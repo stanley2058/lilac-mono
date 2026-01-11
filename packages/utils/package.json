@@ -1,0 +1,13 @@
+{
+  "name": "@stanley2058/lilac-utils",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "ai": "^6.0.27"
+  }
+}
