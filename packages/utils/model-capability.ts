@@ -2,6 +2,8 @@ import type { LanguageModelUsage } from "ai";
 
 export type ModelSpecifier = string;
 
+export type ModelModality = "text" | "image" | "audio" | "video" | "pdf";
+
 export type ModelCost = {
   /** USD per 1M input tokens. */
   input: number;
@@ -11,6 +13,10 @@ export type ModelCost = {
   cache_read?: number;
   /** USD per 1M cache write tokens (optional). */
   cache_write?: number;
+  /** USD per 1M input audio. */
+  input_audio?: number;
+  /** USD per 1M output audio. */
+  output_audio?: number;
 };
 
 export type ModelLimits = {
@@ -28,6 +34,10 @@ export type ModelCapabilityInfo = {
   doc?: string;
   cost?: ModelCost;
   limit: ModelLimits;
+  modalities?: {
+    input: ModelModality[];
+    output?: ModelModality[];
+  };
 };
 
 export type ModelCapabilityOverrides = Record<
@@ -37,6 +47,10 @@ export type ModelCapabilityOverrides = Record<
     limit: {
       context: number;
       output?: number;
+    };
+    modalities?: {
+      input: ModelModality[];
+      output?: ModelModality[];
     };
   }
 >;
@@ -57,16 +71,28 @@ type ModelsDevRegistry = Record<string, ModelsDevProvider>;
 type ModelsDevProvider = {
   id: string;
   env?: string[];
-  npm?: string;
-  name?: string;
+  npm: string;
+  name: string;
   doc?: string;
   models: Record<string, ModelsDevModel>;
 };
 
 type ModelsDevModel = {
   id: string;
-  name?: string;
-  family?: string;
+  name: string;
+  family: string;
+  attachment?: boolean;
+  reasoning?: boolean;
+  tool_call?: boolean;
+  temperature?: boolean;
+  knowledge?: string;
+  release_date?: string;
+  last_updated?: string;
+  modalities: {
+    input: ModelModality[];
+    output: ModelModality[];
+  };
+  open_weights?: boolean;
   cost?: ModelCost;
   limit: ModelLimits;
 };
@@ -91,15 +117,6 @@ export function parseModelSpecifier(spec: string): {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
-}
-
-function getStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item === "string") out.push(item);
-  }
-  return out;
 }
 
 function listSomeKeys(input: Record<string, unknown>, max: number): string[] {
@@ -141,7 +158,7 @@ export class ModelCapability {
           throw new Error("models.dev registry JSON is not an object");
         }
 
-        return record as unknown as ModelsDevRegistry;
+        return record as ModelsDevRegistry;
       })();
     }
 
@@ -163,6 +180,7 @@ export class ModelCapability {
           context: override.limit.context,
           output: override.limit.output ?? 0,
         },
+        modalities: override.modalities,
       };
     }
 
@@ -191,11 +209,12 @@ export class ModelCapability {
       model: parsed.model,
       name: modelEntry.name ?? providerEntry.name,
       family: modelEntry.family,
-      env: getStringArray(providerEntry.env),
+      env: providerEntry.env,
       npm: providerEntry.npm,
       doc: providerEntry.doc,
       cost: modelEntry.cost,
       limit: modelEntry.limit,
+      modalities: modelEntry.modalities,
     };
   }
 
