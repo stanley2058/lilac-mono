@@ -1,0 +1,28 @@
+{
+  "name": "@stanley2058/lilac-tool-bridge",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.6",
+    "@mozilla/readability": "^0.6.0",
+    "@stanley2058/lilac-utils": "workspace:*",
+    "@stanley2058/simple-module-logger": "^0.0.2",
+    "@tavily/core": "^0.6.4",
+    "@types/jsdom": "^27.0.0",
+    "@types/turndown": "^5.0.6",
+    "ai": "^6.0.27",
+    "elysia": "^1.4.21",
+    "file-type": "^21.3.0",
+    "jsdom": "^27.4.0",
+    "playwright": "^1.57.0",
+    "turndown": "^7.2.2",
+    "zod": "^4.3.5"
+  }
+}
