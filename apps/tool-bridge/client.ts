@@ -108,7 +108,15 @@ async function main() {
           ];
           console.log(output.join("\n"));
         } else {
-          const output = [""].join("\n");
+          const output = [
+            `tools - All-in-one tool proxy [version: ${PACKAGE_VERSION}]`,
+            "",
+            "Usage: tools <tool> --arg1=value --arg2=value",
+            "Call a built-in tool with arguments.",
+            "",
+            "--list\tList all available tools",
+            "--help\tShow this help message",
+          ].join("\n");
           console.log(output);
         }
         break;
