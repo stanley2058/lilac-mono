@@ -1,0 +1,61 @@
+import type { LogLevel } from "@stanley2058/simple-module-logger";
+
+export interface Env {
+  logLevel?: LogLevel;
+
+  tools?: {
+    web?: {
+      tavily_api_key?: string;
+    };
+  };
+}
+
+export function parseEnv() {
+  const env = process.env;
+  return {
+    logLevel: env.LOG_LEVEL as LogLevel,
+    toolServer: {
+      port: env.LL_TOOL_SERVER_PORT,
+    },
+    providers: {
+      openai: {
+        baseUrl: env.OPENAI_BASE_URL,
+        apiKey: env.OPENAI_API_KEY,
+      },
+      xai: {
+        baseUrl: env.XAI_BASE_URL,
+        apiKey: env.XAI_API_KEY,
+      },
+      anthropic: {
+        baseUrl: env.ANTHROPIC_BASE_URL,
+        apiKey: env.ANTHROPIC_API_KEY,
+      },
+      openrouter: {
+        baseUrl: env.OPENROUTER_BASE_URL,
+        apiKey: env.OPENROUTER_API_KEY,
+      },
+      groq: {
+        baseUrl: env.GROQ_BASE_URL,
+        apiKey: env.GROQ_API_KEY,
+      },
+      google: {
+        baseUrl: env.GEMINI_BASE_URL || env.GOOGLE_BASE_URL,
+        apiKey:
+          env.GEMINI_API_KEY ||
+          env.GOOGLE_API_KEY ||
+          env.GOOGLE_GENERATIVE_AI_API_KEY,
+      },
+      vercel: {
+        baseUrl: env.AI_GATEWAY_BASE_URL,
+        apiKey: env.AI_GATEWAY_API_KEY,
+      },
+    },
+    tools: {
+      web: {
+        tavilyApiKey: env.TAVILY_API_KEY,
+      },
+    },
+  };
+}
+
+export const env = parseEnv();
