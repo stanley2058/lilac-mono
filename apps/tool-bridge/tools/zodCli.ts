@@ -134,7 +134,7 @@ function formatAggregatedFieldLine(
   }
 
   const modifiersSuffix = modifiers.length ? ` (${modifiers.join("; ")})` : "";
-  const head = `\`${flag}\`: \`${typeStr}\`${modifiersSuffix}`;
+  const head = `${flag}=<${typeStr}>${modifiersSuffix}`;
 
   return description ? `${head} | ${description}` : head;
 }

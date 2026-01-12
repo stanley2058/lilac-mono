@@ -1,5 +1,5 @@
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
-import Elysia from "elysia";
+import Elysia, { NotFoundError } from "elysia";
 import type { ServerTool } from "./tools/type";
 import { Summarize, Web } from "./tools";
 import { env } from "@stanley2058/lilac-utils";
@@ -67,12 +67,22 @@ app.post("/reload", async () => {
   await Promise.allSettled(tools.map((t) => t.init()));
   await refreshToolMapping();
 });
+app.get("/help/:callableId", async ({ params }) => {
+  const tool = callMapping.get(params.callableId);
+  if (!tool) {
+    throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
+  }
+  const desc = await tool.list();
+  const output = desc.find((d) => d.callableId === params.callableId);
+  if (!output) return new NotFoundError();
+  return output;
+});
 app.post(
   "/call",
   async ({ body, request }) => {
     const tool = callMapping.get(body.callableId);
     if (!tool) {
-      throw new Error(`Unknown callable ID '${body.callableId}'`);
+      throw new NotFoundError(`Unknown callable ID '${body.callableId}'`);
     }
 
     try {
@@ -91,7 +101,9 @@ app.post(
   },
   {
     body: BridgeFnRequest,
-    response: BridgeFnResponse,
+    response: {
+      200: BridgeFnResponse,
+    },
   },
 );
 

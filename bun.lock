@@ -5,14 +5,31 @@
     "": {
       "name": "lilac-mono",
     },
+    "apps/core": {
+      "name": "@stanley2058/lilac-core",
+      "dependencies": {
+        "ai": "^6.0.27",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5",
+      },
+    },
     "apps/tool-bridge": {
       "name": "@stanley2058/lilac-tool-bridge",
+      "version": "0.0.1",
+      "bin": {
+        "tools": "dist/index.js",
+      },
       "dependencies": {
         "@ai-sdk/google": "^3.0.6",
         "@mozilla/readability": "^0.6.0",
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.2",
         "@tavily/core": "^0.6.4",
+        "@toon-format/toon": "^2.1.0",
         "@types/jsdom": "^27.0.0",
         "@types/turndown": "^5.0.6",
         "ai": "^6.0.27",
@@ -122,6 +139,8 @@
 
     "@stanley2058/lilac-agent": ["@stanley2058/lilac-agent@workspace:packages/agent"],
 
+    "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
+
     "@stanley2058/lilac-tool-bridge": ["@stanley2058/lilac-tool-bridge@workspace:apps/tool-bridge"],
 
     "@stanley2058/lilac-utils": ["@stanley2058/lilac-utils@workspace:packages/utils"],
@@ -133,6 +152,8 @@
     "@tokenizer/inflate": ["@tokenizer/inflate@0.4.1", "", { "dependencies": { "debug": "^4.4.3", "token-types": "^6.1.1" } }, "sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA=="],
 
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
+
+    "@toon-format/toon": ["@toon-format/toon@2.1.0", "", {}, "sha512-JwWptdF5eOA0HaQxbKAzkpQtR4wSWTEfDlEy/y3/4okmOAX1qwnpLZMmtEWr+ncAhTTY1raCKH0kteHhSXnQqg=="],
 
     "@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
 

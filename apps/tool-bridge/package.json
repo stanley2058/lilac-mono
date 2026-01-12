@@ -1,8 +1,15 @@
 {
   "name": "@stanley2058/lilac-tool-bridge",
+  "version": "0.0.1",
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "tools": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bun build.ts && chmod +x dist/index.js"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
@@ -15,6 +22,7 @@
     "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/simple-module-logger": "^0.0.2",
     "@tavily/core": "^0.6.4",
+    "@toon-format/toon": "^2.1.0",
     "@types/jsdom": "^27.0.0",
     "@types/turndown": "^5.0.6",
     "ai": "^6.0.27",
