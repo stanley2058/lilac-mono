@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, dirname, resolve, isAbsolute } from "node:path";
 import { ripgrep } from "./ripgrep";
 
-function expandTilde(input: string) {
+export function expandTilde(input: string) {
   if (input === "~") return homedir();
   if (input.startsWith("~/")) return join(homedir(), input.slice(2));
   return input;
