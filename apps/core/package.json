@@ -1,6 +1,6 @@
 {
   "name": "@stanley2058/lilac-core",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
