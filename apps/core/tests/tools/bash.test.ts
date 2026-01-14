@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { executeBash } from "../../src/tools/bash-impl";
+import { analyzeBashCommand } from "../../src/tools/bash-safety";
 
 describe("executeBash", () => {
   it("executes a command and returns output", async () => {
@@ -42,5 +43,61 @@ describe("executeBash", () => {
       expect(res.executionError.phase).toBe("spawn");
       expect(res.executionError.message.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("analyzeBashCommand", () => {
+  it("allows benign commands", () => {
+    expect(analyzeBashCommand("echo hello")).toBeNull();
+    expect(analyzeBashCommand("git status")).toBeNull();
+  });
+
+  it("blocks destructive git commands", () => {
+    const result = analyzeBashCommand("git reset --hard");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("git reset --hard");
+  });
+
+  it("blocks rm -rf against root", () => {
+    const result = analyzeBashCommand("rm -rf /");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("root");
+  });
+
+  it("allows rm -rf against temp paths", () => {
+    const result = analyzeBashCommand("rm -rf /tmp/cache");
+    expect(result).toBeNull();
+  });
+
+  it("blocks commands wrapped in bash -c", () => {
+    const result = analyzeBashCommand("bash -c 'git reset --hard'");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("git reset --hard");
+  });
+
+  it("blocks interpreter one-liners that contain dangerous commands", () => {
+    const result = analyzeBashCommand(
+      "python -c 'import os; os.system(\"rm -rf /\")'",
+    );
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("interpreter");
+  });
+
+  it("blocks find -delete", () => {
+    const result = analyzeBashCommand("find . -delete");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("find -delete");
+  });
+
+  it("blocks xargs rm -rf even with temp targets", () => {
+    const result = analyzeBashCommand("xargs rm -rf /tmp/cache");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("xargs");
+  });
+
+  it("blocks parallel shell -c", () => {
+    const result = analyzeBashCommand("parallel bash -c '{}' ::: 'echo hi'");
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain("parallel");
   });
 });

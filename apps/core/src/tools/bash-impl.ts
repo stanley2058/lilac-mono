@@ -1,3 +1,5 @@
+import { analyzeBashCommand } from "./bash-safety";
+import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -7,9 +9,16 @@ export type BashToolInput = {
   command: string;
   cwd?: string;
   timeoutMs?: number;
+  /** Bypass bash safety guardrails for this call. */
+  dangerouslyAllow?: boolean;
 };
 
 export type BashExecutionError =
+  | {
+      type: "blocked";
+      reason: string;
+      segment?: string;
+    }
   | {
       type: "timeout";
       timeoutMs: number;
@@ -54,7 +63,31 @@ export async function executeBash({
   command,
   cwd,
   timeoutMs,
+  dangerouslyAllow,
 }: BashToolInput): Promise<BashToolOutput> {
+  const resolvedCwd = cwd ? expandTilde(cwd) : process.cwd();
+
+  if (!dangerouslyAllow) {
+    const blocked = analyzeBashCommand(command, { cwd: resolvedCwd });
+    if (blocked) {
+      return {
+        stdout: "",
+        stderr: formatBlockedMessage({
+          reason: blocked.reason,
+          command,
+          segment: blocked.segment,
+          redact: redactSecrets,
+        }),
+        exitCode: -1,
+        executionError: {
+          type: "blocked",
+          reason: blocked.reason,
+          segment: blocked.segment,
+        },
+      };
+    }
+  }
+
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS;
 
   const controller = new AbortController();
@@ -67,7 +100,7 @@ export async function executeBash({
 
   try {
     const process = Bun.spawn(["bash", "-lc", command], {
-      cwd: cwd ? expandTilde(cwd) : undefined,
+      cwd: resolvedCwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
@@ -81,8 +114,10 @@ export async function executeBash({
       process.exited,
     ]);
 
-    const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
-    const stderr = stderrResult.status === "fulfilled" ? stderrResult.value : "";
+    const stdout =
+      stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
+    const stderr =
+      stderrResult.status === "fulfilled" ? stderrResult.value : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
     if (timedOut && process.killed) {

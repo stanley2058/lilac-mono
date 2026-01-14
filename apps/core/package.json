@@ -4,13 +4,15 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/shell-quote": "^1.7.5"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "ai": "^6.0.27",
+    "shell-quote": "^1.8.3",
     "zod": "^4.3.5"
   }
 }
