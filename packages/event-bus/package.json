@@ -1,0 +1,15 @@
+{
+  "name": "@stanley2058/lilac-event-bus",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "ioredis": "^5.9.2"
+  }
+}
