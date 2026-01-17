@@ -28,6 +28,7 @@ export const lilacEventTypes = {
   EvtAgentOutputDeltaText: "evt.agent.output.delta.text",
   EvtAgentOutputResponseText: "evt.agent.output.response.text",
   EvtAgentOutputResponseBinary: "evt.agent.output.response.binary",
+  EvtAgentOutputToolCall: "evt.agent.output.toolcall",
 } as const;
 
 /** Union of all supported Lilac event types. */
@@ -183,6 +184,23 @@ export type EvtAgentOutputResponseBinaryData = {
   filename?: string;
 };
 
+export type ToolCallStatus = "start" | "end";
+
+export type EvtAgentOutputToolCallData = {
+  /** Correlates tool-call output events for a request. */
+  requestId: string;
+  /** Start/end boundaries for a tool call. */
+  status: ToolCallStatus;
+  /** Tool identifier (e.g. `bash`, `readFile`, `writeFile`). */
+  toolName: string;
+  /** Preformatted label for UI (e.g. `[bash] ls -al`). */
+  display: string;
+  /** Present when `status === "end"`. */
+  ok?: boolean;
+  /** Present when `status === "end" && ok === false`. */
+  error?: string;
+};
+
 /**
  * Type-level map: event type -> topic + payload.
  */
@@ -275,6 +293,12 @@ export type LilacEventSpec = {
     topic: OutReqTopic;
     key: string;
     data: EvtAgentOutputResponseBinaryData;
+  };
+
+  [lilacEventTypes.EvtAgentOutputToolCall]: {
+    topic: OutReqTopic;
+    key: string;
+    data: EvtAgentOutputToolCallData;
   };
 };
 

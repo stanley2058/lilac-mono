@@ -34,14 +34,16 @@ type OutputEventType =
   | typeof lilacEventTypes.EvtAgentOutputDeltaReasoning
   | typeof lilacEventTypes.EvtAgentOutputDeltaText
   | typeof lilacEventTypes.EvtAgentOutputResponseText
-  | typeof lilacEventTypes.EvtAgentOutputResponseBinary;
+  | typeof lilacEventTypes.EvtAgentOutputResponseBinary
+  | typeof lilacEventTypes.EvtAgentOutputToolCall;
 
 function isOutputEventType(type: LilacEventType): type is OutputEventType {
   return (
     type === lilacEventTypes.EvtAgentOutputDeltaReasoning ||
     type === lilacEventTypes.EvtAgentOutputDeltaText ||
     type === lilacEventTypes.EvtAgentOutputResponseText ||
-    type === lilacEventTypes.EvtAgentOutputResponseBinary
+    type === lilacEventTypes.EvtAgentOutputResponseBinary ||
+    type === lilacEventTypes.EvtAgentOutputToolCall
   );
 }
 
@@ -76,7 +78,8 @@ function getTopicForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputDeltaReasoning:
     case lilacEventTypes.EvtAgentOutputDeltaText:
     case lilacEventTypes.EvtAgentOutputResponseText:
-    case lilacEventTypes.EvtAgentOutputResponseBinary: {
+    case lilacEventTypes.EvtAgentOutputResponseBinary:
+    case lilacEventTypes.EvtAgentOutputToolCall: {
       const requestId = (data as { requestId: string }).requestId;
       return outReqTopic(requestId) as LilacEventSpec[TType]["topic"];
     }
@@ -99,7 +102,8 @@ function getKeyForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputDeltaReasoning:
     case lilacEventTypes.EvtAgentOutputDeltaText:
     case lilacEventTypes.EvtAgentOutputResponseText:
-    case lilacEventTypes.EvtAgentOutputResponseBinary: {
+    case lilacEventTypes.EvtAgentOutputResponseBinary:
+    case lilacEventTypes.EvtAgentOutputToolCall: {
       return (data as { requestId: string }).requestId;
     }
 

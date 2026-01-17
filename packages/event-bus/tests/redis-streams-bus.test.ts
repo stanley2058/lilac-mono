@@ -52,6 +52,58 @@ describe("RedisStreamsBus", () => {
     await bus.close();
   });
 
+  it("publishes tool-call progress events on the output stream", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("toolcall")}`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix, ownsRedis: true });
+    const bus = createLilacBus(raw);
+
+    const requestId = randomId("req");
+    const topic = outReqTopic(requestId);
+
+    const received: Array<{ status: string; toolName: string; display: string }> = [];
+
+    let sub: { stop(): Promise<void> } | undefined;
+    sub = await bus.subscribeTopic(
+      topic,
+      { mode: "tail", offset: { type: "begin" }, batch: { maxWaitMs: 250 } },
+      async (msg) => {
+        if (msg.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          received.push({
+            status: msg.data.status,
+            toolName: msg.data.toolName,
+            display: msg.data.display,
+          });
+          if (received.length >= 2) await sub?.stop();
+        }
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
+      requestId,
+      status: "start",
+      toolName: "bash",
+      display: "[bash] ls -al",
+    });
+
+    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
+      requestId,
+      status: "end",
+      toolName: "bash",
+      display: "[bash] ls -al",
+      ok: true,
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(received).toEqual([
+      { status: "start", toolName: "bash", display: "[bash] ls -al" },
+      { status: "end", toolName: "bash", display: "[bash] ls -al" },
+    ]);
+
+    await bus.close();
+  });
+
   it("fans out evt.request to different subscriptionIds", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("fanout")}`;
