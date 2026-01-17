@@ -1,19 +1,17 @@
 import type { LogLevel } from "@stanley2058/simple-module-logger";
+import path from "node:path";
+import { findWorkspaceRoot } from "./find-root";
 
-export interface Env {
-  logLevel?: LogLevel;
-
-  tools?: {
-    web?: {
-      tavily_api_key?: string;
-    };
-  };
-}
+export type Env = ReturnType<typeof parseEnv>;
 
 export function parseEnv() {
   const env = process.env;
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
+    redisUrl: env.REDIS_URL,
+    sqliteUrl:
+      env.SQLITE_URL ||
+      path.resolve(findWorkspaceRoot(), "data", "data.sqlite3"),
     toolServer: {
       port: env.LL_TOOL_SERVER_PORT,
     },
@@ -55,7 +53,7 @@ export function parseEnv() {
         tavilyApiKey: env.TAVILY_API_KEY,
       },
     },
-  };
+  } as const;
 }
 
 export const env = parseEnv();

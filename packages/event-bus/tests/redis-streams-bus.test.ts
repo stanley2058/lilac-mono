@@ -1,15 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import Redis from "ioredis";
-
 import {
   createLilacBus,
   createRedisStreamsBus,
   lilacEventTypes,
   outReqTopic,
 } from "../index";
+import { env } from "@stanley2058/lilac-utils";
 
-const TEST_REDIS_URL = "redis://127.0.0.1:6379";
-// TODO: make this configurable (env var / config layer).
+const TEST_REDIS_URL = env.redisUrl || "redis://127.0.0.1:6379";
 
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -61,7 +60,11 @@ describe("RedisStreamsBus", () => {
     const requestId = randomId("req");
     const topic = outReqTopic(requestId);
 
-    const received: Array<{ status: string; toolName: string; display: string }> = [];
+    const received: Array<{
+      status: string;
+      toolName: string;
+      display: string;
+    }> = [];
 
     let sub: { stop(): Promise<void> } | undefined;
     sub = await bus.subscribeTopic(
