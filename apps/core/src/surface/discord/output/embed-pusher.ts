@@ -1,0 +1,200 @@
+import { Colors, EmbedBuilder, type Message } from "discord.js";
+import { setTimeout } from "node:timers/promises";
+
+import { chunkMarkdownForEmbeds } from "./markdown-chunker";
+
+export type SafeEdit = (
+  msg: Message,
+  options: Parameters<Message["edit"]>[0],
+) => Promise<boolean>;
+
+const STREAMING_INDICATOR = " ⚪";
+const EDIT_DELAY_MS = 250;
+const CLOSING_TAG_BUFFER = 10;
+
+const EMBED_COLOR_COMPLETE = Colors.Blue;
+const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
+
+function buildActionsValue(lines: readonly string[]): string {
+  const max = 4;
+  const clamped = lines.slice(-max);
+  return clamped.join("\n");
+}
+
+function buildEmbed(params: {
+  description: string;
+  color: number;
+  actionsLines: readonly string[];
+  isStreaming: boolean;
+}): EmbedBuilder {
+  const emb = new EmbedBuilder();
+  emb.setDescription(params.description || "*<empty_string>*");
+  emb.setColor(params.color);
+
+  if (params.isStreaming && params.actionsLines.length > 0) {
+    emb.addFields({
+      name: "Actions",
+      value: buildActionsValue(params.actionsLines),
+      inline: false,
+    });
+  }
+
+  return emb;
+}
+
+function addStreamingIndicator(chunk: string): string {
+  const lines = chunk.split("\n");
+  for (let j = lines.length - 1; j >= 0; j--) {
+    const trimmed = (lines[j] ?? "").trim();
+    if (trimmed.length === 0) continue;
+
+    if (trimmed === "```" || trimmed === "$$") {
+      return chunk + "\n" + STREAMING_INDICATOR.trimStart();
+    }
+    break;
+  }
+
+  return chunk + STREAMING_INDICATOR;
+}
+
+export async function startEmbedPusher(params: {
+  createFirst: (emb: EmbedBuilder) => Promise<Message>;
+  createReply: (parent: Message, emb: EmbedBuilder) => Promise<Message>;
+  getContent: () => string;
+  getActionsLines: () => readonly string[];
+  getMaxLength: (isStreaming: boolean) => number;
+  streamDone: Promise<void>;
+  useSmartSplitting: boolean;
+  safeEdit: SafeEdit;
+}): Promise<{
+  lastMsg: Message;
+  responseQueue: string[];
+  discordMessageCreated: string[];
+}> {
+  let streaming = true;
+  params.streamDone.then(() => {
+    streaming = false;
+  });
+
+  const chunkMessages: Message[] = [];
+  const discordMessageCreated: string[] = [];
+
+  const sentDescriptions: string[] = [];
+  const sentColors: number[] = [];
+  const sentActions: string[] = [];
+
+  let responseQueue: string[] = [];
+
+  const syncToDiscord = async (content: string): Promise<boolean> => {
+    const maxChunkLength = params.getMaxLength(false);
+    const maxLastChunkLength = params.getMaxLength(true);
+
+    let displayChunks = chunkMarkdownForEmbeds(content, {
+      maxChunkLength,
+      maxLastChunkLength,
+      useSmartSplitting: params.useSmartSplitting,
+    });
+
+    const actionsLines = params.getActionsLines();
+
+    // Allow tool progress (Actions) to render even before any text is produced.
+    if (displayChunks.length === 0 && actionsLines.length > 0) {
+      displayChunks = [""];
+    }
+
+    responseQueue = displayChunks;
+
+    if (displayChunks.length === 0) {
+      return false;
+    }
+
+    let didUpdate = false;
+
+    for (let i = 0; i < displayChunks.length; i++) {
+      const chunk = displayChunks[i] ?? "";
+      const isLast = i === displayChunks.length - 1;
+      const showStreamIndicator = streaming && isLast;
+
+      const description = showStreamIndicator
+        ? addStreamingIndicator(chunk)
+        : chunk;
+      const color = showStreamIndicator
+        ? EMBED_COLOR_INCOMPLETE
+        : EMBED_COLOR_COMPLETE;
+
+      // Only show actions while streaming. Once done, actions disappear.
+      const actionsValue =
+        showStreamIndicator && actionsLines.length > 0
+          ? buildActionsValue(actionsLines)
+          : "";
+
+      const emb = buildEmbed({
+        description,
+        color,
+        actionsLines,
+        isStreaming: showStreamIndicator,
+      });
+
+      if (i >= chunkMessages.length) {
+        const msg =
+          i === 0
+            ? await params.createFirst(emb)
+            : await params.createReply(chunkMessages[i - 1]!, emb);
+
+        chunkMessages.push(msg);
+        discordMessageCreated.push(msg.id);
+        sentDescriptions[i] = description;
+        sentColors[i] = color;
+        sentActions[i] = actionsValue;
+        didUpdate = true;
+        continue;
+      }
+
+      if (
+        sentDescriptions[i] !== description ||
+        sentColors[i] !== color ||
+        sentActions[i] !== actionsValue
+      ) {
+        await params.safeEdit(chunkMessages[i]!, { embeds: [emb] });
+        sentDescriptions[i] = description;
+        sentColors[i] = color;
+        sentActions[i] = actionsValue;
+        didUpdate = true;
+      }
+    }
+
+    return didUpdate;
+  };
+
+  while (true) {
+    const content = params.getContent();
+    const didUpdate = await syncToDiscord(content);
+
+    if (!streaming) {
+      if (!didUpdate) {
+        break;
+      }
+      continue;
+    }
+
+    await setTimeout(EDIT_DELAY_MS);
+  }
+
+  const lastMsg = chunkMessages.at(-1);
+  if (!lastMsg) {
+    throw new Error("startEmbedPusher produced no messages");
+  }
+
+  return {
+    lastMsg,
+    responseQueue,
+    discordMessageCreated,
+  };
+}
+
+export function getEmbedPusherConstants() {
+  return {
+    STREAMING_INDICATOR,
+    CLOSING_TAG_BUFFER,
+  };
+}

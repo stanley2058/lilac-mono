@@ -46,8 +46,17 @@ export type LimitOpts = {
   limit?: number;
 };
 
+export type SurfaceAttachment = {
+  kind: "image" | "file";
+  mimeType: string;
+  filename: string;
+  bytes: Uint8Array;
+};
+
 export type ContentOpts = {
-  text: string;
+  text?: string;
+  format?: "markdown" | "plain";
+  attachments?: SurfaceAttachment[];
 };
 
 export type SendOpts = {

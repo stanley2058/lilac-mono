@@ -5,11 +5,41 @@ import type {
   MsgRef,
   SendOpts,
   SessionRef,
+  SurfaceAttachment,
   SurfaceMessage,
   SurfaceSelf,
   SurfaceSession,
 } from "./types";
 import type { AdapterEvent } from "./events";
+
+export type SurfaceToolStatusUpdate = {
+  toolCallId: string;
+  display: string;
+  status: "start" | "end";
+  ok?: boolean;
+  error?: string;
+};
+
+export type SurfaceOutputPart =
+  | { type: "text.delta"; delta: string }
+  | { type: "text.set"; text: string }
+  | { type: "tool.status"; update: SurfaceToolStatusUpdate }
+  | { type: "attachment.add"; attachment: SurfaceAttachment };
+
+export type SurfaceOutputResult = {
+  created: MsgRef[];
+  last: MsgRef;
+};
+
+export interface SurfaceOutputStream {
+  push(part: SurfaceOutputPart): Promise<void>;
+  finish(): Promise<SurfaceOutputResult>;
+  abort(reason?: string): Promise<void>;
+}
+
+export type StartOutputOpts = {
+  replyTo?: MsgRef;
+};
 
 export type AdapterSubscription = {
   stop(): Promise<void>;
@@ -24,6 +54,8 @@ export interface SurfaceAdapter {
   getCapabilities(): Promise<AdapterCapabilities>;
 
   listSessions(): Promise<SurfaceSession[]>;
+
+  startOutput(sessionRef: SessionRef, opts?: StartOutputOpts): Promise<SurfaceOutputStream>;
 
   sendMsg(sessionRef: SessionRef, content: ContentOpts, opts?: SendOpts): Promise<MsgRef>;
   readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null>;

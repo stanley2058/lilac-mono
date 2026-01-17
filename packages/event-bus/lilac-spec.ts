@@ -256,6 +256,8 @@ export type ToolCallStatus = "start" | "end";
 export type EvtAgentOutputToolCallData = {
   /** Correlates tool-call output events for a request. */
   requestId: string;
+  /** Correlates start/end tool events within a request. */
+  toolCallId: string;
   /** Start/end boundaries for a tool call. */
   status: ToolCallStatus;
   /** Tool identifier (e.g. `bash`, `readFile`, `writeFile`). */

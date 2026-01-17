@@ -4,9 +4,7 @@ import {
   GatewayIntentBits,
   Partials,
   type Message,
-  type MessageCreateOptions,
   type PartialMessage,
-  type TextBasedChannel,
 } from "discord.js";
 
 import type {
@@ -39,6 +37,7 @@ import type { AdapterEvent } from "../events";
 import type {
   AdapterEventHandler,
   AdapterSubscription,
+  StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
 
@@ -50,6 +49,10 @@ import {
   replaceUserMentions,
   stripLeadingBotMention,
 } from "./discord-text";
+import {
+  DiscordOutputStream,
+  sendDiscordStyledMessage,
+} from "./output/discord-output-stream";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
@@ -304,6 +307,25 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
   }
 
+  async startOutput(
+    sessionRef: SessionRef,
+    opts?: StartOutputOpts,
+  ): Promise<import("../adapter").SurfaceOutputStream> {
+    const cfg = this.cfg;
+    const client = this.mustClient();
+    if (!cfg) throw new Error("DiscordAdapter not connected");
+
+    // TODO: plumb config for smart splitting.
+    const useSmartSplitting = true;
+
+    return new DiscordOutputStream({
+      client,
+      sessionRef,
+      opts,
+      useSmartSplitting,
+    });
+  }
+
   async sendMsg(
     sessionRef: SessionRef,
     content: ContentOpts,
@@ -313,24 +335,15 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (sessionRef.platform !== "discord")
       throw new Error("Unsupported platform");
 
-    const channel = (await client.channels
-      .fetch(sessionRef.channelId)
-      .catch(() => null)) as TextBasedChannel | null;
+    const useSmartSplitting = true;
 
-    if (!channel || !("send" in channel)) {
-      throw new Error(
-        `Discord channel not found or not text-based: ${sessionRef.channelId}`,
-      );
-    }
-
-    const payload: MessageCreateOptions = { content: content.text };
-    if (opts?.replyTo && opts.replyTo.platform === "discord") {
-      payload.reply = { messageReference: opts.replyTo.messageId };
-    }
-
-    const sent = await channel.send(payload);
-
-    return asDiscordMsgRef(sessionRef.channelId, sent.id);
+    return await sendDiscordStyledMessage({
+      client,
+      sessionRef,
+      content,
+      opts: opts?.replyTo ? { replyTo: opts.replyTo } : undefined,
+      useSmartSplitting,
+    });
   }
 
   async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
@@ -402,7 +415,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
 
     const msg = await channel.messages.fetch(msgRef.messageId);
-    await msg.edit({ content: content.text });
+    await msg.edit({ content: content.text ?? "" });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {

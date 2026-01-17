@@ -84,6 +84,7 @@ describe("RedisStreamsBus", () => {
 
     await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
       requestId,
+      toolCallId: "call-1",
       status: "start",
       toolName: "bash",
       display: "[bash] ls -al",
@@ -91,6 +92,7 @@ describe("RedisStreamsBus", () => {
 
     await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
       requestId,
+      toolCallId: "call-1",
       status: "end",
       toolName: "bash",
       display: "[bash] ls -al",
