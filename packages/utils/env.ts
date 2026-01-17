@@ -12,6 +12,7 @@ export function parseEnv() {
     sqliteUrl:
       env.SQLITE_URL ||
       path.resolve(findWorkspaceRoot(), "data", "data.sqlite3"),
+    dataDir: env.DATA_DIR || path.resolve(findWorkspaceRoot(), "data"),
     toolServer: {
       port: env.LL_TOOL_SERVER_PORT,
     },
