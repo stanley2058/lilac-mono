@@ -1,4 +1,6 @@
 import { encode } from "@toon-format/toon";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 declare global {
   // injected at build time in real releases
@@ -377,16 +379,23 @@ function parseArgs(): ParsedArgs {
     const parsedInputMap = args
       .slice(1)
       .map((a) => {
-        const [k, v] = a.split("=");
+        const eq = a.indexOf("=");
+        const k = eq === -1 ? a : a.slice(0, eq);
+        const v = eq === -1 ? "" : a.slice(eq + 1);
         if (!k) return null;
-        let parsedValue: number | string | boolean = v || "";
+
+        let parsedValue: number | string | boolean = v;
         if (parsedValue.toLowerCase() === "true") parsedValue = true;
         else if (parsedValue.toLowerCase() === "false") parsedValue = false;
+
+        const field = k.slice(2);
+
         if (typeof parsedValue === "string") {
+          parsedValue = normalizeMaybePath(field, parsedValue);
           parsedValue = coerceNumberLike(parsedValue);
         }
 
-        return { field: k.slice(2), value: parsedValue };
+        return { field, value: parsedValue };
       })
       .filter(Boolean) as { field: string; value: number | string | boolean }[];
 
@@ -406,6 +415,49 @@ function parseArgs(): ParsedArgs {
 }
 
 const DECIMAL_NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function looksLikePath(value: string) {
+  if (value.includes("://")) return false;
+  if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
+    return true;
+  }
+  if (value.startsWith("./") || value.startsWith("../")) return true;
+  if (value.startsWith("/")) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
+  return false;
+}
+
+function looksLikeBase64(value: string) {
+  if (value.length < 32) return false;
+  if (value.length > 10_000) return true;
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
+function expandTilde(value: string) {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return `${homedir()}/${value.slice(2)}`;
+  if (value.startsWith("~\\")) return `${homedir()}\\${value.slice(2)}`;
+  return value;
+}
+
+function normalizeMaybePath(field: string, value: string) {
+  if (value.length === 0) return value;
+
+  const fieldLower = field.toLowerCase();
+  const isPathField = fieldLower.endsWith("path");
+
+  // Avoid mis-detecting base64 (often starts with "/" e.g. "/9j/").
+  if (fieldLower.includes("base64") || looksLikeBase64(value)) return value;
+
+  // For unknown flags, only normalize *very* path-like values.
+  // This keeps the CLI generic while avoiding false positives.
+  const shouldNormalize =
+    isPathField || (looksLikePath(value) && value.length <= 512);
+
+  if (!shouldNormalize) return value;
+  return resolve(expandTilde(value));
+}
+
 function coerceNumberLike(input: string): string | number {
   const s = input.trim();
 
