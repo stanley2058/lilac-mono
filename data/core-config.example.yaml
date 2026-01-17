@@ -1,0 +1,8 @@
+surface:
+  discord:
+    botName: lilac_bot
+    statusMessage: "Listening…"
+    allowedChannelIds: ["123456789012345678"]
+    allowedGuildIds: []
+    tokenEnv: DISCORD_TOKEN
+    # dbPath: data/discord-surface.db   # optional override

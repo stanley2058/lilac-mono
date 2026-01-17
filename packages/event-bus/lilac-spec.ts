@@ -10,6 +10,12 @@
 export const lilacEventTypes = {
   CmdRequestMessage: "cmd.request.message",
 
+  EvtAdapterMessageCreated: "evt.adapter.message.created",
+  EvtAdapterMessageUpdated: "evt.adapter.message.updated",
+  EvtAdapterMessageDeleted: "evt.adapter.message.deleted",
+  EvtAdapterReactionAdded: "evt.adapter.reaction.added",
+  EvtAdapterReactionRemoved: "evt.adapter.reaction.removed",
+
   EvtRequestLifecycleChanged: "evt.request.lifecycle.changed",
   EvtRequestReply: "evt.request.reply",
 
@@ -80,10 +86,71 @@ export type CmdRequestMessageData = {
   platform: AdapterPlatform;
   /** Platform-specific channel/conversation identifier. */
   channelId: string;
+  /** Best-effort channel name (if available). */
+  channelName?: string;
   /** Platform-specific user identifier. */
   userId: string;
+  /** Best-effort user display name (if available). */
+  userName?: string;
   text: string;
   /** Raw adapter payload (platform event) if you need it later. */
+  raw?: unknown;
+};
+
+export type EvtAdapterMessageCreatedData = {
+  platform: AdapterPlatform;
+  channelId: string;
+  channelName?: string;
+  messageId: string;
+  userId: string;
+  userName?: string;
+  text: string;
+  ts: number;
+  raw?: unknown;
+};
+
+export type EvtAdapterMessageUpdatedData = {
+  platform: AdapterPlatform;
+  channelId: string;
+  channelName?: string;
+  messageId: string;
+  userId: string;
+  userName?: string;
+  text: string;
+  ts: number;
+  raw?: unknown;
+};
+
+export type EvtAdapterMessageDeletedData = {
+  platform: AdapterPlatform;
+  channelId: string;
+  channelName?: string;
+  messageId: string;
+  ts: number;
+  raw?: unknown;
+};
+
+export type EvtAdapterReactionAddedData = {
+  platform: AdapterPlatform;
+  channelId: string;
+  channelName?: string;
+  messageId: string;
+  userId?: string;
+  userName?: string;
+  reaction: string;
+  ts: number;
+  raw?: unknown;
+};
+
+export type EvtAdapterReactionRemovedData = {
+  platform: AdapterPlatform;
+  channelId: string;
+  channelName?: string;
+  messageId: string;
+  userId?: string;
+  userName?: string;
+  reaction: string;
+  ts: number;
   raw?: unknown;
 };
 
@@ -209,6 +276,36 @@ export type LilacEventSpec = {
     topic: "cmd.request";
     key: string;
     data: CmdRequestMessageData;
+  };
+
+  [lilacEventTypes.EvtAdapterMessageCreated]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterMessageCreatedData;
+  };
+
+  [lilacEventTypes.EvtAdapterMessageUpdated]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterMessageUpdatedData;
+  };
+
+  [lilacEventTypes.EvtAdapterMessageDeleted]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterMessageDeletedData;
+  };
+
+  [lilacEventTypes.EvtAdapterReactionAdded]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterReactionAddedData;
+  };
+
+  [lilacEventTypes.EvtAdapterReactionRemoved]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterReactionRemovedData;
   };
 
   [lilacEventTypes.EvtRequestLifecycleChanged]: {

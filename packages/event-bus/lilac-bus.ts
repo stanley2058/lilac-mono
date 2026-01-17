@@ -53,6 +53,13 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
   return (
     {
       [lilacEventTypes.CmdRequestMessage]: "cmd.request",
+
+      [lilacEventTypes.EvtAdapterMessageCreated]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterMessageUpdated]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterMessageDeleted]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterReactionAdded]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterReactionRemoved]: "evt.adapter",
+
       [lilacEventTypes.EvtRequestLifecycleChanged]: "evt.request",
       [lilacEventTypes.EvtRequestReply]: "evt.request",
 
@@ -105,6 +112,14 @@ function getKeyForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputResponseBinary:
     case lilacEventTypes.EvtAgentOutputToolCall: {
       return (data as { requestId: string }).requestId;
+    }
+
+    case lilacEventTypes.EvtAdapterMessageCreated:
+    case lilacEventTypes.EvtAdapterMessageUpdated:
+    case lilacEventTypes.EvtAdapterMessageDeleted:
+    case lilacEventTypes.EvtAdapterReactionAdded:
+    case lilacEventTypes.EvtAdapterReactionRemoved: {
+      return (data as { channelId: string; messageId: string }).messageId;
     }
 
     case lilacEventTypes.CmdWorkflowTaskCreate:
