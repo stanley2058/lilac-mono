@@ -10,7 +10,7 @@ import {
   type Page,
 } from "playwright";
 import type { ServerTool } from "./type";
-import { zodObjectToCliLines } from "./zodCli";
+import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
 import { env } from "@stanley2058/lilac-utils";

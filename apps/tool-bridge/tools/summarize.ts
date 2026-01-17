@@ -10,7 +10,7 @@ import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
 import { google, type GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
 import type { ServerTool } from "./type";
-import { zodObjectToCliLines } from "./zodCli";
+import { zodObjectToCliLines } from "./zod-cli";
 import { providers } from "@stanley2058/lilac-utils";
 
 export class Summarize implements ServerTool {
