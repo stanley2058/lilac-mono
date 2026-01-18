@@ -61,9 +61,11 @@ Tips:
 
 ### Typechecking
 
+Treat running `tsc` as essential (same tier as running tests). OpenCode’s TypeScript LSP can be unreliable in this monorepo, so `tsc` is the source of truth.
+
 There is no repo-wide `typecheck` script currently.
 
-- If `typescript` is installed in the package, run:
+- Run typecheck in the package you changed:
   - `cd <package> && bunx tsc -p tsconfig.json --noEmit`
 
 If `bunx` needs to install `typescript`, that may require network access.
@@ -146,6 +148,17 @@ There is no active lint/formatter configuration in `apps/*` or `packages/*` (no 
 - `ref/` is for reference material and vendored upstreams.
   - Don’t change `ref/*` unless explicitly asked.
   - Don’t copy rules from `ref/*` blindly; this repo’s active workspace is `apps/*` + `packages/*`.
+
+- When reading external/library code:
+  - Prefer `ref/` first (it often contains the upstream repo).
+  - If you need `node_modules`, run `ls -la node_modules` (and `ls -la node_modules/<pkg>`) before calling Read, to avoid path mistakes.
+
+- `ref/` currently includes:
+  - `ref/ai`
+  - `ref/claude-code-safety-net`
+  - `ref/js-llmcord`
+  - `ref/opencode`
+  - `ref/pi-mono`
 
 ## When Unsure
 
