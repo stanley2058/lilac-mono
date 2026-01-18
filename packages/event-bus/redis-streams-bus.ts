@@ -1,4 +1,5 @@
 import type Redis from "ioredis";
+import SuperJSON from "superjson";
 
 import type { RawBus } from "./raw-bus";
 import type {
@@ -34,10 +35,10 @@ function toRecord(fields: unknown): Record<string, string> {
   return out;
 }
 
-function safeJsonParse(value: string | undefined): unknown {
+function superJsonParse(value: string | undefined): unknown {
   if (!value) return undefined;
   try {
-    return JSON.parse(value);
+    return SuperJSON.parse(value);
   } catch {
     return undefined;
   }
@@ -50,7 +51,7 @@ function decodeMessage(topic: Topic, id: string, fields: unknown): Message {
   const tsRaw = record["ts"];
   const ts = typeof tsRaw === "string" ? Number(tsRaw) : NaN;
 
-  const headersParsed = safeJsonParse(record["headers"]);
+  const headersParsed = superJsonParse(record["headers"]);
   const headers =
     headersParsed && typeof headersParsed === "object"
       ? (headersParsed as Record<string, string>)
@@ -63,7 +64,7 @@ function decodeMessage(topic: Topic, id: string, fields: unknown): Message {
     ts: Number.isFinite(ts) ? ts : Date.now(),
     key: record["key"],
     headers,
-    data: safeJsonParse(record["data"]),
+    data: superJsonParse(record["data"]),
   };
 }
 
@@ -138,7 +139,7 @@ export class RedisStreamsBus implements RawBus {
       "ts",
       String(ts),
       "data",
-      JSON.stringify(msg.data ?? null),
+      SuperJSON.stringify(msg.data ?? null),
     ];
 
     if (opts.key) {
@@ -146,7 +147,7 @@ export class RedisStreamsBus implements RawBus {
     }
 
     if (opts.headers) {
-      fields.push("headers", JSON.stringify(opts.headers));
+      fields.push("headers", SuperJSON.stringify(opts.headers));
     }
 
     // If requested, apply approximate trimming.
@@ -205,7 +206,8 @@ export class RedisStreamsBus implements RawBus {
       }
     }
 
-    const next = messages.length > 0 ? messages[messages.length - 1]!.cursor : undefined;
+    const next =
+      messages.length > 0 ? messages[messages.length - 1]!.cursor : undefined;
     return { messages, next };
   }
 
@@ -228,7 +230,6 @@ export class RedisStreamsBus implements RawBus {
       Math.max(1, opts.batch?.maxWaitMs ?? DEFAULT_BLOCK_MS),
       30_000,
     );
-
 
     const running = (async () => {
       if (opts.mode === "tail") {
@@ -281,8 +282,7 @@ export class RedisStreamsBus implements RawBus {
       const group = workOpts.subscriptionId;
       const consumerId = workOpts.consumerId ?? randomConsumerId();
 
-      const startId =
-        workOpts.offset?.type === "begin" ? "0-0" : "$";
+      const startId = workOpts.offset?.type === "begin" ? "0-0" : "$";
       await ensureGroup({ redis: this.redis, streamKey, group, startId });
 
       while (!abortController.signal.aborted) {

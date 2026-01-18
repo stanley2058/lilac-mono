@@ -7,6 +7,7 @@ import {
   outReqTopic,
 } from "../index";
 import { env } from "@stanley2058/lilac-utils";
+import type { ModelMessage } from "ai";
 
 const TEST_REDIS_URL = env.redisUrl || "redis://127.0.0.1:6379";
 
@@ -159,9 +160,13 @@ describe("RedisStreamsBus", () => {
       },
     );
 
-    await bus.publish(lilacEventTypes.EvtRequestReply, {}, {
-      headers: { request_id: requestId },
-    });
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: { request_id: requestId },
+      },
+    );
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -277,6 +282,72 @@ describe("RedisStreamsBus", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(received).toBe(1);
 
+    await bus.close();
+  });
+
+  it("serializes complex objects with URLs and non-standard types using superjson", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("superjson")}`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix, ownsRedis: true });
+    const bus = createLilacBus(raw);
+
+    const requestId = randomId("req");
+
+    // Create complex object with URL and special types
+    const complexData = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Check out https://example.com/path?query=value",
+            },
+            {
+              type: "file",
+              data: new URL("https://example.com/example.pdf"),
+              mediaType: "application/pdf",
+            },
+          ],
+        },
+      ] satisfies ModelMessage[],
+      raw: {
+        url: new URL("https://example.com/api"),
+        date: new Date(),
+        nested: {
+          innerUrl: "https://nested.example.com",
+        },
+      },
+    };
+
+    let received: unknown;
+
+    let sub: { stop(): Promise<void> } | undefined;
+    sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "work",
+        subscriptionId: "test-agent",
+        consumerId: "instance-1",
+        offset: { type: "begin" },
+        batch: { maxWaitMs: 250 },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage) {
+          received = msg.data;
+        }
+        await ctx.commit();
+        await sub?.stop();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.CmdRequestMessage, complexData, {
+      headers: { request_id: requestId },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(received).toEqual(complexData);
     await bus.close();
   });
 });
