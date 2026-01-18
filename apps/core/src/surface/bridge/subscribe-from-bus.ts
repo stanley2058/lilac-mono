@@ -1,4 +1,8 @@
-import { lilacEventTypes, outReqTopic, type LilacBus } from "@stanley2058/lilac-event-bus";
+import {
+  lilacEventTypes,
+  outReqTopic,
+  type LilacBus,
+} from "@stanley2058/lilac-event-bus";
 
 import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
@@ -41,8 +45,7 @@ function toAttachment(params: {
     ? "image"
     : "file";
 
-  const filename =
-    params.filename ?? (kind === "image" ? "image" : "file");
+  const filename = params.filename ?? (kind === "image" ? "image" : "file");
 
   return {
     kind,
@@ -68,7 +71,7 @@ export async function bridgeBusToAdapter(params: {
     bus,
     platform,
     subscriptionId,
-    idleTimeoutMs = 3 * 60 * 1000,
+    idleTimeoutMs = 60 * 60 * 1000,
   } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
@@ -91,7 +94,9 @@ export async function bridgeBusToAdapter(params: {
 
       if (!requestId || !sessionId) {
         // Do not ack malformed messages: they need investigation.
-        throw new Error("evt.request.reply missing required headers.request_id/session_id");
+        throw new Error(
+          "evt.request.reply missing required headers.request_id/session_id",
+        );
       }
 
       if (requestClient && requestClient !== platform) {
