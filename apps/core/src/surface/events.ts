@@ -1,3 +1,5 @@
+import type { ModelMessage } from "ai";
+
 import type { SurfaceMessage, SurfacePlatform } from "./types";
 
 export type AdapterEventBase = {
@@ -52,9 +54,7 @@ export type AdapterRequestEvent = AdapterEventBase & {
   requestId: string;
   channelId: string;
   channelName?: string;
-  userId: string;
-  userName?: string;
-  text: string;
+  messages: ModelMessage[];
   raw?: unknown;
 };
 

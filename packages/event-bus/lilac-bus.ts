@@ -3,6 +3,7 @@ import type { Cursor, FetchOptions, Message, SubscriptionOptions } from "./types
 import {
   lilacEventTypes,
   outReqTopic,
+  type AdapterPlatform,
   type LilacDataForType,
   type LilacEventSpec,
   type LilacEventType,
@@ -13,16 +14,30 @@ import {
 } from "./lilac-spec";
 
 /**
+ * Canonical request-scoped envelope headers.
+ *
+ * These are optional at the type level because adapter ingestion events may not
+ * be tied to a request. For request/workflow/output events, publishers should
+ * treat missing `request_id` as an error.
+ */
+export type LilacEnvelopeHeaders = {
+  request_id?: string;
+  session_id?: string;
+  request_client?: AdapterPlatform;
+};
+
+/**
  * Strongly-typed event message envelope.
  *
  * `type` controls the `data` payload shape.
  */
 export type LilacMessage<TType extends LilacEventType> =
   TType extends LilacEventType
-    ? Message<LilacDataForType<TType>> & {
+    ? Omit<Message<LilacDataForType<TType>>, "headers"> & {
         type: TType;
         topic: LilacTopicForType<TType>;
         key?: LilacKeyForType<TType>;
+        headers?: Record<string, string> & Partial<LilacEnvelopeHeaders>;
       }
     : never;
 
@@ -77,9 +92,17 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
   )[type] as LilacTopicForType<TType>;
 }
 
+function assertRequestId(headers: LilacEnvelopeHeaders | undefined, label: string): string {
+  const requestId = headers?.request_id;
+  if (!requestId) {
+    throw new Error(`${label} requires headers.request_id`);
+  }
+  return requestId;
+}
+
 function getTopicForType<TType extends LilacEventType>(
   type: TType,
-  data: LilacEventSpec[TType]["data"],
+  headers: LilacEnvelopeHeaders | undefined,
 ): LilacEventSpec[TType]["topic"] {
   switch (type) {
     case lilacEventTypes.EvtAgentOutputDeltaReasoning:
@@ -87,7 +110,7 @@ function getTopicForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputResponseText:
     case lilacEventTypes.EvtAgentOutputResponseBinary:
     case lilacEventTypes.EvtAgentOutputToolCall: {
-      const requestId = (data as { requestId: string }).requestId;
+      const requestId = assertRequestId(headers, `publish(${type})`);
       return outReqTopic(requestId) as LilacEventSpec[TType]["topic"];
     }
 
@@ -100,6 +123,7 @@ function getTopicForType<TType extends LilacEventType>(
 
 function getKeyForType<TType extends LilacEventType>(
   type: TType,
+  headers: LilacEnvelopeHeaders | undefined,
   data: LilacEventSpec[TType]["data"],
 ): string | undefined {
   switch (type) {
@@ -111,7 +135,7 @@ function getKeyForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputResponseText:
     case lilacEventTypes.EvtAgentOutputResponseBinary:
     case lilacEventTypes.EvtAgentOutputToolCall: {
-      return (data as { requestId: string }).requestId;
+      return assertRequestId(headers, `publish(${type})`);
     }
 
     case lilacEventTypes.EvtAdapterMessageCreated:
@@ -153,7 +177,7 @@ export interface LilacBus {
     data: LilacDataForType<TType>,
     options?: {
       /** Optional metadata (string->string). */
-      headers?: Record<string, string>;
+      headers?: Record<string, string> & Partial<LilacEnvelopeHeaders>;
       /** Override the default routing topic (advanced). */
       topic?: LilacTopicForType<TType>;
       /** Override the default correlation key (advanced). */
@@ -176,7 +200,7 @@ export interface LilacBus {
   /**
    * Subscribe to a single event type.
    *
-   * For output-stream event types you must provide `opts.topic` (e.g. `outReqTopic(requestId)`).
+   * For output-stream event types you must provide `opts.topic` (e.g. `outReqTopic(request_id)`).
    */
   subscribeType<TType extends LilacEventType>(
     type: TType,
@@ -210,14 +234,14 @@ export function createLilacBus(raw: RawBus): LilacBus {
       type: TType,
       data: LilacDataForType<TType>,
       options?: {
-        headers?: Record<string, string>;
+        headers?: Record<string, string> & Partial<LilacEnvelopeHeaders>;
         topic?: LilacTopicForType<TType>;
         key?: string;
         retention?: { maxLenApprox?: number };
       },
     ) => {
-      const topic = options?.topic ?? getTopicForType(type, data);
-      const key = options?.key ?? getKeyForType(type, data);
+      const topic = options?.topic ?? getTopicForType(type, options?.headers);
+      const key = options?.key ?? getKeyForType(type, options?.headers, data);
 
       const res = await raw.publish(
         {
@@ -271,7 +295,7 @@ export function createLilacBus(raw: RawBus): LilacBus {
 
       if (!topic) {
         throw new Error(
-          `subscribeType(${type}) requires an explicit topic (e.g. outReqTopic(requestId))`,
+          `subscribeType(${type}) requires an explicit topic (e.g. outReqTopic(request_id))`,
         );
       }
 

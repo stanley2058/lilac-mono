@@ -38,11 +38,14 @@ describe("RedisStreamsBus", () => {
       },
     );
 
-    await bus.publish(lilacEventTypes.EvtAgentOutputDeltaText, {
-      requestId,
-      delta: "hello",
-      seq: 1,
-    });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      {
+        delta: "hello",
+        seq: 1,
+      },
+      { headers: { request_id: requestId } },
+    );
 
     // Wait a tick for the subscriber to receive.
     await new Promise((r) => setTimeout(r, 50));
@@ -62,7 +65,6 @@ describe("RedisStreamsBus", () => {
 
     const received: Array<{
       status: string;
-      toolName: string;
       display: string;
     }> = [];
 
@@ -74,7 +76,6 @@ describe("RedisStreamsBus", () => {
         if (msg.type === lilacEventTypes.EvtAgentOutputToolCall) {
           received.push({
             status: msg.data.status,
-            toolName: msg.data.toolName,
             display: msg.data.display,
           });
           if (received.length >= 2) await sub?.stop();
@@ -82,28 +83,32 @@ describe("RedisStreamsBus", () => {
       },
     );
 
-    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
-      requestId,
-      toolCallId: "call-1",
-      status: "start",
-      toolName: "bash",
-      display: "[bash] ls -al",
-    });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "call-1",
+        status: "start",
+        display: "[bash] ls -al",
+      },
+      { headers: { request_id: requestId } },
+    );
 
-    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, {
-      requestId,
-      toolCallId: "call-1",
-      status: "end",
-      toolName: "bash",
-      display: "[bash] ls -al",
-      ok: true,
-    });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "call-1",
+        status: "end",
+        display: "[bash] ls -al",
+        ok: true,
+      },
+      { headers: { request_id: requestId } },
+    );
 
     await new Promise((r) => setTimeout(r, 50));
 
     expect(received).toEqual([
-      { status: "start", toolName: "bash", display: "[bash] ls -al" },
-      { status: "end", toolName: "bash", display: "[bash] ls -al" },
+      { status: "start", display: "[bash] ls -al" },
+      { status: "end", display: "[bash] ls -al" },
     ]);
 
     await bus.close();
@@ -154,9 +159,8 @@ describe("RedisStreamsBus", () => {
       },
     );
 
-    await bus.publish(lilacEventTypes.EvtRequestReply, {
-      requestId,
-      outputTopic: outReqTopic(requestId),
+    await bus.publish(lilacEventTypes.EvtRequestReply, {}, {
+      headers: { request_id: requestId },
     });
 
     await new Promise((r) => setTimeout(r, 50));
@@ -178,16 +182,22 @@ describe("RedisStreamsBus", () => {
     const requestId = randomId("req");
     const topic = outReqTopic(requestId);
 
-    await bus.publish(lilacEventTypes.EvtAgentOutputDeltaText, {
-      requestId,
-      delta: "a",
-      seq: 1,
-    });
-    await bus.publish(lilacEventTypes.EvtAgentOutputDeltaText, {
-      requestId,
-      delta: "b",
-      seq: 2,
-    });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      {
+        delta: "a",
+        seq: 1,
+      },
+      { headers: { request_id: requestId } },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      {
+        delta: "b",
+        seq: 2,
+      },
+      { headers: { request_id: requestId } },
+    );
 
     const first = await bus.fetchTopic(topic, {
       offset: { type: "begin" },
@@ -250,13 +260,19 @@ describe("RedisStreamsBus", () => {
       },
     );
 
-    await bus.publish(lilacEventTypes.CmdRequestMessage, {
-      requestId,
-      platform: "unknown",
-      channelId: "chan",
-      userId: "user",
-      text: "ping",
-    });
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        messages: [{ role: "user", content: "ping" }],
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "unknown",
+        },
+      },
+    );
 
     await new Promise((r) => setTimeout(r, 50));
     expect(received).toBe(1);

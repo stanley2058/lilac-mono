@@ -4,3 +4,4 @@ export * from "./adapter";
 
 export * from "./discord/discord-adapter";
 export * from "./bridge/publish-to-bus";
+export * from "./bridge/subscribe-from-bus";

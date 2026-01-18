@@ -10,6 +10,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "ai": "^6.0.27",
     "ioredis": "^5.9.2",
     "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/simple-module-logger": "^0.0.2"

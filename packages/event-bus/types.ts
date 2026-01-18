@@ -34,7 +34,7 @@ export type PublishOptions = {
   topic: Topic;
   /** Event type string (e.g. `cmd.request.message`). */
   type: string;
-  /** Optional correlation/partition key (e.g. requestId). */
+  /** Optional correlation/partition key (e.g. request_id). */
   key?: string;
   /** Optional metadata (string->string). */
   headers?: Record<string, string>;

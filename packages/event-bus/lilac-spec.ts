@@ -4,6 +4,8 @@
  * Compile-time only: there is no runtime validation/decoding.
  */
 
+import type { ModelMessage } from "ai";
+
 /**
  * Event type string constants (use for autocomplete).
  */
@@ -82,17 +84,7 @@ export type AdapterPlatform =
   | "unknown";
 
 export type CmdRequestMessageData = {
-  requestId: string;
-  platform: AdapterPlatform;
-  /** Platform-specific channel/conversation identifier. */
-  channelId: string;
-  /** Best-effort channel name (if available). */
-  channelName?: string;
-  /** Platform-specific user identifier. */
-  userId: string;
-  /** Best-effort user display name (if available). */
-  userName?: string;
-  text: string;
+  messages: ModelMessage[];
   /** Raw adapter payload (platform event) if you need it later. */
   raw?: unknown;
 };
@@ -155,27 +147,16 @@ export type EvtAdapterReactionRemovedData = {
 };
 
 export type EvtRequestLifecycleChangedData = {
-  requestId: string;
   state: RequestLifecycleState;
   detail?: string;
   ts?: number;
 };
 
-export type EvtRequestReplyData = {
-  requestId: string;
-  /**
-   * Output stream topic for deltas/responses.
-   *
-   * By convention this is `out.req.${requestId}`.
-   */
-  outputTopic: OutReqTopic;
-};
+export type EvtRequestReplyData = {};
 
 export type CmdWorkflowTaskCreateData = {
   workflowId: string;
   taskId: string;
-  /** Request that spawned this workflow/task (if any). */
-  requestId?: string;
   kind: string;
   input?: unknown;
 };
@@ -219,33 +200,24 @@ export type EvtWorkflowLifecycleChangedData = {
 
 export type CmdAgentCreateData = {
   agentId: string;
-  /**
-   * If this agent creation is tied to a request, populate requestId.
-   * This is typically used to route output events.
-   */
-  requestId?: string;
   context: unknown;
 };
 
 export type EvtAgentOutputDeltaReasoningData = {
-  requestId: string;
   delta: string;
   seq?: number;
 };
 
 export type EvtAgentOutputDeltaTextData = {
-  requestId: string;
   delta: string;
   seq?: number;
 };
 
 export type EvtAgentOutputResponseTextData = {
-  requestId: string;
   text: string;
 };
 
 export type EvtAgentOutputResponseBinaryData = {
-  requestId: string;
   mimeType: string;
   dataBase64: string;
   filename?: string;
@@ -254,14 +226,10 @@ export type EvtAgentOutputResponseBinaryData = {
 export type ToolCallStatus = "start" | "end";
 
 export type EvtAgentOutputToolCallData = {
-  /** Correlates tool-call output events for a request. */
-  requestId: string;
   /** Correlates start/end tool events within a request. */
   toolCallId: string;
   /** Start/end boundaries for a tool call. */
   status: ToolCallStatus;
-  /** Tool identifier (e.g. `bash`, `readFile`, `writeFile`). */
-  toolName: string;
   /** Preformatted label for UI (e.g. `[bash] ls -al`). */
   display: string;
   /** Present when `status === "end"`. */
