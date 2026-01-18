@@ -12,6 +12,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-event-bus": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
     "ai": "^6.0.27",

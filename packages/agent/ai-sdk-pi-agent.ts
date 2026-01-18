@@ -180,6 +180,7 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
       type: "tool_execution_end";
       toolCallId: string;
       toolName: string;
+      args: unknown;
       result: unknown;
       isError: boolean;
     };
@@ -518,6 +519,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
   private transformMessages: TransformMessagesFn | undefined;
 
+  private context?: unknown;
+
   /** Live execution and transcript state. */
   readonly state: AiSdkPiAgentState<TOOLS>;
 
@@ -567,6 +570,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /** Replace the toolset used for subsequent turns. */
   setTools(tools: TOOLS) {
     this.state.tools = tools;
+  }
+
+  /** Replace the tool context used for subsequent turns. */
+  setContext(context: unknown) {
+    this.context = context;
   }
 
   /** Replace the outbound message transform hook. */
@@ -945,8 +953,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       system: this.state.system,
       messages: messagesForModel,
       tools: toolsForModel,
-      abortSignal,
       providerOptions: this.state.providerOptions,
+      experimental_context: this.context,
+      abortSignal,
     });
 
     let assistantStarted = false;
@@ -1303,6 +1312,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         type: "tool_execution_end",
         toolCallId: call.toolCallId,
         toolName: call.toolName,
+        args: call.input,
         result,
         isError,
       });
@@ -1344,6 +1354,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             type: "tool_execution_end",
             toolCallId: skipped.toolCallId,
             toolName: skipped.toolName,
+            args: skipped.input,
             result: "Skipped due to steering message.",
             isError: true,
           });

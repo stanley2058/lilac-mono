@@ -268,6 +268,7 @@ describe("RedisStreamsBus", () => {
     await bus.publish(
       lilacEventTypes.CmdRequestMessage,
       {
+        queue: "prompt",
         messages: [{ role: "user", content: "ping" }],
       },
       {
@@ -295,6 +296,7 @@ describe("RedisStreamsBus", () => {
 
     // Create complex object with URL and special types
     const complexData = {
+      queue: "prompt" as const,
       messages: [
         {
           role: "user",

@@ -90,24 +90,6 @@ export async function bridgeAdapterToBus(params: {
         break;
       }
 
-      case "adapter.request": {
-        await bus.publish(
-          lilacEventTypes.CmdRequestMessage,
-          {
-            messages: evt.messages,
-            raw: evt.raw,
-          },
-          {
-            headers: {
-              request_id: evt.requestId,
-              session_id: evt.channelId,
-              request_client: "discord",
-            },
-          },
-        );
-        break;
-      }
-
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

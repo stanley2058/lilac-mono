@@ -215,7 +215,7 @@ export async function bridgeBusToAdapter(params: {
           }
 
           case lilacEventTypes.EvtAgentOutputResponseText: {
-            await out.push({ type: "text.set", text: outMsg.data.text });
+            await out.push({ type: "text.set", text: outMsg.data.finalText });
             await out.finish();
             await relayStop();
             return;

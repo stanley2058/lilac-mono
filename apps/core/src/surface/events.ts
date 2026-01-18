@@ -49,19 +49,9 @@ export type AdapterReactionRemovedEvent = AdapterEventBase & {
   raw?: unknown;
 };
 
-export type AdapterRequestEvent = AdapterEventBase & {
-  type: "adapter.request";
-  requestId: string;
-  channelId: string;
-  channelName?: string;
-  messages: ModelMessage[];
-  raw?: unknown;
-};
-
 export type AdapterEvent =
   | AdapterMessageCreatedEvent
   | AdapterMessageUpdatedEvent
   | AdapterMessageDeletedEvent
   | AdapterReactionAddedEvent
-  | AdapterReactionRemovedEvent
-  | AdapterRequestEvent;
+  | AdapterReactionRemovedEvent;

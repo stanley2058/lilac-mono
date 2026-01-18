@@ -59,12 +59,18 @@ async function readStreamText(stream: unknown): Promise<string> {
   return await new Response(stream as any).text();
 }
 
-export async function executeBash({
-  command,
-  cwd,
-  timeoutMs,
-  dangerouslyAllow,
-}: BashToolInput): Promise<BashToolOutput> {
+export async function executeBash(
+  { command, cwd, timeoutMs, dangerouslyAllow }: BashToolInput,
+  {
+    context,
+  }: {
+    context?: {
+      requestId: string;
+      sessionId: string;
+      requestClient: string;
+    };
+  } = {},
+): Promise<BashToolOutput> {
   const resolvedCwd = cwd ? expandTilde(cwd) : process.cwd();
 
   if (!dangerouslyAllow) {
@@ -106,6 +112,11 @@ export async function executeBash({
       stdin: "ignore",
       signal: controller.signal,
       killSignal: DEFAULT_KILL_SIGNAL,
+      env: {
+        LILAC_REQUEST_ID: context?.requestId,
+        LILAC_SESSION_ID: context?.sessionId,
+        LILAC_REQUEST_CLIENT: context?.requestClient,
+      },
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([

@@ -243,7 +243,7 @@ describe("bridgeBusToAdapter", () => {
 
     await bus.publish(
       lilacEventTypes.EvtAgentOutputResponseText,
-      { text: "final" },
+      { finalText: "final" },
       { headers: { request_id: requestId } },
     );
 
@@ -316,7 +316,7 @@ describe("bridgeBusToAdapter", () => {
 
     await bus.publish(
       lilacEventTypes.EvtAgentOutputResponseText,
-      { text: "done" },
+      { finalText: "done" },
       { headers: { request_id: requestId } },
     );
 

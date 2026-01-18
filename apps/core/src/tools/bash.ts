@@ -44,7 +44,14 @@ export function bashTool() {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: executeBash,
+      execute: (input, { experimental_context: context }) =>
+        executeBash(input, { context } as {
+          context?: {
+            requestId: string;
+            sessionId: string;
+            requestClient: string;
+          };
+        }),
     }),
   };
 }

@@ -17,12 +17,37 @@ export const coreConfigSchema = z.object({
             .min(1)
             .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
           statusMessage: z.string().optional(),
+
+          router: z
+            .object({
+              /** Default behavior for channels unless overridden by sessionModes. */
+              defaultMode: z.enum(["mention", "active"]).default("mention"),
+              /** Per-session routing mode overrides. Key is session/channel id. */
+              sessionModes: z
+                .record(
+                  z.string().min(1),
+                  z.object({ mode: z.enum(["mention", "active"]) }),
+                )
+                .default({}),
+              /** Debounce window (ms) for active mode initial prompt batching. */
+              activeDebounceMs: z.number().int().positive().default(3000),
+            })
+            .default({
+              defaultMode: "mention",
+              sessionModes: {},
+              activeDebounceMs: 3000,
+            }),
         })
         .default({
           tokenEnv: "DISCORD_TOKEN",
           allowedChannelIds: [],
           allowedGuildIds: [],
           botName: "lilac",
+          router: {
+            defaultMode: "mention",
+            sessionModes: {},
+            activeDebounceMs: 3000,
+          },
         }),
     })
     .default({
@@ -31,7 +56,37 @@ export const coreConfigSchema = z.object({
         allowedChannelIds: [],
         allowedGuildIds: [],
         botName: "lilac",
+        router: {
+          defaultMode: "mention",
+          sessionModes: {},
+          activeDebounceMs: 3000,
+        },
       },
+    }),
+
+  agent: z
+    .object({
+      systemPrompt: z.string().min(1).default("You are lilac."),
+    })
+    .default({
+      systemPrompt: "You are lilac.",
+    }),
+
+  models: z
+    .object({
+      main: z
+        .object({
+          model: z.string().min(1).default("openrouter/openai/gpt-4o"),
+          options: z
+            .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+            .optional(),
+        })
+        .default({
+          model: "openrouter/openai/gpt-4o",
+        }),
+    })
+    .default({
+      main: { model: "openrouter/openai/gpt-4o" },
     }),
 });
 

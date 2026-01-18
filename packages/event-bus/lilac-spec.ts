@@ -54,8 +54,7 @@ export function outReqTopic(requestId: string): OutReqTopic {
 export type RequestLifecycleState =
   | "queued"
   | "running"
-  | "streaming"
-  | "done"
+  | "resolved"
   | "failed"
   | "cancelled";
 
@@ -63,7 +62,7 @@ export type WorkflowLifecycleState =
   | "queued"
   | "running"
   | "blocked"
-  | "done"
+  | "resolved"
   | "failed"
   | "cancelled";
 
@@ -83,7 +82,10 @@ export type AdapterPlatform =
   | "web"
   | "unknown";
 
+export type RequestQueueMode = "prompt" | "steer" | "followUp" | "interrupt";
+
 export type CmdRequestMessageData = {
+  queue: RequestQueueMode;
   messages: ModelMessage[];
   /** Raw adapter payload (platform event) if you need it later. */
   raw?: unknown;
@@ -214,7 +216,8 @@ export type EvtAgentOutputDeltaTextData = {
 };
 
 export type EvtAgentOutputResponseTextData = {
-  text: string;
+  /** The full response text accumulated across all deltas. */
+  finalText: string;
 };
 
 export type EvtAgentOutputResponseBinaryData = {

@@ -7,8 +7,6 @@ import {
   type PartialMessage,
 } from "discord.js";
 
-import type { ModelMessage } from "ai";
-
 import type {
   EvtAdapterMessageCreatedData,
   EvtAdapterMessageDeletedData,
@@ -43,15 +41,7 @@ import type {
   SurfaceAdapter,
 } from "../adapter";
 
-import { DiscordSurfaceStore, type DbDiscordMessage } from "../store/discord-surface-store";
-import { DISCORD_MERGE_WINDOW_MS } from "./merge-window";
-import {
-  replaceChannelMentions,
-  replaceRoleMentions,
-  replaceUserMentions,
-  sanitizeUserToken,
-  stripLeadingBotMention,
-} from "./discord-text";
+import { DiscordSurfaceStore } from "../store/discord-surface-store";
 import {
   DiscordOutputStream,
   sendDiscordStyledMessage,
@@ -109,323 +99,6 @@ function getDisplayName(msg: Message): string {
       ? msg.member.displayName
       : undefined;
   return memberName ?? msg.author.globalName ?? msg.author.username;
-}
-
-type DiscordReplyChainMessage = {
-  messageId: string;
-  authorId: string;
-  authorName: string;
-  ts: number;
-  content: string;
-  reference?: {
-    messageId?: string;
-    channelId?: string;
-  };
-};
-
-type MergedChainChunk = {
-  messageIds: string[];
-  authorId: string;
-  authorName: string;
-  tsStart: number;
-  tsEnd: number;
-  content: string;
-};
-
-function safeJsonParse(value: string | null | undefined): unknown {
-  if (!value) return undefined;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function getReferenceFromRaw(raw: unknown): { messageId?: string; channelId?: string } {
-  if (!raw || typeof raw !== "object") return {};
-  if (!("reference" in raw)) return {};
-  const ref = (raw as { reference?: unknown }).reference;
-  if (!ref || typeof ref !== "object") return {};
-
-  const messageId =
-    "messageId" in ref && typeof (ref as { messageId?: unknown }).messageId === "string"
-      ? ((ref as { messageId: string }).messageId as string)
-      : undefined;
-
-  const channelId =
-    "channelId" in ref && typeof (ref as { channelId?: unknown }).channelId === "string"
-      ? ((ref as { channelId: string }).channelId as string)
-      : undefined;
-
-  return { messageId, channelId };
-}
-
-function mergeReplyChainByWindow(messagesOldestFirst: readonly DiscordReplyChainMessage[]): MergedChainChunk[] {
-  if (messagesOldestFirst.length === 0) return [];
-
-  const out: MergedChainChunk[] = [];
-  let cur: MergedChainChunk = {
-    messageIds: [messagesOldestFirst[0]!.messageId],
-    authorId: messagesOldestFirst[0]!.authorId,
-    authorName: messagesOldestFirst[0]!.authorName,
-    tsStart: messagesOldestFirst[0]!.ts,
-    tsEnd: messagesOldestFirst[0]!.ts,
-    content: messagesOldestFirst[0]!.content,
-  };
-
-  for (let i = 1; i < messagesOldestFirst.length; i++) {
-    const next = messagesOldestFirst[i]!;
-    const gap = next.ts - cur.tsEnd;
-
-    const shouldMerge = next.authorId === cur.authorId && gap <= DISCORD_MERGE_WINDOW_MS;
-    if (!shouldMerge) {
-      out.push(cur);
-      cur = {
-        messageIds: [next.messageId],
-        authorId: next.authorId,
-        authorName: next.authorName,
-        tsStart: next.ts,
-        tsEnd: next.ts,
-        content: next.content,
-      };
-      continue;
-    }
-
-    cur.messageIds.push(next.messageId);
-    cur.tsEnd = next.ts;
-    cur.content = `${cur.content}\n\n${next.content}`;
-  }
-
-  out.push(cur);
-  return out;
-}
-
-function normalizeDiscordText(params: {
-  text: string;
-  store: DiscordSurfaceStore;
-  guildId?: string | null;
-  botUserId: string;
-  botName: string;
-}): string {
-  const { store, guildId, botUserId, botName } = params;
-
-  let normalizedText = replaceUserMentions({
-    text: params.text,
-    lookupUserName: (uid) => {
-      const row = store.getUserName(uid);
-      return row?.display_name ?? row?.global_name ?? row?.username ?? null;
-    },
-    botUserId,
-    botName,
-  });
-
-  if (guildId) {
-    normalizedText = replaceRoleMentions({
-      text: normalizedText,
-      guildId,
-      lookupRoleName: (gid, rid) => {
-        const row = store.getRoleName(gid, rid);
-        return row?.name ?? null;
-      },
-    });
-  }
-
-  normalizedText = replaceChannelMentions({
-    text: normalizedText,
-    lookupChannelName: (cid) => {
-      const row = store.getChannelName(cid);
-      return row?.name ?? null;
-    },
-  });
-
-  return normalizedText;
-}
-
-function formatDiscordAttributionHeader(params: {
-  authorId: string;
-  authorName: string;
-  messageId: string;
-}): string {
-  const userName = sanitizeUserToken(params.authorName || `user_${params.authorId}`);
-  return `[discord user_id=${params.authorId} user_name=${userName} message_id=${params.messageId}]`;
-}
-
-async function fetchDiscordMessageById(params: {
-  channel: Message["channel"];
-  messageId: string;
-}): Promise<Message | null> {
-  const { channel, messageId } = params;
-  if (!channel || !("messages" in channel) || !channel.messages?.fetch) return null;
-  return await channel.messages.fetch(messageId).catch(() => null);
-}
-
-function toReplyChainMessageFromRow(params: {
-  row: DbDiscordMessage;
-  store: DiscordSurfaceStore;
-  botUserId: string;
-  botName: string;
-}): DiscordReplyChainMessage {
-  const { row, store, botUserId, botName } = params;
-
-  const raw = safeJsonParse(row.raw_json);
-  const ref = getReferenceFromRaw(raw);
-
-  const authorName =
-    row.author_id === botUserId
-      ? botName
-      : (() => {
-          const u = store.getUserName(row.author_id);
-          return u?.display_name ?? u?.global_name ?? u?.username ?? `user_${row.author_id}`;
-        })();
-
-  return {
-    messageId: row.message_id,
-    authorId: row.author_id,
-    authorName,
-    ts: row.ts,
-    content: row.content,
-    reference: ref,
-  };
-}
-
-function toReplyChainMessageFromDiscordMessage(params: {
-  msg: Message;
-  botUserId: string;
-  botName: string;
-}): DiscordReplyChainMessage {
-  const { msg, botUserId, botName } = params;
-
-  const authorId = msg.author.id;
-  const authorName = authorId === botUserId ? botName : getDisplayName(msg);
-
-  return {
-    messageId: msg.id,
-    authorId,
-    authorName,
-    ts: getMessageTs(msg),
-    content: msg.content ?? "",
-    reference: {
-      messageId: msg.reference?.messageId ?? undefined,
-      channelId: msg.reference?.channelId ?? undefined,
-    },
-  };
-}
-
-async function buildDiscordRequestMessages(params: {
-  store: DiscordSurfaceStore;
-  triggerMsg: Message;
-  triggerType: "mention" | "reply";
-  botUserId: string;
-  botName: string;
-  maxDepth?: number;
-}): Promise<{
-  messages: ModelMessage[];
-  chainMessageIds: string[];
-  mergedGroups: Array<{ authorId: string; messageIds: string[] }>;
-}> {
-  const { store, triggerMsg, triggerType, botUserId, botName } = params;
-
-  const maxDepth = params.maxDepth ?? 20;
-  const chainNewestToOldest: DiscordReplyChainMessage[] = [];
-
-  let cur: DiscordReplyChainMessage | null = toReplyChainMessageFromDiscordMessage({
-    msg: triggerMsg,
-    botUserId,
-    botName,
-  });
-
-  for (let depth = 0; depth < maxDepth && cur; depth++) {
-    chainNewestToOldest.push(cur);
-
-    const refChannelId = cur.reference?.channelId;
-    if (refChannelId && refChannelId !== triggerMsg.channelId) break;
-
-    const refId = cur.reference?.messageId;
-    if (!refId) break;
-
-    const row = store.getMessage(triggerMsg.channelId, refId);
-    if (row) {
-      cur = toReplyChainMessageFromRow({ row, store, botUserId, botName });
-      continue;
-    }
-
-    const fetched = await fetchDiscordMessageById({ channel: triggerMsg.channel, messageId: refId });
-    if (!fetched) break;
-
-    // Best-effort cache for future chain resolution.
-    store.upsertUserName({
-      userId: fetched.author.id,
-      username: fetched.author.username,
-      globalName: fetched.author.globalName ?? undefined,
-      displayName: fetched.author.id === botUserId ? botName : getDisplayName(fetched),
-      updatedTs: Date.now(),
-    });
-
-    store.upsertMessage({
-      channelId: fetched.channelId,
-      messageId: fetched.id,
-      authorId: fetched.author.id,
-      content: fetched.content ?? "",
-      ts: getMessageTs(fetched),
-      editedTs: getMessageEditedTs(fetched),
-      raw: {
-        id: fetched.id,
-        channelId: fetched.channelId,
-        guildId: fetched.guildId,
-        authorId: fetched.author.id,
-        content: fetched.content,
-        reference: fetched.reference ?? undefined,
-      },
-    });
-
-    cur = toReplyChainMessageFromDiscordMessage({ msg: fetched, botUserId, botName });
-  }
-
-  const chainOldestToNewest = chainNewestToOldest.slice().reverse();
-  const merged = mergeReplyChainByWindow(chainOldestToNewest);
-
-  const modelMessages: ModelMessage[] = [];
-
-  for (const chunk of merged) {
-    const isBot = chunk.authorId === botUserId;
-
-    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
-
-    let text = chunk.content;
-    if (triggerType === "mention" && chunk.messageIds.includes(triggerMsg.id)) {
-      // Strip only on the triggering message content; keep other messages intact.
-      // This is a best-effort approximation when merge windows combine multiple messages.
-      const parts = chunk.content.split("\n\n");
-      const idx = parts.length - 1;
-      parts[idx] = stripLeadingBotMention({ text: parts[idx] ?? "", botUserId });
-      text = parts.join("\n\n");
-    }
-
-    const normalizedText = normalizeDiscordText({
-      text,
-      store,
-      guildId: triggerMsg.guildId,
-      botUserId,
-      botName,
-    });
-
-    const header = formatDiscordAttributionHeader({
-      authorId: chunk.authorId,
-      authorName: chunk.authorName,
-      messageId,
-    });
-
-    modelMessages.push({
-      role: isBot ? "assistant" : "user",
-      content: `${header}\n${normalizedText}`.trimEnd(),
-    });
-  }
-
-  return {
-    messages: modelMessages,
-    chainMessageIds: chainOldestToNewest.map((m) => m.messageId),
-    mergedGroups: merged.map((m) => ({ authorId: m.authorId, messageIds: m.messageIds })),
-  };
 }
 
 function shouldAllowMessage(params: {
@@ -515,9 +188,12 @@ export class DiscordAdapter implements SurfaceAdapter {
 
       // Discord can clear custom presence over time; refresh periodically.
       if (statusMessage) {
-        this.presenceTimer = setInterval(() => {
-          applyPresence();
-        }, 30 * 60 * 1000);
+        this.presenceTimer = setInterval(
+          () => {
+            applyPresence();
+          },
+          30 * 60 * 1000,
+        );
       }
     });
 
@@ -1049,7 +725,17 @@ export class DiscordAdapter implements SurfaceAdapter {
       text: msg.content ?? "",
       ts,
       editedTs,
-      raw: { discord: { id: msg.id } },
+      raw: {
+        discord: {
+          id: msg.id,
+          isDMBased: sessionKind === "dm",
+          mentionsBot: false,
+          replyToBot: false,
+          replyToMessageId: msg.reference?.messageId ?? undefined,
+          guildId: guildId ?? undefined,
+          parentChannelId: parentChannelId ?? undefined,
+        },
+      },
     };
 
     // Emit adapter event
@@ -1061,47 +747,22 @@ export class DiscordAdapter implements SurfaceAdapter {
       channelName,
     });
 
-    // Request trigger detection
+    // Trigger metadata for bus router (no direct request emission here).
     const botId = client.user?.id;
     if (!botId) return;
 
     const isMention = msg.mentions.users.has(botId);
     const isReplyToBot = await this.isReplyToBot(msg, botId);
-    const triggerType = isReplyToBot ? "reply" : isMention ? "mention" : null;
 
-    if (!triggerType) return;
-
-    const requestId = `discord:${channelId}:${msg.id}`;
-
-    const composed = await buildDiscordRequestMessages({
-      store,
-      triggerMsg: msg,
-      triggerType,
-      botUserId: botId,
-      botName: cfg.surface.discord.botName,
-    });
-
-    this.emit({
-      type: "adapter.request",
-      platform: "discord",
-      ts: Date.now(),
-      requestId,
-      channelId,
-      channelName,
-      messages: composed.messages,
-      raw: {
-        triggerType,
-        chainMessageIds: composed.chainMessageIds,
-        mergedGroups: composed.mergedGroups,
-        session: {
-          channelId,
-          guildId,
-          parentChannelId,
-          channelName,
-        },
-        replyTo: msg.reference?.messageId ?? undefined,
-      },
-    });
+    // Mirror trigger metadata on the adapter event so a bus router can make the
+    // same decisions without direct Discord API calls.
+    const rawDiscord = surfaceMsg.raw as
+      | { discord?: Record<string, unknown> }
+      | undefined;
+    if (rawDiscord?.discord) {
+      rawDiscord.discord["mentionsBot"] = isMention;
+      rawDiscord.discord["replyToBot"] = isReplyToBot;
+    }
   }
 
   private async isReplyToBot(
@@ -1185,7 +846,18 @@ export class DiscordAdapter implements SurfaceAdapter {
       text: msg.content ?? "",
       ts,
       editedTs,
-      raw: { discord: { id: msg.id } },
+      raw: {
+        discord: {
+          id: msg.id,
+          // Best-effort: Discord update event may not expose channel type reliably.
+          isDMBased: store.getSession(channelId)?.type === "dm",
+          mentionsBot: false,
+          replyToBot: false,
+          replyToMessageId: msg.reference?.messageId ?? undefined,
+          guildId: guildId ?? undefined,
+          parentChannelId: sess?.parent_channel_id ?? undefined,
+        },
+      },
     };
 
     this.emit({

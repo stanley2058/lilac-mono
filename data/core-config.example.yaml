@@ -6,3 +6,18 @@ surface:
     allowedGuildIds: []
     tokenEnv: DISCORD_TOKEN
     # dbPath: data/discord-surface.db   # optional override
+    # router:
+    #   defaultMode: mention
+    #   sessionModes:
+    #     "123456789012345678":
+    #       mode: active
+    #   activeDebounceMs: 3000
+
+agent:
+  systemPrompt: "You are lilac."
+
+models:
+  main:
+    model: "openrouter/openai/gpt-4o"
+    # options:
+    #   temperature: 0.2
