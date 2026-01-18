@@ -19,6 +19,7 @@ import {
 } from "@stanley2058/lilac-agent";
 
 import { bashTool } from "../../tools/bash";
+import { attachmentTools } from "../../tools/attachment";
 import { fsTool } from "../../tools/fs/fs";
 
 function consumerId(prefix: string): string {
@@ -153,6 +154,7 @@ export async function startBusAgentRunner(params: {
       tools: {
         ...bashTool(),
         ...fsTool(cwd),
+        ...attachmentTools({ bus, cwd }),
       },
       providerOptions: cfg.models.main.options
         ? { [provider]: cfg.models.main.options }
@@ -356,6 +358,16 @@ async function applyToRunningAgent(
 }
 
 function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
+  // If any user message has non-string content (multipart), do not merge.
+  // Tools like `attachment.download` rely on the raw content parts.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const newest = messages[i]!;
+    if (newest.role !== "user") continue;
+    if (typeof newest.content !== "string") {
+      return newest;
+    }
+  }
+
   // Preserve existing behavior: merge batches into one user message separated by blank lines.
   const parts: string[] = [];
   for (const m of messages) {

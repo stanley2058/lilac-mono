@@ -8,10 +8,12 @@
     "apps/core": {
       "name": "@stanley2058/lilac-core",
       "dependencies": {
+        "@stanley2058/lilac-agent": "workspace:*",
         "@stanley2058/lilac-event-bus": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
         "ai": "^6.0.27",
         "discord.js": "^14.25.1",
+        "file-type": "^21.3.0",
         "mdast": "^3.0.0",
         "mdast-util-from-markdown": "^2.0.2",
         "mdast-util-gfm": "^3.1.0",
@@ -21,7 +23,6 @@
         "zod": "^4.3.5",
       },
       "devDependencies": {
-        "@stanley2058/lilac-agent": "workspace:*",
         "@types/bun": "latest",
         "@types/mdast": "^4.0.4",
         "@types/shell-quote": "^1.7.5",

@@ -694,6 +694,13 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg);
 
+    const attachments = [...msg.attachments.values()].map((a) => ({
+      url: a.url,
+      filename: a.name ?? undefined,
+      mimeType: a.contentType ?? undefined,
+      size: typeof a.size === "number" ? a.size : undefined,
+    }));
+
     store.upsertMessage({
       channelId,
       messageId: msg.id,
@@ -708,6 +715,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         authorId: msg.author.id,
         content: msg.content,
         reference: msg.reference ?? undefined,
+        attachments,
       },
     });
 
@@ -734,6 +742,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           replyToMessageId: msg.reference?.messageId ?? undefined,
           guildId: guildId ?? undefined,
           parentChannelId: parentChannelId ?? undefined,
+          attachments,
         },
       },
     };
@@ -803,6 +812,13 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg) ?? Date.now();
 
+    const attachments = [...msg.attachments.values()].map((a) => ({
+      url: a.url,
+      filename: a.name ?? undefined,
+      mimeType: a.contentType ?? undefined,
+      size: typeof a.size === "number" ? a.size : undefined,
+    }));
+
     store.upsertMessage({
       channelId,
       messageId: msg.id,
@@ -817,6 +833,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         authorId: msg.author.id,
         content: msg.content,
         editedTs,
+        attachments,
       },
     });
 
@@ -856,6 +873,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           replyToMessageId: msg.reference?.messageId ?? undefined,
           guildId: guildId ?? undefined,
           parentChannelId: sess?.parent_channel_id ?? undefined,
+          attachments,
         },
       },
     };

@@ -1254,6 +1254,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             ? await tool.needsApproval(call.input, {
                 toolCallId: call.toolCallId,
                 messages: this.state.messages,
+                experimental_context: this.context,
               })
             : Boolean(tool.needsApproval);
 
@@ -1271,6 +1272,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             toolCallId: call.toolCallId,
             messages: this.state.messages,
             abortSignal: this.abortController?.signal,
+            experimental_context: this.context,
           });
 
           if (isAsyncIterable(raw)) {

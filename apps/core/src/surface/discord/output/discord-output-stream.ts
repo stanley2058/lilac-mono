@@ -114,7 +114,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
 
-  private baseMsg: Message | null = null;
+  private firstMsg: Message | null = null;
+  private lastMsg: Message | null = null;
   private readonly done: { promise: Promise<void>; resolve(): void };
 
   private running: Promise<void> | null = null;
@@ -150,27 +151,39 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (!("send" in channel)) throw new Error("Discord channel not found");
 
     // We want to attach images to the same message whenever possible.
-    // So we delay creating the base message until either:
+    // So we delay creating the first message until either:
     // - we have something to display (text or action), or
     // - finish() is called.
-    const base = await channel.send({
+
+    // Discord supports up to 10 attachments per message.
+    const MAX_FILES = 10;
+    const initialAttachments = this.pendingAttachments.slice(0, MAX_FILES);
+    const remainingAttachments = this.pendingAttachments.slice(MAX_FILES);
+
+    const first = await channel.send({
       // content must be non-empty to avoid Discord errors when sending only embeds.
       content: "*Replying...*",
       reply:
         this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
           ? { messageReference: this.deps.opts.replyTo.messageId }
           : undefined,
-      files: toDiscordFiles(this.pendingAttachments),
+      files: toDiscordFiles(initialAttachments),
       allowedMentions: { parse: [], repliedUser: false },
     });
 
-    this.baseMsg = base;
-    this.created.push(asDiscordMsgRef(sessionRef.channelId, base.id));
+    this.firstMsg = first;
+    this.created.push(asDiscordMsgRef(sessionRef.channelId, first.id));
 
-    // Now run the embed pusher, which will reply to baseMsg with embed messages.
-    // Those reply messages are the actual visible output; baseMsg is a stable anchor.
-    // We also clear the attachment buffer since they were included on the initial send.
-    this.pendingAttachments = [];
+    // Keep any overflow attachments for follow-up messages.
+    this.pendingAttachments = remainingAttachments;
+
+    // Special case: attachments-only output (no text and no tool lines).
+    // In this case we don't start the embed pusher at all.
+    if (this.textAcc.length === 0 && this.toolLines.length === 0) {
+      this.lastMsg = first;
+      this.running = Promise.resolve();
+      return;
+    }
 
     const { STREAMING_INDICATOR, CLOSING_TAG_BUFFER } =
       getEmbedPusherConstants();
@@ -190,7 +203,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     this.running = (async () => {
       const res = await startEmbedPusher({
         createFirst: async (emb) => {
-          const msg = await base.reply({
+          const msg = await first.reply({
             embeds: [emb],
             allowedMentions: { parse: [], repliedUser: false },
           });
@@ -220,13 +233,14 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         this.created.push(asDiscordMsgRef(sessionRef.channelId, messageId));
       }
 
-      // Remove the placeholder base message once we have at least one visible embed reply.
-      // We keep it if nothing was created.
-      if (res.discordMessageCreated.length > 0) {
-        await base.delete().catch(() => {});
-      } else {
-        // If we never created embeds, just edit base into a final embed-ish plain message.
-        await safeEdit(base, { content: this.textAcc || "*<empty_string>*" });
+      this.lastMsg = res.lastMsg;
+
+      // IMPORTANT: never delete the message that carries files.
+      // We keep `first` as the stable anchor and rely on embed replies for the visible response.
+      // If no embeds were created, turn `first` into the final plain message.
+      if (res.discordMessageCreated.length === 0) {
+        await safeEdit(first, { content: this.textAcc || "*<empty_string>*" });
+        this.lastMsg = first;
       }
     })();
   }
@@ -261,10 +275,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       }
       case "attachment.add": {
         // Best-effort: attach on the initial send.
-        // If we already started, we currently do not try to mutate files on an existing
-        // message (Discord edit-with-files is tricky); instead we buffer and will send
-        // as follow-up messages when we finish.
-        if (!this.baseMsg) {
+        // If we already started, we do not try to mutate files on an existing message
+        // (Discord edit-with-files is tricky); instead we buffer and will send as follow-up
+        // messages when we finish.
+        if (!this.firstMsg) {
           this.pendingAttachments.push(part.attachment);
           return;
         }
@@ -287,16 +301,27 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     await this.running;
 
     // If we received attachments after first send, emit them as follow-up messages.
-    // Still embed-styled is TODO; for now, just send as files.
-    const { client, sessionRef } = this.deps;
+    // Discord supports up to 10 attachments per message.
+    const { sessionRef } = this.deps;
     if (isDiscordSessionRef(sessionRef) && this.pendingAttachments.length > 0) {
-      // If we started with attachments, they were already sent; remaining buffer includes those too.
-      // We can’t easily know which made it into the initial send, so we only send extras if
-      // baseMsg existed without files.
-      // For now: if baseMsg exists, do nothing (assume included). If baseMsg got deleted,
-      // we also assume included.
-      // (We’ll tighten this once we have real binary output wiring.)
-      void client;
+      const replyTo = this.lastMsg ?? this.firstMsg;
+      if (!replyTo) {
+        throw new Error("DiscordOutputStream missing reply anchor");
+      }
+
+      const MAX_FILES = 10;
+
+      for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
+        const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
+        const msg = await replyTo.reply({
+          files: toDiscordFiles(chunk),
+          allowedMentions: { parse: [], repliedUser: false },
+        });
+        this.created.push(asDiscordMsgRef(sessionRef.channelId, msg.id));
+        this.lastMsg = msg;
+      }
+
+      this.pendingAttachments = [];
     }
 
     const last = this.created.at(-1);

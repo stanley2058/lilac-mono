@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UserContent } from "ai";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
@@ -65,9 +65,51 @@ export async function composeRequestMessages(
       messageId,
     });
 
+    const mainText = `${header}\n${normalized}`.trimEnd();
+
+    if (isBot) {
+      return {
+        role: "assistant",
+        content: mainText,
+      } satisfies ModelMessage;
+    }
+
+    if (chunk.attachments.length === 0) {
+      return {
+        role: "user",
+        content: mainText,
+      } satisfies ModelMessage;
+    }
+
+    const parts: UserContent = [{ type: "text", text: mainText }];
+
+    for (const att of chunk.attachments) {
+      try {
+        const url = new URL(att.url);
+        const mimeType = att.mimeType;
+
+        if (mimeType && mimeType.startsWith("image/")) {
+          parts.push({
+            type: "image",
+            image: url,
+            mediaType: mimeType,
+          });
+        } else {
+          parts.push({
+            type: "file",
+            data: url,
+            filename: att.filename,
+            mediaType: mimeType ?? "application/octet-stream",
+          });
+        }
+      } catch {
+        // ignore invalid URL
+      }
+    }
+
     return {
-      role: isBot ? "assistant" : "user",
-      content: `${header}\n${normalized}`.trimEnd(),
+      role: "user",
+      content: parts,
     } satisfies ModelMessage;
   });
 
@@ -87,6 +129,12 @@ type ReplyChainMessage = {
   authorName: string;
   ts: number;
   text: string;
+  attachments: Array<{
+    url: string;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+  }>;
   raw?: unknown;
 };
 
@@ -97,6 +145,12 @@ type MergedChunk = {
   tsStart: number;
   tsEnd: number;
   text: string;
+  attachments: Array<{
+    url: string;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+  }>;
 };
 
 function stripLeadingBotMention(text: string, botUserId: string): string {
@@ -121,6 +175,59 @@ function formatDiscordAttributionHeader(params: {
 
 function sanitizeUserToken(name: string): string {
   return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
+}
+
+type DiscordAttachmentMeta = {
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+function extractDiscordAttachmentsFromRaw(
+  raw: unknown,
+): DiscordAttachmentMeta[] {
+  if (!raw || typeof raw !== "object") return [];
+
+  // We store attachments in two places depending on origin:
+  // - adapter persisted raw: { attachments: [...] }
+  // - adapter event raw: { discord: { attachments: [...] } }
+  const o = raw as Record<string, unknown>;
+
+  const listFromTopLevel =
+    "attachments" in o && Array.isArray(o.attachments) ? o.attachments : null;
+
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+
+  const listFromDiscord =
+    discord && "attachments" in discord && Array.isArray(discord.attachments)
+      ? discord.attachments
+      : null;
+
+  const list = listFromDiscord ?? listFromTopLevel;
+  if (!list) return [];
+
+  const out: DiscordAttachmentMeta[] = [];
+
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+
+    const url = typeof a.url === "string" ? a.url : null;
+    if (!url) continue;
+
+    out.push({
+      url,
+      filename: typeof a.filename === "string" ? a.filename : undefined,
+      mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
+      size: typeof a.size === "number" ? a.size : undefined,
+    });
+  }
+
+  return out;
 }
 
 function getReferenceFromRaw(raw: unknown): {
@@ -163,6 +270,7 @@ async function fetchReplyChain(
       authorName: cur.userName ?? `user_${cur.userId}`,
       ts: cur.ts,
       text: cur.text,
+      attachments: extractDiscordAttachmentsFromRaw(cur.raw),
       raw: cur.raw,
     });
 
@@ -197,6 +305,7 @@ function mergeChainByDiscordWindow(
     tsStart: chainOldestToNewest[0]!.ts,
     tsEnd: chainOldestToNewest[0]!.ts,
     text: chainOldestToNewest[0]!.text,
+    attachments: [...chainOldestToNewest[0]!.attachments],
   };
 
   for (let i = 1; i < chainOldestToNewest.length; i++) {
@@ -214,6 +323,7 @@ function mergeChainByDiscordWindow(
         tsStart: next.ts,
         tsEnd: next.ts,
         text: next.text,
+        attachments: [...next.attachments],
       };
       continue;
     }
@@ -221,6 +331,7 @@ function mergeChainByDiscordWindow(
     cur.messageIds.push(next.messageId);
     cur.tsEnd = next.ts;
     cur.text = `${cur.text}\n\n${next.text}`;
+    cur.attachments.push(...next.attachments);
   }
 
   out.push(cur);
