@@ -212,7 +212,7 @@ describe("startBusRequestRouter", () => {
             },
           },
         },
-        agent: { systemPrompt: "You are lilac." },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: { main: { model: "openrouter/openai/gpt-4o" } },
       },
     });

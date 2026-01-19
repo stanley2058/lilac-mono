@@ -13,8 +13,7 @@ surface:
     #       mode: active
     #   activeDebounceMs: 3000
 
-agent:
-  systemPrompt: "You are lilac."
+agent: {}
 
 models:
   main:

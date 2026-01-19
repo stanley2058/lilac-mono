@@ -2,6 +2,12 @@ import path from "node:path";
 import { z } from "zod";
 
 import { env } from "./env";
+import { findWorkspaceRoot } from "./find-root";
+import { buildAgentSystemPrompt, promptWorkspaceSignature } from "./agent-prompts";
+
+type AgentConfig = {
+  systemPrompt: string;
+};
 
 export const coreConfigSchema = z.object({
   surface: z
@@ -64,13 +70,7 @@ export const coreConfigSchema = z.object({
       },
     }),
 
-  agent: z
-    .object({
-      systemPrompt: z.string().min(1).default("You are lilac."),
-    })
-    .default({
-      systemPrompt: "You are lilac.",
-    }),
+  agent: z.object({}).default({}),
 
   models: z
     .object({
@@ -105,13 +105,32 @@ export const coreConfigSchema = z.object({
     .optional(),
 });
 
-export type CoreConfig = z.infer<typeof coreConfigSchema>;
+export type CoreConfig = Omit<z.infer<typeof coreConfigSchema>, "agent"> & {
+  agent: AgentConfig;
+};
 
 let cached: CoreConfig | null = null;
 let cachedMtimeMs: number | null = null;
+let cachedPromptMaxMtimeMs: number | null = null;
 
 function configPath(): string {
   return path.join(env.dataDir, "core-config.yaml");
+}
+
+async function ensureDataDirSeeded() {
+  // Lilac stores user-editable prompt files under env.dataDir (default: ./data).
+  // Ensure the directory exists before we attempt to read core-config.yaml.
+  await Bun.write(path.join(env.dataDir, ".gitkeep"), "");
+
+  const cfgPath = configPath();
+  try {
+    await Bun.file(cfgPath).stat();
+  } catch {
+    // If core-config.yaml doesn't exist yet, seed it from the example.
+    const examplePath = path.resolve(findWorkspaceRoot(), "data", "core-config.example.yaml");
+    const example = await Bun.file(examplePath).text();
+    await Bun.write(cfgPath, example);
+  }
 }
 
 function safeParseYaml(raw: string): unknown {
@@ -128,16 +147,26 @@ export async function getCoreConfig(options?: {
   forceReload?: boolean;
 }): Promise<CoreConfig> {
   const forceReload = options?.forceReload ?? false;
+
+  await ensureDataDirSeeded();
+
   const filePath = configPath();
 
   if (!forceReload && cached) {
     try {
       const stat = await Bun.file(filePath).stat();
-      if (cachedMtimeMs !== null && stat.mtimeMs === cachedMtimeMs) {
+      const promptSig = await promptWorkspaceSignature();
+
+      if (
+        cachedMtimeMs !== null &&
+        stat.mtimeMs === cachedMtimeMs &&
+        cachedPromptMaxMtimeMs !== null &&
+        promptSig.maxMtimeMs === cachedPromptMaxMtimeMs
+      ) {
         return cached;
       }
     } catch {
-      // If stat fails, fall through to re-read to produce a better error.
+      // If stat/signature fails, fall through to re-read to produce a better error.
     }
   }
 
@@ -145,7 +174,18 @@ export async function getCoreConfig(options?: {
   const parsed = safeParseYaml(raw);
   const cfg = coreConfigSchema.parse(parsed);
 
-  cached = cfg;
+  // Always use file-based system prompt (data/prompts/*).
+  // This also ensures missing files are created from templates.
+  const built = await buildAgentSystemPrompt();
+  const nextCfg: CoreConfig = {
+    ...cfg,
+    agent: {
+      ...cfg.agent,
+      systemPrompt: built.systemPrompt,
+    },
+  };
+
+  cached = nextCfg;
   try {
     const stat = await Bun.file(filePath).stat();
     cachedMtimeMs = stat.mtimeMs;
@@ -153,7 +193,14 @@ export async function getCoreConfig(options?: {
     cachedMtimeMs = null;
   }
 
-  return cfg;
+  try {
+    const sig = await promptWorkspaceSignature();
+    cachedPromptMaxMtimeMs = sig.maxMtimeMs;
+  } catch {
+    cachedPromptMaxMtimeMs = null;
+  }
+
+  return nextCfg;
 }
 
 export function resolveDiscordDbPath(cfg: CoreConfig): string {
