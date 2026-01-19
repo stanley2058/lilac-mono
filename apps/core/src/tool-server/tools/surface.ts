@@ -38,7 +38,7 @@ function resolveClient(params: {
 
   if (!params.inputClient) {
     throw new Error(
-      "surface tool requires --client when request client is unknown (set LILAC_REQUEST_CLIENT or pass --client=discord)",
+      "surface tool requires --client when request client is unknown (set LILAC_REQUEST_CLIENT or pass --client=<client>)",
     );
   }
 
@@ -153,7 +153,7 @@ const messagesListInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   limit: z
     .number()
@@ -169,7 +169,7 @@ const messagesReadInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
 });
@@ -179,7 +179,7 @@ const messagesSendInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
@@ -190,7 +190,7 @@ const messagesEditInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
   text: z.string().min(1),
@@ -201,7 +201,7 @@ const messagesDeleteInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
 });
@@ -211,7 +211,7 @@ const reactionsListInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
 });
@@ -221,7 +221,7 @@ const reactionsAddInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
   reaction: z
@@ -235,7 +235,7 @@ const reactionsRemoveInputSchema = baseInputSchema.extend({
     .string()
     .min(1)
     .describe(
-      "Session id (Discord: channel id, <#channelId>, or configured token alias)",
+      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   messageId: z.string().min(1),
   reaction: z
@@ -263,7 +263,7 @@ export class Surface implements ServerTool {
         callableId: "surface.sessions.list",
         name: "Surface Sessions List",
         description:
-          "List cached sessions (currently Discord only). Provide --client if request client is unknown.",
+          "List cached sessions. Provide --client if request client is unknown.",
         shortInput: zodObjectToCliLines(sessionsListInputSchema, {
           mode: "required",
         }),
