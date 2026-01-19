@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.6",
+    "ioredis": "^5.9.2",
     "@mozilla/readability": "^0.6.0",
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-event-bus": "workspace:*",
