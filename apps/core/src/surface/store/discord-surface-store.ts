@@ -124,6 +124,19 @@ export class DiscordSurfaceStore {
     `);
 
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS discord_user_ids_by_username (
+        username_lc TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        updated_ts INTEGER NOT NULL
+      );
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discord_user_ids_by_username_user_id
+      ON discord_user_ids_by_username(user_id);
+    `);
+
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS discord_channel_names (
         channel_id TEXT PRIMARY KEY,
         name TEXT,
@@ -201,9 +214,7 @@ export class DiscordSurfaceStore {
 
   listSessions(limit = 500): DbDiscordSession[] {
     return this.db
-      .query(
-        "SELECT * FROM discord_sessions ORDER BY updated_ts DESC LIMIT ?",
-      )
+      .query("SELECT * FROM discord_sessions ORDER BY updated_ts DESC LIMIT ?")
       .all(limit) as DbDiscordSession[];
   }
 
@@ -277,7 +288,11 @@ export class DiscordSurfaceStore {
       .all(channelId, limit) as DbDiscordMessage[];
   }
 
-  listMessagesBefore(channelId: string, beforeTs: number, limit = 50): DbDiscordMessage[] {
+  listMessagesBefore(
+    channelId: string,
+    beforeTs: number,
+    limit = 50,
+  ): DbDiscordMessage[] {
     return this.db
       .query(
         "SELECT * FROM discord_messages WHERE channel_id = ? AND ts < ? ORDER BY ts DESC LIMIT ?",
@@ -335,6 +350,30 @@ export class DiscordSurfaceStore {
         input.updatedTs,
       ],
     );
+
+    if (input.username) {
+      const usernameLc = input.username.toLowerCase();
+      this.db.run(
+        `
+        INSERT INTO discord_user_ids_by_username (
+          username_lc, user_id, updated_ts
+        ) VALUES (?, ?, ?)
+        ON CONFLICT(username_lc) DO UPDATE SET
+          user_id=excluded.user_id,
+          updated_ts=excluded.updated_ts;
+        `,
+        [usernameLc, input.userId, input.updatedTs],
+      );
+    }
+  }
+
+  getUserIdByUsername(username: string): string | null {
+    const row = this.db
+      .query(
+        "SELECT user_id FROM discord_user_ids_by_username WHERE username_lc = ?",
+      )
+      .get(username.toLowerCase()) as { user_id: string } | null;
+    return row?.user_id ?? null;
   }
 
   getUserName(userId: string): DbDiscordUserName | null {
@@ -406,13 +445,7 @@ export class DiscordSurfaceStore {
       ON CONFLICT(channel_id, message_id, emoji, user_id) DO UPDATE SET
         ts=excluded.ts;
       `,
-      [
-        input.channelId,
-        input.messageId,
-        input.emoji,
-        input.userId,
-        input.ts,
-      ],
+      [input.channelId, input.messageId, input.emoji, input.userId, input.ts],
     );
   }
 
@@ -496,7 +529,12 @@ export class DiscordSurfaceStore {
         ORDER BY ts ASC;
         `,
       )
-      .all(channelId, rs.last_read_ts, rs.last_read_ts, rs.last_read_message_id) as DbDiscordMessage[];
+      .all(
+        channelId,
+        rs.last_read_ts,
+        rs.last_read_ts,
+        rs.last_read_message_id,
+      ) as DbDiscordMessage[];
   }
 
   getLatestMessage(channelId: string): DbDiscordMessage | null {

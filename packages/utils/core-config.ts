@@ -88,6 +88,21 @@ export const coreConfigSchema = z.object({
     .default({
       main: { model: "openrouter/openai/gpt-4o" },
     }),
+
+  entity: z
+    .object({
+      users: z
+        .record(z.string().min(1), z.object({ discord: z.string().min(1) }))
+        .default({}),
+
+      sessions: z
+        .object({
+          discord: z.record(z.string().min(1), z.string().min(1)).default({}),
+        })
+        .default({ discord: {} }),
+    })
+    .default({ users: {}, sessions: { discord: {} } })
+    .optional(),
 });
 
 export type CoreConfig = z.infer<typeof coreConfigSchema>;

@@ -126,6 +126,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       sessionRef: SessionRef;
       opts?: StartOutputOpts;
       useSmartSplitting: boolean;
+      rewriteText?: (text: string) => string;
     },
   ) {
     let resolveFn: (() => void) | null = null;
@@ -216,7 +217,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           });
           return msg;
         },
-        getContent: () => this.textAcc,
+        getContent: () => {
+          const rewrite = this.deps.rewriteText;
+          return rewrite ? rewrite(this.textAcc) : this.textAcc;
+        },
         getActionsLines: () =>
           clampLast(
             this.toolLines.map((t) => t.line),
@@ -239,7 +243,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       // We keep `first` as the stable anchor and rely on embed replies for the visible response.
       // If no embeds were created, turn `first` into the final plain message.
       if (res.discordMessageCreated.length === 0) {
-        await safeEdit(first, { content: this.textAcc || "*<empty_string>*" });
+        const rewrite = this.deps.rewriteText;
+        const content = rewrite ? rewrite(this.textAcc) : this.textAcc;
+        await safeEdit(first, { content: content || "*<empty_string>*" });
         this.lastMsg = first;
       }
     })();
@@ -347,6 +353,7 @@ export async function sendDiscordStyledMessage(params: {
   content: ContentOpts;
   opts?: StartOutputOpts;
   useSmartSplitting: boolean;
+  rewriteText?: (text: string) => string;
 }): Promise<MsgRef> {
   const { text, attachments } = normalizeContent(params.content);
   const out = new DiscordOutputStream({
@@ -354,6 +361,7 @@ export async function sendDiscordStyledMessage(params: {
     sessionRef: params.sessionRef,
     opts: params.opts,
     useSmartSplitting: params.useSmartSplitting,
+    rewriteText: params.rewriteText,
   });
 
   for (const a of attachments) {

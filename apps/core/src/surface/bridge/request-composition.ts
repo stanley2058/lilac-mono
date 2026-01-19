@@ -51,7 +51,7 @@ export async function composeRequestMessages(
       opts.trigger.type === "mention" &&
       chunk.messageIds.includes(opts.trigger.msgRef.messageId)
     ) {
-      text = stripLeadingBotMention(text, opts.botUserId);
+      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
     }
 
     const normalized = normalizeText(text, {
@@ -153,8 +153,20 @@ type MergedChunk = {
   }>;
 };
 
-function stripLeadingBotMention(text: string, botUserId: string): string {
-  const re = new RegExp(`^(?:<@!?${botUserId}>)(?:\\s+)?`, "u");
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function stripLeadingBotMention(
+  text: string,
+  botUserId: string,
+  botName: string,
+): string {
+  const sanitizedBot = sanitizeUserToken(botName);
+  const re = new RegExp(
+    `^(?:<@!?${botUserId}>|@${escapeRegExp(sanitizedBot)})(?:\\s+)?`,
+    "iu",
+  );
   return text.replace(re, "");
 }
 

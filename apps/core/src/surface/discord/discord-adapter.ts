@@ -41,6 +41,10 @@ import type {
   SurfaceAdapter,
 } from "../adapter";
 
+import {
+  createDiscordEntityMapper,
+  type EntityMapper,
+} from "../../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../store/discord-surface-store";
 import {
   DiscordOutputStream,
@@ -125,6 +129,7 @@ export class DiscordAdapter implements SurfaceAdapter {
   private client: Client | null = null;
   private store: DiscordSurfaceStore | null = null;
   private cfg: CoreConfig | null = null;
+  private entityMapper: EntityMapper | null = null;
   private handlers = new Set<AdapterEventHandler>();
 
   private self: SurfaceSelf | null = null;
@@ -140,6 +145,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const dbPath = resolveDiscordDbPath(cfg);
     this.store = new DiscordSurfaceStore(dbPath);
+    this.entityMapper = createDiscordEntityMapper({ cfg, store: this.store });
 
     const token = resolveDiscordToken(cfg);
 
@@ -262,6 +268,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     this.store?.close();
     this.store = null;
+    this.entityMapper = null;
   }
 
   async getSelf(): Promise<SurfaceSelf> {
@@ -319,6 +326,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       sessionRef,
       opts,
       useSmartSplitting,
+      rewriteText: this.entityMapper?.rewriteOutgoingText,
     });
   }
 
@@ -339,6 +347,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       content,
       opts: opts?.replyTo ? { replyTo: opts.replyTo } : undefined,
       useSmartSplitting,
+      rewriteText: this.entityMapper?.rewriteOutgoingText,
     });
   }
 
@@ -701,11 +710,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       size: typeof a.size === "number" ? a.size : undefined,
     }));
 
+    const rawContent = msg.content ?? "";
+    const normalizedContent =
+      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+
     store.upsertMessage({
       channelId,
       messageId: msg.id,
       authorId: msg.author.id,
-      content: msg.content ?? "",
+      content: normalizedContent,
       ts,
       editedTs,
       raw: {
@@ -730,7 +743,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       session: sessionRef,
       userId: msg.author.id,
       userName: authorName,
-      text: msg.content ?? "",
+      text: normalizedContent,
       ts,
       editedTs,
       raw: {
@@ -819,11 +832,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       size: typeof a.size === "number" ? a.size : undefined,
     }));
 
+    const rawContent = msg.content ?? "";
+    const normalizedContent =
+      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+
     store.upsertMessage({
       channelId,
       messageId: msg.id,
       authorId: msg.author.id,
-      content: msg.content ?? "",
+      content: normalizedContent,
       ts,
       editedTs,
       raw: {
@@ -860,7 +877,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       session: sessionRef,
       userId: msg.author.id,
       userName: authorName,
-      text: msg.content ?? "",
+      text: normalizedContent,
       ts,
       editedTs,
       raw: {
