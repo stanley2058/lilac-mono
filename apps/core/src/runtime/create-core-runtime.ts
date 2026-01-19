@@ -1,6 +1,5 @@
 import Redis from "ioredis";
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
-
 import { env, getCoreConfig } from "@stanley2058/lilac-utils";
 import {
   createLilacBus,
@@ -140,7 +139,7 @@ export async function createCoreRuntime(
       });
 
       toolServer = createToolServer({
-        tools: createDefaultToolServerTools({ bus }),
+        tools: createDefaultToolServerTools({ bus, adapter, config: cfg }),
         logger: new Logger({
           logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
           module: "tool-server",

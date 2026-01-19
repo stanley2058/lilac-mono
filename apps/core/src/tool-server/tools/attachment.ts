@@ -2,17 +2,24 @@ import { z } from "zod/v4";
 import { fileTypeFromBuffer } from "file-type/core";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { basename, extname, join, resolve, isAbsolute } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import type { ModelMessage } from "ai";
-
-import {
-  lilacEventTypes,
-  type AdapterPlatform,
-  type LilacBus,
-} from "@stanley2058/lilac-event-bus";
-
-import { expandTilde } from "../../tools/fs/fs-impl";
 import type { RequestContext, ServerTool } from "../types";
+import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
+import {
+  requireToolServerHeaders,
+  type RequiredToolServerHeaders,
+} from "../../shared/tool-server-context";
+import {
+  decodeDataUrl,
+  inferExtensionFromMimeType,
+  inferMimeTypeFromFilename,
+  looksLikeDataUrl,
+  looksLikeHttpUrl,
+  resolveToolPath,
+  sanitizeExtension,
+} from "../../shared/attachment-utils";
+import { expandTilde } from "../../tools/fs/fs-impl";
 
 const DEFAULT_OUTBOUND_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -25,130 +32,10 @@ const DISCORD_CDN_HOSTS = new Set([
   "media.discordapp.net",
 ]);
 
-type RequestHeaders = {
-  request_id: string;
-  session_id: string;
-  request_client: AdapterPlatform;
-};
-
-function isAdapterPlatform(x: unknown): x is AdapterPlatform {
-  return (
-    x === "discord" ||
-    x === "whatsapp" ||
-    x === "slack" ||
-    x === "telegram" ||
-    x === "web" ||
-    x === "unknown"
-  );
-}
+type RequestHeaders = RequiredToolServerHeaders;
 
 function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
-  const requestId = ctx?.requestId;
-  const sessionId = ctx?.sessionId;
-  const requestClient = ctx?.requestClient;
-
-  if (!requestId || !sessionId || !requestClient) {
-    throw new Error(
-      "attachment tool requires request context (requestId/sessionId/requestClient)",
-    );
-  }
-
-  if (!isAdapterPlatform(requestClient)) {
-    throw new Error(`Invalid requestClient '${requestClient}'`);
-  }
-
-  return {
-    request_id: requestId,
-    session_id: sessionId,
-    request_client: requestClient,
-  };
-}
-
-function resolveToolPath(toolRoot: string, inputPath: string): string {
-  const expanded = expandTilde(inputPath);
-  const root = resolve(expandTilde(toolRoot));
-  if (isAbsolute(expanded)) return resolve(expanded);
-  return resolve(root, expanded);
-}
-
-function inferMimeTypeFromFilename(filename: string): string {
-  const ext = extname(filename).toLowerCase();
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    case ".pdf":
-      return "application/pdf";
-    case ".txt":
-      return "text/plain";
-    case ".json":
-      return "application/json";
-    case ".csv":
-      return "text/csv";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function inferExtensionFromMimeType(mimeType: string): string {
-  const mt = mimeType.toLowerCase().split(";")[0]?.trim();
-  switch (mt) {
-    case "image/png":
-      return ".png";
-    case "image/jpeg":
-      return ".jpg";
-    case "image/gif":
-      return ".gif";
-    case "image/webp":
-      return ".webp";
-    case "image/svg+xml":
-      return ".svg";
-    case "application/pdf":
-      return ".pdf";
-    case "text/plain":
-      return ".txt";
-    case "application/json":
-      return ".json";
-    case "text/csv":
-      return ".csv";
-    default:
-      return "";
-  }
-}
-
-function looksLikeHttpUrl(s: string): boolean {
-  return s.startsWith("https://") || s.startsWith("http://");
-}
-
-function looksLikeDataUrl(s: string): boolean {
-  return s.startsWith("data:");
-}
-
-function decodeDataUrl(s: string): { bytes: Buffer; mimeType?: string } {
-  const comma = s.indexOf(",");
-  if (comma < 0) {
-    throw new Error("Invalid data URL");
-  }
-
-  const meta = s.slice(5, comma);
-  const data = s.slice(comma + 1);
-
-  const metaParts = meta.split(";");
-  const mimeType = metaParts[0] ? metaParts[0] : undefined;
-  const isBase64 = metaParts.includes("base64");
-
-  const bytes = isBase64
-    ? Buffer.from(data, "base64")
-    : Buffer.from(data, "utf8");
-  return { bytes, mimeType };
+  return requireToolServerHeaders(ctx, "attachment");
 }
 
 function asBuffer(data: unknown): Buffer {
@@ -204,14 +91,6 @@ async function downloadToBuffer(input: unknown): Promise<{
   }
 
   return { bytes: asBuffer(input) };
-}
-
-function sanitizeExtension(ext: string): string {
-  if (!ext) return "";
-  const normalized = ext.startsWith(".") ? ext : `.${ext}`;
-  if (!/^\.[a-z0-9]+$/u.test(normalized)) return "";
-  if (normalized.length > 10) return "";
-  return normalized;
 }
 
 const attachmentAddInputSchema = z

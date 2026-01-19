@@ -71,7 +71,10 @@ type DiscordEntityConfig = {
 };
 
 function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
-  const userByUsernameLc = new Map<string, { canonical: string; userId: string }>();
+  const userByUsernameLc = new Map<
+    string,
+    { canonical: string; userId: string }
+  >();
   const userById = new Map<string, { canonical: string; userId: string }>();
 
   const users = cfg.entity?.users ?? {};
@@ -94,7 +97,10 @@ function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
   const tokens = cfg.entity?.sessions.discord ?? {};
 
   for (const [token, channelId] of Object.entries(tokens)) {
-    channelIdByTokenLc.set(token.toLowerCase(), { canonical: token, channelId });
+    channelIdByTokenLc.set(token.toLowerCase(), {
+      canonical: token,
+      channelId,
+    });
     tokenByChannelId.set(channelId, { canonical: token, channelId });
   }
 
@@ -172,7 +178,10 @@ export function createDiscordEntityMapper(deps: {
     return canonical;
   }
 
-  function mapTextSegments(input: string, fn: (text: string) => string): string {
+  function mapTextSegments(
+    input: string,
+    fn: (text: string) => string,
+  ): string {
     const segments = splitMarkdownCodeSegments(input);
     return segments
       .map((s) => {
@@ -194,9 +203,9 @@ export function createDiscordEntityMapper(deps: {
         },
       );
 
-      // Sessions/channels: #token
+      // Sessions/channels: #token (allow hyphens, dots)
       return withUsers.replace(
-        /(^|[^A-Za-z0-9_])#([A-Za-z0-9_][A-Za-z0-9_]*)/gu,
+        /(^|[^A-Za-z0-9_])#([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu,
         (m, prefix: string, token: string) => {
           const id = resolveChannelIdByToken(token);
           if (!id) return m;
@@ -209,14 +218,11 @@ export function createDiscordEntityMapper(deps: {
   function normalizeIncomingText(text: string): string {
     return mapTextSegments(text, (seg) => {
       // Users: <@id> / <@!id>
-      const withUsers = seg.replace(
-        /<@!?([0-9]+)>/gu,
-        (_m, idRaw: string) => {
-          const id = String(idRaw);
-          const canonical = resolveCanonicalUsernameByUserId(id);
-          return `@${canonical ?? `user_${id}`}`;
-        },
-      );
+      const withUsers = seg.replace(/<@!?([0-9]+)>/gu, (_m, idRaw: string) => {
+        const id = String(idRaw);
+        const canonical = resolveCanonicalUsernameByUserId(id);
+        return `@${canonical ?? `user_${id}`}`;
+      });
 
       // Channels: <#id>
       return withUsers.replace(/<#([0-9]+)>/gu, (_m, idRaw: string) => {

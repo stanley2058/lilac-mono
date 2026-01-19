@@ -6,7 +6,6 @@ import {
   type Message,
   type PartialMessage,
 } from "discord.js";
-
 import type {
   EvtAdapterMessageCreatedData,
   EvtAdapterMessageDeletedData,
@@ -14,14 +13,12 @@ import type {
   EvtAdapterReactionAddedData,
   EvtAdapterReactionRemovedData,
 } from "@stanley2058/lilac-event-bus";
-
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
   resolveDiscordDbPath,
   resolveDiscordToken,
 } from "@stanley2058/lilac-utils";
-
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -40,7 +37,6 @@ import type {
   StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
-
 import {
   createDiscordEntityMapper,
   type EntityMapper,
@@ -310,6 +306,19 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
   }
 
+  /** Lightweight Discord API fetch to get a channel's guildId (no history). */
+  async fetchGuildIdForChannel(channelId: string): Promise<string | null> {
+    const client = this.mustClient();
+
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return null;
+
+    const maybeGuildId = (ch as unknown as { guildId?: unknown }).guildId;
+    return typeof maybeGuildId === "string" && maybeGuildId.length > 0
+      ? maybeGuildId
+      : null;
+  }
+
   async startOutput(
     sessionRef: SessionRef,
     opts?: StartOutputOpts,
@@ -420,7 +429,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
 
     const msg = await channel.messages.fetch(msgRef.messageId);
-    await msg.edit({ content: content.text ?? "" });
+
+    const raw = content.text ?? "";
+    const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;
+    await msg.edit({ content: rewritten });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {

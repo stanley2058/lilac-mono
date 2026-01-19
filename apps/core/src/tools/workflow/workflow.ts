@@ -1,44 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod";
-
-import {
-  lilacEventTypes,
-  type AdapterPlatform,
-  type LilacBus,
-} from "@stanley2058/lilac-event-bus";
-
-type RequestContext = {
-  requestId: string;
-  sessionId: string;
-  requestClient: AdapterPlatform;
-};
-
-function isAdapterPlatform(x: unknown): x is AdapterPlatform {
-  return (
-    x === "discord" ||
-    x === "whatsapp" ||
-    x === "slack" ||
-    x === "telegram" ||
-    x === "web" ||
-    x === "unknown"
-  );
-}
-
-function isRequestContext(x: unknown): x is RequestContext {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
-  return (
-    typeof o.requestId === "string" &&
-    typeof o.sessionId === "string" &&
-    isAdapterPlatform(o.requestClient)
-  );
-}
+import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
+import { requireRequestContext } from "../../shared/req-context";
 
 export function workflowTool(params: { bus: LilacBus }) {
   const { bus } = params;
 
   const workflowCreateInputSchema = z.object({
-    summary: z.string().min(1).describe("Compact snapshot of what we were doing"),
+    summary: z
+      .string()
+      .min(1)
+      .describe("Compact snapshot of what we were doing"),
     tasks: z
       .array(
         z.object({
@@ -47,7 +19,10 @@ export function workflowTool(params: { bus: LilacBus }) {
             .string()
             .min(1)
             .describe("Session/channel id where the message was sent"),
-          messageId: z.string().min(1).describe("Message id to wait for replies to"),
+          messageId: z
+            .string()
+            .min(1)
+            .describe("Message id to wait for replies to"),
         }),
       )
       .min(1)
@@ -70,12 +45,7 @@ export function workflowTool(params: { bus: LilacBus }) {
       inputSchema: workflowCreateInputSchema,
       outputSchema: workflowCreateOutputSchema,
       execute: async (input, { experimental_context }) => {
-        const ctx = experimental_context;
-        if (!isRequestContext(ctx)) {
-          throw new Error(
-            "workflow tool requires experimental_context { requestId, sessionId, requestClient }",
-          );
-        }
+        const ctx = requireRequestContext(experimental_context, "workflow");
 
         const workflowId = `wf:${crypto.randomUUID()}`;
 

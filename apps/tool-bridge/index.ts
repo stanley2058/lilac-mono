@@ -13,6 +13,7 @@ const logger = new Logger({
 const server = createToolServer({
   // In dev mode, run without a bus by default.
   // Bus-backed tools (workflow/attachment) are enabled when the caller injects a bus.
+  // Surface-backed tools require a live adapter + config, which tool-bridge does not create.
   tools: createDefaultToolServerTools(),
   logger,
 });

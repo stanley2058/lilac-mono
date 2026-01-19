@@ -1,23 +1,35 @@
 import os from "node:os";
 import path from "node:path";
-
 import { describe, expect, it } from "bun:test";
-
-import { coreConfigSchema } from "@stanley2058/lilac-utils";
-
+import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { createDiscordEntityMapper } from "../../src/entity/entity-mapper";
 import { DiscordSurfaceStore } from "../../src/surface/store/discord-surface-store";
 
+function testConfig(input: unknown): CoreConfig {
+  const cfg = coreConfigSchema.parse(input);
+  return { ...cfg, agent: { systemPrompt: "(test)" } };
+}
+
 describe("entity-mapper (discord)", () => {
   it("rewrites @username via config (punctuation safe)", async () => {
-    const dbPath = path.join(os.tmpdir(), `lilac-entity-mapper-${crypto.randomUUID()}.db`);
+    const dbPath = path.join(
+      os.tmpdir(),
+      `lilac-entity-mapper-${crypto.randomUUID()}.db`,
+    );
     const store = new DiscordSurfaceStore(dbPath);
 
     try {
-      const cfg = coreConfigSchema.parse({
+      const cfg = testConfig({
+        surface: { discord: { botName: "lilac" } },
         entity: {
           users: { Stanley: { discord: "123" } },
-          sessions: { discord: { dev_channel: "456" } },
+          sessions: {
+            discord: {
+              dev_channel: "456",
+              "release-room": "789",
+              "release.room": "101",
+            },
+          },
         },
       });
 
@@ -36,11 +48,14 @@ describe("entity-mapper (discord)", () => {
   });
 
   it("rewrites @username via DB reverse lookup", async () => {
-    const dbPath = path.join(os.tmpdir(), `lilac-entity-mapper-${crypto.randomUUID()}.db`);
+    const dbPath = path.join(
+      os.tmpdir(),
+      `lilac-entity-mapper-${crypto.randomUUID()}.db`,
+    );
     const store = new DiscordSurfaceStore(dbPath);
 
     try {
-      const cfg = coreConfigSchema.parse({});
+      const cfg = testConfig({ surface: { discord: { botName: "lilac" } } });
       store.upsertUserName({
         userId: "999",
         username: "someone",
@@ -60,14 +75,24 @@ describe("entity-mapper (discord)", () => {
   });
 
   it("does not rewrite inside inline code or fenced code", async () => {
-    const dbPath = path.join(os.tmpdir(), `lilac-entity-mapper-${crypto.randomUUID()}.db`);
+    const dbPath = path.join(
+      os.tmpdir(),
+      `lilac-entity-mapper-${crypto.randomUUID()}.db`,
+    );
     const store = new DiscordSurfaceStore(dbPath);
 
     try {
-      const cfg = coreConfigSchema.parse({
+      const cfg = testConfig({
+        surface: { discord: { botName: "lilac" } },
         entity: {
           users: { Stanley: { discord: "123" } },
-          sessions: { discord: { dev_channel: "456" } },
+          sessions: {
+            discord: {
+              dev_channel: "456",
+              "release-room": "789",
+              "release.room": "101",
+            },
+          },
         },
       });
       const mapper = createDiscordEntityMapper({ cfg, store });
@@ -76,14 +101,27 @@ describe("entity-mapper (discord)", () => {
         "use `@Stanley` here",
       );
 
-      expect(mapper.rewriteOutgoingText("```\n@Stanley\n```"))
-        .toBe("```\n@Stanley\n```");
+      expect(mapper.rewriteOutgoingText("```\n@Stanley\n```")).toBe(
+        "```\n@Stanley\n```",
+      );
 
-      expect(mapper.rewriteOutgoingText("outside @Stanley, inside `@Stanley`"))
-        .toBe("outside <@123>, inside `@Stanley`");
+      expect(
+        mapper.rewriteOutgoingText("outside @Stanley, inside `@Stanley`"),
+      ).toBe("outside <@123>, inside `@Stanley`");
 
-      expect(mapper.rewriteOutgoingText("channel is #dev_channel"))
-        .toBe("channel is <#456>");
+      expect(mapper.rewriteOutgoingText("channel is #dev_channel")).toBe(
+        "channel is <#456>",
+      );
+
+      // hyphenated channel tokens
+      expect(mapper.rewriteOutgoingText("go to #release-room")).toBe(
+        "go to <#789>",
+      );
+
+      // dot in token
+      expect(mapper.rewriteOutgoingText("go to #release.room")).toBe(
+        "go to <#101>",
+      );
     } finally {
       store.close();
       try {
@@ -95,26 +133,39 @@ describe("entity-mapper (discord)", () => {
   });
 
   it("normalizes inbound mentions to canonical tokens (config casing preferred)", async () => {
-    const dbPath = path.join(os.tmpdir(), `lilac-entity-mapper-${crypto.randomUUID()}.db`);
+    const dbPath = path.join(
+      os.tmpdir(),
+      `lilac-entity-mapper-${crypto.randomUUID()}.db`,
+    );
     const store = new DiscordSurfaceStore(dbPath);
 
     try {
-      const cfg = coreConfigSchema.parse({
+      const cfg = testConfig({
+        surface: { discord: { botName: "lilac" } },
         entity: {
           users: { Stanley: { discord: "123" } },
-          sessions: { discord: { dev_channel: "456" } },
+          sessions: {
+            discord: {
+              dev_channel: "456",
+              "release-room": "789",
+              "release.room": "101",
+            },
+          },
         },
       });
       const mapper = createDiscordEntityMapper({ cfg, store });
 
-      expect(mapper.normalizeIncomingText("hello <@123>"))
-        .toBe("hello @Stanley");
+      expect(mapper.normalizeIncomingText("hello <@123>")).toBe(
+        "hello @Stanley",
+      );
 
-      expect(mapper.normalizeIncomingText("go to <#456>"))
-        .toBe("go to #dev_channel");
+      expect(mapper.normalizeIncomingText("go to <#456>")).toBe(
+        "go to #dev_channel",
+      );
 
-      expect(mapper.normalizeIncomingText("unknown <@999>"))
-        .toBe("unknown @user_999");
+      expect(mapper.normalizeIncomingText("unknown <@999>")).toBe(
+        "unknown @user_999",
+      );
     } finally {
       store.close();
       try {

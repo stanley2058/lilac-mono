@@ -1,16 +1,21 @@
 import { tool, type ModelMessage } from "ai";
-import {
-  lilacEventTypes,
-  type AdapterPlatform,
-  type LilacBus,
-} from "@stanley2058/lilac-event-bus";
+import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { fileTypeFromBuffer } from "file-type/core";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { basename, extname, join, resolve, isAbsolute } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import { z } from "zod/v4";
-
 import { expandTilde } from "./fs/fs-impl";
+import {
+  decodeDataUrl,
+  inferExtensionFromMimeType,
+  inferMimeTypeFromFilename,
+  looksLikeDataUrl,
+  looksLikeHttpUrl,
+  resolveToolPath,
+  sanitizeExtension,
+} from "../shared/attachment-utils";
+import { requireRequestContext } from "../shared/req-context";
 
 const DEFAULT_OUTBOUND_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -22,110 +27,6 @@ const DISCORD_CDN_HOSTS = new Set([
   "cdn.discordapp.com",
   "media.discordapp.net",
 ]);
-
-type RequestContext = {
-  requestId: string;
-  sessionId: string;
-  requestClient: AdapterPlatform;
-};
-
-function isRequestContext(x: unknown): x is RequestContext {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
-  return (
-    typeof o.requestId === "string" &&
-    typeof o.sessionId === "string" &&
-    typeof o.requestClient === "string"
-  );
-}
-
-function resolveToolPath(toolRoot: string, inputPath: string): string {
-  const expanded = expandTilde(inputPath);
-  const root = resolve(expandTilde(toolRoot));
-  if (isAbsolute(expanded)) return resolve(expanded);
-  return resolve(root, expanded);
-}
-
-function inferMimeTypeFromFilename(filename: string): string {
-  const ext = extname(filename).toLowerCase();
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    case ".pdf":
-      return "application/pdf";
-    case ".txt":
-      return "text/plain";
-    case ".json":
-      return "application/json";
-    case ".csv":
-      return "text/csv";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function inferExtensionFromMimeType(mimeType: string): string {
-  const mt = mimeType.toLowerCase().split(";")[0]?.trim();
-  switch (mt) {
-    case "image/png":
-      return ".png";
-    case "image/jpeg":
-      return ".jpg";
-    case "image/gif":
-      return ".gif";
-    case "image/webp":
-      return ".webp";
-    case "image/svg+xml":
-      return ".svg";
-    case "application/pdf":
-      return ".pdf";
-    case "text/plain":
-      return ".txt";
-    case "application/json":
-      return ".json";
-    case "text/csv":
-      return ".csv";
-    default:
-      return "";
-  }
-}
-
-function looksLikeHttpUrl(s: string): boolean {
-  return s.startsWith("https://") || s.startsWith("http://");
-}
-
-function looksLikeDataUrl(s: string): boolean {
-  return s.startsWith("data:");
-}
-
-function decodeDataUrl(s: string): { bytes: Buffer; mimeType?: string } {
-  // data:[<mediatype>][;base64],<data>
-  const comma = s.indexOf(",");
-  if (comma < 0) {
-    throw new Error("Invalid data URL");
-  }
-
-  const meta = s.slice(5, comma);
-  const data = s.slice(comma + 1);
-
-  const metaParts = meta.split(";");
-  const mimeType = metaParts[0] ? metaParts[0] : undefined;
-  const isBase64 = metaParts.includes("base64");
-
-  const bytes = isBase64
-    ? Buffer.from(data, "base64")
-    : Buffer.from(data, "utf8");
-  return { bytes, mimeType };
-}
 
 function asBuffer(data: unknown): Buffer {
   if (Buffer.isBuffer(data)) return data;
@@ -143,14 +44,6 @@ function asBuffer(data: unknown): Buffer {
 
   // URL is handled separately.
   throw new Error("Unsupported data content");
-}
-
-function sanitizeExtension(ext: string): string {
-  if (!ext) return "";
-  const normalized = ext.startsWith(".") ? ext : `.${ext}`;
-  if (!/^\.[a-z0-9]+$/u.test(normalized)) return "";
-  if (normalized.length > 10) return "";
-  return normalized;
 }
 
 const attachmentAddInputSchema = z
@@ -319,12 +212,10 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       inputSchema: attachmentAddInputSchema,
       outputSchema: attachmentAddOutputSchema,
       execute: async (input, { experimental_context }) => {
-        const ctx = experimental_context;
-        if (!isRequestContext(ctx)) {
-          throw new Error(
-            "attachment.add requires experimental_context { requestId, sessionId, requestClient }",
-          );
-        }
+        const ctx = requireRequestContext(
+          experimental_context,
+          "attachment.add",
+        );
 
         const paths =
           input.paths && input.paths.length > 0
