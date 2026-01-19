@@ -228,18 +228,13 @@ function mergeShapes(
 
     // If two intersections define the same key, keep a combined schema.
     const existing = out[key];
-    const combined = (existing as any).and
-      ? (existing as any).and(value)
-      : value;
+    const combined = (existing as any).and ? (existing as any).and(value) : value;
     out[key] = combined;
   }
   return out;
 }
 
-function mergeConditions(
-  a: Condition | null,
-  b: Condition | null,
-): Condition | null {
+function mergeConditions(a: Condition | null, b: Condition | null): Condition | null {
   if (!a) return b;
   if (!b) return a;
 
@@ -271,9 +266,7 @@ function extractLiteralValues(schema: z.ZodTypeAny): unknown[] {
       const options = (s as any).options as unknown[] | undefined;
       if (options?.length) return options;
 
-      const entries = (def as any).entries as
-        | Record<string, unknown>
-        | undefined;
+      const entries = (def as any).entries as Record<string, unknown> | undefined;
       return entries ? Object.values(entries) : [];
     }
     case "union": {
@@ -362,7 +355,7 @@ function unwrapModifiers(
 
       case "nullable": {
         throw new Error(
-          `Field \"${ctx.key}\" uses nullable(); prefer optional() for CLI flags.`,
+          `Field "${ctx.key}" uses nullable(); prefer optional() for CLI flags.`,
         );
       }
 
@@ -407,16 +400,14 @@ function renderType(schema: z.ZodTypeAny): string {
       const options = (schema as any).options as unknown[] | undefined;
       if (options?.length) return options.map(formatValue).join(" | ");
 
-      const entries = (def as any).entries as
-        | Record<string, unknown>
-        | undefined;
+      const entries = (def as any).entries as Record<string, unknown> | undefined;
       if (entries) return Object.values(entries).map(formatValue).join(" | ");
 
       return "unknown";
     }
 
     case "union": {
-      const options = (schema as any).options as z.ZodTypeAny[] | undefined;
+      const options = (def as any).options as z.ZodTypeAny[] | undefined;
       if (!options?.length) return "unknown";
       return options.map(renderType).join(" | ");
     }
@@ -440,7 +431,6 @@ function renderType(schema: z.ZodTypeAny): string {
 }
 
 function formatValue(v: unknown): string {
-  // Match your example: `"fetch"` not `fetch`
   return typeof v === "string" ? JSON.stringify(v) : String(v);
 }
 

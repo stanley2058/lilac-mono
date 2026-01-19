@@ -9,7 +9,7 @@ import {
 import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
 import { google, type GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
-import type { ServerTool } from "./type";
+import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { providers } from "@stanley2058/lilac-utils";
 
@@ -42,13 +42,17 @@ export class Summarize implements ServerTool {
   async call(
     callableId: string,
     input: Record<string, unknown>,
-    signal?: AbortSignal,
+    opts?: {
+      signal?: AbortSignal;
+      context?: unknown;
+      messages?: readonly unknown[];
+    },
   ): Promise<unknown> {
     if (callableId !== "summarize") throw new Error("Invalid callable ID");
 
     const payload = agentSummarizeInputSchema.parse(input);
     try {
-      const text = await summarize(payload, { abortSignal: signal });
+      const text = await summarize(payload, { abortSignal: opts?.signal });
       return {
         isError: false,
         text,
@@ -115,10 +119,7 @@ export const agentSummarizeInputSchema = z
       .optional()
       .describe("Local file path for binary content."),
 
-    base64: z
-      .base64()
-      .optional()
-      .describe("Base64-encoded binary content."),
+    base64: z.base64().optional().describe("Base64-encoded binary content."),
 
     additionalInstructions: z
       .string()

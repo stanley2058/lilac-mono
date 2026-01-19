@@ -116,6 +116,7 @@ export async function executeBash(
         LILAC_REQUEST_ID: context?.requestId,
         LILAC_SESSION_ID: context?.sessionId,
         LILAC_REQUEST_CLIENT: context?.requestClient,
+        LILAC_CWD: resolvedCwd,
       },
     });
 

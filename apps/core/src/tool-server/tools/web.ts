@@ -9,7 +9,7 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright";
-import type { ServerTool } from "./type";
+import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
@@ -41,9 +41,7 @@ const getPageSchema = z.object({
   timeout: z
     .number()
     .optional()
-    .describe(
-      "Timeout in ms. Timeout for initial connection if using browser.",
-    ),
+    .describe("Timeout in ms. Timeout for initial connection if using browser."),
 });
 
 const searchInputSchema = z.object({
@@ -122,9 +120,7 @@ export class Web implements ServerTool {
         callableId: "search",
         name: "Web Search",
         description: "Search the web",
-        shortInput: zodObjectToCliLines(searchInputSchema, {
-          mode: "required",
-        }),
+        shortInput: zodObjectToCliLines(searchInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(searchInputSchema),
       },
     ];
@@ -133,7 +129,11 @@ export class Web implements ServerTool {
   async call(
     callableId: string,
     rawInput: Record<string, unknown>,
-    signal?: AbortSignal,
+    _opts?: {
+      signal?: AbortSignal;
+      context?: unknown;
+      messages?: readonly unknown[];
+    },
   ): Promise<unknown> {
     if (callableId === "fetch") return this.callFetch(rawInput);
     if (callableId === "search") return this.callSearch(rawInput);

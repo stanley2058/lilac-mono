@@ -19,9 +19,7 @@ import {
 } from "@stanley2058/lilac-agent";
 
 import { bashTool } from "../../tools/bash";
-import { attachmentTools } from "../../tools/attachment";
 import { fsTool } from "../../tools/fs/fs";
-import { workflowTool } from "../../tools/workflow/workflow";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -149,19 +147,18 @@ export async function startBusAgentRunner(params: {
 
     const { model, provider } = resolveModel(cfg);
 
-    const agent = new AiSdkPiAgent<ToolSet>({
-      system: cfg.agent.systemPrompt,
-      model,
-      tools: {
-        ...bashTool(),
-        ...fsTool(cwd),
-        ...attachmentTools({ bus, cwd }),
-        ...workflowTool({ bus }),
-      },
-      providerOptions: cfg.models.main.options
-        ? { [provider]: cfg.models.main.options }
-        : undefined,
-    });
+      const agent = new AiSdkPiAgent<ToolSet>({
+        system: cfg.agent.systemPrompt,
+        model,
+        tools: {
+          ...bashTool(),
+          ...fsTool(cwd),
+        },
+        providerOptions: cfg.models.main.options
+          ? { [provider]: cfg.models.main.options }
+          : undefined,
+      });
+
 
     agent.setContext({
       sessionId: next.sessionId,
@@ -364,7 +361,7 @@ async function applyToRunningAgent(
 
 function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
   // If any user message has non-string content (multipart), do not merge.
-  // Tools like `attachment.download` rely on the raw content parts.
+  // Preserve raw parts for downstream processing.
   for (let i = messages.length - 1; i >= 0; i--) {
     const newest = messages[i]!;
     if (newest.role !== "user") continue;

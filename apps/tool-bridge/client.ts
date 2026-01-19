@@ -44,11 +44,23 @@ async function toolHelp(callableId: string) {
 }
 
 async function callTool(callableId: string, input: Record<string, unknown>) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  const requestId = process.env.LILAC_REQUEST_ID;
+  const sessionId = process.env.LILAC_SESSION_ID;
+  const requestClient = process.env.LILAC_REQUEST_CLIENT;
+  const cwd = process.env.LILAC_CWD;
+
+  if (requestId) headers["x-lilac-request-id"] = requestId;
+  if (sessionId) headers["x-lilac-session-id"] = sessionId;
+  if (requestClient) headers["x-lilac-request-client"] = requestClient;
+  if (cwd) headers["x-lilac-cwd"] = cwd;
+
   const res = await fetch(`${BACKEND_URL}/call`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       callableId,
       input,
