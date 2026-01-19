@@ -3,70 +3,81 @@ import { z } from "zod";
 
 import { env } from "./env";
 import { findWorkspaceRoot } from "./find-root";
-import { buildAgentSystemPrompt, promptWorkspaceSignature } from "./agent-prompts";
+import {
+  buildAgentSystemPrompt,
+  promptWorkspaceSignature,
+} from "./agent-prompts";
 
 type AgentConfig = {
   systemPrompt: string;
 };
 
+const routerSchema = z
+  .object({
+    /** Default behavior for channels unless overridden by sessionModes. */
+    defaultMode: z.enum(["mention", "active"]).default("mention"),
+    /** Per-session routing mode overrides. Key is session/channel id. */
+    sessionModes: z
+      .record(
+        z.string().min(1),
+        z.object({ mode: z.enum(["mention", "active"]) }),
+      )
+      .default({}),
+    /** Debounce window (ms) for active mode initial prompt batching. */
+    activeDebounceMs: z.number().int().positive().default(3000),
+
+    /** Active channel gate to prevent replying to everything. */
+    activeGate: z
+      .object({
+        enabled: z.boolean().default(false),
+        timeoutMs: z.number().int().positive().default(2500),
+      })
+      .default({ enabled: false, timeoutMs: 2500 }),
+  })
+  .default({
+    defaultMode: "mention",
+    sessionModes: {},
+    activeDebounceMs: 3000,
+    activeGate: { enabled: false, timeoutMs: 2500 },
+  });
+
+const discordSurfaceSchema = z
+  .object({
+    tokenEnv: z.string().min(1).default("DISCORD_TOKEN"),
+    allowedChannelIds: z.array(z.string().min(1)).default([]),
+    allowedGuildIds: z.array(z.string().min(1)).default([]),
+    dbPath: z.string().min(1).optional(),
+    botName: z
+      .string()
+      .min(1)
+      .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
+    statusMessage: z.string().optional(),
+  })
+  .default({
+    tokenEnv: "DISCORD_TOKEN",
+    allowedChannelIds: [],
+    allowedGuildIds: [],
+    botName: "lilac",
+  });
+
 export const coreConfigSchema = z.object({
   surface: z
     .object({
-      discord: z
-        .object({
-          tokenEnv: z.string().min(1).default("DISCORD_TOKEN"),
-          allowedChannelIds: z.array(z.string().min(1)).default([]),
-          allowedGuildIds: z.array(z.string().min(1)).default([]),
-          dbPath: z.string().min(1).optional(),
-          botName: z
-            .string()
-            .min(1)
-            .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
-          statusMessage: z.string().optional(),
-
-          router: z
-            .object({
-              /** Default behavior for channels unless overridden by sessionModes. */
-              defaultMode: z.enum(["mention", "active"]).default("mention"),
-              /** Per-session routing mode overrides. Key is session/channel id. */
-              sessionModes: z
-                .record(
-                  z.string().min(1),
-                  z.object({ mode: z.enum(["mention", "active"]) }),
-                )
-                .default({}),
-              /** Debounce window (ms) for active mode initial prompt batching. */
-              activeDebounceMs: z.number().int().positive().default(3000),
-            })
-            .default({
-              defaultMode: "mention",
-              sessionModes: {},
-              activeDebounceMs: 3000,
-            }),
-        })
-        .default({
-          tokenEnv: "DISCORD_TOKEN",
-          allowedChannelIds: [],
-          allowedGuildIds: [],
-          botName: "lilac",
-          router: {
-            defaultMode: "mention",
-            sessionModes: {},
-            activeDebounceMs: 3000,
-          },
-        }),
+      router: routerSchema,
+      discord: discordSurfaceSchema,
     })
     .default({
+      router: {
+        defaultMode: "mention",
+        sessionModes: {},
+        activeDebounceMs: 3000,
+        activeGate: { enabled: false, timeoutMs: 2500 },
+      },
       discord: {
         tokenEnv: "DISCORD_TOKEN",
         allowedChannelIds: [],
         allowedGuildIds: [],
         botName: "lilac",
-        router: {
-          defaultMode: "mention",
-          sessionModes: {},
-          activeDebounceMs: 3000,
-        },
       },
     }),
 
@@ -84,9 +95,26 @@ export const coreConfigSchema = z.object({
         .default({
           model: "openrouter/openai/gpt-4o",
         }),
+
+      /**
+       * Fast/cheap model for lightweight features (router gate, etc.).
+       *
+       * This is intentionally separate from `models.main`.
+       */
+      fast: z
+        .object({
+          model: z.string().min(1).default("openrouter/openai/gpt-4o-mini"),
+          options: z
+            .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+            .optional(),
+        })
+        .default({
+          model: "openrouter/openai/gpt-4o-mini",
+        }),
     })
     .default({
       main: { model: "openrouter/openai/gpt-4o" },
+      fast: { model: "openrouter/openai/gpt-4o-mini" },
     }),
 
   entity: z
@@ -127,7 +155,11 @@ async function ensureDataDirSeeded() {
     await Bun.file(cfgPath).stat();
   } catch {
     // If core-config.yaml doesn't exist yet, seed it from the example.
-    const examplePath = path.resolve(findWorkspaceRoot(), "data", "core-config.example.yaml");
+    const examplePath = path.resolve(
+      findWorkspaceRoot(),
+      "data",
+      "core-config.example.yaml",
+    );
     const example = await Bun.file(examplePath).text();
     await Bun.write(cfgPath, example);
   }

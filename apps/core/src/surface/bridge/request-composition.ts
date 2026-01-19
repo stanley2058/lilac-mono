@@ -9,6 +9,24 @@ export type RequestCompositionResult = {
   mergedGroups: Array<{ authorId: string; messageIds: string[] }>;
 };
 
+export type ComposeRecentChannelMessagesOpts = {
+  platform: "discord";
+  sessionId: string;
+  botUserId: string;
+  botName: string;
+  limit: number;
+  /** Optional trigger message to force-include (mention/reply). */
+  triggerMsgRef?: MsgRef;
+  triggerType?: "mention" | "reply";
+};
+
+export type ComposeSingleMessageOpts = {
+  platform: "discord";
+  botUserId: string;
+  botName: string;
+  msgRef: MsgRef;
+};
+
 export type ComposeRequestOpts = {
   platform: "discord";
   botUserId: string;
@@ -123,7 +141,182 @@ export async function composeRequestMessages(
   };
 }
 
-type ReplyChainMessage = {
+export async function composeRecentChannelMessages(
+  adapter: SurfaceAdapter,
+  opts: ComposeRecentChannelMessagesOpts,
+): Promise<RequestCompositionResult> {
+  if (opts.platform !== "discord") {
+    throw new Error(`Unsupported platform '${opts.platform}'`);
+  }
+
+  const sessionRef = { platform: "discord", channelId: opts.sessionId } as const;
+
+  const recent = await adapter.listMsg(sessionRef, { limit: opts.limit });
+
+  const list: typeof recent = [...recent];
+
+  if (opts.triggerMsgRef) {
+    const exists = list.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
+    if (!exists) {
+      const fetched = await adapter.readMsg(opts.triggerMsgRef);
+      if (fetched) list.push(fetched);
+    }
+  }
+
+  list.sort((a, b) => a.ts - b.ts);
+
+  const newest = list.slice(Math.max(0, list.length - opts.limit));
+
+  const chain: ReplyChainMessage[] = newest.map((m) => ({
+    messageId: m.ref.messageId,
+    authorId: m.userId,
+    authorName: m.userName ?? `user_${m.userId}`,
+    ts: m.ts,
+    text: m.text,
+    attachments: extractDiscordAttachmentsFromRaw(m.raw),
+    raw: m.raw,
+  }));
+
+  const merged = mergeChainByDiscordWindow(chain);
+
+  const modelMessages = merged.map((chunk) => {
+    const isBot = chunk.authorId === opts.botUserId;
+
+    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+
+    let text = chunk.text;
+    if (
+      opts.triggerType === "mention" &&
+      opts.triggerMsgRef &&
+      chunk.messageIds.includes(opts.triggerMsgRef.messageId)
+    ) {
+      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
+    }
+
+    const normalized = normalizeText(text, {});
+
+    const header = formatDiscordAttributionHeader({
+      authorId: chunk.authorId,
+      authorName: chunk.authorName,
+      messageId,
+    });
+
+    const mainText = `${header}\n${normalized}`.trimEnd();
+
+    if (isBot) {
+      return {
+        role: "assistant",
+        content: mainText,
+      } satisfies ModelMessage;
+    }
+
+    if (chunk.attachments.length === 0) {
+      return {
+        role: "user",
+        content: mainText,
+      } satisfies ModelMessage;
+    }
+
+    const parts: UserContent = [{ type: "text", text: mainText }];
+
+    for (const att of chunk.attachments) {
+      try {
+        const url = new URL(att.url);
+        const mimeType = att.mimeType;
+
+        if (mimeType && mimeType.startsWith("image/")) {
+          parts.push({
+            type: "image",
+            image: url,
+            mediaType: mimeType,
+          });
+        } else {
+          parts.push({
+            type: "file",
+            data: url,
+            filename: att.filename,
+            mediaType: mimeType ?? "application/octet-stream",
+          });
+        }
+      } catch {
+        // ignore invalid URL
+      }
+    }
+
+    return {
+      role: "user",
+      content: parts,
+    } satisfies ModelMessage;
+  });
+
+  return {
+    messages: modelMessages,
+    chainMessageIds: chain.map((m) => m.messageId),
+    mergedGroups: merged.map((m) => ({
+      authorId: m.authorId,
+      messageIds: [...m.messageIds],
+    })),
+  };
+}
+
+export async function composeSingleMessage(
+  adapter: SurfaceAdapter,
+  opts: ComposeSingleMessageOpts,
+): Promise<ModelMessage | null> {
+  if (opts.platform !== "discord") {
+    throw new Error(`Unsupported platform '${opts.platform}'`);
+  }
+
+  const m = await adapter.readMsg(opts.msgRef);
+  if (!m) return null;
+
+  const header = formatDiscordAttributionHeader({
+    authorId: m.userId,
+    authorName: m.userName ?? `user_${m.userId}`,
+    messageId: m.ref.messageId,
+  });
+
+  const mainText = `${header}\n${normalizeText(m.text, {})}`.trimEnd();
+
+  if (m.userId === opts.botUserId) {
+    return { role: "assistant", content: mainText } satisfies ModelMessage;
+  }
+
+  const attachments = extractDiscordAttachmentsFromRaw(m.raw);
+  if (attachments.length === 0) {
+    return { role: "user", content: mainText } satisfies ModelMessage;
+  }
+
+  const parts: UserContent = [{ type: "text", text: mainText }];
+
+  for (const att of attachments) {
+    try {
+      const url = new URL(att.url);
+      const mimeType = att.mimeType;
+
+      if (mimeType && mimeType.startsWith("image/")) {
+        parts.push({
+          type: "image",
+          image: url,
+          mediaType: mimeType,
+        });
+      } else {
+        parts.push({
+          type: "file",
+          data: url,
+          filename: att.filename,
+          mediaType: mimeType ?? "application/octet-stream",
+        });
+      }
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  return { role: "user", content: parts } satisfies ModelMessage;
+}
+
+export type ReplyChainMessage = {
   messageId: string;
   authorId: string;
   authorName: string;

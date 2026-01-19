@@ -239,9 +239,13 @@ export async function startBusAgentRunner(params: {
 
     try {
       // First message should be a prompt.
-      await applyToIdleAgent(agent, next);
+      // If additional messages for the same request id were queued before the run started,
+      // merge them into the initial prompt so they don't become separate runs.
+      const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
+      await agent.prompt(mergedInitial);
 
       await agent.waitForIdle();
+
 
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
@@ -321,11 +325,26 @@ async function publishLifecycle(params: {
   );
 }
 
-async function applyToIdleAgent(agent: AiSdkPiAgent<ToolSet>, entry: Enqueued) {
-  if (entry.queue !== "prompt") {
-    // v1: if we got a steer/followUp before first prompt, treat it as prompt.
+function mergeQueuedForSameRequest(
+  first: Enqueued,
+  queue: Enqueued[],
+): ModelMessage[] {
+  const merged: ModelMessage[] = [...first.messages];
+
+  // Pull in any already-queued items for the same request id so they become
+  // additional user messages in the same initial run.
+  for (let i = 0; i < queue.length; ) {
+    const next = queue[i]!;
+    if (next.requestId !== first.requestId) {
+      i += 1;
+      continue;
+    }
+
+    merged.push(...next.messages);
+    queue.splice(i, 1);
   }
-  await agent.prompt(entry.messages);
+
+  return merged;
 }
 
 async function applyToRunningAgent(

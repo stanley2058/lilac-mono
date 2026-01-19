@@ -1,13 +1,26 @@
-import { getCoreConfig, type CoreConfig } from "@stanley2058/lilac-utils";
+import { generateText, Output, type ModelMessage } from "ai";
+import { z } from "zod";
+
+import {
+  getCoreConfig,
+  providers,
+  type CoreConfig,
+  type Providers,
+} from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
   type LilacBus,
   type RequestQueueMode,
 } from "@stanley2058/lilac-event-bus";
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
-import { composeRequestMessages } from "./request-composition";
+import {
+  composeRecentChannelMessages,
+  composeRequestMessages,
+  composeSingleMessage,
+} from "./request-composition";
 
 type SessionMode = "mention" | "active";
 
@@ -36,8 +49,8 @@ function parseDiscordMsgRefFromAdapterEvent(data: {
 }
 
 function getSessionMode(cfg: CoreConfig, sessionId: string): SessionMode {
-  const entry = cfg.surface.discord.router.sessionModes[sessionId];
-  return entry?.mode ?? cfg.surface.discord.router.defaultMode;
+  const entry = cfg.surface.router.sessionModes[sessionId];
+  return entry?.mode ?? cfg.surface.router.defaultMode;
 }
 
 function getDiscordFlags(raw: unknown): {
@@ -63,15 +76,17 @@ type ActiveSessionState = {
   activeUserId?: string;
 };
 
+type BufferedMessage = {
+  msgRef: MsgRef;
+  userId: string;
+  text: string;
+  mentionsBot: boolean;
+  replyToBot: boolean;
+};
+
 type DebounceBuffer = {
   sessionId: string;
-  firstMessageId: string;
-  firstMsgRef: MsgRef;
-  botUserId?: string;
-  botName?: string;
-  triggerType: "mention" | "reply" | "active";
-  userId: string;
-  msgRefs: MsgRef[];
+  messages: BufferedMessage[];
   timer: ReturnType<typeof setTimeout> | null;
 };
 
@@ -81,8 +96,19 @@ export async function startBusRequestRouter(params: {
   subscriptionId: string;
   /** Optionally inject config; defaults to getCoreConfig(). */
   config?: CoreConfig;
+  /** Optional injection for unit tests (bypasses real model call). */
+  routerGate?: (input: {
+    sessionId: string;
+    botName: string;
+    messages: BufferedMessage[];
+  }) => Promise<{ forward: boolean; reason?: string }>;
 }) {
   const { adapter, bus, subscriptionId } = params;
+
+  const logger = new Logger({
+    module: "bus-request-router",
+    logLevel: (process.env.LOG_LEVEL ?? "info") as LogLevel,
+  });
 
   let cfg = params.config ?? (await getCoreConfig());
 
@@ -153,7 +179,7 @@ export async function startBusRequestRouter(params: {
       const msgRef = parseDiscordMsgRefFromAdapterEvent(msg.data);
 
       const flags = getDiscordFlags(msg.data.raw);
-      const isDm = flags.isDMBased;
+      const isDm = flags.isDMBased === true;
 
       const mode: SessionMode = isDm
         ? "active"
@@ -162,16 +188,32 @@ export async function startBusRequestRouter(params: {
       const active = activeBySession.get(sessionId);
 
       if (mode === "active") {
-        await handleActiveMode({
-          adapter,
-          bus,
-          cfg,
-          buffers,
-          sessionId,
-          msgRef,
-          userId: msg.data.userId,
-          active,
-        });
+        if (isDm) {
+          await handleActiveDmMode({
+            adapter,
+            bus,
+            cfg,
+            sessionId,
+            msgRef,
+            userId: msg.data.userId,
+            active,
+          });
+        } else {
+          await handleActiveChannelMode({
+            adapter,
+            bus,
+            cfg,
+            buffers,
+            sessionId,
+            msgRef,
+            userId: msg.data.userId,
+            userText: msg.data.text,
+            mentionsBot: flags.mentionsBot === true,
+            replyToBot: flags.replyToBot === true,
+            active,
+          });
+        }
+
         await ctx.commit();
         return;
       }
@@ -193,22 +235,30 @@ export async function startBusRequestRouter(params: {
     },
   );
 
-  async function handleActiveMode(input: {
+  function clearDebounceBuffer(sessionId: string) {
+    const b = buffers.get(sessionId);
+    if (!b) return;
+    buffers.delete(sessionId);
+    if (b.timer) {
+      clearTimeout(b.timer);
+      b.timer = null;
+    }
+  }
+
+  async function handleActiveDmMode(input: {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
-    buffers: Map<string, DebounceBuffer>;
     sessionId: string;
     msgRef: MsgRef;
     userId: string;
     active: ActiveSessionState | undefined;
   }) {
-    const { adapter, bus, cfg, buffers, sessionId, msgRef, userId, active } =
-      input;
+    const { adapter, bus, cfg, sessionId, msgRef, userId, active } = input;
 
     if (active) {
-      // While active: always steer.
-      await publishRequest({
+      // DMs: while active, everything is a steer.
+      await publishComposedRequest({
         adapter,
         bus,
         cfg,
@@ -222,66 +272,279 @@ export async function startBusRequestRouter(params: {
       return;
     }
 
-    const existing = buffers.get(sessionId);
-    if (!existing) {
-      const buffer: DebounceBuffer = {
-        sessionId,
-        firstMessageId: msgRef.messageId,
-        firstMsgRef: msgRef,
-        triggerType: "active",
-        userId,
-        msgRefs: [msgRef],
-        timer: null,
-      };
+    // DMs: no gate; start a new request immediately.
+    const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
-      buffer.timer = setTimeout(() => {
-        flushDebounce(sessionId).catch(console.error);
-      }, cfg.surface.discord.router.activeDebounceMs);
-
-      buffers.set(sessionId, buffer);
-      return;
-    }
-
-    existing.msgRefs.push(msgRef);
-  }
-
-  async function flushDebounce(sessionId: string) {
-    const b = buffers.get(sessionId);
-    if (!b) return;
-    buffers.delete(sessionId);
-    if (b.timer) {
-      clearTimeout(b.timer);
-      b.timer = null;
-    }
-
-    // Start a new request anchored to the first message id.
-    const requestId = `discord:${sessionId}:${b.firstMessageId}`;
-
-    await publishRequest({
+    await publishComposedRequest({
       adapter,
       bus,
       cfg,
       requestId,
       sessionId,
       queue: "prompt",
-      triggerType: b.triggerType,
-      msgRef: b.firstMsgRef,
-      userId: b.userId,
+      triggerType: "active",
+      msgRef,
+      userId,
     });
+  }
 
-    // Any additional buffered messages should be steered into the same request.
-    for (const extra of b.msgRefs.slice(1)) {
-      await publishRequest({
+  async function handleActiveChannelMode(input: {
+    adapter: SurfaceAdapter;
+    bus: LilacBus;
+    cfg: CoreConfig;
+    buffers: Map<string, DebounceBuffer>;
+    sessionId: string;
+    msgRef: MsgRef;
+    userId: string;
+    userText: string;
+    mentionsBot: boolean;
+    replyToBot: boolean;
+    active: ActiveSessionState | undefined;
+  }) {
+    const {
+      adapter,
+      bus,
+      cfg,
+      buffers,
+      sessionId,
+      msgRef,
+      userId,
+      userText,
+      mentionsBot,
+      replyToBot,
+      active,
+    } = input;
+
+    if (active) {
+      // Keep users separated: only the active user is allowed to inject follow-ups.
+      if (active.activeUserId && active.activeUserId !== userId) {
+        bufferActiveChannelMessage({
+          buffers,
+          cfg,
+          sessionId,
+          message: {
+            msgRef,
+            userId,
+            text: userText,
+            mentionsBot,
+            replyToBot,
+          },
+        });
+        return;
+      }
+
+      await publishSingleMessageToActiveRequest({
+        adapter,
+        bus,
+        cfg,
+        requestId: active.requestId,
+        sessionId,
+        queue: "followUp",
+        msgRef,
+      });
+      return;
+    }
+
+    // No active request.
+    if (mentionsBot || replyToBot) {
+      // Mention/reply is a bypass trigger.
+      // Discard any pending buffer to avoid a second gated request for the same context.
+      clearDebounceBuffer(sessionId);
+
+      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+
+      await publishActiveChannelPrompt({
         adapter,
         bus,
         cfg,
         requestId,
         sessionId,
-        queue: "steer",
-        triggerType: "active",
-        msgRef: extra,
-        userId: b.userId,
+        triggerMsgRef: msgRef,
+        triggerType: mentionsBot ? "mention" : "reply",
+        activeUserId: userId,
       });
+      return;
+    }
+
+    bufferActiveChannelMessage({
+      buffers,
+      cfg,
+      sessionId,
+      message: {
+        msgRef,
+        userId,
+        text: userText,
+        mentionsBot,
+        replyToBot,
+      },
+    });
+  }
+
+  function bufferActiveChannelMessage(input: {
+    buffers: Map<string, DebounceBuffer>;
+    cfg: CoreConfig;
+    sessionId: string;
+    message: BufferedMessage;
+  }) {
+    const { buffers, cfg, sessionId, message } = input;
+
+    const existing = buffers.get(sessionId);
+    if (!existing) {
+      const buffer: DebounceBuffer = {
+        sessionId,
+        messages: [message],
+        timer: null,
+      };
+
+      buffer.timer = setTimeout(() => {
+        flushDebounce(sessionId).catch(console.error);
+       }, cfg.surface.router.activeDebounceMs);
+
+      buffers.set(sessionId, buffer);
+      return;
+    }
+
+    existing.messages.push(message);
+  }
+
+  async function flushDebounce(sessionId: string) {
+    const b = buffers.get(sessionId);
+    if (!b) return;
+    clearDebounceBuffer(sessionId);
+
+    // Gate is only for active channels with no running request.
+    const gateCfg = cfg.surface.router.activeGate;
+    if (!gateCfg.enabled) {
+      return;
+    }
+
+    const gate = params.routerGate ?? shouldForwardActiveBatch;
+
+    const decision = await gate({
+      sessionId,
+      botName: cfg.surface.discord.botName,
+      messages: b.messages,
+    }).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error({ error: msg, sessionId }, "router gate failed; skipping");
+      return { forward: false, reason: "error" };
+    });
+
+    if (!decision.forward) {
+      logger.info(
+        { sessionId, reason: decision.reason ?? "skip" },
+        "router gate skipped batch",
+      );
+      return;
+    }
+
+    // Gate-forwarded prompt: do NOT reply-to a message.
+    // Anchor the "active user" as the newest message author in the batch.
+    await publishActiveChannelPrompt({
+      adapter,
+      bus,
+      cfg,
+      requestId: randomRequestId(),
+      sessionId,
+      triggerMsgRef: undefined,
+      triggerType: undefined,
+      activeUserId: b.messages[b.messages.length - 1]?.userId,
+    });
+  }
+
+  const gateSchema = z.object({
+    forward: z.boolean(),
+    reason: z.string().optional(),
+  });
+
+  async function shouldForwardActiveBatch(input: {
+    sessionId: string;
+    botName: string;
+    messages: BufferedMessage[];
+  }): Promise<{ forward: boolean; reason?: string }> {
+    const gateCfg = cfg.surface.router.activeGate;
+
+    const timeoutMs = gateCfg.timeoutMs;
+    const abort = new AbortController();
+
+    const timeout = setTimeout(() => abort.abort(), timeoutMs);
+
+    try {
+      const spec = cfg.models.fast.model;
+      const slash = spec.indexOf("/");
+      if (slash <= 0) {
+        throw new Error(`Invalid model spec '${spec}'`);
+      }
+
+      const provider = spec.slice(0, slash);
+      const modelId = spec.slice(slash + 1);
+
+      const p = providers[provider as Providers];
+      if (!p) {
+        throw new Error(
+          `Unknown provider '${provider}' (models.fast.model='${spec}')`,
+        );
+      }
+      if (typeof p !== "function") {
+        throw new Error(
+          `Provider '${provider}' is not configured (models.fast.model='${spec}')`,
+        );
+      }
+
+      const indirectMention = input.messages.some((m) =>
+        m.text.toLowerCase().includes(input.botName.toLowerCase()),
+      );
+
+      const transcript = input.messages
+        .map((m) => `[user_id=${m.userId}] ${m.text}`)
+        .join("\n");
+
+      const prompt = [
+        {
+          role: "system",
+          content: [
+            "You are a router gate for a chat bot.",
+            "Decide whether the bot should start a new request and reply.",
+            'Return strict JSON only: {"forward": true|false, "reason"?: string}',
+            "If uncertain, return forward=false.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            `sessionId=${input.sessionId}`,
+            `botName=${input.botName}`,
+            `indirectMention=${String(indirectMention)}`,
+            "",
+            "Batch:",
+            transcript,
+            "",
+            "Special case: if this looks like a heartbeat poll that expects a reply (e.g. mentions HEARTBEAT.md/HEARTBEAT_OK), forward=true.",
+          ].join("\n"),
+        },
+      ] as ModelMessage[];
+
+      const res = await generateText({
+        model: p(modelId),
+        output: Output.object({ schema: gateSchema }),
+        prompt,
+        abortSignal: abort.signal,
+        maxOutputTokens: 128,
+        providerOptions: cfg.models.fast.options
+          ? { [provider]: cfg.models.fast.options }
+          : undefined,
+      });
+
+      return res.output;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error(
+        { error: msg, sessionId: input.sessionId },
+        "router gate error",
+      );
+      return { forward: false, reason: "error" };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -318,7 +581,7 @@ export async function startBusRequestRouter(params: {
 
       // Non-trigger messages from the active user become steer.
       if (active.activeUserId && active.activeUserId === userId) {
-        await publishRequest({
+        await publishComposedRequest({
           adapter,
           bus,
           cfg,
@@ -337,7 +600,7 @@ export async function startBusRequestRouter(params: {
       const requestId = `discord:${sessionId}:${msgRef.messageId}`;
       activeBySession.set(sessionId, { requestId, activeUserId: userId });
 
-      await publishRequest({
+      await publishComposedRequest({
         adapter,
         bus,
         cfg,
@@ -361,7 +624,7 @@ export async function startBusRequestRouter(params: {
       const requestId = `discord:${sessionId}:${msgRef.messageId}`;
       activeBySession.set(sessionId, { requestId, activeUserId: userId });
 
-      await publishRequest({
+      await publishComposedRequest({
         adapter,
         bus,
         cfg,
@@ -380,7 +643,7 @@ export async function startBusRequestRouter(params: {
       active.activeUserId &&
       userId === active.activeUserId
     ) {
-      await publishRequest({
+      await publishComposedRequest({
         adapter,
         bus,
         cfg,
@@ -395,7 +658,7 @@ export async function startBusRequestRouter(params: {
     }
 
     // Replies to bot always steer into the active request.
-    await publishRequest({
+    await publishComposedRequest({
       adapter,
       bus,
       cfg,
@@ -408,7 +671,32 @@ export async function startBusRequestRouter(params: {
     });
   }
 
-  async function publishRequest(input: {
+  async function publishBusRequest(input: {
+    requestId: string;
+    sessionId: string;
+    queue: RequestQueueMode;
+    triggerType: "mention" | "reply" | "active";
+    messages: ModelMessage[];
+    raw: unknown;
+  }) {
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: input.queue,
+        messages: input.messages,
+        raw: input.raw,
+      },
+      {
+        headers: {
+          request_id: input.requestId,
+          session_id: input.sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+  }
+
+  async function publishComposedRequest(input: {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
@@ -419,16 +707,8 @@ export async function startBusRequestRouter(params: {
     msgRef: MsgRef;
     userId: string;
   }) {
-    const {
-      adapter,
-      bus,
-      cfg,
-      requestId,
-      sessionId,
-      queue,
-      triggerType,
-      msgRef,
-    } = input;
+    const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } =
+      input;
 
     const self = await adapter.getSelf();
 
@@ -442,25 +722,101 @@ export async function startBusRequestRouter(params: {
       },
     });
 
-    await bus.publish(
-      lilacEventTypes.CmdRequestMessage,
-      {
-        queue,
-        messages: composed.messages,
-        raw: {
-          triggerType,
-          chainMessageIds: composed.chainMessageIds,
-          mergedGroups: composed.mergedGroups,
-        },
+    await publishBusRequest({
+      requestId,
+      sessionId,
+      queue,
+      triggerType,
+      messages: composed.messages,
+      raw: {
+        triggerType,
+        chainMessageIds: composed.chainMessageIds,
+        mergedGroups: composed.mergedGroups,
       },
-      {
-        headers: {
-          request_id: requestId || randomRequestId(),
-          session_id: sessionId,
-          request_client: "discord",
-        },
+    });
+  }
+
+  async function publishActiveChannelPrompt(input: {
+    adapter: SurfaceAdapter;
+    bus: LilacBus;
+    cfg: CoreConfig;
+    requestId: string;
+    sessionId: string;
+    triggerMsgRef: MsgRef | undefined;
+    triggerType: "mention" | "reply" | undefined;
+    activeUserId: string | undefined;
+  }) {
+    const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } =
+      input;
+
+    const self = await adapter.getSelf();
+
+    const composed = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: self.userId,
+      botName: cfg.surface.discord.botName,
+      limit: 8,
+      triggerMsgRef,
+      triggerType,
+    });
+
+    await publishBusRequest({
+      requestId,
+      sessionId,
+      queue: "prompt",
+      triggerType: triggerType ?? "active",
+      messages: composed.messages,
+      raw: {
+        triggerType: triggerType ?? "active",
+        chainMessageIds: composed.chainMessageIds,
+        mergedGroups: composed.mergedGroups,
       },
-    );
+    });
+
+    // Ensure the router knows who is allowed to follow up while this request is active.
+    if (input.activeUserId) {
+      activeBySession.set(sessionId, {
+        requestId,
+        activeUserId: input.activeUserId,
+      });
+    } else {
+      activeBySession.set(sessionId, { requestId });
+    }
+  }
+
+  async function publishSingleMessageToActiveRequest(input: {
+    adapter: SurfaceAdapter;
+    bus: LilacBus;
+    cfg: CoreConfig;
+    requestId: string;
+    sessionId: string;
+    queue: "followUp" | "steer";
+    msgRef: MsgRef;
+  }) {
+    const { adapter, cfg, requestId, sessionId, queue, msgRef } = input;
+
+    const self = await adapter.getSelf();
+
+    const msg = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: self.userId,
+      botName: cfg.surface.discord.botName,
+      msgRef,
+    });
+
+    if (!msg) return;
+
+    await publishBusRequest({
+      requestId,
+      sessionId,
+      queue,
+      triggerType: "active",
+      messages: [msg],
+      raw: {
+        triggerType: "active",
+      },
+    });
   }
 
   return {

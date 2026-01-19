@@ -1,93 +1,157 @@
-# Bus Request Router Gate Plan (Active Mode Reply Filter)
+# Bus Request Router Gate Plan (Active Mode Gate + Multi-Turn)
 
-This doc captures a proposed extension to the bus request router to support
-Clawdbot-like "listen to all messages" behavior without replying to everything.
+This doc captures the finalized behavior and implementation plan for a router-only
+"gate" in active mode.
 
-Scope: this is a router-only decision layer. It decides whether to publish
-`cmd.request.message` for a given adapter message/batch.
+Scope: router-only.
+- It decides whether to publish `cmd.request.message` for a given session message/batch.
+- If a message/batch is forwarded, the agent MUST run and output to the channel.
+- If skipped, the agent MUST NOT run at all.
 
-IMPORTANT
-- If a message/batch is "forwarded", the main agent MUST run and MUST output to the channel.
-- If a message/batch is "skipped", the agent MUST NOT run at all.
-- Proactive/heartbeat is out of scope.
+Non-scope:
+- Proactive/heartbeat scheduling is out of scope.
+  - Heartbeat *content* can still be treated as "should reply" by the gate model.
 
-## Current Behavior
+## Repo Touch Points
+
+- Router: `apps/core/src/surface/bridge/bus-request-router.ts`
+- Prompt composition: `apps/core/src/surface/bridge/request-composition.ts`
+- Config schema: `packages/utils/core-config.ts`
+- Example config: `data/core-config.example.yaml`
+- Tests: `apps/core/tests/surface/bridge/bus-request-router.test.ts`
+
+## Definitions
+
+- "DM": Discord channel where adapter sets `raw.discord.isDMBased=true`.
+- "Direct mention": adapter sets `raw.discord.mentionsBot=true`.
+- "Reply-to-bot": adapter sets `raw.discord.replyToBot=true`.
+- "Indirect mention": best-effort case-insensitive substring match of `surface.discord.botName` in message text.
+
+## Current Behavior (Before This Change)
 
 Router implementation: `apps/core/src/surface/bridge/bus-request-router.ts`
 
-- In `active` session mode, any message in the session triggers the router.
-- If no active request exists, the router debounces and then publishes a new
-  `cmd.request.message` with `queue: "prompt"`.
-- If an active request exists, subsequent messages are published with
-  `queue: "steer"` into the active request.
+- In active mode:
+  - If no active request exists: debounce, then publish a new `cmd.request.message` (`queue: "prompt"`).
+  - If an active request exists: subsequent messages publish into the active request as `queue: "steer"`.
 
-Today, the router always wakes the agent in active mode after debounce.
+## Problems This Change Solves
 
-## Problem
+- In busy channels, active mode causes constant replies.
+- We want to listen to all messages but only start a new request when a smaller/faster gate model says it needs a reply.
 
-In busy channels, active mode causes the bot to reply constantly.
-We want to listen to all messages, but only wake the agent when a smaller/faster
-"gate" model says the content warrants a reply.
+Safety policy:
+- If the gate model fails, times out, or returns invalid output: SKIP (do not start a request).
 
-Cost/failure policy:
-- If the gate model fails or times out, the default must be SKIP (do not wake).
+## Finalized Routing Semantics
 
-## Proposed Design
+### DM (No Gate)
 
-Add a gating hook that runs only when:
-- session mode is `active`
-- message is not a direct mention/reply-to-bot trigger
-- there is no currently active request for the session (i.e. we'd be about to start a new request)
+DMs are never gated.
 
-The gate runs on the debounced batch (not per-message), so that a short burst of
-messages is classified once.
+- If there is an active request for the session:
+  - All new messages publish to the active request as `queue: "steer"`.
+- If there is no active request:
+  - Start a new request (no gate) and publish `queue: "prompt"`.
 
-### Hook point
+### Active Channel (Gate + Multi-Turn)
 
-In `apps/core/src/surface/bridge/bus-request-router.ts`:
-- `flushDebounce(sessionId)` is the point where the router mints the new
-  request id and publishes `queue: "prompt"`.
-- Add: `shouldForwardActiveBatch(...)` right before `publishRequest(...)`.
+Active channels are gated only when starting a new request.
 
-If gate decides `forward=false`, do not publish `cmd.request.message`.
+- If there is an active request for the session:
+  - All new messages (including mentions/replies) publish to the active request as `queue: "followUp"`.
+  - No gate is evaluated while a request is running.
 
-### Gate I/O
+- If there is no active request:
+  - Direct mention or reply-to-bot: bypass gate and start a new request immediately.
+    - Also: discard any pending debounce buffer for that session.
+  - Otherwise: debounce a short burst and run the gate once on the debounced batch.
+    - If gate returns forward=true: start a new request.
+    - If gate returns forward=false: skip.
+
+### Prompt Context Size (Active Channel)
+
+When starting a new request in an active channel, the agent prompt must use the latest 8 messages.
+- If the request was started by a mention/reply trigger, the trigger message must be included.
+- For gate-forwarded requests (no mention/reply), the agent reply must NOT reply-to a specific message.
+
+Note:
+- For in-flight messages while a request is running, we do NOT rebuild the latest-8 prompt; they are appended as follow-ups.
+
+### Users Must Stay Separated
+
+In active channels, messages from users other than the "active user" for the running request must not be injected into the running request.
+- They should be buffered (and later gated) as candidates for the next request.
+
+## Gate Hook
+
+Hook point: `flushDebounce(sessionId)` right before publishing a new `queue: "prompt"` request.
+
+The gate runs on the debounced batch.
+
+Gate runs only when:
+- session mode is active channel mode (not DM)
+- there is no active request for the session
+- the debounced batch contains no direct mention and no reply-to-bot triggers
+- `surface.router.activeGate.enabled=true`
+
+If gate decides `forward=false`: do not publish `cmd.request.message`.
+
+## Gate I/O
 
 Input:
 - sessionId/channelId
-- author ids + message text (for the debounced batch; include newest and/or full concatenation)
+- debounced batch messages (author ids + message text)
 - metadata:
   - `mentionsBot=false`
   - `replyToBot=false`
   - `isDMBased=false`
+  - `indirectMention=true|false`
 
 Output:
 - strict JSON: `{ "forward": true|false, "reason"?: string }`
 
-### Model
+## Model Config
 
-Add a dedicated model config, separate from `models.main`:
-- `models.routerGate.model` (same provider spec format as main, e.g. `openrouter/openai/gpt-4o-mini`)
-- `models.routerGate.options` (provider options; optional)
+Models are categorized by feature; gate uses `models.fast`.
 
-Optional router config:
-- `surface.discord.router.activeGate.enabled` (default: false)
-- `surface.discord.router.activeGate.timeoutMs` (default: 1500-3000)
+Config:
+- `models.fast.model` (provider/model spec, e.g. `openrouter/openai/gpt-4o-mini`)
+- `models.fast.options` (provider options; optional)
 
-### Failure / safety policy
+Router config:
+- `surface.router.activeGate.enabled` (default: false)
+- `surface.router.activeGate.timeoutMs` (default: ~2500; suggested range 1500-3000)
 
-- If gate model call errors, returns non-JSON, or times out: SKIP.
+## Failure / Safety Policy
+
+- If gate model call errors, returns non-JSON, returns invalid JSON shape, or times out: SKIP.
 - Never forward based on uncertainty.
 
-### Testing
+## Reply-To Semantics
+
+- Mention/reply-triggered requests use `replyTo` semantics (request id encodes the trigger message id).
+- Gate-forwarded requests must NOT set replyTo (request id must not be parseable as a reply anchor).
+
+## Logging / Observability
+
+Emit a debug/info log line when:
+- gate skips a batch (forward=false)
+- gate fails/timeouts (skipped)
+
+Do not log full message contents.
+
+## Testing
 
 Add unit tests around router active mode:
-- When gate returns forward=false, router publishes no `cmd.request.message`.
-- When gate returns forward=true, router publishes a `prompt` and steers additional buffered messages.
-- When gate throws/timeout, router skips.
+- Gate forward=false => router publishes no `cmd.request.message`.
+- Gate forward=true => router publishes a single `prompt` (no extra steers from the buffer).
+- Gate throws/timeout/invalid output => router skips.
+- Active channel with running request => messages from active user publish as `followUp`.
+- Active channel with running request => messages from other users are not injected; they are buffered and gated for a later request.
+- DM behavior => while running, messages publish as `steer`.
 
-## Follow-ups / open questions
+## Streaming Note
 
-- Prompt design: what qualifies as "needs reply" (mentions of important tokens, direct questions, etc.).
-- Whether to run gate for DMs (likely no; DMs are always active).
-- Observability: emit a debug event/log line when gate skips a batch.
+Multi-turn follow-ups are compatible with streaming because follow-ups are injected between turns.
+Avoid using `interrupt` for this feature because the relay layer does not support output reset semantics.
