@@ -1,4 +1,5 @@
 import { encode } from "@toon-format/toon";
+import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -235,7 +236,14 @@ function formatToolBlock(
   return lines.join("\n");
 }
 
-const commonOptions = ['--output=<"compact" | "json"> (default: "compact")'];
+type OutputMode = "compact" | "json";
+
+const commonOptions = [
+  '--output=<"compact" | "json"> (default: "compact")',
+  "--input=@file.json | --input='<json>' | --input=@-",
+  "--stdin (alias for --input=@-)",
+  "--<field>:json=@file.json | --<field>:json='<json>' | --<field>:json=@-",
+];
 
 async function main() {
   const parsed = parseArgs();
@@ -252,6 +260,14 @@ async function main() {
 
           const usageLines = [
             `tools ${result.callableId} --arg1=value --arg2=value`,
+            `tools ${result.callableId} --input @payload.json`,
+            `cat payload.json | tools ${result.callableId} --stdin`,
+          ];
+
+          const examples = [
+            `tools ${result.callableId} --input @payload.json`,
+            `cat payload.json | tools ${result.callableId} --stdin`,
+            `tools ${result.callableId} --tasks:json=@tasks.json --summary=\"...\"`,
           ];
 
           const output = [
@@ -264,6 +280,8 @@ async function main() {
             section("Arguments", formatBullets(result.input, { indent: 0 })),
             "",
             section("Options", formatBullets(commonOptions, { indent: 0 })),
+            "",
+            section("Examples", formatBullets(examples, { indent: 0 })),
           ];
 
           console.log(output.join("\n"));
@@ -275,6 +293,8 @@ async function main() {
               "tools --list",
               "tools --help [tool]",
               "tools <tool> --arg1=value --arg2=value",
+              "tools <tool> --input @payload.json",
+              "cat payload.json | tools <tool> --stdin",
             ]),
             "",
             section(
@@ -287,6 +307,15 @@ async function main() {
             ),
             "",
             section("Options", formatBullets(commonOptions)),
+            "",
+            section(
+              "Examples",
+              formatBullets([
+                "tools workflow --input @workflow.json",
+                "cat workflow.json | tools workflow --stdin",
+                'cat tasks.json | tools workflow --summary="..." --tasks:json=@-',
+              ]),
+            ),
             "",
             section(
               "Environment",
@@ -311,7 +340,11 @@ async function main() {
         const output: string[] = [
           banner(),
           "",
-          section("Usage", ["tools <tool> --arg1=value --arg2=value"]),
+          section("Usage", [
+            "tools <tool> --arg1=value --arg2=value",
+            "tools <tool> --input @payload.json",
+            "cat payload.json | tools <tool> --stdin",
+          ]),
           "",
           styles.bold(
             "Available tools (quick reference; use --help on a tool for details):",
@@ -326,18 +359,30 @@ async function main() {
         break;
       }
       case "call": {
-        const input = Object.fromEntries(
-          parsed.input.map((i) => [i.field, i.value]),
-        );
-        const { output, ...rest } = input;
-        const result = await callTool(parsed.callableId, rest);
+        const hasAnyInputFlags =
+          parsed.baseInput !== undefined ||
+          parsed.fieldInputs.length > 0 ||
+          parsed.jsonFieldInputs.length > 0;
+
+        if (
+          !parsed.usesStdin &&
+          !hasAnyInputFlags &&
+          process.stdin.isTTY === false
+        ) {
+          throw new Error(
+            "Stdin is piped, but this invocation does not read stdin. Use --stdin/--input=@- for a JSON payload, or --<field>:json=@- for a JSON field.",
+          );
+        }
+
+        const toolInput = await buildToolInput(parsed);
+        const result = await callTool(parsed.callableId, toolInput);
 
         if (result.isError) {
           console.error(`${styles.red("Error:")} ${result.output}`);
           process.exit(1);
         }
 
-        if (output === "json") {
+        if (parsed.outputMode === "json") {
           console.log(JSON.stringify(result.output, null, 2));
         } else {
           console.log(encode(result.output));
@@ -359,6 +404,11 @@ async function main() {
   }
 }
 
+type JsonSource =
+  | { kind: "inline"; text: string }
+  | { kind: "file"; path: string }
+  | { kind: "stdin" };
+
 type ParsedArgs =
   | { type: "version" }
   | { type: "help"; callableId?: string }
@@ -366,7 +416,11 @@ type ParsedArgs =
   | {
       type: "call";
       callableId: string;
-      input: { field: string; value: number | string | boolean }[];
+      outputMode: OutputMode;
+      baseInput?: JsonSource;
+      fieldInputs: { field: string; value: number | string | boolean }[];
+      jsonFieldInputs: { field: string; source: JsonSource }[];
+      usesStdin: boolean;
     }
   | { type: "unknown" };
 
@@ -388,42 +442,234 @@ function parseArgs(): ParsedArgs {
   if (firstArg === "--list") return { type: "list" };
 
   if (firstArg && !firstArg.startsWith("--")) {
-    const parsedInputMap = args
-      .slice(1)
-      .map((a) => {
-        const eq = a.indexOf("=");
-        const k = eq === -1 ? a : a.slice(0, eq);
-        const v = eq === -1 ? "" : a.slice(eq + 1);
-        if (!k) return null;
+    const callableId = firstArg;
 
-        let parsedValue: number | string | boolean = v;
-        if (parsedValue.toLowerCase() === "true") parsedValue = true;
-        else if (parsedValue.toLowerCase() === "false") parsedValue = false;
+    const fieldInputs: { field: string; value: number | string | boolean }[] =
+      [];
+    const jsonFieldInputs: { field: string; source: JsonSource }[] = [];
 
-        const field = k.slice(2);
+    let baseInput: JsonSource | undefined;
+    let outputMode: OutputMode = "compact";
 
-        if (typeof parsedValue === "string") {
-          parsedValue = normalizeMaybePath(field, parsedValue);
-          parsedValue = coerceNumberLike(parsedValue);
+    let stdinConsumer: string | undefined;
+
+    function claimStdin(consumer: string) {
+      if (stdinConsumer && stdinConsumer !== consumer) {
+        throw new Error(
+          `Stdin can only be used once per invocation (already used by ${stdinConsumer}, cannot use for ${consumer}).`,
+        );
+      }
+      stdinConsumer = consumer;
+    }
+
+    for (const a of args.slice(1)) {
+      if (!a.startsWith("--")) {
+        throw new Error(`Unexpected argument '${a}'. Expected --key=value`);
+      }
+
+      const eq = a.indexOf("=");
+      const k = eq === -1 ? a : a.slice(0, eq);
+      const v = eq === -1 ? "" : a.slice(eq + 1);
+      if (!k || k === "--") continue;
+
+      // Special-case: tools <tool> --help / --help=true
+      if (k === "--help") {
+        const value = eq === -1 ? true : parseBooleanLike(v);
+        if (value !== false) return { type: "help", callableId };
+        continue;
+      }
+
+      if (k === "--output") {
+        if (eq === -1) {
+          throw new Error("--output requires a value: --output=compact|json");
+        }
+        if (v !== "compact" && v !== "json") {
+          throw new Error(
+            `Invalid --output value '${v}' (expected compact|json)`,
+          );
+        }
+        outputMode = v;
+        continue;
+      }
+
+      // Whole payload JSON.
+      if (k === "--stdin") {
+        const value = eq === -1 ? true : parseBooleanLike(v);
+        if (value === false) continue;
+
+        if (baseInput) {
+          throw new Error("Only one of --stdin/--input may be provided");
+        }
+        baseInput = { kind: "stdin" };
+        claimStdin("--stdin");
+        continue;
+      }
+
+      if (k === "--input") {
+        if (eq === -1) {
+          throw new Error(
+            "--input requires a value: --input=@file.json or --input=@- or --input='<json>'",
+          );
         }
 
-        return { field, value: parsedValue };
-      })
-      .filter(Boolean) as { field: string; value: number | string | boolean }[];
+        if (baseInput) {
+          throw new Error("Only one of --stdin/--input may be provided");
+        }
 
-    // Original behavior: tools <tool> --help=true
-    if (parsedInputMap.find((p) => p.field === "help")) {
-      return { type: "help", callableId: firstArg };
+        const source = parseJsonSource(v);
+        if (source.kind === "stdin") claimStdin("--input=@-");
+        baseInput = source;
+        continue;
+      }
+
+      const fieldRaw = k.slice(2);
+      if (!fieldRaw) continue;
+
+      if (fieldRaw.endsWith(":json")) {
+        const field = fieldRaw.slice(0, -":json".length);
+        if (!field) {
+          throw new Error(`Invalid JSON field flag '${k}'`);
+        }
+        if (eq === -1) {
+          throw new Error(`--${field}:json requires a value`);
+        }
+
+        const source = parseJsonSource(v);
+        if (source.kind === "stdin") claimStdin(`--${field}:json=@-`);
+
+        jsonFieldInputs.push({ field, source });
+        continue;
+      }
+
+      // Default: treat as primitive string/number/bool.
+      let parsedValue: number | string | boolean = v;
+
+      if (eq === -1) {
+        // Preserve existing behavior for unknown --flag (it becomes empty-string).
+        // The only exception is --help handled above.
+        parsedValue = "";
+      } else {
+        const boolValue = parseBooleanLike(v);
+        if (boolValue !== undefined) {
+          parsedValue = boolValue;
+        }
+      }
+
+      if (typeof parsedValue === "string") {
+        parsedValue = normalizeMaybePath(fieldRaw, parsedValue);
+        parsedValue = coerceNumberLike(parsedValue);
+      }
+
+      fieldInputs.push({ field: fieldRaw, value: parsedValue });
     }
 
     return {
       type: "call",
-      callableId: firstArg,
-      input: parsedInputMap,
+      callableId,
+      outputMode,
+      baseInput,
+      fieldInputs,
+      jsonFieldInputs,
+      usesStdin: stdinConsumer !== undefined,
     };
   }
 
   return { type: "unknown" };
+}
+
+async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
+  let input: Record<string, unknown> = {};
+
+  if (parsed.baseInput) {
+    input = await readJsonObjectSource(parsed.baseInput, "--input/--stdin");
+  }
+
+  for (const { field, source } of parsed.jsonFieldInputs) {
+    const value = await readJsonSource(source, `--${field}:json`);
+    input[field] = value;
+  }
+
+  for (const { field, value } of parsed.fieldInputs) {
+    input[field] = value;
+  }
+
+  return input;
+}
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+function parseJsonSource(value: string): JsonSource {
+  if (value === "@-" || value === "-") {
+    return { kind: "stdin" };
+  }
+
+  if (value.startsWith("@")) {
+    const p = value.slice(1);
+    if (!p) {
+      throw new Error("Invalid JSON source '@' (expected @file.json or @-)");
+    }
+    return { kind: "file", path: resolve(expandTilde(p)) };
+  }
+
+  if (value.length === 0) {
+    throw new Error(
+      "Empty JSON source (expected @file.json, @-, or inline JSON)",
+    );
+  }
+
+  return { kind: "inline", text: value };
+}
+
+async function readJsonObjectSource(source: JsonSource, label: string) {
+  const value = await readJsonSource(source, label);
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return value;
+}
+
+async function readJsonSource(
+  source: JsonSource,
+  label: string,
+): Promise<unknown> {
+  let raw: string;
+
+  if (source.kind === "stdin") {
+    raw = await readStdinText();
+  } else if (source.kind === "file") {
+    raw = await fs.readFile(source.path, "utf8");
+  } else {
+    raw = source.text;
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`${label} is empty`);
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${label} is not valid JSON: ${msg}`);
+  }
+}
+
+async function readStdinText(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseBooleanLike(s: string): boolean | undefined {
+  const lowered = s.trim().toLowerCase();
+  if (lowered === "true") return true;
+  if (lowered === "false") return false;
+  return undefined;
 }
 
 const DECIMAL_NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
