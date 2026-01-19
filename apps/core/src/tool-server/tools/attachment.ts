@@ -93,14 +93,22 @@ async function downloadToBuffer(input: unknown): Promise<{
   return { bytes: asBuffer(input) };
 }
 
-const attachmentAddInputSchema = z
+const attachmentAddFilesInputSchema = z
   .object({
-    path: z.string().optional(),
-    paths: z.array(z.string()).optional(),
-    filename: z.string().optional(),
-    filenames: z.array(z.string()).optional(),
-    mimeType: z.string().optional(),
-    mimeTypes: z.array(z.string()).optional(),
+    paths: z
+      .array(z.string().min(1))
+      .min(1)
+      .describe(
+        "Local file paths to attach (resolved relative to request cwd)",
+      ),
+    filenames: z
+      .array(z.string().min(1))
+      .optional()
+      .describe("Optional filenames for each attachment"),
+    mimeTypes: z
+      .array(z.string().min(1))
+      .optional()
+      .describe("Optional mime types for each attachment"),
   })
   .describe("Add one or more attachments from local files.");
 
@@ -190,18 +198,15 @@ export class Attachment implements ServerTool {
   async list() {
     return [
       {
-        callableId: "attachment.add",
-        name: "Attachment Add",
+        callableId: "attachment.add_files",
+        name: "Attachment Add Files",
         description:
-          "Reads one or more local files and sends them as attachments.",
-        shortInput: ["--path=<string> OR --paths=<string[]>"],
+          "Reads local files and attaches them to the current reply.",
+        shortInput: ["--paths=<string[]>"],
         input: [
-          "--path=<string>",
-          "--paths=<string[]>",
-          "--filename=<string>",
-          "--filenames=<string[]>",
-          "--mimeType=<string>",
-          "--mimeTypes=<string[]>",
+          "--paths=<string[]> | Local file paths",
+          "--filenames=<string[]> | Optional filenames (same length as paths)",
+          "--mimeTypes=<string[]> | Optional mime types (same length as paths)",
         ],
       },
       {
@@ -224,8 +229,8 @@ export class Attachment implements ServerTool {
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
-    if (callableId === "attachment.add") {
-      return await this.callAdd(input, opts?.context);
+    if (callableId === "attachment.add_files") {
+      return await this.callAddFiles(input, opts?.context);
     }
 
     if (callableId === "attachment.download") {
@@ -241,33 +246,22 @@ export class Attachment implements ServerTool {
     throw new Error(`Invalid callable ID '${callableId}'`);
   }
 
-  private async callAdd(
+  private async callAddFiles(
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = attachmentAddInputSchema.parse(rawInput);
+    const input = attachmentAddFilesInputSchema.parse(rawInput);
     const headers = toHeaders(ctx);
 
     const cwd = ctx?.cwd ?? process.cwd();
-
-    const paths =
-      input.paths && input.paths.length > 0
-        ? input.paths
-        : input.path
-          ? [input.path]
-          : [];
-
-    if (paths.length === 0) {
-      throw new Error("attachment.add requires 'paths' or 'path'");
-    }
 
     let totalBytes = 0;
 
     const out: Array<{ filename: string; mimeType: string; bytes: number }> =
       [];
 
-    for (let i = 0; i < paths.length; i++) {
-      const p = paths[i]!;
+    for (let i = 0; i < input.paths.length; i++) {
+      const p = input.paths[i]!;
       const resolvedPath = resolveToolPath(cwd, p);
 
       const st = await fs.stat(resolvedPath);
@@ -291,15 +285,12 @@ export class Attachment implements ServerTool {
       const bytes = await fs.readFile(resolvedPath);
 
       const filename =
-        (input.filenames && input.filenames[i]) ||
-        (paths.length === 1 ? input.filename : undefined) ||
-        basename(resolvedPath);
+        (input.filenames && input.filenames[i]) || basename(resolvedPath);
 
       const typeFromBytes = await fileTypeFromBuffer(bytes);
 
       const mimeType =
         (input.mimeTypes && input.mimeTypes[i]) ||
-        (paths.length === 1 ? input.mimeType : undefined) ||
         typeFromBytes?.mime ||
         inferMimeTypeFromFilename(filename);
 

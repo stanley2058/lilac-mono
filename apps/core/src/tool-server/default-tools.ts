@@ -12,7 +12,13 @@ export function createDefaultToolServerTools(params?: {
   const tools: ServerTool[] = [new Web(), new Summarize()];
 
   if (params?.bus) {
-    tools.push(new Workflow({ bus: params.bus, config: params.config }));
+    tools.push(
+      new Workflow({
+        bus: params.bus,
+        adapter: params.adapter,
+        config: params.config,
+      }),
+    );
     tools.push(new Attachment({ bus: params.bus }));
   }
 

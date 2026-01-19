@@ -24,13 +24,13 @@ We also want tools to be session-agnostic:
 
 ### Design
 
-#### A1) Introduce a tool: attachment.add
+#### A1) Introduce a tool: attachment.add_files
 
-- Implement in `apps/tool-bridge` as a new tool callable id: `attachment.add`.
+- Implement in `apps/tool-bridge` as a new tool callable id: `attachment.add_files`.
 - Input (draft):
-  - `path: string` (file path on local filesystem)
-  - `filename?: string`
-  - `mimeType?: string`
+  - `paths: string[]` (file paths on local filesystem)
+  - `filenames?: string[]`
+  - `mimeTypes?: string[]`
   - `session?: string` (optional override; in v1 can be treated as `session_id`)
   - `request?: string` (optional override; in v1 can be treated as `request_id`)
 
@@ -81,8 +81,8 @@ Delivery semantics:
 
 ### Acceptance Criteria (attachments)
 
-- Tool can call `attachment.add({ path })` during a request and the user sees the file in Discord.
-- Tool can call `attachment.add({ path, session })` and it attaches to the active request in that session (if any).
+- Tool can call `attachment.add_files({ paths: [path] })` during a request and the user sees the file in Discord.
+- Tool can call `attachment.add_files({ paths: [path], session })` and it attaches to the active request in that session (if any).
 - Tool does not need to know request/session ids explicitly when invoked inside a request (env default works).
 
 ## Part B: Workflows

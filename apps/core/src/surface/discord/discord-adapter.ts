@@ -364,6 +364,16 @@ export class DiscordAdapter implements SurfaceAdapter {
     const store = this.mustStore();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
+    const existing = store.getMessage(msgRef.channelId, msgRef.messageId);
+    if (!existing) {
+      // Cache miss: fetch from Discord API and persist.
+      const fetched = await this.fetchAndCacheDiscordMessage({
+        channelId: msgRef.channelId,
+        messageId: msgRef.messageId,
+      });
+      if (!fetched) return null;
+    }
+
     const row = store.getMessage(msgRef.channelId, msgRef.messageId);
     if (!row) return null;
 
@@ -399,7 +409,31 @@ export class DiscordAdapter implements SurfaceAdapter {
       throw new Error("Unsupported platform");
 
     const limit = opts?.limit ?? 50;
-    const rows = store.listMessages(sessionRef.channelId, limit);
+
+    // If the store is empty for this channel, opportunistically fetch from Discord API.
+    // This keeps "explore context" usable even after restarts.
+    const latest = store.getLatestMessage(sessionRef.channelId);
+    if (!latest) {
+      await this.fetchAndCacheDiscordMessages({
+        channelId: sessionRef.channelId,
+        limit,
+        beforeMessageId: opts?.beforeMessageId,
+        afterMessageId: opts?.afterMessageId,
+      });
+    }
+
+    let rows = store.listMessages(sessionRef.channelId, limit);
+
+    // If a cursor was requested and we might not have enough cached history, try a best-effort fetch.
+    if (opts?.beforeMessageId || opts?.afterMessageId) {
+      await this.fetchAndCacheDiscordMessages({
+        channelId: sessionRef.channelId,
+        limit,
+        beforeMessageId: opts?.beforeMessageId,
+        afterMessageId: opts?.afterMessageId,
+      });
+      rows = store.listMessages(sessionRef.channelId, limit);
+    }
 
     return rows.map((r) => {
       const u = store.getUserName(r.author_id);
@@ -608,6 +642,172 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private async fetchAndCacheDiscordMessages(input: {
+    channelId: string;
+    limit: number;
+    beforeMessageId?: string;
+    afterMessageId?: string;
+  }): Promise<void> {
+    const cfg = this.cfg;
+    const store = this.store;
+    const client = this.client;
+    if (!cfg || !store || !client) return;
+
+    const ch = await client.channels.fetch(input.channelId).catch(() => null);
+    if (!ch || !("messages" in ch) || !ch.messages?.fetch) return;
+
+    // Best-effort: discord.js supports fetch with { limit, before, after }.
+    // Use `any` to avoid overload ambiguity (messageId vs options object).
+    const res = await ch.messages
+      .fetch({
+        limit: Math.min(100, Math.max(1, input.limit)),
+        before: input.beforeMessageId,
+        after: input.afterMessageId,
+      })
+      .catch(() => null);
+
+    if (!res) return;
+
+    for (const msg of res.values()) {
+      await this.fetchAndCacheDiscordMessage({
+        channelId: input.channelId,
+        messageId: msg.id,
+      });
+    }
+  }
+
+  private async fetchAndCacheDiscordMessage(input: {
+    channelId: string;
+    messageId: string;
+  }): Promise<SurfaceMessage | null> {
+    const cfg = this.cfg;
+    const store = this.store;
+    const client = this.client;
+    if (!cfg || !store || !client) return null;
+
+    const ch = await client.channels.fetch(input.channelId).catch(() => null);
+    if (!ch || !("messages" in ch) || !ch.messages?.fetch) return null;
+
+    const msg = await ch.messages.fetch(input.messageId).catch(() => null);
+    if (!msg) return null;
+
+    const guildId = msg.guildId;
+    if (!shouldAllowMessage({ cfg, channelId: input.channelId, guildId })) {
+      return null;
+    }
+
+    const channelName = getChannelName(msg.channel);
+
+    const parentChannelId =
+      "isThread" in msg.channel && msg.channel.isThread()
+        ? msg.channel.parentId
+        : null;
+
+    const sessionKind: "channel" | "thread" | "dm" =
+      "isDMBased" in msg.channel &&
+      typeof msg.channel.isDMBased === "function" &&
+      msg.channel.isDMBased()
+        ? "dm"
+        : parentChannelId
+          ? "thread"
+          : "channel";
+
+    store.upsertSession({
+      channelId: input.channelId,
+      guildId: guildId ?? undefined,
+      parentChannelId: parentChannelId ?? undefined,
+      name: channelName,
+      type: sessionKind,
+      updatedTs: Date.now(),
+      raw: {
+        channel: {
+          id: input.channelId,
+          name: channelName,
+          guildId,
+          parentChannelId,
+        },
+      },
+    });
+
+    if (channelName) {
+      store.upsertChannelName({
+        channelId: input.channelId,
+        name: channelName,
+        updatedTs: Date.now(),
+      });
+    }
+
+    const authorName = getDisplayName(msg);
+
+    store.upsertUserName({
+      userId: msg.author.id,
+      username: msg.author.username,
+      globalName: msg.author.globalName ?? undefined,
+      displayName: authorName,
+      updatedTs: Date.now(),
+    });
+
+    const ts = getMessageTs(msg);
+    const editedTs = getMessageEditedTs(msg);
+
+    const attachments = [...msg.attachments.values()].map((a) => ({
+      url: a.url,
+      filename: a.name ?? undefined,
+      mimeType: a.contentType ?? undefined,
+      size: typeof a.size === "number" ? a.size : undefined,
+    }));
+
+    const rawContent = msg.content ?? "";
+    const normalizedContent =
+      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+
+    store.upsertMessage({
+      channelId: input.channelId,
+      messageId: msg.id,
+      authorId: msg.author.id,
+      content: normalizedContent,
+      ts,
+      editedTs,
+      raw: {
+        id: msg.id,
+        channelId: input.channelId,
+        guildId,
+        authorId: msg.author.id,
+        content: msg.content,
+        reference: msg.reference ?? undefined,
+        attachments,
+      },
+    });
+
+    const sessionRef = asDiscordSessionRef({
+      channelId: input.channelId,
+      guildId,
+      parentChannelId,
+    });
+
+    return {
+      ref: asDiscordMsgRef(input.channelId, msg.id),
+      session: sessionRef,
+      userId: msg.author.id,
+      userName: authorName,
+      text: normalizedContent,
+      ts,
+      editedTs,
+      raw: {
+        discord: {
+          id: msg.id,
+          isDMBased: sessionKind === "dm",
+          mentionsBot: false,
+          replyToBot: false,
+          replyToMessageId: msg.reference?.messageId ?? undefined,
+          guildId: guildId ?? undefined,
+          parentChannelId: parentChannelId ?? undefined,
+          attachments,
+        },
+      },
+    };
+  }
+
   private async onMessageCreate(msg: Message | PartialMessage) {
     if (msg.partial) {
       const full = await msg.fetch().catch(() => null);
@@ -620,8 +820,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.client;
     if (!cfg || !store || !client) return;
 
-    // Avoid infinite loops: ignore all bot-authored messages (including ourselves).
-    if (msg.author.bot) return;
+    // Avoid infinite loops: never emit adapter events for bot-authored messages.
+    // But we DO want to cache them for context.
+    const shouldEmitAdapterEvent = !msg.author.bot;
 
     const guildId = msg.guildId;
     const channelId = msg.channelId;
@@ -772,24 +973,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       },
     };
 
-    // Emit adapter event
-    this.emit({
-      type: "adapter.message.created",
-      platform: "discord",
-      ts: Date.now(),
-      message: surfaceMsg,
-      channelName,
-    });
+    // Trigger metadata for bus router is only needed when we emit an adapter event.
+    if (!shouldEmitAdapterEvent) return;
 
-    // Trigger metadata for bus router (no direct request emission here).
     const botId = client.user?.id;
     if (!botId) return;
 
     const isMention = msg.mentions.users.has(botId);
     const isReplyToBot = await this.isReplyToBot(msg, botId);
 
-    // Mirror trigger metadata on the adapter event so a bus router can make the
-    // same decisions without direct Discord API calls.
     const rawDiscord = surfaceMsg.raw as
       | { discord?: Record<string, unknown> }
       | undefined;
@@ -797,6 +989,14 @@ export class DiscordAdapter implements SurfaceAdapter {
       rawDiscord.discord["mentionsBot"] = isMention;
       rawDiscord.discord["replyToBot"] = isReplyToBot;
     }
+
+    this.emit({
+      type: "adapter.message.created",
+      platform: "discord",
+      ts: Date.now(),
+      message: surfaceMsg,
+      channelName,
+    });
   }
 
   private async isReplyToBot(

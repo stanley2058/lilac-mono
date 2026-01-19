@@ -30,21 +30,17 @@ Multi-attachment is represented as **N** `evt.agent.output.response.binary` mess
 
 This avoids changing event contracts and works naturally with streaming.
 
-### A2) Add an agent tool: `attachment.add`
+### A2) Add an agent tool: `attachment.add_files`
 
 Implement a new tool available to the agent-runner toolset (same tier as `bash` and `fs`).
 
-- Tool name: `attachment.add`
+- Tool name: `attachment.add_files`
 - Inputs:
-  - `path?: string`
-  - `paths?: string[]` (preferred)
-  - `filename?: string`
+  - `paths: string[]` (required)
   - `filenames?: string[]`
-  - `mimeType?: string`
   - `mimeTypes?: string[]`
 
 Resolution rules:
-- If `paths` is present, ignore `path`.
 - Pairwise overrides are optional:
   - `filenames[i]` overrides the inferred filename for `paths[i]`.
   - `mimeTypes[i]` overrides the inferred mime type for `paths[i]`.
@@ -165,7 +161,7 @@ Security/robustness:
 ## Implementation Order (v2)
 
 1) Outbound: `DiscordOutputStream` changes so attachments persist and multi-attach follow-ups work.
-2) Outbound: implement `attachment.add` tool and wire it into the agent-runner toolset.
+2) Outbound: implement `attachment.add_files` tool and wire it into the agent-runner toolset.
 3) Inbound: capture Discord attachments in `discord-adapter.ts` raw payload.
 4) Inbound: update request composition to include attachment metadata in `ModelMessage[]` (sentinel JSON block).
 5) Inbound: update running merge logic to preserve attachment metadata while steering/follow-ups.
@@ -176,7 +172,7 @@ Security/robustness:
 ## Acceptance Criteria
 
 Outbound:
-- `attachment.add({ paths: ["a.png", "b.png"] })` results in both files visible in Discord.
+- `attachment.add_files({ paths: ["a.png", "b.png"] })` results in both files visible in Discord.
 - If attachments arrive early: bundled on the first visible message.
 - If attachments arrive late: delivered as one or more follow-up attachment messages.
 

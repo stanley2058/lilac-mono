@@ -46,14 +46,20 @@ function asBuffer(data: unknown): Buffer {
   throw new Error("Unsupported data content");
 }
 
-const attachmentAddInputSchema = z
+const attachmentAddFilesInputSchema = z
   .object({
-    path: z.string().optional(),
-    paths: z.array(z.string()).optional(),
-    filename: z.string().optional(),
-    filenames: z.array(z.string()).optional(),
-    mimeType: z.string().optional(),
-    mimeTypes: z.array(z.string()).optional(),
+    paths: z
+      .array(z.string().min(1))
+      .min(1)
+      .describe("Local file paths to attach (resolved relative to tool cwd)"),
+    filenames: z
+      .array(z.string().min(1))
+      .optional()
+      .describe("Optional filenames for each attachment"),
+    mimeTypes: z
+      .array(z.string().min(1))
+      .optional()
+      .describe("Optional mime types for each attachment"),
   })
   .describe("Add one or more attachments from local files.");
 
@@ -204,29 +210,15 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
   const { bus, cwd } = params;
 
   return {
-    "attachment.add": tool({
-      description: [
-        "Reads one or more local files and sends them as attachments.",
-        "Use paths[] to send multiple attachments in-order.",
-      ].join("\n"),
-      inputSchema: attachmentAddInputSchema,
+    "attachment.add_files": tool({
+      description: "Reads local files and attaches them to the current reply.",
+      inputSchema: attachmentAddFilesInputSchema,
       outputSchema: attachmentAddOutputSchema,
       execute: async (input, { experimental_context }) => {
         const ctx = requireRequestContext(
           experimental_context,
-          "attachment.add",
+          "attachment.add_files",
         );
-
-        const paths =
-          input.paths && input.paths.length > 0
-            ? input.paths
-            : input.path
-              ? [input.path]
-              : [];
-
-        if (paths.length === 0) {
-          throw new Error("attachment.add requires 'paths' or 'path'");
-        }
 
         let totalBytes = 0;
 
@@ -236,8 +228,8 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
           bytes: number;
         }> = [];
 
-        for (let i = 0; i < paths.length; i++) {
-          const p = paths[i]!;
+        for (let i = 0; i < input.paths.length; i++) {
+          const p = input.paths[i]!;
           const resolvedPath = resolveToolPath(cwd, p);
 
           const st = await fs.stat(resolvedPath);
@@ -261,15 +253,12 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
           const bytes = await fs.readFile(resolvedPath);
 
           const filename =
-            (input.filenames && input.filenames[i]) ||
-            (paths.length === 1 ? input.filename : undefined) ||
-            basename(resolvedPath);
+            (input.filenames && input.filenames[i]) || basename(resolvedPath);
 
           const typeFromBytes = await fileTypeFromBuffer(bytes);
 
           const mimeType =
             (input.mimeTypes && input.mimeTypes[i]) ||
-            (paths.length === 1 ? input.mimeType : undefined) ||
             typeFromBytes?.mime ||
             inferMimeTypeFromFilename(filename);
 

@@ -44,6 +44,18 @@ export type SurfaceMessage = {
 
 export type LimitOpts = {
   limit?: number;
+  /**
+   * Optional paging cursor.
+   *
+   * For Discord this is a message id; behavior is adapter-specific.
+   */
+  beforeMessageId?: string;
+  /**
+   * Optional paging cursor.
+   *
+   * For Discord this is a message id; behavior is adapter-specific.
+   */
+  afterMessageId?: string;
 };
 
 export type SurfaceAttachment = {

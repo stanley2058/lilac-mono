@@ -26,7 +26,7 @@ The agent invokes these adapter-backed operations by running the existing `tools
 
 - Core runtime starts an HTTP tool server in-process:
   - `apps/core/src/tool-server/create-tool-server.ts`
-  - callables already exist (`workflow`, `attachment.add`, `attachment.download`, ...)
+  - callables already exist (`workflow`, `attachment.add_files`, `attachment.download`, ...)
 - Agent runner exposes only `bash` + `fs` tools:
   - `apps/core/src/surface/bridge/bus-agent-runner.ts`
 - `bash` tool injects request context env vars:
@@ -143,7 +143,7 @@ Update `apps/core/src/tool-server/tools/workflow.ts` so each task’s `sessionId
 
 No changes required:
 
-- `attachment.add` and `attachment.download` do not accept `sessionId` or outbound `text`.
+- `attachment.add_files` and `attachment.download` do not accept `sessionId` or outbound `text`.
 - They rely on request context headers for routing to the current request/session.
 
 ## Wiring Steps

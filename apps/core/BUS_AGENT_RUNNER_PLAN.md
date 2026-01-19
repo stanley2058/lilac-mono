@@ -135,7 +135,7 @@ For attachment continuity, agent-runner must propagate request/session context i
   - `LILAC_SESSION_ID=<headers.session_id>`
   - `LILAC_REQUEST_CLIENT=<headers.request_client>`
 
-This enables tools like `attachment.add` to default to "current session" without requiring the model to pass ids.
+This enables tools like `attachment.add_files` to default to "current session" without requiring the model to pass ids.
 
 ## Reliability
 

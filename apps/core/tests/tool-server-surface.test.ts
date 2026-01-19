@@ -2,6 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Surface } from "../src/tool-server/tools/surface";
 import type { SurfaceAdapter } from "../src/surface/adapter";
+import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -94,6 +97,11 @@ class FakeAdapter implements SurfaceAdapter {
   ): Promise<SurfaceMessage[]> {
     const msgs = this.messagesByChannelId[sessionRef.channelId] ?? [];
     const limit = opts?.limit ?? 50;
+
+    // v1 fake: ignore cursors, but accept them.
+    void opts?.beforeMessageId;
+    void opts?.afterMessageId;
+
     return msgs.slice(0, limit);
   }
 
@@ -175,6 +183,9 @@ describe("tool-server surface", () => {
   });
 
   it("resolves sessionId alias for send", async () => {
+    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-surface-"));
+    const p = join(tmp, "hello.txt");
+    await fs.writeFile(p, "hello", "utf8");
     const cfg = testConfig({
       surface: {
         discord: {
@@ -193,12 +204,18 @@ describe("tool-server surface", () => {
     const res = await tool.call("surface.messages.send", {
       sessionId: "#ops",
       text: "hi",
+      paths: [p],
       client: "discord",
     });
 
     expect((res as any).ok).toBe(true);
     expect(adapter.sendCalls.length).toBe(1);
     expect(adapter.sendCalls[0]!.sessionRef.channelId).toBe("c1");
+
+    const sent = adapter.sendCalls[0]!;
+    expect(sent.content.text).toBe("hi");
+    expect(sent.content.attachments?.length).toBe(1);
+    expect(sent.content.attachments?.[0]?.filename).toBe("hello.txt");
   });
 
   it("allows guild allowlist when channel is not cached", async () => {

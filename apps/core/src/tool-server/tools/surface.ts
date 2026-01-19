@@ -1,8 +1,16 @@
 import { z } from "zod";
+import fs from "node:fs/promises";
+import { basename } from "node:path";
+import { fileTypeFromBuffer } from "file-type/core";
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../../surface/adapter";
-import type { MsgRef, SessionRef, SurfaceSession } from "../../surface/types";
+import type {
+  MsgRef,
+  SessionRef,
+  SurfaceAttachment,
+  SurfaceSession,
+} from "../../surface/types";
 import type { RequestContext, ServerTool } from "../types";
 
 import {
@@ -10,6 +18,10 @@ import {
   resolveDiscordSessionId,
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
+import {
+  inferMimeTypeFromFilename,
+  resolveToolPath,
+} from "../../shared/attachment-utils";
 
 const surfaceClientSchema = z
   .enum(["discord", "whatsapp", "slack", "telegram", "web"])
@@ -97,6 +109,64 @@ function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
 }
 
+const DEFAULT_OUTBOUND_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+
+export async function loadLocalAttachments(params: {
+  cwd: string;
+  paths: string[];
+  filenames?: string[];
+  mimeTypes?: string[];
+}): Promise<SurfaceAttachment[]> {
+  let totalBytes = 0;
+
+  const out: SurfaceAttachment[] = [];
+
+  for (let i = 0; i < params.paths.length; i++) {
+    const inputPath = params.paths[i]!;
+    const resolvedPath = resolveToolPath(params.cwd, inputPath);
+
+    const st = await fs.stat(resolvedPath);
+    if (!st.isFile()) {
+      throw new Error(`Not a file: ${resolvedPath}`);
+    }
+
+    if (st.size > DEFAULT_OUTBOUND_MAX_FILE_BYTES) {
+      throw new Error(
+        `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${resolvedPath}`,
+      );
+    }
+
+    totalBytes += st.size;
+    if (totalBytes > DEFAULT_OUTBOUND_MAX_TOTAL_BYTES) {
+      throw new Error(
+        `Total attachment bytes too large (${totalBytes} bytes). Max is ${DEFAULT_OUTBOUND_MAX_TOTAL_BYTES} bytes.`,
+      );
+    }
+
+    const bytes = await fs.readFile(resolvedPath);
+
+    const filename =
+      (params.filenames && params.filenames[i]) ?? basename(resolvedPath);
+
+    const typeFromBytes = await fileTypeFromBuffer(bytes);
+
+    const mimeType =
+      (params.mimeTypes && params.mimeTypes[i]) ??
+      typeFromBytes?.mime ??
+      inferMimeTypeFromFilename(filename);
+
+    out.push({
+      kind: mimeType.startsWith("image/") ? "image" : "file",
+      mimeType,
+      filename,
+      bytes: new Uint8Array(bytes),
+    });
+  }
+
+  return out;
+}
+
 type GuildIdResolver = {
   fetchGuildIdForChannel(channelId: string): Promise<string | null>;
 };
@@ -162,6 +232,16 @@ const messagesListInputSchema = baseInputSchema.extend({
     .max(200)
     .optional()
     .describe("Max messages (default: 50)"),
+  beforeMessageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional message id cursor (list messages before this id)"),
+  afterMessageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional message id cursor (list messages after this id)"),
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
@@ -183,6 +263,18 @@ const messagesSendInputSchema = baseInputSchema.extend({
     ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
+  paths: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Local file paths to attach (resolved relative to request cwd)"),
+  filenames: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional filenames for each attachment"),
+  mimeTypes: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional mime types for each attachment"),
 });
 
 const messagesEditInputSchema = baseInputSchema.extend({
@@ -272,7 +364,8 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.messages.list",
         name: "Surface Messages List",
-        description: "List cached messages for a session (no history fetch).",
+        description:
+          "List messages for a session (adapter may fetch history and cache it).",
         shortInput: zodObjectToCliLines(messagesListInputSchema, {
           mode: "required",
         }),
@@ -281,7 +374,8 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.messages.read",
         name: "Surface Messages Read",
-        description: "Read a cached message by id (no history fetch).",
+        description:
+          "Read a message by id (adapter may fetch history and cache it).",
         shortInput: zodObjectToCliLines(messagesReadInputSchema, {
           mode: "required",
         }),
@@ -464,7 +558,11 @@ export class Surface implements ServerTool {
 
     const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
     const limit = input.limit ?? 50;
-    const messages = await this.params.adapter.listMsg(sessionRef, { limit });
+    const messages = await this.params.adapter.listMsg(sessionRef, {
+      limit,
+      beforeMessageId: input.beforeMessageId,
+      afterMessageId: input.afterMessageId,
+    });
 
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
     return messages.filter((m) =>
@@ -554,9 +652,33 @@ export class Surface implements ServerTool {
       ? asDiscordMsgRef(channelId, input.replyToMessageId)
       : undefined;
 
+    const cwd = ctx?.cwd ?? process.cwd();
+
+    const paths = input.paths ?? [];
+    if (paths.length > 0) {
+      if (paths.length > 10) {
+        throw new Error(
+          `Too many attachments (${paths.length}). Max is 10 per message.`,
+        );
+      }
+    }
+
+    const attachments =
+      paths.length > 0
+        ? await loadLocalAttachments({
+            cwd,
+            paths,
+            filenames: input.filenames,
+            mimeTypes: input.mimeTypes,
+          })
+        : [];
+
     const ref = await this.params.adapter.sendMsg(
       sessionRef,
-      { text: input.text },
+      {
+        text: input.text,
+        attachments,
+      },
       replyTo ? { replyTo } : undefined,
     );
 
