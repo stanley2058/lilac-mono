@@ -160,6 +160,8 @@ export type CmdWorkflowTaskCreateData = {
   workflowId: string;
   taskId: string;
   kind: string;
+  /** Human-readable description included in resume context. */
+  description: string;
   input?: unknown;
 };
 

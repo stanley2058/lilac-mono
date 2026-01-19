@@ -149,8 +149,8 @@ export async function bridgeBusToAdapter(params: {
     const bumpTimeout = () => {
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
-        void out.abort("timeout");
-        void relayStop();
+        out.abort("timeout").catch(console.error);
+        relayStop().catch(console.error);
       }, idleTimeoutMs);
     };
 

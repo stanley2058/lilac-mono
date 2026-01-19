@@ -235,7 +235,7 @@ export async function startBusRequestRouter(params: {
       };
 
       buffer.timer = setTimeout(() => {
-        void flushDebounce(sessionId);
+        flushDebounce(sessionId).catch(console.error);
       }, cfg.surface.discord.router.activeDebounceMs);
 
       buffers.set(sessionId, buffer);

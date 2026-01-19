@@ -1,5 +1,5 @@
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import type { CoreConfig, Providers } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
   ModelCapability,
@@ -21,6 +21,7 @@ import {
 import { bashTool } from "../../tools/bash";
 import { attachmentTools } from "../../tools/attachment";
 import { fsTool } from "../../tools/fs/fs";
+import { workflowTool } from "../../tools/workflow/workflow";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -155,6 +156,7 @@ export async function startBusAgentRunner(params: {
         ...bashTool(),
         ...fsTool(cwd),
         ...attachmentTools({ bus, cwd }),
+        ...workflowTool({ bus }),
       },
       providerOptions: cfg.models.main.options
         ? { [provider]: cfg.models.main.options }
@@ -277,7 +279,10 @@ export async function startBusAgentRunner(params: {
   };
 }
 
-function resolveModel(cfg: CoreConfig): { model: LanguageModel; provider: string } {
+function resolveModel(cfg: CoreConfig): {
+  model: LanguageModel;
+  provider: string;
+} {
   const spec = cfg.models.main.model;
   const slash = spec.indexOf("/");
   if (slash <= 0) throw new Error(`Invalid model spec '${spec}'`);
@@ -285,7 +290,7 @@ function resolveModel(cfg: CoreConfig): { model: LanguageModel; provider: string
   const provider = spec.slice(0, slash);
   const modelId = spec.slice(slash + 1);
 
-  const p = (providers as Record<string, unknown>)[provider];
+  const p = providers[provider as Providers];
   if (!p) {
     throw new Error(
       `Unknown provider '${provider}' (models.main.model='${spec}')`,
@@ -298,7 +303,7 @@ function resolveModel(cfg: CoreConfig): { model: LanguageModel; provider: string
     );
   }
 
-  const model = (p as (id: string) => LanguageModel)(modelId);
+  const model = p(modelId);
   return { model, provider };
 }
 
