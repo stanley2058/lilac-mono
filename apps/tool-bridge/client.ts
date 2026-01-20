@@ -20,6 +20,7 @@ type ToolOutputFull = {
   description: string;
   shortInput: string[];
   input: string[];
+  hidden?: boolean;
 };
 
 async function listTools() {
@@ -332,9 +333,12 @@ async function main() {
       }
       case "list": {
         const { tools } = await listTools();
+        const visibleTools = parsed.showHidden
+          ? tools
+          : tools.filter((t) => t.hidden !== true);
         const idWidth = Math.min(
           28,
-          Math.max(10, ...tools.map((t) => t.callableId.length)),
+          Math.max(10, ...visibleTools.map((t) => t.callableId.length)),
         );
 
         const output: string[] = [
@@ -350,7 +354,9 @@ async function main() {
             "Available tools (quick reference; use --help on a tool for details):",
           ),
           "",
-          ...tools.map((t) => formatToolBlock(t, { idWidth, showArgs: true })),
+          ...visibleTools.map((t) =>
+            formatToolBlock(t, { idWidth, showArgs: true }),
+          ),
           "",
           section("Options", formatBullets(commonOptions)),
         ];
@@ -412,7 +418,7 @@ type JsonSource =
 type ParsedArgs =
   | { type: "version" }
   | { type: "help"; callableId?: string }
-  | { type: "list" }
+  | { type: "list"; showHidden: boolean }
   | {
       type: "call";
       callableId: string;
@@ -439,7 +445,18 @@ function parseArgs(): ParsedArgs {
     return { type: "help" };
   }
 
-  if (firstArg === "--list") return { type: "list" };
+  if (firstArg === "--list") {
+    const showHidden = args.some((a) => {
+      if (a === "--show-hidden") return true;
+      if (a.startsWith("--show-hidden=")) {
+        const eq = a.indexOf("=");
+        const v = eq === -1 ? "" : a.slice(eq + 1);
+        return parseBooleanLike(v) === true;
+      }
+      return false;
+    });
+    return { type: "list", showHidden };
+  }
 
   if (firstArg && !firstArg.startsWith("--")) {
     const callableId = firstArg;

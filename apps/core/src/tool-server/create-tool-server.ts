@@ -75,6 +75,7 @@ export function createToolServer(options: ToolServerOptions) {
             name: t.name,
             description: t.description,
             shortInput: t.shortInput,
+            hidden: t.hidden,
           })),
         ),
       };

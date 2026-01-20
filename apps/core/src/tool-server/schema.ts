@@ -7,6 +7,7 @@ export const BridgeListResponse = z.object({
       name: z.string(),
       description: z.string(),
       shortInput: z.array(z.string()),
+      hidden: z.boolean().optional(),
     }),
   ),
 });
@@ -21,6 +22,7 @@ export const BridgeFnHelpResponse = z.object({
   description: z.string(),
   shortInput: z.array(z.string()),
   input: z.array(z.string()),
+  hidden: z.boolean().optional(),
 });
 
 export const BridgeFnRequest = z.object({

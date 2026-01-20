@@ -261,6 +261,7 @@ export class Codex implements ServerTool {
         ].join("\n"),
         shortInput: zodObjectToCliLines(loginInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(loginInputSchema),
+        hidden: true,
       },
       {
         callableId: "codex.status",
@@ -268,6 +269,7 @@ export class Codex implements ServerTool {
         description: "Show whether Codex OAuth tokens are configured.",
         shortInput: [],
         input: zodObjectToCliLines(statusInputSchema),
+        hidden: true,
       },
       {
         callableId: "codex.logout",
@@ -275,6 +277,7 @@ export class Codex implements ServerTool {
         description: "Clear stored Codex OAuth tokens.",
         shortInput: [],
         input: zodObjectToCliLines(logoutInputSchema),
+        hidden: true,
       },
     ];
   }
