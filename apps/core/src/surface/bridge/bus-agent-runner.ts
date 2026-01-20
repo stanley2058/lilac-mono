@@ -142,8 +142,16 @@ export async function startBusAgentRunner(params: {
       request_client: next.requestClient,
     };
 
-    await publishLifecycle({ bus, headers, state: "running" });
-    await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+     await publishLifecycle({
+       bus,
+       headers,
+       state: "running",
+       detail:
+         next.queue !== "prompt"
+           ? `coerced queue=${next.queue} to prompt (no active run)`
+           : undefined,
+     });
+     await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
     const { model, provider } = resolveModel(cfg);
 
@@ -237,12 +245,14 @@ export async function startBusAgentRunner(params: {
       }
     });
 
-    try {
-      // First message should be a prompt.
-      // If additional messages for the same request id were queued before the run started,
-      // merge them into the initial prompt so they don't become separate runs.
-      const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
-      await agent.prompt(mergedInitial);
+     try {
+       // First message should be a prompt.
+       // If additional messages for the same request id were queued before the run started,
+       // merge them into the initial prompt so they don't become separate runs.
+       const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
+
+       await agent.prompt(mergedInitial);
+
 
       await agent.waitForIdle();
 
