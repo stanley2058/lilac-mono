@@ -39,6 +39,10 @@ export async function createRequestMessageCache(
     maxEntries = 256,
   } = options;
 
+  // Prevent unbounded growth for a single requestId when follow-ups/steers
+  // arrive as incremental message batches.
+  const maxMessagesPerRequest = 512;
+
   const map = new Map<string, CacheEntry>();
 
   function pruneExpired(now = Date.now()) {
@@ -70,8 +74,16 @@ export async function createRequestMessageCache(
     const now = Date.now();
     pruneExpired(now);
 
+    const prev = map.get(requestId);
+    const merged = prev ? [...prev.messages, ...messages] : [...messages];
+
+    const clamped =
+      merged.length > maxMessagesPerRequest
+        ? merged.slice(merged.length - maxMessagesPerRequest)
+        : merged;
+
     map.set(requestId, {
-      messages,
+      messages: clamped,
       expiresAt: now + ttlMs,
       updatedAt: now,
     });
@@ -97,7 +109,9 @@ export async function createRequestMessageCache(
         throw new Error("cmd.request.message missing headers.request_id");
       }
 
-      // Store the latest messages for this request.
+      // Append new message batches for this request.
+      // cmd.request messages are often incremental (e.g. follow-ups), so overwrite semantics
+      // can hide earlier user attachments.
       set(requestId, msg.data.messages);
 
       await ctx.commit();
