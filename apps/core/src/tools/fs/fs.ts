@@ -19,6 +19,12 @@ const editErrorCodeSchema = z.enum(EDIT_ERROR_CODES);
 
 const writeFileInputZod = z.object({
   path: pathSchema,
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional working directory to resolve relative paths against (supports ~). Defaults to the tool root.",
+    ),
   content: z.string().describe("The content to write to the file"),
   overwrite: z
     .boolean()
@@ -61,6 +67,12 @@ type WriteFileOutput = z.infer<typeof writeFileOutputZod>;
 
 const readFileInputZod = z.object({
   path: pathSchema,
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional working directory to resolve relative paths against (supports ~). Defaults to the tool root.",
+    ),
   startLine: z
     .number()
     .optional()
@@ -117,6 +129,12 @@ type ReadFileOutput = z.infer<typeof readFileOutputZod>;
 
 const editFileInputZod = z.object({
   path: pathSchema,
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional working directory to resolve relative paths against (supports ~). Defaults to the tool root.",
+    ),
   expectedHash: z
     .string()
     .optional()
@@ -239,7 +257,7 @@ export function fsTool(cwd: string) {
       ].join("\n"),
       inputSchema: writeFileInputZod,
       outputSchema: writeFileOutputZod,
-      execute: async (input) => fs.writeFile(input),
+      execute: async ({ cwd: opCwd, ...input }) => fs.writeFile(input, opCwd),
     }),
 
     readFile: tool<ReadFileInput, ReadFileOutput>({
@@ -247,7 +265,7 @@ export function fsTool(cwd: string) {
         "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
       inputSchema: readFileInputZod,
       outputSchema: readFileOutputZod,
-      execute: async (input) => fs.readFile(input),
+      execute: async ({ cwd: opCwd, ...input }) => fs.readFile(input, opCwd),
     }),
 
     editFile: tool<EditFileInput, EditFileOutput>({
@@ -259,7 +277,7 @@ export function fsTool(cwd: string) {
       ].join("\n"),
       inputSchema: editFileInputZod,
       outputSchema: editFileOutputZod,
-      execute: async (input) => fs.editFile(input),
+      execute: async ({ cwd: opCwd, ...input }) => fs.editFile(input, opCwd),
     }),
   };
 }

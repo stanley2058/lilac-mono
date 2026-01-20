@@ -231,12 +231,13 @@ export class FileSystem {
 
   constructor(private root: string) {}
 
-  private resolvePath(inputPath: string) {
+  private resolvePath(inputPath: string, cwd?: string) {
     const expandedInput = expandTilde(inputPath);
     if (isAbsolute(expandedInput)) return resolve(expandedInput);
 
-    const expandedRoot = resolve(expandTilde(this.root));
-    return resolve(expandedRoot, expandedInput);
+    const base = cwd ?? this.root;
+    const expandedBase = resolve(expandTilde(base));
+    return resolve(expandedBase, expandedInput);
   }
 
   on(listener: Listener) {
@@ -250,11 +251,14 @@ export class FileSystem {
    * @param path The path to the file, relative to the root
    *
    */
-  async readFile({
-    path,
-    ...opts
-  }: ReadFileOptions & { path: string }): Promise<ReadFileResult> {
-    const resolvedPath = this.resolvePath(path);
+  async readFile(
+    {
+      path,
+      ...opts
+    }: ReadFileOptions & { path: string },
+    cwd?: string,
+  ): Promise<ReadFileResult> {
+    const resolvedPath = this.resolvePath(path, cwd);
 
     try {
       const {
@@ -348,20 +352,23 @@ export class FileSystem {
     }
   }
 
-  async writeFile({
-    path,
-    content,
-    overwrite = false,
-    expectedHash,
-    createParents = true,
-  }: {
-    path: string;
-    content: string;
-    overwrite?: boolean;
-    expectedHash?: string;
-    createParents?: boolean;
-  }): Promise<WriteFileResult> {
-    const resolvedPath = this.resolvePath(path);
+  async writeFile(
+    {
+      path,
+      content,
+      overwrite = false,
+      expectedHash,
+      createParents = true,
+    }: {
+      path: string;
+      content: string;
+      overwrite?: boolean;
+      expectedHash?: string;
+      createParents?: boolean;
+    },
+    cwd?: string,
+  ): Promise<WriteFileResult> {
+    const resolvedPath = this.resolvePath(path, cwd);
 
     try {
       let existed = true;
@@ -466,8 +473,8 @@ export class FileSystem {
     }
   }
 
-  async deleteFile({ path }: { path: string }) {
-    const resolvedPath = this.resolvePath(path);
+  async deleteFile({ path, cwd }: { path: string; cwd?: string }) {
+    const resolvedPath = this.resolvePath(path, cwd);
 
     try {
       await fs.unlink(resolvedPath);
@@ -491,16 +498,19 @@ export class FileSystem {
    *
    * By default, edits are atomic: if any edit fails, the file is not written.
    */
-  async editFile({
-    path,
-    edits,
-    expectedHash,
-  }: {
-    path: string;
-    edits: FileEdit[];
-    expectedHash?: string;
-  }): Promise<EditFileResult> {
-    const resolvedPath = this.resolvePath(path);
+  async editFile(
+    {
+      path,
+      edits,
+      expectedHash,
+    }: {
+      path: string;
+      edits: FileEdit[];
+      expectedHash?: string;
+    },
+    cwd?: string,
+  ): Promise<EditFileResult> {
+    const resolvedPath = this.resolvePath(path, cwd);
 
     try {
       const lastAccess = this.fileAccessRecord.get(resolvedPath);
