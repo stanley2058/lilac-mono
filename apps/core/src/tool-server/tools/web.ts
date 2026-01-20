@@ -94,7 +94,7 @@ export class Web implements ServerTool {
 
     if (!env.tools.web.tavilyApiKey) {
       this.logger.logError(
-        "Tavily API key not configured. Please set tavily_api_key in config.extensions.web; falling back to browser mode.",
+        "Tavily API key not configured (missing env var TAVILY_API_KEY). web.search is disabled and fetch(mode=tavily) will fall back to browser mode.",
       );
     } else {
       this.tavily = tavily({ apiKey: env.tools.web.tavilyApiKey });
@@ -151,12 +151,12 @@ export class Web implements ServerTool {
           return await this.getPage(input);
         }
         case "tavily": {
-          if (!this.tavily) {
-            this.logger.logError(
-              "Tavily API key not configured. Please set tavily_api_key in config.extensions.web; falling back to browser mode.",
-            );
-            return await this.getPage(input);
-          }
+            if (!this.tavily) {
+              this.logger.logError(
+                "Tavily API key not configured (missing env var TAVILY_API_KEY). Falling back to browser mode.",
+              );
+              return await this.getPage({ ...input, mode: "browser" });
+            }
           const resp = await this.tavily.extract([input.url], {
             extractDepth: "advanced",
             format: input.format === "markdown" ? "markdown" : "text",
@@ -201,7 +201,15 @@ export class Web implements ServerTool {
       endDate,
     } = searchInputSchema.parse(rawInput);
 
-    const { results } = await this.tavily!.search(query, {
+    if (!this.tavily) {
+      return {
+        isError: true as const,
+        error:
+          "web.search is unavailable: TAVILY_API_KEY is not configured (set env var TAVILY_API_KEY).",
+      };
+    }
+
+    const { results } = await this.tavily.search(query, {
       topic,
       searchDepth,
       maxResults,
