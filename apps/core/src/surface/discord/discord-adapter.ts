@@ -101,6 +101,27 @@ function getDisplayName(msg: Message): string {
   return memberName ?? msg.author.globalName ?? msg.author.username;
 }
 
+function getEmbedDescriptions(msg: Message): string[] {
+  const out: string[] = [];
+  for (const emb of msg.embeds) {
+    const d = emb.description;
+    if (typeof d === "string" && d.trim().length > 0) {
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+function getDisplayTextFromDiscordMessage(msg: Message): string {
+  const content = msg.content ?? "";
+  if (content.trim().length > 0) return content;
+
+  const desc = getEmbedDescriptions(msg).join("\n\n").trim();
+  if (desc.length > 0) return desc;
+
+  return "";
+}
+
 function shouldAllowMessage(params: {
   cfg: CoreConfig;
   channelId: string;
@@ -757,9 +778,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       size: typeof a.size === "number" ? a.size : undefined,
     }));
 
-    const rawContent = msg.content ?? "";
+    const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+
 
     store.upsertMessage({
       channelId: input.channelId,
@@ -774,7 +796,9 @@ export class DiscordAdapter implements SurfaceAdapter {
         guildId,
         authorId: msg.author.id,
         content: msg.content,
+        embeds: getEmbedDescriptions(msg),
         reference: msg.reference ?? undefined,
+        editedTs,
         attachments,
       },
     });
@@ -923,9 +947,9 @@ export class DiscordAdapter implements SurfaceAdapter {
       size: typeof a.size === "number" ? a.size : undefined,
     }));
 
-    const rawContent = msg.content ?? "";
+    const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
     store.upsertMessage({
       channelId,
@@ -940,7 +964,8 @@ export class DiscordAdapter implements SurfaceAdapter {
         guildId,
         authorId: msg.author.id,
         content: msg.content,
-        reference: msg.reference ?? undefined,
+        embeds: getEmbedDescriptions(msg),
+        editedTs,
         attachments,
       },
     });
@@ -1035,7 +1060,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
     const ts = getMessageTs(msg);
-    const editedTs = getMessageEditedTs(msg) ?? Date.now();
+    const editedTs = getMessageEditedTs(msg);
 
     const attachments = [...msg.attachments.values()].map((a) => ({
       url: a.url,
@@ -1044,9 +1069,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       size: typeof a.size === "number" ? a.size : undefined,
     }));
 
-    const rawContent = msg.content ?? "";
+    const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(rawContent) ?? rawContent;
+      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+
 
     store.upsertMessage({
       channelId,
@@ -1061,6 +1087,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         guildId,
         authorId: msg.author.id,
         content: msg.content,
+        embeds: getEmbedDescriptions(msg),
         editedTs,
         attachments,
       },
