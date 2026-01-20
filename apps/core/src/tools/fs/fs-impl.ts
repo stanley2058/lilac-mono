@@ -252,10 +252,7 @@ export class FileSystem {
    *
    */
   async readFile(
-    {
-      path,
-      ...opts
-    }: ReadFileOptions & { path: string },
+    { path, ...opts }: ReadFileOptions & { path: string },
     cwd?: string,
   ): Promise<ReadFileResult> {
     const resolvedPath = this.resolvePath(path, cwd);

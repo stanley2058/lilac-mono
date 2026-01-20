@@ -41,7 +41,9 @@ const getPageSchema = z.object({
   timeout: z
     .number()
     .optional()
-    .describe("Timeout in ms. Timeout for initial connection if using browser."),
+    .describe(
+      "Timeout in ms. Timeout for initial connection if using browser.",
+    ),
 });
 
 const searchInputSchema = z.object({
@@ -120,7 +122,9 @@ export class Web implements ServerTool {
         callableId: "search",
         name: "Web Search",
         description: "Search the web",
-        shortInput: zodObjectToCliLines(searchInputSchema, { mode: "required" }),
+        shortInput: zodObjectToCliLines(searchInputSchema, {
+          mode: "required",
+        }),
         input: zodObjectToCliLines(searchInputSchema),
       },
     ];
@@ -151,12 +155,12 @@ export class Web implements ServerTool {
           return await this.getPage(input);
         }
         case "tavily": {
-            if (!this.tavily) {
-              this.logger.logError(
-                "Tavily API key not configured (missing env var TAVILY_API_KEY). Falling back to browser mode.",
-              );
-              return await this.getPage({ ...input, mode: "browser" });
-            }
+          if (!this.tavily) {
+            this.logger.logError(
+              "Tavily API key not configured (missing env var TAVILY_API_KEY). Falling back to browser mode.",
+            );
+            return await this.getPage({ ...input, mode: "browser" });
+          }
           const resp = await this.tavily.extract([input.url], {
             extractDepth: "advanced",
             format: input.format === "markdown" ? "markdown" : "text",

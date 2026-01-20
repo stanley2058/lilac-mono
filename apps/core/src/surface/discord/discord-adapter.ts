@@ -782,7 +782,6 @@ export class DiscordAdapter implements SurfaceAdapter {
     const normalizedContent =
       this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
-
     store.upsertMessage({
       channelId: input.channelId,
       messageId: msg.id,
@@ -1072,7 +1071,6 @@ export class DiscordAdapter implements SurfaceAdapter {
     const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent =
       this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
-
 
     store.upsertMessage({
       channelId,

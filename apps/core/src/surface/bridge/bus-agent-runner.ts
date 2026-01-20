@@ -142,31 +142,30 @@ export async function startBusAgentRunner(params: {
       request_client: next.requestClient,
     };
 
-     await publishLifecycle({
-       bus,
-       headers,
-       state: "running",
-       detail:
-         next.queue !== "prompt"
-           ? `coerced queue=${next.queue} to prompt (no active run)`
-           : undefined,
-     });
-     await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+    await publishLifecycle({
+      bus,
+      headers,
+      state: "running",
+      detail:
+        next.queue !== "prompt"
+          ? `coerced queue=${next.queue} to prompt (no active run)`
+          : undefined,
+    });
+    await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
     const { model, provider } = resolveModel(cfg);
 
-      const agent = new AiSdkPiAgent<ToolSet>({
-        system: cfg.agent.systemPrompt,
-        model,
-        tools: {
-          ...bashTool(),
-          ...fsTool(cwd),
-        },
-        providerOptions: cfg.models.main.options
-          ? { [provider]: cfg.models.main.options }
-          : undefined,
-      });
-
+    const agent = new AiSdkPiAgent<ToolSet>({
+      system: cfg.agent.systemPrompt,
+      model,
+      tools: {
+        ...bashTool(),
+        ...fsTool(cwd),
+      },
+      providerOptions: cfg.models.main.options
+        ? { [provider]: cfg.models.main.options }
+        : undefined,
+    });
 
     agent.setContext({
       sessionId: next.sessionId,
@@ -245,17 +244,15 @@ export async function startBusAgentRunner(params: {
       }
     });
 
-     try {
-       // First message should be a prompt.
-       // If additional messages for the same request id were queued before the run started,
-       // merge them into the initial prompt so they don't become separate runs.
-       const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
+    try {
+      // First message should be a prompt.
+      // If additional messages for the same request id were queued before the run started,
+      // merge them into the initial prompt so they don't become separate runs.
+      const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
 
-       await agent.prompt(mergedInitial);
-
+      await agent.prompt(mergedInitial);
 
       await agent.waitForIdle();
-
 
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
