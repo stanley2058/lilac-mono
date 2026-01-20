@@ -4,6 +4,7 @@ import {
   getCoreConfig,
   ModelCapability,
   providers,
+  CODEX_BASE_INSTRUCTIONS,
 } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
@@ -155,6 +156,38 @@ export async function startBusAgentRunner(params: {
 
     const { model, provider } = resolveModel(cfg);
 
+    const providerOptionsBase = cfg.models.main.options
+      ? { [provider]: cfg.models.main.options }
+      : undefined;
+
+    // AI SDK OpenAI provider expects its options under key `openai`.
+    // Our config uses provider prefixes like `codex/<model>`, so remap here.
+    //
+    // For Codex, `instructions` must exist and should be relatively stable.
+    // Allow overrides via config:
+    // - models.main.options.instructions (direct)
+    // - models.main.options.codex_instructions (alias)
+    const rawCodexOpts = cfg.models.main.options ?? {};
+    const resolvedCodexInstructions =
+      typeof rawCodexOpts.instructions === "string" &&
+      rawCodexOpts.instructions.length > 0
+        ? rawCodexOpts.instructions
+        : typeof rawCodexOpts.codex_instructions === "string" &&
+            rawCodexOpts.codex_instructions.length > 0
+          ? rawCodexOpts.codex_instructions
+          : CODEX_BASE_INSTRUCTIONS;
+
+    // Don't forward the alias key to the provider.
+    const { codex_instructions: _codexInstructions, ...codexOptsForOpenAI } =
+      rawCodexOpts;
+
+    const codexProviderOptions = {
+      openai: {
+        ...codexOptsForOpenAI,
+        instructions: resolvedCodexInstructions,
+      },
+    };
+
     const agent = new AiSdkPiAgent<ToolSet>({
       system: cfg.agent.systemPrompt,
       model,
@@ -162,9 +195,8 @@ export async function startBusAgentRunner(params: {
         ...bashTool(),
         ...fsTool(cwd),
       },
-      providerOptions: cfg.models.main.options
-        ? { [provider]: cfg.models.main.options }
-        : undefined,
+      providerOptions:
+        provider === "codex" ? codexProviderOptions : providerOptionsBase,
     });
 
     agent.setContext({

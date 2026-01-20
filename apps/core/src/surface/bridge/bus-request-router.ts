@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   getCoreConfig,
   providers,
+  CODEX_BASE_INSTRUCTIONS,
   type CoreConfig,
   type Providers,
 } from "@stanley2058/lilac-utils";
@@ -398,7 +399,7 @@ export async function startBusRequestRouter(params: {
 
       buffer.timer = setTimeout(() => {
         flushDebounce(sessionId).catch(console.error);
-       }, cfg.surface.router.activeDebounceMs);
+      }, cfg.surface.router.activeDebounceMs);
 
       buffers.set(sessionId, buffer);
       return;
@@ -524,15 +525,44 @@ export async function startBusRequestRouter(params: {
         },
       ] as ModelMessage[];
 
+      const providerOptionsBase = cfg.models.fast.options
+        ? { [provider]: cfg.models.fast.options }
+        : undefined;
+
+      // If someone uses codex for router gate (not recommended), remap options
+      // into the OpenAI provider namespace.
+      //
+      // Allow overrides via config:
+      // - models.fast.options.instructions (direct)
+      // - models.fast.options.codex_instructions (alias)
+      const rawCodexOpts = cfg.models.fast.options ?? {};
+      const resolvedCodexInstructions =
+        typeof rawCodexOpts.instructions === "string" &&
+        rawCodexOpts.instructions.length > 0
+          ? rawCodexOpts.instructions
+          : typeof rawCodexOpts.codex_instructions === "string" &&
+              rawCodexOpts.codex_instructions.length > 0
+            ? rawCodexOpts.codex_instructions
+            : CODEX_BASE_INSTRUCTIONS;
+
+      const { codex_instructions: _codexInstructions, ...codexOptsForOpenAI } =
+        rawCodexOpts;
+
+      const codexProviderOptions = {
+        openai: {
+          ...codexOptsForOpenAI,
+          instructions: resolvedCodexInstructions,
+        },
+      };
+
       const res = await generateText({
         model: p(modelId),
         output: Output.object({ schema: gateSchema }),
         prompt,
         abortSignal: abort.signal,
         maxOutputTokens: 128,
-        providerOptions: cfg.models.fast.options
-          ? { [provider]: cfg.models.fast.options }
-          : undefined,
+        providerOptions:
+          provider === "codex" ? codexProviderOptions : providerOptionsBase,
       });
 
       return res.output;
