@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   ripgrep \
   fd-find \
+  tar \
+  gzip \
   unzip \
   python3 \
   python3-venv \
@@ -32,8 +34,13 @@ RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 # Non-root user (needed for bun/npm global installs)
 RUN useradd -m -u 1000 -s /bin/bash lilac
 ENV HOME=/home/lilac
-ENV NPM_CONFIG_PREFIX=${HOME}/.npm-global
-ENV PATH=${HOME}/.npm-global/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV DATA_DIR=/app/data
+ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
+ENV BUN_INSTALL_BIN=${DATA_DIR}/bin
+ENV BUN_INSTALL_CACHE_DIR=${DATA_DIR}/.bun/install/cache
+ENV NPM_CONFIG_PREFIX=${DATA_DIR}/.npm-global
+ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
+ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER lilac
 
 # uv (user-level)

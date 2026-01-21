@@ -3,6 +3,7 @@ import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
 
 import {
   env,
@@ -41,6 +42,25 @@ const playwrightInputSchema = z.object({
     ),
 });
 
+const defaultsInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+  overwriteSkills: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Overwrite default skill templates under DATA_DIR/skills"),
+  network: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe("Allow downloading/installing tools from the network"),
+  strict: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("If true, fail the whole run on the first error"),
+});
+
 const reloadConfigInputSchema = z.object({
   mode: z
     .enum(["cache", "restart"])
@@ -55,6 +75,7 @@ const allInputSchema = z.object({
   dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
   overwriteConfig: z.boolean().optional().default(false),
   overwritePrompts: z.boolean().optional().default(false),
+  overwriteSkills: z.boolean().optional().default(false),
   playwrightWithDeps: z.boolean().optional().default(false),
   restart: z
     .boolean()
@@ -150,6 +171,311 @@ function scheduleRestart(): { ok: true; scheduled: true } {
   return { ok: true as const, scheduled: true as const };
 }
 
+type DefaultInstallStatus =
+  | "already_present"
+  | "installed"
+  | "skipped"
+  | "failed";
+
+type DefaultInstallStep = {
+  id: string;
+  status: DefaultInstallStatus;
+  details?: Record<string, unknown>;
+  error?: string;
+};
+
+function normalizeDataDir(dataDir: string): string {
+  // Keep relative paths stable by resolving against CWD.
+  // In Docker, this is typically /app.
+  return path.resolve(process.cwd(), dataDir);
+}
+
+function resolveDefaultInstallPaths(dataDir: string) {
+  const resolved = normalizeDataDir(dataDir);
+
+  const binDir = path.join(resolved, "bin");
+  const bunGlobalDir = path.join(resolved, ".bun", "install", "global");
+  const bunCacheDir = path.join(resolved, ".bun", "install", "cache");
+  const npmPrefix = path.join(resolved, ".npm-global");
+  const npmBinDir = path.join(npmPrefix, "bin");
+  const xdgConfigHome = path.join(resolved, ".config");
+  const tmpDir = path.join(resolved, "tmp");
+  const lilacSkillsDir = path.join(resolved, "skills");
+
+  return {
+    dataDir: resolved,
+    binDir,
+    bunGlobalDir,
+    bunCacheDir,
+    npmPrefix,
+    npmBinDir,
+    xdgConfigHome,
+    tmpDir,
+    lilacSkillsDir,
+  };
+}
+
+function buildInstallEnv(paths: ReturnType<typeof resolveDefaultInstallPaths>) {
+  const existingPath = process.env.PATH ?? "";
+  const pathPrefix = [paths.binDir, paths.npmBinDir].join(":");
+
+  return {
+    ...process.env,
+    BUN_INSTALL_GLOBAL_DIR: paths.bunGlobalDir,
+    BUN_INSTALL_BIN: paths.binDir,
+    BUN_INSTALL_CACHE_DIR: paths.bunCacheDir,
+    NPM_CONFIG_PREFIX: paths.npmPrefix,
+    XDG_CONFIG_HOME: paths.xdgConfigHome,
+    PATH: `${pathPrefix}:${existingPath}`,
+  };
+}
+
+async function runCommand(params: {
+  cmd: string[];
+  cwd?: string;
+  env?: Record<string, string | undefined>;
+}): Promise<{ code: number; stdout: string; stderr: string }> {
+  const p = Bun.spawn(params.cmd, {
+    cwd: params.cwd,
+    env: params.env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const stdout = p.stdout ? await new Response(p.stdout).text() : "";
+  const stderr = p.stderr ? await new Response(p.stderr).text() : "";
+  const code = await p.exited;
+
+  return { code, stdout, stderr };
+}
+
+async function downloadToFile(url: string, filePath: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Download failed (${res.status}): ${url}`);
+  }
+  await Bun.write(filePath, res);
+}
+
+async function sha256Hex(filePath: string): Promise<string> {
+  const buf = await Bun.file(filePath).arrayBuffer();
+  return createHash("sha256").update(Buffer.from(buf)).digest("hex");
+}
+
+function parseChecksumsText(raw: string): Map<string, string> {
+  const byName = new Map<string, string>();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Format: "<sha256>  <filename>" (allow extra whitespace)
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2) continue;
+    const hash = parts[0]!;
+    const name = parts[parts.length - 1]!;
+    if (hash.length >= 32 && name.length > 0) {
+      byName.set(name, hash);
+    }
+  }
+  return byName;
+}
+
+async function findFirstFile(params: {
+  absolutePattern: string;
+}): Promise<string | null> {
+  const glob = new Bun.Glob(params.absolutePattern);
+  for await (const p of glob.scan({ onlyFiles: true, absolute: true })) {
+    return p;
+  }
+  return null;
+}
+
+async function copyFileIfNeeded(params: {
+  from: string;
+  to: string;
+  overwrite: boolean;
+}) {
+  const existed = await Bun.file(params.to).exists();
+  if (existed && !params.overwrite) {
+    return { copied: false, overwritten: false };
+  }
+
+  await fs.mkdir(path.dirname(params.to), { recursive: true });
+  await fs.copyFile(params.from, params.to);
+  return { copied: true, overwritten: existed };
+}
+
+const githubReleaseSchema = z.object({
+  tag_name: z.string(),
+  assets: z.array(
+    z.object({
+      name: z.string(),
+      browser_download_url: z.string(),
+    }),
+  ),
+});
+
+type GithubRelease = z.infer<typeof githubReleaseSchema>;
+
+async function fetchGithubLatestRelease(repo: string): Promise<GithubRelease> {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/releases/latest`,
+  );
+  if (!res.ok) {
+    throw new Error(
+      `GitHub releases/latest failed (${res.status} ${res.statusText}) for ${repo}`,
+    );
+  }
+  const raw: unknown = await res.json();
+  return githubReleaseSchema.parse(raw);
+}
+
+function stripLeadingV(tag: string): string {
+  return tag.startsWith("v") ? tag.slice(1) : tag;
+}
+
+function platformArchLabel(): "amd64" | "arm64" {
+  if (process.arch === "arm64") return "arm64";
+  return "amd64";
+}
+
+async function installGithubTarGzBinary(params: {
+  repo: string;
+  destPath: string;
+  tarAssetName: (version: string, arch: "amd64" | "arm64") => string;
+  checksumAssetName: (version: string) => string;
+  findExtractedPath: (extractDir: string) => Promise<string | null>;
+  tmpDir: string;
+  overwrite: boolean;
+  network: boolean;
+}): Promise<{
+  status: DefaultInstallStatus;
+  details?: Record<string, unknown>;
+}> {
+  const existed = await Bun.file(params.destPath).exists();
+  if (existed && !params.overwrite) {
+    return { status: "already_present" };
+  }
+
+  if (!params.network) {
+    return {
+      status: "skipped",
+      details: { reason: "network disabled" },
+    };
+  }
+
+  if (process.platform !== "linux") {
+    return {
+      status: "skipped",
+      details: { reason: "unsupported platform", platform: process.platform },
+    };
+  }
+
+  const tarBin = Bun.which("tar");
+  if (!tarBin) {
+    throw new Error(
+      "Missing dependency: tar (required to extract GitHub releases)",
+    );
+  }
+
+  const release = await fetchGithubLatestRelease(params.repo);
+  const version = stripLeadingV(release.tag_name);
+  const arch = platformArchLabel();
+
+  const tarName = params.tarAssetName(version, arch);
+  const checksumName = params.checksumAssetName(version);
+
+  const tarAsset = release.assets.find((a) => a.name === tarName);
+  if (!tarAsset) {
+    throw new Error(
+      `Asset not found in ${params.repo} ${release.tag_name}: ${tarName}`,
+    );
+  }
+
+  const checksumAsset = release.assets.find((a) => a.name === checksumName);
+  if (!checksumAsset) {
+    throw new Error(
+      `Checksums asset not found in ${params.repo} ${release.tag_name}: ${checksumName}`,
+    );
+  }
+
+  await fs.mkdir(params.tmpDir, { recursive: true });
+
+  const tarPath = path.join(
+    params.tmpDir,
+    `${params.repo.replaceAll("/", "-")}-${tarName}`,
+  );
+  const checksumsPath = path.join(
+    params.tmpDir,
+    `${params.repo.replaceAll("/", "-")}-${checksumName}`,
+  );
+
+  await downloadToFile(tarAsset.browser_download_url, tarPath);
+  await downloadToFile(checksumAsset.browser_download_url, checksumsPath);
+
+  const checksumRaw = await Bun.file(checksumsPath).text();
+  const byName = parseChecksumsText(checksumRaw);
+  const expected = byName.get(tarName);
+  if (!expected) {
+    throw new Error(`No checksum entry for ${tarName} in ${checksumName}`);
+  }
+
+  const got = await sha256Hex(tarPath);
+  if (got.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error(
+      `Checksum mismatch for ${tarName}: expected ${expected}, got ${got}`,
+    );
+  }
+
+  const extractDir = path.join(
+    params.tmpDir,
+    `extract-${params.repo.replaceAll("/", "-")}-${Date.now()}`,
+  );
+  await fs.mkdir(extractDir, { recursive: true });
+
+  const untar = await runCommand({
+    cmd: [tarBin, "-xzf", tarPath, "-C", extractDir],
+  });
+  if (untar.code !== 0) {
+    throw new Error(`tar failed: ${untar.stderr || untar.stdout}`);
+  }
+
+  const extracted = await params.findExtractedPath(extractDir);
+  if (!extracted) {
+    throw new Error(`Failed to locate extracted binary from ${tarName}`);
+  }
+
+  await fs.mkdir(path.dirname(params.destPath), { recursive: true });
+  await fs.copyFile(extracted, params.destPath);
+  await fs.chmod(params.destPath, 0o755);
+
+  return {
+    status: "installed",
+    details: {
+      repo: params.repo,
+      tag: release.tag_name,
+      version,
+      arch,
+      tarName,
+      extracted,
+      destPath: params.destPath,
+      replaced: existed,
+    },
+  };
+}
+
+async function hasAnySkillMdUnder(dir: string): Promise<boolean> {
+  try {
+    await fs.access(dir);
+  } catch {
+    return false;
+  }
+  const glob = new Bun.Glob(path.join(dir, "**", "SKILL.md"));
+  for await (const _ of glob.scan({ onlyFiles: true, absolute: true })) {
+    return true;
+  }
+  return false;
+}
+
 export class Onboarding implements ServerTool {
   id = "onboarding";
 
@@ -163,7 +489,9 @@ export class Onboarding implements ServerTool {
         name: "Onboarding Bootstrap",
         description:
           "Bootstrap DATA_DIR (core-config.yaml + prompts/*). Hidden by default.",
-        shortInput: zodObjectToCliLines(bootstrapInputSchema, { mode: "required" }),
+        shortInput: zodObjectToCliLines(bootstrapInputSchema, {
+          mode: "required",
+        }),
         input: zodObjectToCliLines(bootstrapInputSchema),
         hidden: true,
       },
@@ -172,8 +500,21 @@ export class Onboarding implements ServerTool {
         name: "Onboarding Playwright",
         description:
           "Ensure Chromium is available for Playwright (prefer system chromium; fallback to Playwright install). Hidden by default.",
-        shortInput: zodObjectToCliLines(playwrightInputSchema, { mode: "required" }),
+        shortInput: zodObjectToCliLines(playwrightInputSchema, {
+          mode: "required",
+        }),
         input: zodObjectToCliLines(playwrightInputSchema),
+        hidden: true,
+      },
+      {
+        callableId: "onboarding.defaults",
+        name: "Onboarding Defaults",
+        description:
+          "Install default CLIs + skills into DATA_DIR (persisted). Hidden by default.",
+        shortInput: zodObjectToCliLines(defaultsInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(defaultsInputSchema),
         hidden: true,
       },
       {
@@ -190,7 +531,9 @@ export class Onboarding implements ServerTool {
         name: "Onboarding Reload Config",
         description:
           "Reload core config cache (or restart process). Hidden by default.",
-        shortInput: zodObjectToCliLines(reloadConfigInputSchema, { mode: "required" }),
+        shortInput: zodObjectToCliLines(reloadConfigInputSchema, {
+          mode: "required",
+        }),
         input: zodObjectToCliLines(reloadConfigInputSchema),
         hidden: true,
       },
@@ -207,7 +550,7 @@ export class Onboarding implements ServerTool {
         callableId: "onboarding.all",
         name: "Onboarding All",
         description:
-          "Run bootstrap + playwright check/install + config reload (and optional restart). Hidden by default.",
+          "Run bootstrap + playwright check/install + defaults + config reload (and optional restart). Hidden by default.",
         shortInput: zodObjectToCliLines(allInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(allInputSchema),
         hidden: true,
@@ -278,6 +621,214 @@ export class Onboarding implements ServerTool {
       };
     }
 
+    if (callableId === "onboarding.defaults") {
+      const input = defaultsInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+
+      const paths = resolveDefaultInstallPaths(dataDir);
+      const installEnv = buildInstallEnv(paths);
+      const bunBin = Bun.which("bun") ?? "bun";
+
+      await fs.mkdir(paths.binDir, { recursive: true });
+      await fs.mkdir(paths.bunGlobalDir, { recursive: true });
+      await fs.mkdir(paths.bunCacheDir, { recursive: true });
+      await fs.mkdir(paths.npmPrefix, { recursive: true });
+      await fs.mkdir(paths.xdgConfigHome, { recursive: true });
+      await fs.mkdir(paths.tmpDir, { recursive: true });
+      await fs.mkdir(paths.lilacSkillsDir, { recursive: true });
+
+      const steps: DefaultInstallStep[] = [];
+
+      const runStep = async (
+        id: string,
+        fn: () => Promise<Omit<DefaultInstallStep, "id">>,
+      ) => {
+        try {
+          steps.push({ id, ...(await fn()) });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (input.strict) throw e;
+          steps.push({ id, status: "failed", error: msg });
+        }
+      };
+
+      await runStep("skills.mcporter", async () => {
+        const src = path.resolve(
+          process.cwd(),
+          "packages/utils/skill-templates/mcporter/SKILL.md",
+        );
+        const dst = path.join(paths.lilacSkillsDir, "mcporter", "SKILL.md");
+        const { copied, overwritten } = await copyFileIfNeeded({
+          from: src,
+          to: dst,
+          overwrite: input.overwriteSkills,
+        });
+        return {
+          status: copied ? "installed" : "already_present",
+          details: { src, dst, overwritten },
+        };
+      });
+
+      await runStep("skills.gog", async () => {
+        const src = path.resolve(
+          process.cwd(),
+          "packages/utils/skill-templates/gog/SKILL.md",
+        );
+        const dst = path.join(paths.lilacSkillsDir, "gog", "SKILL.md");
+        const { copied, overwritten } = await copyFileIfNeeded({
+          from: src,
+          to: dst,
+          overwrite: input.overwriteSkills,
+        });
+        return {
+          status: copied ? "installed" : "already_present",
+          details: { src, dst, overwritten },
+        };
+      });
+
+      await runStep("cli.mcporter", async () => {
+        const dest = path.join(paths.binDir, "mcporter");
+        if (await Bun.file(dest).exists()) return { status: "already_present" };
+        if (!input.network) {
+          return { status: "skipped", details: { reason: "network disabled" } };
+        }
+
+        const res = await runCommand({
+          cmd: [bunBin, "install", "--global", "mcporter"],
+          env: installEnv,
+        });
+        if (res.code !== 0) {
+          throw new Error(res.stderr || res.stdout || "bun install failed");
+        }
+
+        const installed = await Bun.file(dest).exists();
+        if (!installed) {
+          return {
+            status: "failed",
+            error: `bun install succeeded but ${dest} not found`,
+          };
+        }
+
+        return { status: "installed", details: { dest } };
+      });
+
+      await runStep("cli.agent-browser", async () => {
+        const dest = path.join(paths.binDir, "agent-browser");
+        if (await Bun.file(dest).exists()) return { status: "already_present" };
+        if (!input.network) {
+          return { status: "skipped", details: { reason: "network disabled" } };
+        }
+
+        const res = await runCommand({
+          cmd: [bunBin, "install", "--global", "agent-browser"],
+          env: installEnv,
+        });
+        if (res.code !== 0) {
+          throw new Error(res.stderr || res.stdout || "bun install failed");
+        }
+
+        const installed = await Bun.file(dest).exists();
+        if (!installed) {
+          return {
+            status: "failed",
+            error: `bun install succeeded but ${dest} not found`,
+          };
+        }
+
+        return { status: "installed", details: { dest } };
+      });
+
+      await runStep("skill.agent-browser", async () => {
+        const opencodeSkillsDir = path.join(
+          paths.xdgConfigHome,
+          "opencode",
+          "skills",
+        );
+        if (await hasAnySkillMdUnder(opencodeSkillsDir)) {
+          return { status: "already_present", details: { opencodeSkillsDir } };
+        }
+        if (!input.network) {
+          return { status: "skipped", details: { reason: "network disabled" } };
+        }
+
+        const res = await runCommand({
+          cmd: [
+            bunBin,
+            "x",
+            "add-skill",
+            "-a",
+            "opencode",
+            "-g",
+            "-y",
+            "vercel-labs/agent-browser",
+          ],
+          env: installEnv,
+        });
+        if (res.code !== 0) {
+          throw new Error(res.stderr || res.stdout || "add-skill failed");
+        }
+
+        const installedNow = await hasAnySkillMdUnder(opencodeSkillsDir);
+        return {
+          status: installedNow ? "installed" : "failed",
+          details: { opencodeSkillsDir },
+          error: installedNow
+            ? undefined
+            : "skill install ran but no SKILL.md found",
+        };
+      });
+
+      await runStep("cli.gh", async () => {
+        const dest = path.join(paths.binDir, "gh");
+        const result = await installGithubTarGzBinary({
+          repo: "cli/cli",
+          destPath: dest,
+          tarAssetName: (version, arch) => `gh_${version}_linux_${arch}.tar.gz`,
+          checksumAssetName: (version) => `gh_${version}_checksums.txt`,
+          findExtractedPath: async (extractDir) =>
+            findFirstFile({
+              absolutePattern: path.join(extractDir, "**", "bin", "gh"),
+            }),
+          tmpDir: paths.tmpDir,
+          overwrite: false,
+          network: input.network,
+        });
+        return { status: result.status, details: result.details };
+      });
+
+      await runStep("cli.gog", async () => {
+        const dest = path.join(paths.binDir, "gog");
+        const result = await installGithubTarGzBinary({
+          repo: "steipete/gogcli",
+          destPath: dest,
+          tarAssetName: (version, arch) =>
+            `gogcli_${version}_linux_${arch}.tar.gz`,
+          checksumAssetName: () => "checksums.txt",
+          findExtractedPath: async (extractDir) =>
+            findFirstFile({
+              absolutePattern: path.join(extractDir, "**", "gog"),
+            }),
+          tmpDir: paths.tmpDir,
+          overwrite: false,
+          network: input.network,
+        });
+        return { status: result.status, details: result.details };
+      });
+
+      return {
+        ok: true as const,
+        dataDir: paths.dataDir,
+        env: {
+          BUN_INSTALL_GLOBAL_DIR: installEnv.BUN_INSTALL_GLOBAL_DIR,
+          BUN_INSTALL_BIN: installEnv.BUN_INSTALL_BIN,
+          BUN_INSTALL_CACHE_DIR: installEnv.BUN_INSTALL_CACHE_DIR,
+          NPM_CONFIG_PREFIX: installEnv.NPM_CONFIG_PREFIX,
+          XDG_CONFIG_HOME: installEnv.XDG_CONFIG_HOME,
+        },
+        steps,
+      };
+    }
+
     if (callableId === "onboarding.reload_tools") {
       const port = Number(env.toolServer.port ?? 8080);
       const res = await fetch(`http://127.0.0.1:${port}/reload`, {
@@ -328,6 +879,13 @@ export class Onboarding implements ServerTool {
         withDeps: input.playwrightWithDeps,
       })) as unknown;
 
+      const defaults = (await this.call("onboarding.defaults", {
+        dataDir,
+        overwriteSkills: input.overwriteSkills,
+        network: true,
+        strict: false,
+      })) as unknown;
+
       const reloadConfig = (await this.call("onboarding.reload_config", {
         mode: "cache",
       })) as unknown;
@@ -338,6 +896,7 @@ export class Onboarding implements ServerTool {
         ok: true as const,
         bootstrap,
         playwright,
+        defaults,
         reloadConfig,
         restart,
       };

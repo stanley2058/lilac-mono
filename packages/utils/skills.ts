@@ -154,6 +154,7 @@ export function defaultSkillScanRoots(params: {
   homeDir?: string;
 }): SkillScanRoot[] {
   const home = params.homeDir ?? homedir();
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
   const ws = params.workspaceRoot;
 
   // Higher precedence wins on name collisions.
@@ -197,6 +198,12 @@ export function defaultSkillScanRoots(params: {
       precedence: 200,
     },
     {
+      // add-skill + opencode conventions
+      pattern: path.join(ws, ".opencode", "skills", "*", "SKILL.md"),
+      source: "opencode-project",
+      precedence: 200,
+    },
+    {
       pattern: path.join(ws, ".agent", "skills", "**", "SKILL.md"),
       source: "agent-project",
       precedence: 200,
@@ -234,7 +241,13 @@ export function defaultSkillScanRoots(params: {
       precedence: 100,
     },
     {
-      pattern: path.join(home, ".config", "opencode", "skill", "*", "SKILL.md"),
+      pattern: path.join(xdgConfigHome, "opencode", "skill", "*", "SKILL.md"),
+      source: "opencode-user",
+      precedence: 100,
+    },
+    {
+      // add-skill installs opencode skills here by default.
+      pattern: path.join(xdgConfigHome, "opencode", "skills", "*", "SKILL.md"),
       source: "opencode-user",
       precedence: 100,
     },
