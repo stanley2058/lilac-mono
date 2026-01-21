@@ -1,3 +1,5 @@
+basePrompt: "You are Lilac."
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   # router:
