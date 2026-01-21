@@ -103,9 +103,7 @@ const imageGenerateInputSchema = z
     path: z
       .string()
       .min(1)
-      .describe(
-        "Output file path to write the generated image (resolved relative to request cwd)",
-      ),
+      .describe("Output file path to write the generated image"),
 
     prompt: z.string().min(1).describe("Text prompt for image generation"),
 
@@ -113,7 +111,7 @@ const imageGenerateInputSchema = z
       .enum(["gpt-5-image", "nanobanana", "nanobanana-pro"])
       .optional()
       .describe(
-        "Model to use. If omitted, defaults to nanobanana-pro (fallback to gpt-5-image, then nanobanana if unavailable).",
+        "Image model to use. If omitted, defaults to `nanobanana-pro`.",
       ),
 
     size: z
@@ -121,7 +119,14 @@ const imageGenerateInputSchema = z
       .regex(/^\d+x\d+$/)
       .optional()
       .describe(
-        "Optional output size as '{width}x{height}'. For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
+        [
+          "Optional output size as '{width}x{height}'. (Use only one of --size or --aspect-ratio)",
+          "- For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
+          "- For nanobanana(-pro): calculate based-on 1K, 2K, 4K. E.g.,",
+          "  - 1:1 @ 1K/2K/4K: 1024² / 2048² / 4096²",
+          "  - 16:9 @ 4K: ≈ 7282 × 4096 (short side 4096)",
+          "  - 9:16 @ 4K: ≈ 4096 × 7282",
+        ].join("\n"),
       ),
 
     aspectRatio: z
@@ -129,7 +134,11 @@ const imageGenerateInputSchema = z
       .regex(/^\d+:\d+$/)
       .optional()
       .describe(
-        "Optional aspect ratio as '{width}:{height}'. For gpt-5-image: 1:1 | 3:2 | 2:3. For nanobanana(-pro): 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
+        [
+          "Optional aspect ratio as '{width}:{height}'. (Use only one of --size or --aspect-ratio)",
+          "- For gpt-5-image: 1:1 | 3:2 | 2:3.",
+          "- For nanobanana(-pro): 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
+        ].join("\n"),
       ),
   })
   .superRefine((input, ctx) => {
@@ -142,28 +151,6 @@ const imageGenerateInputSchema = z
   });
 
 type ImageGenerateInput = z.infer<typeof imageGenerateInputSchema>;
-
-function helpText() {
-  return [
-    "Generate an image with a configured provider and write it to a local file.",
-    "This tool writes to disk because tool-server tools are invoked via the CLI.",
-    "",
-    "Supported models + settings:",
-    "- nanobanana-pro (default)",
-    `  - aspectRatio: ${NANOBANANA_ALLOWED_ASPECT_RATIOS.join(", ")}`,
-    "  - size: any {w}x{h} (provider may clamp to supported tiers/resolutions)",
-    "- gpt-5-image",
-    `  - aspectRatio: ${GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS.join(", ")}`,
-    `  - size: ${GPT_5_IMAGE_ALLOWED_SIZES.join(" | ")}`,
-    "- nanobanana",
-    `  - aspectRatio: ${NANOBANANA_ALLOWED_ASPECT_RATIOS.join(", ")}`,
-    "  - size: any {w}x{h} (provider-dependent)",
-    "",
-    "Notes:",
-    "- Provide only one of --size or --aspect-ratio.",
-    "- If the output path already exists, the tool will write to 'name (1).ext' and return the final path.",
-  ].join("\n");
-}
 
 function pickModel(
   available: Partial<Record<SupportedImageModels, ImageModel>>,
@@ -189,7 +176,10 @@ function pickModel(
   );
 }
 
-function validateSettingsForModel(input: ImageGenerateInput, modelId: SupportedImageModels) {
+function validateSettingsForModel(
+  input: ImageGenerateInput,
+  modelId: SupportedImageModels,
+) {
   if (input.aspectRatio) {
     if (modelId === "gpt-5-image") {
       if (!isOneOf(GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
@@ -279,7 +269,8 @@ export class ImageGeneration implements ServerTool {
       {
         callableId: "image.generate",
         name: "Image Generate",
-        description: helpText(),
+        description:
+          "Generate an image with a configured provider and write it to a local file.",
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
         }),
@@ -340,7 +331,9 @@ export class ImageGeneration implements ServerTool {
     const originalExt = extname(resolvedTarget);
     const inferredExt = inferExtensionFromMimeType(img.mediaType) || ".png";
     const targetWithExt =
-      originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
+      originalExt.length > 0
+        ? resolvedTarget
+        : `${resolvedTarget}${inferredExt}`;
 
     const outPath = await pickAvailableFilename(targetWithExt);
     await fs.mkdir(dirname(outPath), { recursive: true });
