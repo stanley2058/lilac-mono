@@ -55,3 +55,25 @@ export function bashTool() {
     }),
   };
 }
+
+export function bashToolWithCwd(defaultCwd: string) {
+  return {
+    bash: tool({
+      description:
+        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
+      inputSchema: bashInputSchema,
+      outputSchema: bashOutputSchema,
+      execute: (input, { experimental_context: context }) =>
+        executeBash(
+          { ...input, cwd: input.cwd ?? defaultCwd },
+          { context } as {
+            context?: {
+              requestId: string;
+              sessionId: string;
+              requestClient: string;
+            };
+          },
+        ),
+    }),
+  };
+}

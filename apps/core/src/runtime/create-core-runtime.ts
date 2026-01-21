@@ -1,6 +1,8 @@
 import Redis from "ioredis";
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import { env, getCoreConfig } from "@stanley2058/lilac-utils";
+import path from "node:path";
+import fs from "node:fs/promises";
 import {
   createLilacBus,
   createRedisStreamsBus,
@@ -29,7 +31,7 @@ export type CoreRuntime = {
 };
 
 export type CoreRuntimeOptions = {
-  /** Where core tools operate (fs tool root). Default: process.cwd(). */
+  /** Where core tools operate (fs/bash tool root). Default: $LILAC_WORKSPACE_DIR or $DATA_DIR/workspace. */
   cwd?: string;
   toolServerPort?: number;
   /** Prefix for Redis consumer group ids / subscription ids. Default: "core". */
@@ -60,12 +62,17 @@ export async function createCoreRuntime(
   });
 
   const subscriptionPrefix = opts.subscriptionPrefix ?? "core";
-  const cwd = opts.cwd ?? process.cwd();
+  const cwd =
+    opts.cwd ??
+    process.env.LILAC_WORKSPACE_DIR ??
+    path.resolve(process.cwd(), env.dataDir, "workspace");
   const toolServerPort =
     opts.toolServerPort ?? Number(env.toolServer.port ?? 8080);
 
   const redisUrl = mustRedisUrl();
   const redis = new Redis(redisUrl);
+
+  await fs.mkdir(cwd, { recursive: true });
 
   try {
     await redis.ping();

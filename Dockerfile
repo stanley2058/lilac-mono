@@ -35,6 +35,7 @@ RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 RUN useradd -m -u 1000 -s /bin/bash lilac
 ENV HOME=/home/lilac
 ENV DATA_DIR=/app/data
+ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
 ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
 ENV BUN_INSTALL_BIN=${DATA_DIR}/bin
 ENV BUN_INSTALL_CACHE_DIR=${DATA_DIR}/.bun/install/cache

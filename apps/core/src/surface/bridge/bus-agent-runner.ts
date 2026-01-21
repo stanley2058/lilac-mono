@@ -19,7 +19,7 @@ import {
   type AiSdkPiAgentEvent,
 } from "@stanley2058/lilac-agent";
 
-import { bashTool } from "../../tools/bash";
+import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
 
 function consumerId(prefix: string): string {
@@ -52,7 +52,8 @@ export async function startBusAgentRunner(params: {
   const { bus, subscriptionId } = params;
 
   let cfg = params.config ?? (await getCoreConfig());
-  const cwd = params.cwd ?? process.cwd();
+  const cwd =
+    params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
 
   const bySession = new Map<string, SessionQueue>();
 
@@ -192,7 +193,7 @@ export async function startBusAgentRunner(params: {
       system: cfg.agent.systemPrompt,
       model,
       tools: {
-        ...bashTool(),
+        ...bashToolWithCwd(cwd),
         ...fsTool(cwd),
       },
       providerOptions:

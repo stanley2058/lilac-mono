@@ -105,7 +105,7 @@ export async function executeBash(
   }, effectiveTimeoutMs);
 
   try {
-    const process = Bun.spawn(["bash", "-lc", command], {
+    const child = Bun.spawn(["bash", "-lc", command], {
       cwd: resolvedCwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -113,6 +113,7 @@ export async function executeBash(
       signal: controller.signal,
       killSignal: DEFAULT_KILL_SIGNAL,
       env: {
+        ...process.env,
         LILAC_REQUEST_ID: context?.requestId,
         LILAC_SESSION_ID: context?.sessionId,
         LILAC_REQUEST_CLIENT: context?.requestClient,
@@ -121,9 +122,9 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamText(process.stdout),
-      readStreamText(process.stderr),
-      process.exited,
+      readStreamText(child.stdout),
+      readStreamText(child.stderr),
+      child.exited,
     ]);
 
     const stdout =
@@ -132,7 +133,7 @@ export async function executeBash(
       stderrResult.status === "fulfilled" ? stderrResult.value : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    if (timedOut && process.killed) {
+    if (timedOut && child.killed) {
       return {
         stdout,
         stderr,
@@ -140,7 +141,7 @@ export async function executeBash(
         executionError: {
           type: "timeout",
           timeoutMs: effectiveTimeoutMs,
-          signal: process.signalCode ?? DEFAULT_KILL_SIGNAL,
+          signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
         },
       };
     }

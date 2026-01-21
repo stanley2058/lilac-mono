@@ -564,7 +564,7 @@ export class Onboarding implements ServerTool {
       const dataDir = input.dataDir ?? env.dataDir;
 
       const ensuredDirs: string[] = [];
-      for (const sub of ["prompts", "skills", "secret"]) {
+      for (const sub of ["prompts", "skills", "secret", "workspace"]) {
         const p = path.join(dataDir, sub);
         await fs.mkdir(p, { recursive: true });
         ensuredDirs.push(p);
