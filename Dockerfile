@@ -41,6 +41,10 @@ ENV BUN_INSTALL_CACHE_DIR=${DATA_DIR}/.bun/install/cache
 ENV NPM_CONFIG_PREFIX=${DATA_DIR}/.npm-global
 ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
 ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN mkdir -p $DATA_DIR
+RUN chown -R lilac:lilac $DATA_DIR
+
 USER lilac
 
 # uv (user-level)
