@@ -65,14 +65,13 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 
 - To search over installed skills, get descriptions or full details, use the `skills.*` in `tools` CLI.
   - If that's not enough, you can also explore and read the directory directly via fs tools.
-- You can install skills with the `skills` CLI:
+- You can install skills with the `add-skill` CLI (always specify an agent (we support all of them), and always use `-y` to skip confirmation):
 
   ```bash
-  # by name
-  bunx skills add org/repo
-
-  # by URL
-  bunx skills add https://github.com/org/repo
+  # install globally to opencode agent
+  bunx add-skill -a opencode -g -y org/repo
+  # help message
+  bunx add-skill --help
   ```
 
   _Skills can contain executables, don't install skills from untrusted sources!_
