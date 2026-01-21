@@ -35,11 +35,8 @@ export class Workflow implements ServerTool {
       {
         callableId: "workflow",
         name: "Workflow",
-        description: [
-          "Create a workflow that will resume later.",
-          "Each task waits for a strict Discord reply to the given messageId in sessionId.",
-          "Use this after sending a message (e.g. DM) and you want to resume when they reply.",
-        ].join("\n"),
+        description:
+          "Create a workflow that will resume later. Each task waits for a strict reply to the given messageId in sessionId. Use this after sending a message (e.g. DM) and you want to resume when they reply.",
         shortInput: ["--summary=<string>", "--tasks=<object[]>"],
         input: [
           "--summary=<string> | Compact snapshot of what we were doing",
@@ -49,10 +46,8 @@ export class Workflow implements ServerTool {
       {
         callableId: "workflow.send_and_wait_for_reply",
         name: "Workflow Send And Wait For Reply",
-        description: [
-          "Send a message to a Discord session and create a workflow task that waits for a reply to that message.",
-          "This is a convenience wrapper around: surface.messages.send + workflow.",
-        ].join("\n"),
+        description:
+          "Send a message to a Discord session and create a workflow task that waits for a reply to that message. (This is a convenience wrapper around: surface.messages.send + workflow.)",
         shortInput: [
           "--sessionId=<string>",
           "--text=<string>",

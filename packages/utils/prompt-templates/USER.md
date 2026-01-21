@@ -1,5 +1,13 @@
-# USER.md - User Preferences
+# USER.md - About Your Human
 
-- Default to concise, information-dense answers.
-- Use plain text suitable for CLI output.
-- Ask before making large API changes.
+_Learn about the person you're helping. Update this as you go._
+
+- **Name:**
+- **What to call them:**
+- **Pronouns:** _(optional)_
+- **Timezone:**
+- **Notes:**
+
+## Context
+
+_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
