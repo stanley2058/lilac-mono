@@ -14,9 +14,10 @@ export type PromptFile = {
 export const CORE_PROMPT_FILES = [
   "AGENTS.md",
   "SOUL.md",
-  "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
+  "MEMORY.md",
+  "TOOLS.md",
 ] as const;
 
 export type CorePromptFileName = (typeof CORE_PROMPT_FILES)[number];
@@ -92,7 +93,9 @@ function stripFrontmatter(raw: string): string {
 export async function loadPromptFiles(options?: {
   dataDir?: string;
 }): Promise<PromptFile[]> {
-  const { promptDir } = await ensurePromptWorkspace({ dataDir: options?.dataDir });
+  const { promptDir } = await ensurePromptWorkspace({
+    dataDir: options?.dataDir,
+  });
 
   const files: PromptFile[] = [];
   for (const name of CORE_PROMPT_FILES) {
@@ -105,13 +108,19 @@ export async function loadPromptFiles(options?: {
   return files;
 }
 
-export function compileSystemPromptFromFiles(files: readonly PromptFile[]): string {
+export function compileSystemPromptFromFiles(
+  files: readonly PromptFile[],
+): string {
   const lines: string[] = [];
 
   lines.push("You are Lilac.");
   lines.push("");
-  lines.push("Your system behavior is defined by a set of workspace prompt files.");
-  lines.push("These files are loaded from the local data directory and are authoritative.");
+  lines.push(
+    "Your system behavior is defined by a set of workspace prompt files.",
+  );
+  lines.push(
+    "These files are loaded from the local data directory and are authoritative.",
+  );
   lines.push("");
   lines.push("How to use the files:");
   lines.push("- AGENTS.md: operating rules and priorities (how you work)");

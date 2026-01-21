@@ -6,6 +6,11 @@ You have access to three tiers of tools:
 2. `tools` CLI accessible via `bash`
 3. Skills (more below)
 
+## bash usage
+
+- Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`
+- Prefer `bun` over `node` and `npm`; `bunx` over `npx`
+
 ## `tools` CLI
 
 The `tools` CLI is an unified interface for all built-in tools.
