@@ -204,11 +204,14 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     this.running = (async () => {
       const res = await startEmbedPusher({
         createFirst: async (emb) => {
-          const msg = await first.reply({
+          // Replace the placeholder "Replying..." message with the first embed.
+          // This keeps the reply target as the *user's* original message (instead of
+          // creating a nested reply chain that replies to the placeholder).
+          await safeEdit(first, {
+            content: "",
             embeds: [emb],
-            allowedMentions: { parse: [], repliedUser: false },
           });
-          return msg;
+          return first;
         },
         createReply: async (parent, emb) => {
           const msg = await parent.reply({
@@ -233,8 +236,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       });
 
       // track created reply messages
+      const seen = new Set(this.created.map((m) => m.messageId));
       for (const messageId of res.discordMessageCreated) {
+        if (seen.has(messageId)) continue;
         this.created.push(asDiscordMsgRef(sessionRef.channelId, messageId));
+        seen.add(messageId);
       }
 
       this.lastMsg = res.lastMsg;
