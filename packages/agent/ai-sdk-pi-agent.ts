@@ -1403,7 +1403,5 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 // Optional smoke demo (requires you to provide a model instance).
 // Run with: `bun ai-sdk-pi-agent.ts` or `node --loader tsx ai-sdk-pi-agent.ts`
 if (import.meta.main) {
-  console.log(
-    "ai-sdk-pi-agent.ts loaded. Create an AiSdkPiAgent with your AI SDK model to run.",
-  );
+  // Intentionally silent when run directly.
 }

@@ -19,6 +19,7 @@ import {
   resolveDiscordDbPath,
   resolveDiscordToken,
 } from "@stanley2058/lilac-utils";
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -122,6 +123,12 @@ function getDisplayTextFromDiscordMessage(msg: Message): string {
   return "";
 }
 
+function previewText(text: string, max = 400): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}...`;
+}
+
 function shouldAllowMessage(params: {
   cfg: CoreConfig;
   channelId: string;
@@ -149,6 +156,11 @@ export class DiscordAdapter implements SurfaceAdapter {
   private entityMapper: EntityMapper | null = null;
   private handlers = new Set<AdapterEventHandler>();
 
+  private readonly logger = new Logger({
+    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    module: "surface:discord",
+  });
+
   private self: SurfaceSelf | null = null;
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -160,9 +172,18 @@ export class DiscordAdapter implements SurfaceAdapter {
     const cfg = this.opts?.config ?? (await getCoreConfig());
     this.cfg = cfg;
 
+    this.logger.info("connecting", {
+      botName: cfg.surface.discord.botName,
+      tokenEnv: cfg.surface.discord.tokenEnv,
+      allowedChannelIds: cfg.surface.discord.allowedChannelIds.length,
+      allowedGuildIds: cfg.surface.discord.allowedGuildIds.length,
+    });
+
     const dbPath = resolveDiscordDbPath(cfg);
     this.store = new DiscordSurfaceStore(dbPath);
     this.entityMapper = createDiscordEntityMapper({ cfg, store: this.store });
+
+    this.logger.info("discord store initialized", { dbPath });
 
     const token = resolveDiscordToken(cfg);
 
@@ -187,6 +208,11 @@ export class DiscordAdapter implements SurfaceAdapter {
         userId: user.id,
         userName: botName,
       };
+
+      this.logger.info("ready", {
+        userId: user.id,
+        botName,
+      });
 
       const statusMessage = cfg.surface.discord.statusMessage;
       const applyPresence = () => {
@@ -265,10 +291,14 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     await client.login(token);
 
+    this.logger.info("login ok");
+
     this.client = client;
   }
 
   async disconnect(): Promise<void> {
+    this.logger.info("disconnecting");
+
     if (this.presenceTimer) {
       clearInterval(this.presenceTimer);
       this.presenceTimer = null;
@@ -286,6 +316,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     this.store?.close();
     this.store = null;
     this.entityMapper = null;
+
+    this.logger.info("disconnected");
   }
 
   async getSelf(): Promise<SurfaceSelf> {
@@ -714,6 +746,11 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const guildId = msg.guildId;
     if (!shouldAllowMessage({ cfg, channelId: input.channelId, guildId })) {
+      this.logger.debug("message ignored (not allowlisted)", {
+        channelId: input.channelId,
+        guildId,
+        messageId: input.messageId,
+      });
       return null;
     }
 
@@ -850,7 +887,27 @@ export class DiscordAdapter implements SurfaceAdapter {
     const guildId = msg.guildId;
     const channelId = msg.channelId;
 
-    if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) {
+      this.logger.debug("message ignored (not allowlisted)", {
+        channelId,
+        guildId,
+        messageId: msg.id,
+        userId: msg.author.id,
+      });
+      return;
+    }
+
+    this.logger.debug("message received", {
+      channelId,
+      guildId,
+      messageId: msg.id,
+      userId: msg.author.id,
+      isBot: msg.author.bot,
+      text:
+        typeof msg.content === "string" && msg.content.trim().length > 0
+          ? previewText(msg.content)
+          : undefined,
+    });
 
     const channelName = getChannelName(msg.channel);
 

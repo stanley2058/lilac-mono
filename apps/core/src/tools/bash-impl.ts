@@ -1,9 +1,15 @@
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
+
+const logger = new Logger({
+  logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+  module: "tool:bash",
+});
 
 export type BashToolInput = {
   command: string;
@@ -73,9 +79,31 @@ export async function executeBash(
 ): Promise<BashToolOutput> {
   const resolvedCwd = cwd ? expandTilde(cwd) : process.cwd();
 
+  const redactedCommand = redactSecrets(command);
+  const startedAt = Date.now();
+
+  logger.info("bash exec", {
+    command: redactedCommand,
+    cwd: resolvedCwd,
+    timeoutMs: timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
+    requestId: context?.requestId,
+    sessionId: context?.sessionId,
+    requestClient: context?.requestClient,
+  });
+
   if (!dangerouslyAllow) {
     const blocked = analyzeBashCommand(command, { cwd: resolvedCwd });
     if (blocked) {
+      logger.warn("bash blocked", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        reason: blocked.reason,
+        segment: blocked.segment,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
+
       return {
         stdout: "",
         stderr: formatBlockedMessage({
@@ -133,7 +161,23 @@ export async function executeBash(
       stderrResult.status === "fulfilled" ? stderrResult.value : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
+    const durationMs = Date.now() - startedAt;
+
     if (timedOut && child.killed) {
+      logger.warn("bash timeout", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        timeoutMs: effectiveTimeoutMs,
+        signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
+        exitCode,
+        durationMs,
+        stdoutBytes: stdout.length,
+        stderrBytes: stderr.length,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
+
       return {
         stdout,
         stderr,
@@ -147,6 +191,19 @@ export async function executeBash(
     }
 
     if (stdoutResult.status === "rejected") {
+      logger.error(
+        "bash stdout read failed",
+        {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          durationMs,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        },
+        stdoutResult.reason,
+      );
+
       return {
         stdout,
         stderr,
@@ -160,6 +217,19 @@ export async function executeBash(
     }
 
     if (stderrResult.status === "rejected") {
+      logger.error(
+        "bash stderr read failed",
+        {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          durationMs,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        },
+        stderrResult.reason,
+      );
+
       return {
         stdout,
         stderr,
@@ -173,6 +243,19 @@ export async function executeBash(
     }
 
     if (exitResult.status === "rejected") {
+      logger.error(
+        "bash exit status read failed",
+        {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          durationMs,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        },
+        exitResult.reason,
+      );
+
       return {
         stdout,
         stderr,
@@ -185,8 +268,50 @@ export async function executeBash(
       };
     }
 
+    // Always log the outcome (exitCode can be non-zero without executionError).
+    const ok = exitCode === 0;
+    if (ok) {
+      logger.info("bash done", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        exitCode,
+        durationMs,
+        stdoutBytes: stdout.length,
+        stderrBytes: stderr.length,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
+    } else {
+      logger.warn("bash done (non-zero exit)", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        exitCode,
+        durationMs,
+        stdoutBytes: stdout.length,
+        stderrBytes: stderr.length,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
+    }
+
     return { stdout, stderr, exitCode };
   } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    logger.error(
+      "bash spawn failed",
+      {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        durationMs,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      },
+      err,
+    );
+
     return {
       stdout: "",
       stderr: "",

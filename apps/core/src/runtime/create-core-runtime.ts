@@ -40,15 +40,6 @@ export type CoreRuntimeOptions = {
   logLevel?: LogLevel;
 };
 
-function mustRedisUrl(): string {
-  const url = env.redisUrl;
-  if (!url) {
-    console.error("Fatal: REDIS_URL must be set");
-    process.exit(1);
-  }
-  return url;
-}
-
 function subId(prefix: string, name: string): string {
   return `${prefix}:${name}`;
 }
@@ -69,7 +60,17 @@ export async function createCoreRuntime(
   const toolServerPort =
     opts.toolServerPort ?? Number(env.toolServer.port ?? 8080);
 
-  const redisUrl = mustRedisUrl();
+  logger.info("Core runtime init", {
+    cwd,
+    toolServerPort,
+    subscriptionPrefix,
+  });
+
+  const redisUrl = env.redisUrl;
+  if (!redisUrl) {
+    logger.error("Missing REDIS_URL env var (required)");
+    throw new Error("REDIS_URL must be set");
+  }
   const redis = new Redis(redisUrl);
 
   await fs.mkdir(cwd, { recursive: true });
@@ -77,9 +78,9 @@ export async function createCoreRuntime(
   try {
     await redis.ping();
   } catch (e) {
+    logger.error("Failed to connect to Redis", e);
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`Fatal: failed to connect to Redis: ${msg}`);
-    process.exit(1);
+    throw new Error(`Failed to connect to Redis: ${msg}`);
   }
 
   const raw = createRedisStreamsBus({
@@ -113,10 +114,16 @@ export async function createCoreRuntime(
     started = true;
 
     try {
+      logger.info("Core runtime starting...");
+
       // Subscribe to adapter events before connecting, so we don't miss early messages.
       stopAdapterToBus = await bridgeAdapterToBus({
         adapter,
         bus,
+        subscriptionId: subId(subscriptionPrefix, "adapter-to-bus"),
+      });
+
+      logger.info("bridgeAdapterToBus started", {
         subscriptionId: subId(subscriptionPrefix, "adapter-to-bus"),
       });
 
@@ -130,15 +137,27 @@ export async function createCoreRuntime(
         },
       });
 
+      logger.info("Workflow service started", {
+        subscriptionId: subId(subscriptionPrefix, "workflow"),
+      });
+
       stopRouter = await startBusRequestRouter({
         adapter,
         bus,
         subscriptionId: subId(subscriptionPrefix, "router"),
       });
 
+      logger.info("Bus request router started", {
+        subscriptionId: subId(subscriptionPrefix, "router"),
+      });
+
       // Tool server (same process)
       requestMessageCache = await createRequestMessageCache({
         bus,
+        subscriptionId: subId(subscriptionPrefix, "tool-request-cache"),
+      });
+
+      logger.info("Request message cache started", {
         subscriptionId: subId(subscriptionPrefix, "tool-request-cache"),
       });
 
@@ -160,13 +179,25 @@ export async function createCoreRuntime(
       await toolServer.init();
       await toolServer.start(toolServerPort);
 
+      logger.info("Tool server started", {
+        port: toolServerPort,
+      });
+
       // Adapter must be connected before we start relaying streamed outputs.
       await adapter.connect();
+
+      logger.info("Surface adapter connected", {
+        platform: "discord",
+      });
 
       stopBusToAdapter = await bridgeBusToAdapter({
         adapter,
         bus,
         platform: "discord",
+        subscriptionId: subId(subscriptionPrefix, "bus-to-adapter"),
+      });
+
+      logger.info("bridgeBusToAdapter started", {
         subscriptionId: subId(subscriptionPrefix, "bus-to-adapter"),
       });
 
@@ -177,12 +208,17 @@ export async function createCoreRuntime(
         cwd,
       });
 
+      logger.info("Bus agent runner started", {
+        subscriptionId: subId(subscriptionPrefix, "agent-runner"),
+        cwd,
+      });
+
       logger.info(
         `Core runtime started (tool-server port=${toolServerPort}, subscriptionPrefix=${subscriptionPrefix})`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      logger.error({ error: e }, `Core runtime start failed: ${msg}`);
+      logger.error(`Core runtime start failed: ${msg}`, e);
       await stop();
       throw e;
     }

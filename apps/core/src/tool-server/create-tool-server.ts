@@ -8,6 +8,41 @@ import {
 } from "./schema";
 import type { RequestContext, ServerTool } from "./types";
 
+function safeJsonPreview(value: unknown, maxChars = 2000): string {
+  const SENSITIVE_KEYS = new Set([
+    "authorization",
+    "Authorization",
+    "apiKey",
+    "apikey",
+    "token",
+    "access",
+    "refresh",
+    "idToken",
+    "code",
+    "pkceVerifier",
+    "password",
+  ]);
+
+  const seen = new WeakSet<object>();
+  const replacer = (key: string, val: unknown) => {
+    if (SENSITIVE_KEYS.has(key)) return "<redacted>";
+    if (typeof val === "object" && val !== null) {
+      if (seen.has(val as object)) return "<circular>";
+      seen.add(val as object);
+    }
+    return val;
+  };
+
+  let raw = "";
+  try {
+    raw = JSON.stringify(value, replacer);
+  } catch {
+    raw = String(value);
+  }
+
+  return raw.length > maxChars ? `${raw.slice(0, maxChars)}...` : raw;
+}
+
 function headerStr(h: unknown): string | undefined {
   return typeof h === "string" && h.length > 0 ? h : undefined;
 }
@@ -55,7 +90,7 @@ export function createToolServer(options: ToolServerOptions) {
   const app = options.app ?? new Elysia();
 
   app.onError(({ code, error }) => {
-    logger.error({ code, error });
+    logger.error("tool-server error", { code }, error);
   });
 
   app.get("/health", async () => ({ ok: true as const }));
@@ -106,12 +141,27 @@ export function createToolServer(options: ToolServerOptions) {
   app.post(
     "/call",
     async ({ body, request, headers }) => {
+      const startedAt = Date.now();
+
       const tool = callMapping.get(body.callableId);
       if (!tool) {
         throw new NotFoundError(`Unknown callable ID '${body.callableId}'`);
       }
 
       const ctx = parseRequestContext(headers);
+
+      logger.info("tool call", {
+        callableId: body.callableId,
+        requestId: ctx.requestId,
+        sessionId: ctx.sessionId,
+        requestClient: ctx.requestClient,
+        cwd: ctx.cwd,
+      });
+
+      logger.debug("tool call input", {
+        callableId: body.callableId,
+        input: safeJsonPreview(body.input),
+      });
 
       try {
         const messages = ctx.requestId
@@ -123,8 +173,25 @@ export function createToolServer(options: ToolServerOptions) {
           context: ctx,
           messages,
         });
+
+        logger.info("tool call done", {
+          callableId: body.callableId,
+          requestId: ctx.requestId,
+          durationMs: Date.now() - startedAt,
+          ok: true,
+        });
         return { isError: false, output };
       } catch (e) {
+        logger.error(
+          "tool call failed",
+          {
+            callableId: body.callableId,
+            requestId: ctx.requestId,
+            durationMs: Date.now() - startedAt,
+          },
+          e,
+        );
+
         return {
           isError: true,
           output: e instanceof Error ? e.message : String(e),
@@ -147,7 +214,7 @@ export function createToolServer(options: ToolServerOptions) {
       const initResult = await Promise.allSettled(tools.map((t) => t.init()));
       for (const result of initResult) {
         if (result.status === "rejected") {
-          logger.error({ error: result.reason });
+          logger.error("tool init failed", result.reason);
         }
       }
       await refreshToolMapping();

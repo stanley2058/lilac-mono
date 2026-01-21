@@ -18,6 +18,8 @@ import {
   type AiSdkPiAgentEvent,
 } from "@stanley2058/lilac-agent";
 
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+
 import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
 
@@ -50,6 +52,11 @@ export async function startBusAgentRunner(params: {
 }) {
   const { bus, subscriptionId } = params;
 
+  const logger = new Logger({
+    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    module: "bus-agent-runner",
+  });
+
   let cfg = params.config ?? (await getCoreConfig());
   const cwd =
     params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
@@ -77,6 +84,14 @@ export async function startBusAgentRunner(params: {
         );
       }
 
+      logger.info("cmd.request.message received", {
+        requestId,
+        sessionId,
+        requestClient,
+        queue: msg.data.queue,
+        messageCount: msg.data.messages.length,
+      });
+
       // reload config opportunistically (mtime cached in getCoreConfig).
       cfg = params.config ?? (await getCoreConfig());
 
@@ -99,7 +114,9 @@ export async function startBusAgentRunner(params: {
 
       if (!state.running) {
         state.queue.push(entry);
-        drainSessionQueue(sessionId, state).catch(console.error);
+        drainSessionQueue(sessionId, state).catch((e: unknown) => {
+          logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
+        });
       } else {
         // If the message is intended for the currently active request, apply immediately.
         if (
@@ -121,6 +138,13 @@ export async function startBusAgentRunner(params: {
             state: "queued",
             detail: "queued behind active request",
           });
+
+          logger.info("request queued behind active run", {
+            requestId,
+            sessionId,
+            activeRequestId: state.activeRequestId,
+            queueDepth: state.queue.length,
+          });
         }
       }
 
@@ -136,6 +160,8 @@ export async function startBusAgentRunner(params: {
 
     state.running = true;
     state.activeRequestId = next.requestId;
+
+    const runStartedAt = Date.now();
 
     const headers = {
       request_id: next.requestId,
@@ -155,6 +181,15 @@ export async function startBusAgentRunner(params: {
     await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
     const resolved = resolveModelSlot(cfg, "main");
+
+    logger.info("agent run starting", {
+      requestId: next.requestId,
+      sessionId: next.sessionId,
+      requestClient: next.requestClient,
+      model: resolved.spec,
+      messageCount: next.messages.length,
+      queuedForSession: state.queue.length,
+    });
 
     const agent = new AiSdkPiAgent<ToolSet>({
       system: cfg.agent.systemPrompt,
@@ -181,6 +216,8 @@ export async function startBusAgentRunner(params: {
 
     let finalText = "";
 
+    const toolStartMs = new Map<string, number>();
+
     const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
       if (
         event.type === "message_update" &&
@@ -195,10 +232,18 @@ export async function startBusAgentRunner(params: {
             { delta },
             { headers },
           )
-          .catch(console.error);
+          .catch((e: unknown) => {
+            logger.error(
+              "failed to publish output delta",
+              { requestId: headers.request_id, sessionId: headers.session_id },
+              e,
+            );
+          });
       }
 
       if (event.type === "tool_execution_start") {
+        toolStartMs.set(event.toolCallId, Date.now());
+
         bus
           .publish(
             lilacEventTypes.EvtAgentOutputToolCall,
@@ -209,10 +254,33 @@ export async function startBusAgentRunner(params: {
             },
             { headers },
           )
-          .catch(console.error);
+          .catch((e: unknown) => {
+            logger.error(
+              "failed to publish tool start",
+              {
+                requestId: headers.request_id,
+                sessionId: headers.session_id,
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+              },
+              e,
+            );
+          });
       }
 
       if (event.type === "tool_execution_end") {
+        const started = toolStartMs.get(event.toolCallId);
+        const toolDurationMs = started ? Date.now() - started : undefined;
+
+        logger.debug("tool finished", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          ok: !event.isError,
+          durationMs: toolDurationMs,
+        });
+
         bus
           .publish(
             lilacEventTypes.EvtAgentOutputToolCall,
@@ -225,7 +293,18 @@ export async function startBusAgentRunner(params: {
             },
             { headers },
           )
-          .catch(console.error);
+          .catch((e: unknown) => {
+            logger.error(
+              "failed to publish tool end",
+              {
+                requestId: headers.request_id,
+                sessionId: headers.session_id,
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+              },
+              e,
+            );
+          });
       }
 
       if (event.type === "agent_end") {
@@ -259,6 +338,13 @@ export async function startBusAgentRunner(params: {
         { headers },
       );
 
+      logger.info("agent run resolved", {
+        requestId: headers.request_id,
+        sessionId: headers.session_id,
+        durationMs: Date.now() - runStartedAt,
+        finalTextChars: finalText.length,
+      });
+
       await publishLifecycle({ bus, headers, state: "resolved" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -268,13 +354,25 @@ export async function startBusAgentRunner(params: {
         { finalText: `Error: ${msg}` },
         { headers },
       );
+
+      logger.error(
+        "agent run failed",
+        {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          durationMs: Date.now() - runStartedAt,
+        },
+        e,
+      );
     } finally {
       unsubscribe();
       unsubscribeCompaction();
       state.agent = null;
       state.activeRequestId = null;
       state.running = false;
-      drainSessionQueue(sessionId, state).catch(console.error);
+      drainSessionQueue(sessionId, state).catch((e: unknown) => {
+        logger.error("drainSessionQueue failed", { sessionId }, e);
+      });
     }
   }
 

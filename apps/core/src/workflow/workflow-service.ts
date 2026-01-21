@@ -5,6 +5,8 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+
 import { createWorkflowStoreQueries } from "./workflow-store-queries";
 import type { WorkflowStoreQueries } from "./workflow-store-queries";
 
@@ -177,6 +179,11 @@ export async function startWorkflowService(params: {
   };
 }) {
   const { bus, store, subscriptionId } = params;
+
+  const logger = new Logger({
+    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    module: "workflow-service",
+  });
   const queries: WorkflowStoreQueries = createWorkflowStoreQueries(store);
 
   const pollIntervalMs = params.pollTimeouts?.intervalMs ?? 1000;
@@ -194,6 +201,12 @@ export async function startWorkflowService(params: {
     async (msg, ctx) => {
       if (msg.type === lilacEventTypes.CmdWorkflowCreate) {
         const workflowId = msg.data.workflowId;
+
+        logger.info("workflow create", {
+          workflowId,
+          requestId: msg.headers?.request_id,
+          sessionId: msg.headers?.session_id,
+        });
 
         const defRaw = msg.data.definition;
         if (!isWorkflowDefinitionV2(defRaw)) {
@@ -219,6 +232,8 @@ export async function startWorkflowService(params: {
 
         store.upsertWorkflow(w);
 
+        logger.info("workflow created", { workflowId });
+
         await publishWorkflowLifecycle({
           bus,
           headers: msg.headers,
@@ -234,6 +249,12 @@ export async function startWorkflowService(params: {
       if (msg.type === lilacEventTypes.CmdWorkflowTaskCreate) {
         const workflowId = msg.data.workflowId;
         const taskId = msg.data.taskId;
+
+        logger.info("workflow task create", {
+          workflowId,
+          taskId,
+          kind: msg.data.kind,
+        });
 
         const w = store.getWorkflow(workflowId);
         if (!w) {
@@ -265,6 +286,13 @@ export async function startWorkflowService(params: {
 
         store.upsertTask(t);
 
+        logger.info("workflow task created", {
+          workflowId,
+          taskId,
+          kind: t.kind,
+          state: t.state,
+        });
+
         await publishTaskLifecycle({
           bus,
           headers: msg.headers,
@@ -294,6 +322,11 @@ export async function startWorkflowService(params: {
 
       if (msg.type === lilacEventTypes.CmdWorkflowCancel) {
         const workflowId = msg.data.workflowId;
+
+        logger.info("workflow cancel", {
+          workflowId,
+          reason: msg.data.reason,
+        });
         const w = store.getWorkflow(workflowId);
         if (!w) {
           await ctx.commit();
@@ -315,6 +348,8 @@ export async function startWorkflowService(params: {
           updatedAt: now(),
         };
         store.upsertWorkflow(updated);
+
+        logger.info("workflow cancelled", { workflowId });
 
         await publishWorkflowLifecycle({
           bus,
@@ -371,21 +406,36 @@ export async function startWorkflowService(params: {
         return;
       }
 
-      await resolveDiscordWaitForReplyFromAdapterEvent({
-        bus,
-        store,
-        queries,
-        evt: msg.data,
-        evtHeaders: msg.headers,
-        onTaskResolved: async (workflowId, trigger) => {
-          await tryResolveWorkflow({
-            bus,
-            store,
-            workflowId,
-            triggerEvt: trigger.evt,
-            triggerUserText: trigger.text,
-          });
-        },
+        await resolveDiscordWaitForReplyFromAdapterEvent({
+          bus,
+          store,
+          queries,
+          evt: msg.data,
+          evtHeaders: msg.headers,
+          onTaskResolved: async (workflowId, trigger) => {
+            logger.info("workflow task resolved (reply)", {
+              workflowId,
+              channelId: trigger.evt.channelId,
+              messageId: trigger.evt.messageId,
+              userId: trigger.evt.userId,
+            });
+
+            logger.debug("workflow task resolved text", {
+              workflowId,
+              text:
+                trigger.text.length > 200
+                  ? `${trigger.text.slice(0, 200)}...`
+                  : trigger.text,
+            });
+            await tryResolveWorkflow({
+              bus,
+              store,
+              logger,
+              workflowId,
+              triggerEvt: trigger.evt,
+              triggerUserText: trigger.text,
+            });
+          },
       });
 
       await ctx.commit();
@@ -399,15 +449,26 @@ export async function startWorkflowService(params: {
         store,
         queries,
         onTaskResolved: async (workflowId, trigger) => {
+          logger.info("workflow task resolved (timeout)", {
+            workflowId,
+          });
+
+          logger.debug("workflow task resolved text", {
+            workflowId,
+            text: trigger.text,
+          });
           await tryResolveWorkflow({
             bus,
             store,
+            logger,
             workflowId,
             triggerEvt: trigger.evt,
             triggerUserText: trigger.text,
           });
         },
-      }).catch(console.error);
+      }).catch((e: unknown) => {
+        logger.error("workflow timeout polling failed", e);
+      });
     }, pollIntervalMs);
   }
 
@@ -426,11 +487,12 @@ export async function startWorkflowService(params: {
 async function tryResolveWorkflow(params: {
   bus: LilacBus;
   store: WorkflowStore;
+  logger: Logger;
   workflowId: string;
   triggerEvt: EvtAdapterMessageCreatedData;
   triggerUserText: string;
 }) {
-  const { bus, store, workflowId } = params;
+  const { bus, store, workflowId, logger } = params;
 
   const w = store.getWorkflow(workflowId);
   if (!w) return;
@@ -452,6 +514,12 @@ async function tryResolveWorkflow(params: {
     updatedAt: now(),
   };
   store.upsertWorkflow(wResolved);
+
+  logger.info("workflow resolved", {
+    workflowId,
+    taskCount: tasks.length,
+    completion: w.definition.completion,
+  });
 
   await publishWorkflowLifecycle({
     bus,
@@ -478,6 +546,13 @@ async function tryResolveWorkflow(params: {
 
   const requestId = `wf:${workflowId}:${bumped.resumeSeq}`;
   ensureNonDiscordRequestId(requestId);
+
+  logger.info("publishing resume request", {
+    workflowId,
+    requestId,
+    sessionId: bumped.definition.resumeTarget.session_id,
+    requestClient: bumped.definition.resumeTarget.request_client,
+  });
 
   const resume = buildResumeRequest({
     workflow: bumped,

@@ -23,6 +23,12 @@ import {
 
 type SessionMode = "mention" | "active";
 
+function previewText(text: string, max = 200): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}...`;
+}
+
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -185,6 +191,21 @@ export async function startBusRequestRouter(params: {
         : getSessionMode(cfg, sessionId);
 
       const active = activeBySession.get(sessionId);
+
+      logger.debug("adapter.message.created", {
+        sessionId,
+        messageId: msgRef.messageId,
+        userId: msg.data.userId,
+        mode,
+        isDm,
+        mentionsBot: flags.mentionsBot === true,
+        replyToBot: flags.replyToBot === true,
+        activeRequestId: active?.requestId,
+        textPreview:
+          typeof msg.data.text === "string" && msg.data.text.trim().length > 0
+            ? previewText(msg.data.text)
+            : undefined,
+      });
 
       if (mode === "active") {
         if (isDm) {
@@ -389,6 +410,11 @@ export async function startBusRequestRouter(params: {
 
     const existing = buffers.get(sessionId);
     if (!existing) {
+      logger.debug("router debounce start", {
+        sessionId,
+        debounceMs: cfg.surface.router.activeDebounceMs,
+      });
+
       const buffer: DebounceBuffer = {
         sessionId,
         messages: [message],
@@ -396,7 +422,9 @@ export async function startBusRequestRouter(params: {
       };
 
       buffer.timer = setTimeout(() => {
-        flushDebounce(sessionId).catch(console.error);
+        flushDebounce(sessionId).catch((e: unknown) => {
+          logger.error("router flushDebounce failed", { sessionId }, e);
+        });
       }, cfg.surface.router.activeDebounceMs);
 
       buffers.set(sessionId, buffer);
@@ -424,8 +452,7 @@ export async function startBusRequestRouter(params: {
       botName: cfg.surface.discord.botName,
       messages: b.messages,
     }).catch((e: unknown) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      logger.error({ error: msg, sessionId }, "router gate failed; skipping");
+      logger.error("router gate failed; skipping", { sessionId }, e);
       return { forward: false, reason: "error" };
     });
 
@@ -436,6 +463,15 @@ export async function startBusRequestRouter(params: {
       );
       return;
     }
+
+    logger.info(
+      {
+        sessionId,
+        reason: decision.reason ?? "forward",
+        messageCount: b.messages.length,
+      },
+      "router gate forwarded batch",
+    );
 
     // Gate-forwarded prompt: do NOT reply-to a message.
     // Anchor the "active user" as the newest message author in the batch.
@@ -515,11 +551,7 @@ export async function startBusRequestRouter(params: {
 
       return res.output;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      logger.error(
-        { error: msg, sessionId: input.sessionId },
-        "router gate error",
-      );
+      logger.error("router gate error", { sessionId: input.sessionId }, e);
       return { forward: false, reason: "error" };
     } finally {
       clearTimeout(timeout);
@@ -657,6 +689,22 @@ export async function startBusRequestRouter(params: {
     messages: ModelMessage[];
     raw: unknown;
   }) {
+    logger.info("cmd.request.message publish", {
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      queue: input.queue,
+      triggerType: input.triggerType,
+      messageCount: input.messages.length,
+      lastUserPreview: (() => {
+        for (let i = input.messages.length - 1; i >= 0; i--) {
+          const m = input.messages[i]!;
+          if (m.role !== "user") continue;
+          if (typeof m.content === "string") return previewText(m.content);
+        }
+        return undefined;
+      })(),
+    });
+
     await bus.publish(
       lilacEventTypes.CmdRequestMessage,
       {

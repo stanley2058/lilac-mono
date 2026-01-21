@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import {
   EDIT_ERROR_CODES,
   READ_ERROR_CODES,
@@ -247,6 +248,11 @@ const editFileOutputZod = z.union([
 type EditFileOutput = z.infer<typeof editFileOutputZod>;
 
 export function fsTool(cwd: string) {
+  const logger = new Logger({
+    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    module: "tool:fs",
+  });
+
   const fs = new FileSystem(cwd);
 
   return {
@@ -257,7 +263,25 @@ export function fsTool(cwd: string) {
       ].join("\n"),
       inputSchema: writeFileInputZod,
       outputSchema: writeFileOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => fs.writeFile(input, opCwd),
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.writeFile", {
+          path: input.path,
+          cwd: opCwd,
+          overwrite: input.overwrite ?? false,
+        });
+
+        const res = await fs.writeFile(input, opCwd);
+
+        logger.info("fs.writeFile done", {
+          path: res.resolvedPath,
+          ok: res.success,
+          created: res.success ? res.created : undefined,
+          overwritten: res.success ? res.overwritten : undefined,
+          error: res.success ? undefined : res.error,
+        });
+
+        return res;
+      },
     }),
 
     readFile: tool<ReadFileInput, ReadFileOutput>({
@@ -265,7 +289,22 @@ export function fsTool(cwd: string) {
         "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
       inputSchema: readFileInputZod,
       outputSchema: readFileOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => fs.readFile(input, opCwd),
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.readFile", {
+          path: input.path,
+          cwd: opCwd,
+        });
+
+        const res = await fs.readFile(input, opCwd);
+
+        logger.info("fs.readFile done", {
+          path: res.resolvedPath,
+          ok: res.success,
+          error: res.success ? undefined : res.error,
+        });
+
+        return res;
+      },
     }),
 
     editFile: tool<EditFileInput, EditFileOutput>({
@@ -277,7 +316,25 @@ export function fsTool(cwd: string) {
       ].join("\n"),
       inputSchema: editFileInputZod,
       outputSchema: editFileOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => fs.editFile(input, opCwd),
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.editFile", {
+          path: input.path,
+          cwd: opCwd,
+          operations: input.edits.map((e) => e.type),
+        });
+
+        const res = await fs.editFile(input, opCwd);
+
+        logger.info("fs.editFile done", {
+          path: res.resolvedPath,
+          ok: res.success,
+          changesMade: res.success ? res.changesMade : undefined,
+          replacementsMade: res.success ? res.replacementsMade : undefined,
+          error: res.success ? undefined : res.error,
+        });
+
+        return res;
+      },
     }),
   };
 }

@@ -1,5 +1,6 @@
 import type Redis from "ioredis";
 import SuperJSON from "superjson";
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 
 import type { RawBus } from "./raw-bus";
 import type {
@@ -73,6 +74,7 @@ async function ensureGroup(options: {
   streamKey: string;
   group: string;
   startId: string;
+  logger?: Logger;
 }): Promise<void> {
   try {
     await options.redis.xgroup(
@@ -82,9 +84,21 @@ async function ensureGroup(options: {
       options.startId,
       "MKSTREAM",
     );
+
+    options.logger?.info("created consumer group", {
+      streamKey: options.streamKey,
+      group: options.group,
+      startId: options.startId,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("BUSYGROUP")) return;
+    if (msg.includes("BUSYGROUP")) {
+      options.logger?.debug("consumer group exists", {
+        streamKey: options.streamKey,
+        group: options.group,
+      });
+      return;
+    }
     throw e;
   }
 }
@@ -113,12 +127,17 @@ export class RedisStreamsBus implements RawBus {
   private readonly redis: Redis;
   private readonly keyPrefix: string;
   private readonly ownsRedis: boolean;
+  private readonly logger: Logger;
 
   /** Create a new bus using an existing ioredis client. */
   constructor(options: RedisStreamsBusOptions) {
     this.redis = options.redis;
     this.keyPrefix = options.keyPrefix ?? "lilac:event-bus";
     this.ownsRedis = options.ownsRedis ?? false;
+    this.logger = new Logger({
+      logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+      module: "event-bus:redis-streams",
+    });
   }
 
   private streamKey(topic: Topic): string {
@@ -231,8 +250,25 @@ export class RedisStreamsBus implements RawBus {
       30_000,
     );
 
+    this.logger.info("subscribe", {
+      topic,
+      mode: opts.mode,
+      subscriptionId:
+        opts.mode === "work" || opts.mode === "fanout"
+          ? (opts as WorkOrFanoutSubscriptionOptions).subscriptionId
+          : undefined,
+      consumerId:
+        opts.mode === "work" || opts.mode === "fanout"
+          ? (opts as WorkOrFanoutSubscriptionOptions).consumerId
+          : undefined,
+      offset: (opts as any).offset,
+      maxMessages,
+      blockMs,
+    });
+
     const running = (async () => {
-      if (opts.mode === "tail") {
+      try {
+        if (opts.mode === "tail") {
         let cursor: string =
           opts.offset?.type === "begin"
             ? "0-0"
@@ -276,14 +312,20 @@ export class RedisStreamsBus implements RawBus {
         }
 
         return;
-      }
+        }
 
       const workOpts = opts as WorkOrFanoutSubscriptionOptions;
       const group = workOpts.subscriptionId;
       const consumerId = workOpts.consumerId ?? randomConsumerId();
 
       const startId = workOpts.offset?.type === "begin" ? "0-0" : "$";
-      await ensureGroup({ redis: this.redis, streamKey, group, startId });
+      await ensureGroup({
+        redis: this.redis,
+        streamKey,
+        group,
+        startId,
+        logger: this.logger,
+      });
 
       while (!abortController.signal.aborted) {
         const res = (await this.redis.xreadgroup(
@@ -322,10 +364,28 @@ export class RedisStreamsBus implements RawBus {
             } catch (e) {
               // Leave message pending for later analysis / recovery.
               // TODO: consider adding a configurable dead-letter flow.
-              console.error("event-bus handler error", e);
+              this.logger.error(
+                "event-bus handler error",
+                {
+                  topic,
+                  group,
+                  consumerId,
+                  messageId: id,
+                  messageType: msg.type,
+                },
+                e,
+              );
             }
           }
         }
+      }
+      } catch (e) {
+        this.logger.error(
+          "event-bus subscription loop crashed",
+          { topic, mode: opts.mode },
+          e,
+        );
+        throw e;
       }
     })();
 

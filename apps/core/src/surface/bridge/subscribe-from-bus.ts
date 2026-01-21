@@ -4,6 +4,8 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 
+import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+
 import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
@@ -66,6 +68,11 @@ export async function bridgeBusToAdapter(params: {
   subscriptionId: string;
   idleTimeoutMs?: number;
 }) {
+  const logger = new Logger({
+    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    module: "bridge:bus-to-adapter",
+  });
+
   const {
     adapter,
     bus,
@@ -109,6 +116,12 @@ export async function bridgeBusToAdapter(params: {
         return;
       }
 
+      logger.info("starting reply relay", {
+        requestId,
+        sessionId,
+        requestClient,
+      });
+
       const relay = await startRelay({
         adapter,
         bus,
@@ -149,8 +162,18 @@ export async function bridgeBusToAdapter(params: {
     const bumpTimeout = () => {
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
-        out.abort("timeout").catch(console.error);
-        relayStop().catch(console.error);
+        logger.warn("reply relay idle timeout", {
+          requestId,
+          sessionId,
+          idleTimeoutMs,
+        });
+
+        out.abort("timeout").catch((e: unknown) => {
+          logger.error("failed to abort output stream", { requestId }, e);
+        });
+        relayStop().catch((e: unknown) => {
+          logger.error("failed to stop relay", { requestId }, e);
+        });
       }, idleTimeoutMs);
     };
 
@@ -170,6 +193,11 @@ export async function bridgeBusToAdapter(params: {
         // ignore
       }
       activeRelays.delete(requestId);
+
+      logger.info("reply relay stopped", {
+        requestId,
+        sessionId,
+      });
     };
 
     bumpTimeout();
@@ -223,6 +251,12 @@ export async function bridgeBusToAdapter(params: {
             await out.push({ type: "text.set", text: outMsg.data.finalText });
             await out.finish();
             await relayStop();
+
+            logger.info("reply relay finished", {
+              requestId,
+              sessionId,
+              finalTextChars: outMsg.data.finalText.length,
+            });
             return;
           }
 

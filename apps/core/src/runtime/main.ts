@@ -8,12 +8,12 @@ const logger = new Logger({
 });
 
 process.on("unhandledRejection", (reason) => {
-  logger.error({ reason }, "Unhandled promise rejection");
+  logger.error("Unhandled promise rejection", reason);
   process.exitCode = 1;
 });
 
 process.on("uncaughtException", (error) => {
-  logger.error({ error }, "Uncaught exception");
+  logger.error("Uncaught exception", error);
   process.exitCode = 1;
 });
 
@@ -23,7 +23,7 @@ try {
   runtime = await createCoreRuntime();
   await runtime.start();
 } catch (e) {
-  logger.error({ error: e }, "Failed to start core runtime");
+  logger.error("Failed to start core runtime", e);
   process.exit(1);
 }
 
@@ -36,7 +36,7 @@ async function shutdown(signal: string) {
   try {
     await runtime?.stop();
   } catch (e) {
-    logger.error({ error: e }, "Shutdown failed");
+    logger.error("Shutdown failed", e);
     process.exitCode = 1;
   } finally {
     process.exit(process.exitCode ?? 0);
@@ -44,9 +44,13 @@ async function shutdown(signal: string) {
 }
 
 process.on("SIGINT", () => {
-  shutdown("SIGINT").catch(console.error);
+  shutdown("SIGINT").catch((e) => {
+    logger.error("Shutdown handler failed", e);
+  });
 });
 
 process.on("SIGTERM", () => {
-  shutdown("SIGTERM").catch(console.error);
+  shutdown("SIGTERM").catch((e) => {
+    logger.error("Shutdown handler failed", e);
+  });
 });
