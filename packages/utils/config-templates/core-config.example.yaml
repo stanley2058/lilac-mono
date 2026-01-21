@@ -2,24 +2,49 @@ basePrompt: "You are Lilac."
 
 surface:
   # Router behavior is surface-wide (not per-adapter).
-  # router:
-  #   defaultMode: mention
-  #   sessionModes:
-  #     "123456789012345678":
-  #       mode: active
-  #   activeDebounceMs: 3000
-  #   activeGate:
-  #     enabled: false
-  #     timeoutMs: 2500
+  router:
+    # Routing modes:
+    # - mention: only start a request on mention/reply-to-bot (default for guild channels)
+    # - active: treat the channel like a DM (respond to everything)
+    defaultMode: mention
+
+    # Per-session routing mode overrides. Key is the session/channel id.
+    sessionModes: {}
+    # sessionModes:
+    #   "123456789012345678":
+    #     mode: active
+
+    # Debounce window (ms) for active mode initial prompt batching.
+    activeDebounceMs: 3000
+
+    # Active channel gate to prevent replying to everything.
+    # When enabled, we run a lightweight model-based gate before forwarding.
+    activeGate:
+      enabled: false
+      timeoutMs: 2500
 
   discord:
     tokenEnv: "DISCORD_TOKEN"
+
+    # If both lists are empty, the bot will ignore all Discord traffic.
     allowedChannelIds: []
     allowedGuildIds: []
+
+    # Display name used in attribution + mention stripping. Must not contain spaces.
     botName: "lilac"
+
+    # Optional: override surface DB location (default: <dataDir>/discord-surface.db).
+    # dbPath: "/path/to/discord-surface.db"
+
+    # Optional: Discord custom presence/status message.
+    # statusMessage: "ready"
 
 
 agent: {}
+
+# Optional: extra system prompt text prepended to data/prompts/*.
+# basePrompt: |
+#   You are lilac.
 
 models:
   # Optional preset registry to make model selection ergonomic.
@@ -41,7 +66,25 @@ models:
     #   temperature: 0.2
 
   # Fast/cheap model for lightweight features (router gate, etc.)
-  # fast:
-  #   model: "openrouter/openai/gpt-4o-mini"
-  #   # options:
-  #   #   temperature: 0.0
+  fast:
+    model: "openrouter/openai/gpt-4o-mini"
+    # options:
+    #   temperature: 0.0
+
+# Entity aliasing / mention rewriting (Discord only).
+#
+# This powers two conveniences:
+# - outbound: "@Stanley" -> "<@123>" and "#ops" -> "<#456>"
+# - inbound: "<@123>" -> "@Stanley" and "<#456>" -> "#ops"
+#
+# Notes:
+# - Matches are case-insensitive; the canonical casing is preserved from config.
+# - Tokens are sanitized (whitespace -> '_' and leading @/# stripped).
+# entity:
+#   users:
+#     Stanley:
+#       discord: "123456789012345678"
+#
+#   sessions:
+#     discord:
+#       ops: "234567890123456789"
