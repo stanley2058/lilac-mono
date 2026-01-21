@@ -11,6 +11,21 @@ describe("executeBash", () => {
     expect(res.stdout).toContain("hello");
   });
 
+  it("inherits PATH from the current process", async () => {
+    const originalPath = process.env.PATH;
+    process.env.PATH = `/__lilac_path_test__:${originalPath ?? ""}`;
+
+    try {
+      const res = await executeBash({ command: "echo $PATH" });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.executionError).toBeUndefined();
+      expect(res.stdout.startsWith("/__lilac_path_test__:")).toBe(true);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it("does not set executionError for command failures", async () => {
     const res = await executeBash({ command: "exit 2" });
 

@@ -133,7 +133,10 @@ export async function executeBash(
   }, effectiveTimeoutMs);
 
   try {
-    const child = Bun.spawn(["bash", "-lc", command], {
+    // Intentionally avoid a login shell here.
+    // Login shells source /etc/profile (and friends) which can clobber PATH
+    // and diverge from the process environment we want the tool to inherit.
+    const child = Bun.spawn(["bash", "-c", command], {
       cwd: resolvedCwd,
       stdout: "pipe",
       stderr: "pipe",
