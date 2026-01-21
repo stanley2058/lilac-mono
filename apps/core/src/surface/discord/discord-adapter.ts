@@ -176,7 +176,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     });
 
-    client.on("ready", async () => {
+    client.on("clientReady", async () => {
       const user = client.user;
       if (!user) return;
 
