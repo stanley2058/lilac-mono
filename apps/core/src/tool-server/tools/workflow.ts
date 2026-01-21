@@ -24,6 +24,7 @@ export class Workflow implements ServerTool {
       bus: LilacBus;
       adapter?: SurfaceAdapter;
       config?: CoreConfig;
+      getConfig?: () => Promise<CoreConfig>;
     },
   ) {}
 
@@ -79,6 +80,12 @@ export class Workflow implements ServerTool {
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
+    const getCfg = async (): Promise<CoreConfig | undefined> => {
+      if (this.params.config) return this.params.config;
+      if (this.params.getConfig) return this.params.getConfig();
+      return undefined;
+    };
+
     if (callableId === "workflow") {
       const payload = workflowCreateInputSchema.parse(input);
       const headers = toHeaders(opts?.context);
@@ -114,11 +121,9 @@ export class Workflow implements ServerTool {
         const taskId = `t:${i + 1}:${crypto.randomUUID()}`;
         taskIds.push(taskId);
 
-        const channelId = this.params.config
-          ? resolveDiscordSessionId({
-              sessionId: t.sessionId,
-              cfg: this.params.config,
-            })
+        const cfg = await getCfg();
+        const channelId = cfg
+          ? resolveDiscordSessionId({ sessionId: t.sessionId, cfg })
           : t.sessionId;
 
         await this.params.bus.publish(
@@ -144,7 +149,8 @@ export class Workflow implements ServerTool {
       const payload = workflowSendAndWaitInputSchema.parse(input);
       const headers = toHeaders(opts?.context);
 
-      if (!this.params.config) {
+      const cfg = await getCfg();
+      if (!cfg) {
         throw new Error(
           "workflow.send_and_wait_for_reply requires core config (tool server must be started with config)",
         );
@@ -152,7 +158,7 @@ export class Workflow implements ServerTool {
 
       const resolvedChannelId = resolveDiscordSessionId({
         sessionId: payload.sessionId,
-        cfg: this.params.config,
+        cfg,
       });
 
       if (!payload.text.trim()) {

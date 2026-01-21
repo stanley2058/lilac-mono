@@ -342,7 +342,8 @@ export class Surface implements ServerTool {
   constructor(
     private readonly params: {
       adapter: SurfaceAdapter;
-      config: CoreConfig;
+      config?: CoreConfig;
+      getConfig?: () => Promise<CoreConfig>;
     },
   ) {}
 
@@ -478,6 +479,14 @@ export class Surface implements ServerTool {
     throw new Error(`Invalid callable ID '${callableId}'`);
   }
 
+  private async getCfg(): Promise<CoreConfig> {
+    if (this.params.config) return this.params.config;
+    if (this.params.getConfig) return this.params.getConfig();
+    throw new Error(
+      "surface tool requires core config (tool server must be started with config)",
+    );
+  }
+
   private async callSessionsList(
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
@@ -485,6 +494,8 @@ export class Surface implements ServerTool {
     const input = sessionsListInputSchema.parse(rawInput);
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
+
+    const cfg = await this.getCfg();
 
     const sessions = await this.params.adapter.listSessions();
     const out: Array<{
@@ -505,7 +516,7 @@ export class Surface implements ServerTool {
 
       if (
         !shouldAllowDiscordChannel({
-          cfg: this.params.config,
+          cfg,
           channelId,
           guildId,
         })
@@ -521,7 +532,7 @@ export class Surface implements ServerTool {
         title: s.title,
         token: bestEffortTokenForDiscordChannelId({
           channelId,
-          cfg: this.params.config,
+          cfg,
         }),
       });
     }
@@ -537,9 +548,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -548,7 +561,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -567,7 +580,7 @@ export class Surface implements ServerTool {
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
     return messages.filter((m) =>
       shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId: m.session.channelId,
         guildId: m.session.guildId,
       }),
@@ -582,9 +595,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -593,7 +608,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -608,7 +623,7 @@ export class Surface implements ServerTool {
 
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId: msg.session.channelId,
         guildId: msg.session.guildId,
       })
@@ -627,9 +642,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -638,7 +655,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -693,9 +710,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -704,7 +723,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -730,9 +749,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -741,7 +762,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -763,9 +784,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -774,7 +797,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -795,9 +818,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -806,7 +831,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })
@@ -830,9 +855,11 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
+    const cfg = await this.getCfg();
+
     const channelId = resolveDiscordSessionId({
       sessionId: input.sessionId,
-      cfg: this.params.config,
+      cfg,
     });
 
     const guildId = await resolveGuildIdForChannel({
@@ -841,7 +868,7 @@ export class Surface implements ServerTool {
     });
     if (
       !shouldAllowDiscordChannel({
-        cfg: this.params.config,
+        cfg,
         channelId,
         guildId,
       })

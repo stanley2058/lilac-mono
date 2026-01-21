@@ -17,7 +17,7 @@ Non-scope:
 - Router: `apps/core/src/surface/bridge/bus-request-router.ts`
 - Prompt composition: `apps/core/src/surface/bridge/request-composition.ts`
 - Config schema: `packages/utils/core-config.ts`
-- Example config: `data/core-config.example.yaml`
+- Config template (seeded into `DATA_DIR/core-config.yaml` on first run): `packages/utils/config-templates/core-config.example.yaml`
 - Tests: `apps/core/tests/surface/bridge/bus-request-router.test.ts`
 
 ## Definitions

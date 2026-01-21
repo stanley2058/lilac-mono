@@ -6,3 +6,4 @@ export * from "./surface";
 export * from "./skills";
 export * from "./codex";
 export * from "./image-generation";
+export * from "./onboarding";

@@ -12,7 +12,6 @@
 
 # local data / caches
 data/*
-!data/core-config.example.yaml
 **/.cache
 **/*.log
 

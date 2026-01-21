@@ -24,7 +24,7 @@ export type CorePromptFileName = (typeof CORE_PROMPT_FILES)[number];
 
 type EnsureResult = {
   promptDir: string;
-  ensured: { name: string; path: string; created: boolean }[];
+  ensured: { name: string; path: string; created: boolean; overwritten: boolean }[];
 };
 
 function templatePath(name: CorePromptFileName): string {
@@ -52,19 +52,24 @@ async function safeMkdir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
 }
 
-async function copyIfMissing(params: {
+async function copyIfNeeded(params: {
   from: string;
   to: string;
-}): Promise<{ created: boolean }> {
-  if (await exists(params.to)) return { created: false };
+  overwrite?: boolean;
+}): Promise<{ created: boolean; overwritten: boolean }> {
+  const existed = await exists(params.to);
+  if (existed && !params.overwrite) {
+    return { created: false, overwritten: false };
+  }
 
   const content = await Bun.file(params.from).text();
   await Bun.write(params.to, content);
-  return { created: true };
+  return { created: !existed, overwritten: existed };
 }
 
 export async function ensurePromptWorkspace(options?: {
   dataDir?: string;
+  overwrite?: boolean;
 }): Promise<EnsureResult> {
   const promptDir = resolvePromptDir({ dataDir: options?.dataDir });
   await safeMkdir(promptDir);
@@ -73,8 +78,12 @@ export async function ensurePromptWorkspace(options?: {
   for (const name of CORE_PROMPT_FILES) {
     const dst = path.join(promptDir, name);
     const src = templatePath(name);
-    const { created } = await copyIfMissing({ from: src, to: dst });
-    ensured.push({ name, path: dst, created });
+    const { created, overwritten } = await copyIfNeeded({
+      from: src,
+      to: dst,
+      overwrite: options?.overwrite,
+    });
+    ensured.push({ name, path: dst, created, overwritten });
   }
 
   return { promptDir, ensured };

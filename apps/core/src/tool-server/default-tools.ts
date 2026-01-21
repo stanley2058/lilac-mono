@@ -6,6 +6,7 @@ import {
   Attachment,
   Codex,
   ImageGeneration,
+  Onboarding,
   Skills,
   Summarize,
   Surface,
@@ -17,8 +18,10 @@ export function createDefaultToolServerTools(params?: {
   bus?: LilacBus;
   adapter?: SurfaceAdapter;
   config?: CoreConfig;
+  getConfig?: () => Promise<CoreConfig>;
 }): ServerTool[] {
   const tools: ServerTool[] = [
+    new Onboarding(),
     new Web(),
     new Summarize(),
     new Skills(),
@@ -32,13 +35,20 @@ export function createDefaultToolServerTools(params?: {
         bus: params.bus,
         adapter: params.adapter,
         config: params.config,
+        getConfig: params.getConfig,
       }),
     );
     tools.push(new Attachment({ bus: params.bus }));
   }
 
-  if (params?.adapter && params?.config) {
-    tools.push(new Surface({ adapter: params.adapter, config: params.config }));
+  if (params?.adapter && (params?.config || params?.getConfig)) {
+    tools.push(
+      new Surface({
+        adapter: params.adapter,
+        config: params.config,
+        getConfig: params.getConfig,
+      }),
+    );
   }
 
   return tools;

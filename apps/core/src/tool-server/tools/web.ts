@@ -1,4 +1,3 @@
-import { $ } from "bun";
 import { z } from "zod";
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import { JSDOM } from "jsdom";
@@ -14,6 +13,8 @@ import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
 import { env } from "@stanley2058/lilac-utils";
+import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 
 const getPageSchema = z.object({
   url: z.string().describe("URL to fetch"),
@@ -82,6 +83,9 @@ export class Web implements ServerTool {
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null =
     null;
+  private browserInit:
+    | Promise<{ browser: Browser; context: BrowserContext }>
+    | null = null;
   private logger: Logger;
 
   constructor() {
@@ -92,8 +96,6 @@ export class Web implements ServerTool {
   }
 
   async init() {
-    this.browserContext = await this.launchBrowser();
-
     if (!env.tools.web.tavilyApiKey) {
       this.logger.logError(
         "Tavily API key not configured (missing env var TAVILY_API_KEY). web.search is disabled and fetch(mode=tavily) will fall back to browser mode.",
@@ -107,6 +109,7 @@ export class Web implements ServerTool {
   async destroy() {
     await this.browserContext?.browser.close();
     this.browserContext = null;
+    this.browserInit = null;
   }
 
   async list() {
@@ -230,20 +233,91 @@ export class Web implements ServerTool {
     }));
   }
 
-  private async ensureInstall() {
-    const chromeExists = await Bun.file(chromium.executablePath()).exists();
-    if (!chromeExists) {
-      await $`bunx playwright install chromium --with-deps`;
+  private async findSystemChromiumExecutable(): Promise<string | null> {
+    const fromEnv =
+      process.env.LILAC_CHROMIUM_PATH ?? process.env.CHROMIUM_PATH ?? null;
+    if (fromEnv && (await this.pathExecutable(fromEnv))) return fromEnv;
+
+    const fromWhich =
+      Bun.which("chromium") ??
+      Bun.which("chromium-browser") ??
+      Bun.which("google-chrome") ??
+      Bun.which("google-chrome-stable") ??
+      null;
+
+    if (fromWhich && (await this.pathExecutable(fromWhich))) return fromWhich;
+
+    const candidates = [
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+    ];
+    for (const c of candidates) {
+      if (await this.pathExecutable(c)) return c;
+    }
+
+    return null;
+  }
+
+  private async pathExecutable(p: string): Promise<boolean> {
+    try {
+      await fs.access(p, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
     }
   }
 
+  private async resolveChromiumLaunchOptions(): Promise<{
+    executablePath?: string;
+    strategy: "system" | "playwright";
+  }> {
+    const system = await this.findSystemChromiumExecutable();
+    if (system) return { strategy: "system", executablePath: system };
+
+    const pwPath = chromium.executablePath();
+    const pwExists = await Bun.file(pwPath).exists();
+    if (!pwExists) {
+      throw new Error(
+        "Chromium is not available. Install system chromium, or run: tools onboarding.playwright",
+      );
+    }
+
+    return { strategy: "playwright" };
+  }
+
+  private async ensureBrowserContext(): Promise<{
+    browser: Browser;
+    context: BrowserContext;
+  }> {
+    if (this.browserContext) return this.browserContext;
+    if (this.browserInit) return this.browserInit;
+
+    this.browserInit = this.launchBrowser()
+      .then((ctx) => {
+        this.browserContext = ctx;
+        return ctx;
+      })
+      .finally(() => {
+        this.browserInit = null;
+      });
+
+    return this.browserInit;
+  }
+
   private async launchBrowser() {
-    this.logger.logDebug("Ensure browser installed...");
-    await this.ensureInstall();
+    const launch = await this.resolveChromiumLaunchOptions();
 
     this.logger.logDebug("Launching browser...");
-    const browser = await chromium.launch({ headless: true });
-    this.logger.logInfo("Chrome launched", browser.version());
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: launch.executablePath,
+    });
+    this.logger.logInfo(
+      `Chrome launched (${launch.strategy})`,
+      browser.version(),
+    );
     const context = await browser.newContext({
       viewport: { width: 1080, height: 1920 },
     });
@@ -323,8 +397,7 @@ export class Web implements ServerTool {
     timeout = 10_000,
     preprocessor = "none",
   }: z.infer<typeof getPageSchema>) {
-    const { context } = this.browserContext || {};
-    if (!context) throw new Error("Browser not initialized");
+    const { context } = await this.ensureBrowserContext();
 
     this.logger.logDebug("Launching in new page...");
     const page = await context.newPage();

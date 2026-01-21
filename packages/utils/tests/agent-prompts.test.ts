@@ -43,6 +43,22 @@ describe("agent prompts", () => {
     });
   });
 
+  it("overwrites prompt files when requested", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await ensurePromptWorkspace({ dataDir });
+
+      const agentsPath = path.join(dataDir, DEFAULT_PROMPT_DIRNAME, "AGENTS.md");
+      await writeFile(agentsPath, "# AGENTS.md\n\nCustom rules.", "utf8");
+
+      const res = await ensurePromptWorkspace({ dataDir, overwrite: true });
+      const agents = res.ensured.find((e) => e.name === "AGENTS.md");
+      expect(agents?.overwritten).toBe(true);
+
+      const next = await Bun.file(agentsPath).text();
+      expect(next).not.toContain("Custom rules.");
+    });
+  });
+
   it("builds a compiled system prompt containing all sections", async () => {
     await withTempDataDir(async (dataDir) => {
       const built = await buildAgentSystemPrompt();

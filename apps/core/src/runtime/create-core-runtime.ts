@@ -75,8 +75,6 @@ export async function createCoreRuntime(
     process.exit(1);
   }
 
-  const cfg = await getCoreConfig();
-
   const raw = createRedisStreamsBus({
     redis,
     ownsRedis: true,
@@ -84,7 +82,7 @@ export async function createCoreRuntime(
 
   const bus: LilacBus = createLilacBus(raw);
 
-  const adapter = new DiscordAdapter({ config: cfg });
+  const adapter = new DiscordAdapter();
   const workflowStore = new SqliteWorkflowStore();
 
   let started = false;
@@ -129,7 +127,6 @@ export async function createCoreRuntime(
         adapter,
         bus,
         subscriptionId: subId(subscriptionPrefix, "router"),
-        config: cfg,
       });
 
       // Tool server (same process)
@@ -139,7 +136,11 @@ export async function createCoreRuntime(
       });
 
       toolServer = createToolServer({
-        tools: createDefaultToolServerTools({ bus, adapter, config: cfg }),
+        tools: createDefaultToolServerTools({
+          bus,
+          adapter,
+          getConfig: () => getCoreConfig(),
+        }),
         logger: new Logger({
           logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
           module: "tool-server",
@@ -166,7 +167,6 @@ export async function createCoreRuntime(
       stopAgentRunner = await startBusAgentRunner({
         bus,
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
-        config: cfg,
         cwd,
       });
 

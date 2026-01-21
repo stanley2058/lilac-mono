@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { z } from "zod";
 
 import { env } from "./env";
@@ -141,28 +142,59 @@ let cached: CoreConfig | null = null;
 let cachedMtimeMs: number | null = null;
 let cachedPromptMaxMtimeMs: number | null = null;
 
-function configPath(): string {
-  return path.join(env.dataDir, "core-config.yaml");
+export function resolveCoreConfigPath(options?: { dataDir?: string }): string {
+  const dataDir = options?.dataDir ?? env.dataDir;
+  return path.join(dataDir, "core-config.yaml");
+}
+
+async function resolveCoreConfigTemplatePath(): Promise<string> {
+  // Prefer an internal template so docker volume mounts can't hide it.
+  const internal = path.join(
+    import.meta.dir,
+    "config-templates",
+    "core-config.example.yaml",
+  );
+  if (await Bun.file(internal).exists()) return internal;
+
+  // Back-compat for older layouts.
+  return path.resolve(findWorkspaceRoot(), "data", "core-config.example.yaml");
+}
+
+export async function seedCoreConfig(options?: {
+  dataDir?: string;
+  overwrite?: boolean;
+}): Promise<{
+  dataDir: string;
+  configPath: string;
+  created: boolean;
+  overwritten: boolean;
+}> {
+  const dataDir = options?.dataDir ?? env.dataDir;
+  const overwrite = options?.overwrite ?? false;
+
+  await fs.mkdir(dataDir, { recursive: true });
+  // Keep: helps empty dirs survive in git checkouts; harmless in docker.
+  await Bun.write(path.join(dataDir, ".gitkeep"), "");
+
+  const configPath = resolveCoreConfigPath({ dataDir });
+  const existed = await Bun.file(configPath).exists();
+
+  if (!existed || overwrite) {
+    const templatePath = await resolveCoreConfigTemplatePath();
+    const template = await Bun.file(templatePath).text();
+    await Bun.write(configPath, template);
+  }
+
+  return {
+    dataDir,
+    configPath,
+    created: !existed,
+    overwritten: existed && overwrite,
+  };
 }
 
 async function ensureDataDirSeeded() {
-  // Lilac stores user-editable prompt files under env.dataDir (default: ./data).
-  // Ensure the directory exists before we attempt to read core-config.yaml.
-  await Bun.write(path.join(env.dataDir, ".gitkeep"), "");
-
-  const cfgPath = configPath();
-  try {
-    await Bun.file(cfgPath).stat();
-  } catch {
-    // If core-config.yaml doesn't exist yet, seed it from the example.
-    const examplePath = path.resolve(
-      findWorkspaceRoot(),
-      "data",
-      "core-config.example.yaml",
-    );
-    const example = await Bun.file(examplePath).text();
-    await Bun.write(cfgPath, example);
-  }
+  await seedCoreConfig({ overwrite: false });
 }
 
 function safeParseYaml(raw: string): unknown {
@@ -182,7 +214,7 @@ export async function getCoreConfig(options?: {
 
   await ensureDataDirSeeded();
 
-  const filePath = configPath();
+  const filePath = resolveCoreConfigPath();
 
   if (!forceReload && cached) {
     try {
