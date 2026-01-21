@@ -24,7 +24,12 @@ export type CorePromptFileName = (typeof CORE_PROMPT_FILES)[number];
 
 type EnsureResult = {
   promptDir: string;
-  ensured: { name: string; path: string; created: boolean; overwritten: boolean }[];
+  ensured: {
+    name: string;
+    path: string;
+    created: boolean;
+    overwritten: boolean;
+  }[];
 };
 
 function templatePath(name: CorePromptFileName): string {
@@ -119,11 +124,10 @@ export async function loadPromptFiles(options?: {
 
 export function compileSystemPromptFromFiles(
   files: readonly PromptFile[],
+  basePrompt?: string,
 ): string {
-  const lines: string[] = [];
+  const lines: string[] = basePrompt ? [basePrompt] : [];
 
-  lines.push("You are Lilac.");
-  lines.push("");
   lines.push(
     "Your system behavior is defined by a set of workspace prompt files.",
   );
@@ -131,22 +135,9 @@ export function compileSystemPromptFromFiles(
     "These files are loaded from the local data directory and are authoritative.",
   );
   lines.push("");
-  lines.push("How to use the files:");
-  lines.push("- AGENTS.md: operating rules and priorities (how you work)");
-  lines.push("- SOUL.md: persona and boundaries (tone, what not to do)");
-  lines.push("- TOOLS.md: tool usage notes (does not grant tools)");
-  lines.push("- IDENTITY.md: short identity card (name/role/vibe)");
-  lines.push("- USER.md: user preferences and defaults");
-  lines.push("");
-  lines.push("If instructions conflict, follow this precedence order:");
-  lines.push("AGENTS.md > SOUL.md > TOOLS.md > IDENTITY.md > USER.md");
-  lines.push("");
-
-  lines.push("# Project Context");
 
   for (const f of files) {
-    lines.push("");
-    lines.push(`## ${f.name}`);
+    lines.push(`# ${f.name} (${f.path})`);
     lines.push(f.content.length > 0 ? f.content : "(empty)");
   }
 
@@ -155,6 +146,7 @@ export function compileSystemPromptFromFiles(
 
 export async function buildAgentSystemPrompt(options?: {
   dataDir?: string;
+  basePrompt?: string;
 }): Promise<{
   systemPrompt: string;
   promptDir: string;
@@ -162,7 +154,7 @@ export async function buildAgentSystemPrompt(options?: {
 }> {
   const files = await loadPromptFiles({ dataDir: options?.dataDir });
   return {
-    systemPrompt: compileSystemPromptFromFiles(files),
+    systemPrompt: compileSystemPromptFromFiles(files, options?.basePrompt),
     promptDir: resolvePromptDir({ dataDir: options?.dataDir }),
     filePaths: files.map((f) => f.path),
   };

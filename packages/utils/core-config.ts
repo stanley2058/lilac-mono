@@ -182,6 +182,8 @@ export const coreConfigSchema = z.object({
     })
     .default({ users: {}, sessions: { discord: {} } })
     .optional(),
+
+  basePrompt: z.string().optional(),
 });
 
 export type CoreConfig = Omit<z.infer<typeof coreConfigSchema>, "agent"> & {
@@ -290,7 +292,7 @@ export async function getCoreConfig(options?: {
 
   // Always use file-based system prompt (data/prompts/*).
   // This also ensures missing files are created from templates.
-  const built = await buildAgentSystemPrompt();
+  const built = await buildAgentSystemPrompt({ basePrompt: cfg.basePrompt });
   const nextCfg: CoreConfig = {
     ...cfg,
     agent: {
