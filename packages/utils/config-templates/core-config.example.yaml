@@ -20,7 +20,20 @@ surface:
 agent: {}
 
 models:
+  # Optional preset registry to make model selection ergonomic.
+  #
+  # def:
+  #   sonnet:
+  #     model: "openrouter/anthropic/claude-sonnet-4.5"
+  #     options:
+  #       anthropic:
+  #         thinking:
+  #           type: enabled
+  #       gateway:
+  #         order: [anthropic, vertex, bedrock]
+
   main:
+    # Can be either a full spec (provider/model) or an alias from models.def.
     model: "openrouter/openai/gpt-4o"
     # options:
     #   temperature: 0.2

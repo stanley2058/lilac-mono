@@ -3,10 +3,8 @@ import { z } from "zod";
 
 import {
   getCoreConfig,
-  providers,
-  CODEX_BASE_INSTRUCTIONS,
+  resolveModelSlot,
   type CoreConfig,
-  type Providers,
 } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
@@ -471,26 +469,7 @@ export async function startBusRequestRouter(params: {
     const timeout = setTimeout(() => abort.abort(), timeoutMs);
 
     try {
-      const spec = cfg.models.fast.model;
-      const slash = spec.indexOf("/");
-      if (slash <= 0) {
-        throw new Error(`Invalid model spec '${spec}'`);
-      }
-
-      const provider = spec.slice(0, slash);
-      const modelId = spec.slice(slash + 1);
-
-      const p = providers[provider as Providers];
-      if (!p) {
-        throw new Error(
-          `Unknown provider '${provider}' (models.fast.model='${spec}')`,
-        );
-      }
-      if (typeof p !== "function") {
-        throw new Error(
-          `Provider '${provider}' is not configured (models.fast.model='${spec}')`,
-        );
-      }
+      const resolved = resolveModelSlot(cfg, "fast");
 
       const indirectMention = input.messages.some((m) =>
         m.text.toLowerCase().includes(input.botName.toLowerCase()),
@@ -525,44 +504,13 @@ export async function startBusRequestRouter(params: {
         },
       ] as ModelMessage[];
 
-      const providerOptionsBase = cfg.models.fast.options
-        ? { [provider]: cfg.models.fast.options }
-        : undefined;
-
-      // If someone uses codex for router gate (not recommended), remap options
-      // into the OpenAI provider namespace.
-      //
-      // Allow overrides via config:
-      // - models.fast.options.instructions (direct)
-      // - models.fast.options.codex_instructions (alias)
-      const rawCodexOpts = cfg.models.fast.options ?? {};
-      const resolvedCodexInstructions =
-        typeof rawCodexOpts.instructions === "string" &&
-        rawCodexOpts.instructions.length > 0
-          ? rawCodexOpts.instructions
-          : typeof rawCodexOpts.codex_instructions === "string" &&
-              rawCodexOpts.codex_instructions.length > 0
-            ? rawCodexOpts.codex_instructions
-            : CODEX_BASE_INSTRUCTIONS;
-
-      const { codex_instructions: _codexInstructions, ...codexOptsForOpenAI } =
-        rawCodexOpts;
-
-      const codexProviderOptions = {
-        openai: {
-          ...codexOptsForOpenAI,
-          instructions: resolvedCodexInstructions,
-        },
-      };
-
       const res = await generateText({
-        model: p(modelId),
+        model: resolved.model,
         output: Output.object({ schema: gateSchema }),
         prompt,
         abortSignal: abort.signal,
-        maxOutputTokens: 128,
-        providerOptions:
-          provider === "codex" ? codexProviderOptions : providerOptionsBase,
+        maxOutputTokens: 1024,
+        providerOptions: resolved.providerOptions,
       });
 
       return res.output;

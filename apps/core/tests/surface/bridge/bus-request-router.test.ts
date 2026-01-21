@@ -245,6 +245,7 @@ describe("startBusRequestRouter", () => {
         },
         agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: {
+          def: {},
           main: { model: "openrouter/openai/gpt-4o" },
           fast: { model: "openrouter/openai/gpt-4o-mini" },
         },
@@ -335,6 +336,7 @@ describe("startBusRequestRouter", () => {
         },
         agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: {
+          def: {},
           main: { model: "openrouter/openai/gpt-4o" },
           fast: { model: "openrouter/openai/gpt-4o-mini" },
         },
@@ -422,6 +424,7 @@ describe("startBusRequestRouter", () => {
         },
         agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: {
+          def: {},
           main: { model: "openrouter/openai/gpt-4o" },
           fast: { model: "openrouter/openai/gpt-4o-mini" },
         },
@@ -514,6 +517,7 @@ describe("startBusRequestRouter", () => {
         },
         agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: {
+          def: {},
           main: { model: "openrouter/openai/gpt-4o" },
           fast: { model: "openrouter/openai/gpt-4o-mini" },
         },
@@ -617,6 +621,7 @@ describe("startBusRequestRouter", () => {
         },
         agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
         models: {
+          def: {},
           main: { model: "openrouter/openai/gpt-4o" },
           fast: { model: "openrouter/openai/gpt-4o-mini" },
         },

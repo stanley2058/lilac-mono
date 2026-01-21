@@ -9,6 +9,34 @@ import {
   promptWorkspaceSignature,
 } from "./agent-prompts";
 
+export type JSONValue =
+  | null
+  | string
+  | number
+  | boolean
+  | JSONObject
+  | JSONArray;
+export type JSONArray = JSONValue[];
+export type JSONObject = {
+  [key: string]: JSONValue | undefined;
+};
+
+const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ]),
+);
+
+const jsonObjectSchema: z.ZodType<JSONObject> = z.record(
+  z.string(),
+  jsonValueSchema,
+);
+
 type AgentConfig = {
   systemPrompt: string;
 };
@@ -86,12 +114,35 @@ export const coreConfigSchema = z.object({
 
   models: z
     .object({
+      /** Optional registry of reusable model presets, referenced by alias. */
+      def: z
+        .record(
+          z.string().min(1),
+          z.object({
+            /** Canonical model spec in provider/model format. */
+            model: z.string().min(1),
+            /** AI SDK providerOptions-style object (nested JSON allowed). */
+            options: jsonObjectSchema.optional(),
+          }),
+        )
+        .default({}),
+
       main: z
         .object({
+          /**
+           * Model spec in provider/model format OR an alias from models.def.
+           *
+           * If no '/' is present, the value is treated as an alias.
+           */
           model: z.string().min(1).default("openrouter/openai/gpt-4o"),
-          options: z
-            .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
-            .optional(),
+          /**
+           * Provider-specific model options.
+           *
+           * Supports either:
+           * - shorthand: { temperature: 0.2 }
+           * - providerOptions map: { openai: { temperature: 0.2 }, gateway: { order: [...] } }
+           */
+          options: jsonObjectSchema.optional(),
         })
         .default({
           model: "openrouter/openai/gpt-4o",
@@ -105,15 +156,14 @@ export const coreConfigSchema = z.object({
       fast: z
         .object({
           model: z.string().min(1).default("openrouter/openai/gpt-4o-mini"),
-          options: z
-            .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
-            .optional(),
+          options: jsonObjectSchema.optional(),
         })
         .default({
           model: "openrouter/openai/gpt-4o-mini",
         }),
     })
     .default({
+      def: {},
       main: { model: "openrouter/openai/gpt-4o" },
       fast: { model: "openrouter/openai/gpt-4o-mini" },
     }),

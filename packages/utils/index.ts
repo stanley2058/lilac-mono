@@ -1,5 +1,6 @@
 export * from "./model-capability";
 export * from "./model-provider";
+export * from "./model-slot";
 export * from "./codex-oauth";
 export * from "./codex-instructions";
 export * from "./env";
