@@ -265,12 +265,6 @@ async function main() {
             `cat payload.json | tools ${result.callableId} --stdin`,
           ];
 
-          const examples = [
-            `tools ${result.callableId} --input @payload.json`,
-            `cat payload.json | tools ${result.callableId} --stdin`,
-            `tools ${result.callableId} --tasks:json=@tasks.json --summary=\"...\"`,
-          ];
-
           const output = [
             banner(),
             "",
@@ -281,8 +275,6 @@ async function main() {
             section("Arguments", formatBullets(result.input, { indent: 0 })),
             "",
             section("Options", formatBullets(commonOptions, { indent: 0 })),
-            "",
-            section("Examples", formatBullets(examples, { indent: 0 })),
           ];
 
           console.log(output.join("\n"));
@@ -465,6 +457,8 @@ function parseArgs(): ParsedArgs {
       [];
     const jsonFieldInputs: { field: string; source: JsonSource }[] = [];
 
+    const seenCanonicalFields = new Map<string, string>();
+
     let baseInput: JsonSource | undefined;
     let outputMode: OutputMode = "compact";
 
@@ -543,10 +537,20 @@ function parseArgs(): ParsedArgs {
       if (!fieldRaw) continue;
 
       if (fieldRaw.endsWith(":json")) {
-        const field = fieldRaw.slice(0, -":json".length);
+        const rawField = fieldRaw.slice(0, -":json".length);
+        const field = kebabToCamelCase(rawField);
         if (!field) {
           throw new Error(`Invalid JSON field flag '${k}'`);
         }
+
+        const previous = seenCanonicalFields.get(field);
+        if (previous && previous !== rawField) {
+          throw new Error(
+            `Duplicate field '${field}' via flags '--${previous}' and '--${rawField}'. Use only one casing.`,
+          );
+        }
+        if (!previous) seenCanonicalFields.set(field, rawField);
+
         if (eq === -1) {
           throw new Error(`--${field}:json requires a value`);
         }
@@ -559,6 +563,15 @@ function parseArgs(): ParsedArgs {
       }
 
       // Default: treat as primitive string/number/bool.
+      const field = kebabToCamelCase(fieldRaw);
+      const previous = seenCanonicalFields.get(field);
+      if (previous && previous !== fieldRaw) {
+        throw new Error(
+          `Duplicate field '${field}' via flags '--${previous}' and '--${fieldRaw}'. Use only one casing.`,
+        );
+      }
+      if (!previous) seenCanonicalFields.set(field, fieldRaw);
+
       let parsedValue: number | string | boolean = v;
 
       if (eq === -1) {
@@ -573,11 +586,11 @@ function parseArgs(): ParsedArgs {
       }
 
       if (typeof parsedValue === "string") {
-        parsedValue = normalizeMaybePath(fieldRaw, parsedValue);
+        parsedValue = normalizeMaybePath(field, parsedValue);
         parsedValue = coerceNumberLike(parsedValue);
       }
 
-      fieldInputs.push({ field: fieldRaw, value: parsedValue });
+      fieldInputs.push({ field, value: parsedValue });
     }
 
     return {
@@ -744,6 +757,11 @@ function coerceNumberLike(input: string): string | number {
   if (!Number.isFinite(n)) return input; // extra safety
 
   return n;
+}
+
+function kebabToCamelCase(input: string): string {
+  if (!input.includes("-")) return input;
+  return input.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 }
 
 await main();

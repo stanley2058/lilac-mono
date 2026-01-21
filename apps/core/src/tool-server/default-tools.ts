@@ -5,6 +5,7 @@ import type { ServerTool } from "./types";
 import {
   Attachment,
   Codex,
+  ImageGeneration,
   Skills,
   Summarize,
   Surface,
@@ -22,6 +23,7 @@ export function createDefaultToolServerTools(params?: {
     new Summarize(),
     new Skills(),
     new Codex(),
+    new ImageGeneration(),
   ];
 
   if (params?.bus) {
