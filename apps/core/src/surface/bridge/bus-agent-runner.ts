@@ -1,4 +1,9 @@
-import type { ModelMessage, ToolSet } from "ai";
+import {
+  asSchema,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type ToolSet,
+} from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
@@ -25,6 +30,314 @@ import { fsTool } from "../../tools/fs/fs";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
+}
+
+function formatInt(n: number): string {
+  // Locale-independent grouping.
+  return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatSeconds(ms: number): string {
+  const sec = ms / 1000;
+  return `${sec.toFixed(1)}s`;
+}
+
+type ToolsLike = Record<
+  string,
+  { description?: string; inputSchema?: unknown }
+>;
+
+function safeStringify(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof URL) return value.toString();
+  if (value === undefined) return "undefined";
+  try {
+    const s = JSON.stringify(value);
+    return s ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function getToolDefsText(tools: ToolsLike | null): string {
+  if (!tools) return "";
+  const entries = Object.entries(tools);
+  if (entries.length === 0) return "";
+
+  const toolDesc = entries.map(([name, tool]) => {
+    let jsonSchema: unknown = {};
+    try {
+      jsonSchema = asSchema(tool?.inputSchema as never).jsonSchema;
+    } catch {
+      jsonSchema = {};
+    }
+    return {
+      name,
+      description: tool?.description ?? "",
+      jsonSchema,
+    };
+  });
+
+  return JSON.stringify(toolDesc);
+}
+
+function isAssistantToolCallMessage(message: ModelMessage): boolean {
+  if (message.role !== "assistant") return false;
+  if (!Array.isArray(message.content)) return false;
+
+  return message.content.some((part) => {
+    return part.type === "tool-call";
+  });
+}
+
+function countCharsInMessage(
+  message: ModelMessage,
+): Omit<InputCompositionChars, "toolDefsChars" | "callCount"> {
+  let systemChars = 0;
+  let assistantChars = 0;
+  let userChars = 0;
+  let toolResultChars = 0;
+
+  const role = message.role;
+
+  if (role === "tool") {
+    toolResultChars += safeStringify(message.content).length;
+    return { systemChars, assistantChars, userChars, toolResultChars };
+  }
+
+  if (role === "system") {
+    systemChars += safeStringify(message.content).length;
+    return { systemChars, assistantChars, userChars, toolResultChars };
+  }
+
+  if (role === "user") {
+    userChars += safeStringify(message.content).length;
+    return { systemChars, assistantChars, userChars, toolResultChars };
+  }
+
+  if (role === "assistant") {
+    if (Array.isArray(message.content)) {
+      for (const part of message.content) {
+        const t = part.type;
+        if (t === "tool-result") {
+          toolResultChars += safeStringify(part).length;
+          continue;
+        }
+        assistantChars += safeStringify(part).length;
+      }
+      return { systemChars, assistantChars, userChars, toolResultChars };
+    }
+
+    assistantChars += safeStringify(message.content).length;
+    return { systemChars, assistantChars, userChars, toolResultChars };
+  }
+
+  // Unknown role; treat as assistant-ish overhead.
+  assistantChars += safeStringify(
+    (message as unknown as { content?: unknown }).content,
+  ).length;
+  return { systemChars, assistantChars, userChars, toolResultChars };
+}
+
+type InputCompositionChars = {
+  systemChars: number;
+  assistantChars: number;
+  userChars: number;
+  toolDefsChars: number;
+  toolResultChars: number;
+  callCount: number;
+};
+
+function buildPromptSnapshots(params: {
+  initialMessages: ModelMessage[];
+  responseMessages: ModelMessage[];
+}): ModelMessage[][] {
+  const snapshots: ModelMessage[][] = [];
+  const state: ModelMessage[] = [...params.initialMessages];
+  snapshots.push([...state]);
+
+  for (let i = 0; i < params.responseMessages.length; i++) {
+    const msg = params.responseMessages[i];
+    if (!msg) continue;
+
+    if (isAssistantToolCallMessage(msg)) {
+      state.push(msg);
+
+      // In tool mode, tool results come in as `role: "tool"` messages.
+      let j = i + 1;
+      while (j < params.responseMessages.length) {
+        const next = params.responseMessages[j];
+        if (!next || next.role !== "tool") break;
+        state.push(next);
+        j++;
+      }
+
+      snapshots.push([...state]);
+      i = j - 1;
+      continue;
+    }
+
+    state.push(msg);
+  }
+
+  return snapshots;
+}
+
+function estimateInputCompositionChars(input: {
+  initialMessages: ModelMessage[];
+  responseMessages: ModelMessage[];
+  tools: unknown;
+}): InputCompositionChars {
+  const tools = (
+    input.tools && typeof input.tools === "object"
+      ? (input.tools as ToolsLike)
+      : null
+  ) satisfies ToolsLike | null;
+
+  const snapshots = buildPromptSnapshots({
+    initialMessages: input.initialMessages,
+    responseMessages: input.responseMessages,
+  });
+
+  const toolDefsText = getToolDefsText(tools);
+  const perCallToolDefsChars = toolDefsText.length;
+
+  let systemChars = 0;
+  let assistantChars = 0;
+  let userChars = 0;
+  let toolResultChars = 0;
+
+  for (const snapshot of snapshots) {
+    for (const message of snapshot) {
+      const counts = countCharsInMessage(message);
+      systemChars += counts.systemChars;
+      assistantChars += counts.assistantChars;
+      userChars += counts.userChars;
+      toolResultChars += counts.toolResultChars;
+    }
+  }
+
+  return {
+    systemChars,
+    assistantChars,
+    userChars,
+    toolDefsChars: perCallToolDefsChars * snapshots.length,
+    toolResultChars,
+    callCount: snapshots.length,
+  };
+}
+
+function computePercentages(chars: {
+  systemChars: number;
+  assistantChars: number;
+  userChars: number;
+  toolDefsChars: number;
+  toolResultChars: number;
+}): { S: number; A: number; U: number; TD: number; TR: number } | null {
+  const entries = [
+    ["S", chars.systemChars],
+    ["A", chars.assistantChars],
+    ["U", chars.userChars],
+    ["TD", chars.toolDefsChars],
+    ["TR", chars.toolResultChars],
+  ] as const;
+
+  const total = entries.reduce((acc, [, v]) => acc + v, 0);
+  if (total <= 0) return null;
+
+  const raw = entries.map(([k, v]) => {
+    const pct = Math.round((v * 100) / total);
+    return { k, v, pct };
+  });
+
+  let sum = raw.reduce((acc, e) => acc + e.pct, 0);
+  const diff = 100 - sum;
+  if (diff !== 0) {
+    let maxIdx = 0;
+    for (let i = 1; i < raw.length; i++) {
+      if (raw[i]!.v > raw[maxIdx]!.v) maxIdx = i;
+    }
+    raw[maxIdx]!.pct += diff;
+    sum += diff;
+  }
+
+  const map = Object.fromEntries(
+    raw.map((e) => [e.k, Math.max(0, Math.min(100, e.pct))]),
+  ) as { S: number; A: number; U: number; TD: number; TR: number };
+
+  return map;
+}
+
+function buildInputCompositionLine(input: {
+  initialMessages: ModelMessage[];
+  responseMessages: ModelMessage[];
+  tools: unknown;
+}): string | null {
+  const chars = estimateInputCompositionChars({
+    initialMessages: input.initialMessages,
+    responseMessages: input.responseMessages,
+    tools: input.tools,
+  });
+
+  const pct = computePercentages(chars);
+  if (!pct) return null;
+
+  return `[IC] S: ${pct.S}%; A: ${pct.A}%; U: ${pct.U}%; TD: ${pct.TD}%; TR: ${pct.TR}%`;
+}
+
+function buildStatsLine(params: {
+  modelLabel: string;
+  usage: LanguageModelUsage | undefined;
+  ttftMs: number | null;
+  tps: number | null;
+  icLine: string | null;
+}): string {
+  const u = params.usage;
+
+  const inputTokens = typeof u?.inputTokens === "number" ? u.inputTokens : null;
+  const outputTokens =
+    typeof u?.outputTokens === "number" ? u.outputTokens : null;
+  const noCache =
+    typeof u?.inputTokenDetails?.noCacheTokens === "number"
+      ? u.inputTokenDetails.noCacheTokens
+      : null;
+
+  const outputReasoning =
+    typeof u?.outputTokenDetails?.reasoningTokens === "number"
+      ? u.outputTokenDetails.reasoningTokens
+      : null;
+
+  const parts: string[] = [];
+  parts.push(`[M]: ${params.modelLabel}`);
+
+  if (inputTokens !== null || outputTokens !== null) {
+    const tokenParts: string[] = [];
+    if (inputTokens !== null) {
+      tokenParts.push(
+        `↑${formatInt(inputTokens)}${noCache !== null ? ` (NC: ${formatInt(noCache)})` : ""}`,
+      );
+    }
+    if (outputTokens !== null) {
+      tokenParts.push(
+        `↓${formatInt(outputTokens)}${outputReasoning !== null ? ` (R: ${formatInt(outputReasoning)})` : ""}`,
+      );
+    }
+    parts.push(`[T]: ${tokenParts.join(" ")}`);
+  }
+
+  if (params.ttftMs !== null) {
+    parts.push(`[TTFT]: ${formatSeconds(params.ttftMs)}`);
+  }
+
+  if (params.tps !== null) {
+    parts.push(`[TPS]: ${params.tps.toFixed(1)}`);
+  }
+
+  if (params.icLine) {
+    parts.push(params.icLine);
+  }
+
+  return `*${parts.join("; ")}*`;
 }
 
 type Enqueued = {
@@ -58,8 +371,7 @@ export async function startBusAgentRunner(params: {
   });
 
   let cfg = params.config ?? (await getCoreConfig());
-  const cwd =
-    params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
+  const cwd = params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
 
   const bySession = new Map<string, SessionQueue>();
 
@@ -218,11 +530,24 @@ export async function startBusAgentRunner(params: {
 
     const toolStartMs = new Map<string, number>();
 
+    // Stats and timings for this run (agent model only).
+    let initialMessages: ModelMessage[] = [];
+    let runTotalUsage: LanguageModelUsage | undefined = undefined;
+    let runFinalMessages: ModelMessage[] | undefined = undefined;
+    let firstTextDeltaAt: number | null = null;
+
     const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
+      if (event.type === "agent_end") {
+        runTotalUsage = event.totalUsage;
+        runFinalMessages = event.messages;
+      }
+
       if (
         event.type === "message_update" &&
         event.assistantMessageEvent.type === "text_delta"
       ) {
+        firstTextDeltaAt ??= Date.now();
+
         const delta = event.assistantMessageEvent.delta;
         finalText += delta;
 
@@ -327,6 +652,7 @@ export async function startBusAgentRunner(params: {
       // If additional messages for the same request id were queued before the run started,
       // merge them into the initial prompt so they don't become separate runs.
       const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
+      initialMessages = [...mergedInitial];
 
       await agent.prompt(mergedInitial);
 
@@ -337,6 +663,40 @@ export async function startBusAgentRunner(params: {
         { finalText },
         { headers },
       );
+
+      // Log stats in the js-llmcord-ish one-liner format.
+      const endAt = Date.now();
+      const ttftMs = firstTextDeltaAt ? firstTextDeltaAt - runStartedAt : null;
+      const outputTokens = runTotalUsage?.outputTokens;
+      const rawTps =
+        typeof outputTokens === "number" && firstTextDeltaAt
+          ? outputTokens / ((endAt - firstTextDeltaAt) / 1000)
+          : null;
+      const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
+
+      const responseMessages = runFinalMessages
+        ? runFinalMessages.slice(initialMessages.length)
+        : [];
+
+      const icLine = buildInputCompositionLine({
+        initialMessages,
+        responseMessages,
+        tools: agent.state.tools,
+      });
+
+      const modelLabel = resolved.modelId;
+      const statsLine = buildStatsLine({
+        modelLabel,
+        usage: runTotalUsage,
+        ttftMs,
+        tps,
+        icLine,
+      });
+
+      logger.info(statsLine, {
+        requestId: headers.request_id,
+        sessionId: headers.session_id,
+      });
 
       logger.info("agent run resolved", {
         requestId: headers.request_id,
