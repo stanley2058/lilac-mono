@@ -261,7 +261,7 @@ async function main() {
 
           const usageLines = [
             `tools ${result.callableId} --arg1=value --arg2=value`,
-            `tools ${result.callableId} --input @payload.json`,
+            `tools ${result.callableId} --input=@payload.json`,
             `cat payload.json | tools ${result.callableId} --stdin`,
           ];
 
@@ -286,7 +286,7 @@ async function main() {
               "tools --list",
               "tools --help [tool]",
               "tools <tool> --arg1=value --arg2=value",
-              "tools <tool> --input @payload.json",
+              "tools <tool> --input=@payload.json",
               "cat payload.json | tools <tool> --stdin",
             ]),
             "",
@@ -304,7 +304,7 @@ async function main() {
             section(
               "Examples",
               formatBullets([
-                "tools workflow --input @workflow.json",
+                "tools workflow --input=@workflow.json",
                 "cat workflow.json | tools workflow --stdin",
                 'cat tasks.json | tools workflow --summary="..." --tasks:json=@-',
               ]),
@@ -338,7 +338,7 @@ async function main() {
           "",
           section("Usage", [
             "tools <tool> --arg1=value --arg2=value",
-            "tools <tool> --input @payload.json",
+            "tools <tool> --input=@payload.json",
             "cat payload.json | tools <tool> --stdin",
           ]),
           "",
@@ -472,26 +472,42 @@ function parseArgs(): ParsedArgs {
       stdinConsumer = consumer;
     }
 
-    for (const a of args.slice(1)) {
-      if (!a.startsWith("--")) {
-        throw new Error(`Unexpected argument '${a}'. Expected --key=value`);
+    const restArgs = args.slice(1);
+    for (let i = 0; i < restArgs.length; i++) {
+      const a = restArgs[i];
+      if (!a || !a.startsWith("--")) {
+        throw new Error(
+          `Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`,
+        );
       }
 
       const eq = a.indexOf("=");
-      const k = eq === -1 ? a : a.slice(0, eq);
-      const v = eq === -1 ? "" : a.slice(eq + 1);
+      let k = eq === -1 ? a : a.slice(0, eq);
+      let v = eq === -1 ? "" : a.slice(eq + 1);
+      let hasValue = eq !== -1;
+
+      if (!hasValue) {
+        const next = restArgs[i + 1];
+        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
+          v = next;
+          hasValue = true;
+          i++;
+        }
+      }
       if (!k || k === "--") continue;
 
       // Special-case: tools <tool> --help / --help=true
       if (k === "--help") {
-        const value = eq === -1 ? true : parseBooleanLike(v);
+        const value = hasValue ? parseBooleanLike(v) : true;
         if (value !== false) return { type: "help", callableId };
         continue;
       }
 
       if (k === "--output") {
-        if (eq === -1) {
-          throw new Error("--output requires a value: --output=compact|json");
+        if (!hasValue) {
+          throw new Error(
+            "--output requires a value: --output=compact|json or --output compact|json",
+          );
         }
         if (v !== "compact" && v !== "json") {
           throw new Error(
@@ -504,7 +520,7 @@ function parseArgs(): ParsedArgs {
 
       // Whole payload JSON.
       if (k === "--stdin") {
-        const value = eq === -1 ? true : parseBooleanLike(v);
+        const value = hasValue ? parseBooleanLike(v) : true;
         if (value === false) continue;
 
         if (baseInput) {
@@ -516,9 +532,9 @@ function parseArgs(): ParsedArgs {
       }
 
       if (k === "--input") {
-        if (eq === -1) {
+        if (!hasValue) {
           throw new Error(
-            "--input requires a value: --input=@file.json or --input=@- or --input='<json>'",
+            "--input requires a value: --input=@file.json, --input @file.json, --input=@-, or --input='<json>'",
           );
         }
 
@@ -535,7 +551,7 @@ function parseArgs(): ParsedArgs {
       const fieldRaw = k.slice(2);
       if (!fieldRaw) continue;
 
-      if (fieldRaw.endsWith(":json")) {
+        if (fieldRaw.endsWith(":json")) {
         const rawField = fieldRaw.slice(0, -":json".length);
         const field = kebabToCamelCase(rawField);
         if (!field) {
@@ -550,7 +566,7 @@ function parseArgs(): ParsedArgs {
         }
         if (!previous) seenCanonicalFields.set(field, rawField);
 
-        if (eq === -1) {
+        if (!hasValue) {
           throw new Error(`--${field}:json requires a value`);
         }
 
@@ -573,7 +589,7 @@ function parseArgs(): ParsedArgs {
 
       let parsedValue: string | boolean = v;
 
-      if (eq === -1) {
+      if (!hasValue) {
         // Preserve existing behavior for unknown --flag (it becomes empty-string).
         // The only exception is --help handled above.
         parsedValue = "";

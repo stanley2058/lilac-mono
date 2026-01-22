@@ -21,7 +21,7 @@ Basic usage:
 tools --list
 tools --help [tool]
 tools <tool> --arg1=value --arg2=value
-tools <tool> --input @payload.json
+tools <tool> --input=@payload.json
 cat payload.json | tools <tool> --stdin
 ```
 
