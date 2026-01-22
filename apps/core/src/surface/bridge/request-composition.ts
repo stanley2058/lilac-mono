@@ -1,4 +1,9 @@
+import { Buffer } from "node:buffer";
+
 import type { ModelMessage, UserContent } from "ai";
+import { fileTypeFromBuffer } from "file-type/core";
+
+import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
@@ -59,77 +64,63 @@ export async function composeRequestMessages(
   const merged = mergeChainByDiscordWindow(chain);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.
-  const modelMessages = merged.map((chunk) => {
-    const isBot = chunk.authorId === opts.botUserId;
+  const attState = createDiscordAttachmentState();
 
-    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+  const modelMessages = await Promise.all(
+    merged.map(async (chunk) => {
+      const isBot = chunk.authorId === opts.botUserId;
 
-    let text = chunk.text;
-    if (
-      opts.trigger.type === "mention" &&
-      chunk.messageIds.includes(opts.trigger.msgRef.messageId)
-    ) {
-      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-    }
+      const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-    const normalized = normalizeText(text, {
-      // We currently rely on adapter text already being normalized (mentions rewritten).
-      // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
-    });
+      let text = chunk.text;
+      if (
+        opts.trigger.type === "mention" &&
+        chunk.messageIds.includes(opts.trigger.msgRef.messageId)
+      ) {
+        text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
+      }
 
-    const header = formatDiscordAttributionHeader({
-      authorId: chunk.authorId,
-      authorName: chunk.authorName,
-      messageId,
-    });
+      const normalized = normalizeText(text, {
+        // We currently rely on adapter text already being normalized (mentions rewritten).
+        // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
+      });
 
-    const mainText = `${header}\n${normalized}`.trimEnd();
+      const header = formatDiscordAttributionHeader({
+        authorId: chunk.authorId,
+        authorName: chunk.authorName,
+        messageId,
+      });
 
-    if (isBot) {
-      return {
-        role: "assistant",
-        content: mainText,
-      } satisfies ModelMessage;
-    }
+      const mainText = `${header}\n${normalized}`.trimEnd();
 
-    if (chunk.attachments.length === 0) {
+      if (isBot) {
+        return {
+          role: "assistant",
+          content: mainText,
+        } satisfies ModelMessage;
+      }
+
+      if (chunk.attachments.length === 0) {
+        return {
+          role: "user",
+          content: mainText,
+        } satisfies ModelMessage;
+      }
+
+      const parts: UserContent = [{ type: "text", text: mainText }];
+
+      await appendDiscordAttachmentsToUserContent(
+        parts,
+        chunk.attachments,
+        attState,
+      );
+
       return {
         role: "user",
-        content: mainText,
+        content: parts,
       } satisfies ModelMessage;
-    }
-
-    const parts: UserContent = [{ type: "text", text: mainText }];
-
-    for (const att of chunk.attachments) {
-      try {
-        const url = new URL(att.url);
-        const mimeType = att.mimeType;
-
-        if (mimeType && mimeType.startsWith("image/")) {
-          parts.push({
-            type: "image",
-            image: url,
-            mediaType: mimeType,
-          });
-        } else {
-          parts.push({
-            type: "file",
-            data: url,
-            filename: att.filename,
-            mediaType: mimeType ?? "application/octet-stream",
-          });
-        }
-      } catch {
-        // ignore invalid URL
-      }
-    }
-
-    return {
-      role: "user",
-      content: parts,
-    } satisfies ModelMessage;
-  });
+    }),
+  );
 
   return {
     messages: modelMessages,
@@ -149,14 +140,19 @@ export async function composeRecentChannelMessages(
     throw new Error(`Unsupported platform '${opts.platform}'`);
   }
 
-  const sessionRef = { platform: "discord", channelId: opts.sessionId } as const;
+  const sessionRef = {
+    platform: "discord",
+    channelId: opts.sessionId,
+  } as const;
 
   const recent = await adapter.listMsg(sessionRef, { limit: opts.limit });
 
   const list: typeof recent = [...recent];
 
   if (opts.triggerMsgRef) {
-    const exists = list.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
+    const exists = list.some(
+      (m) => m.ref.messageId === opts.triggerMsgRef!.messageId,
+    );
     if (!exists) {
       const fetched = await adapter.readMsg(opts.triggerMsgRef);
       if (fetched) list.push(fetched);
@@ -179,75 +175,61 @@ export async function composeRecentChannelMessages(
 
   const merged = mergeChainByDiscordWindow(chain);
 
-  const modelMessages = merged.map((chunk) => {
-    const isBot = chunk.authorId === opts.botUserId;
+  const attState = createDiscordAttachmentState();
 
-    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+  const modelMessages = await Promise.all(
+    merged.map(async (chunk) => {
+      const isBot = chunk.authorId === opts.botUserId;
 
-    let text = chunk.text;
-    if (
-      opts.triggerType === "mention" &&
-      opts.triggerMsgRef &&
-      chunk.messageIds.includes(opts.triggerMsgRef.messageId)
-    ) {
-      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-    }
+      const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-    const normalized = normalizeText(text, {});
+      let text = chunk.text;
+      if (
+        opts.triggerType === "mention" &&
+        opts.triggerMsgRef &&
+        chunk.messageIds.includes(opts.triggerMsgRef.messageId)
+      ) {
+        text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
+      }
 
-    const header = formatDiscordAttributionHeader({
-      authorId: chunk.authorId,
-      authorName: chunk.authorName,
-      messageId,
-    });
+      const normalized = normalizeText(text, {});
 
-    const mainText = `${header}\n${normalized}`.trimEnd();
+      const header = formatDiscordAttributionHeader({
+        authorId: chunk.authorId,
+        authorName: chunk.authorName,
+        messageId,
+      });
 
-    if (isBot) {
-      return {
-        role: "assistant",
-        content: mainText,
-      } satisfies ModelMessage;
-    }
+      const mainText = `${header}\n${normalized}`.trimEnd();
 
-    if (chunk.attachments.length === 0) {
+      if (isBot) {
+        return {
+          role: "assistant",
+          content: mainText,
+        } satisfies ModelMessage;
+      }
+
+      if (chunk.attachments.length === 0) {
+        return {
+          role: "user",
+          content: mainText,
+        } satisfies ModelMessage;
+      }
+
+      const parts: UserContent = [{ type: "text", text: mainText }];
+
+      await appendDiscordAttachmentsToUserContent(
+        parts,
+        chunk.attachments,
+        attState,
+      );
+
       return {
         role: "user",
-        content: mainText,
+        content: parts,
       } satisfies ModelMessage;
-    }
-
-    const parts: UserContent = [{ type: "text", text: mainText }];
-
-    for (const att of chunk.attachments) {
-      try {
-        const url = new URL(att.url);
-        const mimeType = att.mimeType;
-
-        if (mimeType && mimeType.startsWith("image/")) {
-          parts.push({
-            type: "image",
-            image: url,
-            mediaType: mimeType,
-          });
-        } else {
-          parts.push({
-            type: "file",
-            data: url,
-            filename: att.filename,
-            mediaType: mimeType ?? "application/octet-stream",
-          });
-        }
-      } catch {
-        // ignore invalid URL
-      }
-    }
-
-    return {
-      role: "user",
-      content: parts,
-    } satisfies ModelMessage;
-  });
+    }),
+  );
 
   return {
     messages: modelMessages,
@@ -289,31 +271,220 @@ export async function composeSingleMessage(
 
   const parts: UserContent = [{ type: "text", text: mainText }];
 
-  for (const att of attachments) {
-    try {
-      const url = new URL(att.url);
-      const mimeType = att.mimeType;
+  await appendDiscordAttachmentsToUserContent(
+    parts,
+    attachments,
+    createDiscordAttachmentState(),
+  );
 
-      if (mimeType && mimeType.startsWith("image/")) {
-        parts.push({
-          type: "image",
-          image: url,
-          mediaType: mimeType,
-        });
+  return { role: "user", content: parts } satisfies ModelMessage;
+}
+
+const DEFAULT_INBOUND_MAX_FILE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_INBOUND_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+
+const DISCORD_CDN_HOSTS = new Set([
+  "cdn.discordapp.com",
+  "media.discordapp.net",
+]);
+
+type DiscordAttachmentState = {
+  downloadedTotalBytes: number;
+  // URL -> downloaded bytes + inferred mime type
+  cache: Map<string, { bytes: Uint8Array; mimeType?: string }>;
+};
+
+function createDiscordAttachmentState(): DiscordAttachmentState {
+  return { downloadedTotalBytes: 0, cache: new Map() };
+}
+
+function normalizeMimeType(mimeType: string | undefined): string | undefined {
+  if (!mimeType) return undefined;
+  const mt = mimeType.split(";")[0]?.trim();
+  return mt && mt.length > 0 ? mt : undefined;
+}
+
+function bestEffortInferMimeType(params: {
+  filename?: string;
+  url?: URL;
+}): string | undefined {
+  if (params.filename) {
+    const inferred = inferMimeTypeFromFilename(params.filename);
+    if (inferred !== "application/octet-stream") return inferred;
+  }
+
+  if (params.url) {
+    const path = params.url.pathname.split("/").pop();
+    if (path) {
+      const inferred = inferMimeTypeFromFilename(path);
+      if (inferred !== "application/octet-stream") return inferred;
+    }
+  }
+
+  return undefined;
+}
+
+async function downloadDiscordAttachment(url: URL): Promise<{
+  bytes: Uint8Array;
+  contentType?: string;
+}> {
+  if (!DISCORD_CDN_HOSTS.has(url.hostname)) {
+    throw new Error(
+      `Blocked attachment host '${url.hostname}'. Allowed: ${[...DISCORD_CDN_HOSTS].join(", ")}`,
+    );
+  }
+
+  const res = await fetch(url.toString(), { redirect: "follow" });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to download attachment (${res.status}): ${url.toString()}`,
+    );
+  }
+
+  const ab = await res.arrayBuffer();
+  return {
+    bytes: new Uint8Array(ab),
+    contentType: normalizeMimeType(
+      res.headers.get("content-type") ?? undefined,
+    ),
+  };
+}
+
+async function appendDiscordAttachmentsToUserContent(
+  parts: Exclude<UserContent, string>,
+  attachments: readonly DiscordAttachmentMeta[],
+  state: DiscordAttachmentState,
+): Promise<void> {
+  for (const att of attachments) {
+    let url: URL;
+    try {
+      url = new URL(att.url);
+    } catch {
+      continue;
+    }
+
+    const mimeType = normalizeMimeType(att.mimeType);
+
+    // Trust Discord when it provides mime type.
+    if (mimeType) {
+      if (mimeType.startsWith("image/")) {
+        parts.push({ type: "image", image: url, mediaType: mimeType });
       } else {
         parts.push({
           type: "file",
           data: url,
           filename: att.filename,
-          mediaType: mimeType ?? "application/octet-stream",
+          mediaType: mimeType,
         });
       }
-    } catch {
-      // ignore invalid URL
+      continue;
+    }
+
+    // Missing mime type: download once, infer, and pass bytes to avoid a second download.
+    const cached = state.cache.get(url.toString());
+
+    let bytes: Uint8Array | undefined;
+    let resolvedMimeType: string | undefined;
+
+    if (cached) {
+      bytes = cached.bytes;
+      resolvedMimeType = cached.mimeType;
+    } else {
+      // Size pre-check if available.
+      if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+        // Too large: fall back to URL-based attachment.
+        const fallback =
+          bestEffortInferMimeType({ filename: att.filename, url }) ??
+          "application/octet-stream";
+        parts.push({
+          type: "file",
+          data: url,
+          filename: att.filename,
+          mediaType: fallback,
+        });
+        continue;
+      }
+
+      try {
+        const downloaded = await downloadDiscordAttachment(url);
+        bytes = downloaded.bytes;
+
+        if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+          // Too large: fall back to URL-based attachment.
+          const fallback =
+            bestEffortInferMimeType({ filename: att.filename, url }) ??
+            "application/octet-stream";
+          parts.push({
+            type: "file",
+            data: url,
+            filename: att.filename,
+            mediaType: fallback,
+          });
+          continue;
+        }
+
+        // Track only bytes we actually downloaded in this call.
+        state.downloadedTotalBytes += bytes.byteLength;
+        if (state.downloadedTotalBytes > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
+          // Total too large: fall back to URL-based attachment.
+          const fallback =
+            bestEffortInferMimeType({ filename: att.filename, url }) ??
+            "application/octet-stream";
+          parts.push({
+            type: "file",
+            data: url,
+            filename: att.filename,
+            mediaType: fallback,
+          });
+          continue;
+        }
+
+        const buf = Buffer.from(bytes);
+        const detected = await fileTypeFromBuffer(buf);
+
+        resolvedMimeType =
+          detected?.mime ||
+          downloaded.contentType ||
+          bestEffortInferMimeType({ filename: att.filename, url }) ||
+          "application/octet-stream";
+
+        state.cache.set(url.toString(), { bytes, mimeType: resolvedMimeType });
+      } catch {
+        // Best-effort: fall back to URL-based attachment.
+        const fallback =
+          bestEffortInferMimeType({ filename: att.filename, url }) ??
+          "application/octet-stream";
+        parts.push({
+          type: "file",
+          data: url,
+          filename: att.filename,
+          mediaType: fallback,
+        });
+        continue;
+      }
+    }
+
+    const mt = resolvedMimeType ?? "application/octet-stream";
+    if (!bytes) {
+      parts.push({
+        type: "file",
+        data: url,
+        filename: att.filename,
+        mediaType: mt,
+      });
+      continue;
+    }
+    if (mt.startsWith("image/")) {
+      parts.push({ type: "image", image: bytes, mediaType: mt });
+    } else {
+      parts.push({
+        type: "file",
+        data: bytes,
+        filename: att.filename,
+        mediaType: mt,
+      });
     }
   }
-
-  return { role: "user", content: parts } satisfies ModelMessage;
 }
 
 export type ReplyChainMessage = {
