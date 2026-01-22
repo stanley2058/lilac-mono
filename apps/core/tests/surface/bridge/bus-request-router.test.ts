@@ -293,6 +293,97 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("suppresses routing when shouldSuppressAdapterEvent returns suppress=true", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const msgId = "m1";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      shouldSuppressAdapterEvent: async () => ({
+        suppress: true,
+        reason: "test",
+      }),
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    // capture cmd.request.message
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    // Would normally trigger (mentionsBot=true), but should be suppressed.
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: Date.now(),
+      raw: {
+        discord: { isDMBased: false, mentionsBot: true, replyToBot: false },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(0);
+
+    await sub.stop();
+    await router.stop();
+  });
+
   it("skips active channel batch when gate returns forward=false", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

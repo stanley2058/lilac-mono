@@ -17,6 +17,8 @@ import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
 import { startWorkflowService } from "../workflow/workflow-service";
+import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
+import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
 import { createToolServer } from "../tool-server/create-tool-server";
 import { createDefaultToolServerTools } from "../tool-server/default-tools";
@@ -92,6 +94,7 @@ export async function createCoreRuntime(
 
   const adapter = new DiscordAdapter();
   const workflowStore = new SqliteWorkflowStore();
+  const workflowQueries = createWorkflowStoreQueries(workflowStore);
 
   let started = false;
 
@@ -145,6 +148,8 @@ export async function createCoreRuntime(
         adapter,
         bus,
         subscriptionId: subId(subscriptionPrefix, "router"),
+        shouldSuppressAdapterEvent: async ({ evt }) =>
+          shouldSuppressRouterForWorkflowReply({ queries: workflowQueries, evt }),
       });
 
       logger.info("Bus request router started", {

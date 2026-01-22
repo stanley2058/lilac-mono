@@ -80,6 +80,55 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }));
   }
 
+  /**
+   * Unsafe direct sqlite access hook used by the surface router.
+   * Includes resolved tasks to avoid races between workflow resolution and router routing.
+   */
+  unsafeListDiscordWaitForReplyTasksByChannelIdAndMessageId(
+    channelId: string,
+    messageId: string,
+  ): WorkflowTaskRecord[] {
+    const rows = this.db
+      .query(
+        "SELECT * FROM workflow_tasks WHERE kind = ? AND discord_channel_id = ? AND discord_message_id = ? AND state IN ('queued','running','blocked','resolved')",
+      )
+      .all("discord.wait_for_reply", channelId, messageId) as Array<{
+      workflow_id: string;
+      task_id: string;
+      kind: string;
+      description: string;
+      state: string;
+      input_json: string | null;
+      result_json: string | null;
+      created_at: number;
+      updated_at: number;
+      resolved_at: number | null;
+      resolved_by: string | null;
+      discord_channel_id: string | null;
+      discord_message_id: string | null;
+      discord_from_user_id: string | null;
+      timeout_at: number | null;
+    }>;
+
+    return rows.map((row) => ({
+      workflowId: row.workflow_id,
+      taskId: row.task_id,
+      kind: row.kind,
+      description: row.description,
+      state: row.state as WorkflowTaskRecord["state"],
+      input: parseJson(row.input_json) ?? undefined,
+      result: parseJson(row.result_json) ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      resolvedAt: row.resolved_at ?? undefined,
+      resolvedBy: row.resolved_by ?? undefined,
+      discordChannelId: row.discord_channel_id ?? undefined,
+      discordMessageId: row.discord_message_id ?? undefined,
+      discordFromUserId: row.discord_from_user_id ?? undefined,
+      timeoutAt: row.timeout_at ?? undefined,
+    }));
+  }
+
   unsafeListActiveTimeoutTasks(nowMs: number): WorkflowTaskRecord[] {
     const rows = this.db
       .query(

@@ -8,6 +8,7 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
+  type EvtAdapterMessageCreatedData,
   type LilacBus,
   type RequestQueueMode,
 } from "@stanley2058/lilac-event-bus";
@@ -101,6 +102,13 @@ export async function startBusRequestRouter(params: {
   subscriptionId: string;
   /** Optionally inject config; defaults to getCoreConfig(). */
   config?: CoreConfig;
+  /**
+   * Optionally suppress routing for specific adapter events.
+   * Used to prevent workflow-resume replies from also being treated as normal prompts.
+   */
+  shouldSuppressAdapterEvent?: (input: {
+    evt: EvtAdapterMessageCreatedData;
+  }) => Promise<{ suppress: boolean; reason?: string }>;
   /** Optional injection for unit tests (bypasses real model call). */
   routerGate?: (input: {
     sessionId: string;
@@ -176,6 +184,26 @@ export async function startBusRequestRouter(params: {
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.EvtAdapterMessageCreated) return;
       if (msg.data.platform !== "discord") return;
+
+      if (params.shouldSuppressAdapterEvent) {
+        const decision = await params
+          .shouldSuppressAdapterEvent({ evt: msg.data })
+          .catch((e: unknown) => {
+            logger.error("router suppression hook failed; proceeding", e);
+            return { suppress: false as const };
+          });
+
+        if (decision.suppress) {
+          logger.info("router suppressed adapter message", {
+            sessionId: msg.data.channelId,
+            messageId: msg.data.messageId,
+            userId: msg.data.userId,
+            reason: decision.reason,
+          });
+          await ctx.commit();
+          return;
+        }
+      }
 
       // reload config opportunistically (mtime cached in getCoreConfig).
       cfg = params.config ?? (await getCoreConfig());
