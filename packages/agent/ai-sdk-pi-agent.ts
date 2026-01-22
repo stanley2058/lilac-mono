@@ -903,7 +903,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private async runTurn(): Promise<{
     finishReason: FinishReason;
     newMessages: ModelMessage[];
-    toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>;
+    toolCalls: Array<{
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      invalid?: boolean;
+      error?: unknown;
+    }>;
     usage: LanguageModelUsage;
     totalUsage: LanguageModelUsage;
   }> {
@@ -965,11 +971,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       role: "assistant",
       content: [],
     };
-    const toolCalls: Array<{
-      toolCallId: string;
-      toolName: string;
-      input: unknown;
-    }> = [];
+    // Tool calls observed in `fullStream` may still have raw/unvalidated JSON.
+    // They are useful for UI events, but we must execute tools only from the
+    // finalized `response.messages` (post-parse + schema validation).
 
     let aborted = false;
 
@@ -1119,7 +1123,6 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         }
         case "tool-call": {
           const { toolCallId, toolName, input } = part;
-          toolCalls.push({ toolCallId, toolName, input });
           partialAssistant.content.push({
             type: "tool-call",
             toolCallId,
@@ -1183,6 +1186,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     }
 
     const newMessages: ModelMessage[] = response.messages;
+    const toolCalls = extractToolCallsFromMessages(newMessages);
 
     // Emit message_end for assistant message (first assistant in response.messages)
     const assistantMessage = newMessages.find((m) => m.role === "assistant");
@@ -1219,7 +1223,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   private async executeToolCallsAndMaybeSteer(
-    toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>,
+    toolCalls: Array<{
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      invalid?: boolean;
+      error?: unknown;
+    }>,
   ): Promise<boolean> {
     for (let i = 0; i < toolCalls.length; i++) {
       if (this.abortController?.signal.aborted) {
@@ -1247,58 +1257,79 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       let toolOutput: any;
 
       try {
-        if (!tool) throw new Error(`Tool not found: ${call.toolName}`);
-
-        const needsApproval =
-          typeof tool.needsApproval === "function"
-            ? await tool.needsApproval(call.input, {
-                toolCallId: call.toolCallId,
-                messages: this.state.messages,
-                experimental_context: this.context,
-              })
-            : Boolean(tool.needsApproval);
-
-        if (needsApproval) {
+        if (call.invalid) {
           isError = true;
-          result = { denied: true };
-          toolOutput = {
-            type: "execution-denied",
-            reason: "Tool requires approval.",
-          };
-        } else if (!tool.execute) {
-          throw new Error(`Tool has no execute(): ${call.toolName}`);
+          const msg =
+            call.error instanceof Error
+              ? call.error.message
+              : typeof call.error === "string"
+                ? call.error
+                : call.error
+                  ? (() => {
+                      try {
+                        const s = JSON.stringify(call.error);
+                        return s ?? String(call.error);
+                      } catch {
+                        return String(call.error);
+                      }
+                    })()
+                  : "Invalid tool input.";
+          result = msg;
+          toolOutput = { type: "error-text", value: msg };
+        } else if (!tool) {
+          throw new Error(`Tool not found: ${call.toolName}`);
         } else {
-          const raw = tool.execute(call.input, {
-            toolCallId: call.toolCallId,
-            messages: this.state.messages,
-            abortSignal: this.abortController?.signal,
-            experimental_context: this.context,
-          });
+          const needsApproval =
+            typeof tool.needsApproval === "function"
+              ? await tool.needsApproval(call.input, {
+                  toolCallId: call.toolCallId,
+                  messages: this.state.messages,
+                  experimental_context: this.context,
+                })
+              : Boolean(tool.needsApproval);
 
-          if (isAsyncIterable(raw)) {
-            let last: unknown = undefined;
-            for await (const chunk of raw) {
-              last = chunk;
-              this.emit({
-                type: "tool_execution_update",
-                toolCallId: call.toolCallId,
-                toolName: call.toolName,
-                args: call.input,
-                partialResult: chunk,
-              });
-            }
-            result = last;
+          if (needsApproval) {
+            isError = true;
+            result = { denied: true };
+            toolOutput = {
+              type: "execution-denied",
+              reason: "Tool requires approval.",
+            };
+          } else if (!tool.execute) {
+            throw new Error(`Tool has no execute(): ${call.toolName}`);
           } else {
-            result = await raw;
-          }
+            const raw = tool.execute(call.input, {
+              toolCallId: call.toolCallId,
+              messages: this.state.messages,
+              abortSignal: this.abortController?.signal,
+              experimental_context: this.context,
+            });
 
-          toolOutput = tool.toModelOutput
-            ? await tool.toModelOutput({
-                toolCallId: call.toolCallId,
-                input: call.input,
-                output: result,
-              })
-            : { type: "json", value: result ?? null };
+            if (isAsyncIterable(raw)) {
+              let last: unknown = undefined;
+              for await (const chunk of raw) {
+                last = chunk;
+                this.emit({
+                  type: "tool_execution_update",
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                  args: call.input,
+                  partialResult: chunk,
+                });
+              }
+              result = last;
+            } else {
+              result = await raw;
+            }
+
+            toolOutput = tool.toModelOutput
+              ? await tool.toModelOutput({
+                  toolCallId: call.toolCallId,
+                  input: call.input,
+                  output: result,
+                })
+              : { type: "json", value: result ?? null };
+          }
         }
       } catch (e) {
         isError = true;
@@ -1398,6 +1429,58 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
     return false;
   }
+}
+
+function hasOwnKey<T extends object, K extends PropertyKey>(
+  obj: T,
+  key: K,
+): obj is T & Record<K, unknown> {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function extractToolCallsFromMessages(
+  messages: readonly ModelMessage[],
+): Array<{
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  invalid?: boolean;
+  error?: unknown;
+}> {
+  const toolCalls: Array<{
+    toolCallId: string;
+    toolName: string;
+    input: unknown;
+    invalid?: boolean;
+    error?: unknown;
+  }> = [];
+
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const content = message.content;
+    if (typeof content === "string") continue;
+
+    for (const part of content) {
+      // Ignore tool approval request prompts and other parts.
+      if (part.type !== "tool-call") continue;
+
+      // Provider-executed tools should produce tool messages without local execution.
+      if (part.providerExecuted === true) continue;
+
+      const invalid = hasOwnKey(part, "invalid") && part.invalid === true;
+      const error = hasOwnKey(part, "error") ? part.error : undefined;
+
+      toolCalls.push({
+        toolCallId: part.toolCallId,
+        toolName: part.toolName,
+        input: part.input,
+        ...(invalid ? { invalid: true } : {}),
+        ...(error !== undefined ? { error } : {}),
+      });
+    }
+  }
+
+  return toolCalls;
 }
 
 // Optional smoke demo (requires you to provide a model instance).

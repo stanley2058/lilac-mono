@@ -25,6 +25,7 @@ import {
 
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 
+import { applyPatchToolForModel } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
 
@@ -518,6 +519,11 @@ export async function startBusAgentRunner(params: {
       tools: {
         ...bashToolWithCwd(cwd),
         ...fsTool(cwd),
+        ...applyPatchToolForModel({
+          cwd,
+          provider: resolved.provider,
+          modelId: resolved.modelId,
+        }),
       },
       providerOptions: resolved.providerOptions,
     });
