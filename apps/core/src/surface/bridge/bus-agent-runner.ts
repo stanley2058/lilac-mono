@@ -86,6 +86,7 @@ function isAssistantToolCallMessage(message: ModelMessage): boolean {
   if (!Array.isArray(message.content)) return false;
 
   return message.content.some((part) => {
+    if (!part || typeof part !== "object") return false;
     return part.type === "tool-call";
   });
 }
@@ -118,6 +119,7 @@ function countCharsInMessage(
   if (role === "assistant") {
     if (Array.isArray(message.content)) {
       for (const part of message.content) {
+        if (!part || typeof part !== "object") continue;
         const t = part.type;
         if (t === "tool-result") {
           toolResultChars += safeStringify(part).length;
@@ -184,6 +186,7 @@ function buildPromptSnapshots(params: {
 }
 
 function estimateInputCompositionChars(input: {
+  system: string;
   initialMessages: ModelMessage[];
   responseMessages: ModelMessage[];
   tools: unknown;
@@ -201,6 +204,7 @@ function estimateInputCompositionChars(input: {
 
   const toolDefsText = getToolDefsText(tools);
   const perCallToolDefsChars = toolDefsText.length;
+  const perCallSystemChars = input.system.length;
 
   let systemChars = 0;
   let assistantChars = 0;
@@ -208,6 +212,9 @@ function estimateInputCompositionChars(input: {
   let toolResultChars = 0;
 
   for (const snapshot of snapshots) {
+    // AI SDK sends the system prompt per model call (separate from `messages`).
+    systemChars += perCallSystemChars;
+
     for (const message of snapshot) {
       const counts = countCharsInMessage(message);
       systemChars += counts.systemChars;
@@ -269,11 +276,13 @@ function computePercentages(chars: {
 }
 
 function buildInputCompositionLine(input: {
+  system: string;
   initialMessages: ModelMessage[];
   responseMessages: ModelMessage[];
   tools: unknown;
 }): string | null {
   const chars = estimateInputCompositionChars({
+    system: input.system,
     initialMessages: input.initialMessages,
     responseMessages: input.responseMessages,
     tools: input.tools,
@@ -683,6 +692,7 @@ export async function startBusAgentRunner(params: {
         : [];
 
       const icLine = buildInputCompositionLine({
+        system: agent.state.system,
         initialMessages,
         responseMessages,
         tools: agent.state.tools,
