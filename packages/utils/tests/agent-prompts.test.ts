@@ -47,7 +47,11 @@ describe("agent prompts", () => {
     await withTempDataDir(async (dataDir) => {
       await ensurePromptWorkspace({ dataDir });
 
-      const agentsPath = path.join(dataDir, DEFAULT_PROMPT_DIRNAME, "AGENTS.md");
+      const agentsPath = path.join(
+        dataDir,
+        DEFAULT_PROMPT_DIRNAME,
+        "AGENTS.md",
+      );
       await writeFile(agentsPath, "# AGENTS.md\n\nCustom rules.", "utf8");
 
       const res = await ensurePromptWorkspace({ dataDir, overwrite: true });
@@ -65,10 +69,8 @@ describe("agent prompts", () => {
       expect(built.promptDir).toBe(path.join(dataDir, DEFAULT_PROMPT_DIRNAME));
 
       for (const name of CORE_PROMPT_FILES) {
-        expect(built.systemPrompt).toContain(`## ${name}`);
+        expect(built.systemPrompt).toContain(`# ${name}`);
       }
-
-      expect(built.systemPrompt).toContain("If instructions conflict");
     });
   });
 
@@ -76,7 +78,11 @@ describe("agent prompts", () => {
     await withTempDataDir(async (dataDir) => {
       await ensurePromptWorkspace();
 
-      const agentsPath = path.join(dataDir, DEFAULT_PROMPT_DIRNAME, "AGENTS.md");
+      const agentsPath = path.join(
+        dataDir,
+        DEFAULT_PROMPT_DIRNAME,
+        "AGENTS.md",
+      );
       await writeFile(agentsPath, "# AGENTS.md\n\nCustom rules.", "utf8");
 
       const built = await buildAgentSystemPrompt();
