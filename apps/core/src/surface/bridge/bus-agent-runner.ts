@@ -532,21 +532,23 @@ export async function startBusAgentRunner(params: {
 
     // Stats and timings for this run (agent model only).
     let initialMessages: ModelMessage[] = [];
-    let runTotalUsage: LanguageModelUsage | undefined = undefined;
-    let runFinalMessages: ModelMessage[] | undefined = undefined;
-    let firstTextDeltaAt: number | null = null;
+    const runStats: {
+      totalUsage?: LanguageModelUsage;
+      finalMessages?: ModelMessage[];
+      firstTextDeltaAt?: number;
+    } = {};
 
     const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
       if (event.type === "agent_end") {
-        runTotalUsage = event.totalUsage;
-        runFinalMessages = event.messages;
+        runStats.totalUsage = event.totalUsage;
+        runStats.finalMessages = event.messages;
       }
 
       if (
         event.type === "message_update" &&
         event.assistantMessageEvent.type === "text_delta"
       ) {
-        firstTextDeltaAt ??= Date.now();
+        runStats.firstTextDeltaAt ??= Date.now();
 
         const delta = event.assistantMessageEvent.delta;
         finalText += delta;
@@ -666,16 +668,18 @@ export async function startBusAgentRunner(params: {
 
       // Log stats in the js-llmcord-ish one-liner format.
       const endAt = Date.now();
-      const ttftMs = firstTextDeltaAt ? firstTextDeltaAt - runStartedAt : null;
-      const outputTokens = runTotalUsage?.outputTokens;
+      const ttftMs = runStats.firstTextDeltaAt
+        ? runStats.firstTextDeltaAt - runStartedAt
+        : null;
+      const outputTokens = runStats.totalUsage?.outputTokens;
       const rawTps =
-        typeof outputTokens === "number" && firstTextDeltaAt
-          ? outputTokens / ((endAt - firstTextDeltaAt) / 1000)
+        typeof outputTokens === "number" && runStats.firstTextDeltaAt
+          ? outputTokens / ((endAt - runStats.firstTextDeltaAt) / 1000)
           : null;
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
-      const responseMessages = runFinalMessages
-        ? runFinalMessages.slice(initialMessages.length)
+      const responseMessages = runStats.finalMessages
+        ? runStats.finalMessages.slice(initialMessages.length)
         : [];
 
       const icLine = buildInputCompositionLine({
@@ -687,7 +691,7 @@ export async function startBusAgentRunner(params: {
       const modelLabel = resolved.modelId;
       const statsLine = buildStatsLine({
         modelLabel,
-        usage: runTotalUsage,
+        usage: runStats.totalUsage,
         ttftMs,
         tps,
         icLine,
