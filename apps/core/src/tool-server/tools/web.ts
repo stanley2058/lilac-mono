@@ -37,9 +37,10 @@ const getPageSchema = z.object({
     .describe(
       "Preprocessor to use for parsing the page; Only apply to `fetch` and `browser`; `readability` uses the Mozilla Readability library.",
     ),
-  startOffset: z.number().optional(),
-  maxCharacters: z.number().optional(),
+  startOffset: z.coerce.number().optional(),
+  maxCharacters: z.coerce.number().optional(),
   timeout: z
+    .coerce
     .number()
     .optional()
     .describe(
@@ -57,7 +58,7 @@ const searchInputSchema = z.object({
     .describe(
       '"advanced" search is tailored to retrieve the most relevant sources and content snippets for your query, while "basic" search provides generic content snippets from each source.',
     ),
-  maxResults: z.number().optional().default(8).describe("Max results"),
+  maxResults: z.coerce.number().optional().default(8).describe("Max results"),
   timeRange: z
     .enum(["day", "week", "month", "year", "d", "w", "m", "y"])
     .optional()

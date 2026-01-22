@@ -127,6 +127,7 @@ export const agentSummarizeInputSchema = z
       .describe("Additional instructions you want to give to the model."),
 
     maxOutputTokens: z
+      .coerce
       .number()
       .optional()
       .describe(

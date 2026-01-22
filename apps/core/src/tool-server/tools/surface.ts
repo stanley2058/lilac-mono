@@ -226,6 +226,7 @@ const messagesListInputSchema = baseInputSchema.extend({
       "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
     ),
   limit: z
+    .coerce
     .number()
     .int()
     .positive()

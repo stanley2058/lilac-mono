@@ -292,7 +292,7 @@ const workflowSendAndWaitInputSchema = z.object({
   taskDescription: z.string().min(1),
   summary: z.string().min(1),
   fromUserId: z.string().min(1).optional(),
-  timeoutMs: z.number().int().positive().optional(),
+  timeoutMs: z.coerce.number().int().positive().optional(),
 });
 
 const workflowCreateInputSchema = z.object({

@@ -416,7 +416,7 @@ type ParsedArgs =
       callableId: string;
       outputMode: OutputMode;
       baseInput?: JsonSource;
-      fieldInputs: { field: string; value: number | string | boolean }[];
+      fieldInputs: { field: string; value: string | boolean }[];
       jsonFieldInputs: { field: string; source: JsonSource }[];
       usesStdin: boolean;
     }
@@ -453,8 +453,7 @@ function parseArgs(): ParsedArgs {
   if (firstArg && !firstArg.startsWith("--")) {
     const callableId = firstArg;
 
-    const fieldInputs: { field: string; value: number | string | boolean }[] =
-      [];
+    const fieldInputs: { field: string; value: string | boolean }[] = [];
     const jsonFieldInputs: { field: string; source: JsonSource }[] = [];
 
     const seenCanonicalFields = new Map<string, string>();
@@ -562,7 +561,7 @@ function parseArgs(): ParsedArgs {
         continue;
       }
 
-      // Default: treat as primitive string/number/bool.
+      // Default: treat as primitive string/bool.
       const field = kebabToCamelCase(fieldRaw);
       const previous = seenCanonicalFields.get(field);
       if (previous && previous !== fieldRaw) {
@@ -572,7 +571,7 @@ function parseArgs(): ParsedArgs {
       }
       if (!previous) seenCanonicalFields.set(field, fieldRaw);
 
-      let parsedValue: number | string | boolean = v;
+      let parsedValue: string | boolean = v;
 
       if (eq === -1) {
         // Preserve existing behavior for unknown --flag (it becomes empty-string).
@@ -587,7 +586,6 @@ function parseArgs(): ParsedArgs {
 
       if (typeof parsedValue === "string") {
         parsedValue = normalizeMaybePath(field, parsedValue);
-        parsedValue = coerceNumberLike(parsedValue);
       }
 
       fieldInputs.push({ field, value: parsedValue });
@@ -702,8 +700,6 @@ function parseBooleanLike(s: string): boolean | undefined {
   return undefined;
 }
 
-const DECIMAL_NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-
 function looksLikePath(value: string) {
   if (value.includes("://")) return false;
   if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
@@ -744,19 +740,6 @@ function normalizeMaybePath(field: string, value: string) {
 
   if (!shouldNormalize) return value;
   return resolve(expandTilde(value));
-}
-
-function coerceNumberLike(input: string): string | number {
-  const s = input.trim();
-
-  // If you want to preserve whitespace for non-numbers, don’t trim here;
-  // instead test on trimmed but return original.
-  if (!DECIMAL_NUMBER_RE.test(s)) return input;
-
-  const n = Number(s);
-  if (!Number.isFinite(n)) return input; // extra safety
-
-  return n;
 }
 
 function kebabToCamelCase(input: string): string {

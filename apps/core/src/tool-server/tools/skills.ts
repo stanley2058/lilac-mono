@@ -18,6 +18,7 @@ const listInputSchema = z.object({
     .optional()
     .describe("Search query (fuzzy-matched against name/description/source)"),
   limit: z
+    .coerce
     .number()
     .int()
     .positive()
@@ -34,6 +35,7 @@ const listInputSchema = z.object({
 const readInputSchema = z.object({
   name: z.string().min(1).describe("Skill name"),
   maxChars: z
+    .coerce
     .number()
     .int()
     .positive()
