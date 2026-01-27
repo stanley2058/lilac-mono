@@ -1,9 +1,10 @@
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import { createCoreRuntime } from "./create-core-runtime";
 
 const logger = new Logger({
-  logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+  logLevel: resolveLogLevel(),
   module: "core-main",
 });
 

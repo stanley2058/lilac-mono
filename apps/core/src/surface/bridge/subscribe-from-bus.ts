@@ -4,7 +4,8 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
@@ -69,7 +70,7 @@ export async function bridgeBusToAdapter(params: {
   idleTimeoutMs?: number;
 }) {
   const logger = new Logger({
-    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(),
     module: "bridge:bus-to-adapter",
   });
 

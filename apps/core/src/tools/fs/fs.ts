@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { READ_ERROR_CODES, FileSystem } from "./fs-impl";
 
 const pathSchema = z
@@ -75,7 +76,7 @@ type ReadFileOutput = z.infer<typeof readFileOutputZod>;
 
 export function fsTool(cwd: string) {
   const logger = new Logger({
-    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(),
     module: "tool:fs",
   });
 

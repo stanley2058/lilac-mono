@@ -8,6 +8,7 @@ import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
   ModelCapability,
+  resolveLogLevel,
   resolveModelSlot,
 } from "@stanley2058/lilac-utils";
 import {
@@ -23,7 +24,7 @@ import {
   type AiSdkPiAgentEvent,
 } from "@stanley2058/lilac-agent";
 
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import { applyPatchToolForModel } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
@@ -377,7 +378,7 @@ export async function startBusAgentRunner(params: {
   const { bus, subscriptionId } = params;
 
   const logger = new Logger({
-    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(),
     module: "bus-agent-runner",
   });
 

@@ -16,10 +16,11 @@ import type {
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
+  resolveLogLevel,
   resolveDiscordDbPath,
   resolveDiscordToken,
 } from "@stanley2058/lilac-utils";
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { Logger } from "@stanley2058/simple-module-logger";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -157,7 +158,7 @@ export class DiscordAdapter implements SurfaceAdapter {
   private handlers = new Set<AdapterEventHandler>();
 
   private readonly logger = new Logger({
-    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(),
     module: "surface:discord",
   });
 

@@ -1,6 +1,6 @@
 import Redis from "ioredis";
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
-import { env, getCoreConfig } from "@stanley2058/lilac-utils";
+import { env, getCoreConfig, resolveLogLevel } from "@stanley2058/lilac-utils";
 import path from "node:path";
 import fs from "node:fs/promises";
 import {
@@ -50,7 +50,7 @@ export async function createCoreRuntime(
   opts: CoreRuntimeOptions = {},
 ): Promise<CoreRuntime> {
   const logger = new Logger({
-    logLevel: opts.logLevel ?? (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(opts.logLevel),
     module: "core-runtime",
   });
 
@@ -173,7 +173,7 @@ export async function createCoreRuntime(
           getConfig: () => getCoreConfig(),
         }),
         logger: new Logger({
-          logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+          logLevel: resolveLogLevel(),
           module: "tool-server",
         }),
         requestMessageCache: {

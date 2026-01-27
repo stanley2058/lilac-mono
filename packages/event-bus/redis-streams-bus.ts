@@ -1,6 +1,7 @@
 import type Redis from "ioredis";
 import SuperJSON from "superjson";
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { RawBus } from "./raw-bus";
 import type {
@@ -135,7 +136,7 @@ export class RedisStreamsBus implements RawBus {
     this.keyPrefix = options.keyPrefix ?? "lilac:event-bus";
     this.ownsRedis = options.ownsRedis ?? false;
     this.logger = new Logger({
-      logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+      logLevel: resolveLogLevel(),
       module: "event-bus:redis-streams",
     });
   }

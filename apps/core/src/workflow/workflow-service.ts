@@ -5,7 +5,8 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import { createWorkflowStoreQueries } from "./workflow-store-queries";
 import type { WorkflowStoreQueries } from "./workflow-store-queries";
@@ -181,7 +182,7 @@ export async function startWorkflowService(params: {
   const { bus, store, subscriptionId } = params;
 
   const logger = new Logger({
-    logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    logLevel: resolveLogLevel(),
     module: "workflow-service",
   });
   const queries: WorkflowStoreQueries = createWorkflowStoreQueries(store);

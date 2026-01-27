@@ -1,4 +1,5 @@
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
@@ -7,7 +8,7 @@ const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
 
 const logger = new Logger({
-  logLevel: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+  logLevel: resolveLogLevel(),
   module: "tool:bash",
 });
 

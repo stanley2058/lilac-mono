@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   getCoreConfig,
+  resolveLogLevel,
   resolveModelSlot,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
@@ -12,7 +13,7 @@ import {
   type LilacBus,
   type RequestQueueMode,
 } from "@stanley2058/lilac-event-bus";
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
@@ -120,7 +121,7 @@ export async function startBusRequestRouter(params: {
 
   const logger = new Logger({
     module: "bus-request-router",
-    logLevel: (process.env.LOG_LEVEL ?? "info") as LogLevel,
+    logLevel: resolveLogLevel(),
   });
 
   let cfg = params.config ?? (await getCoreConfig());
