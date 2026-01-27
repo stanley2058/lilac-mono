@@ -13,7 +13,7 @@ describe("formatToolArgsForDisplay", () => {
 
   it("formats readFile path with middle truncation (7 ... 10)", () => {
     expect(
-      formatToolArgsForDisplay("readFile", {
+      formatToolArgsForDisplay("read_file", {
         path: "/path/to/some/really/long/path/to/file.js",
       }),
     ).toBe(" /path/t...to/file.js");
@@ -54,7 +54,7 @@ describe("formatToolArgsForDisplay", () => {
 
   it("returns empty string on invalid args", () => {
     expect(formatToolArgsForDisplay("bash", { nope: true })).toBe("");
-    expect(formatToolArgsForDisplay("readFile", { nope: true })).toBe("");
+    expect(formatToolArgsForDisplay("read_file", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("apply_patch", { nope: true })).toBe("");
   });
 });

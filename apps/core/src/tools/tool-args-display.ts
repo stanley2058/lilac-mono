@@ -133,7 +133,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     return " " + truncateEnd(cmd, 20);
   },
 
-  readFile: (args) => {
+  read_file: (args) => {
     const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
     if (!parsed) return "";
 
@@ -141,6 +141,9 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     if (!p) return "";
     return " " + truncateMiddle(p, 7, 10, 20);
   },
+
+  // Back-compat for older transcripts / callers.
+  readFile: (args) => TOOL_ARGS_FORMATTERS.read_file(args),
 
   apply_patch: (args) => {
     const openaiParsed = safeValidateSync<

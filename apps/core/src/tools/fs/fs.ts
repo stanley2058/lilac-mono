@@ -82,7 +82,7 @@ export function fsTool(cwd: string) {
   const fs = new FileSystem(cwd);
 
   return {
-    readFile: tool<ReadFileInput, ReadFileOutput>({
+    read_file: tool<ReadFileInput, ReadFileOutput>({
       description:
         "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
       inputSchema: readFileInputZod,
