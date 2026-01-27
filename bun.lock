@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "lilac-mono",
+      "devDependencies": {
+        "typescript": "^5.9.3",
+      },
     },
     "apps/core": {
       "name": "@stanley2058/lilac-core",

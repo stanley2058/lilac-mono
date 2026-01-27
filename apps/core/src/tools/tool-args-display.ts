@@ -123,6 +123,15 @@ function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
 
 type ToolArgsFormatter = (args: unknown) => string;
 
+const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
+  const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
+  if (!parsed) return "";
+
+  const p = parsed.path.trim();
+  if (!p) return "";
+  return " " + truncateMiddle(p, 7, 10, 20);
+};
+
 const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   bash: (args) => {
     const parsed = safeValidateSync<{ command: string }>(bashInputSchema, args);
@@ -133,17 +142,10 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     return " " + truncateEnd(cmd, 20);
   },
 
-  read_file: (args) => {
-    const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
-    if (!parsed) return "";
-
-    const p = parsed.path.trim();
-    if (!p) return "";
-    return " " + truncateMiddle(p, 7, 10, 20);
-  },
+  read_file: readFileToolArgsFormatter,
 
   // Back-compat for older transcripts / callers.
-  readFile: (args) => TOOL_ARGS_FORMATTERS.read_file(args),
+  readFile: readFileToolArgsFormatter,
 
   apply_patch: (args) => {
     const openaiParsed = safeValidateSync<

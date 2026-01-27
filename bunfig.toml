@@ -1,0 +1,4 @@
+[test]
+# Keep `ref/` (vendored upstreams) out of the default test run.
+# Run tests via a tiny root harness in `__tests__/`.
+root = "./__tests__"

@@ -49,6 +49,10 @@ Tests use Bun’s built-in runner + `bun:test`.
   - `cd apps/core && bun test`
   - `cd packages/event-bus && bun test`
 
+- Run the monorepo test harness from repo root:
+  - `bun test`
+  - This intentionally ignores `ref/` (vendored upstreams) and runs workspace tests via `__tests__/workspaces.test.ts`.
+
 - Run a single test file:
   - `cd apps/core && bun test tests/tools/bash.test.ts`
   - `cd packages/event-bus && bun test tests/redis-streams-bus.test.ts`
@@ -64,6 +68,9 @@ Tips:
 Treat running `tsc` as essential (same tier as running tests). OpenCode’s TypeScript LSP can be unreliable in this monorepo, so `tsc` is the source of truth.
 
 There is no repo-wide `typecheck` script currently.
+
+Notes:
+- OpenCode's TypeScript LSP needs `typescript` installed in the repo (we keep it as a root devDependency). Run `bun install` at repo root once if you want TS LSP features.
 
 - Run typecheck in the package you changed:
   - `cd <package> && bunx tsc -p tsconfig.json --noEmit`

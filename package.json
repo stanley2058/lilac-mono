@@ -1,6 +1,9 @@
 {
   "name": "lilac-mono",
   "private": true,
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
