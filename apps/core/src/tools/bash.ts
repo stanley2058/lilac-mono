@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { executeBash } from "./bash-impl";
 
-const bashInputSchema = z.object({
+export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
   cwd: z.string().optional().describe("Working directory (supports ~)"),
   timeoutMs: z.number().optional().describe("Timeout in ms (default: 1h)"),

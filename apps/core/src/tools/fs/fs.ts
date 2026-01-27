@@ -11,7 +11,7 @@ const pathSchema = z
 
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
 
-const readFileInputZod = z.object({
+export const readFileInputZod = z.object({
   path: pathSchema,
   cwd: z
     .string()

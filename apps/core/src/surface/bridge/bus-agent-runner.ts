@@ -28,6 +28,7 @@ import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import { applyPatchToolForModel } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
+import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -592,7 +593,7 @@ export async function startBusAgentRunner(params: {
             {
               toolCallId: event.toolCallId,
               status: "start",
-              display: `[${event.toolName}]${typeof event.args === "string" ? ` ${event.args}` : ""}`,
+              display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
             },
             { headers },
           )
@@ -629,7 +630,7 @@ export async function startBusAgentRunner(params: {
             {
               toolCallId: event.toolCallId,
               status: "end",
-              display: `[${event.toolName}]${typeof event.args === "string" ? ` ${event.args}` : ""}`,
+              display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
               ok: !event.isError,
               error: event.isError ? "tool error" : undefined,
             },
