@@ -1,8 +1,10 @@
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
+
+import { getGithubEnvForBash } from "../github/github-app-token";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
@@ -123,6 +125,8 @@ export async function executeBash(
     }
   }
 
+  const githubEnv = await getGithubEnvForBash({ dataDir: env.dataDir });
+
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS;
 
   const controller = new AbortController();
@@ -146,6 +150,7 @@ export async function executeBash(
       killSignal: DEFAULT_KILL_SIGNAL,
       env: {
         ...process.env,
+        ...githubEnv,
         LILAC_REQUEST_ID: context?.requestId,
         LILAC_SESSION_ID: context?.sessionId,
         LILAC_REQUEST_CLIENT: context?.requestClient,
@@ -165,6 +170,9 @@ export async function executeBash(
       stderrResult.status === "fulfilled" ? stderrResult.value : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
+    const safeStdout = redactSecrets(stdout);
+    const safeStderr = redactSecrets(stderr);
+
     const durationMs = Date.now() - startedAt;
 
     if (timedOut && child.killed) {
@@ -183,8 +191,8 @@ export async function executeBash(
       });
 
       return {
-        stdout,
-        stderr,
+        stdout: safeStdout,
+        stderr: safeStderr,
         exitCode,
         executionError: {
           type: "timeout",
@@ -209,8 +217,8 @@ export async function executeBash(
       );
 
       return {
-        stdout,
-        stderr,
+        stdout: safeStdout,
+        stderr: safeStderr,
         exitCode: -1,
         executionError: {
           type: "exception",
@@ -235,8 +243,8 @@ export async function executeBash(
       );
 
       return {
-        stdout,
-        stderr,
+        stdout: safeStdout,
+        stderr: safeStderr,
         exitCode: -1,
         executionError: {
           type: "exception",
@@ -261,8 +269,8 @@ export async function executeBash(
       );
 
       return {
-        stdout,
-        stderr,
+        stdout: safeStdout,
+        stderr: safeStderr,
         exitCode: -1,
         executionError: {
           type: "exception",
@@ -300,7 +308,7 @@ export async function executeBash(
       });
     }
 
-    return { stdout, stderr, exitCode };
+    return { stdout: safeStdout, stderr: safeStderr, exitCode };
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     logger.error(

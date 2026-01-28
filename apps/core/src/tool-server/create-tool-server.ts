@@ -21,6 +21,11 @@ function safeJsonPreview(value: unknown, maxChars = 2000): string {
     "idToken",
     "code",
     "pkceVerifier",
+    "privateKey",
+    "privateKeyPem",
+    "private_key",
+    "pem",
+    "keyPath",
     "password",
   ]);
 

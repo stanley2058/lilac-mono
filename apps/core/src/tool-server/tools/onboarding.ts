@@ -18,6 +18,14 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { chromium } from "playwright";
 
+import {
+  clearGithubAppSecret,
+  deriveApiBaseUrl,
+  readGithubAppSecret,
+  writeGithubAppSecret,
+} from "../../github/github-app";
+import { getGithubInstallationTokenOrThrow } from "../../github/github-app-token";
+
 const bootstrapInputSchema = z.object({
   dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
   overwriteConfig: z
@@ -69,6 +77,50 @@ const reloadConfigInputSchema = z.object({
     .describe(
       "cache: force reload config cache; restart: exit process for supervisor restart",
     ),
+});
+
+const githubAppInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+  mode: z
+    .enum(["status", "configure", "test", "clear"])
+    .optional()
+    .default("status")
+    .describe(
+      "status: show config; configure: persist GitHub App credentials; test: mint token and call GitHub API; clear: remove stored secret",
+    ),
+  appId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("GitHub App ID"),
+  installationId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("GitHub App installation ID"),
+  host: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("GitHub host (github.com or your GHES host)"),
+  apiBaseUrl: z
+    .url()
+    .optional()
+    .describe(
+      "GitHub API base URL (default: https://api.github.com; GHES example: https://github.example.com/api/v3)",
+    ),
+  privateKeyPem: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("GitHub App private key PEM contents"),
+  privateKeyPath: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Path to a GitHub App private key PEM file"),
 });
 
 const allInputSchema = z.object({
@@ -518,6 +570,17 @@ export class Onboarding implements ServerTool {
         hidden: true,
       },
       {
+        callableId: "onboarding.github_app",
+        name: "Onboarding GitHub App",
+        description:
+          "Configure GitHub App credentials for the agent (installs GH_TOKEN/GITHUB_TOKEN in bash env). Hidden by default.",
+        shortInput: zodObjectToCliLines(githubAppInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(githubAppInputSchema),
+        hidden: true,
+      },
+      {
         callableId: "onboarding.reload_tools",
         name: "Onboarding Reload Tools",
         description:
@@ -827,6 +890,126 @@ export class Onboarding implements ServerTool {
         },
         steps,
       };
+    }
+
+    if (callableId === "onboarding.github_app") {
+      const input = githubAppInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+
+      const normalizeHost = (h: string | undefined) =>
+        h
+          ? h
+              .trim()
+              .replace(/^https?:\/\//, "")
+              .replace(/\/+$/, "")
+          : undefined;
+
+      if (input.mode === "status") {
+        const secret = await readGithubAppSecret(dataDir);
+        const apiBaseUrl = secret
+          ? deriveApiBaseUrl({ host: secret.host, apiBaseUrl: secret.apiBaseUrl })
+          : undefined;
+        return {
+          ok: true as const,
+          dataDir,
+          configured: Boolean(secret),
+          ...(secret
+            ? {
+                appId: secret.appId,
+                installationId: secret.installationId,
+                host: secret.host,
+                apiBaseUrl,
+                privateKeyPath: secret.privateKeyPath,
+              }
+            : {}),
+        };
+      }
+
+      if (input.mode === "clear") {
+        await clearGithubAppSecret(dataDir);
+        return { ok: true as const, dataDir, cleared: true as const };
+      }
+
+      if (input.mode === "configure") {
+        if (!input.appId) {
+          throw new Error("Missing required input: appId");
+        }
+        if (!input.installationId) {
+          throw new Error("Missing required input: installationId");
+        }
+
+        const privateKeyPem = input.privateKeyPem
+          ? input.privateKeyPem
+          : input.privateKeyPath
+            ? await Bun.file(input.privateKeyPath).text()
+            : null;
+        if (!privateKeyPem) {
+          throw new Error("Missing required input: privateKeyPem or privateKeyPath");
+        }
+
+        const host = normalizeHost(input.host);
+        const apiBaseUrl = input.apiBaseUrl ?? deriveApiBaseUrl({ host });
+
+        const wrote = await writeGithubAppSecret({
+          dataDir,
+          appId: input.appId,
+          installationId: input.installationId,
+          host,
+          apiBaseUrl,
+          privateKeyPem,
+        });
+
+        return {
+          ok: true as const,
+          dataDir,
+          configured: true as const,
+          appId: input.appId,
+          installationId: input.installationId,
+          host,
+          apiBaseUrl,
+          jsonPath: wrote.jsonPath,
+          pemPath: wrote.pemPath,
+          overwritten: wrote.overwritten,
+        };
+      }
+
+      if (input.mode === "test") {
+        const t = await getGithubInstallationTokenOrThrow({ dataDir });
+        const res = await fetch(
+          `${t.apiBaseUrl}/installation/repositories?per_page=1`,
+          {
+            headers: {
+              "User-Agent": "lilac-onboarding",
+              Accept: "application/vnd.github+json",
+              Authorization: `token ${t.token}`,
+            },
+          },
+        );
+        if (!res.ok) {
+          throw new Error(
+            `GitHub API test failed (${res.status} ${res.statusText}) at ${t.apiBaseUrl}`,
+          );
+        }
+
+        const body: unknown = await res.json().catch(() => null as unknown);
+        const repoCount = (() => {
+          if (!body || typeof body !== "object") return undefined;
+          const repos = (body as Record<string, unknown>)["repositories"];
+          return Array.isArray(repos) ? repos.length : undefined;
+        })();
+
+        return {
+          ok: true as const,
+          dataDir,
+          host: t.host,
+          apiBaseUrl: t.apiBaseUrl,
+          expiresAtMs: t.expiresAtMs,
+          repoCount,
+        };
+      }
+
+      const _exhaustive: never = input.mode;
+      return _exhaustive;
     }
 
     if (callableId === "onboarding.reload_tools") {

@@ -17,6 +17,7 @@
   "dependencies": {
     "@ai-sdk/google": "^3.0.6",
     "@mozilla/readability": "^0.6.0",
+    "@octokit/auth-app": "^7.2.1",
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-event-bus": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
