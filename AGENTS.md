@@ -34,6 +34,29 @@ Notes:
 - Keep `bun.lock` consistent; avoid mixing package managers.
 - Workspace deps use `"workspace:*"`.
 
+## Finding Type Definitions (Bun + symlinks)
+
+This repo uses Bun's install layout. Many packages in `apps/*/node_modules` are symlinks into Bun's cache under `node_modules/.bun/...`. If you can't find a type definition by searching the workspace `node_modules`, follow the symlink and then follow `package.json` `exports`/`types`.
+
+Quick recipe:
+1) Locate the installed package entry in the workspace you're working in:
+   - `ls -la apps/core/node_modules/<scope>/<pkg>` (often shows `-> ../../../node_modules/.bun/...`)
+2) Open that package's `package.json` and find the type entry point:
+   - Prefer `exports["."]["types"]` (or `types` for simpler packages).
+3) Jump to the referenced `.d.ts` / `.d.mts` file (often under `dist/`).
+
+Notes:
+- Don't assume types are in `src/` or that `package.json.module` points at shipped source; published packages often expose types from `dist/*`.
+- Some type entry points are `.d.mts` (ESM declarations), not `.d.ts`.
+- Many file searches skip dot-dirs; Bun's cache is `node_modules/.bun/...`, so include that path when searching.
+
+Examples:
+- `@stanley2058/simple-module-logger`:
+  - `apps/core/node_modules/@stanley2058/simple-module-logger/package.json` -> `exports["."]["types"] = "./dist/index.d.mts"`
+- `ai` (AI SDK):
+  - `apps/core/node_modules/ai/package.json` -> `types = "./dist/index.d.ts"`
+  - `LanguageModelUsage` is in `apps/core/node_modules/ai/dist/index.d.ts`
+
 ## Build / Test / Typecheck
 
 ### apps/tool-bridge
