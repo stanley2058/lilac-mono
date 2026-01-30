@@ -1,0 +1,321 @@
+# Lilac Monorepo: Structure, Terminology, And Working Mental Model
+
+This repo is an event-driven “agent runtime” built around a typed event bus (Redis Streams), a surface adapter (Discord today), and two different “tool” layers:
+
+- Agent tools: tools the LLM can call during generation (bash/fs/apply_patch).
+- Tool server tools: an HTTP tool API (Elysia) exposed to external clients via the `tools` CLI.
+
+The main loop is:
+
+1. A surface adapter ingests platform events (Discord messages/reactions) and persists a local cache.
+2. Those adapter events are published onto the bus (`evt.adapter`).
+3. A router turns adapter events into request messages (`cmd.request.message`) based on per-session routing mode.
+4. An agent runner consumes request messages, runs an LLM (AI SDK) with local tools, and publishes streamed output to request-scoped topics (`out.req.<request_id>`).
+5. A relay subscribes to `out.req.<request_id>` and streams output back to the surface (Discord).
+6. Optional: a workflow service creates durable “wait for reply / timeout” tasks and later publishes a resume request.
+
+This document explains where things live, the words used in code, and the project’s “shape” so you don’t have to re-derive it each time.
+
+---
+
+## Repo Layout (What Is Where)
+
+Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams and is treated as read-only.
+
+- `apps/core/`
+  - The core runtime process (Discord adapter + event bus + router + agent runner + workflow service + tool server).
+  - Entry: `apps/core/src/runtime/main.ts` (starts/stops `createCoreRuntime()`).
+  - Most of the “system wiring” is in `apps/core/src/runtime/create-core-runtime.ts`.
+
+- `apps/tool-bridge/`
+  - The `tools` CLI + a “dev-mode” tool server.
+  - CLI client: `apps/tool-bridge/client.ts`.
+  - Tool server (no bus, no surface adapter by default): `apps/tool-bridge/index.ts`.
+  - Build script: `apps/tool-bridge/build.ts` (produces `dist/index.js`, used as the `tools` binary).
+
+- `packages/event-bus/`
+  - The bus implementation and the canonical event spec.
+  - Typed event contract: `packages/event-bus/lilac-spec.ts`.
+  - Typed bus wrapper: `packages/event-bus/lilac-bus.ts`.
+  - Redis Streams transport: `packages/event-bus/redis-streams-bus.ts`.
+  - Low-level types: `packages/event-bus/types.ts`.
+
+- `packages/agent/`
+  - The “pi-agent-like” wrapper around AI SDK streaming + steering/follow-up/interrupt queues.
+  - Core implementation: `packages/agent/ai-sdk-pi-agent.ts`.
+  - Optional auto-compaction: `packages/agent/auto-compaction.ts`.
+
+- `packages/utils/`
+  - Cross-cutting utilities: env parsing, core config, model providers, prompt templates, skills.
+  - Config schema + loader: `packages/utils/core-config.ts`.
+  - Provider wiring: `packages/utils/model-provider.ts`.
+  - Model selection for “main/fast” slots: `packages/utils/model-slot.ts`.
+  - Prompt file workspace management: `packages/utils/agent-prompts.ts`.
+
+- `data/`
+  - “Runtime data directory” for local/dev.
+  - Prompt workspace lives in `data/prompts/*` by default.
+  - `core-config.yaml` is seeded into `DATA_DIR` on startup if missing.
+  - In docker compose this directory is bind-mounted for persistence.
+
+- `__tests__/`
+  - Root harness that runs workspace tests: `__tests__/workspaces.test.ts`.
+
+- `compose.yaml` and `Dockerfile`
+  - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
+  - The docker build installs Bun, system tools (git, rg, chromium, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+
+---
+
+## Key Concepts / Terminology
+
+### Bus / Topics / Subscriptions
+
+The event bus is Redis Streams underneath, wrapped in a typed API.
+
+- Topic: a logical channel (backed by a Redis Stream key).
+  - Examples (static topics): `cmd.request`, `evt.adapter`, `evt.request`, `cmd.workflow`, `evt.workflow`.
+  - Output topics are request-scoped: `out.req.<request_id>`.
+
+- Event type: a string like `cmd.request.message`.
+  - All canonical event types and payloads live in `packages/event-bus/lilac-spec.ts`.
+
+- Subscription `mode` (delivery semantics):
+  - `work`: consumer-group queue semantics (competing consumers).
+  - `fanout`: consumer-group broadcast semantics (each subscriptionId sees all events).
+  - `tail`: non-durable streaming read (no consumer group).
+
+- subscriptionId: durable identifier for the consumer group (used by `work`/`fanout`).
+- consumerId: identity inside the group (often includes pid + random to avoid collisions).
+- cursor: Redis stream entry id; used as an offset/checkpoint.
+
+### Envelope Headers (Correlation)
+
+The “request-scoped” part of the system uses consistent headers on bus messages:
+
+- `request_id`: correlates everything for a single agent run.
+- `session_id`: the surface session (Discord channel/thread id).
+- `request_client`: the adapter platform, e.g. `discord`.
+
+Many flows treat missing `request_id` as an error (especially request lifecycle and output events).
+
+### Surface / Adapter / Session
+
+“Surface” is the user-facing platform integration layer.
+
+- Adapter: implements `SurfaceAdapter` (Discord implementation is `apps/core/src/surface/discord/discord-adapter.ts`).
+- Session: a chat container (Discord channel/thread/DM). In practice, `sessionId` is usually the Discord channel id.
+- Message refs:
+  - `SessionRef` / `MsgRef` are small structs that identify sessions/messages across platforms.
+
+The Discord adapter also maintains a local SQLite cache (`discord-surface.db`) for read-history operations.
+
+### Router
+
+The router subscribes to `evt.adapter` and decides whether to create/append to an agent request.
+
+- Implementation: `apps/core/src/surface/bridge/bus-request-router.ts`.
+- Routing modes:
+  - `mention`: only start a new request when the bot is mentioned or replied-to.
+  - `active`: treat the session like a DM and respond more aggressively.
+
+Active-mode details:
+
+- It can debounce multiple messages into a single initial prompt.
+- It can optionally run a “gate” (small/fast model) to decide whether the bot should reply.
+
+When the router forwards, it publishes `cmd.request.message` (topic: `cmd.request`) containing `ModelMessage[]`.
+
+### Request / Queue Modes
+
+A “request” is the unit of agent work and output streaming.
+
+`cmd.request.message` includes a queue mode:
+
+- `prompt`: start a new request.
+- `steer`: inject guidance into a currently running request.
+- `followUp`: append a user follow-up to a currently running request.
+- `interrupt`: abort + rewind and restart with the new message.
+
+The agent runner enforces one active request per session at a time (per-session serialization).
+
+### Agent Runner
+
+Consumes `cmd.request` and runs the LLM.
+
+- Implementation: `apps/core/src/surface/bridge/bus-agent-runner.ts`.
+- Uses `AiSdkPiAgent` from `packages/agent`.
+- Publishes:
+  - `evt.request.lifecycle.changed` (queued/running/resolved/failed/cancelled)
+  - `evt.request.reply` (a “start streaming output now” signal)
+  - output stream events on `out.req.<request_id>`:
+    - `evt.agent.output.delta.text`
+    - `evt.agent.output.response.text`
+    - `evt.agent.output.response.binary`
+    - `evt.agent.output.toolcall`
+
+### Reply Relay (Bus -> Surface)
+
+When `evt.request.reply` arrives for a request, the relay subscribes to `out.req.<request_id>` and streams output to the adapter.
+
+- Implementation: `apps/core/src/surface/bridge/subscribe-from-bus.ts`.
+
+Important detail: `request_id` sometimes encodes “reply-to” behavior.
+
+- If `request_id` is formatted as `discord:<session_id>:<message_id>`, the relay will reply to that Discord message.
+
+### Workflow
+
+Workflow is a durable “wait for something, then resume later” mechanism.
+
+- Service: `apps/core/src/workflow/workflow-service.ts`.
+- Store: `apps/core/src/workflow/workflow-store.ts` (SQLite-backed).
+- Typical task kind today: `discord.wait_for_reply`.
+- When tasks resolve, the workflow service publishes a new `cmd.request.message` resume prompt with request id like `wf:<workflow_id>:<resume_seq>`.
+
+This is how you can “send a DM, wait for reply, then pick up where you left off” without keeping an in-memory agent around.
+
+### Tool Server vs Agent Tools
+
+There are two different “tool” systems:
+
+1. Agent tools (for the LLM)
+   - Used inside `bus-agent-runner` via AI SDK tool calling.
+   - Implementations: `apps/core/src/tools/*`.
+   - Key ones:
+     - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
+     - `read_file` (`apps/core/src/tools/fs/fs.ts`).
+     - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`), sometimes using OpenAI-native apply_patch for GPT-5 on OpenAI/Codex providers.
+
+2. Tool server tools (HTTP)
+   - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.
+   - Exposes endpoints:
+     - `GET /list` tool catalog
+     - `POST /call` invoke by callableId
+     - `GET /help/:callableId` tool help
+   - Tool definitions live in `apps/core/src/tool-server/tools/*`.
+   - Default registration: `apps/core/src/tool-server/default-tools.ts`.
+
+The tool server uses request context headers (`x-lilac-request-id`, etc.) to enable request-scoped behavior (notably workflows).
+
+### The `tools` CLI
+
+`apps/tool-bridge/client.ts` is a human-friendly CLI that talks to the tool server.
+
+- It can pass correlation headers via env vars:
+  - `LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`
+- It supports `--input=@file.json` and `--stdin` for whole-JSON payloads, plus `--field:value` flags.
+
+---
+
+## Runtime Configuration And State
+
+### DATA_DIR
+
+`DATA_DIR` (default: `<repo>/data`) is where runtime state lives.
+
+Expected contents over time:
+
+- `core-config.yaml` (seeded from `packages/utils/config-templates/core-config.example.yaml` if missing)
+- `prompts/` (seeded from `packages/utils/prompt-templates/*` if missing)
+- `discord-surface.db` (Discord cache DB; default path)
+- `workspace/` (default working directory for bash/fs tools in the core runtime)
+
+### Prompts
+
+The agent system prompt is built from local prompt files.
+
+- Source templates: `packages/utils/prompt-templates/*`
+- Runtime workspace: `DATA_DIR/prompts/*` (see `packages/utils/agent-prompts.ts`)
+
+This makes prompt iteration a file-edit operation rather than a code change.
+
+### core-config.yaml
+
+Loaded via `packages/utils/core-config.ts` and cached by mtime.
+
+Key sections:
+
+- `surface.router`: mention/active routing config.
+- `surface.discord`: bot token env var name, allowlists, botName.
+- `models`: model slots (`main`, `fast`) with optional preset aliases.
+- `entity`: optional aliasing/mention rewriting for users/sessions.
+
+### Environment variables
+
+Parsed in `packages/utils/env.ts`. The important ones:
+
+- `REDIS_URL` (required by core runtime)
+- `DATA_DIR` (where config/prompt/db live)
+- `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
+- `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
+- Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
+- `TAVILY_API_KEY` (enables `web.search` and `fetch(mode=tavily)`)
+- `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
+
+---
+
+## How The Core Runtime Is Wired
+
+`apps/core/src/runtime/create-core-runtime.ts` is the best “single file” overview.
+
+Startup order is intentional:
+
+1. Bridge adapter -> bus (so early Discord events don’t get lost)
+2. Workflow service (subscribes to adapter events)
+3. Router (subscribes to adapter events and request lifecycle)
+4. Tool server + request message cache (so tools can see request messages)
+5. Connect adapter
+6. Bridge bus -> adapter (so output relay is ready)
+7. Agent runner (so it can’t publish replies before relay is online)
+
+Shutdown happens in reverse (best-effort).
+
+---
+
+## Common “Where Do I Change X?” Pointers
+
+- Add/modify bus event types: `packages/event-bus/lilac-spec.ts` and routing/key logic in `packages/event-bus/lilac-bus.ts`.
+- Change request routing behavior: `apps/core/src/surface/bridge/bus-request-router.ts` and config schema in `packages/utils/core-config.ts`.
+- Change agent execution behavior (steer/follow-up/interrupt semantics): `packages/agent/ai-sdk-pi-agent.ts`.
+- Change which local tools the LLM can call: `apps/core/src/surface/bridge/bus-agent-runner.ts`.
+- Add a new HTTP tool: implement `ServerTool` in `apps/core/src/tool-server/tools/*` and register it in `apps/core/src/tool-server/default-tools.ts`.
+- Change how tool invocations are served/logged: `apps/core/src/tool-server/create-tool-server.ts`.
+- Change Discord ingestion/persistence/output rendering: `apps/core/src/surface/discord/discord-adapter.ts` and `apps/core/src/surface/discord/output/*`.
+- Modify workflow behavior or add a new task kind: `apps/core/src/workflow/*`.
+
+---
+
+## Running / Building / Testing (Quick)
+
+- Run core runtime (expects Redis + Discord token + allowlists):
+  - `bun apps/core/src/runtime/main.ts`
+  - This command is for humans, DO NOT run it if you are an agent. Otherwise it will hang your bash tool.
+
+- Run tool server only (dev mode; fewer tools enabled because no bus/adapter):
+  - `bun apps/tool-bridge/index.ts`
+  - This command is for humans, DO NOT run it if you are an agent. Otherwise it will hang your bash tool.
+
+- Build `tools` CLI:
+  - `cd apps/tool-bridge && bun run build`
+
+- Run tests:
+  - Root harness: `bun test`
+  - Per workspace: `cd apps/core && bun test` (and similarly for `packages/*` that have tests)
+
+- Docker (includes Redis):
+  - `docker compose up --build`
+  - This command is for humans, DO NOT run it if you are an agent. Otherwise it will hang your bash tool.
+
+---
+
+## Gotchas / Design Intent
+
+- Discord allowlist is strict: if both `allowedChannelIds` and `allowedGuildIds` are empty, the bot ignores all Discord traffic.
+- Request IDs are meaningful:
+  - `discord:<channelId>:<messageId>` implies “reply to this message”.
+  - `wf:<workflowId>:<seq>` is a workflow resume request.
+  - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
+- The tool server is not the agent’s tool runner; it’s an external API for “tools” as a product surface.
+- Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
+- The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.

@@ -7,6 +7,7 @@ This file gives AI coding agents (OpenCode/Cursor/Copilot/etc.) practical repo c
 - Runtime + package manager: **Bun** (`bun`), ESM-first.
 - Monorepo: **Bun workspaces** (`apps/*`, `packages/*`).
 - **Important**: run `bun install` **inside the package folder** you are working on (not at repo root).
+- Project mental model / terminology: see `PROJECT.md`.
 - `ref/` contains vendored/reference projects. Treat as read-only unless a task explicitly says otherwise.
 - Cursor rules: none found (`.cursor/rules/`, `.cursorrules` not present).
 - Copilot rules: none found (`.github/copilot-instructions.md` not present).
