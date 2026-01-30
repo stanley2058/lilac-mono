@@ -7,6 +7,7 @@ import {
   Codex,
   ImageGeneration,
   Onboarding,
+  SSH,
   Skills,
   Summarize,
   Surface,
@@ -22,6 +23,7 @@ export function createDefaultToolServerTools(params?: {
 }): ServerTool[] {
   const tools: ServerTool[] = [
     new Onboarding(),
+    new SSH(),
     new Web(),
     new Summarize(),
     new Skills(),

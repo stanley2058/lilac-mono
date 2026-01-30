@@ -34,6 +34,9 @@ cat payload.json | tools <tool> --stdin
 - `skills.list` — List and search skills discovered from common directories
 - `skills.brief` — Load a skill's frontmatter + a truncated SKILL.md body
 - `skills.full` — Load a skill's frontmatter + a larger SKILL.md body, plus a top-level directory listing
+- `ssh.hosts` — List SSH host aliases from the server's ~/.ssh/config (hidden when none are configured)
+- `ssh.run` — Run a command on a remote host over SSH (StrictHostKeyChecking=yes, BatchMode=yes)
+- `ssh.probe` — Probe remote host OS + tool availability + git context
 - `workflow` — Create a workflow that will resume later.
   - Each task waits for a strict reply to the given messageId in sessionId.
   - Use this after sending a message (e.g. DM) and you want to resume when they reply.
