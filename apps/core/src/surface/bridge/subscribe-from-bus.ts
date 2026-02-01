@@ -10,6 +10,8 @@ import { Logger } from "@stanley2058/simple-module-logger";
 import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
+import type { TranscriptStore } from "../../transcript/transcript-store";
+
 function getConsumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -68,6 +70,7 @@ export async function bridgeBusToAdapter(params: {
   platform: "discord";
   subscriptionId: string;
   idleTimeoutMs?: number;
+  transcriptStore?: TranscriptStore;
 }) {
   const logger = new Logger({
     logLevel: resolveLogLevel(),
@@ -250,7 +253,23 @@ export async function bridgeBusToAdapter(params: {
 
           case lilacEventTypes.EvtAgentOutputResponseText: {
             await out.push({ type: "text.set", text: outMsg.data.finalText });
-            await out.finish();
+            const res = await out.finish();
+
+            if (params.transcriptStore) {
+              try {
+                params.transcriptStore.linkSurfaceMessagesToRequest({
+                  requestId,
+                  created: res.created,
+                  last: res.last,
+                });
+              } catch (e: unknown) {
+                logger.error(
+                  "failed to link transcript to surface messages",
+                  { requestId, sessionId },
+                  e,
+                );
+              }
+            }
             await relayStop();
 
             logger.info("reply relay finished", {

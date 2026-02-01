@@ -1,6 +1,11 @@
 import Redis from "ioredis";
 import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
-import { env, getCoreConfig, resolveLogLevel } from "@stanley2058/lilac-utils";
+import {
+  env,
+  getCoreConfig,
+  resolveLogLevel,
+  resolveTranscriptDbPath,
+} from "@stanley2058/lilac-utils";
 import path from "node:path";
 import fs from "node:fs/promises";
 import {
@@ -14,6 +19,8 @@ import { bridgeAdapterToBus } from "../surface/bridge/publish-to-bus";
 import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
+
+import { SqliteTranscriptStore } from "../transcript/transcript-store";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
 import { startWorkflowService } from "../workflow/workflow-service";
@@ -96,6 +103,8 @@ export async function createCoreRuntime(
   const workflowStore = new SqliteWorkflowStore();
   const workflowQueries = createWorkflowStoreQueries(workflowStore);
 
+  let transcriptStore: SqliteTranscriptStore | null = null;
+
   let started = false;
 
   let stopAdapterToBus: { stop(): Promise<void> } | null = null;
@@ -118,6 +127,11 @@ export async function createCoreRuntime(
 
     try {
       logger.info("Core runtime starting...");
+
+      // Ensure data dir exists before creating sqlite-backed stores.
+      await fs.mkdir(env.dataDir, { recursive: true });
+
+      transcriptStore = new SqliteTranscriptStore(resolveTranscriptDbPath());
 
       // Subscribe to adapter events before connecting, so we don't miss early messages.
       stopAdapterToBus = await bridgeAdapterToBus({
@@ -150,6 +164,7 @@ export async function createCoreRuntime(
         subscriptionId: subId(subscriptionPrefix, "router"),
         shouldSuppressAdapterEvent: async ({ evt }) =>
           shouldSuppressRouterForWorkflowReply({ queries: workflowQueries, evt }),
+        transcriptStore: transcriptStore ?? undefined,
       });
 
       logger.info("Bus request router started", {
@@ -200,6 +215,7 @@ export async function createCoreRuntime(
         bus,
         platform: "discord",
         subscriptionId: subId(subscriptionPrefix, "bus-to-adapter"),
+        transcriptStore: transcriptStore ?? undefined,
       });
 
       logger.info("bridgeBusToAdapter started", {
@@ -211,6 +227,7 @@ export async function createCoreRuntime(
         bus,
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
         cwd,
+        transcriptStore: transcriptStore ?? undefined,
       });
 
       logger.info("Bus agent runner started", {
@@ -274,6 +291,10 @@ export async function createCoreRuntime(
     );
 
     await safe("adapter.disconnect", () => adapter.disconnect());
+    await safe("transcriptStore.close", async () => {
+      transcriptStore?.close();
+      transcriptStore = null;
+    });
     await safe("bus.close", () => bus.close());
 
     if (stopErrors.length > 0) {

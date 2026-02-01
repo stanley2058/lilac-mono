@@ -8,6 +8,8 @@ import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
 
+import type { TranscriptStore } from "../../transcript/transcript-store";
+
 export type RequestCompositionResult = {
   messages: ModelMessage[];
   chainMessageIds: string[];
@@ -20,6 +22,7 @@ export type ComposeRecentChannelMessagesOpts = {
   botUserId: string;
   botName: string;
   limit: number;
+  transcriptStore?: TranscriptStore;
   /** Optional trigger message to force-include (mention/reply). */
   triggerMsgRef?: MsgRef;
   triggerType?: "mention" | "reply";
@@ -36,6 +39,7 @@ export type ComposeRequestOpts = {
   platform: "discord";
   botUserId: string;
   botName: string;
+  transcriptStore?: TranscriptStore;
   trigger: {
     type: "mention" | "reply";
     msgRef: MsgRef;
@@ -66,61 +70,76 @@ export async function composeRequestMessages(
   // Phase 3: normalize to ModelMessage[] with attribution headers.
   const attState = createDiscordAttachmentState();
 
-  const modelMessages = await Promise.all(
-    merged.map(async (chunk) => {
-      const isBot = chunk.authorId === opts.botUserId;
+  const modelMessages: ModelMessage[] = [];
+  const seenTranscriptRequestIds = new Set<string>();
 
-      const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+  for (const chunk of merged) {
+    const isBot = chunk.authorId === opts.botUserId;
 
-      let text = chunk.text;
-      if (
-        opts.trigger.type === "mention" &&
-        chunk.messageIds.includes(opts.trigger.msgRef.messageId)
-      ) {
-        text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-      }
+    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-      const normalized = normalizeText(text, {
-        // We currently rely on adapter text already being normalized (mentions rewritten).
-        // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
-      });
-
-      const header = formatDiscordAttributionHeader({
-        authorId: chunk.authorId,
-        authorName: chunk.authorName,
+    if (isBot && opts.transcriptStore) {
+      const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+        platform: opts.platform,
+        channelId: opts.trigger.msgRef.channelId,
         messageId,
       });
 
-      const mainText = `${header}\n${normalized}`.trimEnd();
-
-      if (isBot) {
-        return {
-          role: "assistant",
-          content: mainText,
-        } satisfies ModelMessage;
+      if (snap) {
+        if (!seenTranscriptRequestIds.has(snap.requestId)) {
+          modelMessages.push(...snap.messages);
+          seenTranscriptRequestIds.add(snap.requestId);
+        }
+        continue;
       }
+    }
 
-      if (chunk.attachments.length === 0) {
-        return {
-          role: "user",
-          content: mainText,
-        } satisfies ModelMessage;
-      }
+    let text = chunk.text;
+    if (
+      opts.trigger.type === "mention" &&
+      chunk.messageIds.includes(opts.trigger.msgRef.messageId)
+    ) {
+      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
+    }
 
-      const parts: UserContent = [{ type: "text", text: mainText }];
+    const normalized = normalizeText(text, {
+      // We currently rely on adapter text already being normalized (mentions rewritten).
+      // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
+    });
 
-      await appendDiscordAttachmentsToUserContent(
-        parts,
-        chunk.attachments,
-        attState,
-      );
+    const header = formatDiscordAttributionHeader({
+      authorId: chunk.authorId,
+      authorName: chunk.authorName,
+      messageId,
+    });
 
-      return {
+    const mainText = `${header}\n${normalized}`.trimEnd();
+
+    if (isBot) {
+      modelMessages.push({
+        role: "assistant",
+        content: mainText,
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    if (chunk.attachments.length === 0) {
+      modelMessages.push({
         role: "user",
-        content: parts,
-      } satisfies ModelMessage;
-    }),
-  );
+        content: mainText,
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    const parts: UserContent = [{ type: "text", text: mainText }];
+    await appendDiscordAttachmentsToUserContent(
+      parts,
+      chunk.attachments,
+      attState,
+    );
+
+    modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
+  }
 
   return {
     messages: modelMessages,
@@ -177,59 +196,71 @@ export async function composeRecentChannelMessages(
 
   const attState = createDiscordAttachmentState();
 
-  const modelMessages = await Promise.all(
-    merged.map(async (chunk) => {
-      const isBot = chunk.authorId === opts.botUserId;
+  const modelMessages: ModelMessage[] = [];
+  const seenTranscriptRequestIds = new Set<string>();
 
-      const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+  for (const chunk of merged) {
+    const isBot = chunk.authorId === opts.botUserId;
+    const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-      let text = chunk.text;
-      if (
-        opts.triggerType === "mention" &&
-        opts.triggerMsgRef &&
-        chunk.messageIds.includes(opts.triggerMsgRef.messageId)
-      ) {
-        text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-      }
-
-      const normalized = normalizeText(text, {});
-
-      const header = formatDiscordAttributionHeader({
-        authorId: chunk.authorId,
-        authorName: chunk.authorName,
+    if (isBot && opts.transcriptStore) {
+      const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+        platform: opts.platform,
+        channelId: opts.sessionId,
         messageId,
       });
-
-      const mainText = `${header}\n${normalized}`.trimEnd();
-
-      if (isBot) {
-        return {
-          role: "assistant",
-          content: mainText,
-        } satisfies ModelMessage;
+      if (snap) {
+        if (!seenTranscriptRequestIds.has(snap.requestId)) {
+          modelMessages.push(...snap.messages);
+          seenTranscriptRequestIds.add(snap.requestId);
+        }
+        continue;
       }
+    }
 
-      if (chunk.attachments.length === 0) {
-        return {
-          role: "user",
-          content: mainText,
-        } satisfies ModelMessage;
-      }
+    let text = chunk.text;
+    if (
+      opts.triggerType === "mention" &&
+      opts.triggerMsgRef &&
+      chunk.messageIds.includes(opts.triggerMsgRef.messageId)
+    ) {
+      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
+    }
 
-      const parts: UserContent = [{ type: "text", text: mainText }];
+    const normalized = normalizeText(text, {});
 
-      await appendDiscordAttachmentsToUserContent(
-        parts,
-        chunk.attachments,
-        attState,
-      );
+    const header = formatDiscordAttributionHeader({
+      authorId: chunk.authorId,
+      authorName: chunk.authorName,
+      messageId,
+    });
 
-      return {
+    const mainText = `${header}\n${normalized}`.trimEnd();
+
+    if (isBot) {
+      modelMessages.push({
+        role: "assistant",
+        content: mainText,
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    if (chunk.attachments.length === 0) {
+      modelMessages.push({
         role: "user",
-        content: parts,
-      } satisfies ModelMessage;
-    }),
-  );
+        content: mainText,
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    const parts: UserContent = [{ type: "text", text: mainText }];
+    await appendDiscordAttachmentsToUserContent(
+      parts,
+      chunk.attachments,
+      attState,
+    );
+    modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
+  }
 
   return {
     messages: modelMessages,
@@ -328,7 +359,7 @@ function isImageMimeType(mimeType: string | undefined): boolean {
 
 function escapeMetadataValue(s: string): string {
   // Keep the header single-line and parseable.
-  return s.replace(/\s+/gu, " ").replace(/"/gu, "\\\"");
+  return s.replace(/\s+/gu, " ").replace(/"/gu, '\\"');
 }
 
 function formatDiscordAttachmentHeader(params: {
@@ -338,8 +369,10 @@ function formatDiscordAttachmentHeader(params: {
   size?: number;
 }): string {
   const fields: string[] = [];
-  if (params.filename) fields.push(`filename="${escapeMetadataValue(params.filename)}"`);
-  if (params.mimeType) fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
+  if (params.filename)
+    fields.push(`filename="${escapeMetadataValue(params.filename)}"`);
+  if (params.mimeType)
+    fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
   if (typeof params.size === "number") fields.push(`size=${params.size}`);
   fields.push(`url="${escapeMetadataValue(params.url.toString())}"`);
   return `[discord_attachment ${fields.join(" ")}]`;
@@ -353,7 +386,8 @@ function decodeUtf8BestEffort(bytes: Uint8Array): {
   const MAX_TEXT_BYTES = 512 * 1024;
   const MAX_TEXT_CHARS = 50_000;
 
-  const view = bytes.byteLength > MAX_TEXT_BYTES ? bytes.slice(0, MAX_TEXT_BYTES) : bytes;
+  const view =
+    bytes.byteLength > MAX_TEXT_BYTES ? bytes.slice(0, MAX_TEXT_BYTES) : bytes;
   const truncatedBytes = view.byteLength !== bytes.byteLength;
 
   const text = new TextDecoder("utf-8", { fatal: false }).decode(view);
@@ -371,7 +405,8 @@ function decodeUtf8BestEffort(bytes: Uint8Array): {
     }
   }
 
-  const clamped = text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
+  const clamped =
+    text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
   const truncated = truncatedBytes || clamped.length !== text.length;
   return { text: clamped, truncatedBytes: truncated, reason: undefined };
 }

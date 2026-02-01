@@ -17,6 +17,7 @@ import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
+import type { TranscriptStore } from "../../transcript/transcript-store";
 import {
   composeRecentChannelMessages,
   composeRequestMessages,
@@ -64,6 +65,7 @@ function getDiscordFlags(raw: unknown): {
   isDMBased?: boolean;
   mentionsBot?: boolean;
   replyToBot?: boolean;
+  replyToMessageId?: string;
 } {
   if (!raw || typeof raw !== "object") return {};
   const discord = (raw as { discord?: unknown }).discord;
@@ -75,6 +77,8 @@ function getDiscordFlags(raw: unknown): {
     isDMBased: typeof o.isDMBased === "boolean" ? o.isDMBased : undefined,
     mentionsBot: typeof o.mentionsBot === "boolean" ? o.mentionsBot : undefined,
     replyToBot: typeof o.replyToBot === "boolean" ? o.replyToBot : undefined,
+    replyToMessageId:
+      typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
   };
 }
 
@@ -103,6 +107,7 @@ export async function startBusRequestRouter(params: {
   subscriptionId: string;
   /** Optionally inject config; defaults to getCoreConfig(). */
   config?: CoreConfig;
+  transcriptStore?: TranscriptStore;
   /**
    * Optionally suppress routing for specific adapter events.
    * Used to prevent workflow-resume replies from also being treated as normal prompts.
@@ -771,6 +776,7 @@ export async function startBusRequestRouter(params: {
       platform: "discord",
       botUserId: self.userId,
       botName: cfg.surface.discord.botName,
+      transcriptStore: params.transcriptStore,
       trigger: {
         type: triggerType === "mention" ? "mention" : "reply",
         msgRef,
@@ -806,15 +812,27 @@ export async function startBusRequestRouter(params: {
 
     const self = await adapter.getSelf();
 
-    const composed = await composeRecentChannelMessages(adapter, {
-      platform: "discord",
-      sessionId,
-      botUserId: self.userId,
-      botName: cfg.surface.discord.botName,
-      limit: 8,
-      triggerMsgRef,
-      triggerType,
-    });
+    const composed = triggerMsgRef && triggerType === "reply"
+      ? await composeRequestMessages(adapter, {
+          platform: "discord",
+          botUserId: self.userId,
+          botName: cfg.surface.discord.botName,
+          transcriptStore: params.transcriptStore,
+          trigger: {
+            type: "reply",
+            msgRef: triggerMsgRef,
+          },
+        })
+      : await composeRecentChannelMessages(adapter, {
+          platform: "discord",
+          sessionId,
+          botUserId: self.userId,
+          botName: cfg.surface.discord.botName,
+          limit: 8,
+          transcriptStore: params.transcriptStore,
+          triggerMsgRef,
+          triggerType,
+        });
 
     await publishBusRequest({
       requestId,

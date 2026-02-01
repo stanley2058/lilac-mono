@@ -31,6 +31,8 @@ import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
+import type { TranscriptStore } from "../../transcript/transcript-store";
+
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -374,6 +376,7 @@ export async function startBusAgentRunner(params: {
   config?: CoreConfig;
   /** Where core tools operate (fs tool root). */
   cwd?: string;
+  transcriptStore?: TranscriptStore;
 }) {
   const { bus, subscriptionId } = params;
 
@@ -673,6 +676,31 @@ export async function startBusAgentRunner(params: {
 
       await agent.waitForIdle();
 
+      if (params.transcriptStore) {
+        try {
+          const responseMessages = runStats.finalMessages
+            ? runStats.finalMessages.slice(initialMessages.length)
+            : agent.state.messages.slice(initialMessages.length);
+
+          params.transcriptStore.saveRequestTranscript({
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            requestClient: headers.request_client,
+            // Store only this request's newly produced messages.
+            // The request context is reconstructed from the surface thread.
+            messages: responseMessages,
+            finalText,
+            modelLabel: resolved.modelId,
+          });
+        } catch (e) {
+          logger.error(
+            "failed to persist transcript",
+            { requestId: headers.request_id, sessionId: headers.session_id },
+            e,
+          );
+        }
+      }
+
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
         { finalText },
@@ -726,6 +754,30 @@ export async function startBusAgentRunner(params: {
       await publishLifecycle({ bus, headers, state: "resolved" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+
+      if (params.transcriptStore) {
+        try {
+          const responseMessages = runStats.finalMessages
+            ? runStats.finalMessages.slice(initialMessages.length)
+            : agent.state.messages.slice(initialMessages.length);
+
+          params.transcriptStore.saveRequestTranscript({
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            requestClient: headers.request_client,
+            messages: responseMessages,
+            finalText: `Error: ${msg}`,
+            modelLabel: resolved.modelId,
+          });
+        } catch (err) {
+          logger.error(
+            "failed to persist transcript after error",
+            { requestId: headers.request_id, sessionId: headers.session_id },
+            err,
+          );
+        }
+      }
+
       await publishLifecycle({ bus, headers, state: "failed", detail: msg });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,

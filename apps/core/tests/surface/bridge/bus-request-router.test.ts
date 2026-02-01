@@ -28,6 +28,9 @@ import type {
   SurfaceSession,
 } from "../../../src/surface/types";
 
+import type { TranscriptStore } from "../../../src/transcript/transcript-store";
+import type { ModelMessage } from "ai";
+
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
   const subs = new Set<{
@@ -205,6 +208,139 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("startBusRequestRouter", () => {
+  it("forks from a stored transcript when replying to a linked bot message", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const replyToMessageId = "bot-1";
+    const msgId = "m2";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${replyToMessageId}`]: {
+        ref: {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: replyToMessageId,
+        },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "(bot message)",
+        ts: Date.now() - 10_000,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "replying",
+        ts: Date.now(),
+        raw: {
+          reference: { messageId: replyToMessageId },
+          discord: { attachments: [] },
+        },
+      },
+    });
+
+    const baseTranscript: ModelMessage[] = [
+      { role: "assistant", content: "stored assistant context" },
+    ];
+
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript: () => {},
+      linkSurfaceMessagesToRequest: () => {},
+      getTranscriptBySurfaceMessage: ({ messageId }) => {
+        if (messageId !== replyToMessageId) return null;
+        return {
+          requestId: "r1",
+          sessionId,
+          requestClient: "discord",
+          createdTs: Date.now(),
+          updatedTs: Date.now(),
+          messages: baseTranscript,
+        };
+      },
+      close: () => {},
+    };
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      transcriptStore,
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "replying",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: true,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${msgId}`);
+    expect(received[0].data.messages.length).toBe(2);
+    expect(received[0].data.messages[0].role).toBe("assistant");
+    expect(received[0].data.messages[1].role).toBe("user");
+
+    await sub.stop();
+    await router.stop();
+  });
+
   it("publishes cmd.request.message for mention-only mode trigger", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
