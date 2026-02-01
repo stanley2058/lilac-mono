@@ -304,6 +304,78 @@ function normalizeMimeType(mimeType: string | undefined): string | undefined {
   return mt && mt.length > 0 ? mt : undefined;
 }
 
+function isTextExtractableMimeType(mimeType: string | undefined): boolean {
+  const mt = normalizeMimeType(mimeType);
+  if (!mt) return false;
+  if (mt.startsWith("text/")) return true;
+  if (mt === "application/json") return true;
+  if (mt === "application/javascript") return true;
+  if (mt === "application/xml") return true;
+  if (mt === "application/yaml") return true;
+  if (mt === "application/x-yaml") return true;
+  if (mt.startsWith("application/") && mt.endsWith("+json")) return true;
+  return false;
+}
+
+function isPdfMimeType(mimeType: string | undefined): boolean {
+  return normalizeMimeType(mimeType) === "application/pdf";
+}
+
+function isImageMimeType(mimeType: string | undefined): boolean {
+  const mt = normalizeMimeType(mimeType);
+  return Boolean(mt && mt.startsWith("image/"));
+}
+
+function escapeMetadataValue(s: string): string {
+  // Keep the header single-line and parseable.
+  return s.replace(/\s+/gu, " ").replace(/"/gu, "\\\"");
+}
+
+function formatDiscordAttachmentHeader(params: {
+  url: URL;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+}): string {
+  const fields: string[] = [];
+  if (params.filename) fields.push(`filename="${escapeMetadataValue(params.filename)}"`);
+  if (params.mimeType) fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
+  if (typeof params.size === "number") fields.push(`size=${params.size}`);
+  fields.push(`url="${escapeMetadataValue(params.url.toString())}"`);
+  return `[discord_attachment ${fields.join(" ")}]`;
+}
+
+function decodeUtf8BestEffort(bytes: Uint8Array): {
+  text?: string;
+  reason?: "too_large" | "looks_binary";
+  truncatedBytes: boolean;
+} {
+  const MAX_TEXT_BYTES = 512 * 1024;
+  const MAX_TEXT_CHARS = 50_000;
+
+  const view = bytes.byteLength > MAX_TEXT_BYTES ? bytes.slice(0, MAX_TEXT_BYTES) : bytes;
+  const truncatedBytes = view.byteLength !== bytes.byteLength;
+
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(view);
+
+  // Basic binary guardrails even when mime says text.
+  if (text.includes("\u0000")) {
+    return { reason: "looks_binary", truncatedBytes, text: undefined };
+  }
+
+  const replacementCount = (text.match(/\uFFFD/gu) ?? []).length;
+  if (replacementCount > 0) {
+    const ratio = replacementCount / Math.max(1, text.length);
+    if (ratio > 0.02) {
+      return { reason: "looks_binary", truncatedBytes, text: undefined };
+    }
+  }
+
+  const clamped = text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
+  const truncated = truncatedBytes || clamped.length !== text.length;
+  return { text: clamped, truncatedBytes: truncated, reason: undefined };
+}
+
 function bestEffortInferMimeType(params: {
   filename?: string;
   url?: URL;
@@ -365,22 +437,257 @@ async function appendDiscordAttachmentsToUserContent(
 
     const mimeType = normalizeMimeType(att.mimeType);
 
-    // Trust Discord when it provides mime type.
+    // If Discord provides mime type, follow policy without sniffing.
+    // - image/* => image part
+    // - application/pdf => file part
+    // - text-extractable => download + convert to text part
+    // - everything else => do not send as a file part; include URL in text
     if (mimeType) {
-      if (mimeType.startsWith("image/")) {
+      if (isImageMimeType(mimeType)) {
         parts.push({ type: "image", image: url, mediaType: mimeType });
-      } else {
+        continue;
+      }
+
+      if (isPdfMimeType(mimeType)) {
         parts.push({
           type: "file",
           data: url,
           filename: att.filename,
           mediaType: mimeType,
         });
+        continue;
       }
+
+      if (!isTextExtractableMimeType(mimeType)) {
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(binary attachment; fetch via URL if needed)`,
+        });
+        continue;
+      }
+
+      // Text-extractable: download and inline content.
+      if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(text attachment too large to inline; fetch via URL)`,
+        });
+        continue;
+      }
+
+      try {
+        const cached = state.cache.get(url.toString());
+        const downloaded = cached ? null : await downloadDiscordAttachment(url);
+
+        const bytes = cached?.bytes ?? downloaded!.bytes;
+
+        if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+          const header = formatDiscordAttachmentHeader({
+            url,
+            filename: att.filename,
+            mimeType,
+            size: att.size,
+          });
+          parts.push({
+            type: "text",
+            text: `${header}\n(text attachment too large to inline; fetch via URL)`,
+          });
+          continue;
+        }
+
+        if (!cached) {
+          const nextTotal = state.downloadedTotalBytes + bytes.byteLength;
+          if (nextTotal > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
+            const header = formatDiscordAttachmentHeader({
+              url,
+              filename: att.filename,
+              mimeType,
+              size: att.size,
+            });
+            parts.push({
+              type: "text",
+              text: `${header}\n(text attachment skipped; total download bytes too large; fetch via URL)`,
+            });
+            continue;
+          }
+
+          state.downloadedTotalBytes = nextTotal;
+          state.cache.set(url.toString(), { bytes, mimeType });
+        }
+
+        const decoded = decodeUtf8BestEffort(bytes);
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType,
+          size: att.size,
+        });
+
+        if (!decoded.text) {
+          parts.push({
+            type: "text",
+            text: `${header}\n(text extraction failed: ${decoded.reason ?? "unknown"}; fetch via URL)`,
+          });
+          continue;
+        }
+
+        const suffix = decoded.truncatedBytes ? "\n\n(truncated)" : "";
+        parts.push({
+          type: "text",
+          text: `${header}\n${decoded.text}${suffix}`,
+        });
+        continue;
+      } catch {
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(text attachment download failed; fetch via URL)`,
+        });
+        continue;
+      }
+    }
+
+    // Missing mime type: decide based on inferred type first.
+    const inferred = bestEffortInferMimeType({ filename: att.filename, url });
+    if (isImageMimeType(inferred)) {
+      parts.push({ type: "image", image: url, mediaType: inferred! });
+      continue;
+    }
+    if (isPdfMimeType(inferred)) {
+      parts.push({
+        type: "file",
+        data: url,
+        filename: att.filename,
+        mediaType: "application/pdf",
+      });
+      continue;
+    }
+    if (inferred && isTextExtractableMimeType(inferred)) {
+      // Download + inline extracted text.
+      if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType: inferred,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(text attachment too large to inline; fetch via URL)`,
+        });
+        continue;
+      }
+      try {
+        const cached = state.cache.get(url.toString());
+        const downloaded = cached ? null : await downloadDiscordAttachment(url);
+
+        const bytes = cached?.bytes ?? downloaded!.bytes;
+
+        if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+          const header = formatDiscordAttachmentHeader({
+            url,
+            filename: att.filename,
+            mimeType: inferred,
+            size: att.size,
+          });
+          parts.push({
+            type: "text",
+            text: `${header}\n(text attachment too large to inline; fetch via URL)`,
+          });
+          continue;
+        }
+
+        if (!cached) {
+          const nextTotal = state.downloadedTotalBytes + bytes.byteLength;
+          if (nextTotal > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
+            const header = formatDiscordAttachmentHeader({
+              url,
+              filename: att.filename,
+              mimeType: inferred,
+              size: att.size,
+            });
+            parts.push({
+              type: "text",
+              text: `${header}\n(text attachment skipped; total download bytes too large; fetch via URL)`,
+            });
+            continue;
+          }
+
+          state.downloadedTotalBytes = nextTotal;
+          state.cache.set(url.toString(), { bytes, mimeType: inferred });
+        }
+
+        const decoded = decodeUtf8BestEffort(bytes);
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType: inferred,
+          size: att.size,
+        });
+
+        if (!decoded.text) {
+          parts.push({
+            type: "text",
+            text: `${header}\n(text extraction failed: ${decoded.reason ?? "unknown"}; fetch via URL)`,
+          });
+          continue;
+        }
+
+        const suffix = decoded.truncatedBytes ? "\n\n(truncated)" : "";
+        parts.push({
+          type: "text",
+          text: `${header}\n${decoded.text}${suffix}`,
+        });
+        continue;
+      } catch {
+        const header = formatDiscordAttachmentHeader({
+          url,
+          filename: att.filename,
+          mimeType: inferred,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(text attachment download failed; fetch via URL)`,
+        });
+        continue;
+      }
+    }
+
+    // If we can infer a non-text, non-pdf, non-image type from filename, treat as binary and
+    // leave a URL for the agent to fetch (don't send file part upstream).
+    if (inferred && inferred !== "application/octet-stream") {
+      const header = formatDiscordAttachmentHeader({
+        url,
+        filename: att.filename,
+        mimeType: inferred,
+        size: att.size,
+      });
+      parts.push({
+        type: "text",
+        text: `${header}\n(binary attachment; fetch via URL if needed)`,
+      });
       continue;
     }
 
-    // Missing mime type: download once, infer, and pass bytes to avoid a second download.
+    // Unknown: download once, infer, and (only) inline if it's text-extractable.
     const cached = state.cache.get(url.toString());
 
     let bytes: Uint8Array | undefined;
@@ -392,15 +699,32 @@ async function appendDiscordAttachmentsToUserContent(
     } else {
       // Size pre-check if available.
       if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-        // Too large: fall back to URL-based attachment.
         const fallback =
           bestEffortInferMimeType({ filename: att.filename, url }) ??
           "application/octet-stream";
-        parts.push({
-          type: "file",
-          data: url,
+        if (isImageMimeType(fallback)) {
+          parts.push({ type: "image", image: url, mediaType: fallback });
+          continue;
+        }
+        if (isPdfMimeType(fallback)) {
+          parts.push({
+            type: "file",
+            data: url,
+            filename: att.filename,
+            mediaType: "application/pdf",
+          });
+          continue;
+        }
+
+        const header = formatDiscordAttachmentHeader({
+          url,
           filename: att.filename,
-          mediaType: fallback,
+          mimeType: fallback,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(attachment too large to download; fetch via URL)`,
         });
         continue;
       }
@@ -410,15 +734,32 @@ async function appendDiscordAttachmentsToUserContent(
         bytes = downloaded.bytes;
 
         if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-          // Too large: fall back to URL-based attachment.
           const fallback =
             bestEffortInferMimeType({ filename: att.filename, url }) ??
             "application/octet-stream";
-          parts.push({
-            type: "file",
-            data: url,
+          if (isImageMimeType(fallback)) {
+            parts.push({ type: "image", image: url, mediaType: fallback });
+            continue;
+          }
+          if (isPdfMimeType(fallback)) {
+            parts.push({
+              type: "file",
+              data: url,
+              filename: att.filename,
+              mediaType: "application/pdf",
+            });
+            continue;
+          }
+
+          const header = formatDiscordAttachmentHeader({
+            url,
             filename: att.filename,
-            mediaType: fallback,
+            mimeType: fallback,
+            size: att.size,
+          });
+          parts.push({
+            type: "text",
+            text: `${header}\n(attachment too large to download; fetch via URL)`,
           });
           continue;
         }
@@ -426,15 +767,32 @@ async function appendDiscordAttachmentsToUserContent(
         // Track only bytes we actually downloaded in this call.
         state.downloadedTotalBytes += bytes.byteLength;
         if (state.downloadedTotalBytes > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
-          // Total too large: fall back to URL-based attachment.
           const fallback =
             bestEffortInferMimeType({ filename: att.filename, url }) ??
             "application/octet-stream";
-          parts.push({
-            type: "file",
-            data: url,
+          if (isImageMimeType(fallback)) {
+            parts.push({ type: "image", image: url, mediaType: fallback });
+            continue;
+          }
+          if (isPdfMimeType(fallback)) {
+            parts.push({
+              type: "file",
+              data: url,
+              filename: att.filename,
+              mediaType: "application/pdf",
+            });
+            continue;
+          }
+
+          const header = formatDiscordAttachmentHeader({
+            url,
             filename: att.filename,
-            mediaType: fallback,
+            mimeType: fallback,
+            size: att.size,
+          });
+          parts.push({
+            type: "text",
+            text: `${header}\n(attachment download skipped; total bytes too large; fetch via URL)`,
           });
           continue;
         }
@@ -445,20 +803,22 @@ async function appendDiscordAttachmentsToUserContent(
         resolvedMimeType =
           detected?.mime ||
           downloaded.contentType ||
+          inferred ||
           bestEffortInferMimeType({ filename: att.filename, url }) ||
           "application/octet-stream";
 
         state.cache.set(url.toString(), { bytes, mimeType: resolvedMimeType });
       } catch {
         // Best-effort: fall back to URL-based attachment.
-        const fallback =
-          bestEffortInferMimeType({ filename: att.filename, url }) ??
-          "application/octet-stream";
-        parts.push({
-          type: "file",
-          data: url,
+        const header = formatDiscordAttachmentHeader({
+          url,
           filename: att.filename,
-          mediaType: fallback,
+          mimeType: inferred,
+          size: att.size,
+        });
+        parts.push({
+          type: "text",
+          text: `${header}\n(attachment download failed; fetch via URL)`,
         });
         continue;
       }
@@ -466,24 +826,70 @@ async function appendDiscordAttachmentsToUserContent(
 
     const mt = resolvedMimeType ?? "application/octet-stream";
     if (!bytes) {
-      parts.push({
-        type: "file",
-        data: url,
+      const header = formatDiscordAttachmentHeader({
+        url,
         filename: att.filename,
-        mediaType: mt,
+        mimeType: mt,
+        size: att.size,
+      });
+      parts.push({
+        type: "text",
+        text: `${header}\n(attachment unavailable; fetch via URL)`,
       });
       continue;
     }
-    if (mt.startsWith("image/")) {
+
+    if (isImageMimeType(mt)) {
       parts.push({ type: "image", image: bytes, mediaType: mt });
-    } else {
+      continue;
+    }
+
+    if (isPdfMimeType(mt)) {
       parts.push({
         type: "file",
         data: bytes,
         filename: att.filename,
-        mediaType: mt,
+        mediaType: "application/pdf",
       });
+      continue;
     }
+
+    if (isTextExtractableMimeType(mt)) {
+      const decoded = decodeUtf8BestEffort(bytes);
+      const header = formatDiscordAttachmentHeader({
+        url,
+        filename: att.filename,
+        mimeType: mt,
+        size: att.size,
+      });
+
+      if (!decoded.text) {
+        parts.push({
+          type: "text",
+          text: `${header}\n(text extraction failed: ${decoded.reason ?? "unknown"}; fetch via URL)`,
+        });
+        continue;
+      }
+
+      const suffix = decoded.truncatedBytes ? "\n\n(truncated)" : "";
+      parts.push({
+        type: "text",
+        text: `${header}\n${decoded.text}${suffix}`,
+      });
+      continue;
+    }
+
+    // Non-text binary: do not send as file part.
+    const header = formatDiscordAttachmentHeader({
+      url,
+      filename: att.filename,
+      mimeType: mt,
+      size: att.size,
+    });
+    parts.push({
+      type: "text",
+      text: `${header}\n(binary attachment; fetch via URL if needed)`,
+    });
   }
 }
 

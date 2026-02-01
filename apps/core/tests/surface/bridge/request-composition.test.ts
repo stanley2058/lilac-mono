@@ -156,16 +156,63 @@ describe("request-composition attachments", () => {
     const content = out!.content as any[];
 
     expect(content.length).toBe(2);
-    expect(content[1].type).toBe("file");
-    expect(content[1].mediaType).toBe("text/plain");
-    expect(content[1].data).toBeInstanceOf(Uint8Array);
+    expect(content[1].type).toBe("text");
+    expect(typeof content[1].text).toBe("string");
+    expect(content[1].text).toContain("[discord_attachment");
+    expect(content[1].text).toContain("file.txt");
+    expect(content[1].text).toContain("hello");
     expect(calls).toBe(1);
   });
 
-  it("does not download when mimeType is provided", async () => {
+  it("does not download when mimeType is application/pdf", async () => {
     // @ts-expect-error stub fetch
     globalThis.fetch = async () => {
       throw new Error("should not fetch");
+    };
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: 0,
+      raw: {
+        discord: {
+          attachments: [
+            {
+              url: "https://cdn.discordapp.com/attachments/1/2/doc.pdf",
+              filename: "doc.pdf",
+              mimeType: "application/pdf",
+            },
+          ],
+        },
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    const content = out!.content as any[];
+    expect(content[1].type).toBe("file");
+    expect(content[1].mediaType).toBe("application/pdf");
+    expect(content[1].data).toBeInstanceOf(URL);
+  });
+
+  it("inlines plain text when mimeType is text/plain", async () => {
+    let calls = 0;
+    // @ts-expect-error stub fetch
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response("hello", {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
     };
 
     const msg: SurfaceMessage = {
@@ -198,9 +245,50 @@ describe("request-composition attachments", () => {
 
     expect(out?.role).toBe("user");
     const content = out!.content as any[];
-    expect(content[1].type).toBe("file");
-    expect(content[1].mediaType).toBe("text/plain");
-    expect(content[1].data).toBeInstanceOf(URL);
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain("hello");
+    expect(calls).toBe(1);
+  });
+
+  it("treats non-text binary as URL-only text", async () => {
+    // @ts-expect-error stub fetch
+    globalThis.fetch = async () => {
+      throw new Error("should not fetch");
+    };
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: 0,
+      raw: {
+        discord: {
+          attachments: [
+            {
+              url: "https://cdn.discordapp.com/attachments/1/2/doc.rtf",
+              filename: "doc.rtf",
+              mimeType: "application/rtf",
+            },
+          ],
+        },
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    const content = out!.content as any[];
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain("doc.rtf");
+    expect(content[1].text).toContain("https://cdn.discordapp.com/");
   });
 
   it("falls back to inferred mime type when download fails", async () => {
@@ -238,8 +326,9 @@ describe("request-composition attachments", () => {
 
     expect(out?.role).toBe("user");
     const content = out!.content as any[];
-    expect(content[1].type).toBe("file");
-    expect(content[1].mediaType).toBe("text/plain");
-    expect(content[1].data).toBeInstanceOf(URL);
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain("note.txt");
+    expect(content[1].text).toContain("download failed");
+    expect(content[1].text).toContain("https://cdn.discordapp.com/");
   });
 });

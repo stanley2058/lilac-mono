@@ -26,8 +26,26 @@ export function inferMimeTypeFromFilename(filename: string): string {
       return "application/pdf";
     case ".txt":
       return "text/plain";
+    case ".md":
+      return "text/markdown";
+    case ".log":
+      return "text/plain";
+    case ".html":
+    case ".htm":
+      return "text/html";
+    case ".css":
+      return "text/css";
     case ".json":
       return "application/json";
+    case ".js":
+    case ".mjs":
+    case ".cjs":
+      return "application/javascript";
+    case ".xml":
+      return "application/xml";
+    case ".yaml":
+    case ".yml":
+      return "application/x-yaml";
     case ".csv":
       return "text/csv";
     default:
