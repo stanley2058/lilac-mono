@@ -88,13 +88,13 @@ const githubAppInputSchema = z.object({
     .describe(
       "status: show config; configure: persist GitHub App credentials; test: mint token and call GitHub API; clear: remove stored secret",
     ),
-  appId: z
+  appId: z.coerce
     .number()
     .int()
     .positive()
     .optional()
     .describe("GitHub App ID"),
-  installationId: z
+  installationId: z.coerce
     .number()
     .int()
     .positive()
@@ -907,7 +907,10 @@ export class Onboarding implements ServerTool {
       if (input.mode === "status") {
         const secret = await readGithubAppSecret(dataDir);
         const apiBaseUrl = secret
-          ? deriveApiBaseUrl({ host: secret.host, apiBaseUrl: secret.apiBaseUrl })
+          ? deriveApiBaseUrl({
+              host: secret.host,
+              apiBaseUrl: secret.apiBaseUrl,
+            })
           : undefined;
         return {
           ok: true as const,
@@ -944,7 +947,9 @@ export class Onboarding implements ServerTool {
             ? await Bun.file(input.privateKeyPath).text()
             : null;
         if (!privateKeyPem) {
-          throw new Error("Missing required input: privateKeyPem or privateKeyPath");
+          throw new Error(
+            "Missing required input: privateKeyPem or privateKeyPath",
+          );
         }
 
         const host = normalizeHost(input.host);

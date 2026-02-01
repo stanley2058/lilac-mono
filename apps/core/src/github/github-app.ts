@@ -4,12 +4,12 @@ import { z } from "zod";
 
 const githubAppSecretSchema = z.object({
   type: z.literal("github_app"),
-  appId: z.number().int().positive(),
-  installationId: z.number().int().positive(),
+  appId: z.coerce.number().int().positive(),
+  installationId: z.coerce.number().int().positive(),
   /** Optional; used for gh (GH_HOST) and/or to derive apiBaseUrl. */
   host: z.string().min(1).optional(),
   /** Optional; used to mint tokens against GHES. Example: https://github.example.com/api/v3 */
-  apiBaseUrl: z.string().url().optional(),
+  apiBaseUrl: z.url().optional(),
   /** Absolute path to the stored private key pem file. */
   privateKeyPath: z.string().min(1),
 });
