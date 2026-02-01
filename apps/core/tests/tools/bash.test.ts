@@ -59,6 +59,18 @@ describe("executeBash", () => {
       expect(res.executionError.message.length).toBeGreaterThan(0);
     }
   });
+
+  it("truncates very large output and appends a tool error hint", async () => {
+    // 210k characters of output (over the 200k tool limit).
+    const res = await executeBash({
+      command: "head -c 210000 /dev/zero | tr '\\0' 'a'",
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.length + res.stderr.length).toBeLessThanOrEqual(200_000);
+    expect(res.stderr).toContain("<bash_tool_error>");
+    expect(res.stderr).toContain("output truncated");
+  });
 });
 
 describe("analyzeBashCommand", () => {

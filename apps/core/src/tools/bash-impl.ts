@@ -9,6 +9,15 @@ import { getGithubEnvForBash } from "../github/github-app-token";
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
 
+// Keep tool output bounded so we don't blow up agent context.
+const MAX_BASH_OUTPUT_CHARS = 200_000;
+
+const BASH_TOOL_OUTPUT_TRUNCATED_SUFFIX =
+  "\n<bash_tool_error>\n" +
+  "output truncated due to length > 200,000 characters.\n" +
+  "Tip: narrow output, or pipe it to a file and inspect with rg.\n" +
+  "</bash_tool_error>\n";
+
 const logger = new Logger({
   logLevel: resolveLogLevel(),
   module: "tool:bash",
@@ -63,9 +72,131 @@ function toErrorMessage(error: unknown) {
   return String(error);
 }
 
-async function readStreamText(stream: unknown): Promise<string> {
-  if (!stream || typeof stream === "number") return "";
-  return await new Response(stream as any).text();
+type StreamTextResult = {
+  text: string;
+  totalChars: number;
+  capped: boolean;
+};
+
+async function readStreamTextCapped(
+  stream: unknown,
+  maxChars: number,
+): Promise<StreamTextResult> {
+  if (!stream || typeof stream === "number") {
+    return { text: "", totalChars: 0, capped: false };
+  }
+
+  // Bun.spawn pipes are ReadableStream<Uint8Array>.
+  const maybeReadable = stream as { getReader?: unknown };
+  if (typeof maybeReadable.getReader === "function") {
+    const reader = (stream as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+
+    let text = "";
+    let totalChars = 0;
+    let capped = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        const chunkText = decoder.decode(value, { stream: true });
+        totalChars += chunkText.length;
+
+        if (text.length < maxChars) {
+          const remaining = maxChars - text.length;
+          if (chunkText.length <= remaining) {
+            text += chunkText;
+          } else {
+            text += chunkText.slice(0, remaining);
+            capped = true;
+          }
+        } else {
+          capped = true;
+        }
+      }
+
+      const tail = decoder.decode();
+      if (tail.length > 0) {
+        totalChars += tail.length;
+        if (text.length < maxChars) {
+          const remaining = maxChars - text.length;
+          text += tail.length <= remaining ? tail : tail.slice(0, remaining);
+          if (tail.length > remaining) capped = true;
+        } else {
+          capped = true;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return { text, totalChars, capped };
+  }
+
+  // Fallback (should be rare): read everything, then cap.
+  const full = await new Response(stream as any).text();
+  return {
+    text: full.length > maxChars ? full.slice(0, maxChars) : full,
+    totalChars: full.length,
+    capped: full.length > maxChars,
+  };
+}
+
+function limitBashOutput(
+  input: { stdout: string; stderr: string },
+  options?: { truncated?: boolean },
+): {
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+} {
+  const totalLen = input.stdout.length + input.stderr.length;
+  const needsTruncation = totalLen > MAX_BASH_OUTPUT_CHARS;
+  const shouldAddHint = Boolean(options?.truncated) || needsTruncation;
+  if (!shouldAddHint) {
+    return { ...input, truncated: false };
+  }
+
+  const suffix = BASH_TOOL_OUTPUT_TRUNCATED_SUFFIX;
+
+  // If we can fit the hint without trimming, keep all content.
+  if (totalLen + suffix.length <= MAX_BASH_OUTPUT_CHARS) {
+    return {
+      stdout: input.stdout,
+      stderr: input.stderr + suffix,
+      truncated: true,
+    };
+  }
+
+  // Otherwise, reserve space for the hint so the agent always sees it.
+  const available = Math.max(0, MAX_BASH_OUTPUT_CHARS - suffix.length);
+
+  const stdoutPart = input.stdout.slice(0, available);
+  const stderrPart =
+    available > stdoutPart.length
+      ? input.stderr.slice(0, available - stdoutPart.length)
+      : "";
+
+  return {
+    stdout: stdoutPart,
+    stderr: stderrPart + suffix,
+    truncated: true,
+  };
+}
+
+function withLimitedOutput(
+  output: BashToolOutput,
+  options?: { truncated?: boolean },
+): BashToolOutput {
+  const limited = limitBashOutput(
+    { stdout: output.stdout, stderr: output.stderr },
+    options,
+  );
+  if (!limited.truncated) return output;
+  return { ...output, stdout: limited.stdout, stderr: limited.stderr };
 }
 
 export async function executeBash(
@@ -159,21 +290,28 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamText(child.stdout),
-      readStreamText(child.stderr),
+      readStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS),
+      readStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS),
       child.exited,
     ]);
 
     const stdout =
-      stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
+      stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
     const stderr =
-      stderrResult.status === "fulfilled" ? stderrResult.value : "";
+      stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
     const safeStdout = redactSecrets(stdout);
     const safeStderr = redactSecrets(stderr);
 
     const durationMs = Date.now() - startedAt;
+
+    const streamCapped =
+      (stdoutResult.status === "fulfilled" && stdoutResult.value.capped) ||
+      (stderrResult.status === "fulfilled" && stderrResult.value.capped);
+    const outputTruncated =
+      streamCapped ||
+      safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
 
     if (timedOut && child.killed) {
       logger.warn("bash timeout", {
@@ -190,7 +328,7 @@ export async function executeBash(
         requestClient: context?.requestClient,
       });
 
-      return {
+      return withLimitedOutput({
         stdout: safeStdout,
         stderr: safeStderr,
         exitCode,
@@ -199,7 +337,7 @@ export async function executeBash(
           timeoutMs: effectiveTimeoutMs,
           signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
         },
-      };
+      }, { truncated: outputTruncated });
     }
 
     if (stdoutResult.status === "rejected") {
@@ -216,7 +354,8 @@ export async function executeBash(
         stdoutResult.reason,
       );
 
-      return {
+      return withLimitedOutput(
+        {
         stdout: safeStdout,
         stderr: safeStderr,
         exitCode: -1,
@@ -225,7 +364,9 @@ export async function executeBash(
           phase: "stdout",
           message: toErrorMessage(stdoutResult.reason),
         },
-      };
+      },
+        { truncated: outputTruncated },
+      );
     }
 
     if (stderrResult.status === "rejected") {
@@ -242,7 +383,8 @@ export async function executeBash(
         stderrResult.reason,
       );
 
-      return {
+      return withLimitedOutput(
+        {
         stdout: safeStdout,
         stderr: safeStderr,
         exitCode: -1,
@@ -251,7 +393,9 @@ export async function executeBash(
           phase: "stderr",
           message: toErrorMessage(stderrResult.reason),
         },
-      };
+      },
+        { truncated: outputTruncated },
+      );
     }
 
     if (exitResult.status === "rejected") {
@@ -268,7 +412,8 @@ export async function executeBash(
         exitResult.reason,
       );
 
-      return {
+      return withLimitedOutput(
+        {
         stdout: safeStdout,
         stderr: safeStderr,
         exitCode: -1,
@@ -277,7 +422,31 @@ export async function executeBash(
           phase: "unknown",
           message: toErrorMessage(exitResult.reason),
         },
-      };
+      },
+        { truncated: outputTruncated },
+      );
+    }
+
+    if (outputTruncated) {
+      logger.warn("bash output truncated", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        exitCode,
+        durationMs,
+        stdoutChars: stdout.length,
+        stderrChars: stderr.length,
+        stdoutTotalChars:
+          stdoutResult.status === "fulfilled" ? stdoutResult.value.totalChars : 0,
+        stderrTotalChars:
+          stderrResult.status === "fulfilled" ? stderrResult.value.totalChars : 0,
+        stdoutCapped:
+          stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
+        stderrCapped:
+          stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
     }
 
     // Always log the outcome (exitCode can be non-zero without executionError).
@@ -308,7 +477,10 @@ export async function executeBash(
       });
     }
 
-    return { stdout: safeStdout, stderr: safeStderr, exitCode };
+    return withLimitedOutput(
+      { stdout: safeStdout, stderr: safeStderr, exitCode },
+      { truncated: outputTruncated },
+    );
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     logger.error(
