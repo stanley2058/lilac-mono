@@ -39,19 +39,6 @@ describe("formatToolArgsForDisplay", () => {
     );
   });
 
-  it("formats apply_patch (openai) as operation path", () => {
-    expect(
-      formatToolArgsForDisplay("apply_patch", {
-        callId: "call_1",
-        operation: {
-          type: "update_file",
-          path: "/path/to/some/really/long/path/to/file.js",
-          diff: "@@\n-a\n+b\n",
-        },
-      }),
-    ).toBe(" /path/t...to/file.js");
-  });
-
   it("returns empty string on invalid args", () => {
     expect(formatToolArgsForDisplay("bash", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("read_file", { nope: true })).toBe("");

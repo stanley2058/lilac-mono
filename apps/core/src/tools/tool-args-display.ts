@@ -77,26 +77,6 @@ function truncateMiddle(
   return s.slice(0, headLen) + ellipsis + s.slice(-tailLen);
 }
 
-const openAiApplyPatchArgsSchema = z.object({
-  callId: z.string(),
-  operation: z.discriminatedUnion("type", [
-    z.object({
-      type: z.literal("create_file"),
-      path: z.string(),
-      diff: z.string(),
-    }),
-    z.object({
-      type: z.literal("update_file"),
-      path: z.string(),
-      diff: z.string(),
-    }),
-    z.object({
-      type: z.literal("delete_file"),
-      path: z.string(),
-    }),
-  ]),
-});
-
 const localApplyPatchArgsSchema = z.object({
   patchText: z.string(),
   cwd: z.string().optional(),
@@ -148,14 +128,6 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   readFile: readFileToolArgsFormatter,
 
   apply_patch: (args) => {
-    const openaiParsed = safeValidateSync<
-      { operation: { path: string } }
-    >(openAiApplyPatchArgsSchema, args);
-    if (openaiParsed) {
-      const p = openaiParsed.operation.path.trim();
-      return p ? " " + truncateMiddle(p, 7, 10, 20) : "";
-    }
-
     const localParsed = safeValidateSync<{ patchText: string }>(
       localApplyPatchArgsSchema,
       args,

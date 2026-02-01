@@ -185,7 +185,7 @@ There are two different “tool” systems:
    - Key ones:
      - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
      - `read_file` (`apps/core/src/tools/fs/fs.ts`).
-     - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`), sometimes using OpenAI-native apply_patch for GPT-5 on OpenAI/Codex providers.
+     - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`).
 
 2. Tool server tools (HTTP)
    - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.

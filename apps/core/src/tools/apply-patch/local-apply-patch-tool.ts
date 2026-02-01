@@ -3,6 +3,9 @@ import path from "node:path";
 
 import { tool } from "ai";
 import { z } from "zod";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
+import { expandTilde } from "../fs/fs-impl";
 
 const inputSchema = z.object({
   patchText: z
@@ -23,10 +26,21 @@ const outputSchema = z.object({
 
 type PatchInput = z.infer<typeof inputSchema>;
 
+type ToolContext = {
+  requestId: string;
+  sessionId: string;
+  requestClient: string;
+};
+
 type PatchHunk =
   | { type: "add"; path: string; contents: string }
   | { type: "delete"; path: string }
-  | { type: "update"; path: string; movePath?: string; chunks: UpdateFileChunk[] };
+  | {
+      type: "update";
+      path: string;
+      movePath?: string;
+      chunks: UpdateFileChunk[];
+    };
 
 type UpdateFileChunk = {
   oldLines: string[];
@@ -37,6 +51,17 @@ type UpdateFileChunk = {
 
 function resolvePath(baseDir: string, p: string): string {
   return path.isAbsolute(p) ? p : path.resolve(baseDir, p);
+}
+
+function toDisplayPath(resolved: string, baseDir: string): string {
+  const rel = path.relative(baseDir, resolved);
+  if (!rel || rel === "") {
+    return path.basename(resolved);
+  }
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return resolved;
+  }
+  return rel;
 }
 
 function stripHeredoc(input: string): string {
@@ -50,15 +75,18 @@ function stripHeredoc(input: string): string {
 function parsePatchHeader(
   lines: string[],
   startIdx: number,
-): { kind: "add" | "delete" | "update"; filePath: string; movePath?: string; nextIdx: number } | null {
+): {
+  kind: "add" | "delete" | "update";
+  filePath: string;
+  movePath?: string;
+  nextIdx: number;
+} | null {
   const line = lines[startIdx];
   if (line === undefined) return null;
 
   if (line.startsWith("*** Add File:")) {
     const filePath = line.split(":", 2)[1]?.trim();
-    return filePath
-      ? { kind: "add", filePath, nextIdx: startIdx + 1 }
-      : null;
+    return filePath ? { kind: "add", filePath, nextIdx: startIdx + 1 } : null;
   }
 
   if (line.startsWith("*** Delete File:")) {
@@ -78,9 +106,7 @@ function parsePatchHeader(
       nextIdx += 1;
     }
 
-    return filePath
-      ? { kind: "update", filePath, movePath, nextIdx }
-      : null;
+    return filePath ? { kind: "update", filePath, movePath, nextIdx } : null;
   }
 
   return null;
@@ -287,7 +313,13 @@ function seekSequence(
   );
   if (rstrip !== -1) return rstrip;
 
-  const trim = tryMatch(lines, pattern, startIndex, (a, b) => a.trim() === b.trim(), eof);
+  const trim = tryMatch(
+    lines,
+    pattern,
+    startIndex,
+    (a, b) => a.trim() === b.trim(),
+    eof,
+  );
   if (trim !== -1) return trim;
 
   return tryMatch(
@@ -309,16 +341,23 @@ function computeReplacements(
 
   for (const chunk of chunks) {
     if (chunk.changeContext) {
-      const contextIdx = seekSequence(originalLines, [chunk.changeContext], lineIndex);
+      const contextIdx = seekSequence(
+        originalLines,
+        [chunk.changeContext],
+        lineIndex,
+      );
       if (contextIdx === -1) {
-        throw new Error(`Failed to find context '${chunk.changeContext}' in ${filePath}`);
+        throw new Error(
+          `Failed to find context '${chunk.changeContext}' in ${filePath}`,
+        );
       }
       lineIndex = contextIdx + 1;
     }
 
     if (chunk.oldLines.length === 0) {
       const insertionIdx =
-        originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
+        originalLines.length > 0 &&
+        originalLines[originalLines.length - 1] === ""
           ? originalLines.length - 1
           : originalLines.length;
       replacements.push([insertionIdx, 0, chunk.newLines]);
@@ -327,14 +366,28 @@ function computeReplacements(
 
     let pattern = chunk.oldLines;
     let newSlice = chunk.newLines;
-    let found = seekSequence(originalLines, pattern, lineIndex, chunk.isEndOfFile);
+    let found = seekSequence(
+      originalLines,
+      pattern,
+      lineIndex,
+      chunk.isEndOfFile,
+    );
 
-    if (found === -1 && pattern.length > 0 && pattern[pattern.length - 1] === "") {
+    if (
+      found === -1 &&
+      pattern.length > 0 &&
+      pattern[pattern.length - 1] === ""
+    ) {
       pattern = pattern.slice(0, -1);
       if (newSlice.length > 0 && newSlice[newSlice.length - 1] === "") {
         newSlice = newSlice.slice(0, -1);
       }
-      found = seekSequence(originalLines, pattern, lineIndex, chunk.isEndOfFile);
+      found = seekSequence(
+        originalLines,
+        pattern,
+        lineIndex,
+        chunk.isEndOfFile,
+      );
     }
 
     if (found === -1) {
@@ -375,7 +428,10 @@ async function applyUpdateHunk(params: {
 
   const originalContent = await readFile(resolvedPath, "utf-8");
   let originalLines = originalContent.split("\n");
-  if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
+  if (
+    originalLines.length > 0 &&
+    originalLines[originalLines.length - 1] === ""
+  ) {
     originalLines.pop();
   }
 
@@ -397,38 +453,44 @@ async function applyUpdateHunk(params: {
   return { modifiedPath: target };
 }
 
-async function applyHunks(baseDir: string, hunks: PatchHunk[]): Promise<string> {
+async function applyHunks(
+  baseDir: string,
+  hunks: PatchHunk[],
+): Promise<string> {
+  const baseResolved = path.resolve(expandTilde(baseDir));
   const touched: string[] = [];
 
   for (const hunk of hunks) {
     if (hunk.type === "add") {
-      const dst = resolvePath(baseDir, hunk.path);
+      const dst = resolvePath(baseResolved, hunk.path);
       await mkdir(path.dirname(dst), { recursive: true });
       await writeFile(dst, hunk.contents, "utf-8");
-      touched.push(`A ${dst}`);
+      touched.push(`A ${toDisplayPath(dst, baseResolved)}`);
       continue;
     }
 
     if (hunk.type === "delete") {
-      const target = resolvePath(baseDir, hunk.path);
+      const target = resolvePath(baseResolved, hunk.path);
       const s = await stat(target).catch(() => null);
       if (s?.isDirectory()) {
         throw new Error(`Refusing to delete directory: ${hunk.path}`);
       }
       await rm(target, { force: true });
-      touched.push(`D ${target}`);
+      touched.push(`D ${toDisplayPath(target, baseResolved)}`);
       continue;
     }
 
     if (hunk.type === "update") {
-      const src = resolvePath(baseDir, hunk.path);
-      const moveTo = hunk.movePath ? resolvePath(baseDir, hunk.movePath) : undefined;
+      const src = resolvePath(baseResolved, hunk.path);
+      const moveTo = hunk.movePath
+        ? resolvePath(baseResolved, hunk.movePath)
+        : undefined;
       const { modifiedPath } = await applyUpdateHunk({
         resolvedPath: src,
         moveToResolvedPath: moveTo,
         chunks: hunk.chunks,
       });
-      touched.push(`M ${modifiedPath}`);
+      touched.push(`M ${toDisplayPath(modifiedPath, baseResolved)}`);
       continue;
     }
 
@@ -442,20 +504,72 @@ async function applyHunks(baseDir: string, hunks: PatchHunk[]): Promise<string> 
 }
 
 export function localApplyPatchTool(defaultCwd: string) {
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "tool:apply_patch",
+  });
+
   return {
     apply_patch: tool({
       description:
-        "Apply a patch in '*** Begin Patch' format (add/update/delete/move files).",
+        "Apply a patch in '*** Begin Patch' format (*** Add/Update/Delete File, optional *** Move to:, @@ context blocks).",
       inputSchema,
       outputSchema,
-      execute: async (input: PatchInput) => {
+      execute: async (
+        input: PatchInput,
+        { experimental_context: context }: { experimental_context?: unknown },
+      ) => {
+        const ctx =
+          context && typeof context === "object"
+            ? (context as Partial<ToolContext>)
+            : undefined;
         try {
           const cwd = input.cwd ?? defaultCwd;
           const hunks = parsePatch(input.patchText);
+
+          logger.info("apply_patch start", {
+            requestId: ctx?.requestId,
+            sessionId: ctx?.sessionId,
+            requestClient: ctx?.requestClient,
+            cwd,
+            hunkCount: hunks.length,
+            added: hunks.filter((h) => h.type === "add").length,
+            deleted: hunks.filter((h) => h.type === "delete").length,
+            updated: hunks.filter((h) => h.type === "update").length,
+            paths: hunks.map((h) => h.path).slice(0, 20),
+            pathsTruncated: hunks.length > 20,
+          });
+
           const output = await applyHunks(cwd, hunks);
+
+          const outputLines = output.split("\n");
+          const changedLines = outputLines
+            .slice(1)
+            .map((l) => l.trim())
+            .filter(Boolean);
+
+          logger.info("apply_patch done", {
+            requestId: ctx?.requestId,
+            sessionId: ctx?.sessionId,
+            ok: true,
+            changedCount: changedLines.length,
+            changed: changedLines.slice(0, 20),
+            changedTruncated: changedLines.length > 20,
+          });
+
           return { status: "completed" as const, output };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          logger.error(
+            "apply_patch failed",
+            {
+              requestId: ctx?.requestId,
+              sessionId: ctx?.sessionId,
+              ok: false,
+              message: msg,
+            },
+            e,
+          );
           return { status: "failed" as const, output: msg };
         }
       },

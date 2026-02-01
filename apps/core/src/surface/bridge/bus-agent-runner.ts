@@ -26,7 +26,7 @@ import {
 
 import { Logger } from "@stanley2058/simple-module-logger";
 
-import { applyPatchToolForModel } from "../../tools/apply-patch";
+import { applyPatchTool } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
@@ -521,11 +521,7 @@ export async function startBusAgentRunner(params: {
       tools: {
         ...bashToolWithCwd(cwd),
         ...fsTool(cwd),
-        ...applyPatchToolForModel({
-          cwd,
-          provider: resolved.provider,
-          modelId: resolved.modelId,
-        }),
+        ...applyPatchTool({ cwd }),
       },
       providerOptions: resolved.providerOptions,
     });
