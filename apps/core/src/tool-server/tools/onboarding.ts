@@ -818,17 +818,18 @@ export class Onboarding implements ServerTool {
           cmd: [
             bunBin,
             "x",
-            "add-skill",
+            "skills",
+            "add",
+            "vercel-labs/agent-browser",
             "-a",
             "opencode",
             "-g",
             "-y",
-            "vercel-labs/agent-browser",
           ],
           env: installEnv,
         });
         if (res.code !== 0) {
-          throw new Error(res.stderr || res.stdout || "add-skill failed");
+          throw new Error(res.stderr || res.stdout || "`skills add` failed");
         }
 
         const installedNow = await hasAnySkillMdUnder(opencodeSkillsDir);
