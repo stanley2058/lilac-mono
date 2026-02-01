@@ -34,7 +34,7 @@ RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 # Non-root user (needed for bun/npm global installs)
 RUN useradd -m -u 1000 -s /bin/bash lilac
 ENV HOME=/home/lilac
-ENV DATA_DIR=/app/data
+ENV DATA_DIR=/data
 ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
 ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
 ENV BUN_INSTALL_BIN=${DATA_DIR}/bin
@@ -83,9 +83,6 @@ WORKDIR /app
 COPY . .
 RUN chown -R lilac:lilac /app
 USER lilac
-
-# Ensure default data dir exists (often excluded via .dockerignore)
-RUN mkdir -p /app/data
 
 # Build the tool-bridge client bundle
 RUN (cd apps/tool-bridge && bun run build)
