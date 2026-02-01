@@ -51,7 +51,10 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-async function readTextPrefix(filePath: string, maxBytes: number): Promise<string> {
+async function readTextPrefix(
+  filePath: string,
+  maxBytes: number,
+): Promise<string> {
   const handle = await fs.open(filePath, "r");
   try {
     const buf = Buffer.allocUnsafe(maxBytes);
@@ -90,12 +93,10 @@ function trimNonEmptyString(x: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function splitFrontmatter(raw: string):
-  | {
-      frontmatterText: string;
-      body: string;
-    }
-  | null {
+function splitFrontmatter(raw: string): {
+  frontmatterText: string;
+  body: string;
+} | null {
   const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/);
   if (!match) return null;
   const frontmatterText = match[1] ?? "";
@@ -132,7 +133,8 @@ export function parseSkillMarkdown(raw: string): ParsedSkillFile {
   const description = trimNonEmptyString(parsedFrontmatter.description);
 
   if (!name) throw new Error("Frontmatter field 'name' is required");
-  if (!description) throw new Error("Frontmatter field 'description' is required");
+  if (!description)
+    throw new Error("Frontmatter field 'description' is required");
 
   return {
     frontmatter: parsedFrontmatter,
@@ -154,7 +156,8 @@ export function defaultSkillScanRoots(params: {
   homeDir?: string;
 }): SkillScanRoot[] {
   const home = params.homeDir ?? homedir();
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
+  const xdgConfigHome =
+    process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
   const ws = params.workspaceRoot;
 
   // Higher precedence wins on name collisions.
@@ -310,7 +313,11 @@ export async function discoverSkills(params: {
 
     const glob = new Bun.Glob(root.pattern);
 
-    for await (const skillPath of glob.scan({ onlyFiles: true, absolute: true })) {
+    for await (const skillPath of glob.scan({
+      onlyFiles: true,
+      absolute: true,
+      followSymlinks: true,
+    })) {
       if (skillPath.includes(`${path.sep}node_modules${path.sep}`)) continue;
 
       // Progressive disclosure: discovery loads metadata only.
