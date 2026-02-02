@@ -156,8 +156,11 @@ export function defaultSkillScanRoots(params: {
   homeDir?: string;
 }): SkillScanRoot[] {
   const home = params.homeDir ?? homedir();
-  const xdgConfigHome =
-    process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
+  // If callers pass an explicit homeDir (tests, sandboxed runs), keep discovery
+  // scoped to that home and do not consult the real process.env-based XDG home.
+  const xdgConfigHome = params.homeDir
+    ? path.join(home, ".config")
+    : (process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"));
   const ws = params.workspaceRoot;
 
   // Higher precedence wins on name collisions.
