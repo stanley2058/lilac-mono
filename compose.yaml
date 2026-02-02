@@ -25,6 +25,8 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/data
+      - ./home/agents:/home/lilac/.agents
+      - ./home/.ssh:/home/lilac/.ssh
     restart: unless-stopped
 
   redis:
