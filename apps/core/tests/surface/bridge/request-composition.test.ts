@@ -24,7 +24,10 @@ import type {
 } from "../../../src/surface/types";
 
 class FakeAdapter implements SurfaceAdapter {
-  constructor(private readonly message: SurfaceMessage) {}
+  constructor(
+    private readonly message: SurfaceMessage,
+    private readonly reactions: readonly string[] = [],
+  ) {}
 
   async connect(): Promise<void> {
     throw new Error("not implemented");
@@ -94,7 +97,7 @@ class FakeAdapter implements SurfaceAdapter {
   }
 
   async listReactions(_msgRef: MsgRef): Promise<string[]> {
-    throw new Error("not implemented");
+    return [...this.reactions];
   }
 
   async subscribe(_handler: AdapterEventHandler): Promise<AdapterSubscription> {
@@ -117,6 +120,29 @@ afterEach(() => {
 });
 
 describe("request-composition attachments", () => {
+  it("includes reaction hint in attribution header", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: 0,
+    };
+
+    const adapter = new FakeAdapter(msg, ["👍", "👀"]);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("reactions=👍,👀");
+  });
+
   it("downloads discord attachment when mimeType is missing", async () => {
     let calls = 0;
     // @ts-expect-error stub fetch
@@ -425,7 +451,7 @@ describe("request-composition mention thread context", () => {
     }
 
     async listReactions(_msgRef: MsgRef): Promise<string[]> {
-      throw new Error("not implemented");
+      return [];
     }
 
     async subscribe(_handler: AdapterEventHandler): Promise<AdapterSubscription> {

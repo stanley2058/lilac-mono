@@ -47,6 +47,17 @@ export type ComposeRequestOpts = {
   maxDepth?: number;
 };
 
+async function safeListReactions(
+  adapter: SurfaceAdapter,
+  msgRef: MsgRef,
+): Promise<string[]> {
+  try {
+    return await adapter.listReactions(msgRef);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Build request `ModelMessage[]` with reply-chain + merge-window parity.
  *
@@ -99,6 +110,12 @@ export async function composeRequestMessages(
 
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
+    const reactions = await safeListReactions(adapter, {
+      platform: opts.platform,
+      channelId: opts.trigger.msgRef.channelId,
+      messageId,
+    });
+
     if (isBot && opts.transcriptStore) {
       const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
         platform: opts.platform,
@@ -124,6 +141,7 @@ export async function composeRequestMessages(
       authorId: chunk.authorId,
       authorName: chunk.authorName,
       messageId,
+      reactions,
     });
 
     const mainText = `${header}\n${normalized}`.trimEnd();
@@ -196,6 +214,12 @@ export async function composeRecentChannelMessages(
           const isBot = chunk.authorId === opts.botUserId;
           const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
+          const reactions = await safeListReactions(adapter, {
+            platform: opts.platform,
+            channelId: opts.sessionId,
+            messageId,
+          });
+
           if (isBot && opts.transcriptStore) {
             const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
               platform: opts.platform,
@@ -216,6 +240,7 @@ export async function composeRecentChannelMessages(
             authorId: chunk.authorId,
             authorName: chunk.authorName,
             messageId,
+            reactions,
           });
 
           const mainText = `${header}\n${normalized}`.trimEnd();
@@ -306,6 +331,12 @@ export async function composeRecentChannelMessages(
     const isBot = chunk.authorId === opts.botUserId;
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
+    const reactions = await safeListReactions(adapter, {
+      platform: opts.platform,
+      channelId: opts.sessionId,
+      messageId,
+    });
+
     if (isBot && opts.transcriptStore) {
       const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
         platform: opts.platform,
@@ -327,6 +358,7 @@ export async function composeRecentChannelMessages(
       authorId: chunk.authorId,
       authorName: chunk.authorName,
       messageId,
+      reactions,
     });
 
     const mainText = `${header}\n${normalized}`.trimEnd();
@@ -381,6 +413,7 @@ export async function composeSingleMessage(
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
     messageId: m.ref.messageId,
+    reactions: await safeListReactions(adapter, m.ref),
   });
 
   const mainText = `${header}\n${normalizeText(m.text, {})}`.trimEnd();
@@ -1080,15 +1113,47 @@ function formatDiscordAttributionHeader(params: {
   authorId: string;
   authorName: string;
   messageId: string;
+  reactions?: readonly string[];
 }): string {
   const userName = sanitizeUserToken(
     params.authorName || `user_${params.authorId}`,
   );
-  return `[discord user_id=${params.authorId} user_name=${userName} message_id=${params.messageId}]`;
+
+  const reactions = formatReactionSet(params.reactions);
+  const reactionsPart = reactions ? ` reactions=${reactions}` : "";
+
+  return `[discord user_id=${params.authorId} user_name=${userName} message_id=${params.messageId}${reactionsPart}]`;
 }
 
 function sanitizeUserToken(name: string): string {
   return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
+}
+
+function sanitizeReactionToken(reaction: string): string {
+  // Keep the header single-line and parseable. Discord custom emoji toString() can include
+  // angle brackets; keep them, but strip whitespace and closing brackets.
+  return reaction.replace(/\s+/gu, "_").replace(/\]/gu, "");
+}
+
+function formatReactionSet(reactions: readonly string[] | undefined): string | null {
+  if (!reactions || reactions.length === 0) return null;
+
+  const MAX_REACTIONS = 8;
+
+  const uniq: string[] = [];
+  const seen = new Set<string>();
+
+  for (const r of reactions) {
+    if (typeof r !== "string") continue;
+    const s = sanitizeReactionToken(r);
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    uniq.push(s);
+    if (uniq.length >= MAX_REACTIONS) break;
+  }
+
+  return uniq.length > 0 ? uniq.join(",") : null;
 }
 
 type DiscordAttachmentMeta = {

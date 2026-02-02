@@ -29,6 +29,7 @@ import type {
   SendOpts,
   SessionRef,
   SurfaceMessage,
+  SurfaceReactionDetail,
   SurfaceSelf,
   SurfaceSession,
 } from "../types";
@@ -613,6 +614,47 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
 
     return [...new Set(rows.map((r) => r.emoji))];
+  }
+
+  async listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]> {
+    const store = this.mustStore();
+    if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
+
+    const rows = store.listMessageReactions({
+      channelId: msgRef.channelId,
+      messageId: msgRef.messageId,
+    });
+
+    const byEmoji = new Map<string, Map<string, string | undefined>>();
+
+    for (const r of rows) {
+      const u = store.getUserName(r.user_id);
+      const userName = u?.display_name ?? u?.global_name ?? u?.username ?? undefined;
+
+      const users = byEmoji.get(r.emoji) ?? new Map<string, string | undefined>();
+      users.set(r.user_id, userName);
+      byEmoji.set(r.emoji, users);
+    }
+
+    const out: SurfaceReactionDetail[] = [];
+    for (const [emoji, users] of byEmoji) {
+      const list = [...users.entries()]
+        .map(([userId, userName]) => ({ userId, userName }))
+        .sort((a, b) => a.userId.localeCompare(b.userId));
+
+      out.push({
+        emoji,
+        count: list.length,
+        users: list,
+      });
+    }
+
+    out.sort((a, b) => {
+      if (a.count !== b.count) return b.count - a.count;
+      return a.emoji.localeCompare(b.emoji);
+    });
+
+    return out;
   }
 
   async subscribe(handler: AdapterEventHandler): Promise<AdapterSubscription> {

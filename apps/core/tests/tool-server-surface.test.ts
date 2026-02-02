@@ -13,6 +13,7 @@ import type {
   SendOpts,
   SessionRef,
   SurfaceMessage,
+  SurfaceReactionDetail,
   SurfaceSelf,
   SurfaceSession,
 } from "../src/surface/types";
@@ -129,6 +130,19 @@ class FakeAdapter implements SurfaceAdapter {
     return ["👍"];
   }
 
+  async listReactionDetails(_msgRef: MsgRef): Promise<SurfaceReactionDetail[]> {
+    return [
+      {
+        emoji: "👍",
+        count: 2,
+        users: [
+          { userId: "u1", userName: "alice" },
+          { userId: "u2", userName: "bob" },
+        ],
+      },
+    ];
+  }
+
   async subscribe(): Promise<any> {
     throw new Error("not implemented");
   }
@@ -143,6 +157,44 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("tool-server surface", () => {
+  it("returns reaction counts", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "hi",
+            ts: 0,
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = await tool.call("surface.reactions.list", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+    });
+
+    expect(res).toEqual([{ emoji: "👍", count: 2 }]);
+  });
+
   it("filters sessions list by allowlist and includes token", async () => {
     const cfg = testConfig({
       surface: {

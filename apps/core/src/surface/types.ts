@@ -42,6 +42,22 @@ export type SurfaceMessage = {
   raw?: unknown;
 };
 
+export type SurfaceReactionUser = {
+  userId: string;
+  userName?: string;
+};
+
+export type SurfaceReactionDetail = {
+  emoji: string;
+  count: number;
+  users: SurfaceReactionUser[];
+};
+
+export type SurfaceReactionSummary = {
+  emoji: string;
+  count: number;
+};
+
 export type LimitOpts = {
   limit?: number;
   /**

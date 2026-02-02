@@ -208,7 +208,7 @@ class FakeAdapter implements SurfaceAdapter {
   }
 
   async listReactions(_msgRef: MsgRef): Promise<string[]> {
-    throw new Error("not implemented");
+    return [];
   }
 
   async subscribe(): Promise<{ stop(): Promise<void> }> {

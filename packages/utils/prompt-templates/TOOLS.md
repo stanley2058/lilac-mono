@@ -50,7 +50,8 @@ cat payload.json | tools <tool> --stdin
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
 - `surface.messages.delete` — Delete a message.
-- `surface.reactions.list` — List cached reactions for a message.
+- `surface.reactions.list` — List cached reactions for a message (emoji + count).
+- `surface.reactions.listDetailed` — List cached reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
 - `surface.reactions.remove` — Remove a reaction from a message.
 

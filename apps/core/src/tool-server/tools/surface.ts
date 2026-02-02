@@ -9,6 +9,8 @@ import type {
   MsgRef,
   SessionRef,
   SurfaceAttachment,
+  SurfaceReactionDetail,
+  SurfaceReactionSummary,
   SurfaceSession,
 } from "../../surface/types";
 import type { RequestContext, ServerTool } from "../types";
@@ -171,12 +173,25 @@ type GuildIdResolver = {
   fetchGuildIdForChannel(channelId: string): Promise<string | null>;
 };
 
+type ReactionDetailsProvider = {
+  listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]>;
+};
+
 function hasGuildIdResolver(
   adapter: SurfaceAdapter,
 ): adapter is SurfaceAdapter & GuildIdResolver {
   return (
     typeof (adapter as unknown as { fetchGuildIdForChannel?: unknown })
       .fetchGuildIdForChannel === "function"
+  );
+}
+
+function hasReactionDetailsProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & ReactionDetailsProvider {
+  return (
+    typeof (adapter as unknown as { listReactionDetails?: unknown })
+      .listReactionDetails === "function"
   );
 }
 
@@ -309,6 +324,8 @@ const reactionsListInputSchema = baseInputSchema.extend({
   messageId: z.string().min(1),
 });
 
+const reactionsListDetailedInputSchema = reactionsListInputSchema;
+
 const reactionsAddInputSchema = baseInputSchema.extend({
   sessionId: z
     .string()
@@ -413,11 +430,21 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.reactions.list",
         name: "Surface Reactions List",
-        description: "List cached reactions for a message.",
+        description: "List cached reactions for a message (emoji + count).",
         shortInput: zodObjectToCliLines(reactionsListInputSchema, {
           mode: "required",
         }),
         input: zodObjectToCliLines(reactionsListInputSchema),
+      },
+      {
+        callableId: "surface.reactions.listDetailed",
+        name: "Surface Reactions List Detailed",
+        description:
+          "List cached reactions for a message with per-user details (Discord only).",
+        shortInput: zodObjectToCliLines(reactionsListDetailedInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(reactionsListDetailedInputSchema),
       },
       {
         callableId: "surface.reactions.add",
@@ -469,6 +496,9 @@ export class Surface implements ServerTool {
     }
     if (callableId === "surface.reactions.list") {
       return await this.callReactionsList(input, opts?.context);
+    }
+    if (callableId === "surface.reactions.listDetailed") {
+      return await this.callReactionsListDetailed(input, opts?.context);
     }
     if (callableId === "surface.reactions.add") {
       return await this.callReactionsAdd(input, opts?.context);
@@ -806,7 +836,60 @@ export class Surface implements ServerTool {
       throw new Error(`Not allowed: channelId '${channelId}'`);
     }
 
-    return await this.params.adapter.listReactions(
+    if (!hasReactionDetailsProvider(this.params.adapter)) {
+      throw new Error(
+        "surface.reactions.list requires an adapter that supports reaction details",
+      );
+    }
+
+    const details = await this.params.adapter.listReactionDetails(
+      asDiscordMsgRef(channelId, input.messageId),
+    );
+
+    const out: SurfaceReactionSummary[] = details.map((d) => ({
+      emoji: d.emoji,
+      count: d.count,
+    }));
+
+    return out;
+  }
+
+  private async callReactionsListDetailed(
+    rawInput: Record<string, unknown>,
+    ctx: RequestContext | undefined,
+  ) {
+    const input = reactionsListDetailedInputSchema.parse(rawInput);
+    const client = resolveClient({ inputClient: input.client, ctx });
+    ensureDiscordClient(client);
+
+    const cfg = await this.getCfg();
+
+    const channelId = resolveDiscordSessionId({
+      sessionId: input.sessionId,
+      cfg,
+    });
+
+    const guildId = await resolveGuildIdForChannel({
+      adapter: this.params.adapter,
+      channelId,
+    });
+    if (
+      !shouldAllowDiscordChannel({
+        cfg,
+        channelId,
+        guildId,
+      })
+    ) {
+      throw new Error(`Not allowed: channelId '${channelId}'`);
+    }
+
+    if (!hasReactionDetailsProvider(this.params.adapter)) {
+      throw new Error(
+        "surface.reactions.listDetailed is not supported by the current adapter",
+      );
+    }
+
+    return await this.params.adapter.listReactionDetails(
       asDiscordMsgRef(channelId, input.messageId),
     );
   }
