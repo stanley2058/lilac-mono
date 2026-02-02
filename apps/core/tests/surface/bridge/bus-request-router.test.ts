@@ -176,10 +176,27 @@ class FakeAdapter implements SurfaceAdapter {
   }
 
   async getReplyContext(
-    _msgRef: MsgRef,
-    _opts?: LimitOpts,
+    msgRef: MsgRef,
+    opts?: LimitOpts,
   ): Promise<SurfaceMessage[]> {
-    throw new Error("not implemented");
+    const key = `${msgRef.channelId}:${msgRef.messageId}`;
+    const base = this.messages[key];
+    if (!base) return [];
+
+    const limit = opts?.limit ?? 20;
+    const half = Math.max(1, Math.floor(limit / 2));
+
+    const all = Object.values(this.messages)
+      .filter((m) => m.session.channelId === msgRef.channelId)
+      .slice()
+      .sort((a, b) => a.ts - b.ts);
+
+    const beforeAll = all.filter((m) => m.ts <= base.ts);
+    const before = beforeAll.slice(Math.max(0, beforeAll.length - half));
+
+    const after = all.filter((m) => m.ts > base.ts).slice(0, half);
+
+    return before.concat(after);
   }
 
   async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
@@ -208,6 +225,163 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("startBusRequestRouter", () => {
+  it("includes reply-thread root when mention is part of a mergeable reply burst (active channel)", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+
+    const messages: Record<string, SurfaceMessage> = {};
+
+    const add = (m: SurfaceMessage) => {
+      messages[`${m.session.channelId}:${m.ref.messageId}`] = m;
+    };
+
+    add({
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 0,
+      raw: { reference: {} },
+    });
+
+    for (let i = 1; i <= 7; i++) {
+      add({
+        ref: {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: `f${i}`,
+        },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "ux",
+        userName: "other",
+        text: `filler ${i}`,
+        ts: i * 100,
+        raw: { reference: {} },
+      });
+    }
+
+    add({
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 1",
+      ts: 1000,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    });
+
+    add({
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 2",
+      ts: 1100,
+      raw: { reference: {} },
+    });
+
+    add({
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> user msg 3",
+      ts: 1200,
+      raw: { reference: {} },
+    });
+
+    const adapter = new FakeAdapter(messages);
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "m3",
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> user msg 3",
+      ts: Date.now(),
+      raw: {
+        discord: { isDMBased: false, mentionsBot: true, replyToBot: false },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    const evt = received[0];
+    expect(evt.data.queue).toBe("prompt");
+
+    // Should include the replied-to root plus the merged user burst.
+    expect(evt.data.messages.length).toBe(2);
+
+    const rootText = evt.data.messages[0].content;
+    const mergedText = evt.data.messages[1].content;
+
+    expect(typeof rootText).toBe("string");
+    expect(typeof mergedText).toBe("string");
+
+    expect(rootText).toContain("Root");
+    expect(mergedText).toContain("user msg 1");
+    expect(mergedText).toContain("user msg 2");
+    expect(mergedText).toContain("user msg 3");
+    expect(mergedText).not.toContain("<@bot>");
+
+    expect(evt.data.raw?.chainMessageIds).toContain("root");
+    expect(evt.data.raw?.chainMessageIds).toContain("m1");
+    expect(evt.data.raw?.chainMessageIds).toContain("m2");
+    expect(evt.data.raw?.chainMessageIds).toContain("m3");
+
+    await sub.stop();
+    await router.stop();
+  });
   it("forks from a stored transcript when replying to a linked bot message", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

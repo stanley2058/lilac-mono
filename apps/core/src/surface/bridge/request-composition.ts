@@ -6,7 +6,7 @@ import { fileTypeFromBuffer } from "file-type/core";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 
 import type { SurfaceAdapter } from "../adapter";
-import type { MsgRef } from "../types";
+import type { MsgRef, SurfaceMessage } from "../types";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -62,7 +62,28 @@ export async function composeRequestMessages(
   }
 
   // Phase 1: fetch reply chain from the adapter store / platform.
-  const chain = await fetchReplyChain(adapter, opts);
+  // Mention triggers get merge-window parity even if messages are not linked via reply references.
+  const triggerMsg = await adapter.readMsg(opts.trigger.msgRef);
+  if (!triggerMsg) {
+    return { messages: [], chainMessageIds: [], mergedGroups: [] };
+  }
+
+  const chain = opts.trigger.type === "mention"
+    ? await fetchMentionThreadContext(adapter, {
+        platform: opts.platform,
+        botUserId: opts.botUserId,
+        botName: opts.botName,
+        triggerMsg,
+        maxDepth: opts.maxDepth,
+      })
+    : await fetchReplyChainFrom(adapter, {
+        platform: opts.platform,
+        botUserId: opts.botUserId,
+        botName: opts.botName,
+        trigger: opts.trigger,
+        startMsgRef: opts.trigger.msgRef,
+        maxDepth: opts.maxDepth,
+      });
 
   // Phase 2: merge by Discord window rules (same author + <= 7 min).
   const merged = mergeChainByDiscordWindow(chain);
@@ -94,15 +115,7 @@ export async function composeRequestMessages(
       }
     }
 
-    let text = chunk.text;
-    if (
-      opts.trigger.type === "mention" &&
-      chunk.messageIds.includes(opts.trigger.msgRef.messageId)
-    ) {
-      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-    }
-
-    const normalized = normalizeText(text, {
+    const normalized = normalizeText(chunk.text, {
       // We currently rely on adapter text already being normalized (mentions rewritten).
       // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
     });
@@ -159,6 +172,91 @@ export async function composeRecentChannelMessages(
     throw new Error(`Unsupported platform '${opts.platform}'`);
   }
 
+  if (opts.triggerMsgRef && opts.triggerType === "mention") {
+    const triggerMsg = await adapter.readMsg(opts.triggerMsgRef);
+    if (triggerMsg) {
+      const block = await resolveMergeBlockEndingAt(adapter, triggerMsg);
+      const anchor = findEarliestReplyAnchor(block);
+
+      if (anchor) {
+        const anchored = await fetchMentionThreadContext(adapter, {
+          platform: opts.platform,
+          botUserId: opts.botUserId,
+          botName: opts.botName,
+          triggerMsg,
+        });
+
+        const merged = mergeChainByDiscordWindow(anchored);
+        const attState = createDiscordAttachmentState();
+
+        const modelMessages: ModelMessage[] = [];
+        const seenTranscriptRequestIds = new Set<string>();
+
+        for (const chunk of merged) {
+          const isBot = chunk.authorId === opts.botUserId;
+          const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+
+          if (isBot && opts.transcriptStore) {
+            const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+              platform: opts.platform,
+              channelId: opts.sessionId,
+              messageId,
+            });
+            if (snap) {
+              if (!seenTranscriptRequestIds.has(snap.requestId)) {
+                modelMessages.push(...snap.messages);
+                seenTranscriptRequestIds.add(snap.requestId);
+              }
+              continue;
+            }
+          }
+
+          const normalized = normalizeText(chunk.text, {});
+          const header = formatDiscordAttributionHeader({
+            authorId: chunk.authorId,
+            authorName: chunk.authorName,
+            messageId,
+          });
+
+          const mainText = `${header}\n${normalized}`.trimEnd();
+
+          if (isBot) {
+            modelMessages.push({
+              role: "assistant",
+              content: mainText,
+            } satisfies ModelMessage);
+            continue;
+          }
+
+          if (chunk.attachments.length === 0) {
+            modelMessages.push({
+              role: "user",
+              content: mainText,
+            } satisfies ModelMessage);
+            continue;
+          }
+
+          const parts: UserContent = [{ type: "text", text: mainText }];
+          await appendDiscordAttachmentsToUserContent(
+            parts,
+            chunk.attachments,
+            attState,
+          );
+          modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
+        }
+
+        return {
+          messages: modelMessages,
+          chainMessageIds: anchored.map((m) => m.messageId),
+          mergedGroups: merged.map((m) => ({
+            authorId: m.authorId,
+            messageIds: [...m.messageIds],
+          })),
+        };
+      }
+    }
+  }
+
   const sessionRef = {
     platform: "discord",
     channelId: opts.sessionId,
@@ -187,7 +285,12 @@ export async function composeRecentChannelMessages(
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
     ts: m.ts,
-    text: m.text,
+    text:
+      opts.triggerType === "mention" &&
+      opts.triggerMsgRef &&
+      m.ref.messageId === opts.triggerMsgRef.messageId
+        ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
+        : m.text,
     attachments: extractDiscordAttachmentsFromRaw(m.raw),
     raw: m.raw,
   }));
@@ -218,16 +321,7 @@ export async function composeRecentChannelMessages(
       }
     }
 
-    let text = chunk.text;
-    if (
-      opts.triggerType === "mention" &&
-      opts.triggerMsgRef &&
-      chunk.messageIds.includes(opts.triggerMsgRef.messageId)
-    ) {
-      text = stripLeadingBotMention(text, opts.botUserId, opts.botName);
-    }
-
-    const normalized = normalizeText(text, {});
+    const normalized = normalizeText(chunk.text, {});
 
     const header = formatDiscordAttributionHeader({
       authorId: chunk.authorId,
@@ -958,6 +1052,9 @@ type MergedChunk = {
   }>;
 };
 
+const DISCORD_MERGE_WINDOW_MS = 7 * 60 * 1000;
+const DEFAULT_MENTION_BLOCK_LIMIT = 50;
+
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -1052,44 +1149,145 @@ function getReferenceFromRaw(raw: unknown): {
   channelId?: string;
 } {
   if (!raw || typeof raw !== "object") return {};
-  if (!("reference" in raw)) return {};
-  const ref = raw.reference;
-  if (!ref || typeof ref !== "object") return {};
+  const o = raw as Record<string, unknown>;
 
-  const messageId =
-    "messageId" in ref && typeof ref.messageId === "string"
-      ? ref.messageId
+  // Preferred (Discord API shape): reference: { messageId, channelId }
+  if ("reference" in o) {
+    const ref = o.reference;
+    if (ref && typeof ref === "object") {
+      const r = ref as Record<string, unknown>;
+      const messageId =
+        typeof r.messageId === "string" ? r.messageId : undefined;
+      const channelId = typeof r.channelId === "string" ? r.channelId : undefined;
+      if (messageId) return { messageId, channelId };
+    }
+  }
+
+  // Back-compat: older stored rows and adapter events.
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+  const replyToMessageId =
+    discord && typeof discord.replyToMessageId === "string"
+      ? discord.replyToMessageId
       : undefined;
+  if (replyToMessageId) return { messageId: replyToMessageId };
 
-  const channelId =
-    "channelId" in ref && typeof ref.channelId === "string"
-      ? ref.channelId
-      : undefined;
-
-  return { messageId, channelId };
+  return {};
 }
 
-async function fetchReplyChain(
+function toReplyChainMessage(
+  msg: SurfaceMessage,
+  opts?: {
+    overrideText?: string;
+    authorNameFallback?: string;
+  },
+): ReplyChainMessage {
+  return {
+    messageId: msg.ref.messageId,
+    authorId: msg.userId,
+    authorName:
+      msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
+    ts: msg.ts,
+    text: opts?.overrideText ?? msg.text,
+    attachments: extractDiscordAttachmentsFromRaw(msg.raw),
+    raw: msg.raw,
+  };
+}
+
+function dedupeByMessageId(
+  list: readonly ReplyChainMessage[],
+): ReplyChainMessage[] {
+  const out: ReplyChainMessage[] = [];
+  const seen = new Set<string>();
+  for (const m of list) {
+    if (seen.has(m.messageId)) continue;
+    seen.add(m.messageId);
+    out.push(m);
+  }
+  return out;
+}
+
+async function resolveMergeBlockEndingAt(
   adapter: SurfaceAdapter,
-  opts: ComposeRequestOpts,
+  triggerMsg: SurfaceMessage,
+  opts?: { limit?: number },
+): Promise<SurfaceMessage[]> {
+  const limit = opts?.limit ?? DEFAULT_MENTION_BLOCK_LIMIT;
+
+  const ctx = await adapter
+    .getReplyContext(triggerMsg.ref, { limit })
+    .catch(() => [] as SurfaceMessage[]);
+
+  const list = ctx.length > 0 ? ctx.slice() : [triggerMsg];
+
+  if (!list.some((m) => m.ref.messageId === triggerMsg.ref.messageId)) {
+    list.push(triggerMsg);
+  }
+
+  list.sort((a, b) => a.ts - b.ts);
+
+  const triggerIndex = list.findIndex(
+    (m) => m.ref.messageId === triggerMsg.ref.messageId,
+  );
+  if (triggerIndex < 0) return [triggerMsg];
+
+  const authorId = triggerMsg.userId;
+
+  let start = triggerIndex;
+  for (let i = triggerIndex; i > 0; i--) {
+    const prev = list[i - 1]!;
+    const cur = list[i]!;
+
+    if (prev.userId !== authorId) break;
+    if (cur.userId !== authorId) break;
+
+    const gap = cur.ts - prev.ts;
+    if (gap > DISCORD_MERGE_WINDOW_MS) break;
+
+    start = i - 1;
+  }
+
+  return list.slice(start, triggerIndex + 1);
+}
+
+function findEarliestReplyAnchor(
+  block: readonly SurfaceMessage[],
+): SurfaceMessage | null {
+  for (const m of block) {
+    const ref = getReferenceFromRaw(m.raw);
+    if (ref.messageId) return m;
+  }
+  return null;
+}
+
+async function fetchReplyChainFrom(
+  adapter: SurfaceAdapter,
+  opts: {
+    platform: "discord";
+    botUserId: string;
+    botName: string;
+    trigger: { type: "mention" | "reply"; msgRef: MsgRef };
+    startMsgRef: MsgRef;
+    maxDepth?: number;
+  },
 ): Promise<ReplyChainMessage[]> {
   const maxDepth = opts.maxDepth ?? 20;
 
   const chainNewestToOldest: ReplyChainMessage[] = [];
 
-  let cur = await adapter.readMsg(opts.trigger.msgRef);
+  let cur = await adapter.readMsg(opts.startMsgRef);
   if (!cur) return [];
 
   for (let depth = 0; depth < maxDepth && cur; depth++) {
-    chainNewestToOldest.push({
-      messageId: cur.ref.messageId,
-      authorId: cur.userId,
-      authorName: cur.userName ?? `user_${cur.userId}`,
-      ts: cur.ts,
-      text: cur.text,
-      attachments: extractDiscordAttachmentsFromRaw(cur.raw),
-      raw: cur.raw,
-    });
+    const overrideText =
+      opts.trigger.type === "mention" &&
+      cur.ref.messageId === opts.trigger.msgRef.messageId
+        ? stripLeadingBotMention(cur.text, opts.botUserId, opts.botName)
+        : undefined;
+
+    chainNewestToOldest.push(toReplyChainMessage(cur, { overrideText }));
 
     const ref = getReferenceFromRaw(cur.raw);
     if (!ref.messageId) break;
@@ -1107,10 +1305,52 @@ async function fetchReplyChain(
   return chainNewestToOldest.slice().reverse();
 }
 
+async function fetchMentionThreadContext(
+  adapter: SurfaceAdapter,
+  params: {
+    platform: "discord";
+    botUserId: string;
+    botName: string;
+    triggerMsg: SurfaceMessage;
+    maxDepth?: number;
+  },
+): Promise<ReplyChainMessage[]> {
+  const block = await resolveMergeBlockEndingAt(adapter, params.triggerMsg);
+  const anchor = findEarliestReplyAnchor(block);
+
+  const startMsgRef = anchor?.ref ?? params.triggerMsg.ref;
+
+  const chain = await fetchReplyChainFrom(adapter, {
+    platform: params.platform,
+    botUserId: params.botUserId,
+    botName: params.botName,
+    trigger: { type: "mention", msgRef: params.triggerMsg.ref },
+    startMsgRef,
+    maxDepth: params.maxDepth,
+  });
+
+  const blockMessages = block.map((m) => {
+    const overrideText =
+      m.ref.messageId === params.triggerMsg.ref.messageId
+        ? stripLeadingBotMention(m.text, params.botUserId, params.botName)
+        : undefined;
+    return toReplyChainMessage(m, { overrideText });
+  });
+
+  const combined = dedupeByMessageId([...chain, ...blockMessages]);
+
+  combined.sort((a, b) => {
+    if (a.ts !== b.ts) return a.ts - b.ts;
+    // Stable-ish tie-breaker.
+    return a.messageId.localeCompare(b.messageId);
+  });
+
+  return combined;
+}
+
 function mergeChainByDiscordWindow(
   chainOldestToNewest: readonly ReplyChainMessage[],
 ): MergedChunk[] {
-  const DISCORD_MERGE_WINDOW_MS = 7 * 60 * 1000;
   if (chainOldestToNewest.length === 0) return [];
 
   const out: MergedChunk[] = [];
