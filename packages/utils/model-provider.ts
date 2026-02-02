@@ -146,9 +146,43 @@ export function getModelProviders() {
         // Codex backend expects a stable allowlisted `instructions` string.
         // App-level providerOptions mapping provides it; do not set it here.
 
+        let body = init?.body;
+        // Codex backend requires `store` explicitly set to false.
+        // The OpenAI Responses API defaults may omit it, causing a 400.
+        if (
+          url.origin === "https://chatgpt.com" &&
+          url.pathname.endsWith("/backend-api/codex/responses") &&
+          body !== null &&
+          body !== undefined
+        ) {
+          const decodeBody = (b: unknown): string | undefined => {
+            if (typeof b === "string") return b;
+            if (b instanceof Uint8Array) return new TextDecoder().decode(b);
+            if (b instanceof ArrayBuffer)
+              return new TextDecoder().decode(new Uint8Array(b));
+            return undefined;
+          };
+
+          const encoded = decodeBody(body);
+          if (encoded !== undefined) {
+            try {
+              const parsed = JSON.parse(encoded) as unknown;
+              if (parsed && typeof parsed === "object") {
+                const record = parsed as Record<string, unknown>;
+                // Codex backend rejects requests unless store is explicitly false.
+                if (record.store !== false) record.store = false;
+                body = JSON.stringify(record);
+              }
+            } catch {
+              // Ignore non-JSON bodies.
+            }
+          }
+        }
+
         return fetch(url, {
           ...init,
           headers,
+          body,
         });
       }) as typeof globalThis.fetch,
     }),
