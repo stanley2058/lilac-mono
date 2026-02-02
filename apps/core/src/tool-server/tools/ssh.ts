@@ -142,18 +142,6 @@ async function readStreamText(stream: unknown): Promise<string> {
   return await new Response(stream as any).text();
 }
 
-async function writeToStdin(stdin: unknown, text: string) {
-  if (!stdin || typeof stdin === "number") return;
-  const ws = stdin as WritableStream<Uint8Array>;
-  const writer = ws.getWriter();
-  try {
-    const bytes = new TextEncoder().encode(text);
-    await writer.write(bytes);
-  } finally {
-    await writer.close();
-  }
-}
-
 function inferTransportError(stderr: string):
   | { type: "hostkey" | "auth" | "connect" | "unknown"; message: string }
   | undefined {
@@ -173,7 +161,29 @@ function inferTransportError(stderr: string):
 function buildRemoteScript(input: RunInput) {
   const cwd = input.cwd ?? "";
   // Use heredocs to avoid quoting issues.
-  return `#!/usr/bin/env bash\nset -euo pipefail\n\nCWD=$(cat <<'__LILAC_CWD__'\n${cwd}\n__LILAC_CWD__\n)\n\nCMD=$(cat <<'__LILAC_CMD__'\n${input.cmd}\n__LILAC_CMD__\n)\n\nif [ -n "$CWD" ]; then\n  cd "$CWD"\nfi\n\n# Run under bash -lc for a predictable shell environment.\nbash -lc "$CMD"\n`;
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+CWD=$(cat <<'__LILAC_CWD__'
+${cwd}
+__LILAC_CWD__
+)
+
+CMD=$(cat <<'__LILAC_CMD__'
+${input.cmd}
+__LILAC_CMD__
+)
+
+if [ -n "$CWD" ]; then
+  cd "$CWD"
+fi
+
+# Run under a clean bash to avoid remote environment surprises (rc/profile).
+bash --noprofile --norc -c "$CMD"
+
+# Explicitly exit so bash -s doesn't wait for more stdin.
+exit 0
+`;
 }
 
 async function buildProbeScript(input: ProbeInput): Promise<string> {
@@ -228,7 +238,7 @@ export class SSH implements ServerTool {
         callableId: "ssh.run",
         name: "SSH Run",
         description:
-          "Run a command on a remote host over SSH (StrictHostKeyChecking=yes, BatchMode=yes).",
+          "Run a command on a remote host over SSH (StrictHostKeyChecking=yes, BatchMode=yes, bash --noprofile --norc).",
         shortInput: zodObjectToCliLines(runInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(runInputSchema),
         hidden,
@@ -299,13 +309,20 @@ export class SSH implements ServerTool {
           "LogLevel=ERROR",
           input.host,
           "bash",
+          "--noprofile",
+          "--norc",
           "-s",
         ];
 
+        const script = buildRemoteScript(input);
+
+        // Important: provide stdin as a finite blob so the remote `bash -s`
+        // reliably receives EOF and exits. In some environments, streaming
+        // stdin can leave the channel open and hang after producing output.
         const child = Bun.spawn(["ssh", ...sshArgs], {
           stdout: "pipe",
           stderr: "pipe",
-          stdin: "pipe",
+          stdin: new Blob([script]),
           signal: controller.signal,
           killSignal: "SIGTERM",
           env: {
@@ -315,17 +332,11 @@ export class SSH implements ServerTool {
           },
         });
 
-        const script = buildRemoteScript(input);
-        // Fire-and-forget write; if ssh exits early, this will throw and be caught.
-        const writePromise = writeToStdin(child.stdin, script);
-
-        const [stdoutResult, stderrResult, exitResult, writeResult] =
-          await Promise.allSettled([
-            readStreamText(child.stdout),
-            readStreamText(child.stderr),
-            child.exited,
-            writePromise,
-          ]);
+        const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
+          readStreamText(child.stdout),
+          readStreamText(child.stderr),
+          child.exited,
+        ]);
 
         const stdout =
           stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
@@ -370,8 +381,7 @@ export class SSH implements ServerTool {
                 : undefined,
             exitRead:
               exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
-            stdinWrite:
-              writeResult.status === "rejected" ? String(writeResult.reason) : undefined,
+            stdinWrite: undefined,
           },
         };
       } finally {
@@ -419,13 +429,17 @@ export class SSH implements ServerTool {
           "LogLevel=ERROR",
           input.host,
           "bash",
+          "--noprofile",
+          "--norc",
           "-s",
         ];
+
+        const script = await buildProbeScript(input);
 
         const child = Bun.spawn(["ssh", ...sshArgs], {
           stdout: "pipe",
           stderr: "pipe",
-          stdin: "pipe",
+          stdin: new Blob([script]),
           signal: controller.signal,
           killSignal: "SIGTERM",
           env: {
@@ -433,16 +447,11 @@ export class SSH implements ServerTool {
           },
         });
 
-        const script = await buildProbeScript(input);
-        const writePromise = writeToStdin(child.stdin, script);
-
-        const [stdoutResult, stderrResult, exitResult, writeResult] =
-          await Promise.allSettled([
-            readStreamText(child.stdout),
-            readStreamText(child.stderr),
-            child.exited,
-            writePromise,
-          ]);
+        const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
+          readStreamText(child.stdout),
+          readStreamText(child.stderr),
+          child.exited,
+        ]);
 
         const stdout =
           stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
@@ -500,8 +509,7 @@ export class SSH implements ServerTool {
                 : undefined,
             exitRead:
               exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
-            stdinWrite:
-              writeResult.status === "rejected" ? String(writeResult.reason) : undefined,
+            stdinWrite: undefined,
           },
         };
       } finally {

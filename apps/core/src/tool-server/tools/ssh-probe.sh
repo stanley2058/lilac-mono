@@ -4,6 +4,19 @@ set -u
 # This script prints a single JSON object describing remote capabilities.
 # It is designed to be safe and low-impact: no prompts, no network, no writes.
 
+# Some tool commands (notably language runtimes) can hang in minimal/containerized
+# environments (e.g., entropy/NSS issues). Prefer returning a partial probe over
+# blocking forever.
+VERSION_TIMEOUT_SECS=2
+HAS_TIMEOUT=false
+if command -v timeout >/dev/null 2>&1; then
+  HAS_TIMEOUT=true
+fi
+
+# Avoid any git prompts and reduce the chance of waiting on repo locks.
+export GIT_TERMINAL_PROMPT=0
+export GIT_OPTIONAL_LOCKS=0
+
 # Placeholder replaced by the server before sending.
 CWD=$(cat <<'__LILAC_CWD__'
 __LILAC_CWD_VALUE__
@@ -54,6 +67,24 @@ first_line() {
   printf '%s' "$line"
 }
 
+run_first_line() {
+  # Run a command and return its first output line.
+  # If `timeout` is available and the command takes too long, return "timeout".
+  if [ "$HAS_TIMEOUT" = true ]; then
+    local out=""
+    out=$(timeout "$VERSION_TIMEOUT_SECS" "$@" 2>&1)
+    local code=$?
+    if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+      printf 'timeout'
+      return 0
+    fi
+    printf '%s\n' "$out" | first_line
+    return 0
+  fi
+
+  "$@" 2>&1 | first_line
+}
+
 cap_lines() {
   local max="$1"
   local out=""
@@ -86,19 +117,19 @@ cmd_version_line() {
 
   case "$tool" in
     python3|python)
-      "$tool" -V 2>&1 | first_line
+      run_first_line "$tool" -V
       ;;
     pip|pip3)
-      "$tool" --version 2>&1 | first_line
+      run_first_line "$tool" --version
       ;;
     ssh)
-      "$tool" -V 2>&1 | first_line
+      run_first_line "$tool" -V
       ;;
     java)
-      "$tool" -version 2>&1 | first_line
+      run_first_line "$tool" -version
       ;;
     *)
-      "$tool" --version 2>&1 | first_line
+      run_first_line "$tool" --version
       ;;
   esac
 }
@@ -140,7 +171,8 @@ if command -v git >/dev/null 2>&1; then
     git_top_level=$(git rev-parse --show-toplevel 2>/dev/null || true)
     git_head=$(git rev-parse HEAD 2>/dev/null || true)
     git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-    git_status=$(git status --porcelain=v1 2>/dev/null | cap_lines 200 || true)
+    # Avoid an expensive untracked scan during probe.
+    git_status=$(git -c core.fsmonitor=false -c submodule.recurse=false status --porcelain=v1 --untracked-files=no 2>/dev/null | cap_lines 200 || true)
   fi
 fi
 
@@ -211,3 +243,6 @@ done
 printf '}'
 
 printf '}\n'
+
+# Explicitly exit so bash -s doesn't wait for more stdin.
+exit 0
