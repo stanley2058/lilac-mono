@@ -171,6 +171,23 @@ export function getModelProviders() {
                 const record = parsed as Record<string, unknown>;
                 // Codex backend rejects requests unless store is explicitly false.
                 if (record.store !== false) record.store = false;
+
+                // Codex does not persist response items when store=false.
+                // Strip per-item `id` fields to avoid replaying rs_* item references.
+                // (Mirrors opencode/codex behavior.)
+                const input = record.input;
+                if (Array.isArray(input)) {
+                  for (const item of input) {
+                    if (item && typeof item === "object" && "id" in item) {
+                      delete (item as Record<string, unknown>).id;
+                    }
+                  }
+                }
+
+                // Ensure we don't try to thread via Responses replay.
+                if ("previous_response_id" in record) {
+                  delete record.previous_response_id;
+                }
                 body = JSON.stringify(record);
               }
             } catch {
