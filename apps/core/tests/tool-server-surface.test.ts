@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Surface } from "../src/tool-server/tools/surface";
+import type { RequestContext } from "../src/tool-server/types";
 import type { SurfaceAdapter } from "../src/surface/adapter";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -232,6 +233,50 @@ describe("tool-server surface", () => {
     expect(sessions.length).toBe(1);
     expect(sessions[0].channelId).toBe("c1");
     expect(sessions[0].token).toBe("ops");
+  });
+
+  it("defaults sessionId from request context", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "hi",
+            ts: 0,
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const ctx: RequestContext = {
+      sessionId: channelId,
+      requestClient: "discord",
+    };
+
+    const res = (await tool.call(
+      "surface.messages.list",
+      {},
+      { context: ctx },
+    )) as any[];
+
+    expect(res.length).toBe(1);
+    expect(res[0].ref.messageId).toBe("m1");
   });
 
   it("resolves sessionId alias for send", async () => {

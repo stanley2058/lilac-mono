@@ -231,17 +231,37 @@ const baseInputSchema = z.object({
   client: surfaceClientSchema.optional(),
 });
 
+const SESSION_ID_DESC =
+  "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias). If omitted, defaults to the current request session.";
+
+function withDefaultSessionId(
+  rawInput: Record<string, unknown>,
+  ctx: RequestContext | undefined,
+): Record<string, unknown> {
+  const hasOwn = Object.prototype.hasOwnProperty.call(rawInput, "sessionId");
+  const value = rawInput["sessionId"];
+
+  // If explicitly provided (even null/empty), defer to schema validation.
+  if (hasOwn && value !== undefined) return rawInput;
+
+  if (typeof ctx?.sessionId === "string" && ctx.sessionId.length > 0) {
+    return { ...rawInput, sessionId: ctx.sessionId };
+  }
+
+  if (!hasOwn) {
+    throw new Error(
+      "surface tool requires --session-id when request session is unknown (set LILAC_SESSION_ID or pass --session-id=<id>)",
+    );
+  }
+
+  return rawInput;
+}
+
 const sessionsListInputSchema = baseInputSchema;
 
 const messagesListInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
-  limit: z
-    .coerce
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  limit: z.coerce
     .number()
     .int()
     .positive()
@@ -261,22 +281,12 @@ const messagesListInputSchema = baseInputSchema.extend({
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
 });
 
 const messagesSendInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
   paths: z
@@ -294,45 +304,25 @@ const messagesSendInputSchema = baseInputSchema.extend({
 });
 
 const messagesEditInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
   text: z.string().min(1),
 });
 
 const messagesDeleteInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
 });
 
 const reactionsListInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
 });
 
 const reactionsListDetailedInputSchema = reactionsListInputSchema;
 
 const reactionsAddInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
   reaction: z
     .string()
@@ -341,12 +331,7 @@ const reactionsAddInputSchema = baseInputSchema.extend({
 });
 
 const reactionsRemoveInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .describe(
-      "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias)",
-    ),
+  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
   messageId: z.string().min(1),
   reaction: z
     .string()
@@ -575,7 +560,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesListInputSchema.parse(rawInput);
+    const input = messagesListInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -622,7 +609,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesReadInputSchema.parse(rawInput);
+    const input = messagesReadInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -669,7 +658,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesSendInputSchema.parse(rawInput);
+    const input = messagesSendInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -737,7 +728,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesEditInputSchema.parse(rawInput);
+    const input = messagesEditInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -776,7 +769,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesDeleteInputSchema.parse(rawInput);
+    const input = messagesDeleteInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -811,7 +806,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = reactionsListInputSchema.parse(rawInput);
+    const input = reactionsListInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -858,7 +855,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = reactionsListDetailedInputSchema.parse(rawInput);
+    const input = reactionsListDetailedInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -898,7 +897,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = reactionsAddInputSchema.parse(rawInput);
+    const input = reactionsAddInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
@@ -935,7 +936,9 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = reactionsRemoveInputSchema.parse(rawInput);
+    const input = reactionsRemoveInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
 
