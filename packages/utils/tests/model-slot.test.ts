@@ -80,6 +80,7 @@ describe("resolveModelSlot", () => {
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.providerOptions?.openai?.instructions).toBe("hello");
+    expect(resolved.providerOptions?.openai?.store).toBe(false);
 
     // Ensure the meta key is not forwarded.
     expect(resolved.providerOptions?.codex_instructions).toBeUndefined();

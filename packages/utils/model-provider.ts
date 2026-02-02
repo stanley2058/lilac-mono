@@ -173,14 +173,27 @@ export function getModelProviders() {
                 if (record.store !== false) record.store = false;
 
                 // Codex does not persist response items when store=false.
-                // Strip per-item `id` fields to avoid replaying rs_* item references.
-                // (Mirrors opencode/codex behavior.)
+                // Strip optional per-item `id` fields to avoid replaying rs_* item references.
+                // Keep ids on item types that require them.
                 const input = record.input;
                 if (Array.isArray(input)) {
                   for (const item of input) {
-                    if (item && typeof item === "object" && "id" in item) {
-                      delete (item as Record<string, unknown>).id;
+                    if (!item || typeof item !== "object" || !("id" in item)) continue;
+                    const r = item as Record<string, unknown>;
+                    const type = typeof r.type === "string" ? r.type : undefined;
+
+                    // item_reference.id is required.
+                    if (type === "item_reference") continue;
+                    // These tool call item types require id.
+                    if (
+                      type === "local_shell_call" ||
+                      type === "shell_call" ||
+                      type === "computer_call"
+                    ) {
+                      continue;
                     }
+
+                    delete r.id;
                   }
                 }
 

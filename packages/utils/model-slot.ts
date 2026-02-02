@@ -148,6 +148,8 @@ function buildProviderOptions(params: {
   const nextOpenAI = {
     ...existing,
     instructions: resolvedInstructions,
+    // Codex backend requires store=false (items are not persisted).
+    store: false,
   } satisfies JSONObject;
 
   return {
