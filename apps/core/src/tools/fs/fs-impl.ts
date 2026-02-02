@@ -1,7 +1,7 @@
 import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, dirname, resolve, isAbsolute } from "node:path";
+import { join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
 import { ripgrep } from "./ripgrep";
 
 export function expandTilde(input: string) {
@@ -229,7 +229,36 @@ export class FileSystem {
   >();
   private readonly listeners = new Set<Listener>();
 
-  constructor(private root: string) {}
+  private readonly denyPaths: readonly string[];
+
+  constructor(
+    private root: string,
+    opts?: {
+      /** Absolute or ~ paths that are blocked for all operations. */
+      denyPaths?: readonly string[];
+    },
+  ) {
+    this.denyPaths = (opts?.denyPaths ?? []).map((p) => resolve(expandTilde(p)));
+  }
+
+  private isDeniedPath(resolvedPath: string): boolean {
+    const normalized = resolve(resolvedPath);
+    for (const deny of this.denyPaths) {
+      if (normalized === deny) return true;
+      if (normalized.startsWith(`${deny}${sep}`)) return true;
+    }
+    return false;
+  }
+
+  private assertAllowed(resolvedPath: string, op: string): void {
+    if (!this.isDeniedPath(resolvedPath)) return;
+
+    const err = Object.assign(
+      new Error(`Access denied: '${resolvedPath}' is blocked for ${op}`),
+      { code: "EACCES" },
+    );
+    throw err;
+  }
 
   private resolvePath(inputPath: string, cwd?: string) {
     const expandedInput = expandTilde(inputPath);
@@ -258,6 +287,8 @@ export class FileSystem {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
+      this.assertAllowed(resolvedPath, "readFile");
+
       const {
         startLine = 1,
         maxLines = 2000,
@@ -368,6 +399,8 @@ export class FileSystem {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
+      this.assertAllowed(resolvedPath, "writeFile");
+
       let existed = true;
       let currentHash: string | undefined;
 
@@ -474,6 +507,8 @@ export class FileSystem {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
+      this.assertAllowed(resolvedPath, "deleteFile");
+
       await fs.unlink(resolvedPath);
       this.fileAccessRecord.delete(resolvedPath);
 
@@ -510,6 +545,8 @@ export class FileSystem {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
+      this.assertAllowed(resolvedPath, "editFile");
+
       const lastAccess = this.fileAccessRecord.get(resolvedPath);
       const file = await fs.readFile(resolvedPath, "utf-8");
 
@@ -938,6 +975,8 @@ export class FileSystem {
       const { baseDir = this.root, maxEntries = 100 } = opts;
       const resolvedBaseDir = this.resolvePath(baseDir);
 
+      this.assertAllowed(resolvedBaseDir, "glob");
+
       const entries: {
         path: string;
         type: ReturnType<typeof FileSystem.prototype.getFileTypeFromStats>;
@@ -945,6 +984,9 @@ export class FileSystem {
       }[] = [];
       let truncated = false;
       for await (const entry of fs.glob(patterns, { cwd: resolvedBaseDir })) {
+        const abs = resolve(join(resolvedBaseDir, entry));
+        if (this.isDeniedPath(abs)) continue;
+
         if (entries.length >= maxEntries) {
           truncated = true;
           break;
@@ -980,9 +1022,20 @@ export class FileSystem {
 
       const resolvedBaseDir = this.resolvePath(baseDir);
 
+      this.assertAllowed(resolvedBaseDir, "grep");
+
       const globs = fileExtensions.map(
         (ext) => `**/*.${ext.replace(/^\./, "")}`,
       );
+
+      // Ensure ripgrep doesn't traverse blocked paths when searching from broad base dirs (e.g. "/").
+      for (const denyAbs of this.denyPaths) {
+        const rel = relative(resolvedBaseDir, denyAbs);
+        if (rel.length === 0) continue;
+        if (rel.startsWith("..") || rel.startsWith(sep)) continue;
+        globs.push(`!${rel}`);
+        globs.push(`!${rel}/**`);
+      }
 
       const extraArgs: string[] = [];
       if (includeContextLines > 0) {

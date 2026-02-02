@@ -34,6 +34,22 @@ const REASON_INTERPRETER_BLOCKED =
 const REASON_RM_HOME_CWD =
   "rm -rf in home directory is dangerous. Change to a project directory first.";
 
+const SENSITIVE_TOKEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
+  { re: /private-keys-v1\.d\b/i, reason: "access to GPG private keys" },
+  { re: /(^|\/|\\)secret\/(gnupg)(\/|$)/i, reason: "access to agent GNUPGHOME" },
+  { re: /(^|\/|\\)\.ssh(\/|$)/i, reason: "access to ~/.ssh" },
+  { re: /(^|\/|\\)\.aws(\/|$)/i, reason: "access to ~/.aws" },
+  { re: /(^|\/|\\)\.gnupg(\/|$)/i, reason: "access to ~/.gnupg" },
+  {
+    re: /\$\{?GNUPGHOME\}?\//i,
+    reason: "access to agent GNUPGHOME via $GNUPGHOME",
+  },
+  {
+    re: /github-app\.private-key\.pem\b/i,
+    reason: "access to GitHub App private key",
+  },
+];
+
 export type SegmentAnalyzeOptions = AnalyzeOptions & {
   effectiveCwd: string | null | undefined;
   analyzeNested: (command: string) => string | null;
@@ -75,6 +91,15 @@ export function analyzeSegment(
 
   if (stripped.length === 0) {
     return null;
+  }
+
+  for (const token of stripped) {
+    if (!token) continue;
+    for (const { re, reason } of SENSITIVE_TOKEN_PATTERNS) {
+      if (re.test(token)) {
+        return reason;
+      }
+    }
   }
 
   const head = stripped[0];

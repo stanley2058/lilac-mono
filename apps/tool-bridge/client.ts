@@ -2,6 +2,7 @@ import { encode } from "@toon-format/toon";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 
 declare global {
   // injected at build time in real releases
@@ -257,6 +258,37 @@ async function main() {
       }
       case "help": {
         if (parsed.callableId) {
+          if (parsed.callableId === "onboard") {
+            const output = [
+              banner(),
+              "",
+              `${styles.bold("onboard")} ${styles.dim("—")} Configure agent git identity + GPG signing under DATA_DIR`,
+              "",
+              section("Usage", [
+                "tools onboard",
+                "tools onboard --yes",
+                "tools onboard --yes --name=\"lilac-agent[bot]\" --email=\"lilac-agent[bot]@users.noreply.github.com\"",
+                "tools onboard --no-sign",
+              ]),
+              "",
+              section(
+                "Flags",
+                formatBullets([
+                  "--data-dir=<path>\tOverride DATA_DIR for this run",
+                  "--name=<string>\tGit user.name",
+                  "--email=<string>\tGit user.email",
+                  "--sign\tEnable GPG commit signing (default)",
+                  "--no-sign\tDisable commit signing",
+                  "--yes, -y\tNon-interactive (accept defaults)",
+                  "--output=compact|json\tOutput format",
+                ]),
+              ),
+            ].join("\n");
+
+            console.log(output);
+            break;
+          }
+
           const result = await toolHelp(parsed.callableId);
 
           const usageLines = [
@@ -387,6 +419,15 @@ async function main() {
         }
         break;
       }
+      case "onboard": {
+        const result = await runOnboardingWizard(parsed);
+        if (parsed.outputMode === "json") {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(encode(result));
+        }
+        break;
+      }
       case "unknown": {
         console.error(`${styles.red("Error:")} Unknown command, try --help`);
         process.exit(1);
@@ -411,6 +452,15 @@ type ParsedArgs =
   | { type: "version" }
   | { type: "help"; callableId?: string }
   | { type: "list"; showHidden: boolean }
+  | {
+      type: "onboard";
+      outputMode: OutputMode;
+      dataDir?: string;
+      userName?: string;
+      userEmail?: string;
+      sign?: boolean;
+      yes: boolean;
+    }
   | {
       type: "call";
       callableId: string;
@@ -448,6 +498,110 @@ function parseArgs(): ParsedArgs {
       return false;
     });
     return { type: "list", showHidden };
+  }
+
+  if (firstArg === "onboard") {
+    const restArgs = args.slice(1);
+    let outputMode: OutputMode = "compact";
+    let dataDir: string | undefined;
+    let userName: string | undefined;
+    let userEmail: string | undefined;
+    let sign: boolean | undefined;
+    let yes = false;
+
+    for (let i = 0; i < restArgs.length; i++) {
+      const a = restArgs[i];
+      if (a === "-y") {
+        yes = true;
+        continue;
+      }
+      if (!a || !a.startsWith("--")) {
+        throw new Error(
+          `Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`,
+        );
+      }
+
+      const eq = a.indexOf("=");
+      const k = eq === -1 ? a : a.slice(0, eq);
+      let v = eq === -1 ? "" : a.slice(eq + 1);
+      let hasValue = eq !== -1;
+
+      if (!hasValue) {
+        const next = restArgs[i + 1];
+        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
+          v = next;
+          hasValue = true;
+          i++;
+        }
+      }
+
+      if (k === "--help") {
+        const value = hasValue ? parseBooleanLike(v) : true;
+        if (value !== false) return { type: "help", callableId: "onboard" };
+        continue;
+      }
+
+      if (k === "--output") {
+        if (!hasValue) {
+          throw new Error(
+            "--output requires a value: --output=compact|json or --output compact|json",
+          );
+        }
+        if (v !== "compact" && v !== "json") {
+          throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
+        }
+        outputMode = v;
+        continue;
+      }
+
+      if (k === "--yes") {
+        const value = hasValue ? parseBooleanLike(v) : true;
+        if (value !== false) yes = true;
+        continue;
+      }
+
+      if (k === "--data-dir") {
+        if (!hasValue) throw new Error("--data-dir requires a value");
+        dataDir = normalizeMaybePath("dataDir", v);
+        continue;
+      }
+
+      if (k === "--name") {
+        if (!hasValue) throw new Error("--name requires a value");
+        userName = v;
+        continue;
+      }
+
+      if (k === "--email") {
+        if (!hasValue) throw new Error("--email requires a value");
+        userEmail = v;
+        continue;
+      }
+
+      if (k === "--sign") {
+        const value = hasValue ? parseBooleanLike(v) : true;
+        sign = value ?? true;
+        continue;
+      }
+
+      if (k === "--no-sign") {
+        const value = hasValue ? parseBooleanLike(v) : true;
+        if (value !== false) sign = false;
+        continue;
+      }
+
+      throw new Error(`Unknown flag '${k}' for onboard`);
+    }
+
+    return {
+      type: "onboard",
+      outputMode,
+      dataDir,
+      userName,
+      userEmail,
+      sign,
+      yes,
+    };
   }
 
   if (firstArg && !firstArg.startsWith("--")) {
@@ -638,6 +792,132 @@ async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
   }
 
   return input;
+}
+
+async function runOnboardingWizard(parsed: Extract<ParsedArgs, { type: "onboard" }>) {
+  const defaultName = "lilac-agent[bot]";
+  const defaultEmail = "lilac-agent[bot]@users.noreply.github.com";
+
+  const needsTty =
+    !parsed.yes &&
+    (parsed.userName === undefined ||
+      parsed.userEmail === undefined ||
+      parsed.sign === undefined);
+  if (needsTty && process.stdin.isTTY === false) {
+    throw new Error(
+      "tools onboard requires a TTY for prompts. Use --yes with optional --name/--email/--sign flags for non-interactive use.",
+    );
+  }
+
+  const rl = process.stdin.isTTY
+    ? createInterface({ input: process.stdin, output: process.stdout })
+    : null;
+
+  const askText = async (label: string, fallback: string) => {
+    if (!rl || parsed.yes) return fallback;
+    const answer = await rl.question(`${label} (${fallback}): `);
+    const v = answer.trim();
+    return v.length > 0 ? v : fallback;
+  };
+
+  const askYesNo = async (label: string, fallback: boolean) => {
+    if (!rl || parsed.yes) return fallback;
+    const suffix = fallback ? "Y/n" : "y/N";
+    const answer = await rl.question(`${label} (${suffix}): `);
+    const v = answer.trim().toLowerCase();
+    if (v === "") return fallback;
+    if (v === "y" || v === "yes" || v === "true") return true;
+    if (v === "n" || v === "no" || v === "false") return false;
+    return fallback;
+  };
+
+  const getStringField = (obj: unknown, key: string): string | undefined => {
+    if (!isRecord(obj)) return undefined;
+    const v = obj[key];
+    return typeof v === "string" ? v : undefined;
+  };
+
+  try {
+    const userName =
+      parsed.userName ?? (await askText("Git user.name", defaultName));
+    const userEmail =
+      parsed.userEmail ?? (await askText("Git user.email", defaultEmail));
+    const sign =
+      parsed.sign ??
+      (await askYesNo("Enable GPG commit signing (no-passphrase key)", true));
+
+    const baseInput: Record<string, unknown> = parsed.dataDir
+      ? { dataDir: parsed.dataDir }
+      : {};
+
+    const bootstrap = await callTool("onboarding.bootstrap", baseInput);
+    if (bootstrap.isError) throw new Error(bootstrap.output);
+
+    const vcsEnv = await callTool("onboarding.vcs_env", baseInput);
+    if (vcsEnv.isError) throw new Error(vcsEnv.output);
+
+    let fingerprint: string | undefined;
+    let publicKeyArmored: string | undefined;
+
+    if (sign) {
+      const gpgRes = await callTool("onboarding.gnupg", {
+        ...baseInput,
+        mode: "generate",
+        userName,
+        userEmail,
+        uidComment: "lilac",
+      });
+      if (gpgRes.isError) throw new Error(gpgRes.output);
+      fingerprint = getStringField(gpgRes.output, "fingerprint");
+      if (!fingerprint) {
+        throw new Error("GPG key generation did not return a fingerprint");
+      }
+
+      const exp = await callTool("onboarding.gnupg", {
+        ...baseInput,
+        mode: "export_public",
+        fingerprint,
+      });
+      if (exp.isError) throw new Error(exp.output);
+      publicKeyArmored = getStringField(exp.output, "publicKeyArmored");
+    }
+
+    const cfg = await callTool("onboarding.git_identity", {
+      ...baseInput,
+      mode: "configure",
+      userName,
+      userEmail,
+      enableSigning: sign,
+      ...(sign ? { signingKey: fingerprint } : {}),
+    });
+    if (cfg.isError) throw new Error(cfg.output);
+
+    const test = await callTool("onboarding.git_identity", {
+      ...baseInput,
+      mode: "test",
+    });
+    if (test.isError) throw new Error(test.output);
+
+    return {
+      ok: true as const,
+      userName,
+      userEmail,
+      signing: sign
+        ? {
+            enabled: true as const,
+            fingerprint,
+            publicKeyArmored,
+            notes: [
+              "Add this public key to GitHub (Settings -> SSH and GPG keys -> New GPG key).",
+            ],
+          }
+        : { enabled: false as const },
+      vcsEnv: vcsEnv.output,
+      gitTest: test.output,
+    };
+  } finally {
+    await rl?.close();
+  }
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {

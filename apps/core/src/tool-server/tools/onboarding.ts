@@ -79,6 +79,55 @@ const reloadConfigInputSchema = z.object({
     ),
 });
 
+const vcsEnvInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+});
+
+const gitIdentityInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+  mode: z
+    .enum(["status", "configure", "test", "clear"])
+    .optional()
+    .default("status")
+    .describe(
+      "status: show git identity; configure: persist identity; test: create a temp repo and commit; clear: remove identity keys",
+    ),
+  userName: z.string().min(1).optional().describe("Git user.name"),
+  userEmail: z.string().min(1).optional().describe("Git user.email"),
+  enableSigning: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("If true, configure commit/tag signing via GPG"),
+  signingKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("GPG signing key fingerprint (user.signingkey)"),
+});
+
+const gnupgInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+  mode: z
+    .enum(["status", "generate", "export_public", "clear"])
+    .optional()
+    .default("status")
+    .describe(
+      "status: show key info; generate: create a no-passphrase key; export_public: export ASCII-armored public key; clear: delete GNUPGHOME",
+    ),
+  userName: z.string().min(1).optional().describe("Key user name"),
+  userEmail: z.string().min(1).optional().describe("Key user email"),
+  uidComment: z
+    .string()
+    .optional()
+    .describe("Optional UID comment (for display only)"),
+  fingerprint: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Fingerprint to export (default: first secret key)"),
+});
+
 const githubAppInputSchema = z.object({
   dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
   mode: z
@@ -265,6 +314,80 @@ function resolveDefaultInstallPaths(dataDir: string) {
     tmpDir,
     lilacSkillsDir,
   };
+}
+
+function resolveVcsPaths(dataDir: string): {
+  dataDir: string;
+  gitConfigGlobal: string;
+  secretDir: string;
+  gnupgHome: string;
+  xdgConfigHome: string;
+  tmpDir: string;
+} {
+  const resolved = normalizeDataDir(dataDir);
+  const secretDir = path.join(resolved, "secret");
+  return {
+    dataDir: resolved,
+    gitConfigGlobal: path.join(resolved, ".gitconfig"),
+    secretDir,
+    // Store unencrypted signing keys under secret/.
+    gnupgHome: path.join(secretDir, "gnupg"),
+    xdgConfigHome: path.join(resolved, ".config"),
+    tmpDir: path.join(resolved, "tmp"),
+  };
+}
+
+async function ensureDir0700(p: string): Promise<void> {
+  await fs.mkdir(p, { recursive: true });
+  try {
+    await fs.chmod(p, 0o700);
+  } catch {
+    // Best-effort.
+  }
+}
+
+async function ensureVcsDirs(paths: ReturnType<typeof resolveVcsPaths>) {
+  await ensureDir0700(paths.secretDir);
+  await ensureDir0700(paths.gnupgHome);
+  await fs.mkdir(paths.tmpDir, { recursive: true });
+}
+
+function buildVcsEnv(paths: ReturnType<typeof resolveVcsPaths>) {
+  return {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: paths.gitConfigGlobal,
+    // Avoid surprises from system-wide config in sandboxed/agent environments.
+    GIT_CONFIG_NOSYSTEM: "1",
+    GNUPGHOME: paths.gnupgHome,
+    XDG_CONFIG_HOME: paths.xdgConfigHome,
+  };
+}
+
+async function runGit(params: {
+  args: string[];
+  cwd?: string;
+  env: Record<string, string | undefined>;
+}) {
+  return runCommand({ cmd: ["git", ...params.args], cwd: params.cwd, env: params.env });
+}
+
+async function runGpg(params: {
+  args: string[];
+  cwd?: string;
+  env: Record<string, string | undefined>;
+}) {
+  return runCommand({ cmd: ["gpg", ...params.args], cwd: params.cwd, env: params.env });
+}
+
+function parseFirstGpgFingerprint(listSecretKeysOutput: string): string | null {
+  // gpg --with-colons includes lines like: fpr:::::::::FINGERPRINT:
+  for (const line of listSecretKeysOutput.split(/\r?\n/)) {
+    if (!line.startsWith("fpr:")) continue;
+    const parts = line.split(":");
+    const fpr = parts[9];
+    if (typeof fpr === "string" && fpr.length >= 16) return fpr;
+  }
+  return null;
 }
 
 function buildInstallEnv(paths: ReturnType<typeof resolveDefaultInstallPaths>) {
@@ -581,6 +704,37 @@ export class Onboarding implements ServerTool {
         hidden: true,
       },
       {
+        callableId: "onboarding.vcs_env",
+        name: "Onboarding VCS Env",
+        description:
+          "Show effective GIT_CONFIG_GLOBAL and GNUPGHOME paths under DATA_DIR. Hidden by default.",
+        shortInput: zodObjectToCliLines(vcsEnvInputSchema, { mode: "required" }),
+        input: zodObjectToCliLines(vcsEnvInputSchema),
+        hidden: true,
+      },
+      {
+        callableId: "onboarding.git_identity",
+        name: "Onboarding Git Identity",
+        description:
+          "Configure agent git identity (name/email) and optional GPG signing, persisted under DATA_DIR. Hidden by default.",
+        shortInput: zodObjectToCliLines(gitIdentityInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(gitIdentityInputSchema),
+        hidden: true,
+      },
+      {
+        callableId: "onboarding.gnupg",
+        name: "Onboarding GnuPG",
+        description:
+          "Generate/export a no-passphrase GPG key for commit signing (stored under DATA_DIR/secret). Hidden by default.",
+        shortInput: zodObjectToCliLines(gnupgInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(gnupgInputSchema),
+        hidden: true,
+      },
+      {
         callableId: "onboarding.reload_tools",
         name: "Onboarding Reload Tools",
         description:
@@ -622,6 +776,275 @@ export class Onboarding implements ServerTool {
   }
 
   async call(callableId: string, rawInput: Record<string, unknown>) {
+    if (callableId === "onboarding.vcs_env") {
+      const input = vcsEnvInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+      const paths = resolveVcsPaths(dataDir);
+
+      return {
+        ok: true as const,
+        dataDir: paths.dataDir,
+        gitConfigGlobal: paths.gitConfigGlobal,
+        gnupgHome: paths.gnupgHome,
+        xdgConfigHome: paths.xdgConfigHome,
+      };
+    }
+
+    if (callableId === "onboarding.gnupg") {
+      const input = gnupgInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+      const paths = resolveVcsPaths(dataDir);
+      await ensureVcsDirs(paths);
+      const vcsEnv = buildVcsEnv(paths);
+
+      const gpgBin = Bun.which("gpg");
+      if (!gpgBin) {
+        throw new Error(
+          "Missing dependency: gpg (install gnupg). Required for commit signing.",
+        );
+      }
+
+      if (input.mode === "clear") {
+        await fs.rm(paths.gnupgHome, { recursive: true, force: true });
+        await ensureDir0700(paths.gnupgHome);
+        return { ok: true as const, dataDir: paths.dataDir, cleared: true as const };
+      }
+
+      const list = await runGpg({
+        args: ["--list-secret-keys", "--with-colons"],
+        env: vcsEnv,
+      });
+      const existingFpr =
+        list.code === 0 ? parseFirstGpgFingerprint(list.stdout) : null;
+
+      if (input.mode === "status") {
+        return {
+          ok: true as const,
+          dataDir: paths.dataDir,
+          gnupgHome: paths.gnupgHome,
+          hasSecretKey: Boolean(existingFpr),
+          fingerprint: existingFpr ?? undefined,
+        };
+      }
+
+      if (input.mode === "generate") {
+        if (existingFpr) {
+          return {
+            ok: true as const,
+            dataDir: paths.dataDir,
+            generated: false as const,
+            fingerprint: existingFpr,
+            status: "already_present" as const,
+          };
+        }
+
+        const userName = input.userName ?? "lilac-agent[bot]";
+        const userEmail = input.userEmail ?? "lilac-agent[bot]@users.noreply.github.com";
+        const comment = input.uidComment ? ` (${input.uidComment})` : "";
+        const uid = `${userName}${comment} <${userEmail}>`;
+
+        // Ensure loopback pinentry works even if gpg decides to ask.
+        await fs.writeFile(
+          path.join(paths.gnupgHome, "gpg-agent.conf"),
+          "allow-loopback-pinentry\n",
+          "utf8",
+        );
+
+        const gen = await runGpg({
+          args: [
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--quick-generate-key",
+            uid,
+            "default",
+            "default",
+            "never",
+          ],
+          env: vcsEnv,
+        });
+        if (gen.code !== 0) {
+          throw new Error(gen.stderr || gen.stdout || "gpg key generation failed");
+        }
+
+        const after = await runGpg({
+          args: ["--list-secret-keys", "--with-colons"],
+          env: vcsEnv,
+        });
+        const fingerprint =
+          after.code === 0 ? parseFirstGpgFingerprint(after.stdout) : null;
+        if (!fingerprint) {
+          throw new Error(
+            "gpg key generation succeeded, but no secret key fingerprint was found",
+          );
+        }
+
+        return {
+          ok: true as const,
+          dataDir: paths.dataDir,
+          generated: true as const,
+          fingerprint,
+          status: "generated" as const,
+        };
+      }
+
+      if (input.mode === "export_public") {
+        const fingerprint = input.fingerprint ?? existingFpr;
+        if (!fingerprint) {
+          throw new Error("No secret key found to export");
+        }
+
+        const exp = await runGpg({
+          args: ["--armor", "--export", fingerprint],
+          env: vcsEnv,
+        });
+        if (exp.code !== 0) {
+          throw new Error(exp.stderr || exp.stdout || "gpg export failed");
+        }
+
+        return {
+          ok: true as const,
+          dataDir: paths.dataDir,
+          fingerprint,
+          publicKeyArmored: exp.stdout,
+        };
+      }
+
+      const _exhaustive: never = input.mode;
+      return _exhaustive;
+    }
+
+    if (callableId === "onboarding.git_identity") {
+      const input = gitIdentityInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+      const paths = resolveVcsPaths(dataDir);
+      await ensureVcsDirs(paths);
+      const vcsEnv = buildVcsEnv(paths);
+
+      const get = async (key: string): Promise<string | undefined> => {
+        const res = await runGit({ args: ["config", "--global", "--get", key], env: vcsEnv });
+        if (res.code !== 0) return undefined;
+        const v = res.stdout.trim();
+        return v.length > 0 ? v : undefined;
+      };
+
+      const unsetAll = async (key: string) => {
+        const res = await runGit({ args: ["config", "--global", "--unset-all", key], env: vcsEnv });
+        // git config --unset-all returns non-zero if the key is missing.
+        return res.code === 0;
+      };
+
+      if (input.mode === "status") {
+        const userName = await get("user.name");
+        const userEmail = await get("user.email");
+        const signingKey = await get("user.signingkey");
+        const commitSign = await get("commit.gpgsign");
+        const tagSign = await get("tag.gpgsign");
+        const gpgProgram = await get("gpg.program");
+
+        return {
+          ok: true as const,
+          dataDir: paths.dataDir,
+          gitConfigGlobal: paths.gitConfigGlobal,
+          userName,
+          userEmail,
+          signingKey,
+          commitGpgSign: commitSign,
+          tagGpgSign: tagSign,
+          gpgProgram,
+        };
+      }
+
+      if (input.mode === "clear") {
+        const cleared: Record<string, boolean> = {
+          "user.name": await unsetAll("user.name"),
+          "user.email": await unsetAll("user.email"),
+          "user.signingkey": await unsetAll("user.signingkey"),
+          "commit.gpgsign": await unsetAll("commit.gpgsign"),
+          "tag.gpgsign": await unsetAll("tag.gpgsign"),
+          "gpg.program": await unsetAll("gpg.program"),
+        };
+        return { ok: true as const, dataDir: paths.dataDir, cleared };
+      }
+
+      if (input.mode === "configure") {
+        if (!input.userName) throw new Error("Missing required input: userName");
+        if (!input.userEmail) throw new Error("Missing required input: userEmail");
+
+        const set = async (key: string, value: string) => {
+          const res = await runGit({
+            args: ["config", "--global", key, value],
+            env: vcsEnv,
+          });
+          if (res.code !== 0) {
+            throw new Error(res.stderr || res.stdout || `git config failed: ${key}`);
+          }
+        };
+
+        await set("user.name", input.userName);
+        await set("user.email", input.userEmail);
+
+        if (input.enableSigning) {
+          const signingKey = input.signingKey;
+          if (!signingKey) {
+            throw new Error(
+              "Missing required input: signingKey (required when enableSigning=true)",
+            );
+          }
+
+          await set("gpg.program", "gpg");
+          await set("user.signingkey", signingKey);
+          await set("commit.gpgsign", "true");
+          await set("tag.gpgsign", "true");
+        } else {
+          await unsetAll("user.signingkey");
+          await unsetAll("commit.gpgsign");
+          await unsetAll("tag.gpgsign");
+          await unsetAll("gpg.program");
+        }
+
+        return { ok: true as const, dataDir: paths.dataDir, configured: true as const };
+      }
+
+      if (input.mode === "test") {
+        await fs.mkdir(paths.tmpDir, { recursive: true });
+        const repoDir = await fs.mkdtemp(path.join(paths.tmpDir, "git-test-"));
+
+        const init = await runGit({ args: ["init"], cwd: repoDir, env: vcsEnv });
+        if (init.code !== 0) {
+          throw new Error(init.stderr || init.stdout || "git init failed");
+        }
+
+        await fs.writeFile(path.join(repoDir, "README.md"), "test\n", "utf8");
+        const add = await runGit({ args: ["add", "README.md"], cwd: repoDir, env: vcsEnv });
+        if (add.code !== 0) {
+          throw new Error(add.stderr || add.stdout || "git add failed");
+        }
+
+        const commit = await runGit({
+          args: ["commit", "-m", "test commit"],
+          cwd: repoDir,
+          env: vcsEnv,
+        });
+        const ok = commit.code === 0;
+
+        return {
+          ok: true as const,
+          dataDir: paths.dataDir,
+          repoDir,
+          committed: ok,
+          exitCode: commit.code,
+          stdout: commit.stdout,
+          stderr: commit.stderr,
+        };
+      }
+
+      const _exhaustive: never = input.mode;
+      return _exhaustive;
+    }
+
     if (callableId === "onboarding.bootstrap") {
       const input = bootstrapInputSchema.parse(rawInput);
       const dataDir = input.dataDir ?? env.dataDir;

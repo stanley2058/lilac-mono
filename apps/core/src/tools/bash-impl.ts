@@ -1,4 +1,4 @@
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
+import { env, resolveLogLevel, resolveVcsEnv } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
@@ -257,6 +257,7 @@ export async function executeBash(
   }
 
   const githubEnv = await getGithubEnvForBash({ dataDir: env.dataDir });
+  const vcsEnv = resolveVcsEnv({ dataDir: env.dataDir });
 
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS;
 
@@ -282,6 +283,7 @@ export async function executeBash(
       env: {
         ...process.env,
         ...githubEnv,
+        ...vcsEnv,
         LILAC_REQUEST_ID: context?.requestId,
         LILAC_SESSION_ID: context?.sessionId,
         LILAC_REQUEST_CLIENT: context?.requestClient,

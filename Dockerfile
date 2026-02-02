@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
   git \
+  gnupg \
+  pinentry-curses \
   jq \
   ripgrep \
   fd-find \
@@ -36,6 +38,8 @@ RUN useradd -m -u 1000 -s /bin/bash lilac
 ENV HOME=/home/lilac
 ENV DATA_DIR=/data
 ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
+ENV GIT_CONFIG_GLOBAL=${DATA_DIR}/.gitconfig
+ENV GNUPGHOME=${DATA_DIR}/secret/gnupg
 ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
 ENV BUN_INSTALL_BIN=${DATA_DIR}/bin
 ENV BUN_INSTALL_CACHE_DIR=${DATA_DIR}/.bun/install/cache
@@ -43,7 +47,7 @@ ENV NPM_CONFIG_PREFIX=${DATA_DIR}/.npm-global
 ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
 ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RUN mkdir -p $DATA_DIR
+RUN mkdir -p $DATA_DIR $DATA_DIR/secret
 RUN chown -R lilac:lilac $DATA_DIR
 
 USER lilac

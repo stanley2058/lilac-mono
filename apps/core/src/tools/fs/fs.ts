@@ -1,8 +1,9 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { READ_ERROR_CODES, FileSystem } from "./fs-impl";
+import path from "node:path";
 
 const pathSchema = z
   .string()
@@ -80,7 +81,14 @@ export function fsTool(cwd: string) {
     module: "tool:fs",
   });
 
-  const fs = new FileSystem(cwd);
+  const fs = new FileSystem(cwd, {
+    denyPaths: [
+      path.join(env.dataDir, "secret"),
+      "~/.ssh",
+      "~/.aws",
+      "~/.gnupg",
+    ],
+  });
 
   return {
     read_file: tool<ReadFileInput, ReadFileOutput>({

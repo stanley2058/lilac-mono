@@ -13,6 +13,8 @@ services:
       LL_TOOL_SERVER_PORT: ${LL_TOOL_SERVER_PORT:-8080}
       DATA_DIR: ${DATA_DIR:-/data}
       LILAC_WORKSPACE_DIR: ${LILAC_WORKSPACE_DIR:-/data/workspace}
+      GIT_CONFIG_GLOBAL: ${GIT_CONFIG_GLOBAL:-/data/.gitconfig}
+      GNUPGHOME: ${GNUPGHOME:-/data/secret/gnupg}
       # Persist global installs into the mounted data directory.
       BUN_INSTALL_GLOBAL_DIR: ${BUN_INSTALL_GLOBAL_DIR:-/data/.bun/install/global}
       BUN_INSTALL_BIN: ${BUN_INSTALL_BIN:-/data/bin}
@@ -22,7 +24,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data
+      - ./data:/data
     restart: unless-stopped
 
   redis:

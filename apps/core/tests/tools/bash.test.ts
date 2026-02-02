@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { executeBash } from "../../src/tools/bash-impl";
 import { analyzeBashCommand } from "../../src/tools/bash-safety";
+import { env } from "@stanley2058/lilac-utils";
+import path from "node:path";
 
 describe("executeBash", () => {
   it("executes a command and returns output", async () => {
@@ -24,6 +26,24 @@ describe("executeBash", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+
+  it("injects git + gnupg env for persistence", async () => {
+    const res = await executeBash({
+      command: "echo $GIT_CONFIG_GLOBAL && echo $GNUPGHOME",
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.executionError).toBeUndefined();
+
+    const lines = res.stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines[0]).toBe(path.join(env.dataDir, ".gitconfig"));
+    expect(lines[1]).toBe(path.join(env.dataDir, "secret", "gnupg"));
   });
 
   it("does not set executionError for command failures", async () => {

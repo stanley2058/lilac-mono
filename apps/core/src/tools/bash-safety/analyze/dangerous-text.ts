@@ -10,6 +10,30 @@ export function dangerousInText(text: string): string | null {
     caseSensitive?: boolean;
   }> = [
     {
+      regex: /\bprivate-keys-v1\.d\b/,
+      reason: "access to GPG private keys (private-keys-v1.d)",
+    },
+    {
+      regex: /\/secret\/gnupg(\/|\b)/,
+      reason: "access to agent GNUPGHOME (secret/gnupg)",
+    },
+    {
+      regex: /\/\.ssh(\/|\b)/,
+      reason: "access to ~/.ssh",
+    },
+    {
+      regex: /\/\.aws(\/|\b)/,
+      reason: "access to ~/.aws",
+    },
+    {
+      regex: /\/\.gnupg(\/|\b)/,
+      reason: "access to ~/.gnupg",
+    },
+    {
+      regex: /github-app\.private-key\.pem\b/,
+      reason: "access to GitHub App private key",
+    },
+    {
       regex:
         /\brm\s+(-[^\s]*r[^\s]*\s+-[^\s]*f|-\S*f\S*\s+-\S*r|-\S*rf|-\S*fr)\b/,
       reason: "rm -rf",
