@@ -58,13 +58,18 @@ export type ModelCapabilityOverrides = Record<
 export type ModelCapabilityOptions = {
   /** Optional overrides that take priority over models.dev. */
   overrides?: ModelCapabilityOverrides;
-  /** Optional explicit provider alias mapping (no defaults). */
+  /** Optional provider alias mapping merged with defaults. */
   providerAliases?: Record<string, string>;
   /** Override models.dev URL for testing. */
   apiUrl?: string;
   /** Inject custom fetch implementation (defaults to global fetch). */
   fetch?: typeof fetch;
 };
+
+const DEFAULT_PROVIDER_ALIASES = {
+  // Our internal provider id for OpenAI Codex OAuth; models.dev uses "openai".
+  codex: "openai",
+} as const satisfies Record<string, string>;
 
 type ModelsDevRegistry = Record<string, ModelsDevProvider>;
 
@@ -133,7 +138,10 @@ export class ModelCapability {
 
   constructor(options?: ModelCapabilityOptions) {
     this.overrides = options?.overrides ?? {};
-    this.providerAliases = options?.providerAliases ?? {};
+    this.providerAliases = {
+      ...DEFAULT_PROVIDER_ALIASES,
+      ...(options?.providerAliases ?? {}),
+    };
     this.apiUrl = options?.apiUrl ?? "https://models.dev/api.json";
     this.fetchFn = options?.fetch ?? fetch;
   }
