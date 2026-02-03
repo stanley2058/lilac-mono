@@ -1,9 +1,12 @@
 # Lilac Monorepo: Structure, Terminology, And Working Mental Model
 
-This repo is an event-driven “agent runtime” built around a typed event bus (Redis Streams), a surface adapter (Discord today), and two different “tool” layers:
+This repo is an event-driven “agent runtime” built around a typed event bus (Redis Streams), a surface adapter (Discord today), and **layered tools** that are **progressively disclosed** to the agent:
 
-- Agent tools: tools the LLM can call during generation (bash/fs/apply_patch).
-- Tool server tools: an HTTP tool API (Elysia) exposed to external clients via the `tools` CLI.
+- Level 1 (direct AI SDK tools): low-level local tools the LLM can call during generation (`bash`, `read_file`, `apply_patch`).
+- Level 2 (tool server + `tools` CLI): a stable HTTP tool API (Elysia) exposed via the `tools` CLI (and usable by the agent through `bash`).
+- Level 3 (skills): higher-level, file-based “skill bundles” discovered on disk and loaded on-demand.
+
+All three are “for the agent”; the layering is mostly about keeping the default prompt/tool surface small while still enabling richer capabilities when needed.
 
 The main loop is:
 
@@ -23,7 +26,7 @@ This document explains where things live, the words used in code, and the projec
 Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams as git submodules and is treated as read-only.
 
 - `apps/core/`
-  - The core runtime process (Discord adapter + event bus + router + agent runner + workflow service + tool server).
+  - The core runtime process (Discord adapter + event bus + router + agent runner + workflow service/scheduler + tool server).
   - Entry: `apps/core/src/runtime/main.ts` (starts/stops `createCoreRuntime()`).
   - Most of the “system wiring” is in `apps/core/src/runtime/create-core-runtime.ts`.
 
@@ -64,6 +67,9 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
 - `compose.yaml` and `Dockerfile`
   - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
   - The docker build installs Bun, system tools (git, rg, chromium, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+  - Docker compose persists extra home directories for agent ergonomics:
+    - `./home/agents:/home/lilac/.agents`
+    - `./home/.ssh:/home/lilac/.ssh`
 
 ---
 
@@ -72,6 +78,8 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
 ### Bus / Topics / Subscriptions
 
 The event bus is Redis Streams underneath, wrapped in a typed API.
+
+Implementation note: subscriptions use a small Redis connection pool because Redis Streams reads are blocking (`XREAD`/`XREADGROUP`). See `packages/event-bus/redis-connection-pool.ts` and `packages/event-bus/redis-streams-bus.ts`.
 
 - Topic: a logical channel (backed by a Redis Stream key).
   - Examples (static topics): `cmd.request`, `evt.adapter`, `evt.request`, `cmd.workflow`, `evt.workflow`.
@@ -169,34 +177,50 @@ Important detail: `request_id` sometimes encodes “reply-to” behavior.
 Workflow is a durable “wait for something, then resume later” mechanism.
 
 - Service: `apps/core/src/workflow/workflow-service.ts`.
-- Store: `apps/core/src/workflow/workflow-store.ts` (SQLite-backed).
-- Typical task kind today: `discord.wait_for_reply`.
-- When tasks resolve, the workflow service publishes a new `cmd.request.message` resume prompt with request id like `wf:<workflow_id>:<resume_seq>`.
+- Scheduler (time-based triggers): `apps/core/src/workflow/workflow-scheduler.ts`.
+- Store: `apps/core/src/workflow/workflow-store.ts` (SQLite-backed; default `SQLITE_URL` is `data/data.sqlite3`).
+
+Two workflow “shapes” currently exist:
+
+- v2 (interactive resume): tasks like `discord.wait_for_reply` that resume the agent in a real surface session.
+  - When tasks resolve, the workflow service publishes a new `cmd.request.message` resume prompt with request id like `wf:<workflow_id>:<resume_seq>`.
+
+- v3 (scheduled jobs): time-based triggers (`time.wait_until`, `time.cron`) that publish a new `cmd.request.message` when the trigger fires.
+  - These runs use a synthetic session (`job:<workflow_id>`) and `request_client="unknown"`.
+  - Scheduled jobs should generally use Level-2 tools (`tools surface.messages.send`, etc.) to produce user-visible output.
 
 This is how you can “send a DM, wait for reply, then pick up where you left off” without keeping an in-memory agent around.
 
-### Tool Server vs Agent Tools
+### Layered Tools (Progressive Disclosure)
 
-There are two different “tool” systems:
+There are three tool “levels”. They all serve the agent; higher levels are usually only used when the agent needs richer capabilities or a more stable interface.
 
-1. Agent tools (for the LLM)
-   - Used inside `bus-agent-runner` via AI SDK tool calling.
+1. Level 1: direct AI SDK tools (agent-local)
+   - Used inside `apps/core/src/surface/bridge/bus-agent-runner.ts` via AI SDK tool calling.
    - Implementations: `apps/core/src/tools/*`.
    - Key ones:
      - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
-     - `read_file` (`apps/core/src/tools/fs/fs.ts`).
+     - `read_file` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg`).
      - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`).
 
-2. Tool server tools (HTTP)
+2. Level 2: tool server tools + the `tools` CLI
    - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.
    - Exposes endpoints:
+     - `GET /health` health check
      - `GET /list` tool catalog
-     - `POST /call` invoke by callableId
      - `GET /help/:callableId` tool help
+     - `POST /call` invoke by `callableId`
+     - `POST /reload` re-init tools and refresh callable mapping
    - Tool definitions live in `apps/core/src/tool-server/tools/*`.
    - Default registration: `apps/core/src/tool-server/default-tools.ts`.
+   - The tool server uses request context headers (`x-lilac-request-id`, etc.) and an optional request-message cache (`apps/core/src/tool-server/request-message-cache.ts`) for request-scoped behavior.
+   - `apps/tool-bridge/client.ts` provides a human-friendly `tools` CLI that calls the tool server; the agent can also invoke it through Level-1 `bash`.
 
-The tool server uses request context headers (`x-lilac-request-id`, etc.) to enable request-scoped behavior (notably workflows).
+3. Level 3: skills
+   - Skills are on-disk bundles: a directory containing a required `SKILL.md` (YAML frontmatter + instructions) and optional helpers/resources.
+   - Discovery + parsing lives in `packages/utils/skills.ts`.
+   - The tool server exposes skills through `apps/core/src/tool-server/tools/skills.ts` (`skills.list`, `skills.brief`, `skills.full`).
+   - Skills are meant to be loaded on-demand (metadata first, then full body) to avoid prompt bloat.
 
 ### The `tools` CLI
 
@@ -204,6 +228,7 @@ The tool server uses request context headers (`x-lilac-request-id`, etc.) to ena
 
 - It can pass correlation headers via env vars:
   - `LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`
+- It can point at a non-default tool server via `TOOL_SERVER_BACKEND_URL`.
 - It supports `--input=@file.json` and `--stdin` for whole-JSON payloads, plus `--field:value` flags.
 
 ---
@@ -219,7 +244,13 @@ Expected contents over time:
 - `core-config.yaml` (seeded from `packages/utils/config-templates/core-config.example.yaml` if missing)
 - `prompts/` (seeded from `packages/utils/prompt-templates/*` if missing)
 - `discord-surface.db` (Discord cache DB; default path)
+- `agent-transcripts.db` (agent transcript/turn cache used by routing/gating)
+- `data.sqlite3` (default SQLite DB for workflow store; override via `SQLITE_URL`)
+- `skills/` (skill bundles installed/seeded for discovery)
+- `secret/` (persisted secrets, e.g. GitHub App credentials, GPG home)
 - `workspace/` (default working directory for bash/fs tools in the core runtime)
+
+Onboarding-related tools may also create additional persisted directories under `DATA_DIR` (for example `bin/`, `.bun/`, `.npm-global/`, `.config/`, `tmp/`).
 
 ### Prompts
 
@@ -246,6 +277,7 @@ Key sections:
 Parsed in `packages/utils/env.ts`. The important ones:
 
 - `REDIS_URL` (required by core runtime)
+- `SQLITE_URL` (workflow store sqlite path; default: `data/data.sqlite3`)
 - `DATA_DIR` (where config/prompt/db live)
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
@@ -262,7 +294,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 Startup order is intentional:
 
 1. Bridge adapter -> bus (so early Discord events don’t get lost)
-2. Workflow service (subscribes to adapter events)
+2. Workflow service + scheduler (subscribes to adapter events; handles time-based triggers)
 3. Router (subscribes to adapter events and request lifecycle)
 4. Tool server + request message cache (so tools can see request messages)
 5. Connect adapter
@@ -283,6 +315,8 @@ Shutdown happens in reverse (best-effort).
 - Change how tool invocations are served/logged: `apps/core/src/tool-server/create-tool-server.ts`.
 - Change Discord ingestion/persistence/output rendering: `apps/core/src/surface/discord/discord-adapter.ts` and `apps/core/src/surface/discord/output/*`.
 - Modify workflow behavior or add a new task kind: `apps/core/src/workflow/*`.
+- Modify scheduled workflows: `apps/core/src/workflow/workflow-scheduler.ts` and `apps/core/src/workflow/cron.ts`.
+- Modify skill discovery rules: `packages/utils/skills.ts`.
 
 ---
 
@@ -316,6 +350,6 @@ Shutdown happens in reverse (best-effort).
   - `discord:<channelId>:<messageId>` implies “reply to this message”.
   - `wf:<workflowId>:<seq>` is a workflow resume request.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
-- The tool server is not the agent’s tool runner; it’s an external API for “tools” as a product surface.
+- The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
 - The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.
