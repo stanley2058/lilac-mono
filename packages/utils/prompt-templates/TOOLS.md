@@ -13,7 +13,7 @@ You have access to three tiers of tools:
 
 ## `tools` CLI
 
-The `tools` CLI is an unified interface for all built-in tools.
+The `tools` CLI is a unified interface for all built-in tools.
 
 Basic usage:
 
@@ -37,13 +37,9 @@ cat payload.json | tools <tool> --stdin
 - `ssh.hosts` — List SSH host aliases from the server's ~/.ssh/config (hidden when none are configured)
 - `ssh.run` — Run a command on a remote host over SSH (StrictHostKeyChecking=yes, BatchMode=yes)
 - `ssh.probe` — Probe remote host OS + tool availability + git context
-- `workflow` — Create a workflow that will resume later.
-  - Each task waits for a strict reply to the given messageId in sessionId.
-  - Use this after sending a message (e.g. DM) and you want to resume when they reply.
-- `workflow.send_and_wait_for_reply` — Send a message to a Discord session and create a workflow task that waits for a reply to that message.
-  - This is a convenience wrapper around: surface.messages.send + workflow.
 - `attachment.add_files` — Reads local files and attaches them to the current reply.
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
+- `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
 - `surface.sessions.list` — List cached sessions.
 - `surface.messages.list` — List messages for a session
 - `surface.messages.read` — Read a message by id
@@ -54,6 +50,11 @@ cat payload.json | tools <tool> --stdin
 - `surface.reactions.listDetailed` — List cached reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
 - `surface.reactions.remove` — Remove a reaction from a message.
+- `workflow.wait_for_reply.create` — Create a wait_for_reply workflow that resumes later (tasks wait for strict replies to a messageId in sessionId).
+- `workflow.wait_for_reply.send_and_wait` — Send a message and create a wait_for_reply task waiting for a reply to that message.
+- `workflow.schedule` — Create a scheduled workflow trigger (wait_until / wait_for / cron).
+- `workflow.cancel` — Cancel a workflow and its pending tasks.
+- `workflow.list` — List workflows from the local workflow store (core runtime only).
 
 ### Instructions on workflow
 
@@ -61,9 +62,9 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 
 1. User A asked you to DM another user B
 2. You sent a message to B via `surface.messages.send` and gets back a messageId
-3. You create a workflow task that waits for a reply to that messageId
+3. You create a workflow task that waits for a reply to that messageId via `workflow.wait_for_reply.create`
 4. The workflow service will resume you with the context you set when you created the task after a reply is received from B
-   (In the above example, 2 and 3 can be simplified with `workflow.send_and_wait_for_reply`)
+   (In the above example, 2 and 3 can be simplified with `workflow.wait_for_reply.send_and_wait`)
 
 ## Skills
 
