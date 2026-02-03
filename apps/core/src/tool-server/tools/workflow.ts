@@ -11,7 +11,7 @@ import type { SurfaceAdapter } from "../../surface/adapter";
 import type { SendOpts } from "../../surface";
 import type { WorkflowStore } from "../../workflow/workflow-store";
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
-import type { WorkflowDefinitionV3, WorkflowState } from "../../workflow/types";
+import type { WorkflowDefinitionV3 } from "../../workflow/types";
 
 type RequestHeaders = RequiredToolServerHeaders;
 
@@ -19,7 +19,9 @@ function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "workflow");
 }
 
-function tryHeaders(ctx: RequestContext | undefined): RequestHeaders | undefined {
+function tryHeaders(
+  ctx: RequestContext | undefined,
+): RequestHeaders | undefined {
   const requestId = ctx?.requestId;
   const sessionId = ctx?.sessionId;
   const requestClient = ctx?.requestClient;
@@ -51,21 +53,24 @@ export class Workflow implements ServerTool {
   async list() {
     return [
       {
-        callableId: "workflow",
-        name: "Workflow",
+        callableId: "workflow.wait_for_reply.create",
+        name: "Workflow Wait For Reply Create",
         description:
-          "Create a workflow that will resume later. Each task waits for a strict reply to the given messageId in sessionId. Use this after sending a message (e.g. DM) and you want to resume when they reply.",
-        shortInput: ["--summary=<string>", "--tasks=<object[]>"],
+          "Create a wait_for_reply workflow that will resume later. Each task waits for a strict reply to the given messageId in sessionId.",
+        shortInput: [
+          "--summary=<string>",
+          "--tasks=<object[]> | (Use --help to see the full interface)",
+        ],
         input: [
           "--summary=<string> | Compact snapshot of what we were doing",
-          "--tasks=<array> | JSON array of { description, sessionId, messageId }",
+          "--tasks=<{ description: string, sessionId: string, messageId: string }[]>",
         ],
       },
       {
-        callableId: "workflow.send_and_wait_for_reply",
-        name: "Workflow Send And Wait For Reply",
+        callableId: "workflow.wait_for_reply.send_and_wait",
+        name: "Workflow Wait For Reply Send And Wait",
         description:
-          "Send a message to a Discord session and create a workflow task that waits for a reply to that message. (This is a convenience wrapper around: surface.messages.send + workflow.)",
+          "Send a message to a Discord session and create a wait_for_reply workflow task waiting for a reply to that message.",
         shortInput: [
           "--session-id=<string>",
           "--text=<string>",
@@ -124,7 +129,8 @@ export class Workflow implements ServerTool {
       {
         callableId: "workflow.list",
         name: "Workflow List",
-        description: "List workflows from the local workflow store (core runtime only).",
+        description:
+          "List workflows from the local workflow store (core runtime only).",
         shortInput: ["--state=<string>", "--limit=<number>"],
         input: [
           "--state=<queued|running|blocked|resolved|failed|cancelled> | Optional state filter",
@@ -151,7 +157,7 @@ export class Workflow implements ServerTool {
       return undefined;
     };
 
-    if (callableId === "workflow") {
+    if (callableId === "workflow.wait_for_reply.create") {
       const payload = workflowCreateInputSchema.parse(input);
       const headers = toHeaders(opts?.context);
 
@@ -210,14 +216,14 @@ export class Workflow implements ServerTool {
       return { ok: true as const, workflowId, taskIds };
     }
 
-    if (callableId === "workflow.send_and_wait_for_reply") {
+    if (callableId === "workflow.wait_for_reply.send_and_wait") {
       const payload = workflowSendAndWaitInputSchema.parse(input);
       const headers = toHeaders(opts?.context);
 
       const cfg = await getCfg();
       if (!cfg) {
         throw new Error(
-          "workflow.send_and_wait_for_reply requires core config (tool server must be started with config)",
+          "workflow.wait_for_reply.send_and_wait requires core config (tool server must be started with config)",
         );
       }
 
@@ -233,7 +239,7 @@ export class Workflow implements ServerTool {
       const requestClient = headers.request_client;
       if (requestClient !== "discord") {
         throw new Error(
-          `workflow.send_and_wait_for_reply currently requires request_client=discord (got '${requestClient}')`,
+          `workflow.wait_for_reply.send_and_wait currently requires request_client=discord (got '${requestClient}')`,
         );
       }
 
@@ -265,7 +271,7 @@ export class Workflow implements ServerTool {
 
       if (!this.params.adapter) {
         throw new Error(
-          "workflow.send_and_wait_for_reply requires surface adapter (tool server must be started with adapter)",
+          "workflow.wait_for_reply.send_and_wait requires surface adapter (tool server must be started with adapter)",
         );
       }
 
@@ -400,7 +406,8 @@ export class Workflow implements ServerTool {
         const tz = payload.tz ?? "UTC";
         const skipMissed = payload.skipMissed ?? true;
         const startAtMs =
-          typeof payload.startAtMs === "number" && Number.isFinite(payload.startAtMs)
+          typeof payload.startAtMs === "number" &&
+          Number.isFinite(payload.startAtMs)
             ? Math.trunc(payload.startAtMs)
             : undefined;
 
@@ -493,7 +500,9 @@ export class Workflow implements ServerTool {
             updatedAt: w.updatedAt,
             resolvedAt: w.resolvedAt,
             summary: w.definition.summary,
-            ...(payload.includeTasks ? { tasks: store.listTasks(w.workflowId) } : {}),
+            ...(payload.includeTasks
+              ? { tasks: store.listTasks(w.workflowId) }
+              : {}),
           };
         }
 

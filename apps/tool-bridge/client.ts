@@ -267,7 +267,7 @@ async function main() {
               section("Usage", [
                 "tools onboard",
                 "tools onboard --yes",
-                "tools onboard --yes --name=\"lilac-agent[bot]\" --email=\"lilac-agent[bot]@users.noreply.github.com\"",
+                'tools onboard --yes --name="lilac-agent[bot]" --email="lilac-agent[bot]@users.noreply.github.com"',
                 "tools onboard --no-sign",
               ]),
               "",
@@ -336,9 +336,9 @@ async function main() {
             section(
               "Examples",
               formatBullets([
-                "tools workflow --input=@workflow.json",
-                "cat workflow.json | tools workflow --stdin",
-                'cat tasks.json | tools workflow --summary="..." --tasks:json=@-',
+                "tools workflow.wait_for_reply.create --input=@workflow.json",
+                "cat workflow.json | tools workflow.wait_for_reply.create --stdin",
+                'cat tasks.json | tools workflow.wait_for_reply.create --summary="..." --tasks:json=@-',
               ]),
             ),
             "",
@@ -528,7 +528,11 @@ function parseArgs(): ParsedArgs {
 
       if (!hasValue) {
         const next = restArgs[i + 1];
-        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
+        if (
+          typeof next === "string" &&
+          next.length > 0 &&
+          !next.startsWith("--")
+        ) {
           v = next;
           hasValue = true;
           i++;
@@ -548,7 +552,9 @@ function parseArgs(): ParsedArgs {
           );
         }
         if (v !== "compact" && v !== "json") {
-          throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
+          throw new Error(
+            `Invalid --output value '${v}' (expected compact|json)`,
+          );
         }
         outputMode = v;
         continue;
@@ -642,7 +648,11 @@ function parseArgs(): ParsedArgs {
 
       if (!hasValue) {
         const next = restArgs[i + 1];
-        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
+        if (
+          typeof next === "string" &&
+          next.length > 0 &&
+          !next.startsWith("--")
+        ) {
           v = next;
           hasValue = true;
           i++;
@@ -705,7 +715,7 @@ function parseArgs(): ParsedArgs {
       const fieldRaw = k.slice(2);
       if (!fieldRaw) continue;
 
-        if (fieldRaw.endsWith(":json")) {
+      if (fieldRaw.endsWith(":json")) {
         const rawField = fieldRaw.slice(0, -":json".length);
         const field = kebabToCamelCase(rawField);
         if (!field) {
@@ -794,7 +804,9 @@ async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
   return input;
 }
 
-async function runOnboardingWizard(parsed: Extract<ParsedArgs, { type: "onboard" }>) {
+async function runOnboardingWizard(
+  parsed: Extract<ParsedArgs, { type: "onboard" }>,
+) {
   const defaultName = "lilac-agent[bot]";
   const defaultEmail = "lilac-agent[bot]@users.noreply.github.com";
 
