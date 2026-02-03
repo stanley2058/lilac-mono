@@ -1,5 +1,6 @@
 import {
   asSchema,
+  type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
   type ToolSet,
@@ -552,12 +553,19 @@ export async function startBusAgentRunner(params: {
       totalUsage?: LanguageModelUsage;
       finalMessages?: ModelMessage[];
       firstTextDeltaAt?: number;
+      lastTurnFinishReason?: FinishReason;
+      lastTurnEndAt?: number;
     } = {};
 
     const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
       if (event.type === "agent_end") {
         runStats.totalUsage = event.totalUsage;
         runStats.finalMessages = event.messages;
+      }
+
+      if (event.type === "turn_end") {
+        runStats.lastTurnFinishReason = event.finishReason;
+        runStats.lastTurnEndAt = Date.now();
       }
 
       if (
@@ -708,14 +716,16 @@ export async function startBusAgentRunner(params: {
       );
 
       // Log stats in the js-llmcord-ish one-liner format.
-      const endAt = Date.now();
+      const endAt = runStats.lastTurnEndAt ?? Date.now();
       const ttftMs = runStats.firstTextDeltaAt
         ? runStats.firstTextDeltaAt - runStartedAt
         : null;
       const outputTokens = runStats.totalUsage?.outputTokens;
       const rawTps =
-        typeof outputTokens === "number" && runStats.firstTextDeltaAt
-          ? outputTokens / ((endAt - runStats.firstTextDeltaAt) / 1000)
+        typeof outputTokens === "number" &&
+        runStats.lastTurnFinishReason === "stop" &&
+        endAt > runStartedAt
+          ? outputTokens / ((endAt - runStartedAt) / 1000)
           : null;
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
