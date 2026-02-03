@@ -1,0 +1,34 @@
+[submodule "ref/ai"]
+  path = ref/ai
+  url = https://github.com/vercel/ai.git
+  branch = main
+
+[submodule "ref/claude-code-safety-net"]
+  path = ref/claude-code-safety-net
+  url = https://github.com/kenryu42/claude-code-safety-net.git
+  branch = main
+
+[submodule "ref/openclaw"]
+  path = ref/openclaw
+  url = https://github.com/openclaw/openclaw.git
+  branch = main
+
+[submodule "ref/codex"]
+  path = ref/codex
+  url = https://github.com/openai/codex.git
+  branch = main
+
+[submodule "ref/js-llmcord"]
+  path = ref/js-llmcord
+  url = https://github.com/stanley2058/js-llmcord
+  branch = main
+
+[submodule "ref/opencode"]
+  path = ref/opencode
+  url = https://github.com/anomalyco/opencode.git
+  branch = dev
+
+[submodule "ref/pi-mono"]
+  path = ref/pi-mono
+  url = https://github.com/badlogic/pi-mono.git
+  branch = main

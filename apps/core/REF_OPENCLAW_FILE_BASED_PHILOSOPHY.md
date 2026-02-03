@@ -1,12 +1,12 @@
-# Clawdbot: File-Based Everything (Philosophy + Lessons)
+# OpenClaw: File-Based Everything (Philosophy + Lessons)
 
-This document is a research note on `ref/clawdbot/` and the design philosophy that falls out of it.
+This document is a research note on `ref/openclaw/` (formerly `ref/clawdbot/`) and the design philosophy that falls out of it.
 
 Focus: the "simplicity of file-based everything" approach: using ordinary files/folders as the primary persistence layer, extension mechanism, and debugging surface.
 
 ## The Core Philosophy (as observed)
 
-Clawdbot is built around a single long-running Gateway process, but it deliberately keeps most durable state in the filesystem, in human-auditable formats.
+OpenClaw is built around a single long-running Gateway process, but it deliberately keeps most durable state in the filesystem, in human-auditable formats.
 
 Key ideas:
 
@@ -22,8 +22,8 @@ Key ideas:
 
 The design is anchored around a single state directory:
 
-- Default: `~/.clawdbot`
-- Override: `CLAWDBOT_STATE_DIR`
+- Default: `~/.openclaw`
+- Override: `OPENCLAW_STATE_DIR` (legacy: `CLAWDBOT_STATE_DIR`)
 
 This gives a simple mental model:
 
@@ -33,25 +33,25 @@ This gives a simple mental model:
 
 Evidence:
 
-- `ref/clawdbot/src/config/paths.ts` defines `resolveStateDir()` and uses it as the base for config and other stores.
+- `ref/openclaw/src/config/paths.ts` defines `resolveStateDir()` and uses it as the base for config and other stores.
 
 ### 2) One primary config file
 
 Configuration resolves to a single file path:
 
-- Default: `~/.clawdbot/clawdbot.json` (JSON5)
-- Override: `CLAWDBOT_CONFIG_PATH`
+- Default: `~/.openclaw/openclaw.json` (JSON5)
+- Override: `OPENCLAW_CONFIG_PATH` (legacy: `CLAWDBOT_CONFIG_PATH`)
 
 This avoids "configuration sprawl" (no many-dotfile maze) while still allowing advanced users to relocate config.
 
 Evidence:
 
-- `ref/clawdbot/src/config/paths.ts` defines `resolveConfigPath()`.
-- `ref/clawdbot/README.md` consistently references `~/.clawdbot/clawdbot.json` as the main config surface.
+- `ref/openclaw/src/config/paths.ts` defines `resolveConfigPath()`.
+- `ref/openclaw/docs/start/openclaw.md` references `~/.openclaw/openclaw.json` as the main config surface.
 
 ### 3) Sessions are plain files (JSON + JSONL)
 
-Clawdbot persists conversational state using two file types:
+OpenClaw persists conversational state using two file types:
 
 - `sessions.json`: a small mutable key/value store (session metadata)
 - `<sessionId>.jsonl`: append-only transcripts (conversation + tool calls + compaction summaries)
@@ -64,9 +64,9 @@ This is a big philosophical choice:
 
 Evidence:
 
-- `ref/clawdbot/docs/reference/session-management-compaction.md` explains:
-  - Store: `~/.clawdbot/agents/<agentId>/sessions/sessions.json`
-  - Transcripts: `~/.clawdbot/agents/<agentId>/sessions/<sessionId>.jsonl`
+- `ref/openclaw/docs/reference/session-management-compaction.md` explains:
+  - Store: `~/.openclaw/agents/<agentId>/sessions/sessions.json`
+  - Transcripts: `~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl`
 
 ### 4) Skills are folders with `SKILL.md`
 
@@ -75,30 +75,30 @@ Instead of storing skill definitions in a DB or requiring registration, skills a
 Three-tier load order (high signal for extensibility and override mechanics):
 
 1. `<workspace>/skills` (highest precedence)
-2. `~/.clawdbot/skills` (shared/local overrides)
+2. `~/.openclaw/skills` (shared/local overrides)
 3. bundled skills (lowest precedence)
 
 This creates a simple customization story:
 
 - Want to patch a skill? Copy it into a higher-precedence folder.
-- Want shared skills across agents? Put them under `~/.clawdbot/skills`.
+- Want shared skills across agents? Put them under `~/.openclaw/skills`.
 - Want per-agent skills? Put them under that agent's workspace.
 
 Evidence:
 
-- `ref/clawdbot/docs/tools/skills.md` details locations, precedence, and gating.
+- `ref/openclaw/docs/tools/skills.md` details locations, precedence, and gating.
 
 ### 5) Hooks are folders with `HOOK.md` + code
 
 Hooks are also file-discovered:
 
 - Bundled hooks ship with the project.
-- Users can add custom hooks without modifying Clawdbot core.
+- Users can add custom hooks without modifying OpenClaw core.
 
 Two-tier hook placement:
 
 - `<workspace>/hooks/` (highest precedence)
-- `~/.clawdbot/hooks/` (shared across workspaces)
+- `~/.openclaw/hooks/` (shared across workspaces)
 
 Hooks follow a minimal folder contract:
 
@@ -107,13 +107,13 @@ Hooks follow a minimal folder contract:
 
 Evidence:
 
-- `ref/clawdbot/src/hooks/bundled/README.md` describes structure and custom hook locations.
+- `ref/openclaw/docs/hooks.md` describes structure and custom hook locations.
 
 ### 6) Extensions/plugins install as files under the state dir
 
 Plugins/extensions are installed by copying a package directory into the state tree:
 
-- `~/.clawdbot/extensions/<pluginId>`
+- `~/.openclaw/extensions/<pluginId>`
 
 Notably:
 
@@ -127,25 +127,25 @@ This keeps the system understandable:
 
 Evidence:
 
-- `ref/clawdbot/src/plugins/install.ts` resolves the install dir under `CONFIG_DIR/extensions` (where `CONFIG_DIR` is the state dir root).
+- `ref/openclaw/docs/plugin.md` documents plugin install paths under `~/.openclaw/extensions/`.
 
 ### 7) Global env fallback is a file
 
-Clawdbot supports a `.env` fallback file located in the state dir:
+OpenClaw supports a `.env` fallback file located in the state dir:
 
-- `~/.clawdbot/.env`
+- `~/.openclaw/.env`
 
 This is pragmatic for daemon/service installs where "shell env" is not reliable.
 
 Evidence:
 
-- `ref/clawdbot/src/infra/dotenv.ts` loads dotenv from CWD first, then from `resolveConfigDir(...)/.env` without overriding existing vars.
+- `ref/openclaw/src/infra/dotenv.ts` loads dotenv from CWD first, then from `resolveConfigDir(...)/.env` without overriding existing vars.
 
 ### 8) Security approvals are a file (policy-as-data)
 
 Exec approval policy is stored in a local JSON file:
 
-- `~/.clawdbot/exec-approvals.json`
+- `~/.openclaw/exec-approvals.json`
 
 This includes allowlists and prompting policy.
 
@@ -156,7 +156,7 @@ This is also consistent with the "file-first" theme:
 
 Evidence:
 
-- `ref/clawdbot/docs/tools/exec-approvals.md`.
+- `ref/openclaw/docs/tools/exec-approvals.md`.
 
 ## Patterns Behind the File-Based Approach
 
@@ -173,12 +173,12 @@ This is the file-system equivalent of dependency injection.
 
 Where it shows up:
 
-- Skills precedence (`<workspace>/skills` beats `~/.clawdbot/skills` beats bundled)
-- Hooks precedence (`<workspace>/hooks` beats `~/.clawdbot/hooks` beats bundled)
+- Skills precedence (`<workspace>/skills` beats `~/.openclaw/skills` beats bundled)
+- Hooks precedence (`<workspace>/hooks` beats `~/.openclaw/hooks` beats bundled)
 
 ### B) Separate "small mutable index" from "append-only history"
 
-Clawdbot uses:
+OpenClaw uses:
 
 - `sessions.json` for mutable pointers and counters,
 - `*.jsonl` for durable event history.
@@ -189,26 +189,26 @@ This split avoids constantly rewriting large files while preserving a full audit
 
 Many important product surfaces are just paths:
 
-- config: `~/.clawdbot/clawdbot.json`
-- env: `~/.clawdbot/.env`
-- transcripts: `~/.clawdbot/agents/<agentId>/sessions/*.jsonl`
-- logs: `~/.clawdbot/logs/...`
-- policy: `~/.clawdbot/exec-approvals.json`
+- config: `~/.openclaw/openclaw.json`
+- env: `~/.openclaw/.env`
+- transcripts: `~/.openclaw/agents/<agentId>/sessions/*.jsonl`
+- logs: `~/.openclaw/logs/...`
+- policy: `~/.openclaw/exec-approvals.json`
 
 This lowers the cost of debugging because you can reason about the system without running a special admin client.
 
 ### D) Keep the Gateway authoritative, but keep the storage simple
 
-Even though files are the persistence layer, Clawdbot is explicit that:
+Even though files are the persistence layer, OpenClaw is explicit that:
 
 - the Gateway is the source of truth for session state and token counts,
 - but the on-disk representation is still meaningful for troubleshooting.
 
 Evidence:
 
-- `ref/clawdbot/docs/reference/session-management-compaction.md` calls out "Source of truth: the Gateway" while still documenting exact file locations.
+- `ref/openclaw/docs/reference/session-management-compaction.md` calls out "Source of truth: the Gateway" while still documenting exact file locations.
 
-## Tradeoffs (and how Clawdbot mitigates them)
+## Tradeoffs (and how OpenClaw mitigates them)
 
 File-based systems are not automatically simpler in operation. The benefits come with a few recurring risks:
 
@@ -217,15 +217,15 @@ File-based systems are not automatically simpler in operation. The benefits come
 - State drift from multiple state dirs or moved configs.
   - Mitigation: doctor checks detect split state directories.
 - Secret leakage via backups or committing state to git.
-  - Mitigation: explicit guidance to keep `~/.clawdbot` out of git.
+  - Mitigation: explicit guidance to keep `~/.openclaw` out of git.
 
 Evidence:
 
-- `ref/clawdbot/src/commands/doctor-state-integrity.ts` warns about multiple state dirs and recommends keeping `~/.clawdbot` out of git.
+- `ref/openclaw/src/commands/doctor-state-integrity.ts` warns about multiple state dirs and recommends keeping `~/.openclaw` out of git.
 
 ## What We Can Learn (for Lilac / our core plans)
 
-If we want the same "feels local, easy to debug" ergonomics, Clawdbot suggests a few high-leverage moves.
+If we want the same "feels local, easy to debug" ergonomics, OpenClaw suggests a few high-leverage moves.
 
 ### 1) Pick a single, obvious state dir
 
@@ -256,7 +256,7 @@ If a thing is naturally an event stream (messages, tool calls, bus events, lifec
 - easy to tail,
 - easy to ingest later into a DB if needed.
 
-Clawdbot's session model is a concrete example of combining:
+OpenClaw's session model is a concrete example of combining:
 
 - small mutable index (fast lookups),
 - append-only history (auditability + replay potential).
@@ -270,11 +270,11 @@ A file-based system needs guardrails:
 - detection of split state dirs,
 - detection of missing transcripts referenced by the index.
 
-Clawdbot treats this as a core feature, not an afterthought.
+OpenClaw treats this as a core feature, not an afterthought.
 
 ### 5) Keep the storage formats boring
 
-Clawdbot mostly sticks to:
+OpenClaw mostly sticks to:
 
 - JSON/JSON5 for mutable configs and policy
 - JSONL for append-only transcripts/logs
@@ -284,11 +284,10 @@ The result: fewer bespoke parsers and fewer "special tools" needed for introspec
 
 ## Evidence Map (files referenced)
 
-- `ref/clawdbot/src/config/paths.ts` (state dir + config path)
-- `ref/clawdbot/src/infra/dotenv.ts` (global `.env` fallback)
-- `ref/clawdbot/src/plugins/install.ts` (extensions install under state dir)
-- `ref/clawdbot/docs/reference/session-management-compaction.md` (sessions.json + jsonl transcripts)
-- `ref/clawdbot/docs/tools/skills.md` (skill folders + precedence)
-- `ref/clawdbot/src/hooks/bundled/README.md` (hook folder contract + precedence)
-- `ref/clawdbot/docs/tools/exec-approvals.md` (policy-as-file)
-- `ref/clawdbot/src/commands/doctor-state-integrity.ts` (integrity checks + "don't git ~/.clawdbot")
+- `ref/openclaw/src/config/paths.ts` (state dir + config path)
+- `ref/openclaw/src/infra/dotenv.ts` (global `.env` fallback)
+- `ref/openclaw/docs/reference/session-management-compaction.md` (sessions.json + jsonl transcripts)
+- `ref/openclaw/docs/tools/skills.md` (skill folders + precedence)
+- `ref/openclaw/docs/hooks.md` (hook folder contract + precedence)
+- `ref/openclaw/docs/tools/exec-approvals.md` (policy-as-file)
+- `ref/openclaw/src/commands/doctor-state-integrity.ts` (integrity checks + "don't git ~/.openclaw")

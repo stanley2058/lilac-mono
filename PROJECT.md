@@ -20,7 +20,7 @@ This document explains where things live, the words used in code, and the projec
 
 ## Repo Layout (What Is Where)
 
-Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams and is treated as read-only.
+Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams as git submodules and is treated as read-only.
 
 - `apps/core/`
   - The core runtime process (Discord adapter + event bus + router + agent runner + workflow service + tool server).

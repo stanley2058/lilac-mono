@@ -177,6 +177,8 @@ There is no active lint/formatter configuration in `apps/*` or `packages/*` (no 
 ## Monorepo / references
 
 - `ref/` is for reference material and vendored upstreams.
+  - `ref/*` are git submodules and may not be checked out on a fresh clone.
+  - To load refs on demand: `git submodule update --init --recursive ref`
   - Don’t change `ref/*` unless explicitly asked.
   - Don’t copy rules from `ref/*` blindly; this repo’s active workspace is `apps/*` + `packages/*`.
 
@@ -187,7 +189,9 @@ There is no active lint/formatter configuration in `apps/*` or `packages/*` (no 
 - `ref/` currently includes:
   - `ref/ai`
   - `ref/claude-code-safety-net`
+  - `ref/codex`
   - `ref/js-llmcord`
+  - `ref/openclaw`
   - `ref/opencode`
   - `ref/pi-mono`
 
