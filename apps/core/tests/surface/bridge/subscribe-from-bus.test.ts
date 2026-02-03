@@ -132,6 +132,8 @@ class FakeOutputStream {
 class FakeAdapter implements SurfaceAdapter {
   public lastStart: { sessionRef: SessionRef; opts?: StartOutputOpts } | null = null;
   public stream: FakeOutputStream | null = null;
+  public typingStarts: SessionRef[] = [];
+  public typingStops = 0;
 
   async connect(): Promise<void> {
     throw new Error("not implemented");
@@ -153,6 +155,15 @@ class FakeAdapter implements SurfaceAdapter {
     this.lastStart = { sessionRef, opts };
     this.stream = new FakeOutputStream();
     return this.stream;
+  }
+
+  async startTyping(sessionRef: SessionRef): Promise<{ stop(): Promise<void> }> {
+    this.typingStarts.push(sessionRef);
+    return {
+      stop: async () => {
+        this.typingStops += 1;
+      },
+    };
   }
 
   async sendMsg(_sessionRef: SessionRef, _content: ContentOpts, _opts?: SendOpts): Promise<MsgRef> {
@@ -272,6 +283,9 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.stream?.finished).toBe(true);
 
+    expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
+    expect(adapter.typingStops).toBe(1);
+
     await bridge.stop();
   });
 
@@ -324,6 +338,9 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.lastStart).not.toBeNull();
     expect(adapter.stream?.finished).toBe(true);
+
+    expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
+    expect(adapter.typingStops).toBe(1);
 
     await bridge.stop();
   });

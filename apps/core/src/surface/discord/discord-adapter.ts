@@ -5,6 +5,7 @@ import {
   Partials,
   type Message,
   type PartialMessage,
+  type TextBasedChannel,
 } from "discord.js";
 import type {
   EvtAdapterMessageCreatedData,
@@ -394,6 +395,65 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
   }
 
+  async startTyping(
+    sessionRef: SessionRef,
+  ): Promise<{ stop(): Promise<void> }> {
+    const client = this.mustClient();
+    if (sessionRef.platform !== "discord") {
+      throw new Error("Unsupported platform");
+    }
+
+    const ch = (await client.channels
+      .fetch(sessionRef.channelId)
+      .catch(() => null)) as TextBasedChannel | null;
+
+    const sendTyping = ch && "sendTyping" in ch ? ch.sendTyping : null;
+
+    if (!sendTyping) return { stop: async () => {} };
+
+    // Discord typing indicators last ~10s; refresh a bit earlier.
+    const REFRESH_MS = 8000;
+
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let consecutiveFailures = 0;
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await sendTyping.call(ch);
+        consecutiveFailures = 0;
+      } catch {
+        consecutiveFailures += 1;
+        // Best-effort: avoid spamming if missing perms / rate-limited.
+        if (consecutiveFailures >= 3) {
+          stop();
+        }
+      }
+    };
+
+    // Fire once immediately, then refresh.
+    tick().catch((e) => this.logger.error(e));
+    timer = setInterval(() => {
+      tick().catch((e) => this.logger.error(e));
+    }, REFRESH_MS);
+
+    return {
+      stop: async () => {
+        stop();
+      },
+    };
+  }
+
   async sendMsg(
     sessionRef: SessionRef,
     content: ContentOpts,
@@ -629,9 +689,11 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     for (const r of rows) {
       const u = store.getUserName(r.user_id);
-      const userName = u?.display_name ?? u?.global_name ?? u?.username ?? undefined;
+      const userName =
+        u?.display_name ?? u?.global_name ?? u?.username ?? undefined;
 
-      const users = byEmoji.get(r.emoji) ?? new Map<string, string | undefined>();
+      const users =
+        byEmoji.get(r.emoji) ?? new Map<string, string | undefined>();
       users.set(r.user_id, userName);
       byEmoji.set(r.emoji, users);
     }

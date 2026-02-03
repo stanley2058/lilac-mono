@@ -7,13 +7,24 @@ import {
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 
-import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
+import type {
+  SurfaceAdapter,
+  SurfaceOutputPart,
+  TypingIndicatorProvider,
+  TypingIndicatorSubscription,
+} from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
 function getConsumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
+}
+
+function isTypingIndicatorProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & TypingIndicatorProvider {
+  return "startTyping" in adapter && typeof adapter.startTyping === "function";
 }
 
 function parseDiscordReplyTo(params: {
@@ -182,6 +193,8 @@ export async function bridgeBusToAdapter(params: {
       replyTo: replyTo ?? undefined,
     });
 
+    let typing: TypingIndicatorSubscription | null = null;
+
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const bumpTimeout = () => {
       if (timeout) clearTimeout(timeout);
@@ -211,6 +224,11 @@ export async function bridgeBusToAdapter(params: {
       if (timeout) {
         clearTimeout(timeout);
         timeout = null;
+      }
+      try {
+        await typing?.stop();
+      } catch {
+        // ignore
       }
       try {
         await outputSub?.stop();
@@ -247,13 +265,16 @@ export async function bridgeBusToAdapter(params: {
           const shouldSample =
             env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
           if (shouldWarn || shouldSample) {
-            (shouldWarn ? logger.warn : logger.info)("perf.output_first_event", {
-              requestId,
-              sessionId,
-              sinceRelayStartMs,
-              outBusLagMs,
-              outType: outMsg.type,
-            });
+            (shouldWarn ? logger.warn : logger.info)(
+              "perf.output_first_event",
+              {
+                requestId,
+                sessionId,
+                sinceRelayStartMs,
+                outBusLagMs,
+                outType: outMsg.type,
+              },
+            );
           }
         }
 
@@ -332,6 +353,10 @@ export async function bridgeBusToAdapter(params: {
         }
       },
     );
+
+    if (isTypingIndicatorProvider(adapter)) {
+      typing = await adapter.startTyping(sessionRef).catch(() => null);
+    }
 
     if (env.perf.log) {
       const setupMs = Date.now() - subStart;

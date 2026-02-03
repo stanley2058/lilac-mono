@@ -45,6 +45,15 @@ export type AdapterSubscription = {
   stop(): Promise<void>;
 };
 
+export type TypingIndicatorSubscription = {
+  stop(): Promise<void>;
+};
+
+/** Optional capability: start/stop a typing indicator for a session. */
+export interface TypingIndicatorProvider {
+  startTyping(sessionRef: SessionRef): Promise<TypingIndicatorSubscription>;
+}
+
 export type AdapterEventHandler = (evt: AdapterEvent) => Promise<void> | void;
 
 export interface SurfaceAdapter {
