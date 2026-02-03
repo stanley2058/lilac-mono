@@ -187,10 +187,10 @@ function banner() {
 
 function formatBullets(
   items: string[],
-  opts?: { indent?: number; dim?: boolean },
+  opts?: { indent?: number; dim?: boolean; withPrefix?: boolean },
 ) {
   const indent = opts?.indent ?? 0;
-  const bulletPrefix = "- ";
+  const bulletPrefix = opts?.withPrefix ? "- " : "";
   const width = termWidth();
   const available = Math.max(20, width - indent - bulletPrefix.length);
 
@@ -230,8 +230,7 @@ function formatToolBlock(
   if (opts.showArgs) {
     const args = "input" in tool ? tool.input : tool.shortInput;
     if (args.length > 0) {
-      lines.push(styles.dim(`${" ".repeat(2)}Args:`));
-      lines.push(...formatBullets(args, { indent: 4, dim: true }));
+      lines.push(...formatBullets(args, { indent: 2, dim: true }));
     }
   }
 
