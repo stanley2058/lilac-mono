@@ -1,6 +1,12 @@
 import type { ModelMessage } from "ai";
 
-import type { ResumeContext, ResumeRequest, WorkflowRecord, WorkflowTaskRecord } from "./types";
+import type {
+  ResumeContext,
+  ResumeRequest,
+  WorkflowDefinitionV2,
+  WorkflowRecord,
+  WorkflowTaskRecord,
+} from "./types";
 
 function formatMention(requestClient: string, userId: string): string {
   if (requestClient === "discord") {
@@ -9,7 +15,10 @@ function formatMention(requestClient: string, userId: string): string {
   return `@${userId}`;
 }
 
-function toResumeContext(w: WorkflowRecord, tasks: WorkflowTaskRecord[]): ResumeContext {
+function toResumeContext(
+  w: WorkflowRecord & { definition: WorkflowDefinitionV2 },
+  tasks: WorkflowTaskRecord[],
+): ResumeContext {
   return {
     workflow: {
       workflowId: w.workflowId,
@@ -72,7 +81,7 @@ function formatContextForSystemMessage(ctx: ResumeContext): string {
 }
 
 export function buildResumeRequest(params: {
-  workflow: WorkflowRecord;
+  workflow: WorkflowRecord & { definition: WorkflowDefinitionV2 };
   tasks: WorkflowTaskRecord[];
   triggerUserText: string;
   triggerMeta: {

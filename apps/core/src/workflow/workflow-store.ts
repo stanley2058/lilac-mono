@@ -2,7 +2,12 @@ import { Database } from "bun:sqlite";
 import { env } from "@stanley2058/lilac-utils";
 import path from "node:path";
 
-import type { WorkflowRecord, WorkflowTaskRecord } from "./types";
+import type {
+  WorkflowRecord,
+  WorkflowState,
+  WorkflowTaskRecord,
+  WorkflowTaskState,
+} from "./types";
 
 export type WorkflowStore = {
   ensureSchema(): void;
@@ -10,9 +15,29 @@ export type WorkflowStore = {
   getWorkflow(workflowId: string): WorkflowRecord | null;
   upsertWorkflow(w: WorkflowRecord): void;
 
+  listWorkflows(opts?: {
+    state?: WorkflowState;
+    limit?: number;
+    offset?: number;
+    order?: "updated_desc" | "created_desc";
+  }): WorkflowRecord[];
+
   getTask(workflowId: string, taskId: string): WorkflowTaskRecord | null;
   upsertTask(t: WorkflowTaskRecord): void;
   listTasks(workflowId: string): WorkflowTaskRecord[];
+
+  /**
+   * Best-effort atomic claim for timeout-based tasks.
+   * Returns true only if the task was claimed by transitioning to state=running.
+   */
+  tryClaimTimeoutTask(params: {
+    workflowId: string;
+    taskId: string;
+    timeoutAt: number;
+    nowMs: number;
+    /** Consider running tasks stale after this threshold (default: 60s). */
+    runningStaleMs?: number;
+  }): boolean;
 
   /**
    * Atomically increments resumeSeq and returns the updated workflow.
@@ -264,6 +289,57 @@ export class SqliteWorkflowStore implements WorkflowStore {
     };
   }
 
+  listWorkflows(opts?: {
+    state?: WorkflowState;
+    limit?: number;
+    offset?: number;
+    order?: "updated_desc" | "created_desc";
+  }): WorkflowRecord[] {
+    const limit = Math.max(1, Math.min(1000, opts?.limit ?? 100));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const order = opts?.order ?? "updated_desc";
+
+    const orderSql =
+      order === "created_desc" ? "created_at DESC" : "updated_at DESC";
+
+    const where = opts?.state ? "WHERE state = ?" : "";
+    const sql =
+      `SELECT workflow_id, state, created_at, updated_at, resolved_at, resume_published_at, definition_json, resume_seq ` +
+      `FROM workflows ${where} ORDER BY ${orderSql} LIMIT ? OFFSET ?`;
+
+    const rows = this.db.query(sql).all(
+      ...(opts?.state ? [opts.state] : []),
+      limit,
+      offset,
+    ) as Array<{
+      workflow_id: string;
+      state: string;
+      created_at: number;
+      updated_at: number;
+      resolved_at: number | null;
+      resume_published_at: number | null;
+      definition_json: string;
+      resume_seq: number;
+    }>;
+
+    const out: WorkflowRecord[] = [];
+    for (const row of rows) {
+      const def = parseJson<WorkflowRecord["definition"]>(row.definition_json);
+      if (!def) continue;
+      out.push({
+        workflowId: row.workflow_id,
+        state: row.state as WorkflowRecord["state"],
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        resolvedAt: row.resolved_at ?? undefined,
+        resumePublishedAt: row.resume_published_at ?? undefined,
+        definition: def,
+        resumeSeq: row.resume_seq,
+      });
+    }
+    return out;
+  }
+
   upsertWorkflow(w: WorkflowRecord): void {
     this.db.run(
       `
@@ -422,6 +498,42 @@ export class SqliteWorkflowStore implements WorkflowStore {
       discordFromUserId: row.discord_from_user_id ?? undefined,
       timeoutAt: row.timeout_at ?? undefined,
     }));
+  }
+
+  tryClaimTimeoutTask(params: {
+    workflowId: string;
+    taskId: string;
+    timeoutAt: number;
+    nowMs: number;
+    runningStaleMs?: number;
+  }): boolean {
+    const runningStaleMs = params.runningStaleMs ?? 60_000;
+    const staleBefore = params.nowMs - runningStaleMs;
+
+    const res = this.db
+      .query(
+        `
+        UPDATE workflow_tasks
+        SET state = ?, updated_at = ?
+        WHERE workflow_id = ?
+          AND task_id = ?
+          AND timeout_at = ?
+          AND (
+            state IN ('queued','blocked')
+            OR (state = 'running' AND updated_at <= ?)
+          )
+        `,
+      )
+      .run(
+        "running" satisfies WorkflowTaskState,
+        params.nowMs,
+        params.workflowId,
+        params.taskId,
+        params.timeoutAt,
+        staleBefore,
+      ) as unknown as { changes?: number };
+
+    return (res.changes ?? 0) > 0;
   }
 
   bumpResumeSeq(workflowId: string): WorkflowRecord | null {

@@ -24,6 +24,7 @@ import { SqliteTranscriptStore } from "../transcript/transcript-store";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
 import { startWorkflowService } from "../workflow/workflow-service";
+import { startWorkflowScheduler } from "../workflow/workflow-scheduler";
 import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
 import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
@@ -118,6 +119,7 @@ export async function createCoreRuntime(
   let stopAdapterToBus: { stop(): Promise<void> } | null = null;
   let stopRouter: { stop(): Promise<void> } | null = null;
   let stopWorkflow: { stop(): Promise<void> } | null = null;
+  let stopWorkflowScheduler: { stop(): Promise<void> } | null = null;
   let stopBusToAdapter: { stop(): Promise<void> } | null = null;
   let stopAgentRunner: { stop(): Promise<void> } | null = null;
 
@@ -166,6 +168,17 @@ export async function createCoreRuntime(
         subscriptionId: subId(subscriptionPrefix, "workflow"),
       });
 
+      stopWorkflowScheduler = await startWorkflowScheduler({
+        bus,
+        store: workflowStore,
+        queries: workflowQueries,
+        subscriptionId: subId(subscriptionPrefix, "workflow-scheduler"),
+      });
+
+      logger.info("Workflow scheduler started", {
+        subscriptionId: subId(subscriptionPrefix, "workflow-scheduler"),
+      });
+
       stopRouter = await startBusRequestRouter({
         adapter,
         bus,
@@ -194,6 +207,7 @@ export async function createCoreRuntime(
           bus,
           adapter,
           getConfig: () => getCoreConfig(),
+          workflowStore,
         }),
         logger: new Logger({
           logLevel: resolveLogLevel(),
@@ -292,6 +306,10 @@ export async function createCoreRuntime(
     await safe(
       "workflow.stop",
       () => stopWorkflow?.stop() ?? Promise.resolve(),
+    );
+    await safe(
+      "workflowScheduler.stop",
+      () => stopWorkflowScheduler?.stop() ?? Promise.resolve(),
     );
     await safe(
       "bridgeAdapterToBus.stop",

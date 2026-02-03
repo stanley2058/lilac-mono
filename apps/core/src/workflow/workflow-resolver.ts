@@ -129,6 +129,9 @@ export async function pollTimeouts(params: {
   if (candidates.length === 0) return;
 
   for (const task of candidates) {
+    // Timeout polling is only used as a fallback for discord.wait_for_reply tasks.
+    // Scheduled/cron jobs are handled by the workflow scheduler.
+    if (task.kind !== "discord.wait_for_reply") continue;
     if (!task.timeoutAt) continue;
 
     const fresh = params.store.getTask(task.workflowId, task.taskId);

@@ -9,11 +9,27 @@ import type { RequestContext, ServerTool } from "../types";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../../surface/adapter";
 import type { SendOpts } from "../../surface";
+import type { WorkflowStore } from "../../workflow/workflow-store";
+import { isAdapterPlatform } from "../../shared/is-adapter-platform";
+import type { WorkflowDefinitionV3, WorkflowState } from "../../workflow/types";
 
 type RequestHeaders = RequiredToolServerHeaders;
 
 function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "workflow");
+}
+
+function tryHeaders(ctx: RequestContext | undefined): RequestHeaders | undefined {
+  const requestId = ctx?.requestId;
+  const sessionId = ctx?.sessionId;
+  const requestClient = ctx?.requestClient;
+  if (!requestId || !sessionId || !requestClient) return undefined;
+  if (!isAdapterPlatform(requestClient)) return undefined;
+  return {
+    request_id: requestId,
+    session_id: sessionId,
+    request_client: requestClient,
+  };
 }
 
 export class Workflow implements ServerTool {
@@ -25,6 +41,7 @@ export class Workflow implements ServerTool {
       adapter?: SurfaceAdapter;
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
+      workflowStore?: WorkflowStore;
     },
   ) {}
 
@@ -50,22 +67,70 @@ export class Workflow implements ServerTool {
         description:
           "Send a message to a Discord session and create a workflow task that waits for a reply to that message. (This is a convenience wrapper around: surface.messages.send + workflow.)",
         shortInput: [
-          "--sessionId=<string>",
+          "--session-id=<string>",
           "--text=<string>",
-          "--taskDescription=<string>",
+          "--task-description=<string>",
           "--summary=<string>",
         ],
         input: [
-          "--sessionId=<string> | Target session/channel (raw id, <#id>, or configured token alias)",
+          "--session-id=<string> | Target session/channel (raw id, <#id>, or configured token alias)",
           "--text=<string> | Message to send",
           "--paths=<string[]> | Optional local attachment paths",
           "--filenames=<string[]> | Optional filenames for each attachment",
-          "--mimeTypes=<string[]> | Optional mime types for each attachment",
-          "--replyToMessageId=<string> | Optional reply target id",
-          "--taskDescription=<string> | Description for the wait_for_reply task",
+          "--mime-types=<string[]> | Optional mime types for each attachment",
+          "--reply-to-message-id=<string> | Optional reply target id",
+          "--task-description=<string> | Description for the wait_for_reply task",
           "--summary=<string> | Workflow summary to be used on resume",
-          "--fromUserId=<string> | Optional user id restriction for replies",
-          "--timeoutMs=<number> | Optional timeout for waiting",
+          "--from-user-id=<string> | Optional user id restriction for replies",
+          "--timeout-ms=<number> | Optional timeout for waiting",
+        ],
+      },
+      {
+        callableId: "workflow.schedule",
+        name: "Workflow Schedule",
+        description:
+          "Create a scheduled workflow trigger. Supports wait_until, wait_for, and cron (5-field minute precision).",
+        shortInput: [
+          "--mode=<wait_until|wait_for|cron>",
+          "--summary=<string>",
+          "--user-prompt=<string>",
+        ],
+        input: [
+          "--mode=<wait_until|wait_for|cron>",
+          "--summary=<string> | Job summary",
+          "--user-prompt=<string> | Job instructions",
+          "--system-prompt=<string> | Optional additional system prompt for the job",
+          "--require-done=<boolean> | Require a final DONE token (default: true)",
+          "--done-token=<string> | DONE token text (default: DONE)",
+          "--run-at-ms=<number> | (wait_until) absolute timestamp in ms",
+          "--run-at-iso=<string> | (wait_until) ISO timestamp",
+          "--delay-ms=<number> | (wait_for) delay in ms",
+          "--expr=<string> | (cron) 5-field cron expression",
+          "--tz=<string> | (cron) timezone (default: UTC)",
+          "--start-at-ms=<number> | (cron) optional start timestamp",
+          "--skip-missed=<boolean> | (cron) skip missed ticks (default: true)",
+        ],
+      },
+      {
+        callableId: "workflow.cancel",
+        name: "Workflow Cancel",
+        description: "Cancel a workflow and its pending tasks.",
+        shortInput: ["--workflow-id=<string>"],
+        input: [
+          "--workflow-id=<string>",
+          "--reason=<string> | Optional cancellation reason",
+        ],
+      },
+      {
+        callableId: "workflow.list",
+        name: "Workflow List",
+        description: "List workflows from the local workflow store (core runtime only).",
+        shortInput: ["--state=<string>", "--limit=<number>"],
+        input: [
+          "--state=<queued|running|blocked|resolved|failed|cancelled> | Optional state filter",
+          "--limit=<number> | Max rows (default: 100)",
+          "--offset=<number> | Offset (default: 0)",
+          "--include-tasks=<boolean> | Include tasks (default: false)",
         ],
       },
     ];
@@ -278,6 +343,181 @@ export class Workflow implements ServerTool {
       };
     }
 
+    if (callableId === "workflow.schedule") {
+      const payload = workflowScheduleInputSchema.parse(input);
+      const headers = tryHeaders(opts?.context);
+      const nowMs = Date.now();
+
+      const workflowId = `wf:${crypto.randomUUID()}`;
+      const taskId = `t:1:${crypto.randomUUID()}`;
+
+      const origin = headers
+        ? {
+            request_id: headers.request_id,
+            session_id: headers.session_id,
+            request_client: headers.request_client,
+          }
+        : undefined;
+
+      const requireDone = payload.requireDone ?? true;
+      const doneToken = (payload.doneToken ?? "DONE").trim() || "DONE";
+
+      let schedule: WorkflowDefinitionV3["schedule"];
+      let taskKind: string;
+      let taskInput: unknown;
+      let taskDesc: string;
+
+      if (payload.mode === "wait_until") {
+        const runAtMs =
+          payload.runAtMs ??
+          (payload.runAtIso ? new Date(payload.runAtIso).getTime() : NaN);
+        if (!Number.isFinite(runAtMs)) {
+          throw new Error(
+            "workflow.schedule wait_until requires a valid runAtMs or runAtIso",
+          );
+        }
+        const runAt = Math.trunc(runAtMs);
+        schedule = { mode: "wait_until", runAtMs: runAt };
+        taskKind = "time.wait_until";
+        taskInput = { runAtMs: runAt };
+        taskDesc = `wait_until @ ${new Date(runAt).toISOString()}`;
+      } else if (payload.mode === "wait_for") {
+        const delayMs = Math.trunc(payload.delayMs);
+        if (!Number.isFinite(delayMs) || delayMs <= 0) {
+          throw new Error("workflow.schedule wait_for requires delayMs > 0");
+        }
+        const runAtMs = nowMs + delayMs;
+        schedule = {
+          mode: "wait_for",
+          delayMs,
+          createdAtMs: nowMs,
+          runAtMs,
+        };
+        taskKind = "time.wait_until";
+        taskInput = { runAtMs };
+        taskDesc = `wait_for ${delayMs}ms @ ${new Date(runAtMs).toISOString()}`;
+      } else {
+        const tz = payload.tz ?? "UTC";
+        const skipMissed = payload.skipMissed ?? true;
+        const startAtMs =
+          typeof payload.startAtMs === "number" && Number.isFinite(payload.startAtMs)
+            ? Math.trunc(payload.startAtMs)
+            : undefined;
+
+        schedule = {
+          mode: "cron",
+          expr: payload.expr,
+          tz,
+          startAtMs,
+          skipMissed,
+        };
+
+        taskKind = "time.cron";
+        taskInput = {
+          expr: payload.expr,
+          tz,
+          startAtMs,
+          skipMissed,
+        };
+        taskDesc = `cron '${payload.expr}' tz=${tz}`;
+      }
+
+      const def: WorkflowDefinitionV3 = {
+        version: 3,
+        kind: "scheduled",
+        origin,
+        schedule,
+        job: {
+          summary: payload.summary,
+          systemPrompt: payload.systemPrompt,
+          userPrompt: payload.userPrompt,
+          requireDone,
+          doneToken,
+        },
+      };
+
+      await this.params.bus.publish(
+        lilacEventTypes.CmdWorkflowCreate,
+        { workflowId, definition: def },
+        headers ? { headers } : undefined,
+      );
+
+      await this.params.bus.publish(
+        lilacEventTypes.CmdWorkflowTaskCreate,
+        {
+          workflowId,
+          taskId,
+          kind: taskKind,
+          description: taskDesc,
+          input: taskInput,
+        },
+        headers ? { headers } : undefined,
+      );
+
+      return { ok: true as const, workflowId, taskId };
+    }
+
+    if (callableId === "workflow.cancel") {
+      const payload = workflowCancelInputSchema.parse(input);
+      const headers = tryHeaders(opts?.context);
+      await this.params.bus.publish(
+        lilacEventTypes.CmdWorkflowCancel,
+        { workflowId: payload.workflowId, reason: payload.reason },
+        headers ? { headers } : undefined,
+      );
+      return { ok: true as const };
+    }
+
+    if (callableId === "workflow.list") {
+      const payload = workflowListInputSchema.parse(input);
+      const store = this.params.workflowStore;
+      if (!store) {
+        throw new Error(
+          "workflow.list requires workflowStore (tool server must run inside core runtime)",
+        );
+      }
+
+      const rows = store.listWorkflows({
+        state: payload.state,
+        limit: payload.limit,
+        offset: payload.offset,
+      });
+
+      const workflows = rows.map((w) => {
+        if (w.definition.version === 2) {
+          return {
+            workflowId: w.workflowId,
+            kind: "interactive" as const,
+            state: w.state,
+            createdAt: w.createdAt,
+            updatedAt: w.updatedAt,
+            resolvedAt: w.resolvedAt,
+            summary: w.definition.summary,
+            ...(payload.includeTasks ? { tasks: store.listTasks(w.workflowId) } : {}),
+          };
+        }
+
+        const tasks = store.listTasks(w.workflowId);
+        const trigger = tasks.find(
+          (t) => t.kind === "time.wait_until" || t.kind === "time.cron",
+        );
+        return {
+          workflowId: w.workflowId,
+          kind: "scheduled" as const,
+          state: w.state,
+          createdAt: w.createdAt,
+          updatedAt: w.updatedAt,
+          resolvedAt: w.resolvedAt,
+          summary: w.definition.job.summary,
+          schedule: w.definition.schedule,
+          nextRunAt: trigger?.timeoutAt,
+          ...(payload.includeTasks ? { tasks } : {}),
+        };
+      });
+
+      return { ok: true as const, workflows };
+    }
+
     throw new Error("Invalid callable ID");
   }
 }
@@ -313,4 +553,58 @@ const workflowCreateInputSchema = z.object({
     )
     .min(1)
     .describe("Tasks to wait on (v2: discord.wait_for_reply)"),
+});
+
+const workflowScheduleInputSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("wait_until"),
+    summary: z.string().min(1),
+    userPrompt: z.string().min(1),
+    systemPrompt: z.string().min(1).optional(),
+    requireDone: z.boolean().optional(),
+    doneToken: z.string().min(1).optional(),
+    runAtMs: z.coerce.number().int().optional(),
+    runAtIso: z.string().min(1).optional(),
+  }),
+  z.object({
+    mode: z.literal("wait_for"),
+    summary: z.string().min(1),
+    userPrompt: z.string().min(1),
+    systemPrompt: z.string().min(1).optional(),
+    requireDone: z.boolean().optional(),
+    doneToken: z.string().min(1).optional(),
+    delayMs: z.coerce.number().int().positive(),
+  }),
+  z.object({
+    mode: z.literal("cron"),
+    summary: z.string().min(1),
+    userPrompt: z.string().min(1),
+    systemPrompt: z.string().min(1).optional(),
+    requireDone: z.boolean().optional(),
+    doneToken: z.string().min(1).optional(),
+    expr: z
+      .string()
+      .min(1)
+      .refine(
+        (s) => s.trim().split(/\s+/g).filter(Boolean).length === 5,
+        "expr must be a 5-field cron expression",
+      ),
+    tz: z.string().min(1).optional(),
+    startAtMs: z.coerce.number().int().optional(),
+    skipMissed: z.boolean().optional(),
+  }),
+]);
+
+const workflowCancelInputSchema = z.object({
+  workflowId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+
+const workflowListInputSchema = z.object({
+  state: z
+    .enum(["queued", "running", "blocked", "resolved", "failed", "cancelled"])
+    .optional(),
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+  includeTasks: z.boolean().optional().default(false),
 });

@@ -1,6 +1,7 @@
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../surface/adapter";
+import type { WorkflowStore } from "../workflow/workflow-store";
 import type { ServerTool } from "./types";
 import {
   Attachment,
@@ -20,6 +21,7 @@ export function createDefaultToolServerTools(params?: {
   adapter?: SurfaceAdapter;
   config?: CoreConfig;
   getConfig?: () => Promise<CoreConfig>;
+  workflowStore?: WorkflowStore;
 }): ServerTool[] {
   const tools: ServerTool[] = [
     new Onboarding(),
@@ -38,6 +40,7 @@ export function createDefaultToolServerTools(params?: {
         adapter: params.adapter,
         config: params.config,
         getConfig: params.getConfig,
+        workflowStore: params.workflowStore,
       }),
     );
     tools.push(new Attachment({ bus: params.bus }));

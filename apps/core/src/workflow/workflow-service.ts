@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import {
   lilacEventTypes,
   type CmdRequestMessageData,
@@ -18,6 +20,7 @@ import {
 
 import type {
   WorkflowDefinitionV2,
+  WorkflowDefinitionV3,
   WorkflowRecord,
   WorkflowTaskRecord,
   WorkflowTaskState,
@@ -35,32 +38,80 @@ function now(): number {
   return Date.now();
 }
 
-function isWorkflowDefinitionV2(x: unknown): x is WorkflowDefinitionV2 {
-  if (!x || typeof x !== "object") return false;
-  const o = x as Record<string, unknown>;
-  if (o.version !== 2) return false;
+const cronExpr5Schema = z
+  .string()
+  .min(1)
+  .refine(
+    (s) => s.trim().split(/\s+/g).filter(Boolean).length === 5,
+    "cron expr must be 5 fields",
+  );
 
-  const origin = o.origin;
-  const resumeTarget = o.resumeTarget;
+const v2OriginSchema = z.object({
+  request_id: z.string().min(1),
+  session_id: z.string().min(1),
+  request_client: z.string().min(1),
+  user_id: z.string().min(1).optional(),
+});
 
-  if (!origin || typeof origin !== "object") return false;
-  if (!resumeTarget || typeof resumeTarget !== "object") return false;
+const workflowDefinitionV2Schema: z.ZodType<WorkflowDefinitionV2> = z.object({
+  version: z.literal(2),
+  origin: v2OriginSchema,
+  resumeTarget: z.object({
+    session_id: z.string().min(1),
+    request_client: z.string().min(1),
+    mention_user_id: z.string().min(1).optional(),
+  }),
+  summary: z.string().min(1),
+  completion: z.enum(["all", "any"]),
+});
 
-  const originRec = origin as Record<string, unknown>;
-  const resumeRec = resumeTarget as Record<string, unknown>;
+const workflowDefinitionV3Schema: z.ZodType<WorkflowDefinitionV3> = z.object({
+  version: z.literal(3),
+  kind: z.literal("scheduled"),
+  origin: v2OriginSchema.optional(),
+  schedule: z.discriminatedUnion("mode", [
+    z.object({
+      mode: z.literal("wait_until"),
+      runAtMs: z.number().finite(),
+    }),
+    z.object({
+      mode: z.literal("wait_for"),
+      delayMs: z.number().finite(),
+      createdAtMs: z.number().finite(),
+      runAtMs: z.number().finite(),
+    }),
+    z.object({
+      mode: z.literal("cron"),
+      expr: cronExpr5Schema,
+      tz: z.string().min(1).optional(),
+      startAtMs: z.number().finite().optional(),
+      skipMissed: z.boolean().optional(),
+    }),
+  ]),
+  job: z.object({
+    summary: z.string().min(1),
+    systemPrompt: z.string().min(1).optional(),
+    userPrompt: z.string().min(1),
+    requireDone: z.boolean().optional(),
+    doneToken: z.string().min(1).optional(),
+  }),
+});
 
-  if (typeof originRec.request_id !== "string") return false;
-  if (typeof originRec.session_id !== "string") return false;
-  if (typeof originRec.request_client !== "string") return false;
+const workflowDefinitionSchema = z.union([
+  workflowDefinitionV2Schema,
+  workflowDefinitionV3Schema,
+]);
 
-  if (typeof resumeRec.session_id !== "string") return false;
-  if (typeof resumeRec.request_client !== "string") return false;
-
-  if (typeof o.summary !== "string") return false;
-
-  if (o.completion !== "all" && o.completion !== "any") return false;
-
-  return true;
+function parseWorkflowDefinition(
+  raw: unknown,
+): WorkflowDefinitionV2 | WorkflowDefinitionV3 {
+  const parsed = workflowDefinitionSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(
+      "cmd.workflow.create requires definition: WorkflowDefinitionV2 | WorkflowDefinitionV3",
+    );
+  }
+  return parsed.data;
 }
 
 async function publishWorkflowLifecycle(params: {
@@ -210,11 +261,7 @@ export async function startWorkflowService(params: {
         });
 
         const defRaw = msg.data.definition;
-        if (!isWorkflowDefinitionV2(defRaw)) {
-          throw new Error(
-            "cmd.workflow.create requires definition: WorkflowDefinitionV2",
-          );
-        }
+        const defParsed = parseWorkflowDefinition(defRaw);
 
         const existing = store.getWorkflow(workflowId);
         if (existing) {
@@ -227,7 +274,7 @@ export async function startWorkflowService(params: {
           state: "queued",
           createdAt: now(),
           updatedAt: now(),
-          definition: defRaw,
+          definition: defParsed,
           resumeSeq: 0,
         };
 
@@ -498,6 +545,11 @@ async function tryResolveWorkflow(params: {
   const w = store.getWorkflow(workflowId);
   if (!w) return;
 
+  // Scheduled workflows are triggered by the scheduler, not by v2 resume logic.
+  if (w.definition.version !== 2) {
+    return;
+  }
+
   if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled")
     return;
 
@@ -545,18 +597,25 @@ async function tryResolveWorkflow(params: {
   const bumped = store.bumpResumeSeq(workflowId);
   if (!bumped) return;
 
+  if (bumped.definition.version !== 2) {
+    // Defensive: should not happen since we only resolve v2 workflows here.
+    return;
+  }
+
+  const bumpedV2 = bumped as WorkflowRecord & { definition: WorkflowDefinitionV2 };
+
   const requestId = `wf:${workflowId}:${bumped.resumeSeq}`;
   ensureNonDiscordRequestId(requestId);
 
   logger.info("publishing resume request", {
     workflowId,
     requestId,
-    sessionId: bumped.definition.resumeTarget.session_id,
-    requestClient: bumped.definition.resumeTarget.request_client,
+    sessionId: bumpedV2.definition.resumeTarget.session_id,
+    requestClient: bumpedV2.definition.resumeTarget.request_client,
   });
 
   const resume = buildResumeRequest({
-    workflow: bumped,
+    workflow: bumpedV2,
     tasks: store.listTasks(workflowId),
     triggerUserText: params.triggerUserText,
     triggerMeta: {
