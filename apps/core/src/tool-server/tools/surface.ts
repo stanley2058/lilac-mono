@@ -231,8 +231,7 @@ const baseInputSchema = z.object({
   client: surfaceClientSchema.optional(),
 });
 
-const SESSION_ID_DESC =
-  "Session id (platform-specific; can be a raw id, a mention like <#id>, or a configured token alias). If omitted, defaults to the current request session.";
+const helpInputSchema = baseInputSchema;
 
 function withDefaultSessionId(
   rawInput: Record<string, unknown>,
@@ -260,7 +259,7 @@ function withDefaultSessionId(
 const sessionsListInputSchema = baseInputSchema;
 
 const messagesListInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   limit: z.coerce
     .number()
     .int()
@@ -281,12 +280,12 @@ const messagesListInputSchema = baseInputSchema.extend({
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
 });
 
 const messagesSendInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
   paths: z
@@ -304,25 +303,25 @@ const messagesSendInputSchema = baseInputSchema.extend({
 });
 
 const messagesEditInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
   text: z.string().min(1),
 });
 
 const messagesDeleteInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
 });
 
 const reactionsListInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
 });
 
 const reactionsListDetailedInputSchema = reactionsListInputSchema;
 
 const reactionsAddInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
   reaction: z
     .string()
@@ -331,7 +330,7 @@ const reactionsAddInputSchema = baseInputSchema.extend({
 });
 
 const reactionsRemoveInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1).describe(SESSION_ID_DESC),
+  sessionId: z.string().min(1),
   messageId: z.string().min(1),
   reaction: z
     .string()
@@ -355,6 +354,16 @@ export class Surface implements ServerTool {
 
   async list() {
     return [
+      {
+        callableId: "surface.help",
+        name: "Surface Help",
+        description:
+          "Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.",
+        shortInput: zodObjectToCliLines(helpInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(helpInputSchema),
+      },
       {
         callableId: "surface.sessions.list",
         name: "Surface Sessions List",
@@ -461,6 +470,9 @@ export class Surface implements ServerTool {
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
+    if (callableId === "surface.help") {
+      return await this.callHelp(input, opts?.context);
+    }
     if (callableId === "surface.sessions.list") {
       return await this.callSessionsList(input, opts?.context);
     }
@@ -493,6 +505,81 @@ export class Surface implements ServerTool {
     }
 
     throw new Error(`Invalid callable ID '${callableId}'`);
+  }
+
+  private async callHelp(
+    rawInput: Record<string, unknown>,
+    ctx: RequestContext | undefined,
+  ) {
+    const input = helpInputSchema.parse(rawInput);
+
+    const ctxClientRaw = ctx?.requestClient;
+    const ctxClient = isAdapterPlatform(ctxClientRaw)
+      ? ctxClientRaw
+      : "unknown";
+    const effectiveClient =
+      input.client ?? (ctxClient !== "unknown" ? ctxClient : undefined);
+
+    return {
+      tool: "surface" as const,
+      supportedClients: ["discord"] as const,
+      context: {
+        requestClient: ctxClient,
+        sessionId: typeof ctx?.sessionId === "string" ? ctx.sessionId : null,
+      },
+      terminology: {
+        client:
+          "Surface client/platform. If the request context has a known client (LILAC_REQUEST_CLIENT), --client is optional; otherwise pass --client explicitly.",
+        session:
+          "A conversation container. For Discord, a session maps to a channel.",
+        sessionId:
+          "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID).",
+        messageId:
+          "A platform-specific message identifier inside a session/channel.",
+        replyToMessageId:
+          "When sending a message, optionally reply to an existing messageId.",
+        attachments:
+          "Local files attached to an outbound message (paths resolved relative to request cwd).",
+      },
+      sessionIdFormats:
+        effectiveClient === "discord" || effectiveClient === undefined
+          ? {
+              client: "discord" as const,
+              accepted: [
+                {
+                  format: "123456789012345678",
+                  meaning: "Raw Discord channel id",
+                },
+                {
+                  format: "<#123456789012345678>",
+                  meaning: "Discord channel mention",
+                },
+                {
+                  format: "dev-chat",
+                  meaning:
+                    "Configured token alias (cfg.entity.sessions.discord maps token -> channelId)",
+                },
+              ],
+              notes: [
+                "Only Discord is implemented today; other clients are reserved.",
+                "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID).",
+              ],
+            }
+          : {
+              client: effectiveClient,
+              accepted: [],
+              notes: [
+                "Only Discord is implemented today; pass --client=discord (or set LILAC_REQUEST_CLIENT=discord).",
+              ],
+            },
+      relatedConfigKeys: {
+        requestClientEnv: "LILAC_REQUEST_CLIENT",
+        sessionIdEnv: "LILAC_SESSION_ID",
+        discordSessionAliases: "cfg.entity.sessions.discord",
+        surfaceAllowlistChannels: "cfg.surface.discord.allowedChannelIds",
+        surfaceAllowlistGuilds: "cfg.surface.discord.allowedGuildIds",
+      },
+    };
   }
 
   private async getCfg(): Promise<CoreConfig> {
