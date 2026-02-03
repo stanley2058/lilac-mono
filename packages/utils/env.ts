@@ -6,6 +6,13 @@ export type Env = ReturnType<typeof parseEnv>;
 
 export function parseEnv() {
   const env = process.env;
+
+  const perfLog = env.LILAC_PERF_LOG === "1" || env.LILAC_PERF_LOG === "true";
+  const perfLagWarnMsRaw = env.LILAC_PERF_LAG_WARN_MS;
+  const perfLagWarnMs = perfLagWarnMsRaw ? Number(perfLagWarnMsRaw) : 200;
+  const perfSampleRateRaw = env.LILAC_PERF_SAMPLE_RATE;
+  const perfSampleRate = perfSampleRateRaw ? Number(perfSampleRateRaw) : 0;
+
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
@@ -53,6 +60,14 @@ export function parseEnv() {
       web: {
         tavilyApiKey: env.TAVILY_API_KEY,
       },
+    },
+    perf: {
+      log: perfLog,
+      lagWarnMs: Number.isFinite(perfLagWarnMs) ? perfLagWarnMs : 200,
+      sampleRate:
+        Number.isFinite(perfSampleRate) && perfSampleRate >= 0
+          ? perfSampleRate
+          : 0,
     },
   } as const;
 }

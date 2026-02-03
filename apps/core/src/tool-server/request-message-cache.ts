@@ -98,7 +98,7 @@ export async function createRequestMessageCache(
       subscriptionId,
       consumerId: consumerId(subscriptionId),
       offset: { type: "now" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg: LilacMessageForTopic<"cmd.request">, ctx) => {
       if (msg.type !== lilacEventTypes.CmdRequestMessage) return;

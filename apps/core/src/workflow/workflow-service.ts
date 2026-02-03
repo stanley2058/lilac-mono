@@ -197,7 +197,7 @@ export async function startWorkflowService(params: {
       subscriptionId,
       consumerId: consumerId(subscriptionId),
       offset: { type: "begin" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type === lilacEventTypes.CmdWorkflowCreate) {
@@ -399,7 +399,7 @@ export async function startWorkflowService(params: {
       subscriptionId: `${subscriptionId}:adapter`,
       consumerId: consumerId(`${subscriptionId}:adapter`),
       offset: { type: "now" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.EvtAdapterMessageCreated) {

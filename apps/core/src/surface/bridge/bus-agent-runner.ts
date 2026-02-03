@@ -7,6 +7,7 @@ import {
 } from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
+  env,
   getCoreConfig,
   ModelCapability,
   resolveLogLevel,
@@ -398,7 +399,7 @@ export async function startBusAgentRunner(params: {
       subscriptionId,
       consumerId: consumerId(subscriptionId),
       offset: { type: "begin" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
@@ -410,6 +411,23 @@ export async function startBusAgentRunner(params: {
         throw new Error(
           "cmd.request.message missing required headers.request_id/session_id",
         );
+      }
+
+      if (env.perf.log) {
+        const lagMs = Date.now() - msg.ts;
+        const shouldWarn = lagMs >= env.perf.lagWarnMs;
+        const shouldSample =
+          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        if (shouldWarn || shouldSample) {
+          (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
+            stage: "cmd.request->agent_runner",
+            lagMs,
+            requestId,
+            sessionId,
+            requestClient,
+            queue: msg.data.queue,
+          });
+        }
       }
 
       logger.info("cmd.request.message received", {

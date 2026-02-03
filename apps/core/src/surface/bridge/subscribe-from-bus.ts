@@ -4,7 +4,7 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter, SurfaceOutputPart } from "../adapter";
@@ -62,6 +62,8 @@ function toAttachment(params: {
 
 type ActiveRelay = {
   stop(): Promise<void>;
+  startedAt: number;
+  firstOutLogged: boolean;
 };
 
 export async function bridgeBusToAdapter(params: {
@@ -94,7 +96,7 @@ export async function bridgeBusToAdapter(params: {
       subscriptionId,
       consumerId: getConsumerId(subscriptionId),
       offset: { type: "now" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.EvtRequestReply) return;
@@ -118,6 +120,22 @@ export async function bridgeBusToAdapter(params: {
       if (activeRelays.has(requestId)) {
         await ctx.commit();
         return;
+      }
+
+      if (env.perf.log) {
+        const lagMs = Date.now() - msg.ts;
+        const shouldWarn = lagMs >= env.perf.lagWarnMs;
+        const shouldSample =
+          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        if (shouldWarn || shouldSample) {
+          (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
+            stage: "evt.request.reply->bus_to_adapter",
+            lagMs,
+            requestId,
+            sessionId,
+            requestClient,
+          });
+        }
       }
 
       logger.info("starting reply relay", {
@@ -151,6 +169,8 @@ export async function bridgeBusToAdapter(params: {
   }): Promise<ActiveRelay> {
     const { requestId, sessionId, idleTimeoutMs } = input;
 
+    const relayStartedAt = Date.now();
+
     const sessionRef: SessionRef = {
       platform,
       channelId: sessionId,
@@ -183,6 +203,7 @@ export async function bridgeBusToAdapter(params: {
 
     let stopped = false;
     let outputSub: { stop(): Promise<void> } | null = null;
+    let firstOutLogged = false;
 
     const relayStop = async () => {
       if (stopped) return;
@@ -206,6 +227,7 @@ export async function bridgeBusToAdapter(params: {
 
     bumpTimeout();
 
+    const subStart = Date.now();
     outputSub = await bus.subscribeTopic(
       outReqTopic(requestId),
       {
@@ -214,6 +236,27 @@ export async function bridgeBusToAdapter(params: {
         batch: { maxWaitMs: 250 },
       },
       async (outMsg) => {
+        if (env.perf.log && !firstOutLogged) {
+          firstOutLogged = true;
+          const now = Date.now();
+          const sinceRelayStartMs = now - relayStartedAt;
+          const outBusLagMs = now - outMsg.ts;
+          const shouldWarn =
+            sinceRelayStartMs >= env.perf.lagWarnMs ||
+            outBusLagMs >= env.perf.lagWarnMs;
+          const shouldSample =
+            env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+          if (shouldWarn || shouldSample) {
+            (shouldWarn ? logger.warn : logger.info)("perf.output_first_event", {
+              requestId,
+              sessionId,
+              sinceRelayStartMs,
+              outBusLagMs,
+              outType: outMsg.type,
+            });
+          }
+        }
+
         bumpTimeout();
 
         let part: SurfaceOutputPart | null = null;
@@ -290,7 +333,26 @@ export async function bridgeBusToAdapter(params: {
       },
     );
 
-    return { stop: relayStop };
+    if (env.perf.log) {
+      const setupMs = Date.now() - subStart;
+      const shouldWarn = setupMs >= env.perf.lagWarnMs;
+      const shouldSample =
+        env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+      if (shouldWarn || shouldSample) {
+        (shouldWarn ? logger.warn : logger.info)("perf.subscription_setup", {
+          stage: "bus_to_adapter.output_subscribe",
+          requestId,
+          sessionId,
+          setupMs,
+        });
+      }
+    }
+
+    return {
+      stop: relayStop,
+      startedAt: relayStartedAt,
+      firstOutLogged,
+    };
   }
 
   return {

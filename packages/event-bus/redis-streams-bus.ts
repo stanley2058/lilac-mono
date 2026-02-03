@@ -4,6 +4,10 @@ import { resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { RawBus } from "./raw-bus";
+import {
+  RedisConnectionPool,
+  type RedisConnectionPoolOptions,
+} from "./redis-connection-pool";
 import type {
   Cursor,
   FetchOptions,
@@ -121,6 +125,19 @@ export type RedisStreamsBusOptions = {
    * Default: false (assume the caller owns the shared Redis client).
    */
   ownsRedis?: boolean;
+
+  /**
+   * Pool config for subscription connections.
+   *
+   * Subscriptions use blocking `XREAD`/`XREADGROUP`, which would otherwise block
+   * publishes on a shared ioredis connection.
+   */
+  subscriberPool?: {
+    /** Max duplicated clients used by subscriptions. Default: 16. */
+    max?: number;
+    /** Optional background warm-up count. Default: 0. */
+    warm?: number;
+  };
 };
 
 /** Redis Streams-backed implementation of `RawBus`. */
@@ -129,6 +146,7 @@ export class RedisStreamsBus implements RawBus {
   private readonly keyPrefix: string;
   private readonly ownsRedis: boolean;
   private readonly logger: Logger;
+  private readonly subPool: RedisConnectionPool;
 
   /** Create a new bus using an existing ioredis client. */
   constructor(options: RedisStreamsBusOptions) {
@@ -139,6 +157,20 @@ export class RedisStreamsBus implements RawBus {
       logLevel: resolveLogLevel(),
       module: "event-bus:redis-streams",
     });
+
+    const poolCfg = options.subscriberPool;
+    const max = poolCfg?.max ?? 16;
+    const warm = poolCfg?.warm ?? 0;
+    const poolOpts: RedisConnectionPoolOptions = {
+      base: this.redis,
+      max,
+      warm,
+      onExhausted: "fallback_to_shared_with_warn",
+      logger: this.logger,
+      label: "event-bus:subscribe",
+    };
+
+    this.subPool = new RedisConnectionPool(poolOpts);
   }
 
   private streamKey(topic: Topic): string {
@@ -245,11 +277,45 @@ export class RedisStreamsBus implements RawBus {
     const streamKey = this.streamKey(topic);
     const abortController = new AbortController();
 
+    const lease = await this.subPool.acquire();
+    const subRedis = lease.redis;
+
+    let disconnectOnStop = false;
+    let releaseUnhealthy = false;
+
+    // Avoid a race where callers publish immediately after subscribe() resolves.
+    // For work/fanout (consumer group) modes, the group must exist before we return.
+    let group: string | null = null;
+    let consumerId: string | null = null;
+
     const maxMessages = opts.batch?.maxMessages ?? DEFAULT_MAX_MESSAGES;
     const blockMs = Math.min(
       Math.max(1, opts.batch?.maxWaitMs ?? DEFAULT_BLOCK_MS),
       30_000,
     );
+
+    try {
+      if (opts.mode === "work" || opts.mode === "fanout") {
+        const workOpts = opts as WorkOrFanoutSubscriptionOptions;
+        group = workOpts.subscriptionId;
+        consumerId = workOpts.consumerId ?? randomConsumerId();
+
+        const startId = workOpts.offset?.type === "begin" ? "0-0" : "$";
+        await ensureGroup({
+          redis: subRedis,
+          streamKey,
+          group,
+          startId,
+          logger: this.logger,
+        });
+      }
+    } catch (e) {
+      releaseUnhealthy = true;
+      if (!lease.shared) {
+        await lease.release({ unhealthy: true });
+      }
+      throw e;
+    }
 
     this.logger.info("subscribe", {
       topic,
@@ -270,24 +336,67 @@ export class RedisStreamsBus implements RawBus {
     const running = (async () => {
       try {
         if (opts.mode === "tail") {
-        let cursor: string =
-          opts.offset?.type === "begin"
-            ? "0-0"
-            : opts.offset?.type === "now"
-              ? "$"
-              : opts.offset?.type === "cursor"
-                ? opts.offset.cursor
-                : "$";
+          let cursor: string =
+            opts.offset?.type === "begin"
+              ? "0-0"
+              : opts.offset?.type === "now"
+                ? "$"
+                : opts.offset?.type === "cursor"
+                  ? opts.offset.cursor
+                  : "$";
+
+          while (!abortController.signal.aborted) {
+            const res = (await subRedis.xread(
+              "COUNT",
+              String(maxMessages),
+              "BLOCK",
+              String(blockMs),
+              "STREAMS",
+              streamKey,
+              cursor,
+            )) as unknown;
+
+            const streams = Array.isArray(res) ? res : [];
+            for (const s of streams) {
+              const entries = Array.isArray(s) ? s[1] : undefined;
+              if (!Array.isArray(entries)) continue;
+
+              for (const entry of entries) {
+                const id = Array.isArray(entry) ? entry[0] : undefined;
+                const fields = Array.isArray(entry) ? entry[1] : undefined;
+                if (typeof id !== "string") continue;
+
+                cursor = id;
+                const msg = decodeMessage(topic, id, fields) as Message<TData>;
+                const ctx: HandleContext = {
+                  cursor: id,
+                  commit: async () => {},
+                };
+
+                await handler(msg, ctx);
+              }
+            }
+          }
+
+          return;
+        }
+
+        if (!group || !consumerId) {
+          throw new Error("event-bus internal error: missing group/consumerId");
+        }
 
         while (!abortController.signal.aborted) {
-          const res = (await this.redis.xread(
+          const res = (await subRedis.xreadgroup(
+            "GROUP",
+            group,
+            consumerId,
             "COUNT",
             String(maxMessages),
             "BLOCK",
             String(blockMs),
             "STREAMS",
             streamKey,
-            cursor,
+            ">",
           )) as unknown;
 
           const streams = Array.isArray(res) ? res : [];
@@ -300,99 +409,67 @@ export class RedisStreamsBus implements RawBus {
               const fields = Array.isArray(entry) ? entry[1] : undefined;
               if (typeof id !== "string") continue;
 
-              cursor = id;
               const msg = decodeMessage(topic, id, fields) as Message<TData>;
               const ctx: HandleContext = {
                 cursor: id,
-                commit: async () => {},
+                commit: async () => {
+                  await subRedis.xack(streamKey, group, id);
+                },
               };
 
-              await handler(msg, ctx);
+              try {
+                await handler(msg, ctx);
+              } catch (e) {
+                // Leave message pending for later analysis / recovery.
+                // TODO: consider adding a configurable dead-letter flow.
+                this.logger.error(
+                  "event-bus handler error",
+                  {
+                    topic,
+                    group,
+                    consumerId,
+                    messageId: id,
+                    messageType: msg.type,
+                  },
+                  e,
+                );
+              }
             }
           }
         }
-
-        return;
-        }
-
-      const workOpts = opts as WorkOrFanoutSubscriptionOptions;
-      const group = workOpts.subscriptionId;
-      const consumerId = workOpts.consumerId ?? randomConsumerId();
-
-      const startId = workOpts.offset?.type === "begin" ? "0-0" : "$";
-      await ensureGroup({
-        redis: this.redis,
-        streamKey,
-        group,
-        startId,
-        logger: this.logger,
-      });
-
-      while (!abortController.signal.aborted) {
-        const res = (await this.redis.xreadgroup(
-          "GROUP",
-          group,
-          consumerId,
-          "COUNT",
-          String(maxMessages),
-          "BLOCK",
-          String(blockMs),
-          "STREAMS",
-          streamKey,
-          ">",
-        )) as unknown;
-
-        const streams = Array.isArray(res) ? res : [];
-        for (const s of streams) {
-          const entries = Array.isArray(s) ? s[1] : undefined;
-          if (!Array.isArray(entries)) continue;
-
-          for (const entry of entries) {
-            const id = Array.isArray(entry) ? entry[0] : undefined;
-            const fields = Array.isArray(entry) ? entry[1] : undefined;
-            if (typeof id !== "string") continue;
-
-            const msg = decodeMessage(topic, id, fields) as Message<TData>;
-            const ctx: HandleContext = {
-              cursor: id,
-              commit: async () => {
-                await this.redis.xack(streamKey, group, id);
-              },
-            };
-
-            try {
-              await handler(msg, ctx);
-            } catch (e) {
-              // Leave message pending for later analysis / recovery.
-              // TODO: consider adding a configurable dead-letter flow.
-              this.logger.error(
-                "event-bus handler error",
-                {
-                  topic,
-                  group,
-                  consumerId,
-                  messageId: id,
-                  messageType: msg.type,
-                },
-                e,
-              );
-            }
-          }
-        }
-      }
       } catch (e) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+        releaseUnhealthy = true;
         this.logger.error(
           "event-bus subscription loop crashed",
           { topic, mode: opts.mode },
           e,
         );
         throw e;
+      } finally {
+        if (!lease.shared) {
+          await lease.release({ unhealthy: disconnectOnStop || releaseUnhealthy });
+        }
       }
     })();
 
     return {
       stop: async () => {
         abortController.abort();
+
+        // If this subscription owns a dedicated connection, disconnect it so any
+        // blocking XREAD unblocks promptly.
+        if (!lease.shared) {
+          // We avoid disconnecting for short BLOCK intervals so the connection can be reused.
+          // For long blocks, force-disconnect to avoid waiting on the server-side timeout.
+          if (blockMs > 500) {
+            disconnectOnStop = true;
+            subRedis.disconnect();
+          }
+        }
+
         await running;
       },
     };
@@ -400,6 +477,7 @@ export class RedisStreamsBus implements RawBus {
 
   /** Close the bus (no-op unless `ownsRedis` was set). */
   async close(): Promise<void> {
+    await this.subPool.close();
     if (!this.ownsRedis) return;
 
     // Do not `disconnect()` because it drops queued commands; `quit()` is clean.

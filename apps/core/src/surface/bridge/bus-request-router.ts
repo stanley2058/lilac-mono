@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   getCoreConfig,
+  env,
   resolveLogLevel,
   resolveModelSlot,
   type CoreConfig,
@@ -141,7 +142,7 @@ export async function startBusRequestRouter(params: {
       subscriptionId: `${subscriptionId}:lifecycle`,
       consumerId: consumerId(`${subscriptionId}:lifecycle`),
       offset: { type: "now" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.EvtRequestLifecycleChanged) return;
@@ -185,11 +186,27 @@ export async function startBusRequestRouter(params: {
       subscriptionId: `${subscriptionId}:adapter`,
       consumerId: consumerId(`${subscriptionId}:adapter`),
       offset: { type: "now" },
-      batch: { maxWaitMs: 250 },
+      batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
       if (msg.type !== lilacEventTypes.EvtAdapterMessageCreated) return;
       if (msg.data.platform !== "discord") return;
+
+      if (env.perf.log) {
+        const lagMs = Date.now() - msg.ts;
+        const shouldWarn = lagMs >= env.perf.lagWarnMs;
+        const shouldSample =
+          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        if (shouldWarn || shouldSample) {
+          (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
+            stage: "evt.adapter->router",
+            lagMs,
+            sessionId: msg.data.channelId,
+            messageId: msg.data.messageId,
+            userId: msg.data.userId,
+          });
+        }
+      }
 
       if (params.shouldSuppressAdapterEvent) {
         const decision = await params

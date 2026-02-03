@@ -95,6 +95,14 @@ export async function createCoreRuntime(
   const raw = createRedisStreamsBus({
     redis,
     ownsRedis: true,
+    subscriberPool: {
+      // We keep subscriptions on dedicated connections because Redis Streams uses
+      // blocking XREAD/XREADGROUP calls.
+      // Cap connections to avoid FD blowups, and warm a few so first-turn latency
+      // doesn't include connection establishment.
+      max: 16,
+      warm: 8,
+    },
   });
 
   const bus: LilacBus = createLilacBus(raw);

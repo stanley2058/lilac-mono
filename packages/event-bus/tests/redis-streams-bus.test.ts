@@ -16,6 +16,70 @@ function randomId(prefix: string): string {
 }
 
 describe("RedisStreamsBus", () => {
+  it("does not block publish while a tail subscription is blocked", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("hol")}`;
+    const raw = createRedisStreamsBus({
+      redis,
+      keyPrefix,
+      ownsRedis: true,
+      subscriberPool: { max: 4, warm: 2 },
+    });
+
+    const topicA = "topic-a";
+    const topicB = "topic-b";
+
+    const sub = await raw.subscribe(
+      topicA,
+      { mode: "tail", offset: { type: "now" }, batch: { maxWaitMs: 2000 } },
+      async () => {},
+    );
+
+    // Give the subscription loop a moment to enter XREAD BLOCK.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const startedAt = Date.now();
+    await raw.publish(
+      { topic: topicB, type: "test.publish", data: { ok: true } },
+      { topic: topicB, type: "test.publish" },
+    );
+    const publishMs = Date.now() - startedAt;
+
+    // On the old single-connection implementation, this would be ~BLOCK ms.
+    expect(publishMs).toBeLessThan(600);
+
+    await sub.stop();
+    await raw.close();
+  });
+
+  it("stop() interrupts a blocking XREAD promptly", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("stop")}`;
+    const raw = createRedisStreamsBus({
+      redis,
+      keyPrefix,
+      ownsRedis: true,
+      subscriberPool: { max: 2, warm: 1 },
+    });
+
+    const topic = "topic";
+
+    const sub = await raw.subscribe(
+      topic,
+      { mode: "tail", offset: { type: "now" }, batch: { maxWaitMs: 5000 } },
+      async () => {},
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const startedAt = Date.now();
+    await sub.stop();
+    const stopMs = Date.now() - startedAt;
+
+    expect(stopMs).toBeLessThan(600);
+    await raw.close();
+  });
+
   it("publishes and tails output stream events", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("tail")}`;
