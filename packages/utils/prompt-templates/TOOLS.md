@@ -54,7 +54,7 @@ cat payload.json | tools <tool> --stdin
 - `workflow.wait_for_reply.send_and_wait` — Send a message and create a wait_for_reply task waiting for a reply to that message.
 - `workflow.schedule` — Create a scheduled workflow trigger (wait_until / wait_for / cron).
 - `workflow.cancel` — Cancel a workflow and its pending tasks.
-- `workflow.list` — List workflows from the local workflow store (core runtime only).
+- `workflow.list` — List workflows from the local workflow store (scheduled only).
 
 ### Instructions on workflow
 

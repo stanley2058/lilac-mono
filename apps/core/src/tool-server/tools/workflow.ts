@@ -130,7 +130,7 @@ export class Workflow implements ServerTool {
         callableId: "workflow.list",
         name: "Workflow List",
         description:
-          "List workflows from the local workflow store (core runtime only).",
+          "List workflows from the local workflow store (scheduled only).",
         shortInput: ["--state=<string>", "--limit=<number>"],
         input: [
           "--state=<queued|running|blocked|resolved|failed|cancelled> | Optional state filter",
