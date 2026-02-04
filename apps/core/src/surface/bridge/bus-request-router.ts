@@ -492,20 +492,21 @@ export async function startBusRequestRouter(params: {
 
     // Gate is only for active channels with no running request.
     const gateCfg = cfg.surface.router.activeGate;
-    if (!gateCfg.enabled) {
-      return;
-    }
-
     const gate = params.routerGate ?? shouldForwardActiveBatch;
 
-    const decision = await gate({
-      sessionId,
-      botName: cfg.surface.discord.botName,
-      messages: b.messages,
-    }).catch((e: unknown) => {
-      logger.error("router gate failed; skipping", { sessionId }, e);
-      return { forward: false, reason: "error" };
-    });
+    const decision = gateCfg.enabled
+      ? await gate({
+          sessionId,
+          botName: cfg.surface.discord.botName,
+          messages: b.messages,
+        }).catch((e: unknown) => {
+          logger.error("router gate failed; skipping", { sessionId }, e);
+          return { forward: false, reason: "error" };
+        })
+      : ({ forward: true as const, reason: "disabled" } satisfies {
+          forward: boolean;
+          reason?: string;
+        });
 
     if (!decision.forward) {
       logger.info(
@@ -520,6 +521,7 @@ export async function startBusRequestRouter(params: {
         sessionId,
         reason: decision.reason ?? "forward",
         messageCount: b.messages.length,
+        gated: gateCfg.enabled,
       },
       "router gate forwarded batch",
     );
