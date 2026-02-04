@@ -17,7 +17,7 @@
         "@stanley2058/lilac-agent": "workspace:*",
         "@stanley2058/lilac-event-bus": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
-        "@stanley2058/simple-module-logger": "^0.0.2",
+        "@stanley2058/simple-module-logger": "^0.0.3",
         "@tavily/core": "^0.6.4",
         "@types/jsdom": "^27.0.0",
         "@types/turndown": "^5.0.6",
@@ -58,7 +58,7 @@
       "dependencies": {
         "@stanley2058/lilac-core": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
-        "@stanley2058/simple-module-logger": "^0.0.2",
+        "@stanley2058/simple-module-logger": "^0.0.3",
         "@toon-format/toon": "^2.1.0",
       },
       "devDependencies": {
@@ -85,7 +85,7 @@
       "name": "@stanley2058/lilac-event-bus",
       "dependencies": {
         "@stanley2058/lilac-utils": "workspace:*",
-        "@stanley2058/simple-module-logger": "^0.0.2",
+        "@stanley2058/simple-module-logger": "^0.0.3",
         "ai": "^6.0.27",
         "ioredis": "^5.9.2",
         "superjson": "^2.2.1",
@@ -106,7 +106,7 @@
         "@ai-sdk/openai-compatible": "^2.0.4",
         "@ai-sdk/xai": "^3.0.13",
         "@openrouter/ai-sdk-provider": "^1.5.4",
-        "@stanley2058/simple-module-logger": "^0.0.2",
+        "@stanley2058/simple-module-logger": "^0.0.3",
         "ai": "^6.0.27",
         "zod": "^4.3.5",
       },
@@ -227,7 +227,7 @@
 
     "@stanley2058/lilac-utils": ["@stanley2058/lilac-utils@workspace:packages/utils"],
 
-    "@stanley2058/simple-module-logger": ["@stanley2058/simple-module-logger@0.0.2", "", {}, "sha512-xVMPLAgHkH+3rRjB0pXtnEP+Nu1ImbuCH3yYDJC5b0syRygZW4yZ0iED4dpTdZaSw/cmW6KPlHOUp7gYrznrJw=="],
+    "@stanley2058/simple-module-logger": ["@stanley2058/simple-module-logger@0.0.3", "", {}, "sha512-8p3oZasqK9zdaoALyZ4cxB2lX13MAUvTX2jmzcFg+zdc3bgh2pBbFoGzQ7vhSvzwMhusjlLOf5hToMJXDmIaBw=="],
 
     "@tavily/core": ["@tavily/core@0.6.4", "", { "dependencies": { "axios": "^1.7.7", "https-proxy-agent": "^7.0.6", "js-tiktoken": "^1.0.14" } }, "sha512-PppC0p2SwkoImLiYFT/uqDyWKPivpVsIM16HUf1Apmtbqg1YhI7Yg5Hq6eYSojC6COVCGXE4CotBnWqUmrai+A=="],
 
