@@ -33,6 +33,15 @@ const surfaceClientSchema = z
 
 type SurfaceClient = z.infer<typeof surfaceClientSchema>;
 
+function inferDiscordOriginFromRequestId(
+  requestId: string | undefined,
+): { sessionId: string; messageId: string } | null {
+  if (!requestId) return null;
+  const m = /^discord:([^:]+):([^:]+)$/.exec(requestId);
+  if (!m) return null;
+  return { sessionId: m[1]!, messageId: m[2]! };
+}
+
 function resolveClient(params: {
   inputClient?: SurfaceClient;
   ctx?: RequestContext;
@@ -243,23 +252,59 @@ function withDefaultSessionId(
   // If explicitly provided (even null/empty), defer to schema validation.
   if (hasOwn && value !== undefined) return rawInput;
 
-  if (typeof ctx?.sessionId === "string" && ctx.sessionId.length > 0) {
-    return { ...rawInput, sessionId: ctx.sessionId };
+  const ctxSessionId =
+    typeof ctx?.sessionId === "string" && ctx.sessionId.length > 0
+      ? ctx.sessionId
+      : inferDiscordOriginFromRequestId(ctx?.requestId)?.sessionId;
+
+  if (ctxSessionId) {
+    return { ...rawInput, sessionId: ctxSessionId };
   }
 
-  if (!hasOwn) {
-    throw new Error(
-      "surface tool requires --session-id when request session is unknown (set LILAC_SESSION_ID or pass --session-id=<id>)",
-    );
+  throw new Error(
+    "surface tool requires --session-id when request session is unknown (set LILAC_SESSION_ID or pass --session-id=<id>)",
+  );
+}
+
+function withDefaultMessageId(
+  rawInput: Record<string, unknown>,
+  ctx: RequestContext | undefined,
+): Record<string, unknown> {
+  const hasOwn = Object.prototype.hasOwnProperty.call(rawInput, "messageId");
+  const value = rawInput["messageId"];
+
+  // If explicitly provided (even null/empty), defer to schema validation.
+  if (hasOwn && value !== undefined) return rawInput;
+
+  const inferred = inferDiscordOriginFromRequestId(ctx?.requestId);
+  if (inferred?.messageId) {
+    return { ...rawInput, messageId: inferred.messageId };
   }
 
-  return rawInput;
+  const rid = typeof ctx?.requestId === "string" ? ctx.requestId : undefined;
+  const hint = rid ? ` (requestId='${rid}')` : " (no requestId in context)";
+
+  throw new Error(
+    `surface tool requires --message-id when origin message is unknown${hint}. ` +
+      "This is expected for active-mode gated batches (requestId like 'req:<uuid>'); pass --message-id explicitly.",
+  );
+}
+
+function mustPresentString(v: unknown, label: string): string {
+  if (typeof v === "string" && v.length > 0) return v;
+  throw new Error(`surface tool internal error: missing ${label}`);
 }
 
 const sessionsListInputSchema = baseInputSchema;
 
 const messagesListInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
   limit: z.coerce
     .number()
     .int()
@@ -280,12 +325,30 @@ const messagesListInputSchema = baseInputSchema.extend({
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
-  messageId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  messageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+    ),
 });
 
 const messagesSendInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
   paths: z
@@ -303,26 +366,62 @@ const messagesSendInputSchema = baseInputSchema.extend({
 });
 
 const messagesEditInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
   messageId: z.string().min(1),
   text: z.string().min(1),
 });
 
 const messagesDeleteInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
   messageId: z.string().min(1),
 });
 
 const reactionsListInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
-  messageId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  messageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+    ),
 });
 
 const reactionsListDetailedInputSchema = reactionsListInputSchema;
 
 const reactionsAddInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
-  messageId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  messageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+    ),
   reaction: z
     .string()
     .min(1)
@@ -330,8 +429,20 @@ const reactionsAddInputSchema = baseInputSchema.extend({
 });
 
 const reactionsRemoveInputSchema = baseInputSchema.extend({
-  sessionId: z.string().min(1),
-  messageId: z.string().min(1),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  messageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+    ),
   reaction: z
     .string()
     .min(1)
@@ -533,9 +644,9 @@ export class Surface implements ServerTool {
         session:
           "A conversation container. For Discord, a session maps to a channel.",
         sessionId:
-          "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID).",
+          "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
         messageId:
-          "A platform-specific message identifier inside a session/channel.",
+          "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>'.",
         replyToMessageId:
           "When sending a message, optionally reply to an existing messageId.",
         attachments:
@@ -560,11 +671,11 @@ export class Surface implements ServerTool {
                     "Configured token alias (cfg.entity.sessions.discord maps token -> channelId)",
                 },
               ],
-              notes: [
-                "Only Discord is implemented today; other clients are reserved.",
-                "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID).",
-              ],
-            }
+               notes: [
+                 "Only Discord is implemented today; other clients are reserved.",
+                 "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID). Some requests also allow inferring sessionId/messageId from requestId when it is 'discord:<sessionId>:<messageId>'.",
+               ],
+             }
           : {
               client: effectiveClient,
               accepted: [],
@@ -656,7 +767,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -697,7 +808,7 @@ export class Surface implements ServerTool {
     ctx: RequestContext | undefined,
   ) {
     const input = messagesReadInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
+      withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
@@ -705,7 +816,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -723,7 +834,10 @@ export class Surface implements ServerTool {
       throw new Error(`Not allowed: channelId '${channelId}'`);
     }
 
-    const msgRef = asDiscordMsgRef(channelId, input.messageId);
+    const msgRef = asDiscordMsgRef(
+      channelId,
+      mustPresentString(input.messageId, "messageId"),
+    );
     const msg = await this.params.adapter.readMsg(msgRef);
 
     if (!msg) return null;
@@ -754,7 +868,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -824,7 +938,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -865,7 +979,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -894,7 +1008,7 @@ export class Surface implements ServerTool {
     ctx: RequestContext | undefined,
   ) {
     const input = reactionsListInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
+      withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
@@ -902,7 +1016,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -927,7 +1041,10 @@ export class Surface implements ServerTool {
     }
 
     const details = await this.params.adapter.listReactionDetails(
-      asDiscordMsgRef(channelId, input.messageId),
+      asDiscordMsgRef(
+        channelId,
+        mustPresentString(input.messageId, "messageId"),
+      ),
     );
 
     const out: SurfaceReactionSummary[] = details.map((d) => ({
@@ -943,7 +1060,7 @@ export class Surface implements ServerTool {
     ctx: RequestContext | undefined,
   ) {
     const input = reactionsListDetailedInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
+      withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
@@ -951,7 +1068,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -976,7 +1093,10 @@ export class Surface implements ServerTool {
     }
 
     return await this.params.adapter.listReactionDetails(
-      asDiscordMsgRef(channelId, input.messageId),
+      asDiscordMsgRef(
+        channelId,
+        mustPresentString(input.messageId, "messageId"),
+      ),
     );
   }
 
@@ -985,7 +1105,7 @@ export class Surface implements ServerTool {
     ctx: RequestContext | undefined,
   ) {
     const input = reactionsAddInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
+      withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
@@ -993,7 +1113,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -1012,7 +1132,10 @@ export class Surface implements ServerTool {
     }
 
     await this.params.adapter.addReaction(
-      asDiscordMsgRef(channelId, input.messageId),
+      asDiscordMsgRef(
+        channelId,
+        mustPresentString(input.messageId, "messageId"),
+      ),
       input.reaction,
     );
 
@@ -1024,7 +1147,7 @@ export class Surface implements ServerTool {
     ctx: RequestContext | undefined,
   ) {
     const input = reactionsRemoveInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
+      withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
     ensureDiscordClient(client);
@@ -1032,7 +1155,7 @@ export class Surface implements ServerTool {
     const cfg = await this.getCfg();
 
     const channelId = resolveDiscordSessionId({
-      sessionId: input.sessionId,
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
       cfg,
     });
 
@@ -1051,7 +1174,10 @@ export class Surface implements ServerTool {
     }
 
     await this.params.adapter.removeReaction(
-      asDiscordMsgRef(channelId, input.messageId),
+      asDiscordMsgRef(
+        channelId,
+        mustPresentString(input.messageId, "messageId"),
+      ),
       input.reaction,
     );
 

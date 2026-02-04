@@ -279,6 +279,79 @@ describe("tool-server surface", () => {
     expect(res[0].ref.messageId).toBe("m1");
   });
 
+  it("defaults sessionId and messageId from discord requestId", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "hi",
+            ts: 0,
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const ctx: RequestContext = {
+      requestId: `discord:${channelId}:m1`,
+      requestClient: "discord",
+    };
+
+    const msg = (await tool.call(
+      "surface.messages.read",
+      {},
+      { context: ctx },
+    )) as any;
+
+    expect(msg?.ref?.messageId).toBe("m1");
+  });
+
+  it("requires messageId when requestId is not discord-anchored", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {},
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const ctx: RequestContext = {
+      requestId: "req:123",
+      requestClient: "discord",
+      sessionId: channelId,
+    };
+
+    await expect(
+      tool.call("surface.reactions.list", {}, { context: ctx }),
+    ).rejects.toThrow("requires --message-id");
+  });
+
   it("resolves sessionId alias for send", async () => {
     const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-surface-"));
     const p = join(tmp, "hello.txt");
