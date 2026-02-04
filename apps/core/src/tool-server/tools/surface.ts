@@ -4,7 +4,10 @@ import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type/core";
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
-import type { SurfaceAdapter } from "../../surface/adapter";
+import {
+  hasCacheBurstProvider,
+  type SurfaceAdapter,
+} from "../../surface/adapter";
 import type {
   MsgRef,
   SessionRef,
@@ -488,8 +491,7 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.messages.list",
         name: "Surface Messages List",
-        description:
-          "List messages for a session (adapter may fetch history and cache it).",
+        description: "List messages for a session.",
         shortInput: zodObjectToCliLines(messagesListInputSchema, {
           mode: "required",
         }),
@@ -498,8 +500,7 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.messages.read",
         name: "Surface Messages Read",
-        description:
-          "Read a message by id (adapter may fetch history and cache it).",
+        description: "Read a message by id.",
         shortInput: zodObjectToCliLines(messagesReadInputSchema, {
           mode: "required",
         }),
@@ -535,7 +536,7 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.reactions.list",
         name: "Surface Reactions List",
-        description: "List cached reactions for a message (emoji + count).",
+        description: "List reactions for a message (emoji + count).",
         shortInput: zodObjectToCliLines(reactionsListInputSchema, {
           mode: "required",
         }),
@@ -545,7 +546,7 @@ export class Surface implements ServerTool {
         callableId: "surface.reactions.listDetailed",
         name: "Surface Reactions List Detailed",
         description:
-          "List cached reactions for a message with per-user details (Discord only).",
+          "List reactions for a message with per-user details (Discord only).",
         shortInput: zodObjectToCliLines(reactionsListDetailedInputSchema, {
           mode: "required",
         }),
@@ -671,11 +672,11 @@ export class Surface implements ServerTool {
                     "Configured token alias (cfg.entity.sessions.discord maps token -> channelId)",
                 },
               ],
-               notes: [
-                 "Only Discord is implemented today; other clients are reserved.",
-                 "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID). Some requests also allow inferring sessionId/messageId from requestId when it is 'discord:<sessionId>:<messageId>'.",
-               ],
-             }
+              notes: [
+                "Only Discord is implemented today; other clients are reserved.",
+                "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID). Some requests also allow inferring sessionId/messageId from requestId when it is 'discord:<sessionId>:<messageId>'.",
+              ],
+            }
           : {
               client: effectiveClient,
               accepted: [],
@@ -786,6 +787,14 @@ export class Surface implements ServerTool {
     }
 
     const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
+
+    if (hasCacheBurstProvider(this.params.adapter)) {
+      await this.params.adapter.burstCache({
+        sessionRef,
+        reason: "surface_tool",
+      });
+    }
+
     const limit = input.limit ?? 50;
     const messages = await this.params.adapter.listMsg(sessionRef, {
       limit,
@@ -838,6 +847,15 @@ export class Surface implements ServerTool {
       channelId,
       mustPresentString(input.messageId, "messageId"),
     );
+
+    if (hasCacheBurstProvider(this.params.adapter)) {
+      await this.params.adapter.burstCache({
+        msgRef,
+        sessionRef: asDiscordSessionRef(channelId, guildId ?? undefined),
+        reason: "surface_tool",
+      });
+    }
+
     const msg = await this.params.adapter.readMsg(msgRef);
 
     if (!msg) return null;
@@ -1040,12 +1058,20 @@ export class Surface implements ServerTool {
       );
     }
 
-    const details = await this.params.adapter.listReactionDetails(
-      asDiscordMsgRef(
-        channelId,
-        mustPresentString(input.messageId, "messageId"),
-      ),
+    const msgRef = asDiscordMsgRef(
+      channelId,
+      mustPresentString(input.messageId, "messageId"),
     );
+
+    if (hasCacheBurstProvider(this.params.adapter)) {
+      await this.params.adapter.burstCache({
+        msgRef,
+        sessionRef: asDiscordSessionRef(channelId, guildId ?? undefined),
+        reason: "surface_tool",
+      });
+    }
+
+    const details = await this.params.adapter.listReactionDetails(msgRef);
 
     const out: SurfaceReactionSummary[] = details.map((d) => ({
       emoji: d.emoji,
@@ -1092,12 +1118,20 @@ export class Surface implements ServerTool {
       );
     }
 
-    return await this.params.adapter.listReactionDetails(
-      asDiscordMsgRef(
-        channelId,
-        mustPresentString(input.messageId, "messageId"),
-      ),
+    const msgRef = asDiscordMsgRef(
+      channelId,
+      mustPresentString(input.messageId, "messageId"),
     );
+
+    if (hasCacheBurstProvider(this.params.adapter)) {
+      await this.params.adapter.burstCache({
+        msgRef,
+        sessionRef: asDiscordSessionRef(channelId, guildId ?? undefined),
+        reason: "surface_tool",
+      });
+    }
+
+    return await this.params.adapter.listReactionDetails(msgRef);
   }
 
   private async callReactionsAdd(

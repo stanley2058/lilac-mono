@@ -4,8 +4,10 @@ import {
   GatewayIntentBits,
   Partials,
   type Message,
+  type MessageReaction,
   type PartialMessage,
   type TextBasedChannel,
+  type User,
 } from "discord.js";
 import type {
   EvtAdapterMessageCreatedData,
@@ -150,6 +152,20 @@ function shouldAllowMessage(params: {
   if (gid && allowedGuildIds.has(gid)) return true;
 
   return false;
+}
+
+function compareDiscordSnowflake(a: string, b: string): number {
+  // Prefer numeric comparison (snowflakes are numeric strings).
+  // Fall back to localeCompare if parsing fails.
+  try {
+    const ai = BigInt(a);
+    const bi = BigInt(b);
+    if (ai < bi) return -1;
+    if (ai > bi) return 1;
+    return 0;
+  } catch {
+    return a.localeCompare(b);
+  }
 }
 
 export class DiscordAdapter implements SurfaceAdapter {
@@ -362,6 +378,48 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
   }
 
+  async burstCache(input: {
+    msgRef?: MsgRef;
+    sessionRef?: SessionRef;
+    reason: "surface_tool" | "other";
+  }): Promise<void> {
+    void input.reason;
+
+    const client = this.client;
+    if (!client) return;
+
+    const fromMsg =
+      input.msgRef && input.msgRef.platform === "discord"
+        ? input.msgRef.channelId
+        : null;
+    const fromSession =
+      input.sessionRef && input.sessionRef.platform === "discord"
+        ? input.sessionRef.channelId
+        : null;
+    const channelId = fromMsg ?? fromSession;
+    if (!channelId) return;
+
+    const ch =
+      client.channels.cache.get(channelId) ??
+      (await client.channels.fetch(channelId).catch(() => null));
+    if (!ch || !("messages" in ch) || !ch.messages?.cache) return;
+
+    if (input.msgRef && input.msgRef.platform === "discord") {
+      const cached = ch.messages.cache.get(input.msgRef.messageId);
+      if (cached) {
+        for (const r of cached.reactions.cache.values()) {
+          r.users.cache.clear();
+        }
+        cached.reactions.cache.clear();
+      }
+      ch.messages.cache.delete(input.msgRef.messageId);
+      return;
+    }
+
+    // "Latest view" reads generally want a fresh channel snapshot.
+    ch.messages.cache.clear();
+  }
+
   /** Lightweight Discord API fetch to get a channel's guildId (no history). */
   async fetchGuildIdForChannel(channelId: string): Promise<string | null> {
     const client = this.mustClient();
@@ -369,10 +427,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ch = await client.channels.fetch(channelId).catch(() => null);
     if (!ch) return null;
 
-    const maybeGuildId = (ch as unknown as { guildId?: unknown }).guildId;
-    return typeof maybeGuildId === "string" && maybeGuildId.length > 0
-      ? maybeGuildId
-      : null;
+    return ch && "guildId" in ch ? ch.guildId : null;
   }
 
   async startOutput(
@@ -476,94 +531,35 @@ export class DiscordAdapter implements SurfaceAdapter {
   }
 
   async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
-    const store = this.mustStore();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const existing = store.getMessage(msgRef.channelId, msgRef.messageId);
-    if (!existing) {
-      // Cache miss: fetch from Discord API and persist.
-      const fetched = await this.fetchAndCacheDiscordMessage({
-        channelId: msgRef.channelId,
-        messageId: msgRef.messageId,
-      });
-      if (!fetched) return null;
-    }
-
-    const row = store.getMessage(msgRef.channelId, msgRef.messageId);
-    if (!row) return null;
-
-    const user = store.getUserName(row.author_id);
-
-    const sess = store.getSession(row.channel_id);
-    const sessionRef = asDiscordSessionRef({
-      channelId: row.channel_id,
-      guildId: sess?.guild_id,
-      parentChannelId: sess?.parent_channel_id,
+    const msg = await this.fetchDiscordMessage({
+      channelId: msgRef.channelId,
+      messageId: msgRef.messageId,
     });
 
-    return {
-      ref: msgRef,
-      session: sessionRef,
-      userId: row.author_id,
-      userName:
-        user?.display_name ?? user?.global_name ?? user?.username ?? undefined,
-      text: row.content,
-      ts: row.ts,
-      editedTs: row.edited_ts ?? undefined,
-      deleted: row.deleted_ts != null,
-      raw: row.raw_json ? JSON.parse(row.raw_json) : undefined,
-    };
+    if (!msg) return null;
+
+    return this.toSurfaceMessageFromDiscordMessage(msg);
   }
 
   async listMsg(
     sessionRef: SessionRef,
     opts?: LimitOpts,
   ): Promise<SurfaceMessage[]> {
-    const store = this.mustStore();
     if (sessionRef.platform !== "discord")
       throw new Error("Unsupported platform");
 
-    const limit = opts?.limit ?? 50;
+    const limit = Math.min(200, Math.max(1, opts?.limit ?? 50));
 
-    // If the store is empty for this channel, opportunistically fetch from Discord API.
-    // This keeps "explore context" usable even after restarts.
-    const latest = store.getLatestMessage(sessionRef.channelId);
-    if (!latest) {
-      await this.fetchAndCacheDiscordMessages({
-        channelId: sessionRef.channelId,
-        limit,
-        beforeMessageId: opts?.beforeMessageId,
-        afterMessageId: opts?.afterMessageId,
-      });
-    }
-
-    let rows = store.listMessages(sessionRef.channelId, limit);
-
-    // If a cursor was requested and we might not have enough cached history, try a best-effort fetch.
-    if (opts?.beforeMessageId || opts?.afterMessageId) {
-      await this.fetchAndCacheDiscordMessages({
-        channelId: sessionRef.channelId,
-        limit,
-        beforeMessageId: opts?.beforeMessageId,
-        afterMessageId: opts?.afterMessageId,
-      });
-      rows = store.listMessages(sessionRef.channelId, limit);
-    }
-
-    return rows.map((r) => {
-      const u = store.getUserName(r.author_id);
-      return {
-        ref: asDiscordMsgRef(r.channel_id, r.message_id),
-        session: sessionRef,
-        userId: r.author_id,
-        userName: u?.display_name ?? u?.global_name ?? u?.username ?? undefined,
-        text: r.content,
-        ts: r.ts,
-        editedTs: r.edited_ts ?? undefined,
-        deleted: r.deleted_ts != null,
-        raw: r.raw_json ? JSON.parse(r.raw_json) : undefined,
-      };
+    const messages = await this.fetchDiscordMessages({
+      channelId: sessionRef.channelId,
+      limit,
+      beforeMessageId: opts?.beforeMessageId,
+      afterMessageId: opts?.afterMessageId,
     });
+
+    return messages.map((m) => this.toSurfaceMessageFromDiscordMessage(m));
   }
 
   async editMsg(msgRef: MsgRef, content: ContentOpts): Promise<void> {
@@ -603,36 +599,22 @@ export class DiscordAdapter implements SurfaceAdapter {
     msgRef: MsgRef,
     opts?: LimitOpts,
   ): Promise<SurfaceMessage[]> {
-    const store = this.mustStore();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const base = store.getMessage(msgRef.channelId, msgRef.messageId);
-    if (!base) return [];
+    const limit = Math.min(100, Math.max(1, opts?.limit ?? 20));
 
-    const limit = opts?.limit ?? 20;
-    const rows = store.listMessagesAround(msgRef.channelId, base.ts, limit);
-
-    const sess = store.getSession(msgRef.channelId);
-    const sessionRef = asDiscordSessionRef({
+    const messages = await this.fetchDiscordMessages({
       channelId: msgRef.channelId,
-      guildId: sess?.guild_id,
-      parentChannelId: sess?.parent_channel_id,
+      limit,
+      aroundMessageId: msgRef.messageId,
     });
 
-    return rows.map((r) => {
-      const u = store.getUserName(r.author_id);
-      return {
-        ref: asDiscordMsgRef(r.channel_id, r.message_id),
-        session: sessionRef,
-        userId: r.author_id,
-        userName: u?.display_name ?? u?.global_name ?? u?.username ?? undefined,
-        text: r.content,
-        ts: r.ts,
-        editedTs: r.edited_ts ?? undefined,
-        deleted: r.deleted_ts != null,
-        raw: r.raw_json ? JSON.parse(r.raw_json) : undefined,
-      };
-    });
+    return messages
+      .map((m) => this.toSurfaceMessageFromDiscordMessage(m))
+      .sort((a, b) => {
+        if (a.ts !== b.ts) return a.ts - b.ts;
+        return compareDiscordSnowflake(a.ref.messageId, b.ref.messageId);
+      });
   }
 
   async addReaction(msgRef: MsgRef, reaction: string): Promise<void> {
@@ -645,7 +627,11 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
-    const msg = await channel.messages.fetch(msgRef.messageId);
+    const msg = await channel.messages.fetch({
+      message: msgRef.messageId,
+      cache: false,
+      force: true,
+    });
     await msg.react(reaction);
   }
 
@@ -659,54 +645,74 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
-    const msg = await channel.messages.fetch(msgRef.messageId);
+    const msg = await channel.messages.fetch({
+      message: msgRef.messageId,
+      cache: false,
+      force: true,
+    });
     const r = msg.reactions.resolve(reaction);
     await r?.remove();
   }
 
   async listReactions(msgRef: MsgRef): Promise<string[]> {
-    const store = this.mustStore();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const rows = store.listMessageReactions({
+    const msg = await this.fetchDiscordMessage({
       channelId: msgRef.channelId,
       messageId: msgRef.messageId,
     });
+    if (!msg) return [];
 
-    return [...new Set(rows.map((r) => r.emoji))];
+    return [...new Set([...msg.reactions.cache.values()].map((r) => r.emoji.toString()))].sort(
+      (a, b) => a.localeCompare(b),
+    );
   }
 
   async listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]> {
-    const store = this.mustStore();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const rows = store.listMessageReactions({
+    const store = this.mustStore();
+
+    const msg = await this.fetchDiscordMessage({
       channelId: msgRef.channelId,
       messageId: msgRef.messageId,
     });
+    if (!msg) return [];
 
-    const byEmoji = new Map<string, Map<string, string | undefined>>();
-
-    for (const r of rows) {
-      const u = store.getUserName(r.user_id);
-      const userName =
-        u?.display_name ?? u?.global_name ?? u?.username ?? undefined;
-
-      const users =
-        byEmoji.get(r.emoji) ?? new Map<string, string | undefined>();
-      users.set(r.user_id, userName);
-      byEmoji.set(r.emoji, users);
-    }
+    const now = Date.now();
 
     const out: SurfaceReactionDetail[] = [];
-    for (const [emoji, users] of byEmoji) {
-      const list = [...users.entries()]
-        .map(([userId, userName]) => ({ userId, userName }))
+    const reactions = [...msg.reactions.cache.values()];
+
+    for (const reaction of reactions) {
+      const emoji = reaction.emoji.toString();
+
+      const users = await this.fetchAllReactionUsers(reaction, { maxUsers: 1000 });
+
+      const list = [...users.values()]
+        .map((u) => {
+          const cached = store.getUserName(u.id);
+          const cachedName =
+            cached?.display_name ?? cached?.global_name ?? cached?.username ?? undefined;
+          const liveName = (u.globalName ?? u.username) || undefined;
+          const userName = cachedName ?? liveName;
+
+          // Best-effort: keep the name caches warm for entity mapping.
+          store.upsertUserName({
+            userId: u.id,
+            username: u.username,
+            globalName: u.globalName ?? undefined,
+            displayName: userName,
+            updatedTs: now,
+          });
+
+          return { userId: u.id, userName };
+        })
         .sort((a, b) => a.userId.localeCompare(b.userId));
 
       out.push({
         emoji,
-        count: list.length,
+        count: reaction.count ?? list.length,
         users: list,
       });
     }
@@ -715,6 +721,42 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (a.count !== b.count) return b.count - a.count;
       return a.emoji.localeCompare(b.emoji);
     });
+
+    return out;
+  }
+
+  private async fetchAllReactionUsers(
+    reaction: MessageReaction,
+    opts: { maxUsers: number },
+  ): Promise<Map<string, User>> {
+    const out = new Map<string, User>();
+
+    const pageLimit = 100;
+    let after: string | undefined;
+
+    while (out.size < opts.maxUsers) {
+      const res = await reaction.users
+        .fetch({ limit: pageLimit, ...(after ? { after } : {}) })
+        .catch(() => null);
+      if (!res || res.size === 0) break;
+
+      for (const u of res.values()) {
+        out.set(u.id, u);
+      }
+
+      if (res.size < pageLimit) break;
+      after = res.lastKey() ?? undefined;
+      if (!after) break;
+
+      const expected = reaction.count;
+      if (
+        typeof expected === "number" &&
+        Number.isFinite(expected) &&
+        out.size >= expected
+      ) {
+        break;
+      }
+    }
 
     return out;
   }
@@ -733,22 +775,26 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (sessionRef.platform !== "discord")
       throw new Error("Unsupported platform");
 
-    const rows = store.listUnread(sessionRef.channelId);
+    const rs = store.getOrInitReadState(sessionRef.channelId);
 
-    return rows.map((r) => {
-      const u = store.getUserName(r.author_id);
-      return {
-        ref: asDiscordMsgRef(r.channel_id, r.message_id),
-        session: sessionRef,
-        userId: r.author_id,
-        userName: u?.display_name ?? u?.global_name ?? u?.username ?? undefined,
-        text: r.content,
-        ts: r.ts,
-        editedTs: r.edited_ts ?? undefined,
-        deleted: r.deleted_ts != null,
-        raw: r.raw_json ? JSON.parse(r.raw_json) : undefined,
-      };
+    // Best-effort: fetch a recent window and filter locally.
+    const recent = await this.listMsg(sessionRef, { limit: 100 });
+
+    const unread = recent.filter((m) => {
+      if (m.deleted) return false;
+      if (m.ts > rs.last_read_ts) return true;
+      if (m.ts < rs.last_read_ts) return false;
+      return (
+        compareDiscordSnowflake(m.ref.messageId, rs.last_read_message_id) > 0
+      );
     });
+
+    unread.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      return compareDiscordSnowflake(a.ref.messageId, b.ref.messageId);
+    });
+
+    return unread;
   }
 
   async markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void> {
@@ -759,22 +805,28 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (upToMsgRef) {
       if (upToMsgRef.platform !== "discord")
         throw new Error("Unsupported platform");
-      const msg = store.getMessage(upToMsgRef.channelId, upToMsgRef.messageId);
+
+      const msg = await this.fetchDiscordMessage({
+        channelId: upToMsgRef.channelId,
+        messageId: upToMsgRef.messageId,
+      });
+
       if (!msg) return;
+
       store.setReadState({
         channelId: sessionRef.channelId,
-        lastReadTs: msg.ts,
-        lastReadMessageId: msg.message_id,
+        lastReadTs: getMessageTs(msg),
+        lastReadMessageId: msg.id,
       });
       return;
     }
 
-    const latest = store.getLatestMessage(sessionRef.channelId);
+    const latest = await this.fetchLatestDiscordMessage(sessionRef.channelId);
     if (!latest) return;
     store.setReadState({
       channelId: sessionRef.channelId,
-      lastReadTs: latest.ts,
-      lastReadMessageId: latest.message_id,
+      lastReadTs: getMessageTs(latest),
+      lastReadMessageId: latest.id,
     });
   }
 
@@ -800,48 +852,13 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
-  private async fetchAndCacheDiscordMessages(input: {
-    channelId: string;
-    limit: number;
-    beforeMessageId?: string;
-    afterMessageId?: string;
-  }): Promise<void> {
-    const cfg = this.cfg;
-    const store = this.store;
-    const client = this.client;
-    if (!cfg || !store || !client) return;
-
-    const ch = await client.channels.fetch(input.channelId).catch(() => null);
-    if (!ch || !("messages" in ch) || !ch.messages?.fetch) return;
-
-    // Best-effort: discord.js supports fetch with { limit, before, after }.
-    // Use `any` to avoid overload ambiguity (messageId vs options object).
-    const res = await ch.messages
-      .fetch({
-        limit: Math.min(100, Math.max(1, input.limit)),
-        before: input.beforeMessageId,
-        after: input.afterMessageId,
-      })
-      .catch(() => null);
-
-    if (!res) return;
-
-    for (const msg of res.values()) {
-      await this.fetchAndCacheDiscordMessage({
-        channelId: input.channelId,
-        messageId: msg.id,
-      });
-    }
-  }
-
-  private async fetchAndCacheDiscordMessage(input: {
+  private async fetchDiscordMessage(input: {
     channelId: string;
     messageId: string;
-  }): Promise<SurfaceMessage | null> {
+  }): Promise<Message | null> {
     const cfg = this.cfg;
-    const store = this.store;
     const client = this.client;
-    if (!cfg || !store || !client) return null;
+    if (!cfg || !client) return null;
 
     const ch = await client.channels.fetch(input.channelId).catch(() => null);
     if (!ch || !("messages" in ch) || !ch.messages?.fetch) return null;
@@ -849,15 +866,105 @@ export class DiscordAdapter implements SurfaceAdapter {
     const msg = await ch.messages.fetch(input.messageId).catch(() => null);
     if (!msg) return null;
 
-    const guildId = msg.guildId;
-    if (!shouldAllowMessage({ cfg, channelId: input.channelId, guildId })) {
-      this.logger.debug("message ignored (not allowlisted)", {
+    if (
+      !shouldAllowMessage({
+        cfg,
         channelId: input.channelId,
-        guildId,
-        messageId: input.messageId,
-      });
+        guildId: msg.guildId,
+      })
+    ) {
       return null;
     }
+
+    return msg;
+  }
+
+  private async fetchLatestDiscordMessage(
+    channelId: string,
+  ): Promise<Message | null> {
+    const list = await this.fetchDiscordMessages({ channelId, limit: 1 });
+    return list[0] ?? null;
+  }
+
+  private async fetchDiscordMessages(input: {
+    channelId: string;
+    limit: number;
+    beforeMessageId?: string;
+    afterMessageId?: string;
+    aroundMessageId?: string;
+  }): Promise<Message[]> {
+    const cfg = this.cfg;
+    const client = this.client;
+    if (!cfg || !client) return [];
+
+    const ch = await client.channels.fetch(input.channelId).catch(() => null);
+    if (!ch || !("messages" in ch) || !ch.messages?.fetch) return [];
+
+    // Allowlist is channel/guild scoped; for list operations the channel is authoritative.
+    const guildId = "guildId" in ch ? ch.guildId : null;
+
+    if (!shouldAllowMessage({ cfg, channelId: input.channelId, guildId })) {
+      return [];
+    }
+
+    const limit = Math.min(200, Math.max(1, Math.floor(input.limit)));
+
+    // `around` and `after` are not paged (Discord API caps at 100 anyway).
+    if (input.aroundMessageId) {
+      const res = await ch.messages
+        .fetch({
+          limit: Math.min(100, limit),
+          around: input.aroundMessageId,
+        })
+        .catch(() => null);
+      return res ? [...res.values()] : [];
+    }
+
+    if (input.afterMessageId) {
+      const res = await ch.messages
+        .fetch({
+          limit: Math.min(100, limit),
+          after: input.afterMessageId,
+        })
+        .catch(() => null);
+      return res ? [...res.values()] : [];
+    }
+
+    // Default / before-cursor: page backwards using `before`.
+    const out: Message[] = [];
+    let before = input.beforeMessageId;
+
+    while (out.length < limit) {
+      const pageSize = Math.min(100, limit - out.length);
+      const res = await ch.messages
+        .fetch({
+          limit: pageSize,
+          before,
+        })
+        .catch(() => null);
+      if (!res) break;
+
+      const page = [...res.values()];
+      if (page.length === 0) break;
+
+      out.push(...page);
+
+      // `res.values()` yields newest->oldest; the last entry is the oldest.
+      before = page[page.length - 1]!.id;
+    }
+
+    return out;
+  }
+
+  private toSurfaceMessageFromDiscordMessage(msg: Message): SurfaceMessage {
+    const cfg = this.cfg;
+    const store = this.store;
+    if (!cfg || !store) {
+      throw new Error("DiscordAdapter not connected");
+    }
+
+    const channelId = msg.channelId;
+    const guildId = msg.guildId;
 
     const channelName = getChannelName(msg.channel);
 
@@ -875,26 +982,22 @@ export class DiscordAdapter implements SurfaceAdapter {
           ? "thread"
           : "channel";
 
+    // Keep lightweight metadata caches warm (names/sessions), but do not cache message bodies.
     store.upsertSession({
-      channelId: input.channelId,
+      channelId,
       guildId: guildId ?? undefined,
       parentChannelId: parentChannelId ?? undefined,
       name: channelName,
       type: sessionKind,
       updatedTs: Date.now(),
       raw: {
-        channel: {
-          id: input.channelId,
-          name: channelName,
-          guildId,
-          parentChannelId,
-        },
+        channel: { id: channelId, name: channelName, guildId, parentChannelId },
       },
     });
 
     if (channelName) {
       store.upsertChannelName({
-        channelId: input.channelId,
+        channelId,
         name: channelName,
         updatedTs: Date.now(),
       });
@@ -924,16 +1027,24 @@ export class DiscordAdapter implements SurfaceAdapter {
     const normalizedContent =
       this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
-    store.upsertMessage({
-      channelId: input.channelId,
-      messageId: msg.id,
-      authorId: msg.author.id,
-      content: normalizedContent,
+    const sessionRef = asDiscordSessionRef({
+      channelId,
+      guildId,
+      parentChannelId,
+    });
+
+    return {
+      ref: asDiscordMsgRef(channelId, msg.id),
+      session: sessionRef,
+      userId: msg.author.id,
+      userName: authorName,
+      text: normalizedContent,
       ts,
       editedTs,
+      deleted: false,
       raw: {
         id: msg.id,
-        channelId: input.channelId,
+        channelId,
         guildId,
         authorId: msg.author.id,
         content: msg.content,
@@ -941,34 +1052,6 @@ export class DiscordAdapter implements SurfaceAdapter {
         reference: msg.reference ?? undefined,
         editedTs,
         attachments,
-      },
-    });
-
-    const sessionRef = asDiscordSessionRef({
-      channelId: input.channelId,
-      guildId,
-      parentChannelId,
-    });
-
-    return {
-      ref: asDiscordMsgRef(input.channelId, msg.id),
-      session: sessionRef,
-      userId: msg.author.id,
-      userName: authorName,
-      text: normalizedContent,
-      ts,
-      editedTs,
-      raw: {
-        discord: {
-          id: msg.id,
-          isDMBased: sessionKind === "dm",
-          mentionsBot: false,
-          replyToBot: false,
-          replyToMessageId: msg.reference?.messageId ?? undefined,
-          guildId: guildId ?? undefined,
-          parentChannelId: parentChannelId ?? undefined,
-          attachments,
-        },
       },
     };
   }
@@ -986,7 +1069,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (!cfg || !store || !client) return;
 
     // Avoid infinite loops: never emit adapter events for bot-authored messages.
-    // But we DO want to cache them for context.
+    // We still want to record lightweight metadata (names/sessions) for context.
     const shouldEmitAdapterEvent = !msg.author.bot;
 
     const guildId = msg.guildId;
@@ -1112,26 +1195,6 @@ export class DiscordAdapter implements SurfaceAdapter {
     const normalizedContent =
       this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
-    store.upsertMessage({
-      channelId,
-      messageId: msg.id,
-      authorId: msg.author.id,
-      content: normalizedContent,
-      ts,
-      editedTs,
-      raw: {
-        id: msg.id,
-        channelId,
-        guildId,
-        authorId: msg.author.id,
-        content: msg.content,
-        embeds: getEmbedDescriptions(msg),
-        reference: msg.reference ?? undefined,
-        editedTs,
-        attachments,
-      },
-    });
-
     const sessionRef = asDiscordSessionRef({
       channelId,
       guildId,
@@ -1221,6 +1284,42 @@ export class DiscordAdapter implements SurfaceAdapter {
     const channelId = msg.channelId;
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
+    const channelName = getChannelName(msg.channel);
+
+    const parentChannelId =
+      "isThread" in msg.channel && msg.channel.isThread()
+        ? msg.channel.parentId
+        : null;
+
+    const sessionKind: "channel" | "thread" | "dm" =
+      "isDMBased" in msg.channel &&
+      typeof msg.channel.isDMBased === "function" &&
+      msg.channel.isDMBased()
+        ? "dm"
+        : parentChannelId
+          ? "thread"
+          : "channel";
+
+    store.upsertSession({
+      channelId,
+      guildId: guildId ?? undefined,
+      parentChannelId: parentChannelId ?? undefined,
+      name: channelName,
+      type: sessionKind,
+      updatedTs: Date.now(),
+      raw: {
+        channel: { id: channelId, name: channelName, guildId, parentChannelId },
+      },
+    });
+
+    if (channelName) {
+      store.upsertChannelName({
+        channelId,
+        name: channelName,
+        updatedTs: Date.now(),
+      });
+    }
+
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg);
 
@@ -1235,27 +1334,6 @@ export class DiscordAdapter implements SurfaceAdapter {
     const normalizedContent =
       this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
-    store.upsertMessage({
-      channelId,
-      messageId: msg.id,
-      authorId: msg.author.id,
-      content: normalizedContent,
-      ts,
-      editedTs,
-      raw: {
-        id: msg.id,
-        channelId,
-        guildId,
-        authorId: msg.author.id,
-        content: msg.content,
-        embeds: getEmbedDescriptions(msg),
-        reference: msg.reference ?? undefined,
-        editedTs,
-        attachments,
-      },
-    });
-
-    const channelName = getChannelName(msg.channel);
     const sess = store.getSession(channelId);
     const sessionRef = asDiscordSessionRef({
       channelId,
@@ -1285,12 +1363,12 @@ export class DiscordAdapter implements SurfaceAdapter {
         discord: {
           id: msg.id,
           // Best-effort: Discord update event may not expose channel type reliably.
-          isDMBased: store.getSession(channelId)?.type === "dm",
+          isDMBased: sessionKind === "dm",
           mentionsBot: false,
           replyToBot: false,
           replyToMessageId: msg.reference?.messageId ?? undefined,
           guildId: guildId ?? undefined,
-          parentChannelId: sess?.parent_channel_id ?? undefined,
+          parentChannelId: parentChannelId ?? undefined,
           attachments,
         },
       },
@@ -1314,23 +1392,20 @@ export class DiscordAdapter implements SurfaceAdapter {
     const store = this.store;
     if (!cfg || !store) return;
 
-    // If msg is null, we still cache deletion for known messages, but allowlist must be checked.
-    const guildId = msg?.guildId ?? null;
-    if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
+    // Message caching removed: do not persist deletions. Still emit the event.
+    let guildId: string | null = msg?.guildId ?? null;
 
-    store.markMessageDeleted({
-      channelId,
-      messageId,
-      deletedTs: Date.now(),
-      raw: msg
-        ? {
-            id: msg.id,
-            channelId,
-            guildId,
-            authorId: msg.author?.id,
-          }
-        : { id: messageId, channelId },
-    });
+    // If we didn't get a guild id from the event, best-effort resolve from channel.
+    if (!guildId) {
+      const client = this.client;
+      const ch = client
+        ? await client.channels.fetch(channelId).catch(() => null)
+        : null;
+      guildId = ch && "guildId" in ch ? ch.guildId : null;
+    }
+
+    // Allowlist check should still apply even when Discord sends partial delete events.
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
     const sess = store.getSession(channelId);
     const sessionRef = asDiscordSessionRef({
@@ -1370,13 +1445,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     const guildId = msg.guildId;
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
-    if (userId) {
-      store.addMessageReaction({
-        channelId,
-        messageId: msg.id,
-        emoji: reaction,
+    if (userId && userName) {
+      store.upsertUserName({
         userId,
-        ts: Date.now(),
+        username: userName,
+        displayName: userName,
+        updatedTs: Date.now(),
       });
     }
 
@@ -1421,12 +1495,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     const guildId = msg.guildId;
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
-    if (userId) {
-      store.removeMessageReaction({
-        channelId,
-        messageId: msg.id,
-        emoji: reaction,
+    if (userId && userName) {
+      store.upsertUserName({
         userId,
+        username: userName,
+        displayName: userName,
+        updatedTs: Date.now(),
       });
     }
 

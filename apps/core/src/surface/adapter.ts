@@ -82,3 +82,24 @@ export interface SurfaceAdapter {
   getUnRead(sessionRef: SessionRef): Promise<SurfaceMessage[]>;
   markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void>;
 }
+
+export type SurfaceBurstCacheInput = {
+  /** Prefer passing msgRef for targeted invalidation. */
+  msgRef?: MsgRef;
+  /** Used when msgRef is unknown (e.g. listing a session). */
+  sessionRef?: SessionRef;
+  /** Why the cache is being invalidated. */
+  reason: "surface_tool" | "other";
+};
+
+/** Optional capability: invalidate in-memory provider caches for a "latest view" read. */
+export interface SurfaceCacheBurstProvider {
+  burstCache(input: SurfaceBurstCacheInput): Promise<void>;
+}
+
+export function hasCacheBurstProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & SurfaceCacheBurstProvider {
+  const maybe = adapter as unknown as { burstCache?: unknown };
+  return typeof maybe.burstCache === "function";
+}

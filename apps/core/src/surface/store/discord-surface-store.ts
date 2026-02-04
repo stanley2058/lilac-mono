@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 
+import { dropLegacyDiscordMessageCacheTables } from "./migrations/drop-legacy-discord-message-cache-tables";
+
 export type DbDiscordSession = {
   channel_id: string;
   guild_id: string | null;
@@ -7,17 +9,6 @@ export type DbDiscordSession = {
   name: string | null;
   type: "channel" | "thread" | "dm";
   updated_ts: number;
-  raw_json: string | null;
-};
-
-export type DbDiscordMessage = {
-  channel_id: string;
-  message_id: string;
-  author_id: string;
-  content: string;
-  ts: number;
-  edited_ts: number | null;
-  deleted_ts: number | null;
   raw_json: string | null;
 };
 
@@ -48,14 +39,6 @@ export type DbDiscordRoleName = {
   updated_ts: number;
 };
 
-export type DbDiscordMessageReaction = {
-  channel_id: string;
-  message_id: string;
-  emoji: string;
-  user_id: string;
-  ts: number;
-};
-
 export class DiscordSurfaceStore {
   private readonly db: Database;
 
@@ -81,29 +64,8 @@ export class DiscordSurfaceStore {
       );
     `);
 
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS discord_messages (
-        channel_id TEXT NOT NULL,
-        message_id TEXT NOT NULL,
-        author_id TEXT NOT NULL,
-        content TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        edited_ts INTEGER,
-        deleted_ts INTEGER,
-        raw_json TEXT,
-        PRIMARY KEY (channel_id, message_id)
-      );
-    `);
-
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_channel_ts
-      ON discord_messages(channel_id, ts);
-    `);
-
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_channel_author_ts
-      ON discord_messages(channel_id, author_id, ts);
-    `);
+    // Surface reads are live-fetched now; drop legacy caches to avoid stale context.
+    dropLegacyDiscordMessageCacheTables(this.db);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS discord_read_state (
@@ -153,22 +115,6 @@ export class DiscordSurfaceStore {
         PRIMARY KEY (guild_id, role_id)
       );
     `);
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS discord_message_reactions (
-        channel_id TEXT NOT NULL,
-        message_id TEXT NOT NULL,
-        emoji TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        PRIMARY KEY (channel_id, message_id, emoji, user_id)
-      );
-    `);
-
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_discord_reactions_msg
-      ON discord_message_reactions(channel_id, message_id);
-    `);
   }
 
   upsertSession(input: {
@@ -216,112 +162,6 @@ export class DiscordSurfaceStore {
     return this.db
       .query("SELECT * FROM discord_sessions ORDER BY updated_ts DESC LIMIT ?")
       .all(limit) as DbDiscordSession[];
-  }
-
-  upsertMessage(input: {
-    channelId: string;
-    messageId: string;
-    authorId: string;
-    content: string;
-    ts: number;
-    editedTs?: number;
-    deletedTs?: number;
-    raw?: unknown;
-  }) {
-    const rawJson = input.raw ? JSON.stringify(input.raw) : null;
-    this.db.run(
-      `
-      INSERT INTO discord_messages (
-        channel_id, message_id, author_id, content, ts, edited_ts, deleted_ts, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(channel_id, message_id) DO UPDATE SET
-        author_id=excluded.author_id,
-        content=excluded.content,
-        ts=excluded.ts,
-        edited_ts=excluded.edited_ts,
-        deleted_ts=excluded.deleted_ts,
-        raw_json=excluded.raw_json;
-      `,
-      [
-        input.channelId,
-        input.messageId,
-        input.authorId,
-        input.content,
-        input.ts,
-        input.editedTs ?? null,
-        input.deletedTs ?? null,
-        rawJson,
-      ],
-    );
-  }
-
-  markMessageDeleted(input: {
-    channelId: string;
-    messageId: string;
-    deletedTs: number;
-    raw?: unknown;
-  }) {
-    const rawJson = input.raw ? JSON.stringify(input.raw) : null;
-    this.db.run(
-      `
-      UPDATE discord_messages
-      SET deleted_ts = ?, raw_json = COALESCE(?, raw_json)
-      WHERE channel_id = ? AND message_id = ?;
-      `,
-      [input.deletedTs, rawJson, input.channelId, input.messageId],
-    );
-  }
-
-  getMessage(channelId: string, messageId: string): DbDiscordMessage | null {
-    return this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? AND message_id = ?",
-      )
-      .get(channelId, messageId) as DbDiscordMessage | null;
-  }
-
-  listMessages(channelId: string, limit = 50): DbDiscordMessage[] {
-    return this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? ORDER BY ts DESC LIMIT ?",
-      )
-      .all(channelId, limit) as DbDiscordMessage[];
-  }
-
-  listMessagesBefore(
-    channelId: string,
-    beforeTs: number,
-    limit = 50,
-  ): DbDiscordMessage[] {
-    return this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? AND ts < ? ORDER BY ts DESC LIMIT ?",
-      )
-      .all(channelId, beforeTs, limit) as DbDiscordMessage[];
-  }
-
-  listMessagesAround(
-    channelId: string,
-    centerTs: number,
-    limit = 20,
-  ): DbDiscordMessage[] {
-    // Simple v1: fetch some before + after and merge.
-    const half = Math.max(1, Math.floor(limit / 2));
-
-    const before = this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? AND ts <= ? ORDER BY ts DESC LIMIT ?",
-      )
-      .all(channelId, centerTs, half) as DbDiscordMessage[];
-
-    const after = this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? AND ts > ? ORDER BY ts ASC LIMIT ?",
-      )
-      .all(channelId, centerTs, half) as DbDiscordMessage[];
-
-    const merged = before.reverse().concat(after);
-    return merged;
   }
 
   upsertUserName(input: {
@@ -431,50 +271,6 @@ export class DiscordSurfaceStore {
       .get(guildId, roleId) as DbDiscordRoleName | null;
   }
 
-  addMessageReaction(input: {
-    channelId: string;
-    messageId: string;
-    emoji: string;
-    userId: string;
-    ts: number;
-  }) {
-    this.db.run(
-      `
-      INSERT INTO discord_message_reactions (channel_id, message_id, emoji, user_id, ts)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(channel_id, message_id, emoji, user_id) DO UPDATE SET
-        ts=excluded.ts;
-      `,
-      [input.channelId, input.messageId, input.emoji, input.userId, input.ts],
-    );
-  }
-
-  removeMessageReaction(input: {
-    channelId: string;
-    messageId: string;
-    emoji: string;
-    userId: string;
-  }) {
-    this.db.run(
-      `
-      DELETE FROM discord_message_reactions
-      WHERE channel_id = ? AND message_id = ? AND emoji = ? AND user_id = ?;
-      `,
-      [input.channelId, input.messageId, input.emoji, input.userId],
-    );
-  }
-
-  listMessageReactions(input: {
-    channelId: string;
-    messageId: string;
-  }): DbDiscordMessageReaction[] {
-    return this.db
-      .query(
-        "SELECT * FROM discord_message_reactions WHERE channel_id = ? AND message_id = ? ORDER BY ts ASC",
-      )
-      .all(input.channelId, input.messageId) as DbDiscordMessageReaction[];
-  }
-
   getOrInitReadState(channelId: string): DbDiscordReadState {
     const existing = this.db
       .query("SELECT * FROM discord_read_state WHERE channel_id = ?")
@@ -511,37 +307,5 @@ export class DiscordSurfaceStore {
       `,
       [input.channelId, input.lastReadTs, input.lastReadMessageId],
     );
-  }
-
-  listUnread(channelId: string): DbDiscordMessage[] {
-    const rs = this.getOrInitReadState(channelId);
-
-    return this.db
-      .query(
-        `
-        SELECT * FROM discord_messages
-        WHERE channel_id = ?
-          AND deleted_ts IS NULL
-          AND (
-            ts > ?
-            OR (ts = ? AND message_id > ?)
-          )
-        ORDER BY ts ASC;
-        `,
-      )
-      .all(
-        channelId,
-        rs.last_read_ts,
-        rs.last_read_ts,
-        rs.last_read_message_id,
-      ) as DbDiscordMessage[];
-  }
-
-  getLatestMessage(channelId: string): DbDiscordMessage | null {
-    return this.db
-      .query(
-        "SELECT * FROM discord_messages WHERE channel_id = ? ORDER BY ts DESC LIMIT 1",
-      )
-      .get(channelId) as DbDiscordMessage | null;
   }
 }
