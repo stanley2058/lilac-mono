@@ -492,9 +492,12 @@ export async function startBusRequestRouter(params: {
 
     // Gate is only for active channels with no running request.
     const gateCfg = cfg.surface.router.activeGate;
+    const sessionGateOverride =
+      cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
+    const gateEnabled = sessionGateOverride ?? gateCfg.enabled;
     const gate = params.routerGate ?? shouldForwardActiveBatch;
 
-    const decision = gateCfg.enabled
+    const decision = gateEnabled
       ? await gate({
           sessionId,
           botName: cfg.surface.discord.botName,
@@ -521,7 +524,7 @@ export async function startBusRequestRouter(params: {
         sessionId,
         reason: decision.reason ?? "forward",
         messageCount: b.messages.length,
-        gated: gateCfg.enabled,
+        gated: gateEnabled,
       },
       "router gate forwarded batch",
     );

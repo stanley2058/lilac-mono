@@ -49,7 +49,11 @@ const routerSchema = z
     sessionModes: z
       .record(
         z.string().min(1),
-        z.object({ mode: z.enum(["mention", "active"]) }),
+        z.object({
+          mode: z.enum(["mention", "active"]),
+          /** Override activeGate.enabled for this session/channel (active mode only). */
+          gate: z.boolean().optional(),
+        }),
       )
       .default({}),
     /** Debounce window (ms) for active mode initial prompt batching. */

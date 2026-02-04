@@ -121,6 +121,7 @@ Config:
 
 Router config:
 - `surface.router.activeGate.enabled` (default: false)
+- `surface.router.sessionModes.<sessionId>.gate` (optional override for active channels)
 - `surface.router.activeGate.timeoutMs` (default: ~2500; suggested range 1500-3000)
 
 ## Failure / Safety Policy
