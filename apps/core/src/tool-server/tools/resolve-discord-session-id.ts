@@ -28,6 +28,13 @@ export function resolveDiscordSessionId(input: {
     return raw;
   }
 
+  // Common Discord session key shape used by other components.
+  // Accept silently to keep the surface tool ergonomics forgiving.
+  const sessionKeyMatch = raw.match(/^discord:channel:([0-9]+)$/u);
+  if (sessionKeyMatch) {
+    return sessionKeyMatch[1]!;
+  }
+
   const token = normalizeToken(raw);
   const map = input.cfg.entity?.sessions?.discord ?? {};
 
@@ -37,6 +44,13 @@ export function resolveDiscordSessionId(input: {
     if (keyLc === tokenLc) {
       return channelId;
     }
+  }
+
+  if (raw.startsWith("req:")) {
+    throw new Error(
+      `Invalid --session-id '${input.sessionId}': that looks like a requestId. ` +
+        "Pass a Discord channel id (e.g. '1462714189553598555') or omit --session-id to use the active session.",
+    );
   }
 
   throw new Error(

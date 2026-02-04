@@ -34,10 +34,13 @@ export function buildScheduledJobMessages(params: {
     "- To produce user-visible output, use the bash tool to run the `tools` CLI.",
   );
   lines.push(
-    "- Use: tools surface.messages.send --client=discord --session-id=<channelId> --text=\"...\"",
+    "- Default (reply in the active session/channel): tools surface.messages.send --text=\"...\"",
   );
   lines.push(
-    "- You must explicitly pass both --client and --session-id for every surface call.",
+    "- If you need to post to a different session/channel, pass: --client=discord --session-id=<channelId>",
+  );
+  lines.push(
+    "- Note: --session-id is a channel id (e.g. '1462714189553598555'), not a request id like 'req:<uuid>'.",
   );
   if (requireDone) {
     lines.push("");

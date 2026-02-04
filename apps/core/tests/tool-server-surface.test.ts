@@ -322,6 +322,72 @@ describe("tool-server surface", () => {
     expect(msg?.ref?.messageId).toBe("m1");
   });
 
+  it("accepts discord:channel:<id> as sessionId", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "hi",
+            ts: 0,
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: `discord:channel:${channelId}`,
+    })) as any[];
+
+    expect(res.length).toBe(1);
+    expect(res[0].ref.messageId).toBe("m1");
+  });
+
+  it("errors clearly when sessionId looks like requestId", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {},
+    );
+    const tool = new Surface({ adapter, config: cfg });
+
+    await expect(
+      tool.call("surface.messages.list", {
+        client: "discord",
+        sessionId: "req:2e5fd968-2047-4378-b198-6e19be8049cc",
+      }),
+    ).rejects.toThrow("looks like a requestId");
+  });
+
   it("requires messageId when requestId is not discord-anchored", async () => {
     const channelId = "123";
     const cfg = testConfig({
