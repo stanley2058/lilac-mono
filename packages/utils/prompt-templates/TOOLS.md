@@ -74,9 +74,9 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 
   ```bash
   # install globally to opencode agent
-  bunx add-skill -a opencode -g -y org/repo
+  bunx skills add org/repo -a opencode -g -y
   # help message
-  bunx add-skill --help
+  bunx skills --help
   ```
 
   _Skills can contain executables, don't install skills from untrusted sources!_
