@@ -46,8 +46,8 @@ cat payload.json | tools <tool> --stdin
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
 - `surface.messages.delete` — Delete a message.
-- `surface.reactions.list` — List cached reactions for a message (emoji + count).
-- `surface.reactions.listDetailed` — List cached reactions for a message with per-user details.
+- `surface.reactions.list` — List reactions for a message (emoji + count).
+- `surface.reactions.listDetailed` — List reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
 - `surface.reactions.remove` — Remove a reaction from a message.
 - `workflow.wait_for_reply.create` — Create a wait_for_reply workflow that resumes later (tasks wait for strict replies to a messageId in sessionId).
@@ -68,6 +68,7 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 
 ## Skills
 
+- Tools that don't fit in the `tools` cli are packaged as skills, search here first if `tools` doesn't immediately contains what you are looking for.
 - To search over installed skills, get descriptions or full details, use the `skills.*` in `tools` CLI.
   - If that's not enough, you can also explore and read the directory directly via fs tools.
 - You can install skills with the `add-skill` CLI (always specify an agent (we support all of them), and always use `-y` to skip confirmation):
