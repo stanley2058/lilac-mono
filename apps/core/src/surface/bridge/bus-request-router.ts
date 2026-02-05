@@ -537,7 +537,8 @@ export async function startBusRequestRouter(params: {
       cfg,
       requestId: randomRequestId(),
       sessionId,
-      triggerMsgRef: undefined,
+      // Use newest message as the context anchor (not a reply trigger).
+      triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,
       activeUserId: b.messages[b.messages.length - 1]?.userId,
     });

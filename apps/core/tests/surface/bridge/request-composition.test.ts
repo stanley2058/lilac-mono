@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
 import {
+  composeRecentChannelMessages,
   composeRequestMessages,
   composeSingleMessage,
 } from "../../../src/surface/bridge/request-composition";
+import type { ModelMessage } from "ai";
 import type {
   AdapterEventHandler,
   AdapterSubscription,
@@ -11,6 +13,7 @@ import type {
   SurfaceAdapter,
   SurfaceOutputStream,
 } from "../../../src/surface/adapter";
+import type { TranscriptStore } from "../../../src/transcript/transcript-store";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -540,5 +543,260 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("user msg 2");
     expect(merged as string).toContain("user msg 3");
     expect(merged as string).not.toContain("<@bot>");
+  });
+});
+
+describe("request-composition active channel burst rules", () => {
+  class ListFakeAdapter implements SurfaceAdapter {
+    constructor(private readonly messages: SurfaceMessage[]) {}
+
+    async connect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async disconnect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async getSelf(): Promise<SurfaceSelf> {
+      throw new Error("not implemented");
+    }
+    async getCapabilities(): Promise<AdapterCapabilities> {
+      throw new Error("not implemented");
+    }
+
+    async listSessions(): Promise<SurfaceSession[]> {
+      throw new Error("not implemented");
+    }
+
+    async startOutput(
+      _sessionRef: SessionRef,
+      _opts?: StartOutputOpts,
+    ): Promise<SurfaceOutputStream> {
+      throw new Error("not implemented");
+    }
+
+    async sendMsg(
+      _sessionRef: SessionRef,
+      _content: ContentOpts,
+      _opts?: SendOpts,
+    ): Promise<MsgRef> {
+      throw new Error("not implemented");
+    }
+
+    async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
+      const m = this.messages.find(
+        (x) => x.session.channelId === msgRef.channelId && x.ref.messageId === msgRef.messageId,
+      );
+      return m ?? null;
+    }
+
+    async listMsg(
+      sessionRef: SessionRef,
+      opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      const limit = Math.max(1, opts?.limit ?? 50);
+      const inChannel = this.messages.filter(
+        (m) => m.session.channelId === sessionRef.channelId,
+      );
+      // Return a recent-ish slice (ordering doesn't matter; composeRecentChannelMessages sorts).
+      return inChannel.slice(Math.max(0, inChannel.length - limit));
+    }
+
+    async editMsg(_msgRef: MsgRef, _content: ContentOpts): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async deleteMsg(_msgRef: MsgRef): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async getReplyContext(
+      _msgRef: MsgRef,
+      _opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      return [];
+    }
+
+    async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async removeReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async listReactions(_msgRef: MsgRef): Promise<string[]> {
+      return [];
+    }
+
+    async subscribe(_handler: AdapterEventHandler): Promise<AdapterSubscription> {
+      throw new Error("not implemented");
+    }
+
+    async getUnRead(_sessionRef: SessionRef): Promise<SurfaceMessage[]> {
+      throw new Error("not implemented");
+    }
+
+    async markRead(
+      _sessionRef: SessionRef,
+      _upToMsgRef?: MsgRef,
+    ): Promise<void> {
+      throw new Error("not implemented");
+    }
+  }
+
+  it("stops at >3h age cutoff (active mode, non-trigger)", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const mk = (id: string, ts: number): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: `msg_${id}`,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const msgs = [
+      mk("7", anchorTs - (3 * 60 * 60 * 1000 + 1)), // too old
+      mk("8", anchorTs - 90 * 60 * 1000),
+      mk("9", anchorTs - 30 * 60 * 1000),
+      mk("10", anchorTs),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "10" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["8", "9", "10"]);
+  });
+
+  it("stops at >2h silence gap cutoff (active mode, non-trigger)", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const mk = (id: string, ts: number): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: `msg_${id}`,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const msgs = [
+      mk("8", anchorTs - 3 * 60 * 60 * 1000), // age ok, but gap too large
+      mk("9", anchorTs - 30 * 60 * 1000),
+      mk("10", anchorTs),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "10" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["9", "10"]);
+  });
+
+  it("does not expand transcripts for bot messages older than 1h", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const mkUser = (id: string, ts: number): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: `user_${id}`,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const mkBot = (id: string, ts: number, text: string): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const msgs = [
+      mkBot("8", anchorTs - 2 * 60 * 60 * 1000, "old bot text"),
+      mkBot("9", anchorTs - 30 * 60 * 1000, "recent bot text"),
+      mkUser("10", anchorTs),
+    ];
+
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest() {},
+      close() {},
+      getTranscriptBySurfaceMessage(input) {
+        const expanded = (content: string): ModelMessage[] => [
+          { role: "assistant", content },
+        ];
+        if (input.messageId === "8") {
+          return {
+            requestId: "r8",
+            sessionId,
+            requestClient: "discord",
+            createdTs: 0,
+            updatedTs: 0,
+            messages: expanded("EXPANDED_OLD"),
+          };
+        }
+        if (input.messageId === "9") {
+          return {
+            requestId: "r9",
+            sessionId,
+            requestClient: "discord",
+            createdTs: 0,
+            updatedTs: 0,
+            messages: expanded("EXPANDED_RECENT"),
+          };
+        }
+        return null;
+      },
+    };
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      transcriptStore,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "10" },
+      triggerType: undefined,
+    });
+
+    const text = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+
+    expect(text).toContain("EXPANDED_RECENT");
+    expect(text).not.toContain("EXPANDED_OLD");
+    expect(text).toContain("old bot text");
   });
 });

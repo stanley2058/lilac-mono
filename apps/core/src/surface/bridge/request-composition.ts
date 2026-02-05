@@ -287,25 +287,104 @@ export async function composeRecentChannelMessages(
     channelId: opts.sessionId,
   } as const;
 
-  const recent = await adapter.listMsg(sessionRef, { limit: opts.limit });
+  const shouldApplyActiveBurstRules = Boolean(
+    opts.triggerMsgRef && !opts.triggerType,
+  );
+
+  // In active-mode gate-forwarded prompts, we may need a little more history to
+  // apply time-based cutoffs (age/gap) without relying on fixed "last N".
+  const fetchLimit = shouldApplyActiveBurstRules
+    ? Math.min(200, Math.max(opts.limit, 50))
+    : opts.limit;
+
+  const recent = await adapter.listMsg(sessionRef, { limit: fetchLimit });
 
   const list: typeof recent = [...recent];
 
+  let fetchedTrigger: SurfaceMessage | null = null;
+
   if (opts.triggerMsgRef) {
-    const exists = list.some(
-      (m) => m.ref.messageId === opts.triggerMsgRef!.messageId,
-    );
+    const exists = list.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
     if (!exists) {
-      const fetched = await adapter.readMsg(opts.triggerMsgRef);
-      if (fetched) list.push(fetched);
+      fetchedTrigger = await adapter.readMsg(opts.triggerMsgRef);
+      if (fetchedTrigger) list.push(fetchedTrigger);
     }
   }
 
-  list.sort((a, b) => a.ts - b.ts);
+  function compareDiscordSnowflakeLike(a: string, b: string): number {
+    try {
+      const ai = BigInt(a);
+      const bi = BigInt(b);
+      if (ai < bi) return -1;
+      if (ai > bi) return 1;
+      return 0;
+    } catch {
+      return a.localeCompare(b);
+    }
+  }
 
-  const newest = list.slice(Math.max(0, list.length - opts.limit));
+  list.sort((a, b) => {
+    if (a.ts !== b.ts) return a.ts - b.ts;
+    return compareDiscordSnowflakeLike(a.ref.messageId, b.ref.messageId);
+  });
 
-  const chain: ReplyChainMessage[] = newest.map((m) => ({
+  const triggerMsg =
+    opts.triggerMsgRef
+      ? list.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ??
+        fetchedTrigger
+      : null;
+
+  const activeAnchor = shouldApplyActiveBurstRules
+    ? (triggerMsg ?? (list.length > 0 ? list[list.length - 1]! : null))
+    : null;
+
+  const ACTIVE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+  const ACTIVE_MAX_GAP_MS = 2 * 60 * 60 * 1000;
+  const ACTIVE_TRANSCRIPT_MAX_AGE_MS = 1 * 60 * 60 * 1000;
+
+  let selected: SurfaceMessage[];
+
+  if (shouldApplyActiveBurstRules && activeAnchor) {
+    const anchorTs = activeAnchor.ts;
+    const anchorId = activeAnchor.ref.messageId;
+
+    // Only include messages up to the anchor (avoid pulling in newer messages
+    // that arrived after the gate decision).
+    const eligible = list.filter((m) => {
+      if (m.ts < anchorTs) return true;
+      if (m.ts > anchorTs) return false;
+      return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
+    });
+
+    const anchorIndex = eligible.findIndex((m) => m.ref.messageId === anchorId);
+    const startIndex = anchorIndex >= 0 ? anchorIndex : eligible.length - 1;
+
+    const pickedNewestToOldest: SurfaceMessage[] = [];
+
+    let prev = eligible[startIndex] ?? null;
+    if (prev) pickedNewestToOldest.push(prev);
+
+    for (let i = startIndex - 1; i >= 0 && pickedNewestToOldest.length < opts.limit; i--) {
+      const cur = eligible[i]!;
+
+      // Absolute age cutoff relative to the anchor message.
+      const ageMs = anchorTs - cur.ts;
+      if (ageMs > ACTIVE_MAX_AGE_MS) break;
+
+      // Silence-gap cutoff: stop and do NOT include the message that crosses the gap.
+      const gapMs = (prev?.ts ?? anchorTs) - cur.ts;
+      if (gapMs > ACTIVE_MAX_GAP_MS) break;
+
+      pickedNewestToOldest.push(cur);
+      prev = cur;
+    }
+
+    selected = pickedNewestToOldest.reverse();
+  } else {
+    selected = list.slice(Math.max(0, list.length - opts.limit));
+  }
+
+  const chain: ReplyChainMessage[] = selected.map((m) => ({
     messageId: m.ref.messageId,
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
@@ -331,13 +410,23 @@ export async function composeRecentChannelMessages(
     const isBot = chunk.authorId === opts.botUserId;
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
+    const anchorTsForTranscript = shouldApplyActiveBurstRules
+      ? activeAnchor?.ts ?? null
+      : null;
+    const transcriptAgeMs =
+      anchorTsForTranscript !== null ? anchorTsForTranscript - chunk.tsEnd : null;
+    const allowTranscriptExpansion =
+      !shouldApplyActiveBurstRules ||
+      transcriptAgeMs === null ||
+      transcriptAgeMs <= ACTIVE_TRANSCRIPT_MAX_AGE_MS;
+
     const reactions = await safeListReactions(adapter, {
       platform: opts.platform,
       channelId: opts.sessionId,
       messageId,
     });
 
-    if (isBot && opts.transcriptStore) {
+    if (isBot && opts.transcriptStore && allowTranscriptExpansion) {
       const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
         platform: opts.platform,
         channelId: opts.sessionId,
