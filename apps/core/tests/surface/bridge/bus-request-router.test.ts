@@ -306,6 +306,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -451,6 +452,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -545,6 +547,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -637,6 +640,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -727,6 +731,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -817,6 +822,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -913,6 +919,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -1008,6 +1015,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -1099,6 +1107,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -1192,6 +1201,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "active",
@@ -1296,6 +1306,7 @@ describe("startBusRequestRouter", () => {
             allowedChannelIds: [],
             allowedGuildIds: [],
             botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
           },
           router: {
             defaultMode: "mention",
