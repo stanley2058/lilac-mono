@@ -236,9 +236,9 @@ describe("batch tool", () => {
 
     const lines = lastStart!.display.split("\n");
     expect(lines.length).toBe(4);
-    expect(lines[1]!).toContain("bash echo tool-3");
-    expect(lines[2]!).toContain("bash echo tool-4");
-    expect(lines[3]!).toContain("bash echo tool-5");
+    expect(lines[1]!).toContain("[bash] echo tool-3");
+    expect(lines[2]!).toContain("[bash] echo tool-4");
+    expect(lines[3]!).toContain("[bash] echo tool-5");
 
     const lastEnd = [...updates].reverse().find((u) => u.status === "end");
     expect(lastEnd).toBeTruthy();

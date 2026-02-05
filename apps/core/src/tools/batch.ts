@@ -171,9 +171,10 @@ export function batchTool(params: {
 
     if (recent.length === 0) return header;
 
-    const lines = recent.map((c) => {
+    const lines = recent.map((c, idx) => {
       const args = formatToolArgsForDisplay(c.tool, c.args);
-      return `  ${iconForChild(c)} ${c.tool}${args}`;
+      const branch = idx === recent.length - 1 ? "└──" : "├──";
+      return `${branch} ${iconForChild(c)} [${c.tool}]${args}`;
     });
 
     return [header, ...lines].join("\n");
