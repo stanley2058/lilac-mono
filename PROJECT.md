@@ -282,7 +282,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
-- `TAVILY_API_KEY` (enables `web.search` and `fetch(mode=tavily)`)
+- `TAVILY_API_KEY` (enables `tools search` and `tools fetch --mode=tavily`)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 
 ---

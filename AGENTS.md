@@ -137,8 +137,10 @@ There is no active lint/formatter configuration in `apps/*` or `packages/*` (no 
 
 - **No `any`** and **no `as any`**.
   - If you must bridge unknown data, use `unknown` + narrowing.
+  - Prefer using `zod` schemas to parse/validate `unknown` at boundaries (tool inputs, JSON/YAML, external APIs) when possible.
   - Prefer user-defined type guards:
     - `function isFoo(x: unknown): x is Foo { ... }`
+- Prefer type narrowing over casting (`as Foo`) when possible.
 - Prefer unions and discriminated unions for error/results.
 - Prefer `Record<string, T>` to `{ [k: string]: T }`.
 - Prefer `readonly T[]` when you don’t mutate.
