@@ -365,6 +365,13 @@ type Enqueued = {
   raw?: unknown;
 };
 
+function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = (raw as Record<string, unknown>)["sessionMode"];
+  if (v === "mention" || v === "active") return v;
+  return null;
+}
+
 type SessionQueue = {
   running: boolean;
   agent: AiSdkPiAgent<ToolSet> | null;
@@ -509,10 +516,13 @@ export async function startBusAgentRunner(params: {
 
     const runStartedAt = Date.now();
 
+    const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
+
     const headers = {
       request_id: next.requestId,
       session_id: next.sessionId,
       request_client: next.requestClient,
+      ...(routerSessionMode ? { router_session_mode: routerSessionMode } : {}),
     };
 
     await publishLifecycle({
@@ -848,6 +858,7 @@ async function publishLifecycle(params: {
     request_id: string;
     session_id: string;
     request_client: AdapterPlatform;
+    router_session_mode?: "mention" | "active";
   };
   state: RequestLifecycleState;
   detail?: string;

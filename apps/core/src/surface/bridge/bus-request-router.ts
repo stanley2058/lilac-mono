@@ -268,6 +268,7 @@ export async function startBusRequestRouter(params: {
             msgRef,
             userId: msg.data.userId,
             active,
+            sessionMode: mode,
           });
         } else {
           await handleActiveChannelMode({
@@ -282,6 +283,7 @@ export async function startBusRequestRouter(params: {
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
             active,
+            sessionMode: mode,
           });
         }
 
@@ -300,6 +302,7 @@ export async function startBusRequestRouter(params: {
         mentionsBot: flags.mentionsBot,
         replyToBot: flags.replyToBot,
         active,
+        sessionMode: mode,
       });
 
       await ctx.commit();
@@ -324,8 +327,10 @@ export async function startBusRequestRouter(params: {
     msgRef: MsgRef;
     userId: string;
     active: ActiveSessionState | undefined;
+    sessionMode: SessionMode;
   }) {
-    const { adapter, bus, cfg, sessionId, msgRef, userId, active } = input;
+    const { adapter, bus, cfg, sessionId, msgRef, userId, active, sessionMode } =
+      input;
 
     if (active) {
       // DMs: while active, everything is a steer.
@@ -339,6 +344,7 @@ export async function startBusRequestRouter(params: {
         triggerType: "active",
         msgRef,
         userId,
+        sessionMode,
       });
       return;
     }
@@ -356,6 +362,7 @@ export async function startBusRequestRouter(params: {
       triggerType: "active",
       msgRef,
       userId,
+      sessionMode,
     });
   }
 
@@ -371,6 +378,7 @@ export async function startBusRequestRouter(params: {
     mentionsBot: boolean;
     replyToBot: boolean;
     active: ActiveSessionState | undefined;
+    sessionMode: SessionMode;
   }) {
     const {
       adapter,
@@ -384,6 +392,7 @@ export async function startBusRequestRouter(params: {
       mentionsBot,
       replyToBot,
       active,
+      sessionMode,
     } = input;
 
     if (active) {
@@ -412,6 +421,7 @@ export async function startBusRequestRouter(params: {
         sessionId,
         queue: "followUp",
         msgRef,
+        sessionMode,
       });
       return;
     }
@@ -433,6 +443,7 @@ export async function startBusRequestRouter(params: {
         triggerMsgRef: msgRef,
         triggerType: mentionsBot ? "mention" : "reply",
         activeUserId: userId,
+        sessionMode,
       });
       return;
     }
@@ -541,6 +552,7 @@ export async function startBusRequestRouter(params: {
       triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,
       activeUserId: b.messages[b.messages.length - 1]?.userId,
+      sessionMode: "active",
     });
   }
 
@@ -626,6 +638,7 @@ export async function startBusRequestRouter(params: {
     mentionsBot?: boolean;
     replyToBot?: boolean;
     active: ActiveSessionState | undefined;
+    sessionMode: SessionMode;
   }) {
     const {
       adapter,
@@ -658,6 +671,7 @@ export async function startBusRequestRouter(params: {
           triggerType: "active",
           msgRef,
           userId,
+          sessionMode: input.sessionMode,
         });
       }
       return;
@@ -677,6 +691,7 @@ export async function startBusRequestRouter(params: {
         triggerType,
         msgRef,
         userId,
+        sessionMode: input.sessionMode,
       });
       return;
     }
@@ -701,6 +716,7 @@ export async function startBusRequestRouter(params: {
         triggerType,
         msgRef,
         userId,
+        sessionMode: input.sessionMode,
       });
       return;
     }
@@ -720,6 +736,7 @@ export async function startBusRequestRouter(params: {
         triggerType,
         msgRef,
         userId,
+        sessionMode: input.sessionMode,
       });
       return;
     }
@@ -735,6 +752,7 @@ export async function startBusRequestRouter(params: {
       triggerType,
       msgRef,
       userId,
+      sessionMode: input.sessionMode,
     });
   }
 
@@ -743,6 +761,7 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     queue: RequestQueueMode;
     triggerType: "mention" | "reply" | "active";
+    sessionMode: SessionMode;
     messages: ModelMessage[];
     raw: unknown;
   }) {
@@ -767,7 +786,12 @@ export async function startBusRequestRouter(params: {
       {
         queue: input.queue,
         messages: input.messages,
-        raw: input.raw,
+        raw: {
+          ...(input.raw && typeof input.raw === "object"
+            ? (input.raw as Record<string, unknown>)
+            : {}),
+          sessionMode: input.sessionMode,
+        },
       },
       {
         headers: {
@@ -789,6 +813,7 @@ export async function startBusRequestRouter(params: {
     triggerType: "mention" | "reply" | "active";
     msgRef: MsgRef;
     userId: string;
+    sessionMode: SessionMode;
   }) {
     const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } =
       input;
@@ -811,6 +836,7 @@ export async function startBusRequestRouter(params: {
       sessionId,
       queue,
       triggerType,
+      sessionMode: input.sessionMode,
       messages: composed.messages,
       raw: {
         triggerType,
@@ -829,6 +855,7 @@ export async function startBusRequestRouter(params: {
     triggerMsgRef: MsgRef | undefined;
     triggerType: "mention" | "reply" | undefined;
     activeUserId: string | undefined;
+    sessionMode: SessionMode;
   }) {
     const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } =
       input;
@@ -862,6 +889,7 @@ export async function startBusRequestRouter(params: {
       sessionId,
       queue: "prompt",
       triggerType: triggerType ?? "active",
+      sessionMode: input.sessionMode,
       messages: composed.messages,
       raw: {
         triggerType: triggerType ?? "active",
@@ -889,6 +917,7 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     queue: "followUp" | "steer";
     msgRef: MsgRef;
+    sessionMode: SessionMode;
   }) {
     const { adapter, cfg, requestId, sessionId, queue, msgRef } = input;
 
@@ -908,6 +937,7 @@ export async function startBusRequestRouter(params: {
       sessionId,
       queue,
       triggerType: "active",
+      sessionMode: input.sessionMode,
       messages: [msg],
       raw: {
         triggerType: "active",

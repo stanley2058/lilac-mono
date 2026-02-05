@@ -127,6 +127,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       opts?: StartOutputOpts;
       useSmartSplitting: boolean;
       rewriteText?: (text: string) => string;
+
+      /** Optional: send a mention-only ping message at end of stream. */
+      mentionPing?: {
+        enabled: boolean;
+        maxUsers: number;
+        extractUserIds?: (text: string) => string[];
+      };
     },
   ) {
     let resolveFn: (() => void) | null = null;
@@ -334,6 +341,39 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       }
 
       this.pendingAttachments = [];
+    }
+
+    // Optional: after the full response is visible, send a dedicated mention-only message.
+    // This is primarily for active-mode channels where the main response is streamed via edits.
+    const mentionPing = this.deps.mentionPing;
+    if (mentionPing?.enabled) {
+      const extractor = mentionPing.extractUserIds;
+      const ids = extractor ? extractor(this.textAcc) : [];
+      const deduped = [...new Set(ids)].slice(0, mentionPing.maxUsers);
+
+      if (deduped.length > 0) {
+        const { sessionRef } = this.deps;
+        const anchor = this.lastMsg ?? this.firstMsg;
+        if (!anchor) {
+          throw new Error("DiscordOutputStream missing reply anchor");
+        }
+
+        const content = deduped.map((id) => `<@${id}>`).join(" ");
+
+        const pingMsg = await anchor.reply({
+          content,
+          allowedMentions: {
+            users: deduped,
+            parse: [],
+            repliedUser: false,
+          },
+        });
+
+        if (isDiscordSessionRef(sessionRef)) {
+          this.created.push(asDiscordMsgRef(sessionRef.channelId, pingMsg.id));
+        }
+        this.lastMsg = pingMsg;
+      }
     }
 
     const last = this.created.at(-1);

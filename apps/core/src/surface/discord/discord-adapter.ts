@@ -441,12 +441,21 @@ export class DiscordAdapter implements SurfaceAdapter {
     // TODO: plumb config for smart splitting.
     const useSmartSplitting = true;
 
+    const mentionCfg = cfg.surface.discord.mentionNotifications;
+    const mentionPingEnabled =
+      mentionCfg.enabled === true && opts?.sessionMode === "active";
+
     return new DiscordOutputStream({
       client,
       sessionRef,
       opts,
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
+      mentionPing: {
+        enabled: mentionPingEnabled,
+        maxUsers: mentionCfg.maxUsers,
+        extractUserIds: this.entityMapper?.extractOutgoingMentionUserIds,
+      },
     });
   }
 
@@ -663,9 +672,11 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
     if (!msg) return [];
 
-    return [...new Set([...msg.reactions.cache.values()].map((r) => r.emoji.toString()))].sort(
-      (a, b) => a.localeCompare(b),
-    );
+    return [
+      ...new Set(
+        [...msg.reactions.cache.values()].map((r) => r.emoji.toString()),
+      ),
+    ].sort((a, b) => a.localeCompare(b));
   }
 
   async listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]> {
@@ -687,13 +698,18 @@ export class DiscordAdapter implements SurfaceAdapter {
     for (const reaction of reactions) {
       const emoji = reaction.emoji.toString();
 
-      const users = await this.fetchAllReactionUsers(reaction, { maxUsers: 1000 });
+      const users = await this.fetchAllReactionUsers(reaction, {
+        maxUsers: 1000,
+      });
 
       const list = [...users.values()]
         .map((u) => {
           const cached = store.getUserName(u.id);
           const cachedName =
-            cached?.display_name ?? cached?.global_name ?? cached?.username ?? undefined;
+            cached?.display_name ??
+            cached?.global_name ??
+            cached?.username ??
+            undefined;
           const liveName = (u.globalName ?? u.username) || undefined;
           const userName = cachedName ?? liveName;
 

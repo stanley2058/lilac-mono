@@ -10,6 +10,7 @@ import { Logger } from "@stanley2058/simple-module-logger";
 import type {
   SurfaceAdapter,
   SurfaceOutputPart,
+  StartOutputOpts,
   TypingIndicatorProvider,
   TypingIndicatorSubscription,
 } from "../adapter";
@@ -44,6 +45,14 @@ function parseDiscordReplyTo(params: {
     channelId: params.sessionId,
     messageId: surfaceSpecificId,
   };
+}
+
+function parseRouterSessionMode(raw: string | undefined):
+  | "mention"
+  | "active"
+  | undefined {
+  if (raw === "mention" || raw === "active") return raw;
+  return undefined;
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {
@@ -115,6 +124,9 @@ export async function bridgeBusToAdapter(params: {
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
       const requestClient = msg.headers?.request_client;
+      const routerSessionMode = parseRouterSessionMode(
+        msg.headers?.router_session_mode,
+      );
 
       if (!requestId || !sessionId) {
         // Do not ack malformed messages: they need investigation.
@@ -161,6 +173,7 @@ export async function bridgeBusToAdapter(params: {
         platform,
         requestId,
         sessionId,
+        routerSessionMode,
         idleTimeoutMs,
       });
 
@@ -176,6 +189,7 @@ export async function bridgeBusToAdapter(params: {
     platform: "discord";
     requestId: string;
     sessionId: string;
+    routerSessionMode?: "mention" | "active";
     idleTimeoutMs: number;
   }): Promise<ActiveRelay> {
     const { requestId, sessionId, idleTimeoutMs } = input;
@@ -189,9 +203,14 @@ export async function bridgeBusToAdapter(params: {
 
     const replyTo = parseDiscordReplyTo({ requestId, sessionId });
 
-    const out = await adapter.startOutput(sessionRef, {
+    const startOpts: StartOutputOpts = {
       replyTo: replyTo ?? undefined,
-    });
+    };
+    if (input.routerSessionMode) {
+      startOpts.sessionMode = input.routerSessionMode;
+    }
+
+    const out = await adapter.startOutput(sessionRef, startOpts);
 
     let typing: TypingIndicatorSubscription | null = null;
 

@@ -39,6 +39,8 @@ export interface SurfaceOutputStream {
 
 export type StartOutputOpts = {
   replyTo?: MsgRef;
+  /** Router-derived session mode. Used for surface-specific behaviors (e.g. mention pings). */
+  sessionMode?: "mention" | "active";
 };
 
 export type AdapterSubscription = {

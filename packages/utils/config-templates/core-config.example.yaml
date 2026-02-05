@@ -41,6 +41,18 @@ surface:
     # Optional: Discord custom presence/status message.
     # statusMessage: "ready"
 
+    # Mention notifications (opt-in).
+    #
+    # In active-mode channels, Lilac streams responses via edits, and Discord mention
+    # notifications are not reliable for edits. When enabled, Lilac will send a
+    # *separate* mention-only message at the end of the response when the agent
+    # explicitly tags configured users (e.g. "@Stanley").
+    #
+    # Note: only users configured under entity.users are eligible for "@Name" pings.
+    mentionNotifications:
+      enabled: false
+      maxUsers: 5
+
 
 agent: {}
 

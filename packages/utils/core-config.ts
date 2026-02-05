@@ -85,12 +85,23 @@ const discordSurfaceSchema = z
       .min(1)
       .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
     statusMessage: z.string().optional(),
+
+    /** Optional mention notification behavior for bot-authored messages. */
+    mentionNotifications: z
+      .object({
+        /** If true, send a dedicated mention-only ping message in active-mode sessions. */
+        enabled: z.boolean().default(false),
+        /** Max distinct users to ping per response. */
+        maxUsers: z.number().int().positive().max(25).default(5),
+      })
+      .default({ enabled: false, maxUsers: 5 }),
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",
     allowedChannelIds: [],
     allowedGuildIds: [],
     botName: "lilac",
+    mentionNotifications: { enabled: false, maxUsers: 5 },
   });
 
 export const coreConfigSchema = z.object({
@@ -111,6 +122,7 @@ export const coreConfigSchema = z.object({
         allowedChannelIds: [],
         allowedGuildIds: [],
         botName: "lilac",
+        mentionNotifications: { enabled: false, maxUsers: 5 },
       },
     }),
 
