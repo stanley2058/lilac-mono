@@ -103,6 +103,10 @@ function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
 
 type ToolArgsFormatter = (args: unknown) => string;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
   if (!parsed) return "";
@@ -141,6 +145,15 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     const remaining = Math.max(0, paths.length - 1);
     const suffix = remaining > 0 ? ` (+${remaining})` : "";
     return " " + truncateMiddle(first, 7, 10, 20) + suffix;
+  },
+
+  batch: (args) => {
+    if (!isRecord(args)) return "";
+    const calls = args["tool_calls"];
+    if (!Array.isArray(calls)) return "";
+    const n = calls.length;
+    if (!Number.isFinite(n) || n <= 0) return "";
+    return ` (${n} tools)`;
   },
 };
 

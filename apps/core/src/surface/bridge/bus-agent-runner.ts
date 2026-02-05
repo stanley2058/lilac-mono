@@ -30,6 +30,7 @@ import { Logger } from "@stanley2058/simple-module-logger";
 
 import { applyPatchTool } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
+import { batchTool } from "../../tools/batch";
 import { fsTool } from "../../tools/fs/fs";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
@@ -64,6 +65,16 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getBatchOkFromResult(result: unknown): boolean | null {
+  if (!isRecord(result)) return null;
+  const v = result["ok"];
+  return typeof v === "boolean" ? v : null;
 }
 
 function getToolDefsText(tools: ToolsLike | null): string {
@@ -547,14 +558,35 @@ export async function startBusAgentRunner(params: {
       queuedForSession: state.queue.length,
     });
 
+    const tools: ToolSet = {} as ToolSet;
+    Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
+    Object.assign(
+      tools,
+      batchTool({
+        defaultCwd: cwd,
+        getTools: () => tools,
+        reportToolStatus: (update) => {
+          bus
+            .publish(lilacEventTypes.EvtAgentOutputToolCall, update, { headers })
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish batch tool status",
+                {
+                  requestId: headers.request_id,
+                  sessionId: headers.session_id,
+                  toolCallId: update.toolCallId,
+                },
+                e,
+              );
+            });
+        },
+      }),
+    );
+
     const agent = new AiSdkPiAgent<ToolSet>({
       system: cfg.agent.systemPrompt,
       model: resolved.model,
-      tools: {
-        ...bashToolWithCwd(cwd),
-        ...fsTool(cwd),
-        ...applyPatchTool({ cwd }),
-      },
+      tools,
       providerOptions: resolved.providerOptions,
     });
 
@@ -651,27 +683,33 @@ export async function startBusAgentRunner(params: {
         const started = toolStartMs.get(event.toolCallId);
         const toolDurationMs = started ? Date.now() - started : undefined;
 
+        const ok =
+          event.toolName === "batch"
+            ? (getBatchOkFromResult(event.result) ?? !event.isError)
+            : !event.isError;
+
         logger.debug("tool finished", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
           toolCallId: event.toolCallId,
           toolName: event.toolName,
-          ok: !event.isError,
+          ok,
           durationMs: toolDurationMs,
         });
 
         bus
           .publish(
             lilacEventTypes.EvtAgentOutputToolCall,
-            {
-              toolCallId: event.toolCallId,
-              status: "end",
-              display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
-              ok: !event.isError,
-              error: event.isError ? "tool error" : undefined,
-            },
-            { headers },
-          )
+              {
+                toolCallId: event.toolCallId,
+                status: "end",
+                display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
+                ok,
+                error:
+                  ok ? undefined : event.isError ? "tool error" : "batch failed",
+              },
+              { headers },
+            )
           .catch((e: unknown) => {
             logger.error(
               "failed to publish tool end",
