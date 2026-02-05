@@ -130,6 +130,14 @@ function scrubLargeBinary(messages: readonly ModelMessage[]): ModelMessage[] {
 
   let totalBytes = 0;
 
+  const estimateBase64Bytes = (b64: string): number => {
+    // Approximate decoded bytes; sufficient for bounding storage.
+    const len = b64.length;
+    const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+    const bytes = Math.floor((len * 3) / 4) - padding;
+    return Math.max(0, bytes);
+  };
+
   const scrubFilePart = (part: FilePart): FilePart | TextPart => {
     if (part.data instanceof Uint8Array) {
       const bytes = part.data;
@@ -145,6 +153,14 @@ function scrubLargeBinary(messages: readonly ModelMessage[]): ModelMessage[] {
   const out: ModelMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = { ...messages[i]! };
+
+    if (Array.isArray(msg.content)) {
+      // Shallow-clone parts so we can safely rewrite them.
+      const cloned = (msg.content as unknown[]).map((p) =>
+        p && typeof p === "object" ? { ...(p as Record<string, unknown>) } : p,
+      );
+      msg.content = cloned as unknown as typeof msg.content;
+    }
 
     if (!Array.isArray(msg.content)) {
       out.push(msg);
@@ -167,6 +183,68 @@ function scrubLargeBinary(messages: readonly ModelMessage[]): ModelMessage[] {
         }
       }
       msg.content = content;
+    }
+
+    if (msg.role === "tool" && Array.isArray(msg.content)) {
+      const content = (msg.content as unknown[]).map((part) => {
+        if (!part || typeof part !== "object") return part;
+        const p = part as Record<string, unknown>;
+        if (p["type"] !== "tool-result") return part;
+
+        const output = p["output"];
+        if (!output || typeof output !== "object") return part;
+
+        const o = output as Record<string, unknown>;
+        if (o["type"] !== "content") return part;
+        if (!Array.isArray(o["value"])) return part;
+
+        const value = o["value"] as unknown[];
+        const nextValue: unknown[] = [];
+
+        for (const item of value) {
+          if (!item || typeof item !== "object") {
+            nextValue.push(item);
+            continue;
+          }
+
+          const it = item as Record<string, unknown>;
+          const t = it["type"];
+          if (t !== "image-data" && t !== "file-data") {
+            nextValue.push(item);
+            continue;
+          }
+
+          const data = it["data"];
+          if (typeof data !== "string") {
+            nextValue.push(item);
+            continue;
+          }
+
+          const bytes = estimateBase64Bytes(data);
+          const tooBig = bytes > MAX_BINARY_BYTES_PER_PART;
+          const tooMuch = totalBytes + bytes > MAX_BINARY_BYTES_TOTAL;
+          if (tooBig || tooMuch) {
+            const mediaType =
+              typeof it["mediaType"] === "string" ? it["mediaType"] : "";
+            const filename =
+              typeof it["filename"] === "string" ? it["filename"] : "";
+            const detail =
+              filename || mediaType
+                ? ` (${[filename, mediaType].filter(Boolean).join(", ")})`
+                : "";
+            nextValue.push({ type: "text", text: `${OMITTED}${detail}` });
+            continue;
+          }
+
+          totalBytes += bytes;
+          nextValue.push(item);
+        }
+
+        p["output"] = { ...o, value: nextValue };
+        return p;
+      });
+
+      msg.content = content as unknown as typeof msg.content;
     }
 
     out.push(msg);
@@ -233,18 +311,19 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }): void {
     const now = Date.now();
 
-    // Prune tool outputs and remove oversized binary payloads before persisting.
-    const pruned = pruneToolOutputs(input.messages);
-    const scrubbed = scrubLargeBinary(pruned);
+    // Remove oversized binary payloads (e.g. base64 tool attachments) before pruning tool outputs.
+    // This keeps recent tool metadata while avoiding pathological storage growth.
+    const scrubbed = scrubLargeBinary(input.messages);
+    const pruned = pruneToolOutputs(scrubbed);
 
-    const messagesJson = JSON.stringify(scrubbed);
+    const messagesJson = JSON.stringify(pruned);
 
     // Basic bound: avoid storing pathological payloads.
     const MAX_MESSAGES_JSON_CHARS = 10_000_000;
     const finalJson =
       messagesJson.length > MAX_MESSAGES_JSON_CHARS
         ? JSON.stringify(
-            scrubLargeBinary(pruneToolOutputs(input.messages.slice(-1000))),
+            pruneToolOutputs(scrubLargeBinary(input.messages.slice(-1000))),
           )
         : messagesJson;
 

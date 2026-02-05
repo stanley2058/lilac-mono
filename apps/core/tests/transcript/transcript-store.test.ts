@@ -89,4 +89,114 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
+
+  it("scrubs large base64 tool attachments before persisting", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+
+    const store = new SqliteTranscriptStore(dbPath);
+
+    const hugeBase64 = "A".repeat(400_000);
+
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            input: { path: "doc.pdf" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: "Attached file from read_file" },
+                {
+                  type: "file-data",
+                  mediaType: "application/pdf",
+                  filename: "doc.pdf",
+                  data: hugeBase64,
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { role: "assistant", content: "a1" },
+    ] as unknown as ModelMessage[];
+
+    store.saveRequestTranscript({
+      requestId: "r1",
+      sessionId: "chan",
+      requestClient: "discord",
+      messages,
+      finalText: "done",
+      modelLabel: "test-model",
+    });
+
+    store.linkSurfaceMessagesToRequest({
+      requestId: "r1",
+      created: [{ platform: "discord", channelId: "chan", messageId: "bot-1" }],
+      last: { platform: "discord", channelId: "chan", messageId: "bot-1" },
+    });
+
+    const snap = store.getTranscriptBySurfaceMessage({
+      platform: "discord",
+      channelId: "chan",
+      messageId: "bot-1",
+    });
+
+    expect(snap).not.toBeNull();
+
+    const toolMsg = snap!.messages.find((m) => m.role === "tool");
+    expect(toolMsg).not.toBeUndefined();
+
+    const parts = Array.isArray(toolMsg!.content)
+      ? (toolMsg!.content as unknown[])
+      : [];
+    const toolResult = parts.find((p) => {
+      if (!p || typeof p !== "object") return false;
+      return (p as Record<string, unknown>)["type"] === "tool-result";
+    }) as Record<string, unknown> | undefined;
+
+    const output = toolResult?.["output"] as Record<string, unknown> | undefined;
+    expect(output?.["type"]).toBe("content");
+
+    const value = Array.isArray(output?.["value"])
+      ? (output?.["value"] as unknown[])
+      : [];
+
+    // The binary data should be removed, but a placeholder should remain.
+    expect(
+      value.some(
+        (v) =>
+          !!v &&
+          typeof v === "object" &&
+          (v as Record<string, unknown>)["type"] === "text" &&
+          String((v as Record<string, unknown>)["text"]).includes("[binary omitted]"),
+      ),
+    ).toBe(true);
+
+    expect(
+      value.some(
+        (v) =>
+          !!v &&
+          typeof v === "object" &&
+          (v as Record<string, unknown>)["type"] === "file-data",
+      ),
+    ).toBe(false);
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });

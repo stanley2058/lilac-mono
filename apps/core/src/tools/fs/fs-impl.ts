@@ -49,6 +49,23 @@ export type ReadFileSuccessBase = {
   truncatedByChars: boolean;
 };
 
+export type ReadFileBytesResult =
+  | {
+      success: true;
+      resolvedPath: string;
+      fileHash: string;
+      bytes: Buffer;
+      bytesLength: number;
+    }
+  | {
+      success: false;
+      resolvedPath: string;
+      error: {
+        code: ReadErrorCode;
+        message: string;
+      };
+    };
+
 export type ReadFileResult =
   | (ReadFileSuccessBase & {
       format: "raw";
@@ -358,6 +375,64 @@ export class FileSystem {
       }
 
       return { ...base, format: "raw", content: output };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const code =
+        typeof e === "object" && e && "code" in e
+          ? String((e as any).code)
+          : undefined;
+
+      const errorCode: ReadErrorCode =
+        code === "ENOENT"
+          ? "NOT_FOUND"
+          : code === "EACCES" || code === "EPERM"
+            ? "PERMISSION"
+            : "UNKNOWN";
+
+      return {
+        success: false as const,
+        resolvedPath,
+        error: { code: errorCode, message: msg },
+      };
+    }
+  }
+
+  /**
+   * Reads a file as bytes.
+   *
+   * This is intended for binary files (images, PDFs, etc.) where reading as utf-8
+   * would corrupt the data.
+   */
+  async readFileBytes(
+    { path }: { path: string },
+    cwd?: string,
+  ): Promise<ReadFileBytesResult> {
+    const resolvedPath = this.resolvePath(path, cwd);
+
+    try {
+      this.assertAllowed(resolvedPath, "readFile");
+
+      const bytes = await fs.readFile(resolvedPath);
+      const fileHash = this.hash(bytes);
+
+      this.fileAccessRecord.set(resolvedPath, {
+        lastAccess: Date.now(),
+        fileHash,
+      });
+
+      this.fireEvent({
+        type: "readFile",
+        path: resolvedPath,
+        accessAt: Date.now(),
+      });
+
+      return {
+        success: true,
+        resolvedPath,
+        fileHash,
+        bytes,
+        bytesLength: bytes.byteLength,
+      };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const code =
@@ -1058,7 +1133,7 @@ export class FileSystem {
     }
   }
 
-  private hash(input: string) {
+  private hash(input: string | Uint8Array) {
     return Bun.hash.xxHash3(input).toString(16);
   }
 
