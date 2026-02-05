@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   nodejs \
   npm \
   chromium \
+  sqlite3 \
   openssh-client \
   fonts-liberation \
   fonts-noto-color-emoji \
