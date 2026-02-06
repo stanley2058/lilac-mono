@@ -106,7 +106,7 @@ export function subagentTools(params: {
   const { bus } = params;
 
   return {
-    "subagent.delegate": tool<SubagentDelegateInput, SubagentDelegateOutput>({
+    subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
       description:
         "Delegate to a read-only explore subagent and return its final response.",
       inputSchema: subagentDelegateInputSchema,
@@ -114,13 +114,13 @@ export function subagentTools(params: {
       execute: async (input, { abortSignal, experimental_context, toolCallId }) => {
         const ctx = requireRequestContext(
           experimental_context,
-          "subagent.delegate",
+          "subagent_delegate",
         ) as RequestContextLike;
 
         const depth = parseDepth(experimental_context);
         if (depth >= params.maxDepth) {
           throw new Error(
-            "subagent.delegate is disabled in subagent runs (depth limit reached)",
+            "subagent_delegate is disabled in subagent runs (depth limit reached)",
           );
         }
 

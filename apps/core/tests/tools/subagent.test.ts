@@ -123,7 +123,7 @@ function createInMemoryRawBus(): RawBus {
   };
 }
 
-describe("subagent.delegate tool", () => {
+describe("subagent_delegate tool", () => {
   it("delegates to child request and returns child final text", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -207,7 +207,7 @@ describe("subagent.delegate tool", () => {
     );
 
     const res = await resolveExecuteResult(
-      tools["subagent.delegate"].execute!(
+      tools.subagent_delegate.execute!(
         { profile: "explore", task: "Map auth flow" },
         {
           toolCallId: "tool-1",
@@ -241,7 +241,7 @@ describe("subagent.delegate tool", () => {
     });
 
     await expect(
-      tools["subagent.delegate"].execute!(
+      tools.subagent_delegate.execute!(
         { profile: "explore", task: "Map auth flow" },
         {
           toolCallId: "tool-2",
@@ -320,7 +320,7 @@ describe("subagent.delegate tool", () => {
     );
 
     const res = await resolveExecuteResult(
-      tools["subagent.delegate"].execute!(
+      tools.subagent_delegate.execute!(
         { profile: "explore", task: "Map auth flow", timeoutMs: 999_999 },
         {
           toolCallId: "tool-3",

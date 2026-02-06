@@ -155,7 +155,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     return " " + truncateEnd(pattern, 20);
   },
 
-  "subagent.delegate": (args) => {
+  subagent_delegate: (args) => {
     const parsed = safeValidateSync<{ task: string }>(
       subagentDelegateArgsSchema,
       args,
