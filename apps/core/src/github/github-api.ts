@@ -144,6 +144,25 @@ export async function createIssueComment(input: {
   });
 }
 
+export async function getIssueComment(input: {
+  owner: string;
+  repo: string;
+  commentId: number;
+}): Promise<{
+  id: number;
+  user?: { login?: string; id?: number };
+  body?: string;
+  created_at?: string;
+  updated_at?: string;
+  html_url?: string;
+}> {
+  const c = await ctx();
+  return await githubFetchJson({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/comments/${input.commentId}`,
+  });
+}
+
 export async function editIssueComment(input: {
   owner: string;
   repo: string;
@@ -159,11 +178,32 @@ export async function editIssueComment(input: {
   });
 }
 
+export async function deleteIssueComment(input: {
+  owner: string;
+  repo: string;
+  commentId: number;
+}): Promise<void> {
+  const c = await ctx();
+  await githubFetchNoBody({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/comments/${input.commentId}`,
+    method: "DELETE",
+  });
+}
+
 export async function getIssue(input: {
   owner: string;
   repo: string;
   number: number;
-}): Promise<{ title: string; body: string | null; html_url?: string; pull_request?: unknown }> {
+}): Promise<{
+  title: string;
+  body: string | null;
+  html_url?: string;
+  pull_request?: unknown;
+  user?: { login?: string; id?: number };
+  created_at?: string;
+  updated_at?: string;
+}> {
   const c = await ctx();
   return await githubFetchJson({
     ...c,
@@ -176,12 +216,101 @@ export async function listIssueComments(input: {
   repo: string;
   number: number;
   limit: number;
-}): Promise<Array<{ id: number; user?: { login?: string }; body?: string; created_at?: string; html_url?: string }>> {
+}): Promise<
+  Array<{
+    id: number;
+    user?: { login?: string; id?: number };
+    body?: string;
+    created_at?: string;
+    updated_at?: string;
+    html_url?: string;
+  }>
+> {
   const c = await ctx();
   const perPage = Math.min(Math.max(input.limit, 1), 100);
   return await githubFetchJson({
     ...c,
     path: `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments?per_page=${perPage}`,
+  });
+}
+
+export type GithubReaction = {
+  id: number;
+  content: string;
+  user?: { login?: string; id?: number };
+};
+
+export async function createIssueReaction(input: {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  content:
+    | "+1"
+    | "-1"
+    | "laugh"
+    | "confused"
+    | "heart"
+    | "hooray"
+    | "rocket"
+    | "eyes";
+}): Promise<{ id: number }> {
+  const c = await ctx();
+  return await githubFetchJson<{ id: number }>({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/${input.issueNumber}/reactions`,
+    method: "POST",
+    body: { content: input.content },
+  });
+}
+
+export async function createIssueCommentReaction(input: {
+  owner: string;
+  repo: string;
+  commentId: number;
+  content:
+    | "+1"
+    | "-1"
+    | "laugh"
+    | "confused"
+    | "heart"
+    | "hooray"
+    | "rocket"
+    | "eyes";
+}): Promise<{ id: number }> {
+  const c = await ctx();
+  return await githubFetchJson<{ id: number }>({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/comments/${input.commentId}/reactions`,
+    method: "POST",
+    body: { content: input.content },
+  });
+}
+
+export async function listIssueReactions(input: {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  limit: number;
+}): Promise<GithubReaction[]> {
+  const c = await ctx();
+  const perPage = Math.min(Math.max(input.limit, 1), 100);
+  return await githubFetchJson({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/${input.issueNumber}/reactions?per_page=${perPage}`,
+  });
+}
+
+export async function listIssueCommentReactions(input: {
+  owner: string;
+  repo: string;
+  commentId: number;
+  limit: number;
+}): Promise<GithubReaction[]> {
+  const c = await ctx();
+  const perPage = Math.min(Math.max(input.limit, 1), 100);
+  return await githubFetchJson({
+    ...c,
+    path: `/repos/${input.owner}/${input.repo}/issues/comments/${input.commentId}/reactions?per_page=${perPage}`,
   });
 }
 

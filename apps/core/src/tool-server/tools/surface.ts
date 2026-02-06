@@ -28,8 +28,30 @@ import {
   resolveToolPath,
 } from "../../shared/attachment-utils";
 
+import {
+  isGithubIssueTriggerId,
+  parseGithubRequestId,
+  parseGithubSessionId,
+} from "../../github/github-ids";
+import {
+  createIssueComment,
+  createIssueCommentReaction,
+  createIssueReaction,
+  deleteIssueComment,
+  deleteIssueCommentReactionById,
+  deleteIssueReactionById,
+  editIssueComment,
+  getGithubAppSlugOrNull,
+  getIssue,
+  getIssueComment,
+  listIssueCommentReactions,
+  listIssueComments,
+  listIssueReactions,
+  type GithubReaction,
+} from "../../github/github-api";
+
 const surfaceClientSchema = z
-  .enum(["discord", "whatsapp", "slack", "telegram", "web"])
+  .enum(["discord", "github", "whatsapp", "slack", "telegram", "web"])
   .describe(
     "Surface client/platform (required if request client is unknown / not provided)",
   );
@@ -39,6 +61,7 @@ type SurfaceClient = z.infer<typeof surfaceClientSchema>;
 function isSurfaceClient(x: string): x is SurfaceClient {
   return (
     x === "discord" ||
+    x === "github" ||
     x === "whatsapp" ||
     x === "slack" ||
     x === "telegram" ||
@@ -53,6 +76,15 @@ function inferDiscordOriginFromRequestId(
   const m = /^discord:([^:]+):([^:]+)$/.exec(requestId);
   if (!m) return null;
   return { sessionId: m[1]!, messageId: m[2]! };
+}
+
+function inferGithubOriginFromRequestId(
+  requestId: string | undefined,
+): { sessionId: string; messageId: string } | null {
+  if (!requestId) return null;
+  const parsed = parseGithubRequestId({ requestId });
+  if (!parsed) return null;
+  return { sessionId: parsed.sessionId, messageId: parsed.triggerId };
 }
 
 function resolveClient(params: {
@@ -87,7 +119,7 @@ function resolveClient(params: {
 function ensureDiscordClient(client: SurfaceClient): "discord" {
   if (client !== "discord") {
     throw new Error(
-      `surface tool: client '${client}' is not supported yet (only 'discord' is currently implemented)`,
+      `surface tool: client '${client}' is not supported yet (supported: 'discord', 'github')`,
     );
   }
   return "discord";
@@ -134,6 +166,129 @@ function asDiscordSessionRef(
 
 function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
+}
+
+function asGithubSessionRef(sessionId: string): SessionRef {
+  return { platform: "github", channelId: sessionId };
+}
+
+function asGithubMsgRef(sessionId: string, messageId: string): MsgRef {
+  return { platform: "github", channelId: sessionId, messageId };
+}
+
+function parseIsoMs(iso: string | undefined): number {
+  if (!iso) return 0;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+const GITHUB_REACTION_CONTENTS = [
+  "+1",
+  "-1",
+  "laugh",
+  "confused",
+  "heart",
+  "hooray",
+  "rocket",
+  "eyes",
+] as const;
+
+type GithubReactionContent = (typeof GITHUB_REACTION_CONTENTS)[number];
+
+function githubReactionEmojiFromContent(content: string): string {
+  switch (content) {
+    case "+1":
+      return "👍";
+    case "-1":
+      return "👎";
+    case "laugh":
+      return "😄";
+    case "confused":
+      return "😕";
+    case "heart":
+      return "❤️";
+    case "hooray":
+      return "🎉";
+    case "rocket":
+      return "🚀";
+    case "eyes":
+      return "👀";
+    default:
+      return content;
+  }
+}
+
+function githubReactionContentFromInput(reaction: string): GithubReactionContent {
+  const raw = reaction.trim();
+  const alias = raw.startsWith(":") && raw.endsWith(":") ? raw.slice(1, -1) : raw;
+  const normalized = alias.trim().toLowerCase();
+
+  // Direct emoji shortcuts.
+  switch (raw) {
+    case "👍":
+      return "+1";
+    case "👎":
+      return "-1";
+    case "😄":
+      return "laugh";
+    case "😕":
+      return "confused";
+    case "❤️":
+      return "heart";
+    case "🎉":
+      return "hooray";
+    case "🚀":
+      return "rocket";
+    case "👀":
+      return "eyes";
+  }
+
+  if (
+    normalized === "+1" ||
+    normalized === "thumbsup" ||
+    normalized === "thumbs_up" ||
+    normalized === "like"
+  ) {
+    return "+1";
+  }
+  if (
+    normalized === "-1" ||
+    normalized === "thumbsdown" ||
+    normalized === "thumbs_down" ||
+    normalized === "dislike"
+  ) {
+    return "-1";
+  }
+  if (normalized === "laugh" || normalized === "smile" || normalized === "grin") {
+    return "laugh";
+  }
+  if (
+    normalized === "confused" ||
+    normalized === "confusion" ||
+    normalized === "thinking"
+  ) {
+    return "confused";
+  }
+  if (normalized === "heart" || normalized === "love") {
+    return "heart";
+  }
+  if (normalized === "hooray" || normalized === "tada" || normalized === "party") {
+    return "hooray";
+  }
+  if (normalized === "rocket") {
+    return "rocket";
+  }
+  if (normalized === "eyes") {
+    return "eyes";
+  }
+
+  if ((GITHUB_REACTION_CONTENTS as readonly string[]).includes(normalized)) {
+    return normalized as GithubReactionContent;
+  }
+
+  throw new Error(
+    `Unsupported GitHub reaction '${reaction}'. Supported: ${GITHUB_REACTION_CONTENTS.join(", ")}, or emoji equivalents like 👍 👀 🚀`,
+  );
 }
 
 const DEFAULT_OUTBOUND_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -271,7 +426,8 @@ function withDefaultSessionId(
   const ctxSessionId =
     typeof ctx?.sessionId === "string" && ctx.sessionId.length > 0
       ? ctx.sessionId
-      : inferDiscordOriginFromRequestId(ctx?.requestId)?.sessionId;
+      : inferDiscordOriginFromRequestId(ctx?.requestId)?.sessionId ??
+        inferGithubOriginFromRequestId(ctx?.requestId)?.sessionId;
 
   if (ctxSessionId) {
     return { ...rawInput, sessionId: ctxSessionId };
@@ -293,9 +449,10 @@ function withDefaultMessageId(
   if (hasOwn && value !== undefined) return rawInput;
 
   const inferred = inferDiscordOriginFromRequestId(ctx?.requestId);
-  if (inferred?.messageId) {
-    return { ...rawInput, messageId: inferred.messageId };
-  }
+  if (inferred?.messageId) return { ...rawInput, messageId: inferred.messageId };
+
+  const inferredGh = inferGithubOriginFromRequestId(ctx?.requestId);
+  if (inferredGh?.messageId) return { ...rawInput, messageId: inferredGh.messageId };
 
   const rid = typeof ctx?.requestId === "string" ? ctx.requestId : undefined;
   const hint = rid ? ` (requestId='${rid}')` : " (no requestId in context)";
@@ -353,7 +510,7 @@ const messagesReadInputSchema = baseInputSchema.extend({
     .min(1)
     .optional()
     .describe(
-      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+      "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
 });
 
@@ -417,7 +574,7 @@ const reactionsListInputSchema = baseInputSchema.extend({
     .min(1)
     .optional()
     .describe(
-      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+      "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
 });
 
@@ -436,7 +593,7 @@ const reactionsAddInputSchema = baseInputSchema.extend({
     .min(1)
     .optional()
     .describe(
-      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+      "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
   reaction: z
     .string()
@@ -457,7 +614,7 @@ const reactionsRemoveInputSchema = baseInputSchema.extend({
     .min(1)
     .optional()
     .describe(
-      "Target message id. If omitted and the current requestId is 'discord:<sessionId>:<messageId>', defaults to that origin message.",
+      "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
   reaction: z
     .string()
@@ -465,12 +622,31 @@ const reactionsRemoveInputSchema = baseInputSchema.extend({
     .describe("Reaction emoji (e.g. 👍, ✅, :custom_emoji:)"),
 });
 
+const defaultGithubApi = {
+  getIssue,
+  listIssueComments,
+  createIssueComment,
+  getIssueComment,
+  editIssueComment,
+  deleteIssueComment,
+
+  createIssueReaction,
+  createIssueCommentReaction,
+  listIssueReactions,
+  listIssueCommentReactions,
+  deleteIssueReactionById,
+  deleteIssueCommentReactionById,
+  getGithubAppSlugOrNull,
+};
+export type GithubSurfaceApi = typeof defaultGithubApi;
+
 export class Surface implements ServerTool {
   id = "surface";
 
   constructor(
     private readonly params: {
       adapter: SurfaceAdapter;
+      githubApi?: GithubSurfaceApi;
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
     },
@@ -559,7 +735,7 @@ export class Surface implements ServerTool {
         callableId: "surface.reactions.listDetailed",
         name: "Surface Reactions List Detailed",
         description:
-          "List reactions for a message with per-user details (Discord only).",
+          "List reactions for a message with per-user details.",
         shortInput: zodObjectToCliLines(reactionsListDetailedInputSchema, {
           mode: "required",
         }),
@@ -647,7 +823,7 @@ export class Surface implements ServerTool {
 
     return {
       tool: "surface" as const,
-      supportedClients: ["discord"] as const,
+      supportedClients: ["discord", "github"] as const,
       context: {
         requestClient: ctxClient,
         sessionId: typeof ctx?.sessionId === "string" ? ctx.sessionId : null,
@@ -656,11 +832,11 @@ export class Surface implements ServerTool {
         client:
           "Surface client/platform. If the request context has a known client (LILAC_REQUEST_CLIENT), --client is optional; otherwise pass --client explicitly.",
         session:
-          "A conversation container. For Discord, a session maps to a channel.",
+          "A conversation container. For Discord, a session maps to a channel; for GitHub, a session maps to an issue/PR thread.",
         sessionId:
           "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
         messageId:
-          "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>'.",
+          "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>'.",
         replyToMessageId:
           "When sending a message, optionally reply to an existing messageId.",
         attachments:
@@ -686,15 +862,28 @@ export class Surface implements ServerTool {
                 },
               ],
               notes: [
-                "Only Discord is implemented today; other clients are reserved.",
                 "If the request has no session context, you must pass --session-id (or set LILAC_SESSION_ID). Some requests also allow inferring sessionId/messageId from requestId when it is 'discord:<sessionId>:<messageId>'.",
+              ],
+            }
+          : effectiveClient === "github"
+          ? {
+              client: "github" as const,
+              accepted: [
+                {
+                  format: "OWNER/REPO#123",
+                  meaning: "GitHub issue/PR thread",
+                },
+              ],
+              notes: [
+                "surface.sessions.list is not implemented for GitHub; use gh to discover issues/PRs.",
+                "For GitHub triggers, surface tools can default sessionId/messageId from requestId when it is 'github:<OWNER/REPO#N>:<triggerId>'.",
               ],
             }
           : {
               client: effectiveClient,
               accepted: [],
               notes: [
-                "Only Discord is implemented today; pass --client=discord (or set LILAC_REQUEST_CLIENT=discord).",
+                "Only Discord and GitHub are implemented today.",
               ],
             },
       relatedConfigKeys: {
@@ -715,12 +904,51 @@ export class Surface implements ServerTool {
     );
   }
 
+  private gh(): GithubSurfaceApi {
+    return this.params.githubApi ?? defaultGithubApi;
+  }
+
+  private async listGithubReactions(params: {
+    thread: { owner: string; repo: string; number: number };
+    sessionId: string;
+    messageId: string;
+  }): Promise<GithubReaction[]> {
+    if (isGithubIssueTriggerId({
+      sessionId: params.sessionId,
+      triggerId: params.messageId,
+    })) {
+      return await this.gh().listIssueReactions({
+        owner: params.thread.owner,
+        repo: params.thread.repo,
+        issueNumber: params.thread.number,
+        limit: 100,
+      });
+    }
+
+    const commentId = Number(params.messageId);
+    if (!Number.isFinite(commentId) || commentId <= 0) {
+      throw new Error(`Invalid GitHub commentId '${params.messageId}'`);
+    }
+
+    return await this.gh().listIssueCommentReactions({
+      owner: params.thread.owner,
+      repo: params.thread.repo,
+      commentId,
+      limit: 100,
+    });
+  }
+
   private async callSessionsList(
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
     const input = sessionsListInputSchema.parse(rawInput);
     const client = resolveClient({ inputClient: input.client, ctx });
+    if (client === "github") {
+      throw new Error(
+        "surface.sessions.list is not supported for GitHub. Use `gh` to list issues/PRs and then pass `--session-id OWNER/REPO#<number>` to other surface.* tools.",
+      );
+    }
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -776,6 +1004,45 @@ export class Surface implements ServerTool {
       withDefaultSessionId(rawInput, ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      if (input.beforeMessageId || input.afterMessageId) {
+        throw new Error(
+          "surface.messages.list for GitHub does not support before/after cursors; use --limit only.",
+        );
+      }
+
+      const thread = parseGithubSessionId(sessionId);
+      const limit = input.limit ?? 50;
+      const comments = await this.gh().listIssueComments({
+        owner: thread.owner,
+        repo: thread.repo,
+        number: thread.number,
+        limit,
+      });
+
+      const sessionRef = asGithubSessionRef(sessionId);
+      return comments.map((c) => {
+        const login =
+          c.user && typeof c.user.login === "string" ? c.user.login : undefined;
+        const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
+
+        return {
+          ref: asGithubMsgRef(sessionId, String(c.id)),
+          session: sessionRef,
+          userId: id !== null ? String(id) : login ?? "unknown",
+          userName: login,
+          text: typeof c.body === "string" ? c.body : "",
+          ts: parseIsoMs(c.created_at),
+          editedTs: parseIsoMs(c.updated_at),
+          raw: {
+            htmlUrl: typeof c.html_url === "string" ? c.html_url : undefined,
+          },
+        };
+      });
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -834,6 +1101,70 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const messageId = mustPresentString(input.messageId, "messageId");
+      const thread = parseGithubSessionId(sessionId);
+
+      if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
+        const issue = await this.gh().getIssue({
+          owner: thread.owner,
+          repo: thread.repo,
+          number: thread.number,
+        });
+
+        const login =
+          issue.user && typeof issue.user.login === "string"
+            ? issue.user.login
+            : undefined;
+        const id =
+          issue.user && typeof issue.user.id === "number" ? issue.user.id : null;
+
+        return {
+          ref: asGithubMsgRef(sessionId, String(thread.number)),
+          session: asGithubSessionRef(sessionId),
+          userId: id !== null ? String(id) : login ?? "unknown",
+          userName: login,
+          text: `Title: ${issue.title}\n\n${issue.body ?? ""}`.trim(),
+          ts: parseIsoMs(issue.created_at),
+          editedTs: parseIsoMs(issue.updated_at),
+          raw: {
+            title: issue.title,
+            htmlUrl: typeof issue.html_url === "string" ? issue.html_url : undefined,
+          },
+        };
+      }
+
+      const commentId = Number(messageId);
+      if (!Number.isFinite(commentId) || commentId <= 0) {
+        throw new Error(`Invalid GitHub commentId '${messageId}'`);
+      }
+
+      const c = await this.gh().getIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId,
+      });
+
+      const login =
+        c.user && typeof c.user.login === "string" ? c.user.login : undefined;
+      const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
+
+      return {
+        ref: asGithubMsgRef(sessionId, String(c.id)),
+        session: asGithubSessionRef(sessionId),
+        userId: id !== null ? String(id) : login ?? "unknown",
+        userName: login,
+        text: typeof c.body === "string" ? c.body : "",
+        ts: parseIsoMs(c.created_at),
+        editedTs: parseIsoMs(c.updated_at),
+        raw: {
+          htmlUrl: typeof c.html_url === "string" ? c.html_url : undefined,
+        },
+      };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -896,6 +1227,34 @@ export class Surface implements ServerTool {
       withDefaultSessionId(rawInput, ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const thread = parseGithubSessionId(sessionId);
+
+      if (input.replyToMessageId) {
+        throw new Error(
+          "surface.messages.send for GitHub does not support replyToMessageId; post a normal comment and link the target instead.",
+        );
+      }
+
+      const paths = input.paths ?? [];
+      if (paths.length > 0) {
+        throw new Error(
+          "surface.messages.send for GitHub does not support attachments; use gh or upload elsewhere and link.",
+        );
+      }
+
+      const res = await this.gh().createIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        issueNumber: thread.number,
+        body: input.text,
+      });
+
+      return { ok: true as const, ref: asGithubMsgRef(sessionId, String(res.id)) };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -966,6 +1325,32 @@ export class Surface implements ServerTool {
       withDefaultSessionId(rawInput, ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const thread = parseGithubSessionId(sessionId);
+
+      if (isGithubIssueTriggerId({ sessionId, triggerId: input.messageId })) {
+        throw new Error(
+          "Editing the GitHub issue/PR body is not supported via surface.messages.edit. Use gh issue edit / gh pr edit.",
+        );
+      }
+
+      const commentId = Number(input.messageId);
+      if (!Number.isFinite(commentId) || commentId <= 0) {
+        throw new Error(`Invalid GitHub commentId '${input.messageId}'`);
+      }
+
+      await this.gh().editIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId,
+        body: input.text,
+      });
+
+      return { ok: true as const };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -1007,6 +1392,31 @@ export class Surface implements ServerTool {
       withDefaultSessionId(rawInput, ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const thread = parseGithubSessionId(sessionId);
+
+      if (isGithubIssueTriggerId({ sessionId, triggerId: input.messageId })) {
+        throw new Error(
+          "Deleting the GitHub issue/PR body is not supported via surface.messages.delete. Use gh issue delete / gh pr (if applicable).",
+        );
+      }
+
+      const commentId = Number(input.messageId);
+      if (!Number.isFinite(commentId) || commentId <= 0) {
+        throw new Error(`Invalid GitHub commentId '${input.messageId}'`);
+      }
+
+      await this.gh().deleteIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId,
+      });
+
+      return { ok: true as const };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -1044,6 +1454,29 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const messageId = mustPresentString(input.messageId, "messageId");
+      const thread = parseGithubSessionId(sessionId);
+
+      const reactions = await this.listGithubReactions({
+        thread,
+        sessionId,
+        messageId,
+      });
+
+      const counts = new Map<string, number>();
+      for (const r of reactions) {
+        counts.set(r.content, (counts.get(r.content) ?? 0) + 1);
+      }
+
+      return Array.from(counts.entries()).map(([content, count]) => ({
+        emoji: githubReactionEmojiFromContent(content),
+        count,
+      }));
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -1104,6 +1537,52 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const messageId = mustPresentString(input.messageId, "messageId");
+      const thread = parseGithubSessionId(sessionId);
+
+      const reactions = await this.listGithubReactions({
+        thread,
+        sessionId,
+        messageId,
+      });
+
+      const byContent = new Map<
+        string,
+        { count: number; users: Array<{ userId: string; userName?: string }> }
+      >();
+
+      for (const r of reactions) {
+        const entry = byContent.get(r.content) ?? { count: 0, users: [] };
+        entry.count += 1;
+
+        const login =
+          r.user && typeof r.user.login === "string" ? r.user.login : undefined;
+        const id = r.user && typeof r.user.id === "number" ? r.user.id : null;
+
+        if (login || id !== null) {
+          const userId = id !== null ? String(id) : login!;
+          if (!entry.users.some((u) => u.userId === userId)) {
+            entry.users.push({ userId, userName: login });
+          }
+        }
+
+        byContent.set(r.content, entry);
+      }
+
+      const out: SurfaceReactionDetail[] = Array.from(byContent.entries()).map(
+        ([content, v]) => ({
+          emoji: githubReactionEmojiFromContent(content),
+          count: v.count,
+          users: v.users,
+        }),
+      );
+
+      return out;
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -1157,6 +1636,36 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const messageId = mustPresentString(input.messageId, "messageId");
+      const thread = parseGithubSessionId(sessionId);
+      const content = githubReactionContentFromInput(input.reaction);
+
+      if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
+        await this.gh().createIssueReaction({
+          owner: thread.owner,
+          repo: thread.repo,
+          issueNumber: thread.number,
+          content,
+        });
+      } else {
+        const commentId = Number(messageId);
+        if (!Number.isFinite(commentId) || commentId <= 0) {
+          throw new Error(`Invalid GitHub commentId '${messageId}'`);
+        }
+        await this.gh().createIssueCommentReaction({
+          owner: thread.owner,
+          repo: thread.repo,
+          commentId,
+          content,
+        });
+      }
+
+      return { ok: true as const };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
@@ -1199,6 +1708,58 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      const sessionId = mustPresentString(input.sessionId, "sessionId");
+      const messageId = mustPresentString(input.messageId, "messageId");
+      const thread = parseGithubSessionId(sessionId);
+      const content = githubReactionContentFromInput(input.reaction);
+
+      const slug = await this.gh().getGithubAppSlugOrNull();
+      if (!slug) {
+        throw new Error(
+          "Unable to resolve GitHub App slug (required to remove reactions safely). Use gh to remove the reaction instead.",
+        );
+      }
+      const botLogin = `${slug}[bot]`;
+
+      const reactions = await this.listGithubReactions({
+        thread,
+        sessionId,
+        messageId,
+      });
+
+      const mine = reactions.filter(
+        (r) => r.content === content && r.user?.login === botLogin,
+      );
+
+      if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
+        for (const r of mine) {
+          await this.gh().deleteIssueReactionById({
+            owner: thread.owner,
+            repo: thread.repo,
+            issueNumber: thread.number,
+            reactionId: r.id,
+          });
+        }
+      } else {
+        const commentId = Number(messageId);
+        if (!Number.isFinite(commentId) || commentId <= 0) {
+          throw new Error(`Invalid GitHub commentId '${messageId}'`);
+        }
+        for (const r of mine) {
+          await this.gh().deleteIssueCommentReactionById({
+            owner: thread.owner,
+            repo: thread.repo,
+            commentId,
+            reactionId: r.id,
+          });
+        }
+      }
+
+      return { ok: true as const };
+    }
+
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();

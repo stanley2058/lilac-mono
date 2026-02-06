@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Surface } from "../src/tool-server/tools/surface";
+import type { GithubSurfaceApi } from "../src/tool-server/tools/surface";
 import type { RequestContext } from "../src/tool-server/types";
 import type { SurfaceAdapter } from "../src/surface/adapter";
 import fs from "node:fs/promises";
@@ -516,5 +517,236 @@ describe("tool-server surface", () => {
       messageId: "m1",
     });
     expect(adapter.addReactionCalls[0]!.reaction).toBe("👍");
+  });
+
+  it("errors for github sessions.list and points to gh", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg });
+
+    await expect(
+      tool.call("surface.sessions.list", { client: "github" }),
+    ).rejects.toThrow("gh");
+  });
+
+  it("defaults github sessionId/messageId from requestId", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const calls: Array<{ owner: string; repo: string; commentId: number }> = [];
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async ({ owner, repo, commentId }) => {
+        calls.push({ owner, repo, commentId });
+        return {
+          id: commentId,
+          body: "hello",
+          user: { login: "alice", id: 1 },
+          created_at: "2020-01-01T00:00:00Z",
+        };
+      },
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async () => undefined,
+      getGithubAppSlugOrNull: async () => null,
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+    const ctx: RequestContext = {
+      requestId: "github:octo/repo#12:345",
+      requestClient: "github",
+    };
+
+    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as any;
+    expect(calls.length).toBe(1);
+    expect(calls[0]).toEqual({ owner: "octo", repo: "repo", commentId: 345 });
+    expect(msg.ref.platform).toBe("github");
+    expect(msg.ref.messageId).toBe("345");
+    expect(msg.text).toBe("hello");
+  });
+
+  it("reads github issue body when messageId matches issue number", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => ({
+        title: "t",
+        body: "b",
+        user: { login: "alice", id: 1 },
+        created_at: "2020-01-01T00:00:00Z",
+        updated_at: "2020-01-02T00:00:00Z",
+      }),
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async () => {
+        throw new Error("not implemented");
+      },
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async () => undefined,
+      getGithubAppSlugOrNull: async () => null,
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+    const ctx: RequestContext = {
+      requestId: "github:octo/repo#12:12:deadbeef",
+      requestClient: "github",
+    };
+
+    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as any;
+    expect(msg.ref.platform).toBe("github");
+    expect(msg.ref.messageId).toBe("12");
+    expect(msg.text).toContain("Title: t");
+    expect(msg.text).toContain("b");
+  });
+
+  it("maps github reaction emoji to content on add", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const calls: Array<{ owner: string; repo: string; commentId: number; content: string }> = [];
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async () => ({ id: 0 }),
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async ({ owner, repo, commentId, content }) => {
+        calls.push({ owner, repo, commentId, content });
+        return { id: 1 };
+      },
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async () => undefined,
+      getGithubAppSlugOrNull: async () => null,
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+
+    const res = await tool.call("surface.reactions.add", {
+      client: "github",
+      sessionId: "octo/repo#12",
+      messageId: "345",
+      reaction: "👍",
+    });
+
+    expect((res as any).ok).toBe(true);
+    expect(calls.length).toBe(1);
+    expect(calls[0]).toEqual({
+      owner: "octo",
+      repo: "repo",
+      commentId: 345,
+      content: "+1",
+    });
+  });
+
+  it("removes only bot-owned github reactions", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const deleted: number[] = [];
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async () => ({ id: 0 }),
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [
+        { id: 1, content: "+1", user: { login: "lilac[bot]", id: 1 } },
+        { id: 2, content: "+1", user: { login: "bob", id: 2 } },
+      ],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async ({ reactionId }) => {
+        deleted.push(reactionId);
+      },
+      getGithubAppSlugOrNull: async () => "lilac",
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+
+    const res = await tool.call("surface.reactions.remove", {
+      client: "github",
+      sessionId: "octo/repo#12",
+      messageId: "345",
+      reaction: "👍",
+    });
+
+    expect((res as any).ok).toBe(true);
+    expect(deleted).toEqual([1]);
   });
 });
