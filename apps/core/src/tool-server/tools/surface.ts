@@ -408,6 +408,20 @@ async function resolveGuildIdForChannel(params: {
   return null;
 }
 
+function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
+  const out = new Map<string, string>();
+  const users = cfg.entity?.users ?? {};
+
+  for (const [alias, rec] of Object.entries(users)) {
+    const userId = rec.discord;
+    if (!out.has(userId)) {
+      out.set(userId, alias);
+    }
+  }
+
+  return out;
+}
+
 const baseInputSchema = z.object({
   client: surfaceClientSchema.optional(),
 });
@@ -1310,11 +1324,17 @@ export class Surface implements ServerTool {
       limit: input.limit,
     });
 
+    const userAliasById = buildDiscordUserAliasById(cfg);
+    const hits = result.hits.map((hit) => ({
+      ...hit,
+      userAlias: userAliasById.get(hit.userId),
+    }));
+
     return {
       sessionId: channelId,
       query: input.query,
       heal: result.heal,
-      hits: result.hits,
+      hits,
     };
   }
 

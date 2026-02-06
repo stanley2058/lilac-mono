@@ -300,6 +300,11 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: {
+        users: {
+          alice: { discord: "u1" },
+        },
+      },
     });
 
     const adapter = new FakeAdapter(
@@ -346,12 +351,13 @@ describe("tool-server surface", () => {
       sessionId: c1,
       query: "deploy",
     })) as {
-      hits: Array<{ ref: { channelId: string } }>;
+      hits: Array<{ ref: { channelId: string }; userAlias?: string }>;
       heal: { attempted: boolean; limit: number } | null;
     };
 
     expect(first.hits.length).toBe(1);
     expect(first.hits[0]!.ref.channelId).toBe(c1);
+    expect(first.hits[0]!.userAlias).toBe("alice");
     expect(first.heal?.attempted).toBe(true);
     expect(first.heal?.limit).toBe(300);
     expect(adapter.listCalls.length).toBe(1);
