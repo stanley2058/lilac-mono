@@ -478,7 +478,11 @@ describe("tool-server surface", () => {
 
     expect((res as any).ok).toBe(true);
     expect(adapter.sendCalls.length).toBe(1);
-    expect(adapter.sendCalls[0]!.sessionRef.guildId).toBe("g1");
+    const ref = adapter.sendCalls[0]!.sessionRef;
+    expect(ref.platform).toBe("discord");
+    if (ref.platform === "discord") {
+      expect(ref.guildId).toBe("g1");
+    }
   });
 
   it("adds reaction", async () => {

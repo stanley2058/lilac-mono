@@ -76,6 +76,7 @@ export type TaskLifecycleState =
 
 export type AdapterPlatform =
   | "discord"
+  | "github"
   | "whatsapp"
   | "slack"
   | "telegram"

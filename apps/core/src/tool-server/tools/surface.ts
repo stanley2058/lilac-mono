@@ -36,6 +36,16 @@ const surfaceClientSchema = z
 
 type SurfaceClient = z.infer<typeof surfaceClientSchema>;
 
+function isSurfaceClient(x: string): x is SurfaceClient {
+  return (
+    x === "discord" ||
+    x === "whatsapp" ||
+    x === "slack" ||
+    x === "telegram" ||
+    x === "web"
+  );
+}
+
 function inferDiscordOriginFromRequestId(
   requestId: string | undefined,
 ): { sessionId: string; messageId: string } | null {
@@ -50,7 +60,10 @@ function resolveClient(params: {
   ctx?: RequestContext;
 }): SurfaceClient {
   const ctxClientRaw = params.ctx?.requestClient;
-  const ctxClient = isAdapterPlatform(ctxClientRaw) ? ctxClientRaw : "unknown";
+  const ctxClient =
+    typeof ctxClientRaw === "string" && isAdapterPlatform(ctxClientRaw) && isSurfaceClient(ctxClientRaw)
+      ? ctxClientRaw
+      : "unknown";
 
   if (ctxClient !== "unknown") {
     if (params.inputClient && params.inputClient !== ctxClient) {
@@ -803,13 +816,14 @@ export class Surface implements ServerTool {
     });
 
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
-    return messages.filter((m) =>
-      shouldAllowDiscordChannel({
+    return messages.filter((m) => {
+      if (m.session.platform !== "discord") return false;
+      return shouldAllowDiscordChannel({
         cfg,
         channelId: m.session.channelId,
         guildId: m.session.guildId,
-      }),
-    );
+      });
+    });
   }
 
   private async callMessagesRead(
@@ -861,6 +875,7 @@ export class Surface implements ServerTool {
     if (!msg) return null;
 
     if (
+      msg.session.platform !== "discord" ||
       !shouldAllowDiscordChannel({
         cfg,
         channelId: msg.session.channelId,

@@ -409,6 +409,7 @@ export async function startBusAgentRunner(params: {
   const cwd = params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
 
   const bySession = new Map<string, SessionQueue>();
+  const cancelledByRequestId = new Set<string>();
 
   const sub = await bus.subscribeTopic(
     "cmd.request",
@@ -477,21 +478,35 @@ export async function startBusAgentRunner(params: {
       bySession.set(sessionId, state);
 
       if (!state.running) {
+        // Some messages (e.g. GitHub PR synchronize cancellation) only make sense
+        // when a run is already active.
+        const requiresActive = (() => {
+          const raw = entry.raw;
+          if (!raw || typeof raw !== "object") return false;
+          const v = (raw as Record<string, unknown>)["requiresActive"];
+          return v === true;
+        })();
+        if (requiresActive && entry.queue !== "prompt") {
+          logger.info("dropping request message (requires active run)", {
+            requestId,
+            sessionId,
+            queue: entry.queue,
+          });
+          await ctx.commit();
+          return;
+        }
+
         state.queue.push(entry);
         drainSessionQueue(sessionId, state).catch((e: unknown) => {
           logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
         });
       } else {
         // If the message is intended for the currently active request, apply immediately.
-        if (
-          state.activeRequestId &&
-          state.activeRequestId === requestId &&
-          state.agent
-        ) {
-          await applyToRunningAgent(state.agent, entry);
-        } else {
-          // No parallel runs: queue prompt messages for later.
-          state.queue.push(entry);
+          if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
+            await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
+          } else {
+            // No parallel runs: queue prompt messages for later.
+            state.queue.push(entry);
           await publishLifecycle({
             bus,
             headers: {
@@ -558,11 +573,11 @@ export async function startBusAgentRunner(params: {
       queuedForSession: state.queue.length,
     });
 
-    const tools: ToolSet = {} as ToolSet;
-    Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
-    Object.assign(
-      tools,
-      batchTool({
+      const tools: ToolSet = {} as ToolSet;
+      Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
+      Object.assign(
+        tools,
+        batchTool({
         defaultCwd: cwd,
         getTools: () => tools,
         reportToolStatus: (update) => {
@@ -750,6 +765,11 @@ export async function startBusAgentRunner(params: {
 
       await agent.waitForIdle();
 
+      const isCancelled = cancelledByRequestId.has(headers.request_id);
+      if (isCancelled && !finalText) {
+        finalText = "Cancelled: superseded";
+      }
+
       if (params.transcriptStore) {
         try {
           const responseMessages = runStats.finalMessages
@@ -827,7 +847,12 @@ export async function startBusAgentRunner(params: {
         finalTextChars: finalText.length,
       });
 
-      await publishLifecycle({ bus, headers, state: "resolved" });
+      await publishLifecycle({
+        bus,
+        headers,
+        state: isCancelled ? "cancelled" : "resolved",
+        detail: isCancelled ? "cancelled by interrupt" : undefined,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
 
@@ -876,6 +901,7 @@ export async function startBusAgentRunner(params: {
       state.agent = null;
       state.activeRequestId = null;
       state.running = false;
+      cancelledByRequestId.delete(headers.request_id);
       drainSessionQueue(sessionId, state).catch((e: unknown) => {
         logger.error("drainSessionQueue failed", { sessionId }, e);
       });
@@ -933,8 +959,16 @@ function mergeQueuedForSameRequest(
 async function applyToRunningAgent(
   agent: AiSdkPiAgent<ToolSet>,
   entry: Enqueued,
+  cancelledByRequestId: Set<string>,
 ) {
   const merged = mergeToSingleUserMessage(entry.messages);
+
+  const cancel = (() => {
+    const raw = entry.raw;
+    if (!raw || typeof raw !== "object") return false;
+    const v = (raw as Record<string, unknown>)["cancel"];
+    return v === true;
+  })();
 
   switch (entry.queue) {
     case "steer": {
@@ -946,6 +980,11 @@ async function applyToRunningAgent(
       return;
     }
     case "interrupt": {
+      if (cancel) {
+        cancelledByRequestId.add(entry.requestId);
+        agent.abort();
+        return;
+      }
       await agent.interrupt(merged);
       return;
     }

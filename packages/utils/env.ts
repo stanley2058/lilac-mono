@@ -61,6 +61,11 @@ export function parseEnv() {
         tavilyApiKey: env.TAVILY_API_KEY,
       },
     },
+    github: {
+      webhookSecret: env.GITHUB_WEBHOOK_SECRET,
+      webhookPort: env.GITHUB_WEBHOOK_PORT,
+      webhookPath: env.GITHUB_WEBHOOK_PATH || "/github/webhook",
+    },
     perf: {
       log: perfLog,
       lagWarnMs: Number.isFinite(perfLagWarnMs) ? perfLagWarnMs : 200,

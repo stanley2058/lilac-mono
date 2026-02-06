@@ -16,6 +16,18 @@ import type {
 } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
+import {
+  deleteIssueCommentReactionById,
+  deleteIssueReactionById,
+} from "../../github/github-api";
+import { parseGithubRequestId, parseGithubSessionId } from "../../github/github-ids";
+import {
+  clearGithubAck,
+  getGithubAck,
+  getGithubLatestRequestForSession,
+  getGithubRequestMeta,
+} from "../../github/github-state";
+
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
 function getConsumerId(prefix: string): string {
@@ -44,6 +56,20 @@ function parseDiscordReplyTo(params: {
     platform: "discord",
     channelId: params.sessionId,
     messageId: surfaceSpecificId,
+  };
+}
+
+function parseGithubReplyTo(params: {
+  requestId: string;
+  sessionId: string;
+}): MsgRef | null {
+  const parsed = parseGithubRequestId({ requestId: params.requestId });
+  if (!parsed) return null;
+  if (parsed.sessionId !== params.sessionId) return null;
+  return {
+    platform: "github",
+    channelId: params.sessionId,
+    messageId: parsed.triggerId,
   };
 }
 
@@ -80,6 +106,53 @@ function toAttachment(params: {
   };
 }
 
+async function cleanupGithubAck(input: {
+  logger: Logger;
+  requestId: string;
+  sessionId: string;
+}) {
+  const ack = getGithubAck(input.requestId);
+  if (!ack) return;
+
+  const meta = getGithubRequestMeta(input.requestId);
+  const thread = (() => {
+    if (meta?.repoFullName) {
+      const [owner, repo] = meta.repoFullName.split("/");
+      if (owner && repo) {
+        return { owner, repo, issueNumber: meta.issueNumber };
+      }
+    }
+    const parsed = parseGithubSessionId(input.sessionId);
+    return { owner: parsed.owner, repo: parsed.repo, issueNumber: parsed.number };
+  })();
+
+  try {
+    if (ack.target.kind === "issue") {
+      await deleteIssueReactionById({
+        owner: thread.owner,
+        repo: thread.repo,
+        issueNumber: ack.target.issueNumber,
+        reactionId: ack.reactionId,
+      });
+    } else {
+      await deleteIssueCommentReactionById({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId: ack.target.commentId,
+        reactionId: ack.reactionId,
+      });
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Best-effort: ignore if already removed.
+    if (!msg.includes("404")) {
+      input.logger.warn("failed to delete github ack reaction", { requestId: input.requestId }, e);
+    }
+  } finally {
+    clearGithubAck(input.requestId);
+  }
+}
+
 type ActiveRelay = {
   stop(): Promise<void>;
   startedAt: number;
@@ -89,7 +162,7 @@ type ActiveRelay = {
 export async function bridgeBusToAdapter(params: {
   adapter: SurfaceAdapter;
   bus: LilacBus;
-  platform: "discord";
+  platform: "discord" | "github";
   subscriptionId: string;
   idleTimeoutMs?: number;
   transcriptStore?: TranscriptStore;
@@ -186,7 +259,7 @@ export async function bridgeBusToAdapter(params: {
   async function startRelay(input: {
     adapter: SurfaceAdapter;
     bus: LilacBus;
-    platform: "discord";
+    platform: "discord" | "github";
     requestId: string;
     sessionId: string;
     routerSessionMode?: "mention" | "active";
@@ -196,12 +269,15 @@ export async function bridgeBusToAdapter(params: {
 
     const relayStartedAt = Date.now();
 
-    const sessionRef: SessionRef = {
-      platform,
-      channelId: sessionId,
-    };
+    const sessionRef: SessionRef =
+      platform === "discord"
+        ? { platform, channelId: sessionId }
+        : { platform: "github", channelId: sessionId };
 
-    const replyTo = parseDiscordReplyTo({ requestId, sessionId });
+    const replyTo =
+      platform === "discord"
+        ? parseDiscordReplyTo({ requestId, sessionId })
+        : parseGithubReplyTo({ requestId, sessionId });
 
     const startOpts: StartOutputOpts = {
       replyTo: replyTo ?? undefined,
@@ -334,9 +410,23 @@ export async function bridgeBusToAdapter(params: {
             break;
           }
 
-          case lilacEventTypes.EvtAgentOutputResponseText: {
-            await out.push({ type: "text.set", text: outMsg.data.finalText });
-            const res = await out.finish();
+           case lilacEventTypes.EvtAgentOutputResponseText: {
+             if (platform === "github") {
+               const latest = getGithubLatestRequestForSession(sessionId);
+               if (latest && latest !== requestId) {
+                 logger.info("github reply suppressed (superseded)", {
+                   requestId,
+                   sessionId,
+                   latest,
+                 });
+                 await out.abort("superseded").catch(() => undefined);
+                 await relayStop();
+                 return;
+               }
+             }
+
+             await out.push({ type: "text.set", text: outMsg.data.finalText });
+             const res = await out.finish();
 
             if (params.transcriptStore) {
               try {
@@ -353,7 +443,15 @@ export async function bridgeBusToAdapter(params: {
                 );
               }
             }
-            await relayStop();
+             await relayStop();
+
+             if (platform === "github") {
+               await cleanupGithubAck({ logger, requestId, sessionId }).catch(
+                 (e: unknown) => {
+                   logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                 },
+               );
+             }
 
             logger.info("reply relay finished", {
               requestId,

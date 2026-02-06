@@ -15,10 +15,14 @@ import {
 } from "@stanley2058/lilac-event-bus";
 
 import { DiscordAdapter } from "../surface/discord/discord-adapter";
+import { GithubAdapter } from "../surface/github/github-adapter";
 import { bridgeAdapterToBus } from "../surface/bridge/publish-to-bus";
 import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
+
+import { readGithubAppSecret } from "../github/github-app";
+import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
 
 import { SqliteTranscriptStore } from "../transcript/transcript-store";
 
@@ -109,6 +113,7 @@ export async function createCoreRuntime(
   const bus: LilacBus = createLilacBus(raw);
 
   const adapter = new DiscordAdapter();
+  const githubAdapter = new GithubAdapter();
   const workflowStore = new SqliteWorkflowStore();
   const workflowQueries = createWorkflowStoreQueries(workflowStore);
 
@@ -121,7 +126,10 @@ export async function createCoreRuntime(
   let stopWorkflow: { stop(): Promise<void> } | null = null;
   let stopWorkflowScheduler: { stop(): Promise<void> } | null = null;
   let stopBusToAdapter: { stop(): Promise<void> } | null = null;
+  let stopGithubBusToAdapter: { stop(): Promise<void> } | null = null;
   let stopAgentRunner: { stop(): Promise<void> } | null = null;
+
+  let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
   let requestMessageCache: RequestMessageCache | null = null;
 
@@ -244,6 +252,31 @@ export async function createCoreRuntime(
         subscriptionId: subId(subscriptionPrefix, "bus-to-adapter"),
       });
 
+      // GitHub surface (webhook ingress + non-streamed comment egress)
+      const ghSecret = await readGithubAppSecret(env.dataDir);
+      if (ghSecret) {
+        stopGithubWebhook = await startGithubWebhookServer({
+          bus,
+          subscriptionId: subId(subscriptionPrefix, "github-webhook"),
+        });
+
+        stopGithubBusToAdapter = await bridgeBusToAdapter({
+          adapter: githubAdapter,
+          bus,
+          platform: "github",
+          subscriptionId: subId(subscriptionPrefix, "bus-to-github"),
+          transcriptStore: transcriptStore ?? undefined,
+        });
+
+        logger.info("GitHub surface started", {
+          webhookPath: env.github.webhookPath,
+          webhookPort: env.github.webhookPort,
+          subscriptionId: subId(subscriptionPrefix, "bus-to-github"),
+        });
+      } else {
+        logger.info("GitHub App secret missing; skipping GitHub surface");
+      }
+
       // Start agent runner last so it can't publish replies before relay is online.
       stopAgentRunner = await startBusAgentRunner({
         bus,
@@ -292,6 +325,14 @@ export async function createCoreRuntime(
       "bridgeBusToAdapter.stop",
       () => stopBusToAdapter?.stop() ?? Promise.resolve(),
     );
+    await safe(
+      "bridgeGithubBusToAdapter.stop",
+      () => stopGithubBusToAdapter?.stop() ?? Promise.resolve(),
+    );
+    await safe(
+      "githubWebhook.stop",
+      () => stopGithubWebhook?.stop() ?? Promise.resolve(),
+    );
 
     await safe(
       "toolServer.stop",
@@ -317,6 +358,7 @@ export async function createCoreRuntime(
     );
 
     await safe("adapter.disconnect", () => adapter.disconnect());
+    await safe("githubAdapter.disconnect", () => githubAdapter.disconnect());
     await safe("transcriptStore.close", async () => {
       transcriptStore?.close();
       transcriptStore = null;

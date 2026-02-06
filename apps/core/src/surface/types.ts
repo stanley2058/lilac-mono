@@ -9,14 +9,33 @@ export type DiscordSessionRef = {
   parentChannelId?: string;
 };
 
+/**
+ * GitHub session:
+ * - channelId: "OWNER/REPO#<number>" (issue or PR)
+ */
+export type GithubSessionRef = {
+  platform: "github";
+  channelId: string;
+};
+
 export type DiscordMsgRef = {
   platform: "discord";
   channelId: string;
   messageId: string;
 };
 
-export type SessionRef = DiscordSessionRef;
-export type MsgRef = DiscordMsgRef;
+/**
+ * GitHub message reference:
+ * - messageId: either issue/pr number (for PR description trigger) or an issue_comment id.
+ */
+export type GithubMsgRef = {
+  platform: "github";
+  channelId: string;
+  messageId: string;
+};
+
+export type SessionRef = DiscordSessionRef | GithubSessionRef;
+export type MsgRef = DiscordMsgRef | GithubMsgRef;
 
 export type SurfaceSelf = {
   platform: SurfacePlatform;
