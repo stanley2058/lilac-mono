@@ -54,7 +54,24 @@ surface:
       maxUsers: 5
 
 
-agent: {}
+agent:
+  subagents:
+    # Master switch for delegate-style subagents.
+    enabled: true
+    # Subagents cannot spawn subagents (0 or 1 only).
+    maxDepth: 1
+    # Default timeout applied by subagent.delegate when timeoutMs is omitted.
+    defaultTimeoutMs: 180000
+    # Hard cap for subagent timeout (max 8 minutes).
+    maxTimeoutMs: 480000
+    profiles:
+      explore:
+        # Which model slot to run explore subagents on.
+        # Options: main | fast
+        modelSlot: "main"
+        # Optional extra prompt fragment appended in explore mode.
+        # promptOverlay: |
+        #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
 
 # Optional: extra system prompt text prepended to data/prompts/*.
 # basePrompt: |

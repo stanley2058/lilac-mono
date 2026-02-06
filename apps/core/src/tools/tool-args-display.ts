@@ -2,7 +2,7 @@ import { asSchema } from "ai";
 import { z } from "zod";
 
 import { bashInputSchema } from "./bash";
-import { readFileInputZod } from "./fs/fs";
+import { globInputZod, grepInputZod, readFileInputZod } from "./fs/fs";
 
 type ValidationResult<T> =
   | { success: true; value: T }
@@ -82,6 +82,12 @@ const localApplyPatchArgsSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const subagentDelegateArgsSchema = z.object({
+  profile: z.literal("explore").optional(),
+  task: z.string().min(1),
+  timeoutMs: z.number().optional(),
+});
+
 function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
   // Matches tool patch headers like:
   // *** Add File: path
@@ -130,6 +136,35 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
 
   // Back-compat for older transcripts / callers.
   readFile: readFileToolArgsFormatter,
+
+  glob: (args) => {
+    const parsed = safeValidateSync<{ patterns: string[] }>(globInputZod, args);
+    if (!parsed) return "";
+    const first = (parsed.patterns[0] ?? "").trim();
+    if (!first) return "";
+    const suffix =
+      parsed.patterns.length > 1 ? ` (+${parsed.patterns.length - 1})` : "";
+    return " " + truncateMiddle(first, 7, 10, 20) + suffix;
+  },
+
+  grep: (args) => {
+    const parsed = safeValidateSync<{ pattern: string }>(grepInputZod, args);
+    if (!parsed) return "";
+    const pattern = parsed.pattern.replace(/\s+/g, " ").trim();
+    if (!pattern) return "";
+    return " " + truncateEnd(pattern, 20);
+  },
+
+  "subagent.delegate": (args) => {
+    const parsed = safeValidateSync<{ task: string }>(
+      subagentDelegateArgsSchema,
+      args,
+    );
+    if (!parsed) return "";
+    const task = parsed.task.replace(/\s+/g, " ").trim();
+    if (!task) return "";
+    return " " + truncateEnd(task, 20);
+  },
 
   apply_patch: (args) => {
     const localParsed = safeValidateSync<{ patchText: string }>(

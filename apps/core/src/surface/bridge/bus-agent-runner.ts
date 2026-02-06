@@ -32,6 +32,7 @@ import { applyPatchTool } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { batchTool } from "../../tools/batch";
 import { fsTool } from "../../tools/fs/fs";
+import { subagentTools } from "../../tools/subagent";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
@@ -383,6 +384,85 @@ function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | nul
   return null;
 }
 
+type AgentRunProfile = "primary" | "explore";
+
+type ParsedSubagentMeta = {
+  profile: AgentRunProfile;
+  depth: number;
+};
+
+type SubagentConfig = NonNullable<CoreConfig["agent"]["subagents"]>;
+
+const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
+  enabled: true,
+  maxDepth: 1,
+  defaultTimeoutMs: 3 * 60 * 1000,
+  maxTimeoutMs: 8 * 60 * 1000,
+  profiles: {
+    explore: {
+      modelSlot: "main",
+    },
+  },
+};
+
+function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
+  if (!raw || typeof raw !== "object") {
+    return { profile: "primary", depth: 0 };
+  }
+
+  const subagent = (raw as Record<string, unknown>)["subagent"];
+  if (!subagent || typeof subagent !== "object") {
+    return { profile: "primary", depth: 0 };
+  }
+
+  const o = subagent as Record<string, unknown>;
+
+  const profile: AgentRunProfile =
+    o["profile"] === "explore" ? "explore" : "primary";
+
+  const depthRaw = o["depth"];
+  const depth =
+    typeof depthRaw === "number" && Number.isFinite(depthRaw)
+      ? Math.max(0, Math.trunc(depthRaw))
+      : profile === "explore"
+        ? 1
+        : 0;
+
+  return { profile, depth };
+}
+
+function buildExploreOverlay(extra?: string): string {
+  const lines = [
+    "You are running in explore subagent mode.",
+    "Focus on repository exploration and evidence-backed findings.",
+    "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
+    "Do not use bash.",
+    "Do not edit files.",
+    "Do not delegate to another subagent.",
+  ];
+
+  if (extra && extra.trim().length > 0) {
+    lines.push(extra.trim());
+  }
+
+  return lines.join("\n");
+}
+
+function buildSystemPromptForProfile(params: {
+  baseSystemPrompt: string;
+  profile: AgentRunProfile;
+  exploreOverlay?: string;
+}): string {
+  if (params.profile !== "explore") return params.baseSystemPrompt;
+
+  return [
+    params.baseSystemPrompt,
+    "",
+    "## Subagent Mode: Explore",
+    buildExploreOverlay(params.exploreOverlay),
+  ].join("\n");
+}
+
 type SessionQueue = {
   running: boolean;
   agent: AiSdkPiAgent<ToolSet> | null;
@@ -542,6 +622,10 @@ export async function startBusAgentRunner(params: {
 
     const runStartedAt = Date.now();
 
+    const subagentMeta = parseSubagentMetaFromRaw(next.raw);
+    const runProfile = subagentMeta.profile;
+    const subagents = cfg.agent.subagents ?? DEFAULT_SUBAGENT_CONFIG;
+
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
 
     const headers = {
@@ -550,6 +634,29 @@ export async function startBusAgentRunner(params: {
       request_client: next.requestClient,
       ...(routerSessionMode ? { router_session_mode: routerSessionMode } : {}),
     };
+
+    const maxSubagentDepth = subagents.maxDepth;
+    if (subagentMeta.depth > maxSubagentDepth) {
+      const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
+      await publishLifecycle({
+        bus,
+        headers,
+        state: "failed",
+        detail,
+      });
+      await bus.publish(
+        lilacEventTypes.EvtAgentOutputResponseText,
+        { finalText: `Error: ${detail}` },
+        { headers },
+      );
+
+      state.activeRequestId = null;
+      state.running = false;
+      drainSessionQueue(sessionId, state).catch((e: unknown) => {
+        logger.error("drainSessionQueue failed", { sessionId }, e);
+      });
+      return;
+    }
 
     await publishLifecycle({
       bus,
@@ -562,22 +669,55 @@ export async function startBusAgentRunner(params: {
     });
     await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
-    const resolved = resolveModelSlot(cfg, "main");
+    const resolved = resolveModelSlot(
+      cfg,
+      runProfile === "explore"
+        ? subagents.profiles.explore.modelSlot
+        : "main",
+    );
+
+    const systemPrompt = buildSystemPromptForProfile({
+      baseSystemPrompt: cfg.agent.systemPrompt,
+      profile: runProfile,
+      exploreOverlay: subagents.profiles.explore.promptOverlay,
+    });
 
     logger.info("agent run starting", {
       requestId: next.requestId,
       sessionId: next.sessionId,
       requestClient: next.requestClient,
+      runProfile,
+      subagentDepth: subagentMeta.depth,
       model: resolved.spec,
       messageCount: next.messages.length,
       queuedForSession: state.queue.length,
     });
 
-      const tools: ToolSet = {} as ToolSet;
+    const tools: ToolSet = {} as ToolSet;
+    if (runProfile === "explore") {
+      Object.assign(tools, fsTool(cwd));
+    } else {
       Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
-      Object.assign(
-        tools,
-        batchTool({
+
+      if (
+        subagents.enabled &&
+        subagentMeta.depth < subagents.maxDepth
+      ) {
+        Object.assign(
+          tools,
+          subagentTools({
+            bus,
+            defaultTimeoutMs: subagents.defaultTimeoutMs,
+            maxTimeoutMs: subagents.maxTimeoutMs,
+            maxDepth: subagents.maxDepth,
+          }),
+        );
+      }
+    }
+
+    Object.assign(
+      tools,
+      batchTool({
         defaultCwd: cwd,
         getTools: () => tools,
         reportToolStatus: (update) => {
@@ -599,7 +739,7 @@ export async function startBusAgentRunner(params: {
     );
 
     const agent = new AiSdkPiAgent<ToolSet>({
-      system: cfg.agent.systemPrompt,
+      system: systemPrompt,
       model: resolved.model,
       tools,
       providerOptions: resolved.providerOptions,
@@ -609,6 +749,8 @@ export async function startBusAgentRunner(params: {
       sessionId: next.sessionId,
       requestId: next.requestId,
       requestClient: next.requestClient,
+      subagentDepth: subagentMeta.depth,
+      subagentProfile: runProfile,
     });
 
     const unsubscribeCompaction = await attachAutoCompaction(agent, {

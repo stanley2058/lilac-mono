@@ -6,7 +6,13 @@ import { expandTilde } from "./fs/fs-impl";
 import { parsePatch } from "./apply-patch/local-apply-patch-tool";
 import { formatToolArgsForDisplay } from "./tool-args-display";
 
-const ALLOWED_TOOL_NAMES = ["read_file", "bash", "apply_patch"] as const;
+const ALLOWED_TOOL_NAMES = [
+  "read_file",
+  "glob",
+  "grep",
+  "bash",
+  "apply_patch",
+] as const;
 type AllowedToolName = (typeof ALLOWED_TOOL_NAMES)[number];
 
 const toolCallSchema = z.object({
@@ -184,7 +190,7 @@ export function batchTool(params: {
     batch: tool({
       description: [
         "Execute multiple tool calls in parallel.",
-        "Use this to speed up independent read_file/bash/apply_patch operations.",
+        "Use this to speed up independent read_file/glob/grep/bash/apply_patch operations.",
         "Notes:",
         "- All calls start in parallel; ordering is not guaranteed.",
         "- Partial failures do not stop other tool calls.",

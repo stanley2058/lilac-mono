@@ -22,7 +22,7 @@ import type {
 
 function testConfig(input: unknown): CoreConfig {
   const cfg = coreConfigSchema.parse(input);
-  return { ...cfg, agent: { systemPrompt: "(test)" } };
+  return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
 }
 
 class FakeAdapter implements SurfaceAdapter {

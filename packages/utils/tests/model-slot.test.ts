@@ -10,7 +10,7 @@ function baseConfig(): CoreConfig {
   const parsed = coreConfigSchema.parse({});
   return {
     ...parsed,
-    agent: { systemPrompt: "test" },
+    agent: { ...parsed.agent, systemPrompt: "test" },
   };
 }
 

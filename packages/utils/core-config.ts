@@ -39,7 +39,58 @@ const jsonObjectSchema: z.ZodType<JSONObject> = z.record(
 
 type AgentConfig = {
   systemPrompt: string;
+  subagents?: {
+    enabled: boolean;
+    maxDepth: number;
+    defaultTimeoutMs: number;
+    maxTimeoutMs: number;
+    profiles: {
+      explore: {
+        modelSlot: "main" | "fast";
+        promptOverlay?: string;
+      };
+    };
+  };
 };
+
+const subagentProfileSchema = z.object({
+  modelSlot: z.enum(["main", "fast"]).default("main"),
+  promptOverlay: z.string().min(1).optional(),
+});
+
+const subagentsSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxDepth: z.number().int().min(0).max(1).default(1),
+    defaultTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(8 * 60 * 1000)
+      .default(3 * 60 * 1000),
+    maxTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(8 * 60 * 1000)
+      .default(8 * 60 * 1000),
+    profiles: z
+      .object({
+        explore: subagentProfileSchema.default({ modelSlot: "main" }),
+      })
+      .default({
+        explore: { modelSlot: "main" },
+      }),
+  })
+  .superRefine((input, ctx) => {
+    if (input.defaultTimeoutMs > input.maxTimeoutMs) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultTimeoutMs"],
+        message: "defaultTimeoutMs must be <= maxTimeoutMs",
+      });
+    }
+  });
 
 const routerSchema = z
   .object({
@@ -126,7 +177,29 @@ export const coreConfigSchema = z.object({
       },
     }),
 
-  agent: z.object({}).default({}),
+  agent: z
+    .object({
+      subagents: subagentsSchema.default({
+        enabled: true,
+        maxDepth: 1,
+        defaultTimeoutMs: 3 * 60 * 1000,
+        maxTimeoutMs: 8 * 60 * 1000,
+        profiles: {
+          explore: { modelSlot: "main" },
+        },
+      }),
+    })
+    .default({
+      subagents: {
+        enabled: true,
+        maxDepth: 1,
+        defaultTimeoutMs: 3 * 60 * 1000,
+        maxTimeoutMs: 8 * 60 * 1000,
+        profiles: {
+          explore: { modelSlot: "main" },
+        },
+      },
+    }),
 
   models: z
     .object({

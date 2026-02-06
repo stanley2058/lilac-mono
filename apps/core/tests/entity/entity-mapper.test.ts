@@ -10,7 +10,7 @@ function buildCfg(): CoreConfig {
 
   return {
     ...base,
-    agent: { systemPrompt: "" },
+    agent: { ...base.agent, systemPrompt: "" },
     entity: {
       users: {
         Stanley: { discord: "123" },

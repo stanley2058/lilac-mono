@@ -202,6 +202,39 @@ describe("batch tool", () => {
     expect(out.results.some((r) => r.tool === "read_file" && r.ok)).toBe(true);
   });
 
+  it("runs glob + grep in parallel and returns both results", async () => {
+    const tools = makeTools(baseDir);
+    const batch = getTool(tools, "batch");
+
+    await writeFile(join(baseDir, "src.ts"), "const marker = 1;\n");
+
+    const res = await batch.execute(
+      {
+        tool_calls: [
+          { tool: "glob", parameters: { patterns: ["**/*.ts"] } },
+          {
+            tool: "grep",
+            parameters: {
+              pattern: "marker",
+              fileExtensions: ["ts"],
+            },
+          },
+        ],
+      },
+      {
+        toolCallId: "batch-3b",
+        messages: [],
+        abortSignal: undefined,
+        experimental_context: undefined,
+      },
+    );
+
+    const out = res as { results: Array<{ tool: string; ok: boolean }> };
+    expect(out.results.length).toBe(2);
+    expect(out.results.some((r) => r.tool === "glob" && r.ok)).toBe(true);
+    expect(out.results.some((r) => r.tool === "grep" && r.ok)).toBe(true);
+  });
+
   it("reports batch progress and shows newest 3 child updates", async () => {
     const updates: Array<{ status: string; display: string }> = [];
     const tools = makeToolsWithBatchReporter(baseDir, (u) => {

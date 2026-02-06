@@ -45,6 +45,112 @@ export const readFileInputZod = z.object({
 
 type ReadFileInput = z.infer<typeof readFileInputZod>;
 
+const globEntryTypeSchema = z.enum([
+  "symlink",
+  "file",
+  "directory",
+  "socket",
+  "block_device",
+  "character_device",
+  "fifo",
+  "unknown",
+]);
+
+export const globInputZod = z.object({
+  patterns: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe("Glob patterns (supports include + negate patterns)"),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional base directory to search from (supports ~). Defaults to the tool root.",
+    ),
+  maxEntries: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum number of matched paths to return (default: 100)."),
+});
+
+type GlobInput = z.infer<typeof globInputZod>;
+
+const globOutputZod = z.object({
+  truncated: z.boolean(),
+  entries: z.array(
+    z.object({
+      path: z.string(),
+      type: globEntryTypeSchema,
+      size: z.number(),
+    }),
+  ),
+  error: z.string().optional(),
+});
+
+type GlobOutput = z.infer<typeof globOutputZod>;
+
+export const grepInputZod = z.object({
+  pattern: z
+    .string()
+    .min(1)
+    .describe("Search pattern. Literal by default unless regex=true."),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional base directory to search from (supports ~). Defaults to the tool root.",
+    ),
+  regex: z
+    .boolean()
+    .optional()
+    .describe("Treat pattern as regex when true. Default is false (literal)."),
+  maxResults: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum number of matches to return (default: 100)."),
+  fileExtensions: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional file extension filters (e.g. [\"ts\", \"tsx\"])."),
+  includeContextLines: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Include N context lines around each match."),
+});
+
+type GrepInput = z.infer<typeof grepInputZod>;
+
+const grepOutputZod = z.object({
+  results: z
+    .array(
+      z.object({
+        file: z.string(),
+        line: z.number(),
+        column: z.number(),
+        text: z.string(),
+        submatches: z
+          .array(
+            z.object({
+              match: z.string(),
+              start: z.number(),
+              end: z.number(),
+            }),
+          )
+          .optional(),
+      }),
+    )
+    .optional(),
+  error: z.string().optional(),
+});
+
+type GrepOutput = z.infer<typeof grepOutputZod>;
+
 const readFileSuccessBaseZod = z.object({
   success: z.literal(true),
   resolvedPath: z.string(),
@@ -250,6 +356,65 @@ export function fsTool(cwd: string) {
             },
           ],
         };
+      },
+    }),
+
+    glob: tool<GlobInput, GlobOutput>({
+      description:
+        "Match filesystem paths using glob patterns. Returns path/type/size entries.",
+      inputSchema: globInputZod,
+      outputSchema: globOutputZod,
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.glob", {
+          patterns: input.patterns,
+          cwd: opCwd,
+          maxEntries: input.maxEntries,
+        });
+
+        const res = await fs.glob({
+          patterns: input.patterns,
+          maxEntries: input.maxEntries,
+          baseDir: opCwd,
+        });
+
+        logger.info("fs.glob done", {
+          entryCount: res.entries.length,
+          truncated: res.truncated,
+          error: res.error,
+        });
+
+        return res;
+      },
+    }),
+
+    grep: tool<GrepInput, GrepOutput>({
+      description:
+        "Search file contents with ripgrep. Supports literal or regex modes.",
+      inputSchema: grepInputZod,
+      outputSchema: grepOutputZod,
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.grep", {
+          pattern: input.pattern,
+          cwd: opCwd,
+          regex: input.regex,
+          maxResults: input.maxResults,
+        });
+
+        const res = await fs.grep({
+          pattern: input.pattern,
+          regex: input.regex,
+          maxResults: input.maxResults,
+          fileExtensions: input.fileExtensions,
+          includeContextLines: input.includeContextLines,
+          baseDir: opCwd,
+        });
+
+        logger.info("fs.grep done", {
+          resultCount: Array.isArray(res.results) ? res.results.length : 0,
+          error: res.error,
+        });
+
+        return res;
       },
     }),
   };
