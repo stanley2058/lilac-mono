@@ -16,6 +16,7 @@ import type {
   SurfaceReactionSummary,
   SurfaceSession,
 } from "../../surface/types";
+import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import type { RequestContext, ServerTool } from "../types";
 
 import {
@@ -514,6 +515,27 @@ const messagesReadInputSchema = baseInputSchema.extend({
     ),
 });
 
+const messagesSearchInputSchema = baseInputSchema.extend({
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  query: z
+    .string()
+    .min(1)
+    .describe("Search query (full-text, session-scoped)."),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .describe("Max matches (default: 20, max: 100)"),
+});
+
 const messagesSendInputSchema = baseInputSchema.extend({
   sessionId: z
     .string()
@@ -649,6 +671,7 @@ export class Surface implements ServerTool {
       githubApi?: GithubSurfaceApi;
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
+      discordSearch?: DiscordSearchService;
     },
   ) {}
 
@@ -694,6 +717,15 @@ export class Surface implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(messagesReadInputSchema),
+      },
+      {
+        callableId: "surface.messages.search",
+        name: "Surface Messages Search",
+        description: "Search indexed messages in a single Discord session.",
+        shortInput: zodObjectToCliLines(messagesSearchInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(messagesSearchInputSchema),
       },
       {
         callableId: "surface.messages.send",
@@ -782,6 +814,9 @@ export class Surface implements ServerTool {
     }
     if (callableId === "surface.messages.read") {
       return await this.callMessagesRead(input, opts?.context);
+    }
+    if (callableId === "surface.messages.search") {
+      return await this.callMessagesSearch(input, opts?.context);
     }
     if (callableId === "surface.messages.send") {
       return await this.callMessagesSend(input, opts?.context);
@@ -1217,6 +1252,70 @@ export class Surface implements ServerTool {
     }
 
     return msg;
+  }
+
+  private async callMessagesSearch(
+    rawInput: Record<string, unknown>,
+    ctx: RequestContext | undefined,
+  ) {
+    const input = messagesSearchInputSchema.parse(
+      withDefaultSessionId(rawInput, ctx),
+    );
+    const client = resolveClient({ inputClient: input.client, ctx });
+
+    if (client === "github") {
+      throw new Error(
+        "surface.messages.search for GitHub is not supported yet.",
+      );
+    }
+
+    ensureDiscordClient(client);
+
+    const search = this.params.discordSearch;
+    if (!search) {
+      throw new Error(
+        "surface.messages.search is unavailable: Discord search index is not initialized.",
+      );
+    }
+
+    const cfg = await this.getCfg();
+
+    const channelId = resolveDiscordSessionId({
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
+      cfg,
+    });
+
+    const guildId = await resolveGuildIdForChannel({
+      adapter: this.params.adapter,
+      channelId,
+    });
+    if (
+      !shouldAllowDiscordChannel({
+        cfg,
+        channelId,
+        guildId,
+      })
+    ) {
+      throw new Error(`Not allowed: channelId '${channelId}'`);
+    }
+
+    const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
+    if (sessionRef.platform !== "discord") {
+      throw new Error("surface.messages.search internal error");
+    }
+
+    const result = await search.searchSession({
+      sessionRef,
+      query: input.query,
+      limit: input.limit,
+    });
+
+    return {
+      sessionId: channelId,
+      query: input.query,
+      heal: result.heal,
+      hits: result.hits,
+    };
   }
 
   private async callMessagesSend(

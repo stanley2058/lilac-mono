@@ -1,6 +1,7 @@
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../surface/adapter";
+import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { WorkflowStore } from "../workflow/workflow-store";
 import type { ServerTool } from "./types";
 import {
@@ -22,6 +23,7 @@ export function createDefaultToolServerTools(params?: {
   config?: CoreConfig;
   getConfig?: () => Promise<CoreConfig>;
   workflowStore?: WorkflowStore;
+  discordSearch?: DiscordSearchService;
 }): ServerTool[] {
   const tools: ServerTool[] = [
     new Onboarding(),
@@ -52,6 +54,7 @@ export function createDefaultToolServerTools(params?: {
         adapter: params.adapter,
         config: params.config,
         getConfig: params.getConfig,
+        discordSearch: params.discordSearch,
       }),
     );
   }

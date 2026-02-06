@@ -418,6 +418,10 @@ export function resolveTranscriptDbPath(): string {
   return path.join(env.dataDir, "agent-transcripts.db");
 }
 
+export function resolveDiscordSearchDbPath(): string {
+  return path.join(env.dataDir, "discord-search.db");
+}
+
 export function resolveDiscordToken(cfg: CoreConfig): string {
   const key = cfg.surface.discord.tokenEnv;
   const value = process.env[key];

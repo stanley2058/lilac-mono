@@ -2,6 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Surface } from "../src/tool-server/tools/surface";
 import type { GithubSurfaceApi } from "../src/tool-server/tools/surface";
+import {
+  DiscordSearchService,
+  DiscordSearchStore,
+} from "../src/surface/store/discord-search-store";
 import type { RequestContext } from "../src/tool-server/types";
 import type { SurfaceAdapter } from "../src/surface/adapter";
 import fs from "node:fs/promises";
@@ -33,6 +37,7 @@ class FakeAdapter implements SurfaceAdapter {
   }> = [];
   public addReactionCalls: Array<{ msgRef: MsgRef; reaction: string }> = [];
   public removeReactionCalls: Array<{ msgRef: MsgRef; reaction: string }> = [];
+  public listCalls: Array<{ sessionRef: SessionRef; opts?: LimitOpts }> = [];
 
   constructor(
     private readonly sessions: SurfaceSession[],
@@ -98,6 +103,8 @@ class FakeAdapter implements SurfaceAdapter {
     sessionRef: SessionRef,
     opts?: LimitOpts,
   ): Promise<SurfaceMessage[]> {
+    this.listCalls.push({ sessionRef, opts });
+
     const msgs = this.messagesByChannelId[sessionRef.channelId] ?? [];
     const limit = opts?.limit ?? 50;
 
@@ -278,6 +285,91 @@ describe("tool-server surface", () => {
 
     expect(res.length).toBe(1);
     expect(res[0].ref.messageId).toBe("m1");
+  });
+
+  it("searches per session and cools down healing", async () => {
+    const c1 = "123";
+    const c2 = "456";
+
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [c1, c2],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId: c1 }, kind: "channel" }],
+      {
+        [c1]: [
+          {
+            ref: { platform: "discord", channelId: c1, messageId: "m1" },
+            session: { platform: "discord", channelId: c1 },
+            userId: "u1",
+            text: "deploy completed successfully",
+            ts: 100,
+          },
+          {
+            ref: { platform: "discord", channelId: c1, messageId: "m2" },
+            session: { platform: "discord", channelId: c1 },
+            userId: "u2",
+            text: "incident timeline",
+            ts: 101,
+          },
+        ],
+        [c2]: [
+          {
+            ref: { platform: "discord", channelId: c2, messageId: "m3" },
+            session: { platform: "discord", channelId: c2 },
+            userId: "u3",
+            text: "deploy in other channel",
+            ts: 102,
+          },
+        ],
+      },
+    );
+
+    const searchStore = new DiscordSearchStore(":memory:");
+    const search = new DiscordSearchService({ adapter, store: searchStore });
+    const tool = new Surface({
+      adapter,
+      config: cfg,
+      discordSearch: search,
+    });
+
+    const first = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: c1,
+      query: "deploy",
+    })) as {
+      hits: Array<{ ref: { channelId: string } }>;
+      heal: { attempted: boolean; limit: number } | null;
+    };
+
+    expect(first.hits.length).toBe(1);
+    expect(first.hits[0]!.ref.channelId).toBe(c1);
+    expect(first.heal?.attempted).toBe(true);
+    expect(first.heal?.limit).toBe(300);
+    expect(adapter.listCalls.length).toBe(1);
+    expect(adapter.listCalls[0]?.opts?.limit).toBe(300);
+
+    const second = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: c1,
+      query: "deploy",
+    })) as {
+      heal: { skipped: boolean; reason?: string } | null;
+    };
+
+    expect(second.heal?.skipped).toBe(true);
+    expect(second.heal?.reason).toBe("cooldown");
+    expect(adapter.listCalls.length).toBe(1);
+
+    searchStore.close();
   });
 
   it("defaults sessionId and messageId from discord requestId", async () => {

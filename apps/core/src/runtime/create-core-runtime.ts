@@ -3,6 +3,7 @@ import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import {
   env,
   getCoreConfig,
+  resolveDiscordSearchDbPath,
   resolveLogLevel,
   resolveTranscriptDbPath,
 } from "@stanley2058/lilac-utils";
@@ -20,6 +21,11 @@ import { bridgeAdapterToBus } from "../surface/bridge/publish-to-bus";
 import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
+import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
+import {
+  DiscordSearchService,
+  DiscordSearchStore,
+} from "../surface/store/discord-search-store";
 
 import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
@@ -118,10 +124,13 @@ export async function createCoreRuntime(
   const workflowQueries = createWorkflowStoreQueries(workflowStore);
 
   let transcriptStore: SqliteTranscriptStore | null = null;
+  let discordSearchStore: DiscordSearchStore | null = null;
+  let discordSearchService: DiscordSearchService | null = null;
 
   let started = false;
 
   let stopAdapterToBus: { stop(): Promise<void> } | null = null;
+  let stopDiscordSearchIndexer: { stop(): Promise<void> } | null = null;
   let stopRouter: { stop(): Promise<void> } | null = null;
   let stopWorkflow: { stop(): Promise<void> } | null = null;
   let stopWorkflowScheduler: { stop(): Promise<void> } | null = null;
@@ -150,6 +159,20 @@ export async function createCoreRuntime(
       await fs.mkdir(env.dataDir, { recursive: true });
 
       transcriptStore = new SqliteTranscriptStore(resolveTranscriptDbPath());
+      discordSearchStore = new DiscordSearchStore(resolveDiscordSearchDbPath());
+      discordSearchService = new DiscordSearchService({
+        adapter,
+        store: discordSearchStore,
+      });
+
+      stopDiscordSearchIndexer = await startDiscordSearchIndexer({
+        adapter,
+        search: discordSearchService,
+      });
+
+      logger.info("Discord search indexer started", {
+        dbPath: resolveDiscordSearchDbPath(),
+      });
 
       // Subscribe to adapter events before connecting, so we don't miss early messages.
       stopAdapterToBus = await bridgeAdapterToBus({
@@ -216,6 +239,7 @@ export async function createCoreRuntime(
           adapter,
           getConfig: () => getCoreConfig(),
           workflowStore,
+          discordSearch: discordSearchService ?? undefined,
         }),
         logger: new Logger({
           logLevel: resolveLogLevel(),
@@ -322,6 +346,10 @@ export async function createCoreRuntime(
       () => stopAgentRunner?.stop() ?? Promise.resolve(),
     );
     await safe(
+      "discordSearchIndexer.stop",
+      () => stopDiscordSearchIndexer?.stop() ?? Promise.resolve(),
+    );
+    await safe(
       "bridgeBusToAdapter.stop",
       () => stopBusToAdapter?.stop() ?? Promise.resolve(),
     );
@@ -362,6 +390,11 @@ export async function createCoreRuntime(
     await safe("transcriptStore.close", async () => {
       transcriptStore?.close();
       transcriptStore = null;
+    });
+    await safe("discordSearchStore.close", async () => {
+      discordSearchStore?.close();
+      discordSearchStore = null;
+      discordSearchService = null;
     });
     await safe("bus.close", () => bus.close());
 
