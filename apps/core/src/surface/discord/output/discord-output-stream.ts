@@ -50,16 +50,24 @@ function normalizeContent(content: ContentOpts): {
   };
 }
 
+export function escapeDiscordMarkdown(text: string): string {
+  // Escape markdown-significant characters so tool status lines render literally.
+  // This avoids cases like "**/*" being interpreted as emphasis.
+  return text.replace(/([\\*_`~|>\[\]()])/g, "\\$1");
+}
+
 function buildToolLine(update: SurfaceToolStatusUpdate): string {
+  const escapedDisplay = escapeDiscordMarkdown(update.display);
+
   if (update.status === "start") {
-    return `▶ ${update.display}`;
+    return `▶ ${escapedDisplay}`;
   }
 
   if (update.ok) {
-    return `✓ ${update.display}`;
+    return `✓ ${escapedDisplay}`;
   }
 
-  return `✗ ${update.display}`;
+  return `✗ ${escapedDisplay}`;
 }
 
 function clampLast<T>(arr: readonly T[], n: number): T[] {
