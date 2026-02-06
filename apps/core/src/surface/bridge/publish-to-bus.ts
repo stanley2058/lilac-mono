@@ -90,6 +90,31 @@ export async function bridgeAdapterToBus(params: {
         break;
       }
 
+      case "adapter.request.cancel": {
+        await bus.publish(
+          lilacEventTypes.CmdRequestMessage,
+          {
+            queue: "interrupt",
+            messages: [],
+            raw: {
+              cancel: true,
+              requiresActive: true,
+              source: "discord_cancel_button",
+              ...(evt.userId ? { userId: evt.userId } : {}),
+              ...(evt.messageId ? { messageId: evt.messageId } : {}),
+            },
+          },
+          {
+            headers: {
+              request_id: evt.requestId,
+              session_id: evt.sessionId,
+              request_client: evt.platform,
+            },
+          },
+        );
+        break;
+      }
+
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

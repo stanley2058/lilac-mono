@@ -37,6 +37,9 @@ export async function startDiscordSearchIndexer(params: {
       case "adapter.reaction.removed": {
         return;
       }
+      case "adapter.request.cancel": {
+        return;
+      }
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

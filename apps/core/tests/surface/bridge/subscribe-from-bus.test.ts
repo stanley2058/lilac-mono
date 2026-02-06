@@ -262,6 +262,7 @@ describe("bridgeBusToAdapter", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(adapter.lastStart?.sessionRef).toEqual({ platform: "discord", channelId: "chan" });
+    expect(adapter.lastStart?.opts?.requestId).toBe(requestId);
     expect(adapter.lastStart?.opts?.replyTo).toEqual({
       platform: "discord",
       channelId: "chan",

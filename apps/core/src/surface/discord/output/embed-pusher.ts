@@ -1,4 +1,4 @@
-import { Colors, EmbedBuilder, type Message } from "discord.js";
+import { Colors, EmbedBuilder, type Message, type MessageEditOptions } from "discord.js";
 import { setTimeout } from "node:timers/promises";
 
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
@@ -66,6 +66,13 @@ export async function startEmbedPusher(params: {
   streamDone: Promise<void>;
   useSmartSplitting: boolean;
   safeEdit: SafeEdit;
+  /**
+   * Optional additional edit options for the FIRST message in the chain.
+   * Used for surface controls (e.g. Cancel buttons) that must persist across edits.
+   */
+  getFirstMessageEditExtras?: (
+    isStreaming: boolean,
+  ) => Partial<MessageEditOptions>;
 }): Promise<{
   lastMsg: Message;
   responseQueue: string[];
@@ -135,6 +142,11 @@ export async function startEmbedPusher(params: {
         isStreaming: showStreamIndicator,
       });
 
+      const firstExtras =
+        i === 0 && params.getFirstMessageEditExtras
+          ? params.getFirstMessageEditExtras(streaming)
+          : undefined;
+
       if (i >= chunkMessages.length) {
         const msg =
           i === 0
@@ -155,7 +167,10 @@ export async function startEmbedPusher(params: {
         sentColors[i] !== color ||
         sentActions[i] !== actionsValue
       ) {
-        await params.safeEdit(chunkMessages[i]!, { embeds: [emb] });
+        await params.safeEdit(chunkMessages[i]!, {
+          embeds: [emb],
+          ...(firstExtras ?? {}),
+        });
         sentDescriptions[i] = description;
         sentColors[i] = color;
         sentActions[i] = actionsValue;

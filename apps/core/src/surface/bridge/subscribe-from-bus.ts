@@ -282,6 +282,7 @@ export async function bridgeBusToAdapter(params: {
     const startOpts: StartOutputOpts = {
       replyTo: replyTo ?? undefined,
     };
+    startOpts.requestId = requestId;
     if (input.routerSessionMode) {
       startOpts.sessionMode = input.routerSessionMode;
     }

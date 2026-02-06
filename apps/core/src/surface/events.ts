@@ -49,9 +49,22 @@ export type AdapterReactionRemovedEvent = AdapterEventBase & {
   raw?: unknown;
 };
 
+export type AdapterRequestCancelEvent = AdapterEventBase & {
+  type: "adapter.request.cancel";
+  /** Target request id to cancel (as used on the bus). */
+  requestId: string;
+  /** Target session id (discord channel/thread id). */
+  sessionId: string;
+  /** Optional user who clicked the control. */
+  userId?: string;
+  /** Optional surface message containing the control. */
+  messageId?: string;
+};
+
 export type AdapterEvent =
   | AdapterMessageCreatedEvent
   | AdapterMessageUpdatedEvent
   | AdapterMessageDeletedEvent
   | AdapterReactionAddedEvent
-  | AdapterReactionRemovedEvent;
+  | AdapterReactionRemovedEvent
+  | AdapterRequestCancelEvent;

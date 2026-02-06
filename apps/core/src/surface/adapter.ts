@@ -41,6 +41,8 @@ export type StartOutputOpts = {
   replyTo?: MsgRef;
   /** Router-derived session mode. Used for surface-specific behaviors (e.g. mention pings). */
   sessionMode?: "mention" | "active";
+  /** Request id for this stream (used for surface controls like Cancel buttons). */
+  requestId?: string;
 };
 
 export type AdapterSubscription = {

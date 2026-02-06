@@ -581,12 +581,40 @@ export async function startBusAgentRunner(params: {
           logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
         });
       } else {
+        const requiresActive = (() => {
+          const raw = entry.raw;
+          if (!raw || typeof raw !== "object") return false;
+          const v = (raw as Record<string, unknown>)["requiresActive"];
+          return v === true;
+        })();
+
         // If the message is intended for the currently active request, apply immediately.
-          if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
-            await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
-          } else {
-            // No parallel runs: queue prompt messages for later.
-            state.queue.push(entry);
+        if (
+          state.activeRequestId &&
+          state.activeRequestId === requestId &&
+          state.agent
+        ) {
+          await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
+        } else {
+          // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
+          // an unrelated active request.
+          if (requiresActive) {
+            logger.info(
+              "dropping request message (requires active request id)",
+              {
+                requestId,
+                sessionId,
+                activeRequestId: state.activeRequestId,
+                queue: entry.queue,
+              },
+            );
+            await ctx.commit();
+            return;
+          }
+
+          // No parallel runs: queue prompt messages for later.
+          state.queue.push(entry);
+
           await publishLifecycle({
             bus,
             headers: {
@@ -909,7 +937,7 @@ export async function startBusAgentRunner(params: {
 
       const isCancelled = cancelledByRequestId.has(headers.request_id);
       if (isCancelled && !finalText) {
-        finalText = "Cancelled: superseded";
+        finalText = "Cancelled.";
       }
 
       if (params.transcriptStore) {

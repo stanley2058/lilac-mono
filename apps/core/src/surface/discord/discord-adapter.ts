@@ -1,9 +1,11 @@
 import {
   ActivityType,
   Client,
+  type CacheType,
   GatewayIntentBits,
   MessageType,
   Partials,
+  type Interaction,
   type Message,
   type MessageReaction,
   type PartialMessage,
@@ -53,6 +55,7 @@ import {
   DiscordOutputStream,
   sendDiscordStyledMessage,
 } from "./output/discord-output-stream";
+import { parseCancelCustomId } from "./discord-cancel";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
@@ -314,6 +317,10 @@ export class DiscordAdapter implements SurfaceAdapter {
         user?.id,
         user?.username ?? undefined,
       );
+    });
+
+    client.on("interactionCreate", async (interaction) => {
+      await this.onInteractionCreate(interaction);
     });
 
     await client.login(token);
@@ -868,11 +875,65 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private emit(evt: AdapterEvent) {
     for (const h of this.handlers) {
+      Promise.resolve()
+        .then(() => h(evt))
+        .catch(() => {
+          // ignore
+        });
+    }
+  }
+
+  private async onInteractionCreate(interaction: Interaction<CacheType>) {
+    if (!interaction.isButton()) return;
+
+    const parsed = parseCancelCustomId(interaction.customId);
+    if (!parsed) return;
+
+    // Guard against mismatched sessions (e.g. copied components).
+    if (interaction.channelId && parsed.sessionId !== interaction.channelId) {
       try {
-        h(evt);
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({
+            content: "This cancel button is not for this channel.",
+            ephemeral: true,
+          });
+        } else {
+          await interaction.reply({
+            content: "This cancel button is not for this channel.",
+            ephemeral: true,
+          });
+        }
       } catch {
         // ignore
       }
+      return;
+    }
+
+    this.emit({
+      type: "adapter.request.cancel",
+      platform: "discord",
+      ts: Date.now(),
+      requestId: parsed.requestId,
+      sessionId: parsed.sessionId,
+      userId: interaction.user?.id ?? undefined,
+      messageId: interaction.message?.id ?? undefined,
+    });
+
+    // Acknowledge quickly; actual cancellation is handled asynchronously via the bus.
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({
+          content: "Cancel requested.",
+          ephemeral: true,
+        });
+      } else {
+        await interaction.reply({
+          content: "Cancel requested.",
+          ephemeral: true,
+        });
+      }
+    } catch {
+      // ignore
     }
   }
 

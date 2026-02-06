@@ -1,10 +1,13 @@
 import { Buffer } from "node:buffer";
 
-import type {
-  Client,
-  Message,
-  MessageCreateOptions,
-  TextBasedChannel,
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  type Client,
+  type Message,
+  type MessageCreateOptions,
+  type TextBasedChannel,
 } from "discord.js";
 
 import type {
@@ -26,6 +29,7 @@ import type {
 // via edit is not consistently supported across environments.
 
 import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
+import { buildCancelCustomId } from "../discord-cancel";
 
 function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
@@ -126,6 +130,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private lastMsg: Message | null = null;
   private readonly done: { promise: Promise<void>; resolve(): void };
 
+  private cancelCustomId: string | null = null;
+
   private running: Promise<void> | null = null;
 
   constructor(
@@ -176,6 +182,26 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     const initialAttachments = this.pendingAttachments.slice(0, MAX_FILES);
     const remainingAttachments = this.pendingAttachments.slice(MAX_FILES);
 
+    this.cancelCustomId = (() => {
+      const requestId = this.deps.opts?.requestId;
+      return requestId
+        ? buildCancelCustomId({ sessionId: sessionRef.channelId, requestId })
+        : null;
+    })();
+
+    const buildCancelComponents = (
+      enabled: boolean,
+    ): MessageCreateOptions["components"] | undefined => {
+      if (!this.cancelCustomId) return undefined;
+      const btn = new ButtonBuilder()
+        .setCustomId(this.cancelCustomId)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!enabled);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(btn);
+      return [row];
+    };
+
     const first = await channel.send({
       // content must be non-empty to avoid Discord errors when sending only embeds.
       content: "*Replying...*",
@@ -184,6 +210,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           ? { messageReference: this.deps.opts.replyTo.messageId }
           : undefined,
       files: toDiscordFiles(initialAttachments),
+      components: buildCancelComponents(true),
       allowedMentions: { parse: [], repliedUser: false },
     });
 
@@ -225,6 +252,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           await safeEdit(first, {
             content: "",
             embeds: [emb],
+            components: buildCancelComponents(true),
           });
           return first;
         },
@@ -248,6 +276,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         streamDone: this.done.promise,
         useSmartSplitting: this.deps.useSmartSplitting,
         safeEdit,
+        getFirstMessageEditExtras: (isStreaming) => ({
+          components: isStreaming ? buildCancelComponents(true) : [],
+        }),
       });
 
       // track created reply messages
@@ -266,7 +297,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       if (res.discordMessageCreated.length === 0) {
         const rewrite = this.deps.rewriteText;
         const content = rewrite ? rewrite(this.textAcc) : this.textAcc;
-        await safeEdit(first, { content: content || "*<empty_string>*" });
+        await safeEdit(first, {
+          content: content || "*<empty_string>*",
+          components: [],
+        });
         this.lastMsg = first;
       }
     })();
@@ -326,6 +360,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     this.done.resolve();
     await this.running;
+
+    // If we never started the embed pusher (attachments-only), remove the cancel control.
+    if (this.firstMsg && this.cancelCustomId) {
+      await safeEdit(this.firstMsg, { components: [] });
+    }
 
     // If we received attachments after first send, emit them as follow-up messages.
     // Discord supports up to 10 attachments per message.
@@ -398,6 +437,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   async abort(_reason?: string): Promise<void> {
     this.done.resolve();
     await this.running;
+
+    // Best-effort: remove controls when aborting.
+    if (this.firstMsg && this.cancelCustomId) {
+      await safeEdit(this.firstMsg, { components: [] });
+    }
   }
 }
 
