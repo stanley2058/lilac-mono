@@ -2,6 +2,7 @@ import {
   ActivityType,
   Client,
   GatewayIntentBits,
+  MessageType,
   Partials,
   type Message,
   type MessageReaction,
@@ -152,6 +153,13 @@ function shouldAllowMessage(params: {
   if (gid && allowedGuildIds.has(gid)) return true;
 
   return false;
+}
+
+export function isRoutableDiscordUserMessage(msg: Message): boolean {
+  if (msg.author.bot) return false;
+  if (msg.system) return false;
+
+  return msg.type === MessageType.Default || msg.type === MessageType.Reply;
 }
 
 function compareDiscordSnowflake(a: string, b: string): number {
@@ -1084,9 +1092,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.client;
     if (!cfg || !store || !client) return;
 
-    // Avoid infinite loops: never emit adapter events for bot-authored messages.
+    // Only route real user chat messages to the request router.
     // We still want to record lightweight metadata (names/sessions) for context.
-    const shouldEmitAdapterEvent = !msg.author.bot;
+    const shouldEmitAdapterEvent = isRoutableDiscordUserMessage(msg);
 
     const guildId = msg.guildId;
     const channelId = msg.channelId;
