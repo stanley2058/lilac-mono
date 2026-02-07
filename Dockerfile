@@ -70,6 +70,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/core/package.json apps/core/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
+COPY apps/opencode-controller/package.json apps/opencode-controller/package.json
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/utils/package.json packages/utils/package.json
