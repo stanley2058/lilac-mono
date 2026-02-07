@@ -1,0 +1,23 @@
+{
+  "name": "@stanley2058/lilac-opencode-controller",
+  "version": "0.0.1",
+  "module": "client.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "lilac-opencode": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bun build.ts && chmod +x dist/index.js",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.1.49"
+  }
+}

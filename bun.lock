@@ -49,6 +49,22 @@
         "typescript": "^5.9.3",
       },
     },
+    "apps/opencode-controller": {
+      "name": "@stanley2058/lilac-opencode-controller",
+      "version": "0.0.1",
+      "bin": {
+        "lilac-opencode": "dist/index.js",
+      },
+      "dependencies": {
+        "@opencode-ai/sdk": "1.1.49",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5",
+      },
+    },
     "apps/tool-bridge": {
       "name": "@stanley2058/lilac-tool-bridge",
       "version": "0.0.1",
@@ -201,6 +217,8 @@
 
     "@octokit/types": ["@octokit/types@14.1.0", "", { "dependencies": { "@octokit/openapi-types": "^25.1.0" } }, "sha512-1y6DgTy8Jomcpu33N+p5w58l6xyt55Ar2I91RPiIA0xCJBXyUAhXCcmZaDWSANiha7R9a6qJJ2CRomGPZ6f46g=="],
 
+    "@opencode-ai/sdk": ["@opencode-ai/sdk@1.1.49", "", {}, "sha512-F5ZkgiqOiV+z3U4zeBLvrmNZv5MwNFMTWM+HWhChD+/UEswIebQKk9UMz9lPX4fswexIJdFPwFI/TBdNyZfKMg=="],
+
     "@openrouter/ai-sdk-provider": ["@openrouter/ai-sdk-provider@1.5.4", "", { "dependencies": { "@openrouter/sdk": "^0.1.27" }, "peerDependencies": { "ai": "^5.0.0", "zod": "^3.24.1 || ^v4" } }, "sha512-xrSQPUIH8n9zuyYZR0XK7Ba0h2KsjJcMkxnwaYfmv13pKs3sDkjPzVPPhlhzqBGddHb5cFEwJ9VFuFeDcxCDSw=="],
 
     "@openrouter/sdk": ["@openrouter/sdk@0.1.27", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-RH//L10bSmc81q25zAZudiI4kNkLgxF2E+WU42vghp3N6TEvZ6F0jK7uT3tOxkEn91gzmMw9YVmDENy7SJsajQ=="],
@@ -222,6 +240,8 @@
     "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
 
     "@stanley2058/lilac-event-bus": ["@stanley2058/lilac-event-bus@workspace:packages/event-bus"],
+
+    "@stanley2058/lilac-opencode-controller": ["@stanley2058/lilac-opencode-controller@workspace:apps/opencode-controller"],
 
     "@stanley2058/lilac-tool-bridge": ["@stanley2058/lilac-tool-bridge@workspace:apps/tool-bridge"],
 
