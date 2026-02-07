@@ -1272,7 +1272,7 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
-  it("routes DM in-flight messages as steer", async () => {
+  it("routes DM in-flight messages as followUp", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
 
@@ -1369,8 +1369,277 @@ describe("startBusRequestRouter", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(received.length).toBe(1);
-    expect(received[0].data.queue).toBe("steer");
+    expect(received[0].data.queue).toBe("followUp");
     expect(received[0].headers?.request_id).toBe(requestId);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("routes in-flight active channel replies as queued prompts; other messages remain followUps", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const replyMsgId = "m-reply";
+    const followMsgId = "m-follow";
+    const requestId = `discord:${sessionId}:anchor`;
+
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${replyMsgId}`]: {
+        ref: {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: replyMsgId,
+        },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "replying",
+        ts: now,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:${followMsgId}`]: {
+        ref: {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: followMsgId,
+        },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u2",
+        userName: "user2",
+        text: "follow up",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    // Mark request running so router treats session as active.
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running", ts: Date.now() },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+
+    // Reply forks into a queued-behind prompt.
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: replyMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "replying",
+      ts: now,
+      raw: {
+        discord: { isDMBased: false, mentionsBot: false, replyToBot: true },
+      },
+    });
+
+    // Non-reply messages remain followUps into the running request.
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: followMsgId,
+      userId: "u2",
+      userName: "user2",
+      text: "follow up",
+      ts: now + 1,
+      raw: {
+        discord: { isDMBased: false, mentionsBot: true, replyToBot: false },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(2);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${replyMsgId}`);
+    expect(received[1].data.queue).toBe("followUp");
+    expect(received[1].headers?.request_id).toBe(requestId);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("ignores non-triggers in mention-only channels, and queues triggers behind active requests", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const requestId = `discord:${sessionId}:anchor`;
+    const msgMention = "m-mention";
+    const msgOther = "m-other";
+
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgMention}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgMention },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: now,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:${msgOther}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgOther },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u2",
+        userName: "user2",
+        text: "hello everyone",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            mentionNotifications: { enabled: false, maxUsers: 5 },
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    // Mark request running.
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running", ts: Date.now() },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+
+    // Non-trigger ignored.
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgOther,
+      userId: "u2",
+      userName: "user2",
+      text: "hello everyone",
+      ts: now + 1,
+      raw: {
+        discord: { isDMBased: false, mentionsBot: false, replyToBot: false },
+      },
+    });
+
+    // Trigger queues behind active request.
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgMention,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: now,
+      raw: {
+        discord: { isDMBased: false, mentionsBot: true, replyToBot: false },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${msgMention}`);
+    expect(received[0].data.raw?.triggerType).toBe("mention");
 
     await sub.stop();
     await router.stop();

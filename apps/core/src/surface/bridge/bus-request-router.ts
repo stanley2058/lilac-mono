@@ -85,7 +85,6 @@ function getDiscordFlags(raw: unknown): {
 
 type ActiveSessionState = {
   requestId: string;
-  activeUserId?: string;
 };
 
 type BufferedMessage = {
@@ -157,11 +156,7 @@ export async function startBusRequestRouter(params: {
       }
 
       if (msg.data.state === "running") {
-        const prev = activeBySession.get(sessionId);
-        activeBySession.set(sessionId, {
-          requestId,
-          activeUserId: prev?.activeUserId,
-        });
+        activeBySession.set(sessionId, { requestId });
       }
 
       if (
@@ -267,6 +262,8 @@ export async function startBusRequestRouter(params: {
             sessionId,
             msgRef,
             userId: msg.data.userId,
+            mentionsBot: flags.mentionsBot === true,
+            replyToBot: flags.replyToBot === true,
             active,
             sessionMode: mode,
           });
@@ -326,43 +323,77 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     msgRef: MsgRef;
     userId: string;
+    mentionsBot: boolean;
+    replyToBot: boolean;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
   }) {
-    const { adapter, bus, cfg, sessionId, msgRef, userId, active, sessionMode } =
-      input;
+    const {
+      adapter,
+      bus,
+      cfg,
+      sessionId,
+      msgRef,
+      userId,
+      mentionsBot,
+      replyToBot,
+      active,
+      sessionMode,
+    } = input;
 
     if (active) {
-      // DMs: while active, everything is a steer.
-      await publishComposedRequest({
+      // Phase 1: DMs behave like active channels.
+      // - Replies to bot fork into a new request queued behind.
+      // - Everything else becomes a follow-up into the running request.
+      if (replyToBot) {
+        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+
+        await publishActiveChannelPrompt({
+          adapter,
+          bus,
+          cfg,
+          requestId,
+          sessionId,
+          triggerMsgRef: msgRef,
+          triggerType: "reply",
+          sessionMode,
+          markActive: false,
+        });
+        return;
+      }
+
+      await publishSingleMessageToActiveRequest({
         adapter,
         bus,
         cfg,
         requestId: active.requestId,
         sessionId,
-        queue: "steer",
-        triggerType: "active",
+        queue: "followUp",
         msgRef,
-        userId,
         sessionMode,
       });
       return;
     }
 
-    // DMs: no gate; start a new request immediately.
     const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
-    await publishComposedRequest({
+    const triggerType: "mention" | "reply" | undefined = replyToBot
+      ? "reply"
+      : mentionsBot
+        ? "mention"
+        : undefined;
+
+    // DMs are ungated: start a new request immediately.
+    await publishActiveChannelPrompt({
       adapter,
       bus,
       cfg,
       requestId,
       sessionId,
-      queue: "prompt",
-      triggerType: "active",
-      msgRef,
-      userId,
+      triggerMsgRef: msgRef,
+      triggerType,
       sessionMode,
+      markActive: true,
     });
   }
 
@@ -396,19 +427,22 @@ export async function startBusRequestRouter(params: {
     } = input;
 
     if (active) {
-      // Keep users separated: only the active user is allowed to inject follow-ups.
-      if (active.activeUserId && active.activeUserId !== userId) {
-        bufferActiveChannelMessage({
-          buffers,
+      // Phase 1: active channels behave like group chats.
+      // - Replies to bot fork into a new request queued behind.
+      // - Everything else becomes a follow-up into the running request.
+      if (replyToBot) {
+        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+
+        await publishActiveChannelPrompt({
+          adapter,
+          bus,
           cfg,
+          requestId,
           sessionId,
-          message: {
-            msgRef,
-            userId,
-            text: userText,
-            mentionsBot,
-            replyToBot,
-          },
+          triggerMsgRef: msgRef,
+          triggerType: "reply",
+          sessionMode,
+          markActive: false,
         });
         return;
       }
@@ -434,6 +468,8 @@ export async function startBusRequestRouter(params: {
 
       const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
+      const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
+
       await publishActiveChannelPrompt({
         adapter,
         bus,
@@ -441,9 +477,9 @@ export async function startBusRequestRouter(params: {
         requestId,
         sessionId,
         triggerMsgRef: msgRef,
-        triggerType: mentionsBot ? "mention" : "reply",
-        activeUserId: userId,
+        triggerType,
         sessionMode,
+        markActive: true,
       });
       return;
     }
@@ -541,7 +577,7 @@ export async function startBusRequestRouter(params: {
     );
 
     // Gate-forwarded prompt: do NOT reply-to a message.
-    // Anchor the "active user" as the newest message author in the batch.
+    // Use newest message as the context anchor.
     await publishActiveChannelPrompt({
       adapter,
       bus,
@@ -551,8 +587,8 @@ export async function startBusRequestRouter(params: {
       // Use newest message as the context anchor (not a reply trigger).
       triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,
-      activeUserId: b.messages[b.messages.length - 1]?.userId,
       sessionMode: "active",
+      markActive: true,
     });
   }
 
@@ -656,99 +692,25 @@ export async function startBusRequestRouter(params: {
     const triggerType = replyToBot ? "reply" : mentionsBot ? "mention" : null;
 
     if (!triggerType) {
-      // In mention-only mode, ignore non-triggers if no active request.
-      if (!active) return;
-
-      // Non-trigger messages from the active user become steer.
-      if (active.activeUserId && active.activeUserId === userId) {
-        await publishComposedRequest({
-          adapter,
-          bus,
-          cfg,
-          requestId: active.requestId,
-          sessionId,
-          queue: "steer",
-          triggerType: "active",
-          msgRef,
-          userId,
-          sessionMode: input.sessionMode,
-        });
-      }
+      // Mention-only channels: ignore non-triggers (even if a request is active).
       return;
     }
+
+    const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
     if (!active) {
-      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
-      activeBySession.set(sessionId, { requestId, activeUserId: userId });
-
-      await publishComposedRequest({
-        adapter,
-        bus,
-        cfg,
-        requestId,
-        sessionId,
-        queue: "prompt",
-        triggerType,
-        msgRef,
-        userId,
-        sessionMode: input.sessionMode,
-      });
-      return;
+      // Optimistically mark active to avoid a brief window before lifecycle updates.
+      activeBySession.set(sessionId, { requestId });
     }
 
-    // Active request exists.
-    if (
-      triggerType === "mention" &&
-      active.activeUserId &&
-      userId !== active.activeUserId
-    ) {
-      // Other user mention starts a new request, which will be queued by the runner.
-      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
-      activeBySession.set(sessionId, { requestId, activeUserId: userId });
-
-      await publishComposedRequest({
-        adapter,
-        bus,
-        cfg,
-        requestId,
-        sessionId,
-        queue: "prompt",
-        triggerType,
-        msgRef,
-        userId,
-        sessionMode: input.sessionMode,
-      });
-      return;
-    }
-
-    if (
-      triggerType === "mention" &&
-      active.activeUserId &&
-      userId === active.activeUserId
-    ) {
-      await publishComposedRequest({
-        adapter,
-        bus,
-        cfg,
-        requestId: active.requestId,
-        sessionId,
-        queue: "followUp",
-        triggerType,
-        msgRef,
-        userId,
-        sessionMode: input.sessionMode,
-      });
-      return;
-    }
-
-    // Replies to bot always steer into the active request.
+    // Triggers always start a new request. If a request is running, the runner will queue it.
     await publishComposedRequest({
       adapter,
       bus,
       cfg,
-      requestId: active.requestId,
+      requestId,
       sessionId,
-      queue: "steer",
+      queue: "prompt",
       triggerType,
       msgRef,
       userId,
@@ -854,8 +816,9 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     triggerMsgRef: MsgRef | undefined;
     triggerType: "mention" | "reply" | undefined;
-    activeUserId: string | undefined;
     sessionMode: SessionMode;
+    /** When true, update router's active session state immediately. */
+    markActive: boolean;
   }) {
     const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } =
       input;
@@ -898,13 +861,9 @@ export async function startBusRequestRouter(params: {
       },
     });
 
-    // Ensure the router knows who is allowed to follow up while this request is active.
-    if (input.activeUserId) {
-      activeBySession.set(sessionId, {
-        requestId,
-        activeUserId: input.activeUserId,
-      });
-    } else {
+    // Only mark active when this request is expected to start immediately.
+    // For queued-behind requests we must not clobber the running request id.
+    if (input.markActive) {
       activeBySession.set(sessionId, { requestId });
     }
   }

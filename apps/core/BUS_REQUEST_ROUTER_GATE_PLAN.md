@@ -50,7 +50,8 @@ Safety policy:
 DMs are never gated.
 
 - If there is an active request for the session:
-  - All new messages publish to the active request as `queue: "steer"`.
+  - Replies-to-bot (`replyToBot=true`) fork into a new request and publish as `queue: "prompt"` (queued behind).
+  - All other new messages publish to the active request as `queue: "followUp"`.
 - If there is no active request:
   - Start a new request (no gate) and publish `queue: "prompt"`.
 
@@ -59,7 +60,10 @@ DMs are never gated.
 Active channels are gated only when starting a new request.
 
 - If there is an active request for the session:
-  - All new messages (including mentions/replies) publish to the active request as `queue: "followUp"`.
+  - Replies-to-bot (`replyToBot=true`) fork into a new request and publish as `queue: "prompt"`.
+    - The agent output will reply to the user's reply message.
+    - The runner will queue this request behind the currently running request.
+  - All other new messages (including mentions) publish to the active request as `queue: "followUp"`.
   - No gate is evaluated while a request is running.
 
 - If there is no active request:
@@ -80,8 +84,10 @@ Note:
 
 ### Users Must Stay Separated
 
-In active channels, messages from users other than the "active user" for the running request must not be injected into the running request.
-- They should be buffered (and later gated) as candidates for the next request.
+(Phase 1 update)
+
+Active channels are treated as group chats. While a request is running, any user may send follow-ups that are injected via `queue: "followUp"`.
+Replies-to-bot still fork into queued-behind prompts.
 
 ## Gate Hook
 
@@ -148,9 +154,8 @@ Add unit tests around router active mode:
 - Gate forward=false => router publishes no `cmd.request.message`.
 - Gate forward=true => router publishes a single `prompt` (no extra steers from the buffer).
 - Gate throws/timeout/invalid output => router skips.
-- Active channel with running request => messages from active user publish as `followUp`.
-- Active channel with running request => messages from other users are not injected; they are buffered and gated for a later request.
-- DM behavior => while running, messages publish as `steer`.
+- Active channel with running request => `replyToBot=true` publishes a queued-behind `prompt`; otherwise publishes `followUp` (any user).
+- DM behavior => while running, `replyToBot=true` publishes a queued-behind `prompt`; otherwise publishes `followUp`.
 
 ## Streaming Note
 
