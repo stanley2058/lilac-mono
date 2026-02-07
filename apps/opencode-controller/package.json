@@ -3,7 +3,11 @@
   "version": "0.0.1",
   "module": "client.ts",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stanley2058/lilac-mono.git"
+  },
   "bin": {
     "lilac-opencode": "dist/index.js"
   },
