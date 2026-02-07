@@ -113,13 +113,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+const DISPLAY_MAX_LEN = 40;
+const PATH_HEAD_LEN = 14;
+const PATH_TAIL_LEN = 23;
+
 const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
   if (!parsed) return "";
 
   const p = parsed.path.trim();
   if (!p) return "";
-  return " " + truncateMiddle(p, 7, 10, 20);
+  return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
 };
 
 const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
@@ -129,7 +133,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
 
     const cmd = parsed.command.replace(/\s+/g, " ").trim();
     if (!cmd) return "";
-    return " " + truncateEnd(cmd, 20);
+    return " " + truncateEnd(cmd, DISPLAY_MAX_LEN);
   },
 
   read_file: readFileToolArgsFormatter,
@@ -138,21 +142,34 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   readFile: readFileToolArgsFormatter,
 
   glob: (args) => {
-    const parsed = safeValidateSync<{ patterns: string[] }>(globInputZod, args);
+    const parsed = safeValidateSync<{ patterns: string[]; cwd?: string }>(
+      globInputZod,
+      args,
+    );
     if (!parsed) return "";
-    const first = (parsed.patterns[0] ?? "").trim();
-    if (!first) return "";
-    const suffix =
-      parsed.patterns.length > 1 ? ` (+${parsed.patterns.length - 1})` : "";
-    return " " + truncateMiddle(first, 7, 10, 20) + suffix;
+
+    const joinedPatterns = parsed.patterns.map((p) => p.trim()).filter(Boolean).join(",");
+    if (!joinedPatterns) return "";
+
+    const cwd = (parsed.cwd ?? "").trim();
+    const raw = cwd ? `${joinedPatterns} ${cwd}` : joinedPatterns;
+    const display = raw.replace(/\s+/g, " ").trim();
+    return " " + truncateEnd(display, DISPLAY_MAX_LEN);
   },
 
   grep: (args) => {
-    const parsed = safeValidateSync<{ pattern: string }>(grepInputZod, args);
+    const parsed = safeValidateSync<{ pattern: string; cwd?: string }>(
+      grepInputZod,
+      args,
+    );
     if (!parsed) return "";
+
     const pattern = parsed.pattern.replace(/\s+/g, " ").trim();
     if (!pattern) return "";
-    return " " + truncateEnd(pattern, 20);
+
+    const cwd = (parsed.cwd ?? "").replace(/\s+/g, " ").trim();
+    const raw = cwd ? `${pattern} ${cwd}` : pattern;
+    return " " + truncateEnd(raw, DISPLAY_MAX_LEN);
   },
 
   subagent_delegate: (args) => {
@@ -163,7 +180,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     if (!parsed) return "";
     const task = parsed.task.replace(/\s+/g, " ").trim();
     if (!task) return "";
-    return " " + truncateEnd(task, 20);
+    return " " + truncateEnd(task, DISPLAY_MAX_LEN);
   },
 
   apply_patch: (args) => {
@@ -179,7 +196,11 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
 
     const remaining = Math.max(0, paths.length - 1);
     const suffix = remaining > 0 ? ` (+${remaining})` : "";
-    return " " + truncateMiddle(first, 7, 10, 20) + suffix;
+    return (
+      " " +
+      truncateMiddle(first, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN) +
+      suffix
+    );
   },
 
   batch: (args) => {

@@ -3,20 +3,20 @@ import { describe, expect, it } from "bun:test";
 import { formatToolArgsForDisplay } from "../../src/tools/tool-args-display";
 
 describe("formatToolArgsForDisplay", () => {
-  it("formats bash command and truncates to 20 chars including ellipsis", () => {
+  it("formats bash command and truncates to 40 chars including ellipsis", () => {
     expect(
       formatToolArgsForDisplay("bash", {
-        command: "echo 12345678901234567890",
+        command: "echo 12345678901234567890123456789012345678901234567890",
       }),
-    ).toBe(" echo 123456789012...");
+    ).toBe(" echo 12345678901234567890123456789012...");
   });
 
-  it("formats readFile path with middle truncation (7 ... 10)", () => {
+  it("formats readFile path with middle truncation (14 ... 23)", () => {
     expect(
       formatToolArgsForDisplay("read_file", {
         path: "/path/to/some/really/long/path/to/file.js",
       }),
-    ).toBe(" /path/t...to/file.js");
+    ).toBe(" /path/to/some/...ly/long/path/to/file.js");
   });
 
   it("formats apply_patch (local) as first file + remaining count", () => {
@@ -35,8 +35,26 @@ describe("formatToolArgsForDisplay", () => {
     ].join("\n");
 
     expect(formatToolArgsForDisplay("apply_patch", { patchText })).toBe(
-      " /path/t...o/file1.js (+3)",
+      " /path/to/some/...y/long/path/to/file1.js (+3)",
     );
+  });
+
+  it("formats grep as pattern + cwd", () => {
+    expect(
+      formatToolArgsForDisplay("grep", {
+        pattern: "foo",
+        cwd: "/tmp",
+      }),
+    ).toBe(" foo /tmp");
+  });
+
+  it("formats glob as patterns + cwd", () => {
+    expect(
+      formatToolArgsForDisplay("glob", {
+        patterns: ["a", "b"],
+        cwd: "/c",
+      }),
+    ).toBe(" a,b /c");
   });
 
   it("returns empty string on invalid args", () => {

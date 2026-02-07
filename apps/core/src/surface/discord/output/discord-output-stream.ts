@@ -60,8 +60,23 @@ export function escapeDiscordMarkdown(text: string): string {
   return text.replace(/([\\*_`~|>\[\]()])/g, "\\$1");
 }
 
+function isBatchToolDisplay(display: string): boolean {
+  const trimmed = display.trimStart();
+  // Back-compat: older displays used "[batch]".
+  return trimmed.startsWith("batch") || trimmed.startsWith("[batch]");
+}
+
+function normalizeToolDisplayForDiscord(display: string): string {
+  if (isBatchToolDisplay(display)) return display;
+  return display
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function buildToolLine(update: SurfaceToolStatusUpdate): string {
-  const escapedDisplay = escapeDiscordMarkdown(update.display);
+  const normalized = normalizeToolDisplayForDiscord(update.display);
+  const escapedDisplay = escapeDiscordMarkdown(normalized);
 
   if (update.status === "start") {
     return `▶ ${escapedDisplay}`;

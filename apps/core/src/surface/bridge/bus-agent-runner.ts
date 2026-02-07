@@ -850,7 +850,7 @@ export async function startBusAgentRunner(params: {
             {
               toolCallId: event.toolCallId,
               status: "start",
-              display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
+              display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
             },
             { headers },
           )
@@ -892,7 +892,7 @@ export async function startBusAgentRunner(params: {
               {
                 toolCallId: event.toolCallId,
                 status: "end",
-                display: `[${event.toolName}]${formatToolArgsForDisplay(event.toolName, event.args)}`,
+                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
                 ok,
                 error:
                   ok ? undefined : event.isError ? "tool error" : "batch failed",

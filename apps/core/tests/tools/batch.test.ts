@@ -265,16 +265,16 @@ describe("batch tool", () => {
       .reverse()
       .find((u) => u.status === "start" && u.display.includes("0/5 done"));
     expect(lastStart).toBeTruthy();
-    expect(lastStart!.display).toContain("[batch] (5 tools;");
+    expect(lastStart!.display).toContain("batch (5 tools;");
 
     const lines = lastStart!.display.split("\n");
     expect(lines.length).toBe(4);
-    expect(lines[1]!).toContain("[bash] echo tool-3");
-    expect(lines[2]!).toContain("[bash] echo tool-4");
-    expect(lines[3]!).toContain("[bash] echo tool-5");
+    expect(lines[1]!).toContain("bash echo tool-3");
+    expect(lines[2]!).toContain("bash echo tool-4");
+    expect(lines[3]!).toContain("bash echo tool-5");
 
     const lastEnd = [...updates].reverse().find((u) => u.status === "end");
     expect(lastEnd).toBeTruthy();
-    expect(lastEnd!.display).toBe("[batch] (5 tools)");
+    expect(lastEnd!.display).toBe("batch (5 tools)");
   });
 });

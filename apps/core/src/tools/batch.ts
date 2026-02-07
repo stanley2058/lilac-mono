@@ -164,8 +164,8 @@ export function batchTool(params: {
     collapsed: boolean;
   }): string {
     const header = params.collapsed
-      ? `[batch] (${params.total} tools)`
-      : `[batch] (${params.total} tools; ${params.done}/${params.total} done)`;
+      ? `batch (${params.total} tools)`
+      : `batch (${params.total} tools; ${params.done}/${params.total} done)`;
 
     if (params.collapsed) return header;
 
@@ -180,7 +180,7 @@ export function batchTool(params: {
     const lines = recent.map((c, idx) => {
       const args = formatToolArgsForDisplay(c.tool, c.args);
       const branch = idx === recent.length - 1 ? "└──" : "├──";
-      return `${branch} ${iconForChild(c)} [${c.tool}]${args}`;
+      return `${branch} ${iconForChild(c)} ${c.tool}${args}`;
     });
 
     return [header, ...lines].join("\n");

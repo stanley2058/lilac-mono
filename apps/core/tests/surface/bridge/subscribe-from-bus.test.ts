@@ -252,7 +252,7 @@ describe("bridgeBusToAdapter", () => {
       {
         toolCallId: "call-1",
         status: "start",
-        display: "[bash] echo hi",
+        display: "bash echo hi",
       },
       { headers: { request_id: requestId } },
     );
@@ -281,7 +281,7 @@ describe("bridgeBusToAdapter", () => {
         update: {
           toolCallId: "call-1",
           status: "start",
-          display: "[bash] echo hi",
+          display: "bash echo hi",
         },
       },
       { type: "text.set", text: "final" },
