@@ -3,7 +3,8 @@ import { z } from "zod/v4";
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { fileTypeFromBuffer } from "file-type/core";
-import { READ_ERROR_CODES, FileSystem } from "./fs-impl";
+import { READ_ERROR_CODES, FileSystem, expandTilde } from "./fs-impl";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 
@@ -14,6 +15,124 @@ const pathSchema = z
   );
 
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
+
+const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
+const MAX_INSTRUCTION_CHARS = 20_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPathWithin(candidatePath: string, parentDir: string): boolean {
+  const rel = path.relative(parentDir, candidatePath);
+  if (rel === "") return true;
+  if (rel === "..") return false;
+  if (rel.startsWith(`..${path.sep}`)) return false;
+  return !path.isAbsolute(rel);
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readTextFileBestEffort(
+  filePath: string,
+): Promise<string | null> {
+  try {
+    const raw = await fsp.readFile(filePath, "utf8");
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (trimmed.length <= MAX_INSTRUCTION_CHARS) return trimmed;
+    return trimmed.slice(0, MAX_INSTRUCTION_CHARS) + "\n... (truncated)";
+  } catch {
+    return null;
+  }
+}
+
+async function findGitRoot(startDir: string): Promise<string | null> {
+  let current = path.resolve(startDir);
+  while (true) {
+    if (await pathExists(path.join(current, ".git"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function parseInstructionPathsFromText(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("Instructions from:")) continue;
+    const p = trimmed.slice("Instructions from:".length).trim();
+    if (p.length > 0) out.push(p);
+  }
+  return out;
+}
+
+function collectPreviouslyLoadedInstructionPaths(
+  messages: readonly unknown[],
+): Set<string> {
+  const out = new Set<string>();
+
+  for (const msg of messages) {
+    if (!isRecord(msg)) continue;
+    if (msg["role"] !== "tool") continue;
+
+    const content = msg["content"];
+    if (!Array.isArray(content)) continue;
+
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      if (part["type"] !== "tool-result") continue;
+      if (part["toolName"] !== "read_file") continue;
+
+      const output = part["output"];
+      if (!isRecord(output)) continue;
+
+      if (output["type"] === "json") {
+        const value = output["value"];
+        if (isRecord(value)) {
+          const loaded = value["loadedInstructions"];
+          if (Array.isArray(loaded)) {
+            for (const p of loaded) {
+              if (typeof p === "string" && p.length > 0) out.add(p);
+            }
+          }
+
+          const instructionsText = value["instructionsText"];
+          if (typeof instructionsText === "string") {
+            for (const p of parseInstructionPathsFromText(instructionsText)) {
+              out.add(p);
+            }
+          }
+        }
+        continue;
+      }
+
+      if (output["type"] === "content") {
+        const value = output["value"];
+        if (!Array.isArray(value)) continue;
+        for (const p of value) {
+          if (!isRecord(p)) continue;
+          if (p["type"] !== "text") continue;
+          const t = p["text"];
+          if (typeof t !== "string") continue;
+          for (const loadedPath of parseInstructionPathsFromText(t)) {
+            out.add(loadedPath);
+          }
+        }
+      }
+    }
+  }
+
+  return out;
+}
 
 export const readFileInputZod = z.object({
   path: pathSchema,
@@ -151,26 +270,43 @@ const grepOutputZod = z.object({
 
 type GrepOutput = z.infer<typeof grepOutputZod>;
 
-const readFileSuccessBaseZod = z.object({
-  success: z.literal(true),
-  resolvedPath: z.string(),
-  fileHash: z.string(),
-  startLine: z.number(),
-  endLine: z.number(),
-  totalLines: z.number(),
-  hasMoreLines: z.boolean(),
-  truncatedByChars: z.boolean(),
+const instructionFieldsZod = z.object({
+  loadedInstructions: z
+    .array(z.string())
+    .optional()
+    .describe("Instruction file paths loaded for this read_file call"),
+  instructionsText: z
+    .string()
+    .optional()
+    .describe(
+      "Instruction text auto-loaded from AGENTS.md files. Intended for model context.",
+    ),
 });
 
-const readFileAttachmentSuccessZod = z.object({
-  success: z.literal(true),
-  kind: z.literal("attachment"),
-  resolvedPath: z.string(),
-  fileHash: z.string(),
-  filename: z.string(),
-  mimeType: z.string(),
-  bytes: z.number(),
-});
+const readFileSuccessBaseZod = z
+  .object({
+    success: z.literal(true),
+    resolvedPath: z.string(),
+    fileHash: z.string(),
+    startLine: z.number(),
+    endLine: z.number(),
+    totalLines: z.number(),
+    hasMoreLines: z.boolean(),
+    truncatedByChars: z.boolean(),
+  })
+  .merge(instructionFieldsZod);
+
+const readFileAttachmentSuccessZod = z
+  .object({
+    success: z.literal(true),
+    kind: z.literal("attachment"),
+    resolvedPath: z.string(),
+    fileHash: z.string(),
+    filename: z.string(),
+    mimeType: z.string(),
+    bytes: z.number(),
+  })
+  .merge(instructionFieldsZod);
 
 const readFileOutputZod = z.union([
   readFileSuccessBaseZod.extend({
@@ -200,7 +336,9 @@ export function fsTool(cwd: string) {
     module: "tool:fs",
   });
 
-  const fs = new FileSystem(cwd, {
+  const toolRootAbs = path.resolve(expandTilde(cwd));
+
+  const fileSystem = new FileSystem(cwd, {
     denyPaths: [
       path.join(env.dataDir, "secret"),
       "~/.ssh",
@@ -248,6 +386,69 @@ export function fsTool(cwd: string) {
     );
   }
 
+  async function loadInstructionsForPath(params: {
+    resolvedPath: string;
+    opCwd?: string;
+    messages: readonly unknown[];
+  }): Promise<{ loaded: string[]; text?: string } | null> {
+    const targetAbs = path.resolve(params.resolvedPath);
+
+    const targetBase = path.basename(targetAbs);
+    if ((INSTRUCTION_FILENAMES as readonly string[]).includes(targetBase)) {
+      return null;
+    }
+
+    const opCwdAbs = params.opCwd
+      ? path.resolve(expandTilde(params.opCwd))
+      : toolRootAbs;
+
+    const boundaryCwd = isPathWithin(targetAbs, opCwdAbs) ? opCwdAbs : null;
+    const gitRoot = boundaryCwd ? null : await findGitRoot(opCwdAbs);
+    const boundaryAbs = boundaryCwd ?? gitRoot;
+
+    if (!boundaryAbs) return null;
+    if (!isPathWithin(targetAbs, boundaryAbs)) return null;
+
+    const already = collectPreviouslyLoadedInstructionPaths(params.messages);
+    const loaded: string[] = [];
+    const snippets: string[] = [];
+
+    let current = path.dirname(targetAbs);
+    while (true) {
+      for (const name of INSTRUCTION_FILENAMES) {
+        const candidate = path.join(current, name);
+        if (candidate === targetAbs) continue;
+        if (already.has(candidate)) continue;
+        if (!(await pathExists(candidate))) continue;
+
+        const content = await readTextFileBestEffort(candidate);
+        if (!content) continue;
+
+        loaded.push(candidate);
+        already.add(candidate);
+        snippets.push(`Instructions from: ${candidate}\n${content}`);
+      }
+
+      if (current === boundaryAbs) break;
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+
+      if (!isPathWithin(current, boundaryAbs)) break;
+    }
+
+    if (loaded.length === 0) return null;
+
+    return {
+      loaded,
+      text: [
+        "<system-reminder>",
+        snippets.join("\n\n"),
+        "</system-reminder>",
+      ].join("\n"),
+    };
+  }
+
   return {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description:
@@ -265,7 +466,10 @@ export function fsTool(cwd: string) {
 
         const res = wantsAttachment
           ? await (async () => {
-              const bytesRes = await fs.readFileBytes({ path: input.path }, opCwd);
+              const bytesRes = await fileSystem.readFileBytes(
+                { path: input.path },
+                opCwd,
+              );
               if (!bytesRes.success) {
                 return bytesRes;
               }
@@ -285,6 +489,12 @@ export function fsTool(cwd: string) {
                 fileHash: bytesRes.fileHash,
               });
 
+              const instructions = await loadInstructionsForPath({
+                resolvedPath,
+                opCwd,
+                messages: options.messages,
+              });
+
               return {
                 success: true as const,
                 kind: "attachment" as const,
@@ -293,17 +503,45 @@ export function fsTool(cwd: string) {
                 filename,
                 mimeType,
                 bytes: bytesRes.bytesLength,
+                ...(instructions
+                  ? {
+                      loadedInstructions: instructions.loaded,
+                      instructionsText: instructions.text,
+                    }
+                  : {}),
               };
             })()
-          : await fs.readFile(input, opCwd);
+          : await fileSystem.readFile(input, opCwd);
+
+        const withInstructions = await (async () => {
+          if (!res.success) return res;
+          if (isAttachmentOutput(res)) return res;
+          const instructions = await loadInstructionsForPath({
+            resolvedPath: res.resolvedPath,
+            opCwd,
+            messages: options.messages,
+          });
+          if (!instructions) return res;
+          return {
+            ...res,
+            loadedInstructions: instructions.loaded,
+            instructionsText: instructions.text,
+          };
+        })();
 
         logger.info("fs.readFile done", {
-          path: res.resolvedPath,
-          ok: res.success,
-          error: res.success ? undefined : res.error,
+          path: withInstructions.resolvedPath,
+          ok: withInstructions.success,
+          loadedInstructions:
+            withInstructions.success &&
+            "loadedInstructions" in withInstructions &&
+            Array.isArray((withInstructions as any).loadedInstructions)
+              ? (withInstructions as any).loadedInstructions.length
+              : 0,
+          error: withInstructions.success ? undefined : withInstructions.error,
         });
 
-        return res;
+        return withInstructions;
       },
       toModelOutput: async ({ toolCallId, output }) => {
         if (!isAttachmentOutput(output)) {
@@ -322,7 +560,9 @@ export function fsTool(cwd: string) {
         if (bytes) {
           base64 = Buffer.from(bytes).toString("base64");
         } else {
-          const bytesRes = await fs.readFileBytes({ path: output.resolvedPath });
+          const bytesRes = await fileSystem.readFileBytes({
+            path: output.resolvedPath,
+          });
           if (!bytesRes.success) {
             return {
               type: "error-text",
@@ -334,11 +574,18 @@ export function fsTool(cwd: string) {
 
         const intro = `Attached file from read_file: ${filename} (${mimeType}, ${output.bytes} bytes).`;
 
+        const instructionsText = output.instructionsText;
+        const instructionParts =
+          typeof instructionsText === "string" && instructionsText.trim().length > 0
+            ? [{ type: "text" as const, text: instructionsText }]
+            : [];
+
         if (imageMimeTypes.has(mimeType)) {
           return {
             type: "content",
             value: [
               { type: "text", text: intro },
+              ...instructionParts,
               { type: "image-data", mediaType: mimeType, data: base64 },
             ],
           };
@@ -348,6 +595,7 @@ export function fsTool(cwd: string) {
           type: "content",
           value: [
             { type: "text", text: intro },
+            ...instructionParts,
             {
               type: "file-data",
               mediaType: mimeType,
@@ -371,7 +619,7 @@ export function fsTool(cwd: string) {
           maxEntries: input.maxEntries,
         });
 
-        const res = await fs.glob({
+        const res = await fileSystem.glob({
           patterns: input.patterns,
           maxEntries: input.maxEntries,
           baseDir: opCwd,
@@ -400,7 +648,7 @@ export function fsTool(cwd: string) {
           maxResults: input.maxResults,
         });
 
-        const res = await fs.grep({
+        const res = await fileSystem.grep({
           pattern: input.pattern,
           regex: input.regex,
           maxResults: input.maxResults,
