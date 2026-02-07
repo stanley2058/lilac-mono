@@ -219,6 +219,11 @@ Add a new module:
 - Start per-request output relays on `evt.request.reply`.
 - Push output events into `SurfaceAdapter.startOutput()`.
 
+Additionally (Discord UX):
+- Support output re-anchoring while a request is running (freeze current message; continue in a new one):
+  - consume `cmd.surface.output.reanchor` (topic: `cmd.surface`)
+  - publish `evt.surface.output.message.created` (topic: `evt.surface`) when the surface creates a message for a request
+
 ### Shared subscriber (evt.request)
 
 Subscription:
@@ -267,6 +272,19 @@ Relay mapping:
   - `await out.finish()`
   - stop the output subscription and remove the relay from the active map
 - `evt.agent.output.delta.reasoning`: ignore for now, but keep a dedicated case branch for future UI wiring.
+
+### Output re-anchor (Discord)
+
+To keep Discord reply threading coherent while steering:
+
+- The relay may receive `cmd.surface.output.reanchor` for an active request.
+  - It aborts the current output stream with a reanchor reason (best-effort: remove tool display; replace empty output with a placeholder).
+  - It starts a new output stream using either:
+    - an explicit reply target (`replyTo`) or
+    - inherited reply-vs-top-level mode.
+  - It then continues pushing subsequent `out.req.*` events into the new stream.
+
+- The surface output stream can report message creation via `StartOutputOpts.onMessageCreated` so the relay can publish `evt.surface.output.message.created`.
 
 ### Idempotency / duplicates
 

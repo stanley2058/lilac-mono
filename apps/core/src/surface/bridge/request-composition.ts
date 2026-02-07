@@ -72,7 +72,7 @@ export async function composeRequestMessages(
     throw new Error(`Unsupported platform '${opts.platform}'`);
   }
 
-  // Phase 1: fetch reply chain from the adapter store / platform.
+  // Step 1: fetch reply chain from the adapter store / platform.
   // Mention triggers get merge-window parity even if messages are not linked via reply references.
   const triggerMsg = await adapter.readMsg(opts.trigger.msgRef);
   if (!triggerMsg) {
@@ -96,7 +96,7 @@ export async function composeRequestMessages(
         maxDepth: opts.maxDepth,
       });
 
-  // Phase 2: merge by Discord window rules (same author + <= 7 min).
+  // Step 2: merge by Discord window rules (same author + <= 7 min).
   const merged = mergeChainByDiscordWindow(chain);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.

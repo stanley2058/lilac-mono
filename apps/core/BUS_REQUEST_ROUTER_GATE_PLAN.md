@@ -27,13 +27,15 @@ Non-scope:
 - "Reply-to-bot": adapter sets `raw.discord.replyToBot=true`.
 - "Indirect mention": best-effort case-insensitive substring match of `surface.discord.botName` in message text.
 
-## Current Behavior (Before This Change)
+## Current Behavior
 
 Router implementation: `apps/core/src/surface/bridge/bus-request-router.ts`
 
 - In active mode:
-  - If no active request exists: debounce, then publish a new `cmd.request.message` (`queue: "prompt"`).
-  - If an active request exists: subsequent messages publish into the active request as `queue: "steer"`.
+  - If no active request exists: debounce, optionally run the gate, then publish a new `cmd.request.message` (`queue: "prompt"`).
+  - If an active request exists: subsequent messages usually publish into the active request as `queue: "followUp"`.
+    - Some triggers publish `queue: "steer"` and request an output reanchor (see below).
+    - Replies to older bot messages still fork into queued-behind prompts to preserve reply threading.
 
 ## Problems This Change Solves
 
@@ -45,12 +47,25 @@ Safety policy:
 
 ## Finalized Routing Semantics
 
+### Active Output Tracking + Reanchor
+
+To support “reply to the active streaming message” and to keep Discord threading coherent while steering:
+
+- The reply relay publishes `evt.surface.output.message.created` whenever a surface message is created for a request.
+  - Router uses this to track which Discord message ids belong to the active output chain.
+- Router may publish `cmd.surface.output.reanchor` to tell the reply relay to stop updating the current in-flight message chain and continue streaming output in a new message.
+  - This is used for steer UX (freeze old message; continue in a new reply/top-level message).
+
 ### DM (No Gate)
 
 DMs are never gated.
 
 - If there is an active request for the session:
-  - Replies-to-bot (`replyToBot=true`) fork into a new request and publish as `queue: "prompt"` (queued behind).
+  - Replies to the active output chain:
+    - `replyToBot=true` and reply target is in the active output chain => publish into the active request.
+      - with `mentionsBot=true` => `queue: "steer"` + `cmd.surface.output.reanchor` (continue replying to the user’s reply)
+      - otherwise => `queue: "followUp"`
+  - Replies to other bot messages (`replyToBot=true` but not an active-output reply) fork into a queued-behind `queue: "prompt"`.
   - All other new messages publish to the active request as `queue: "followUp"`.
 - If there is no active request:
   - Start a new request (no gate) and publish `queue: "prompt"`.
@@ -60,10 +75,14 @@ DMs are never gated.
 Active channels are gated only when starting a new request.
 
 - If there is an active request for the session:
-  - Replies-to-bot (`replyToBot=true`) fork into a new request and publish as `queue: "prompt"`.
-    - The agent output will reply to the user's reply message.
-    - The runner will queue this request behind the currently running request.
-  - All other new messages (including mentions) publish to the active request as `queue: "followUp"`.
+  - Replies to the active output chain:
+    - `replyToBot=true` and reply target is in the active output chain => publish into the active request.
+      - with `mentionsBot=true` => `queue: "steer"` + `cmd.surface.output.reanchor` (continue replying to the user’s reply)
+      - otherwise => `queue: "followUp"`
+  - Mentions while running (not a reply) steer the active request:
+    - `mentionsBot=true` and `replyToBot=false` => `queue: "steer"` + `cmd.surface.output.reanchor` (continue in the same reply-vs-top-level mode as the current output)
+  - Replies to other bot messages (`replyToBot=true` but not an active-output reply) fork into a queued-behind `queue: "prompt"`.
+  - All other new messages publish to the active request as `queue: "followUp"`.
   - No gate is evaluated while a request is running.
 
 - If there is no active request:
@@ -82,12 +101,10 @@ When starting a new request in an active channel, the agent prompt must use the 
 Note:
 - For in-flight messages while a request is running, we do NOT rebuild the latest-8 prompt; they are appended as follow-ups.
 
-### Users Must Stay Separated
-
-(Phase 1 update)
+### Group Chat Semantics
 
 Active channels are treated as group chats. While a request is running, any user may send follow-ups that are injected via `queue: "followUp"`.
-Replies-to-bot still fork into queued-behind prompts.
+Replies to non-active bot messages still fork into queued-behind prompts.
 
 ## Gate Hook
 
@@ -152,12 +169,16 @@ Do not log full message contents.
 
 Add unit tests around router active mode:
 - Gate forward=false => router publishes no `cmd.request.message`.
-- Gate forward=true => router publishes a single `prompt` (no extra steers from the buffer).
+- Gate forward=true => router publishes a single `prompt` (no extra follow-ups from the buffer).
 - Gate throws/timeout/invalid output => router skips.
-- Active channel with running request => `replyToBot=true` publishes a queued-behind `prompt`; otherwise publishes `followUp` (any user).
-- DM behavior => while running, `replyToBot=true` publishes a queued-behind `prompt`; otherwise publishes `followUp`.
+- Active channel with running request:
+  - reply to active output => followUp (or steer+reanchor when also mentioning)
+  - mention (not reply) => steer+reanchor
+  - reply to other bot msg => queued-behind prompt
+- DM behavior while running matches active channels.
 
 ## Streaming Note
 
 Multi-turn follow-ups are compatible with streaming because follow-ups are injected between turns.
-Avoid using `interrupt` for this feature because the relay layer does not support output reset semantics.
+Steering is delivered at safe boundaries (tool boundaries and the end of non-tool turns) to avoid corrupting the output stream.
+Avoid using `interrupt` for this feature because the relay layer preserves existing output messages for coherence.

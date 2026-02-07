@@ -1,4 +1,4 @@
-# Bus Request Router (Discord -> cmd.request.message) Plan (v1)
+# Bus Request Router (Discord -> cmd.request.message) Plan (v2)
 
 This plan defines the "router" layer that turns adapter ingestion events into agent requests.
 
@@ -7,6 +7,10 @@ The router is responsible for:
 - choosing the correct request identity (`headers.request_id`)
 - choosing the queueing behavior (`prompt` / `steer` / `followUp` / `interrupt`)
 - batching/debouncing when needed
+
+This version also covers the “active streaming reply” UX:
+- replies to the currently active streaming bot message stay in the same request
+- steer can re-anchor output mid-flight without deleting the in-flight message
 
 The agent-runner remains the authoritative source of "which sessions have a running agent" (see `BUS_AGENT_RUNNER_PLAN.md`).
 
@@ -23,9 +27,13 @@ The agent-runner remains the authoritative source of "which sessions have a runn
   - Polling mode is out of scope for this plan
 - Support queueing behaviors:
   - `prompt`: start a new request (new `request_id`)
-  - `steer`: add messages to the currently running request for that session
-  - `followUp`: only in mention-only mode and only for additional mentions by the same user
-  - `interrupt`: reserved (not used by default in this stage)
+  - `steer`: inject guidance into a currently running request
+  - `followUp`: append a user follow-up to a currently running request
+  - `interrupt`: reserved (not used by default)
+
+- Support output re-anchoring while a request is running:
+  - Router publishes `cmd.surface.output.reanchor`.
+  - Relay freezes the current in-flight message and continues streaming in a new message.
 
 ## Non-goals
 
@@ -55,6 +63,9 @@ Recommendation:
 
 This keeps the bus contract stable while allowing router logic without needing direct Discord API access.
 
+Additionally, router consumes surface output events:
+- `evt.surface.output.message.created` (published by the reply relay) to track which bot message ids are part of the active output chain.
+
 ### Outputs
 
 - `cmd.request.message`
@@ -70,10 +81,9 @@ This keeps the bus contract stable while allowing router logic without needing d
 The router keeps a lightweight local state cache, but treats the agent-runner as authoritative.
 
 State tracked:
-- `activeRequestBySession: Map<session_id, request_id>`
-- `activeUserBySession: Map<session_id, user_id>` (for mention-only mode semantics)
-- `sessionMode: Map<session_id, "mentionOnly" | "activeObserve">`
-- `observeDebounceBuffers` for activeObserve mode:
+- `activeBySession: Map<session_id, { requestId, activeOutputMessageIds }>`
+- `sessionMode: Map<session_id, "mention" | "active">`
+- debounce buffers for active mode when starting a new request:
   - `buffered: Array<{ messageId, userId, ts, text, ... }>`
   - `timer` (debounce)
 
@@ -106,35 +116,43 @@ Note: this does not force a 1:1 between a single Discord message and a request; 
 
 - Trigger: any `evt.adapter.message.created` in a DM session.
 - If there is an active request for the session:
-  - publish `cmd.request.message` with `queue: "steer"`
+  - reply to active output chain:
+    - reply + @mention => `queue: "steer"` and request output reanchor to the user's reply message
+    - reply only => `queue: "followUp"`
+  - reply to other bot message => fork queued-behind `queue: "prompt"`
+  - otherwise => `queue: "followUp"`
 - Else:
   - publish `cmd.request.message` with `queue: "prompt"` and mint a new request_id
 
 ### Channel: mention-only mode
+
+Mention-only sessions ignore non-triggers.
 
 - Trigger events:
   - message mentions bot, OR
   - message replies to a bot-authored message
 - If there is no active request:
   - publish `queue: "prompt"` (new request_id)
-  - set `activeUserId = message.author`
 - If there is an active request:
-  - Non-mention messages (same user, grouped by merge rules) => `queue: "steer"`
-  - Additional mentions:
-    - If from the same user: `queue: "followUp"` to the active request_id
-    - If from other users: `queue: "prompt"` (new request_id)
+  - If the message is a reply to the active output chain:
+    - reply + @mention => `queue: "steer"` and request output reanchor to the user's reply message
+    - reply only => `queue: "followUp"`
+  - Otherwise (mention/reply trigger): publish a queued-behind `queue: "prompt"` (preserve reply threading)
 
-This matches:
-- mention implies "new request" except when same-user mention becomes followUp
+### Channel: active mode
 
-### Channel: active observe mode
+Active sessions treat the channel like a group chat.
 
-- Trigger: any message in the session
 - If there is no active request:
-  - buffer messages for debounce interval
-  - on debounce fire: publish one `queue: "prompt"` with the buffered batch and mint request_id from the first buffered message
+  - direct mention or reply-to-bot => bypass gate/debounce and start a new `queue: "prompt"`
+  - otherwise => debounce a short burst and optionally run the gate
 - If there is an active request:
-  - publish `queue: "steer"` for each subsequent message (or for grouped batches)
+  - reply to active output chain:
+    - reply + @mention => `queue: "steer"` and request output reanchor to the user's reply message
+    - reply only => `queue: "followUp"`
+  - @mention (not a reply) => `queue: "steer"` and request output reanchor (inherit current reply-vs-top-level mode)
+  - reply to other bot message => fork queued-behind `queue: "prompt"`
+  - otherwise => `queue: "followUp"`
 
 ## Message grouping rules
 
@@ -158,7 +176,7 @@ Important: keep `ModelMessage[]` order stable and deterministic.
 
 ## Acceptance Criteria
 
-- DMs: user can message without mention, agent starts, subsequent messages during streaming become `steer`.
-- Mention-only channels: only mention/reply triggers start; same-user mentions during an active run become `followUp`.
-- Active observe: messages are debounced into one `prompt`; subsequent messages become `steer`.
+- DMs: user can message without mention; while running, replies to active output become followUp/steer; other replies fork prompts.
+- Mention-only channels: only mention/reply triggers start; in-flight triggers queue behind unless replying to active output.
+- Active channels: gate/debounce when idle; while running, followUps stream into the active request, and mentions can steer with reanchor.
 - Router does not need direct Discord API access; it relies on adapter event payload + raw metadata.

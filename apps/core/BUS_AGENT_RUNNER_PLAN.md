@@ -105,6 +105,12 @@ This interacts with router rules (other-user mention -> new request). The simple
   - if request is active and streaming: `agent.followUp(mergedUserMessage)`
   - if idle: treat as `prompt`
 
+Notes:
+- `AiSdkPiAgent` delivers steering at safe boundaries.
+  - after each tool call, and
+  - at the end of a turn that finished without tool calls.
+- Steering drains any buffered follow-ups and injects them together (bundled).
+
 - `interrupt`:
   - if streaming: `await agent.interrupt(mergedUserMessage)`
   - else: treat as `prompt`
@@ -150,5 +156,5 @@ This enables tools like `attachment.add_files` to default to "current session" w
 
 - A `cmd.request.message(queue:"prompt")` produces a streamed response back to the adapter.
 - While streaming, a `cmd.request.message(queue:"steer")` injects additional context mid-run without losing output stream.
-- While streaming, a `cmd.request.message(queue:"followUp")` is processed after the current run completes.
+- While streaming, a `cmd.request.message(queue:"followUp")` is buffered and delivered at a safe boundary (end of a non-tool turn).
 - Runner publishes lifecycle state changes with headers so router can rebuild session state.

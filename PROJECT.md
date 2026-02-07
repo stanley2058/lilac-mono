@@ -125,7 +125,7 @@ The router subscribes to `evt.adapter` and decides whether to create/append to a
 - Implementation: `apps/core/src/surface/bridge/bus-request-router.ts`.
 - Routing modes:
   - `mention`: only start a new request when the bot is mentioned or replied-to.
-  - `active`: treat the session like a DM and respond more aggressively.
+  - `active`: treat the session like a group chat and respond more aggressively.
 
 Active-mode details:
 
@@ -141,8 +141,8 @@ A “request” is the unit of agent work and output streaming.
 `cmd.request.message` includes a queue mode:
 
 - `prompt`: start a new request.
-- `steer`: inject guidance into a currently running request.
-- `followUp`: append a user follow-up to a currently running request.
+- `steer`: inject guidance into a currently running request (delivered at safe boundaries; also drains buffered follow-ups).
+- `followUp`: append a user follow-up to a currently running request (buffered; delivered at safe boundaries).
 - `interrupt`: abort + rewind and restart with the new message.
 
 The agent runner enforces one active request per session at a time (per-session serialization).
@@ -167,6 +167,12 @@ Consumes `cmd.request` and runs the LLM.
 When `evt.request.reply` arrives for a request, the relay subscribes to `out.req.<request_id>` and streams output to the adapter.
 
 - Implementation: `apps/core/src/surface/bridge/subscribe-from-bus.ts`.
+
+The relay also supports “re-anchoring” output mid-request (used by steer UX on Discord):
+
+- `cmd.surface.output.reanchor` (topic: `cmd.surface`) tells the relay to freeze the current in-flight message chain and continue streaming in a new message.
+- `evt.surface.output.message.created` (topic: `evt.surface`) is published by the relay when a surface message is created for a request.
+  - Router uses this to detect “reply to the active streaming message”.
 
 Important detail: `request_id` sometimes encodes “reply-to” behavior.
 

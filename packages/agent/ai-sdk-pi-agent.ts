@@ -863,7 +863,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             }
 
             // No tools: inject steering/follow-ups if present, otherwise stop.
-            // Phase 2: steering should pick up any buffered follow-ups.
+            // Steering should pick up any buffered follow-ups.
             const steeringNow = takeQueued(this.steeringMode, this.steeringQueue);
             if (steeringNow.length > 0) {
               const followUpsAll = takeAll(this.followUpQueue);
@@ -1420,7 +1420,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
       const steering = takeQueued(this.steeringMode, this.steeringQueue);
       if (steering.length > 0) {
-        // Phase 2: steering should include any buffered follow-ups.
+        // Steering should include any buffered follow-ups.
         const followUpsAll = takeAll(this.followUpQueue);
 
         // Skip remaining tools (pi-agent behavior)

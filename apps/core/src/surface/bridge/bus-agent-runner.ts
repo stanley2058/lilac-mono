@@ -781,7 +781,7 @@ export async function startBusAgentRunner(params: {
       subagentProfile: runProfile,
     });
 
-    // Phase 2: drain all buffered messages at boundaries.
+    // Drain all buffered messages at boundaries (better UX in chat surfaces).
     agent.setFollowUpMode("all");
     agent.setSteeringMode("all");
 

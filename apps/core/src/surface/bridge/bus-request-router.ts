@@ -390,8 +390,11 @@ export async function startBusRequestRouter(params: {
     } = input;
 
     if (active) {
-      // Phase 1: DMs behave like active channels.
-      // - Replies to bot fork into a new request queued behind.
+      // While a request is running:
+      // - Replies to the active output message chain stay in the active request.
+      //   - reply + mention => steer (plus output reanchor)
+      //   - reply only => followUp
+      // - Replies to other bot messages fork into a queued-behind prompt.
       // - Everything else becomes a follow-up into the running request.
       const isReplyToActiveOutput =
         replyToBot &&
@@ -518,8 +521,12 @@ export async function startBusRequestRouter(params: {
     } = input;
 
     if (active) {
-      // Phase 1: active channels behave like group chats.
-      // - Replies to bot fork into a new request queued behind.
+      // Active channels behave like group chats while a request is running.
+      // - Replies to the active output message chain stay in the active request.
+      //   - reply + mention => steer (plus output reanchor)
+      //   - reply only => followUp
+      // - Mentions (not replies) can steer the active request (plus output reanchor).
+      // - Replies to other bot messages fork into a queued-behind prompt.
       // - Everything else becomes a follow-up into the running request.
       const isReplyToActiveOutput =
         replyToBot &&
@@ -563,7 +570,7 @@ export async function startBusRequestRouter(params: {
         return;
       }
 
-      // Phase 2: active channel @mention can steer the running request.
+      // Active channel @mention (not a reply) can steer the running request.
       // IMPORTANT: replies to non-active bot messages must still fork into a queued prompt.
       if (!replyToBot && mentionsBot) {
         await publishSurfaceOutputReanchor({
@@ -856,7 +863,7 @@ export async function startBusRequestRouter(params: {
 
     const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
-    // Special case (Phase 2): if the user is replying to the currently active output message,
+    // Special case: if the user is replying to the currently active output message chain,
     // treat it as a follow-up or steer into the running request (instead of forking).
     if (
       active &&
