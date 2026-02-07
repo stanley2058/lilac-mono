@@ -12,6 +12,8 @@ import type { ModelMessage } from "ai";
 export const lilacEventTypes = {
   CmdRequestMessage: "cmd.request.message",
 
+  CmdSurfaceOutputReanchor: "cmd.surface.output.reanchor",
+
   EvtAdapterMessageCreated: "evt.adapter.message.created",
   EvtAdapterMessageUpdated: "evt.adapter.message.updated",
   EvtAdapterMessageDeleted: "evt.adapter.message.deleted",
@@ -20,6 +22,8 @@ export const lilacEventTypes = {
 
   EvtRequestLifecycleChanged: "evt.request.lifecycle.changed",
   EvtRequestReply: "evt.request.reply",
+
+  EvtSurfaceOutputMessageCreated: "evt.surface.output.message.created",
 
   CmdWorkflowTaskCreate: "cmd.workflow.task.create",
   EvtWorkflowTaskResolved: "evt.workflow.task.resolved",
@@ -83,6 +87,13 @@ export type AdapterPlatform =
   | "web"
   | "unknown";
 
+/** Reference to a surface message (platform+channel+message). */
+export type SurfaceMsgRef = {
+  platform: AdapterPlatform;
+  channelId: string;
+  messageId: string;
+};
+
 export type RequestQueueMode = "prompt" | "steer" | "followUp" | "interrupt";
 
 export type CmdRequestMessageData = {
@@ -90,6 +101,14 @@ export type CmdRequestMessageData = {
   messages: ModelMessage[];
   /** Raw adapter payload (platform event) if you need it later. */
   raw?: unknown;
+};
+
+/** Command: switch an active output relay to a new reply anchor. */
+export type CmdSurfaceOutputReanchorData = {
+  /** When true, keep the relay's current reply mode (reply vs top-level). */
+  inheritReplyTo: boolean;
+  /** Override reply target when inheritReplyTo=false; omit for top-level. */
+  replyTo?: SurfaceMsgRef;
 };
 
 export type EvtAdapterMessageCreatedData = {
@@ -156,6 +175,11 @@ export type EvtRequestLifecycleChangedData = {
 };
 
 export type EvtRequestReplyData = {};
+
+/** Event: a surface output message was created for a request. */
+export type EvtSurfaceOutputMessageCreatedData = {
+  msgRef: SurfaceMsgRef;
+};
 
 export type CmdWorkflowTaskCreateData = {
   workflowId: string;
@@ -254,6 +278,12 @@ export type LilacEventSpec = {
     data: CmdRequestMessageData;
   };
 
+  [lilacEventTypes.CmdSurfaceOutputReanchor]: {
+    topic: "cmd.surface";
+    key: string;
+    data: CmdSurfaceOutputReanchorData;
+  };
+
   [lilacEventTypes.EvtAdapterMessageCreated]: {
     topic: "evt.adapter";
     key: string;
@@ -294,6 +324,12 @@ export type LilacEventSpec = {
     topic: "evt.request";
     key: string;
     data: EvtRequestReplyData;
+  };
+
+  [lilacEventTypes.EvtSurfaceOutputMessageCreated]: {
+    topic: "evt.surface";
+    key: string;
+    data: EvtSurfaceOutputMessageCreatedData;
   };
 
   [lilacEventTypes.CmdWorkflowTaskCreate]: {

@@ -85,6 +85,8 @@ function getDiscordFlags(raw: unknown): {
 
 type ActiveSessionState = {
   requestId: string;
+  /** IDs of bot output messages in the current active output chain. */
+  activeOutputMessageIds: Set<string>;
 };
 
 type BufferedMessage = {
@@ -156,7 +158,10 @@ export async function startBusRequestRouter(params: {
       }
 
       if (msg.data.state === "running") {
-        activeBySession.set(sessionId, { requestId });
+        activeBySession.set(sessionId, {
+          requestId,
+          activeOutputMessageIds: new Set(),
+        });
       }
 
       if (
@@ -168,6 +173,45 @@ export async function startBusRequestRouter(params: {
         if (cur?.requestId === requestId) {
           activeBySession.delete(sessionId);
         }
+      }
+
+      await ctx.commit();
+    },
+  );
+
+  const surfaceSub = await bus.subscribeTopic(
+    "evt.surface",
+    {
+      mode: "fanout",
+      subscriptionId: `${subscriptionId}:surface`,
+      consumerId: consumerId(`${subscriptionId}:surface`),
+      offset: { type: "now" },
+      batch: { maxWaitMs: 1000 },
+    },
+    async (msg, ctx) => {
+      if (msg.type !== lilacEventTypes.EvtSurfaceOutputMessageCreated) return;
+
+      const requestId = msg.headers?.request_id;
+      const sessionId = msg.headers?.session_id;
+      if (!requestId || !sessionId) {
+        throw new Error(
+          "evt.surface.output.message.created missing required headers.request_id/session_id",
+        );
+      }
+
+      const cur = activeBySession.get(sessionId);
+      if (!cur || cur.requestId !== requestId) {
+        await ctx.commit();
+        return;
+      }
+
+      const msgRef = msg.data.msgRef;
+      if (
+        msgRef?.platform === "discord" &&
+        typeof msgRef.messageId === "string" &&
+        msgRef.messageId
+      ) {
+        cur.activeOutputMessageIds.add(msgRef.messageId);
       }
 
       await ctx.commit();
@@ -264,6 +308,7 @@ export async function startBusRequestRouter(params: {
             userId: msg.data.userId,
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
+            replyToMessageId: flags.replyToMessageId,
             active,
             sessionMode: mode,
           });
@@ -279,6 +324,7 @@ export async function startBusRequestRouter(params: {
             userText: msg.data.text,
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
+            replyToMessageId: flags.replyToMessageId,
             active,
             sessionMode: mode,
           });
@@ -298,6 +344,7 @@ export async function startBusRequestRouter(params: {
         userId: msg.data.userId,
         mentionsBot: flags.mentionsBot,
         replyToBot: flags.replyToBot,
+        replyToMessageId: flags.replyToMessageId,
         active,
         sessionMode: mode,
       });
@@ -325,6 +372,7 @@ export async function startBusRequestRouter(params: {
     userId: string;
     mentionsBot: boolean;
     replyToBot: boolean;
+    replyToMessageId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
   }) {
@@ -345,6 +393,48 @@ export async function startBusRequestRouter(params: {
       // Phase 1: DMs behave like active channels.
       // - Replies to bot fork into a new request queued behind.
       // - Everything else becomes a follow-up into the running request.
+      const isReplyToActiveOutput =
+        replyToBot &&
+        typeof input.replyToMessageId === "string" &&
+        active.activeOutputMessageIds.has(input.replyToMessageId);
+
+      if (isReplyToActiveOutput) {
+        if (mentionsBot) {
+          await publishSurfaceOutputReanchor({
+            bus,
+            requestId: active.requestId,
+            sessionId,
+            inheritReplyTo: false,
+            replyTo: msgRef,
+          });
+          active.activeOutputMessageIds.clear();
+
+          await publishSingleMessageToActiveRequest({
+            adapter,
+            bus,
+            cfg,
+            requestId: active.requestId,
+            sessionId,
+            queue: "steer",
+            msgRef,
+            sessionMode,
+          });
+          return;
+        }
+
+        await publishSingleMessageToActiveRequest({
+          adapter,
+          bus,
+          cfg,
+          requestId: active.requestId,
+          sessionId,
+          queue: "followUp",
+          msgRef,
+          sessionMode,
+        });
+        return;
+      }
+
       if (replyToBot) {
         const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
@@ -408,6 +498,7 @@ export async function startBusRequestRouter(params: {
     userText: string;
     mentionsBot: boolean;
     replyToBot: boolean;
+    replyToMessageId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
   }) {
@@ -430,6 +521,72 @@ export async function startBusRequestRouter(params: {
       // Phase 1: active channels behave like group chats.
       // - Replies to bot fork into a new request queued behind.
       // - Everything else becomes a follow-up into the running request.
+      const isReplyToActiveOutput =
+        replyToBot &&
+        typeof input.replyToMessageId === "string" &&
+        active.activeOutputMessageIds.has(input.replyToMessageId);
+
+      if (isReplyToActiveOutput) {
+        if (mentionsBot) {
+          await publishSurfaceOutputReanchor({
+            bus,
+            requestId: active.requestId,
+            sessionId,
+            inheritReplyTo: false,
+            replyTo: msgRef,
+          });
+          active.activeOutputMessageIds.clear();
+
+          await publishSingleMessageToActiveRequest({
+            adapter,
+            bus,
+            cfg,
+            requestId: active.requestId,
+            sessionId,
+            queue: "steer",
+            msgRef,
+            sessionMode,
+          });
+          return;
+        }
+
+        await publishSingleMessageToActiveRequest({
+          adapter,
+          bus,
+          cfg,
+          requestId: active.requestId,
+          sessionId,
+          queue: "followUp",
+          msgRef,
+          sessionMode,
+        });
+        return;
+      }
+
+      // Phase 2: active channel @mention can steer the running request.
+      // IMPORTANT: replies to non-active bot messages must still fork into a queued prompt.
+      if (!replyToBot && mentionsBot) {
+        await publishSurfaceOutputReanchor({
+          bus,
+          requestId: active.requestId,
+          sessionId,
+          inheritReplyTo: true,
+        });
+        active.activeOutputMessageIds.clear();
+
+        await publishSingleMessageToActiveRequest({
+          adapter,
+          bus,
+          cfg,
+          requestId: active.requestId,
+          sessionId,
+          queue: "steer",
+          msgRef,
+          sessionMode,
+        });
+        return;
+      }
+
       if (replyToBot) {
         const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
@@ -673,6 +830,7 @@ export async function startBusRequestRouter(params: {
     userId: string;
     mentionsBot?: boolean;
     replyToBot?: boolean;
+    replyToMessageId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
   }) {
@@ -698,9 +856,55 @@ export async function startBusRequestRouter(params: {
 
     const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
+    // Special case (Phase 2): if the user is replying to the currently active output message,
+    // treat it as a follow-up or steer into the running request (instead of forking).
+    if (
+      active &&
+      replyToBot &&
+      typeof input.replyToMessageId === "string" &&
+      active.activeOutputMessageIds.has(input.replyToMessageId)
+    ) {
+      if (mentionsBot) {
+        await publishSurfaceOutputReanchor({
+          bus,
+          requestId: active.requestId,
+          sessionId,
+          inheritReplyTo: false,
+          replyTo: msgRef,
+        });
+        active.activeOutputMessageIds.clear();
+
+        await publishSingleMessageToActiveRequest({
+          adapter,
+          bus,
+          cfg,
+          requestId: active.requestId,
+          sessionId,
+          queue: "steer",
+          msgRef,
+          sessionMode: input.sessionMode,
+        });
+      } else {
+        await publishSingleMessageToActiveRequest({
+          adapter,
+          bus,
+          cfg,
+          requestId: active.requestId,
+          sessionId,
+          queue: "followUp",
+          msgRef,
+          sessionMode: input.sessionMode,
+        });
+      }
+      return;
+    }
+
     if (!active) {
       // Optimistically mark active to avoid a brief window before lifecycle updates.
-      activeBySession.set(sessionId, { requestId });
+      activeBySession.set(sessionId, {
+        requestId,
+        activeOutputMessageIds: new Set(),
+      });
     }
 
     // Triggers always start a new request. If a request is running, the runner will queue it.
@@ -864,7 +1068,10 @@ export async function startBusRequestRouter(params: {
     // Only mark active when this request is expected to start immediately.
     // For queued-behind requests we must not clobber the running request id.
     if (input.markActive) {
-      activeBySession.set(sessionId, { requestId });
+      activeBySession.set(sessionId, {
+        requestId,
+        activeOutputMessageIds: new Set(),
+      });
     }
   }
 
@@ -904,10 +1111,42 @@ export async function startBusRequestRouter(params: {
     });
   }
 
+  async function publishSurfaceOutputReanchor(input: {
+    bus: LilacBus;
+    requestId: string;
+    sessionId: string;
+    inheritReplyTo: boolean;
+    replyTo?: MsgRef;
+  }) {
+    const { bus, requestId, sessionId, inheritReplyTo, replyTo } = input;
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      {
+        inheritReplyTo,
+        replyTo: replyTo
+          ? {
+              platform: replyTo.platform,
+              channelId: replyTo.channelId,
+              messageId: replyTo.messageId,
+            }
+          : undefined,
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+  }
+
   return {
     stop: async () => {
       await adapterSub.stop();
       await lifecycleSub.stop();
+      await surfaceSub.stop();
       for (const b of buffers.values()) {
         if (b.timer) clearTimeout(b.timer);
       }

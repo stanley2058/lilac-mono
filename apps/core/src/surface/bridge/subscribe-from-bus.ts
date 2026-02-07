@@ -11,6 +11,7 @@ import type {
   SurfaceAdapter,
   SurfaceOutputPart,
   StartOutputOpts,
+  SurfaceToolStatusUpdate,
   TypingIndicatorProvider,
   TypingIndicatorSubscription,
 } from "../adapter";
@@ -20,7 +21,10 @@ import {
   deleteIssueCommentReactionById,
   deleteIssueReactionById,
 } from "../../github/github-api";
-import { parseGithubRequestId, parseGithubSessionId } from "../../github/github-ids";
+import {
+  parseGithubRequestId,
+  parseGithubSessionId,
+} from "../../github/github-ids";
 import {
   clearGithubAck,
   getGithubAck,
@@ -73,10 +77,9 @@ function parseGithubReplyTo(params: {
   };
 }
 
-function parseRouterSessionMode(raw: string | undefined):
-  | "mention"
-  | "active"
-  | undefined {
+function parseRouterSessionMode(
+  raw: string | undefined,
+): "mention" | "active" | undefined {
   if (raw === "mention" || raw === "active") return raw;
   return undefined;
 }
@@ -123,7 +126,11 @@ async function cleanupGithubAck(input: {
       }
     }
     const parsed = parseGithubSessionId(input.sessionId);
-    return { owner: parsed.owner, repo: parsed.repo, issueNumber: parsed.number };
+    return {
+      owner: parsed.owner,
+      repo: parsed.repo,
+      issueNumber: parsed.number,
+    };
   })();
 
   try {
@@ -146,7 +153,11 @@ async function cleanupGithubAck(input: {
     const msg = e instanceof Error ? e.message : String(e);
     // Best-effort: ignore if already removed.
     if (!msg.includes("404")) {
-      input.logger.warn("failed to delete github ack reaction", { requestId: input.requestId }, e);
+      input.logger.warn(
+        "failed to delete github ack reaction",
+        { requestId: input.requestId },
+        e,
+      );
     }
   } finally {
     clearGithubAck(input.requestId);
@@ -157,7 +168,24 @@ type ActiveRelay = {
   stop(): Promise<void>;
   startedAt: number;
   firstOutLogged: boolean;
+  reanchor(input: { inheritReplyTo: boolean; replyTo?: MsgRef }): Promise<void>;
 };
+
+function toMsgRefFromSurfaceMsgRef(raw: unknown): MsgRef | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const platform = o["platform"];
+  const channelId = o["channelId"];
+  const messageId = o["messageId"];
+  if (platform !== "discord" && platform !== "github") return null;
+  if (typeof channelId !== "string" || typeof messageId !== "string")
+    return null;
+  return {
+    platform,
+    channelId,
+    messageId,
+  };
+}
 
 export async function bridgeBusToAdapter(params: {
   adapter: SurfaceAdapter;
@@ -181,6 +209,55 @@ export async function bridgeBusToAdapter(params: {
   } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
+
+  const cmdSurfaceSub = await bus.subscribeTopic(
+    "cmd.surface",
+    {
+      mode: "fanout",
+      subscriptionId: `${subscriptionId}:cmd_surface`,
+      consumerId: getConsumerId(`${subscriptionId}:cmd_surface`),
+      offset: { type: "now" },
+      batch: { maxWaitMs: 1000 },
+    },
+    async (msg, ctx) => {
+      if (msg.type !== lilacEventTypes.CmdSurfaceOutputReanchor) return;
+
+      const requestId = msg.headers?.request_id;
+      const sessionId = msg.headers?.session_id;
+      const requestClient = msg.headers?.request_client;
+      if (!requestId || !sessionId) {
+        throw new Error(
+          "cmd.surface.output.reanchor missing required headers.request_id/session_id",
+        );
+      }
+
+      if (requestClient && requestClient !== platform) {
+        await ctx.commit();
+        return;
+      }
+
+      const relay = activeRelays.get(requestId);
+      if (!relay) {
+        await ctx.commit();
+        return;
+      }
+
+      const replyTo = msg.data.replyTo
+        ? toMsgRefFromSurfaceMsgRef(msg.data.replyTo)
+        : null;
+
+      await relay
+        .reanchor({
+          inheritReplyTo: msg.data.inheritReplyTo,
+          replyTo: replyTo ?? undefined,
+        })
+        .catch((e: unknown) => {
+          logger.error("reanchor failed", { requestId, sessionId }, e);
+        });
+
+      await ctx.commit();
+    },
+  );
 
   const sub = await bus.subscribeTopic(
     "evt.request",
@@ -279,15 +356,74 @@ export async function bridgeBusToAdapter(params: {
         ? parseDiscordReplyTo({ requestId, sessionId })
         : parseGithubReplyTo({ requestId, sessionId });
 
-    const startOpts: StartOutputOpts = {
-      replyTo: replyTo ?? undefined,
-    };
-    startOpts.requestId = requestId;
-    if (input.routerSessionMode) {
-      startOpts.sessionMode = input.routerSessionMode;
-    }
+    const baseReplyTo = replyTo ?? undefined;
+    let currentReplyTo: MsgRef | undefined = baseReplyTo;
 
-    const out = await adapter.startOutput(sessionRef, startOpts);
+    let outTextAcc = "";
+    const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
+
+    // Serialize all mutations to the active output stream so reanchor doesn't race.
+    let op = Promise.resolve();
+    const enqueue = async (fn: () => Promise<void>) => {
+      op = op.then(fn);
+      await op;
+    };
+
+    let streamToken = 0;
+
+    const publishCreatedForToken = (token: number) => (msgRef: MsgRef) => {
+      // Only publish created messages for the currently active output stream.
+      // This prevents a reanchor from temporarily treating "frozen" follow-up messages
+      // (e.g. attachment flushes) as the active streaming target.
+      if (token !== streamToken) return;
+
+      bus
+        .publish(
+          lilacEventTypes.EvtSurfaceOutputMessageCreated,
+          {
+            msgRef: {
+              platform: msgRef.platform,
+              channelId: msgRef.channelId,
+              messageId: msgRef.messageId,
+            },
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: input.platform,
+            },
+          },
+        )
+        .catch((e: unknown) => {
+          logger.debug(
+            "failed to publish output message created",
+            { requestId },
+            e,
+          );
+        });
+    };
+
+    const buildStartOpts = (
+      overrideReplyTo: MsgRef | undefined,
+      token: number,
+    ): StartOutputOpts => {
+      const startOpts: StartOutputOpts = {
+        replyTo: overrideReplyTo,
+        requestId,
+        onMessageCreated: publishCreatedForToken(token),
+      };
+      if (input.routerSessionMode) {
+        startOpts.sessionMode = input.routerSessionMode;
+      }
+      return startOpts;
+    };
+
+    streamToken += 1;
+    let out = await adapter.startOutput(
+      sessionRef,
+      buildStartOpts(baseReplyTo, streamToken),
+    );
 
     let typing: TypingIndicatorSubscription | null = null;
 
@@ -376,99 +512,111 @@ export async function bridgeBusToAdapter(params: {
 
         bumpTimeout();
 
-        let part: SurfaceOutputPart | null = null;
+        await enqueue(async () => {
+          let part: SurfaceOutputPart | null = null;
 
-        switch (outMsg.type) {
-          case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-            // ignored for now
-            break;
-          }
+          switch (outMsg.type) {
+            case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
+              // ignored for now
+              break;
+            }
 
-          case lilacEventTypes.EvtAgentOutputDeltaText: {
-            part = { type: "text.delta", delta: outMsg.data.delta };
-            break;
-          }
+            case lilacEventTypes.EvtAgentOutputDeltaText: {
+              outTextAcc += outMsg.data.delta;
+              part = { type: "text.delta", delta: outMsg.data.delta };
+              break;
+            }
 
-          case lilacEventTypes.EvtAgentOutputToolCall: {
-            part = {
-              type: "tool.status",
-              update: {
+            case lilacEventTypes.EvtAgentOutputToolCall: {
+              const update = {
                 toolCallId: outMsg.data.toolCallId,
                 display: outMsg.data.display,
                 status: outMsg.data.status,
                 ok: outMsg.data.ok,
                 error: outMsg.data.error,
-              },
-            };
-            break;
-          }
+              } satisfies SurfaceToolStatusUpdate;
 
-          case lilacEventTypes.EvtAgentOutputResponseBinary: {
-            part = {
-              type: "attachment.add",
-              attachment: toAttachment(outMsg.data),
-            };
-            break;
-          }
+              toolStatusById.set(update.toolCallId, update);
 
-           case lilacEventTypes.EvtAgentOutputResponseText: {
-             if (platform === "github") {
-               const latest = getGithubLatestRequestForSession(sessionId);
-               if (latest && latest !== requestId) {
-                 logger.info("github reply suppressed (superseded)", {
-                   requestId,
-                   sessionId,
-                   latest,
-                 });
-                 await out.abort("superseded").catch(() => undefined);
-                 await relayStop();
-                 return;
-               }
-             }
+              part = {
+                type: "tool.status",
+                update,
+              };
+              break;
+            }
 
-             await out.push({ type: "text.set", text: outMsg.data.finalText });
-             const res = await out.finish();
+            case lilacEventTypes.EvtAgentOutputResponseBinary: {
+              part = {
+                type: "attachment.add",
+                attachment: toAttachment(outMsg.data),
+              };
+              break;
+            }
 
-            if (params.transcriptStore) {
-              try {
-                params.transcriptStore.linkSurfaceMessagesToRequest({
-                  requestId,
-                  created: res.created,
-                  last: res.last,
-                });
-              } catch (e: unknown) {
-                logger.error(
-                  "failed to link transcript to surface messages",
-                  { requestId, sessionId },
-                  e,
+            case lilacEventTypes.EvtAgentOutputResponseText: {
+              if (platform === "github") {
+                const latest = getGithubLatestRequestForSession(sessionId);
+                if (latest && latest !== requestId) {
+                  logger.info("github reply suppressed (superseded)", {
+                    requestId,
+                    sessionId,
+                    latest,
+                  });
+                  await out.abort("superseded").catch(() => undefined);
+                  await relayStop();
+                  return;
+                }
+              }
+
+              outTextAcc = outMsg.data.finalText;
+              await out.push({ type: "text.set", text: outTextAcc });
+              const res = await out.finish();
+
+              if (params.transcriptStore) {
+                try {
+                  params.transcriptStore.linkSurfaceMessagesToRequest({
+                    requestId,
+                    created: res.created,
+                    last: res.last,
+                  });
+                } catch (e: unknown) {
+                  logger.error(
+                    "failed to link transcript to surface messages",
+                    { requestId, sessionId },
+                    e,
+                  );
+                }
+              }
+              await relayStop();
+
+              if (platform === "github") {
+                await cleanupGithubAck({ logger, requestId, sessionId }).catch(
+                  (e: unknown) => {
+                    logger.warn(
+                      "github ack cleanup failed",
+                      { requestId, sessionId },
+                      e,
+                    );
+                  },
                 );
               }
+
+              logger.info("reply relay finished", {
+                requestId,
+                sessionId,
+                finalTextChars: outMsg.data.finalText.length,
+              });
+              return;
             }
-             await relayStop();
 
-             if (platform === "github") {
-               await cleanupGithubAck({ logger, requestId, sessionId }).catch(
-                 (e: unknown) => {
-                   logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
-                 },
-               );
-             }
-
-            logger.info("reply relay finished", {
-              requestId,
-              sessionId,
-              finalTextChars: outMsg.data.finalText.length,
-            });
-            return;
+            default:
+              return;
           }
 
-          default:
-            return;
-        }
-
-        if (part) {
-          await out.push(part);
-        }
+          if (part) {
+            await out.push(part);
+          }
+        });
       },
     );
 
@@ -495,12 +643,44 @@ export async function bridgeBusToAdapter(params: {
       stop: relayStop,
       startedAt: relayStartedAt,
       firstOutLogged,
+      reanchor: async (reanchorInput) => {
+        await enqueue(async () => {
+          const nextReplyTo = reanchorInput.inheritReplyTo
+            ? currentReplyTo
+            : reanchorInput.replyTo;
+
+          // Make the new stream active immediately so any messages created during abort
+          // do not get published as "active output".
+          streamToken += 1;
+
+          // Freeze the current output chain in-place.
+          await out.abort("reanchor").catch(() => undefined);
+
+          currentReplyTo = nextReplyTo;
+
+          // Start a new output stream and prime it with current state.
+          out = await adapter.startOutput(
+            sessionRef,
+            buildStartOpts(nextReplyTo, streamToken),
+          );
+
+          if (outTextAcc.trim().length > 0) {
+            await out.push({ type: "text.set", text: outTextAcc });
+          }
+
+          // Replay tool status lines so the new stream shows current Actions.
+          for (const u of toolStatusById.values()) {
+            await out.push({ type: "tool.status", update: u });
+          }
+        });
+      },
     };
   }
 
   return {
     stop: async () => {
       await sub.stop();
+      await cmdSurfaceSub.stop();
       await Promise.all([...activeRelays.values()].map((r) => r.stop()));
     },
   };

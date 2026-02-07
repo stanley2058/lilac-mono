@@ -162,6 +162,14 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     };
   }
 
+  private notifyCreated(msgRef: MsgRef) {
+    try {
+      this.deps.opts?.onMessageCreated?.(msgRef);
+    } catch {
+      // ignore
+    }
+  }
+
   private async ensureStarted(): Promise<void> {
     if (this.running) return;
 
@@ -215,7 +223,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     });
 
     this.firstMsg = first;
-    this.created.push(asDiscordMsgRef(sessionRef.channelId, first.id));
+    {
+      const ref = asDiscordMsgRef(sessionRef.channelId, first.id);
+      this.created.push(ref);
+      this.notifyCreated(ref);
+    }
 
     // Keep any overflow attachments for follow-up messages.
     this.pendingAttachments = remainingAttachments;
@@ -261,6 +273,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             embeds: [emb],
             allowedMentions: { parse: [], repliedUser: false },
           });
+
+          // Notify immediately so the router can treat replies-to-this message as "active".
+          const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+          this.created.push(ref);
+          this.notifyCreated(ref);
           return msg;
         },
         getContent: () => {
@@ -383,7 +400,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           files: toDiscordFiles(chunk),
           allowedMentions: { parse: [], repliedUser: false },
         });
-        this.created.push(asDiscordMsgRef(sessionRef.channelId, msg.id));
+        {
+          const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+          this.created.push(ref);
+          this.notifyCreated(ref);
+        }
         this.lastMsg = msg;
       }
 
@@ -417,7 +438,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         });
 
         if (isDiscordSessionRef(sessionRef)) {
-          this.created.push(asDiscordMsgRef(sessionRef.channelId, pingMsg.id));
+          const ref = asDiscordMsgRef(sessionRef.channelId, pingMsg.id);
+          this.created.push(ref);
+          this.notifyCreated(ref);
         }
         this.lastMsg = pingMsg;
       }
@@ -435,12 +458,49 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   }
 
   async abort(_reason?: string): Promise<void> {
+    const reason = _reason;
+    const isReanchor = reason === "reanchor";
+
+    if (isReanchor) {
+      // Freeze the current message chain in a coherent state.
+      // If we have not produced any text yet, replace emptiness with a placeholder.
+      if (this.textAcc.trim().length === 0) {
+        this.textAcc = "*Steering...*";
+      }
+
+      // Ensure the placeholder message exists so we can "freeze" it.
+      await this.ensureStarted();
+    }
+
     this.done.resolve();
     await this.running;
 
     // Best-effort: remove controls when aborting.
     if (this.firstMsg && this.cancelCustomId) {
       await safeEdit(this.firstMsg, { components: [] });
+    }
+
+    // On reanchor, flush any buffered attachments so they aren't dropped.
+    if (isReanchor) {
+      const { sessionRef } = this.deps;
+      if (isDiscordSessionRef(sessionRef) && this.pendingAttachments.length > 0) {
+        const replyTo = this.lastMsg ?? this.firstMsg;
+        if (replyTo) {
+          const MAX_FILES = 10;
+          for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
+            const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
+            const msg = await replyTo.reply({
+              files: toDiscordFiles(chunk),
+              allowedMentions: { parse: [], repliedUser: false },
+            });
+            const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+            this.created.push(ref);
+            this.notifyCreated(ref);
+            this.lastMsg = msg;
+          }
+          this.pendingAttachments = [];
+        }
+      }
     }
   }
 }

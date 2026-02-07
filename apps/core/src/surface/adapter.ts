@@ -43,6 +43,8 @@ export type StartOutputOpts = {
   sessionMode?: "mention" | "active";
   /** Request id for this stream (used for surface controls like Cancel buttons). */
   requestId?: string;
+  /** Optional hook invoked when the surface creates a message for this stream. */
+  onMessageCreated?: (msgRef: MsgRef) => void;
 };
 
 export type AdapterSubscription = {

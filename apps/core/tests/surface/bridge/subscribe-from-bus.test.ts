@@ -132,6 +132,8 @@ class FakeOutputStream {
 class FakeAdapter implements SurfaceAdapter {
   public lastStart: { sessionRef: SessionRef; opts?: StartOutputOpts } | null = null;
   public stream: FakeOutputStream | null = null;
+  public starts: Array<{ sessionRef: SessionRef; opts?: StartOutputOpts }> = [];
+  public streams: FakeOutputStream[] = [];
   public typingStarts: SessionRef[] = [];
   public typingStops = 0;
 
@@ -153,8 +155,11 @@ class FakeAdapter implements SurfaceAdapter {
 
   async startOutput(sessionRef: SessionRef, opts?: StartOutputOpts) {
     this.lastStart = { sessionRef, opts };
-    this.stream = new FakeOutputStream();
-    return this.stream;
+    this.starts.push({ sessionRef, opts });
+    const s = new FakeOutputStream();
+    this.stream = s;
+    this.streams.push(s);
+    return s;
   }
 
   async startTyping(sessionRef: SessionRef): Promise<{ stop(): Promise<void> }> {
@@ -342,6 +347,87 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
     expect(adapter.typingStops).toBe(1);
+
+    await bridge.stop();
+  });
+
+  it("reanchors an active discord relay and continues streaming", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_3";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ab" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.starts.length).toBe(2);
+    expect(adapter.starts[0]?.opts?.replyTo?.messageId).toBe("msg_3");
+    expect(adapter.starts[1]?.opts?.replyTo?.messageId).toBe("msg_3");
+
+    expect(adapter.streams.length).toBe(2);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+
+    // First stream gets the first delta.
+    expect(adapter.streams[0]?.parts).toEqual([{ type: "text.delta", delta: "a" }]);
+
+    // Second stream is primed with the accumulated text, then continues.
+    expect(adapter.streams[1]?.parts).toEqual([
+      { type: "text.set", text: "a" },
+      { type: "text.delta", delta: "b" },
+      { type: "text.set", text: "ab" },
+    ]);
+
+    expect(adapter.streams[1]?.finished).toBe(true);
 
     await bridge.stop();
   });

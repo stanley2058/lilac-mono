@@ -356,11 +356,44 @@ function takeQueued(
   return out;
 }
 
+function takeAll(queue: ModelMessage[]): ModelMessage[] {
+  if (queue.length === 0) return [];
+  const out = queue.slice();
+  queue.length = 0;
+  return out;
+}
+
 function makeUserMessage(input: string | ModelMessage): ModelMessage {
   if (typeof input === "string") {
     return { role: "user", content: input };
   }
   return input;
+}
+
+function mergeUserMessages(messages: ModelMessage[]): ModelMessage[] {
+  if (messages.length === 0) return [];
+
+  // If any user message has non-string content (multipart), do not merge.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const newest = messages[i]!;
+    if (newest.role !== "user") continue;
+    if (typeof newest.content !== "string") {
+      return messages;
+    }
+  }
+
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    if (typeof m.content === "string") {
+      parts.push(m.content);
+    }
+  }
+
+  const merged = parts.join("\n\n").trim();
+  if (!merged) return messages;
+
+  return [{ role: "user", content: merged }];
 }
 
 function stripToolExecuteForModel<TOOLS extends ToolSet>(tools: TOOLS): TOOLS {
@@ -829,10 +862,22 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               continue;
             }
 
-            // No tools: inject follow-ups if present, otherwise stop.
+            // No tools: inject steering/follow-ups if present, otherwise stop.
+            // Phase 2: steering should pick up any buffered follow-ups.
+            const steeringNow = takeQueued(this.steeringMode, this.steeringQueue);
+            if (steeringNow.length > 0) {
+              const followUpsAll = takeAll(this.followUpQueue);
+              const merged = mergeUserMessages([...followUpsAll, ...steeringNow]);
+              for (const msg of merged) {
+                this.appendMessage(msg);
+              }
+              continue;
+            }
+
             const followUps = takeQueued(this.followUpMode, this.followUpQueue);
             if (followUps.length > 0) {
-              for (const msg of followUps) {
+              const merged = mergeUserMessages(followUps);
+              for (const msg of merged) {
                 this.appendMessage(msg);
               }
               continue;
@@ -1375,6 +1420,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
       const steering = takeQueued(this.steeringMode, this.steeringQueue);
       if (steering.length > 0) {
+        // Phase 2: steering should include any buffered follow-ups.
+        const followUpsAll = takeAll(this.followUpQueue);
+
         // Skip remaining tools (pi-agent behavior)
         for (const skipped of toolCalls.slice(i + 1)) {
           this.emit({
@@ -1417,10 +1465,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           });
         }
 
-        for (const msg of steering) {
-          this.state.messages.push(msg);
-          this.emit({ type: "message_start", message: cloneMessage(msg) });
-          this.emit({ type: "message_end", message: cloneMessage(msg) });
+        const merged = mergeUserMessages([...followUpsAll, ...steering]);
+        for (const msg of merged) {
+          this.appendMessage(msg);
         }
 
         return true;

@@ -781,6 +781,10 @@ export async function startBusAgentRunner(params: {
       subagentProfile: runProfile,
     });
 
+    // Phase 2: drain all buffered messages at boundaries.
+    agent.setFollowUpMode("all");
+    agent.setSteeringMode("all");
+
     const unsubscribeCompaction = await attachAutoCompaction(agent, {
       model: resolved.spec,
       modelCapability: new ModelCapability(),

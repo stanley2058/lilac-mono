@@ -69,6 +69,8 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
     {
       [lilacEventTypes.CmdRequestMessage]: "cmd.request",
 
+      [lilacEventTypes.CmdSurfaceOutputReanchor]: "cmd.surface",
+
       [lilacEventTypes.EvtAdapterMessageCreated]: "evt.adapter",
       [lilacEventTypes.EvtAdapterMessageUpdated]: "evt.adapter",
       [lilacEventTypes.EvtAdapterMessageDeleted]: "evt.adapter",
@@ -77,6 +79,8 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
 
       [lilacEventTypes.EvtRequestLifecycleChanged]: "evt.request",
       [lilacEventTypes.EvtRequestReply]: "evt.request",
+
+      [lilacEventTypes.EvtSurfaceOutputMessageCreated]: "evt.surface",
 
       [lilacEventTypes.CmdWorkflowTaskCreate]: "cmd.workflow",
       [lilacEventTypes.CmdWorkflowCreate]: "cmd.workflow",
@@ -128,8 +132,10 @@ function getKeyForType<TType extends LilacEventType>(
 ): string | undefined {
   switch (type) {
     case lilacEventTypes.CmdRequestMessage:
+    case lilacEventTypes.CmdSurfaceOutputReanchor:
     case lilacEventTypes.EvtRequestLifecycleChanged:
     case lilacEventTypes.EvtRequestReply:
+    case lilacEventTypes.EvtSurfaceOutputMessageCreated:
     case lilacEventTypes.EvtAgentOutputDeltaReasoning:
     case lilacEventTypes.EvtAgentOutputDeltaText:
     case lilacEventTypes.EvtAgentOutputResponseText:
