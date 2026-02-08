@@ -15,6 +15,20 @@ globalThis.PACKAGE_VERSION = "dev";
 const BACKEND_URL =
   process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
 
+async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Response> {
+  // Bun (and Node's undici fetch) can enforce a default request timeout (~5m)
+  // which breaks long-running tool calls (e.g. ssh.run). Use the same workaround
+  // as the OpenCode SDK: set Request.timeout=false.
+  const req = new Request(input, init);
+  try {
+    // Best-effort: this property is not part of the standard Fetch spec.
+    Reflect.set(req as unknown as object, "timeout", false);
+  } catch {
+    // Ignore: runtime may not support this knob.
+  }
+  return await fetch(req);
+}
+
 type ToolOutputFull = {
   callableId: string;
   name: string;
@@ -25,7 +39,7 @@ type ToolOutputFull = {
 };
 
 async function listTools() {
-  const res = await fetch(`${BACKEND_URL}/list`);
+  const res = await fetchNoTimeout(`${BACKEND_URL}/list`);
   if (!res.ok) {
     throw new Error(`Failed to fetch tools list: ${res.statusText}`);
   }
@@ -36,7 +50,7 @@ async function listTools() {
 }
 
 async function toolHelp(callableId: string) {
-  const res = await fetch(
+  const res = await fetchNoTimeout(
     `${BACKEND_URL}/help/${encodeURIComponent(callableId)}`,
   );
   if (!res.ok) {
@@ -61,7 +75,7 @@ async function callTool(callableId: string, input: Record<string, unknown>) {
   if (requestClient) headers["x-lilac-request-client"] = requestClient;
   if (cwd) headers["x-lilac-cwd"] = cwd;
 
-  const res = await fetch(`${BACKEND_URL}/call`, {
+  const res = await fetchNoTimeout(`${BACKEND_URL}/call`, {
     method: "POST",
     headers,
     body: JSON.stringify({
