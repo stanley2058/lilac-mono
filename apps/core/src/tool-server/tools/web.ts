@@ -38,13 +38,15 @@ const getPageSchema = z.object({
       "Preprocessor to use for parsing the page; Only apply to `fetch` and `browser`; `readability` uses the Mozilla Readability library.",
     ),
   startOffset: z.coerce.number().optional(),
-  maxCharacters: z.coerce.number().optional(),
-  timeout: z
-    .coerce
+  maxCharacters: z.coerce
+    .number()
+    .optional()
+    .describe("Max characters (default: 200000)"),
+  timeout: z.coerce
     .number()
     .optional()
     .describe(
-      "Timeout in ms. Timeout for initial connection if using browser.",
+      "Timeout in ms. Timeout for initial connection if using browser. (default: 10000 = 10s)",
     ),
 });
 
@@ -84,9 +86,10 @@ export class Web implements ServerTool {
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null =
     null;
-  private browserInit:
-    | Promise<{ browser: Browser; context: BrowserContext }>
-    | null = null;
+  private browserInit: Promise<{
+    browser: Browser;
+    context: BrowserContext;
+  }> | null = null;
   private logger: Logger;
 
   constructor() {
@@ -181,7 +184,7 @@ export class Web implements ServerTool {
           }
 
           const offset = input.startOffset ?? 0;
-          const maxCharacters = input.maxCharacters ?? 4000;
+          const maxCharacters = input.maxCharacters ?? 200_000;
           return {
             isError: false,
             title: "title" in response ? response.title : response.url,
@@ -329,8 +332,8 @@ export class Web implements ServerTool {
     url,
     format = "markdown",
     startOffset = 0,
-    maxCharacters = 4000,
-    timeout = 3000,
+    maxCharacters = 200_000,
+    timeout = 10_000,
     preprocessor = "none",
   }: z.infer<typeof getPageSchema>) {
     let acceptHeader = "text/markdown, text/html;q=0.8, */*;q=0.1";
@@ -394,7 +397,7 @@ export class Web implements ServerTool {
     url,
     format = "markdown",
     startOffset = 0,
-    maxCharacters = 6000,
+    maxCharacters = 200_000,
     timeout = 10_000,
     preprocessor = "none",
   }: z.infer<typeof getPageSchema>) {
