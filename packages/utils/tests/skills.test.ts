@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { discoverSkills } from "../skills";
+import {
+  formatAvailableSkillsSection,
+  type DiscoveredSkill,
+} from "../skills";
 
 async function mkdirp(p: string) {
   await fs.mkdir(p, { recursive: true });
@@ -73,5 +77,35 @@ describe("skills discovery", () => {
     });
 
     expect(skills).toEqual([]);
+  });
+});
+
+describe("skills prompt formatting", () => {
+  it("returns null when no skills are provided", () => {
+    expect(formatAvailableSkillsSection([])).toBe(null);
+  });
+
+  it("truncates descriptions and caps total size with omission line", () => {
+    const skills: DiscoveredSkill[] = Array.from({ length: 10 }).map((_, i) => ({
+      name: `skill-${i}`,
+      description: "x".repeat(500),
+      location: `/tmp/skill-${i}/SKILL.md`,
+      baseDir: `/tmp/skill-${i}`,
+      source: "lilac-data",
+    }));
+
+    const section = formatAvailableSkillsSection(skills, {
+      maxDescriptionChars: 20,
+      maxSectionChars: 180,
+    });
+
+    expect(section).not.toBe(null);
+    expect(section!).toContain("## Available Skills");
+    expect(section!).toContain("- skill-0:");
+    // Description truncation
+    expect(section!).toContain("...");
+    // Omission line
+    expect(section!).toContain("(...and ");
+    expect(section!.length).toBeLessThanOrEqual(180);
   });
 });

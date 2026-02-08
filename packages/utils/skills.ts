@@ -38,6 +38,9 @@ export type DiscoverSkillsResult = {
   warnings: SkillWarning[];
 };
 
+export const DEFAULT_SKILL_DESCRIPTION_MAX_CHARS = 160;
+export const DEFAULT_SKILLS_SECTION_MAX_CHARS = 20000;
+
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -286,6 +289,76 @@ function validateSkillDescription(description: string): string[] {
     );
   }
   return errors;
+}
+
+function normalizeInlineText(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+function truncateWithEllipsis(raw: string, maxChars: number): string {
+  const s = normalizeInlineText(raw);
+  if (maxChars <= 0) return "";
+  if (s.length <= maxChars) return s;
+  if (maxChars <= 3) return s.slice(0, maxChars);
+  return `${s.slice(0, maxChars - 3)}...`;
+}
+
+/**
+ * Build a compact skills index suitable for appending to a system prompt.
+ * Returns null when no skills are provided.
+ */
+export function formatAvailableSkillsSection(
+  skills: readonly DiscoveredSkill[],
+  options?: {
+    maxDescriptionChars?: number;
+    maxSectionChars?: number;
+  },
+): string | null {
+  if (skills.length === 0) return null;
+
+  const maxDescriptionChars =
+    options?.maxDescriptionChars ?? DEFAULT_SKILL_DESCRIPTION_MAX_CHARS;
+  const maxSectionChars =
+    options?.maxSectionChars ?? DEFAULT_SKILLS_SECTION_MAX_CHARS;
+
+  const header = "## Available Skills";
+  const lines: string[] = [header];
+
+  for (const s of skills) {
+    const desc = truncateWithEllipsis(s.description, maxDescriptionChars);
+    const line = `- ${s.name}: ${desc}`;
+
+    const candidate = [...lines, line].join("\n");
+    if (candidate.length > maxSectionChars) {
+      break;
+    }
+
+    lines.push(line);
+  }
+
+  // If any skills were omitted due to the overall cap, add a final line.
+  // Ensure the omission line itself fits by removing trailing skill lines if needed.
+  while (true) {
+    const included = Math.max(0, lines.length - 1);
+    const omitted = skills.length - included;
+    if (omitted <= 0) break;
+
+    const omittedLine = `(...and ${omitted} more skills omitted)`;
+    const candidate = [...lines, omittedLine].join("\n");
+    if (candidate.length <= maxSectionChars) {
+      lines.push(omittedLine);
+      break;
+    }
+
+    // If we can't fit the omission line, drop the last included skill.
+    if (lines.length <= 1) {
+      // Extremely small maxSectionChars; return a best-effort truncated header.
+      return header.slice(0, Math.max(0, maxSectionChars));
+    }
+    lines.pop();
+  }
+
+  return lines.join("\n");
 }
 
 export async function discoverSkills(params: {

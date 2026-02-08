@@ -7,7 +7,10 @@ import {
 } from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
+  discoverSkills,
   env,
+  findWorkspaceRoot,
+  formatAvailableSkillsSection,
   getCoreConfig,
   ModelCapability,
   resolveLogLevel,
@@ -452,8 +455,14 @@ function buildSystemPromptForProfile(params: {
   baseSystemPrompt: string;
   profile: AgentRunProfile;
   exploreOverlay?: string;
+  skillsSection?: string | null;
 }): string {
-  if (params.profile !== "explore") return params.baseSystemPrompt;
+  if (params.profile !== "explore") {
+    if (!params.skillsSection || params.skillsSection.trim().length === 0) {
+      return params.baseSystemPrompt;
+    }
+    return [params.baseSystemPrompt, "", params.skillsSection.trim()].join("\n");
+  }
 
   return [
     params.baseSystemPrompt,
@@ -461,6 +470,20 @@ function buildSystemPromptForProfile(params: {
     "## Subagent Mode: Explore",
     buildExploreOverlay(params.exploreOverlay),
   ].join("\n");
+}
+
+async function maybeBuildSkillsSectionForPrimary(): Promise<string | null> {
+  try {
+    const workspaceRoot = findWorkspaceRoot();
+    const { skills } = await discoverSkills({
+      workspaceRoot,
+      dataDir: env.dataDir,
+    });
+    return formatAvailableSkillsSection(skills);
+  } catch {
+    // Best-effort: never fail a run due to skill discovery.
+    return null;
+  }
 }
 
 type SessionQueue = {
@@ -708,6 +731,8 @@ export async function startBusAgentRunner(params: {
       baseSystemPrompt: cfg.agent.systemPrompt,
       profile: runProfile,
       exploreOverlay: subagents.profiles.explore.promptOverlay,
+      skillsSection:
+        runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
     });
 
     logger.info("agent run starting", {
