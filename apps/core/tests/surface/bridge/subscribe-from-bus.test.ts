@@ -431,4 +431,57 @@ describe("bridgeBusToAdapter", () => {
 
     await bridge.stop();
   });
+
+  it("cancels an active relay on cmd.request cancel and clears typing", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_cancel";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "interrupt",
+        messages: [],
+        raw: { cancel: true, requiresActive: true },
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.aborted).toBe("cancel");
+    expect(adapter.typingStops).toBe(1);
+
+    await bridge.stop();
+  });
 });

@@ -148,6 +148,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private cancelCustomId: string | null = null;
 
   private running: Promise<void> | null = null;
+  private usedEmbedPusher = false;
 
   constructor(
     private readonly deps: {
@@ -270,6 +271,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       );
     };
 
+    this.usedEmbedPusher = true;
     this.running = (async () => {
       const res = await startEmbedPusher({
         createFirst: async (emb) => {
@@ -475,6 +477,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   async abort(_reason?: string): Promise<void> {
     const reason = _reason;
     const isReanchor = reason === "reanchor";
+    const isCancel = reason === "cancel";
+
+    if (isCancel && this.textAcc.trim().length === 0) {
+      this.textAcc = "Cancelled.";
+    }
 
     if (isReanchor) {
       // Freeze the current message chain in a coherent state.
@@ -489,6 +496,15 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     this.done.resolve();
     await this.running;
+
+    // Best-effort: if we never started the embed pusher, the first message is still
+    // the placeholder "Replying...". For cancels, rewrite it so the thread isn't left
+    // in a confusing state.
+    if (isCancel && this.firstMsg && !this.usedEmbedPusher) {
+      await safeEdit(this.firstMsg, {
+        content: this.textAcc || "Cancelled.",
+      });
+    }
 
     // Best-effort: remove controls when aborting.
     if (this.firstMsg && this.cancelCustomId) {

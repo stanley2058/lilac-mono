@@ -166,6 +166,7 @@ async function cleanupGithubAck(input: {
 
 type ActiveRelay = {
   stop(): Promise<void>;
+  cancel(): Promise<void>;
   startedAt: number;
   firstOutLogged: boolean;
   reanchor(input: { inheritReplyTo: boolean; replyTo?: MsgRef }): Promise<void>;
@@ -209,6 +210,58 @@ export async function bridgeBusToAdapter(params: {
   } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
+
+  const cmdRequestSub = await bus.subscribeTopic(
+    "cmd.request",
+    {
+      mode: "fanout",
+      subscriptionId: `${subscriptionId}:cmd_request`,
+      consumerId: getConsumerId(`${subscriptionId}:cmd_request`),
+      offset: { type: "now" },
+      batch: { maxWaitMs: 1000 },
+    },
+    async (msg, ctx) => {
+      if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
+
+      const requestId = msg.headers?.request_id;
+      const sessionId = msg.headers?.session_id;
+      const requestClient = msg.headers?.request_client;
+
+      if (!requestId || !sessionId) {
+        await ctx.commit();
+        return;
+      }
+
+      if (requestClient && requestClient !== platform) {
+        await ctx.commit();
+        return;
+      }
+
+      const cancel = (() => {
+        const raw = msg.data.raw;
+        if (!raw || typeof raw !== "object") return false;
+        const v = (raw as Record<string, unknown>)["cancel"];
+        return v === true;
+      })();
+
+      if (!cancel) {
+        await ctx.commit();
+        return;
+      }
+
+      const relay = activeRelays.get(requestId);
+      if (!relay) {
+        await ctx.commit();
+        return;
+      }
+
+      await relay.cancel().catch((e: unknown) => {
+        logger.error("failed to cancel active relay", { requestId, sessionId }, e);
+      });
+
+      await ctx.commit();
+    },
+  );
 
   const cmdSurfaceSub = await bus.subscribeTopic(
     "cmd.surface",
@@ -641,6 +694,14 @@ export async function bridgeBusToAdapter(params: {
 
     return {
       stop: relayStop,
+      cancel: async () => {
+        await enqueue(async () => {
+          await out.abort("cancel").catch((e: unknown) => {
+            logger.error("failed to abort output stream on cancel", { requestId }, e);
+          });
+          await relayStop();
+        });
+      },
       startedAt: relayStartedAt,
       firstOutLogged,
       reanchor: async (reanchorInput) => {
@@ -681,6 +742,7 @@ export async function bridgeBusToAdapter(params: {
     stop: async () => {
       await sub.stop();
       await cmdSurfaceSub.stop();
+      await cmdRequestSub.stop();
       await Promise.all([...activeRelays.values()].map((r) => r.stop()));
     },
   };

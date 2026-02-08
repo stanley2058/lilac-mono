@@ -3,6 +3,7 @@ import {
   Client,
   type CacheType,
   GatewayIntentBits,
+  MessageFlags,
   MessageType,
   Partials,
   type Interaction,
@@ -895,12 +896,12 @@ export class DiscordAdapter implements SurfaceAdapter {
         if (interaction.deferred || interaction.replied) {
           await interaction.followUp({
             content: "This cancel button is not for this channel.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         } else {
           await interaction.reply({
             content: "This cancel button is not for this channel.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
       } catch {
@@ -924,12 +925,12 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({
           content: "Cancel requested.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } else {
         await interaction.reply({
           content: "Cancel requested.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
     } catch {
