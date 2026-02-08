@@ -390,9 +390,7 @@ export async function composeRecentChannelMessages(
     authorName: m.userName ?? `user_${m.userId}`,
     ts: m.ts,
     text:
-      opts.triggerType === "mention" &&
-      opts.triggerMsgRef &&
-      m.ref.messageId === opts.triggerMsgRef.messageId
+      m.userId !== opts.botUserId
         ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
         : m.text,
     attachments: extractDiscordAttachmentsFromRaw(m.raw),
@@ -498,6 +496,11 @@ export async function composeSingleMessage(
   const m = await adapter.readMsg(opts.msgRef);
   if (!m) return null;
 
+  const text =
+    m.userId !== opts.botUserId
+      ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
+      : m.text;
+
   const header = formatDiscordAttributionHeader({
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
@@ -505,7 +508,7 @@ export async function composeSingleMessage(
     reactions: await safeListReactions(adapter, m.ref),
   });
 
-  const mainText = `${header}\n${normalizeText(m.text, {})}`.trimEnd();
+  const mainText = `${header}\n${normalizeText(text, {})}`.trimEnd();
 
   if (m.userId === opts.botUserId) {
     return { role: "assistant", content: mainText } satisfies ModelMessage;
@@ -1436,8 +1439,7 @@ async function fetchReplyChainFrom(
 
   for (let depth = 0; depth < maxDepth && cur; depth++) {
     const overrideText =
-      opts.trigger.type === "mention" &&
-      cur.ref.messageId === opts.trigger.msgRef.messageId
+      cur.userId !== opts.botUserId
         ? stripLeadingBotMention(cur.text, opts.botUserId, opts.botName)
         : undefined;
 
@@ -1485,7 +1487,7 @@ async function fetchMentionThreadContext(
 
   const blockMessages = block.map((m) => {
     const overrideText =
-      m.ref.messageId === params.triggerMsg.ref.messageId
+      m.userId !== params.botUserId
         ? stripLeadingBotMention(m.text, params.botUserId, params.botName)
         : undefined;
     return toReplyChainMessage(m, { overrideText });

@@ -1556,7 +1556,7 @@ describe("startBusRequestRouter", () => {
         session: { platform: "discord", channelId: sessionId },
         userId: "u1",
         userName: "user1",
-        text: "replying (no mention)",
+        text: "@lilac replying (no mention)",
         ts: now,
         raw: { reference: {} },
       },
@@ -1712,6 +1712,16 @@ describe("startBusRequestRouter", () => {
     expect(received[0].headers?.request_id).toBe(requestId);
     expect(received[1].data.queue).toBe("steer");
     expect(received[1].headers?.request_id).toBe(requestId);
+
+    // Leading bot mentions should be stripped consistently for followUp/steer.
+    const followUpText = received[0].data.messages?.[0]?.content;
+    const steerText = received[1].data.messages?.[0]?.content;
+    expect(typeof followUpText).toBe("string");
+    expect(typeof steerText).toBe("string");
+    expect(followUpText as string).toContain("replying (no mention)");
+    expect(followUpText as string).not.toContain("@lilac");
+    expect(steerText as string).toContain("replying (mention)");
+    expect(steerText as string).not.toContain("<@bot>");
 
     expect(surfaceCmd.length).toBe(1);
     expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
