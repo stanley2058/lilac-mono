@@ -22,14 +22,22 @@ Core commands
      --roots \
      --limit 20
    ```
-2. Prompt (continue newest session in directory)
+2. Session snapshot (compact, for agents)
+   ```bash
+   lilac-opencode sessions snapshot \
+     --directory /abs/path/to/repo \
+     --continue \
+     --runs 6 \
+     --max-chars 1200
+   ```
+3. Prompt (continue newest session in directory)
    ```bash
    lilac-opencode prompt \
      --directory /abs/path/to/repo \
      --text "Continue working on the failing tests" \
      --agent build
    ```
-3. Prompt (continue or create by exact title)
+4. Prompt (continue or create by exact title)
    Use `--title` to deterministically continue the same OpenCode session across calls.
    ```bash
    lilac-opencode prompt \
@@ -38,7 +46,7 @@ Core commands
      --text "Continue where we left off" \
      --agent build
    ```
-4. Prompt (explicit session id)
+5. Prompt (explicit session id)
    ```bash
    lilac-opencode prompt \
      --directory /abs/path/to/repo \

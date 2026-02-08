@@ -2726,7 +2726,6 @@ async function selectSession(params) {
   if (params.title) {
     const list = await client3.session.list({
       directory: params.directory,
-      roots: true,
       search: params.title,
       limit: 50
     });
@@ -2767,8 +2766,213 @@ async function selectSession(params) {
   }
   return { session: createRes.data, created: true };
 }
+async function resolveExistingSession(params) {
+  const { client: client3 } = params;
+  if (params.sessionID) {
+    const res = await client3.session.get({ sessionID: params.sessionID });
+    if (res.error || !res.data) {
+      throw new Error(`Failed to load session '${params.sessionID}': ${JSON.stringify(res.error)}`);
+    }
+    return res.data;
+  }
+  if (params.title) {
+    const list = await client3.session.list({
+      directory: params.directory,
+      search: params.title,
+      limit: 50
+    });
+    if (list.error) {
+      throw new Error(`Failed to list sessions for title lookup: ${JSON.stringify(list.error)}`);
+    }
+    const sessions = Array.isArray(list.data) ? list.data : [];
+    const found = sessions.find((s) => s.title === params.title);
+    if (found)
+      return found;
+    throw new Error(`No session found with exact title '${params.title}'.`);
+  }
+  if (params.cont) {
+    const list = await client3.session.list({
+      directory: params.directory,
+      roots: true,
+      limit: 1
+    });
+    if (list.error) {
+      throw new Error(`Failed to list sessions for --continue: ${JSON.stringify(list.error)}`);
+    }
+    const s = Array.isArray(list.data) ? list.data[0] : undefined;
+    if (s)
+      return s;
+    throw new Error(`No sessions found in directory '${params.directory}'.`);
+  }
+  throw new Error("Missing session selector (session-id/title/--continue).");
+}
+function buildRecentRuns(params) {
+  const maxRuns = Math.max(0, Math.trunc(params.maxRuns));
+  const maxChars = Math.max(0, Math.trunc(params.maxCharsPerMessage));
+  let truncated = false;
+  const assistantByParent = new Map;
+  for (const m of params.messages) {
+    if (m.info.role !== "assistant")
+      continue;
+    const parentID = m.info.parentID;
+    if (!parentID)
+      continue;
+    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
+    const prev = assistantByParent.get(parentID);
+    const prevCreated = typeof prev?.info.time?.created === "number" ? prev.info.time.created : -1;
+    if (!prev || created >= prevCreated) {
+      assistantByParent.set(parentID, { info: m.info, parts: m.parts });
+    }
+  }
+  const runs = [];
+  for (const m of params.messages) {
+    if (m.info.role !== "user")
+      continue;
+    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
+    const userText = pickUserText(m.parts);
+    const tUser = truncateText(userText, maxChars);
+    truncated = truncated || tUser.truncated;
+    const a = assistantByParent.get(m.info.id);
+    const assistant = a ? (() => {
+      const aCreated = typeof a.info.time?.created === "number" ? a.info.time.created : 0;
+      const aText = pickAssistantText(a.parts);
+      const tAsst = truncateText(aText, maxChars);
+      truncated = truncated || tAsst.truncated;
+      return {
+        messageID: a.info.id,
+        created: aCreated,
+        text: tAsst.text,
+        error: a.info.error
+      };
+    })() : null;
+    runs.push({
+      user: {
+        messageID: m.info.id,
+        created,
+        text: tUser.text
+      },
+      assistant
+    });
+  }
+  return {
+    runs: maxRuns === 0 ? [] : runs.slice(-maxRuns),
+    truncated
+  };
+}
+async function runSnapshot(params) {
+  const out = {
+    ok: false,
+    sessionID: "",
+    meta: {
+      directory: params.directory,
+      baseUrl: params.baseUrl,
+      ensureServer: params.ensureServer
+    }
+  };
+  try {
+    const ensured = await ensureServer({
+      baseUrl: params.baseUrl,
+      directory: params.directory,
+      ensure: params.ensureServer,
+      opencodeBin: params.opencodeBin,
+      serverStartTimeoutMs: 1e4
+    });
+    const client3 = ensured.client;
+    const session = await resolveExistingSession({
+      client: client3,
+      directory: params.directory,
+      sessionID: params.sessionID,
+      title: params.title,
+      cont: params.cont
+    });
+    out.sessionID = session.id;
+    out.session = {
+      id: session.id,
+      title: session.title,
+      directory: session.directory,
+      parentID: session.parentID,
+      time: {
+        created: session.time.created,
+        updated: session.time.updated,
+        archived: session.time.archived
+      },
+      ...session.summary ? {
+        summary: {
+          additions: session.summary.additions,
+          deletions: session.summary.deletions,
+          files: session.summary.files
+        }
+      } : {}
+    };
+    const todosRes = await client3.session.todo({ sessionID: session.id });
+    if (todosRes.error) {
+      throw new Error(`Failed to fetch session todos: ${JSON.stringify(todosRes.error)}`);
+    }
+    const todosAll = Array.isArray(todosRes.data) ? todosRes.data : [];
+    const remaining = todosAll.filter(isTodoRemaining);
+    const pending = remaining.filter((t) => t.status === "pending").length;
+    const inProgress = remaining.filter((t) => t.status === "in_progress").length;
+    const other = remaining.length - pending - inProgress;
+    out.todo = {
+      remaining: {
+        total: remaining.length,
+        pending,
+        in_progress: inProgress,
+        other
+      },
+      ...params.includeTodos ? {
+        items: remaining.map((t) => ({
+          id: t.id,
+          content: t.content,
+          status: t.status,
+          priority: t.priority
+        }))
+      } : {}
+    };
+    const limit = Math.max(1, Math.trunc(params.messagesLimit));
+    const msgs = await client3.session.messages({
+      sessionID: session.id,
+      limit
+    });
+    if (msgs.error || !msgs.data) {
+      throw new Error(`Failed to fetch session messages: ${JSON.stringify(msgs.error)}`);
+    }
+    const recent = buildRecentRuns({
+      messages: msgs.data,
+      maxRuns: params.maxRuns,
+      maxCharsPerMessage: params.maxCharsPerMessage
+    });
+    out.recent = { runs: recent.runs };
+    out.truncation = {
+      maxCharsPerMessage: params.maxCharsPerMessage,
+      maxRuns: params.maxRuns,
+      fetchedMessagesLimit: limit,
+      truncated: recent.truncated
+    };
+    out.ok = true;
+    return out;
+  } catch (e) {
+    out.ok = false;
+    out.error = isRecord(e) && "message" in e ? e.message : String(e);
+    return out;
+  }
+}
 function pickAssistantText(parts) {
   return parts.filter((p) => p.type === "text").map((p) => p.ignored ? "" : p.text).filter((s) => s.length > 0).join("");
+}
+function pickUserText(parts) {
+  return parts.filter((p) => p.type === "text").map((p) => p.ignored ? "" : p.text).filter((s) => s.length > 0).join("");
+}
+function truncateText(text, maxChars) {
+  if (maxChars <= 0)
+    return { text: "", truncated: text.length > 0 };
+  if (text.length <= maxChars)
+    return { text, truncated: false };
+  return { text: text.slice(0, maxChars), truncated: true };
+}
+function isTodoRemaining(t) {
+  const s = typeof t.status === "string" ? t.status : "";
+  return s !== "completed" && s !== "cancelled";
 }
 function findAssistantMessageForUserMessage(params) {
   let best = null;
@@ -2976,6 +3180,7 @@ function help() {
     "",
     "Usage:",
     "  lilac-opencode sessions list [--directory <path>] [--roots] [--limit <n>] [--search <term>] [--base-url <url>] [--no-ensure-server]",
+    "  lilac-opencode sessions snapshot [--directory <path>] [--session-id <id> | --title <title> | --continue] [--runs <n>] [--max-chars <n>] [--messages-limit <n>] [--include-todos] [--base-url <url>] [--no-ensure-server]",
     "  lilac-opencode prompt --text <msg> [--directory <path>] [--session-id <id> | --title <title> | --continue] [--agent <name>] [--model <provider/model>] [--variant <v>]",
     "",
     "Global flags:",
@@ -2993,6 +3198,12 @@ function help() {
     "  --auto-reject-questions/--no-auto-reject-questions  Default: true",
     "  --deny-questions-on-create/--no-deny-questions-on-create Default: true",
     "",
+    "Snapshot flags:",
+    "  --runs=<n>                  Default: 6",
+    "  --max-chars=<n>             Default: 1200 (per user/assistant text)",
+    "  --messages-limit=<n>        Default: 120",
+    "  --include-todos             Include remaining todo items (default: counts only)",
+    "",
     "Notes:",
     "  - Output is always JSON.",
     "  - If --text is omitted and stdin is piped, stdin is used as the message."
@@ -3002,23 +3213,49 @@ function help() {
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === "help" || argv.includes("--help")) {
-    printJson({ ok: true, help: help(), version: "0.0.2" });
+    printJson({ ok: true, help: help(), version: "0.0.3" });
     return;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    printJson({ ok: true, version: "0.0.2" });
+    printJson({ ok: true, version: "0.0.3" });
     return;
   }
   const cmd = argv[0] ?? "";
   if (cmd === "sessions") {
     const sub = argv[1] && !argv[1].startsWith("--") ? argv[1] : "list";
-    const rest = sub === "list" ? argv.slice(2) : argv.slice(1);
+    const rest = sub === "list" || sub === "snapshot" ? argv.slice(2) : argv.slice(1);
     const { flags } = parseFlags(rest);
     const directory = getStringFlag(flags, "directory") ?? process.cwd();
     const baseUrl = getStringFlag(flags, "base-url") ?? "http://127.0.0.1:4096";
     const ensure = getBoolFlag(flags, "ensure-server", true);
     const opencodeBin = getStringFlag(flags, "opencode-bin") ?? "opencode";
     try {
+      if (sub === "snapshot") {
+        const sessionID = getStringFlag(flags, "session-id");
+        const title = getStringFlag(flags, "title");
+        const cont = sessionID === undefined && title === undefined ? true : getBoolFlag(flags, "continue", false);
+        const maxRuns = getIntFlag(flags, "runs", 6);
+        const maxCharsPerMessage = getIntFlag(flags, "max-chars", 1200);
+        const messagesLimit = getIntFlag(flags, "messages-limit", 120);
+        const includeTodos = getBoolFlag(flags, "include-todos", false);
+        const res2 = await runSnapshot({
+          baseUrl,
+          directory,
+          ensureServer: ensure,
+          opencodeBin,
+          sessionID,
+          title,
+          cont,
+          maxRuns,
+          maxCharsPerMessage,
+          messagesLimit,
+          includeTodos
+        });
+        printJson(res2);
+        if (!res2.ok)
+          process.exitCode = 1;
+        return;
+      }
       const { client: client3 } = await ensureServer({
         baseUrl,
         directory,

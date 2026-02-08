@@ -1,6 +1,6 @@
 {
   "name": "@stanley2058/lilac-opencode-controller",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "module": "client.ts",
   "type": "module",
   "license": "MIT",

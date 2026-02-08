@@ -33,6 +33,16 @@ List sessions (scoped to a repo directory):
 bun dist/index.js sessions list --directory /path/to/repo --roots --limit 20
 ```
 
+Fetch a small session snapshot (for agents):
+
+```bash
+bun dist/index.js sessions snapshot \
+  --directory /path/to/repo \
+  --continue \
+  --runs 6 \
+  --max-chars 1200
+```
+
 Send a prompt, continuing the newest root session in that directory:
 
 ```bash
