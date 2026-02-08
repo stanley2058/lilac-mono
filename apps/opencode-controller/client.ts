@@ -765,7 +765,7 @@ async function runPrompt(params: {
 
     out.sessionID = session.id;
 
-    const userMessageID = `lilac_${randomUUID()}`;
+    const userMessageID = `msg_lilac_${randomUUID()}`;
     out.userMessageID = userMessageID;
 
     const sse = new AbortController();

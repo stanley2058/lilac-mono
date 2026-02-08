@@ -3030,7 +3030,7 @@ async function runPrompt(params) {
       denyQuestionsOnCreate: params.denyQuestionsOnCreate
     });
     out.sessionID = session.id;
-    const userMessageID = `lilac_${randomUUID()}`;
+    const userMessageID = `msg_lilac_${randomUUID()}`;
     out.userMessageID = userMessageID;
     const sse = new AbortController;
     const events = await client3.event.subscribe({ directory: params.directory }, { signal: sse.signal });
@@ -3213,11 +3213,11 @@ function help() {
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === "help" || argv.includes("--help")) {
-    printJson({ ok: true, help: help(), version: "0.0.3" });
+    printJson({ ok: true, help: help(), version: "0.0.4" });
     return;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    printJson({ ok: true, version: "0.0.3" });
+    printJson({ ok: true, version: "0.0.4" });
     return;
   }
   const cmd = argv[0] ?? "";
