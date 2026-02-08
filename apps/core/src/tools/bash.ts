@@ -19,6 +19,10 @@ const bashExecutionErrorSchema = z.discriminatedUnion("type", [
     segment: z.string().optional(),
   }),
   z.object({
+    type: z.literal("aborted"),
+    signal: z.string().optional(),
+  }),
+  z.object({
     type: z.literal("timeout"),
     timeoutMs: z.number(),
     signal: z.string(),
@@ -44,13 +48,17 @@ export function bashTool() {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: (input, { experimental_context: context }) =>
-        executeBash(input, { context } as {
+      execute: (input, { experimental_context: context, abortSignal }) =>
+        executeBash(input, {
+          context,
+          abortSignal,
+        } as {
           context?: {
             requestId: string;
             sessionId: string;
             requestClient: string;
           };
+          abortSignal?: AbortSignal;
         }),
     }),
   };
@@ -63,15 +71,19 @@ export function bashToolWithCwd(defaultCwd: string) {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: (input, { experimental_context: context }) =>
+      execute: (input, { experimental_context: context, abortSignal }) =>
         executeBash(
           { ...input, cwd: input.cwd ?? defaultCwd },
-          { context } as {
+          {
+            context,
+            abortSignal,
+          } as {
             context?: {
               requestId: string;
               sessionId: string;
               requestClient: string;
             };
+            abortSignal?: AbortSignal;
           },
         ),
     }),

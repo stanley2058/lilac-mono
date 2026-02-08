@@ -38,6 +38,10 @@ export type BashExecutionError =
       segment?: string;
     }
   | {
+      type: "aborted";
+      signal?: string;
+    }
+  | {
       type: "timeout";
       timeoutMs: number;
       signal: string;
@@ -203,12 +207,14 @@ export async function executeBash(
   { command, cwd, timeoutMs, dangerouslyAllow }: BashToolInput,
   {
     context,
+    abortSignal,
   }: {
     context?: {
       requestId: string;
       sessionId: string;
       requestClient: string;
     };
+    abortSignal?: AbortSignal;
   } = {},
 ): Promise<BashToolOutput> {
   const resolvedCwd = cwd ? expandTilde(cwd) : process.cwd();
@@ -263,23 +269,79 @@ export async function executeBash(
 
   const controller = new AbortController();
   let timedOut = false;
+  let aborted = false;
+
+  let child: ReturnType<typeof Bun.spawn> | null = null;
+
+  const killProcessGroupBestEffort = (pid: number, signal: "SIGTERM" | "SIGKILL") => {
+    // Best-effort: kill the whole subprocess group (tools cli, ssh, etc.).
+    // Requires the child to be spawned as a new process group leader.
+    try {
+      // Negative pid means "process group" on POSIX.
+      process.kill(-pid, signal);
+    } catch {
+      // ignore
+    }
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // ignore
+    }
+  };
+
+  const HARD_KILL_DELAY_MS = 2000;
+  let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleHardKill = () => {
+    if (hardKillTimer) return;
+    hardKillTimer = setTimeout(() => {
+      const pid = (child as { pid?: unknown } | null)?.pid;
+      if (typeof pid === "number" && pid > 0) {
+        killProcessGroupBestEffort(pid, "SIGKILL");
+      }
+    }, HARD_KILL_DELAY_MS);
+  };
+
+  let abortListener: (() => void) | null = null;
+  if (abortSignal) {
+    const onAbort = () => {
+      aborted = true;
+      controller.abort();
+      const pid = child?.pid;
+      if (pid) {
+        killProcessGroupBestEffort(pid, "SIGTERM");
+        scheduleHardKill();
+      }
+    };
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+      abortListener = () => abortSignal.removeEventListener("abort", onAbort);
+    }
+  }
 
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort();
+    const pid = child?.pid;
+    if (pid) {
+      killProcessGroupBestEffort(pid, "SIGTERM");
+      scheduleHardKill();
+    }
   }, effectiveTimeoutMs);
 
   try {
     // Intentionally avoid a login shell here.
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
-    const child = Bun.spawn(["bash", "-c", command], {
+    child = Bun.spawn(["bash", "-c", command], {
       cwd: resolvedCwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
       signal: controller.signal,
       killSignal: DEFAULT_KILL_SIGNAL,
+      detached: true,
       env: {
         ...process.env,
         ...githubEnv,
@@ -315,8 +377,8 @@ export async function executeBash(
       streamCapped ||
       safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
 
-    if (timedOut && child.killed) {
-      logger.warn("bash timeout", {
+    if (aborted && child.killed) {
+      logger.warn("bash aborted", {
         command: redactedCommand,
         cwd: resolvedCwd,
         timeoutMs: effectiveTimeoutMs,
@@ -335,11 +397,40 @@ export async function executeBash(
         stderr: safeStderr,
         exitCode,
         executionError: {
-          type: "timeout",
-          timeoutMs: effectiveTimeoutMs,
+          type: "aborted",
           signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
         },
       }, { truncated: outputTruncated });
+    }
+
+    if (timedOut && child.killed) {
+      logger.warn("bash timeout", {
+        command: redactedCommand,
+        cwd: resolvedCwd,
+        timeoutMs: effectiveTimeoutMs,
+        signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
+        exitCode,
+        durationMs,
+        stdoutBytes: stdout.length,
+        stderrBytes: stderr.length,
+        requestId: context?.requestId,
+        sessionId: context?.sessionId,
+        requestClient: context?.requestClient,
+      });
+
+      return withLimitedOutput(
+        {
+          stdout: safeStdout,
+          stderr: safeStderr,
+          exitCode,
+          executionError: {
+            type: "timeout",
+            timeoutMs: effectiveTimeoutMs,
+            signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
+          },
+        },
+        { truncated: outputTruncated },
+      );
     }
 
     if (stdoutResult.status === "rejected") {
@@ -510,5 +601,10 @@ export async function executeBash(
     };
   } finally {
     clearTimeout(timeout);
+    if (hardKillTimer) {
+      clearTimeout(hardKillTimer);
+      hardKillTimer = null;
+    }
+    abortListener?.();
   }
 }
