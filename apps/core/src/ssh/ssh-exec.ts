@@ -225,8 +225,6 @@ export async function sshExecBash(params: {
       "-o",
       "BatchMode=yes",
       "-o",
-      "SendEnv=",
-      "-o",
       "StrictHostKeyChecking=yes",
       "-o",
       "ClearAllForwardings=yes",
