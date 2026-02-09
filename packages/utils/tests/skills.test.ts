@@ -78,6 +78,33 @@ describe("skills discovery", () => {
 
     expect(skills).toEqual([]);
   });
+
+  it("discovers skills from ~/.agents/skills", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+
+    const workspaceRoot = path.join(tmpRoot, "ws");
+    const dataDir = path.join(tmpRoot, "data");
+    const homeDir = path.join(tmpRoot, "home");
+
+    await mkdirp(path.join(homeDir, ".agents", "skills", "agent-skill"));
+
+    await fs.writeFile(
+      path.join(homeDir, ".agents", "skills", "agent-skill", "SKILL.md"),
+      `---\nname: agent-skill\ndescription: from agents\n---\n\n# Agents\n`,
+      "utf8",
+    );
+
+    const { skills } = await discoverSkills({
+      workspaceRoot,
+      dataDir,
+      homeDir,
+    });
+
+    expect(skills.length).toBe(1);
+    expect(skills[0]!.name).toBe("agent-skill");
+    expect(skills[0]!.description).toBe("from agents");
+    expect(skills[0]!.source).toBe("agent-user");
+  });
 });
 
 describe("skills prompt formatting", () => {

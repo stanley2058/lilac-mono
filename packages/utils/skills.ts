@@ -16,6 +16,7 @@ export type SkillSource =
   | "claude-user"
   | "cursor-user"
   | "copilot-user"
+  | "agent-user"
   | "codex-user"
   | "opencode-user"
   | "gemini-user";
@@ -245,6 +246,11 @@ export function defaultSkillScanRoots(params: {
       precedence: 100,
     },
     {
+      pattern: path.join(home, ".agents", "skills", "**", "SKILL.md"),
+      source: "agent-user",
+      precedence: 100,
+    },
+    {
       pattern: path.join(home, ".codex", "skills", "**", "SKILL.md"),
       source: "codex-user",
       precedence: 100,
@@ -367,7 +373,7 @@ export async function discoverSkills(params: {
   homeDir?: string;
   roots?: SkillScanRoot[];
 }): Promise<DiscoverSkillsResult> {
-  const roots =
+  const rootsInput =
     params.roots ??
     defaultSkillScanRoots({
       workspaceRoot: params.workspaceRoot,
@@ -375,8 +381,20 @@ export async function discoverSkills(params: {
       homeDir: params.homeDir,
     });
 
+  // Avoid scanning identical patterns multiple times (can happen when callers
+  // provide custom roots or compose lists).
+  const roots: SkillScanRoot[] = [];
+  const seenRootPatterns = new Set<string>();
+  for (const r of rootsInput) {
+    const key = path.normalize(r.pattern);
+    if (seenRootPatterns.has(key)) continue;
+    seenRootPatterns.add(key);
+    roots.push(r);
+  }
+
   const warnings: SkillWarning[] = [];
   const byName = new Map<string, DiscoveredSkill>();
+  const seenSkillPaths = new Set<string>();
 
   for (const root of roots) {
     const baseDir = globBaseDir(root.pattern);
@@ -394,6 +412,9 @@ export async function discoverSkills(params: {
       absolute: true,
       followSymlinks: true,
     })) {
+      const normalizedSkillPath = path.normalize(skillPath);
+      if (seenSkillPaths.has(normalizedSkillPath)) continue;
+      seenSkillPaths.add(normalizedSkillPath);
       if (skillPath.includes(`${path.sep}node_modules${path.sep}`)) continue;
 
       // Progressive disclosure: discovery loads metadata only.
