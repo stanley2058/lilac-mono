@@ -190,7 +190,7 @@ export class Web implements ServerTool {
             title: "title" in response ? response.title : response.url,
             content: response.rawContent.slice(offset, offset + maxCharacters),
             length: response.rawContent.length,
-            truncated: response.rawContent.length > maxCharacters,
+            rearTruncated: response.rawContent.length > offset + maxCharacters,
           };
         }
       }
@@ -483,7 +483,7 @@ export class Web implements ServerTool {
             startOffset + maxCharacters,
           ),
           length: content.markdown.length,
-          truncated: content.markdown.length > maxCharacters,
+          rearTruncated: content.markdown.length > startOffset + maxCharacters,
         } as const;
       }
       case "text": {
@@ -492,7 +492,7 @@ export class Web implements ServerTool {
           title: content.title,
           content: content.text.slice(startOffset, startOffset + maxCharacters),
           length: content.text.length,
-          truncated: content.text.length > maxCharacters,
+          rearTruncated: content.text.length > startOffset + maxCharacters,
         } as const;
       }
       case "html": {
@@ -501,7 +501,7 @@ export class Web implements ServerTool {
           title: content.title,
           content: content.raw.slice(startOffset, startOffset + maxCharacters),
           length: content.raw.length,
-          truncated: content.raw.length > maxCharacters,
+          rearTruncated: content.raw.length > startOffset + maxCharacters,
         } as const;
       }
     }
