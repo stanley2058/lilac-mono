@@ -3,6 +3,7 @@ import {
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
+  type ToolContent,
   type ToolSet,
 } from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
@@ -27,6 +28,7 @@ import {
   AiSdkPiAgent,
   attachAutoCompaction,
   type AiSdkPiAgentEvent,
+  type TransformMessagesFn,
 } from "@stanley2058/lilac-agent";
 
 import { Logger } from "@stanley2058/simple-module-logger";
@@ -73,6 +75,223 @@ function safeStringify(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// OpenCode-style tool output pruning:
+// - Keep full tool call/result structure for forkability.
+// - Compact *old* tool results (replace output with a placeholder) only in the
+//   model-facing view, right before sending.
+// - Track compacted toolCallIds in-memory per session for stability (cache hits).
+const TOOL_OUTPUT_PLACEHOLDER = "[Old tool result content cleared]";
+const TOOL_OUTPUT_CHARS_PER_TOKEN = 4;
+const TOOL_OUTPUT_PRUNE_PROTECT_TOKENS = 40_000;
+const TOOL_OUTPUT_PRUNE_MINIMUM_TOKENS = 20_000;
+const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill"]);
+
+const MODEL_VIEW_MAX_BINARY_BYTES_PER_PART = 256 * 1024;
+const MODEL_VIEW_MAX_BINARY_BYTES_TOTAL = 2 * 1024 * 1024;
+const MODEL_VIEW_BINARY_OMITTED = "[binary omitted]";
+
+function estimateTokensFromValue(value: unknown): number {
+  // Best-effort token estimate (OpenCode uses chars/4).
+  const chars = safeStringify(value).length;
+  return Math.max(0, Math.round(chars / TOOL_OUTPUT_CHARS_PER_TOKEN));
+}
+
+function maybeMarkOldToolOutputsCompacted(params: {
+  messages: readonly ModelMessage[];
+  compactedToolCallIds: Set<string>;
+}): boolean {
+  let turns = 0;
+  let total = 0;
+  let pruned = 0;
+  const toCompact = new Set<string>();
+
+  // Walk backwards; skip the last turn (turn = user message).
+  // This mirrors OpenCode's "turns < 2" behavior.
+  outer: for (
+    let msgIndex = params.messages.length - 1;
+    msgIndex >= 0;
+    msgIndex--
+  ) {
+    const msg = params.messages[msgIndex]!;
+    if (msg.role === "user") turns++;
+    if (turns < 2) continue;
+
+    if (msg.role !== "tool") continue;
+    if (!Array.isArray(msg.content)) continue;
+
+    for (let partIndex = msg.content.length - 1; partIndex >= 0; partIndex--) {
+      const part = msg.content[partIndex];
+      if (part?.type !== "tool-result") continue;
+
+      const toolName = part.toolName;
+      if (toolName && TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS.has(toolName)) continue;
+      const toolCallId = part.toolCallId;
+      if (!toolCallId) continue;
+
+      // Once we reach already-compacted results, stop. Older ones should already be compacted.
+      if (params.compactedToolCallIds.has(toolCallId)) break outer;
+
+      const output = part.output;
+      const estimate = estimateTokensFromValue(output);
+      total += estimate;
+
+      if (total > TOOL_OUTPUT_PRUNE_PROTECT_TOKENS) {
+        pruned += estimate;
+        toCompact.add(toolCallId);
+      }
+    }
+  }
+
+  if (pruned <= TOOL_OUTPUT_PRUNE_MINIMUM_TOKENS) return false;
+
+  let changed = false;
+  for (const id of toCompact) {
+    if (params.compactedToolCallIds.has(id)) continue;
+    params.compactedToolCallIds.add(id);
+    changed = true;
+  }
+  return changed;
+}
+
+function applyToolOutputCompactionView(params: {
+  messages: readonly ModelMessage[];
+  compactedToolCallIds: ReadonlySet<string>;
+}): ModelMessage[] {
+  let changed = false;
+
+  const out = params.messages.map((m) => {
+    if (m.role !== "tool") return m;
+    if (!Array.isArray(m.content)) return m;
+
+    let nextContent: ToolContent | null = null;
+
+    for (let i = 0; i < m.content.length; i++) {
+      const part = m.content[i];
+      if (part?.type !== "tool-result") continue;
+
+      const toolCallId = part.toolCallId;
+      if (!toolCallId) continue;
+      if (!params.compactedToolCallIds.has(toolCallId)) continue;
+
+      nextContent ??= m.content.map((p) => ({ ...p }));
+
+      const nextPart = nextContent?.[i];
+      if (nextPart?.type !== "tool-result") continue;
+
+      nextPart["output"] = { type: "text", value: TOOL_OUTPUT_PLACEHOLDER };
+      changed = true;
+    }
+
+    if (!nextContent) return m;
+    return {
+      ...m,
+      content: nextContent,
+    } satisfies ModelMessage;
+  });
+
+  return changed ? out : [...params.messages];
+}
+
+function scrubLargeBinaryForModelView(
+  messages: readonly ModelMessage[],
+): ModelMessage[] {
+  let totalBytes = 0;
+
+  const estimateBase64Bytes = (b64: string): number => {
+    // Approximate decoded bytes; good enough for bounding.
+    const len = b64.length;
+    const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+    const bytes = Math.floor((len * 3) / 4) - padding;
+    return Math.max(0, bytes);
+  };
+
+  const out: ModelMessage[] = [];
+
+  for (const msg of messages) {
+    if (msg.role !== "tool" || !Array.isArray(msg.content)) {
+      out.push(msg);
+      continue;
+    }
+
+    let nextContent: ToolContent | null = null;
+
+    for (let i = 0; i < msg.content.length; i++) {
+      const part = msg.content[i];
+      if (part?.type !== "tool-result") continue;
+
+      const output = part.output;
+      const outputType = output.type;
+      if (outputType !== "content") continue;
+
+      const rawValue = output["value"];
+      if (!Array.isArray(rawValue)) continue;
+
+      const value = rawValue;
+      let nextValue: typeof rawValue | null = null;
+
+      for (let j = 0; j < value.length; j++) {
+        const item = value[j];
+        if (!isRecord(item)) continue;
+
+        const t = item.type;
+        if (t !== "image-data" && t !== "file-data") continue;
+
+        const data = item.data;
+        if (typeof data !== "string") continue;
+
+        const bytes = estimateBase64Bytes(data);
+        const tooBig = bytes > MODEL_VIEW_MAX_BINARY_BYTES_PER_PART;
+        const tooMuch = totalBytes + bytes > MODEL_VIEW_MAX_BINARY_BYTES_TOTAL;
+        if (!tooBig && !tooMuch) {
+          totalBytes += bytes;
+          continue;
+        }
+
+        nextValue ??= value.map((v) => ({ ...v }));
+
+        const mediaType =
+          "mediaType" in item && typeof item.mediaType === "string"
+            ? item.mediaType
+            : "";
+        const filename =
+          "filename" in item && typeof item.filename === "string"
+            ? item.filename
+            : "";
+        const detail =
+          filename || mediaType
+            ? ` (${[filename, mediaType].filter(Boolean).join(", ")})`
+            : "";
+
+        nextValue[j] = {
+          type: "text",
+          text: `${MODEL_VIEW_BINARY_OMITTED}${detail}`,
+        };
+      }
+
+      if (!nextValue) continue;
+
+      nextContent ??= msg.content.map((p) => ({ ...p }));
+      const nextPart = nextContent[i];
+      if (nextPart?.type !== "tool-result") continue;
+
+      const nextOutput = {
+        ...output,
+        value: nextValue,
+      };
+      nextPart["output"] = nextOutput;
+    }
+
+    if (!nextContent) {
+      out.push(msg);
+      continue;
+    }
+
+    out.push({ ...msg, content: nextContent });
+  }
+
+  return out;
 }
 
 function getBatchOkFromResult(result: unknown): boolean | null {
@@ -156,10 +375,7 @@ function countCharsInMessage(
     return { systemChars, assistantChars, userChars, toolResultChars };
   }
 
-  // Unknown role; treat as assistant-ish overhead.
-  assistantChars += safeStringify(
-    (message as unknown as { content?: unknown }).content,
-  ).length;
+  // Unreachable with the current ModelMessage type; keep a conservative fallback.
   return { systemChars, assistantChars, userChars, toolResultChars };
 }
 
@@ -380,7 +596,9 @@ type Enqueued = {
   raw?: unknown;
 };
 
-function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | null {
+function parseRouterSessionModeFromRaw(
+  raw: unknown,
+): "mention" | "active" | null {
   if (!raw || typeof raw !== "object") return null;
   const v = (raw as Record<string, unknown>)["sessionMode"];
   if (v === "mention" || v === "active") return v;
@@ -461,7 +679,9 @@ function buildSystemPromptForProfile(params: {
     if (!params.skillsSection || params.skillsSection.trim().length === 0) {
       return params.baseSystemPrompt;
     }
-    return [params.baseSystemPrompt, "", params.skillsSection.trim()].join("\n");
+    return [params.baseSystemPrompt, "", params.skillsSection.trim()].join(
+      "\n",
+    );
   }
 
   return [
@@ -491,6 +711,8 @@ type SessionQueue = {
   agent: AiSdkPiAgent<ToolSet> | null;
   queue: Enqueued[];
   activeRequestId: string | null;
+  /** Track toolCallIds whose outputs are compacted in the model-facing view. */
+  compactedToolCallIds: Set<string>;
 };
 
 export async function startBusAgentRunner(params: {
@@ -572,12 +794,15 @@ export async function startBusAgentRunner(params: {
         raw: msg.data.raw,
       };
 
-      const state = bySession.get(sessionId) ?? {
-        running: false,
-        agent: null,
-        queue: [],
-        activeRequestId: null,
-      };
+      const state =
+        bySession.get(sessionId) ??
+        ({
+          running: false,
+          agent: null,
+          queue: [] as Enqueued[],
+          activeRequestId: null,
+          compactedToolCallIds: new Set<string>(),
+        } satisfies SessionQueue);
       bySession.set(sessionId, state);
 
       if (!state.running) {
@@ -722,9 +947,7 @@ export async function startBusAgentRunner(params: {
 
     const resolved = resolveModelSlot(
       cfg,
-      runProfile === "explore"
-        ? subagents.profiles.explore.modelSlot
-        : "main",
+      runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
     );
 
     const systemPrompt = buildSystemPromptForProfile({
@@ -732,7 +955,9 @@ export async function startBusAgentRunner(params: {
       profile: runProfile,
       exploreOverlay: subagents.profiles.explore.promptOverlay,
       skillsSection:
-        runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
+        runProfile === "primary"
+          ? await maybeBuildSkillsSectionForPrimary()
+          : null,
     });
 
     logger.info("agent run starting", {
@@ -750,12 +975,14 @@ export async function startBusAgentRunner(params: {
     if (runProfile === "explore") {
       Object.assign(tools, fsTool(cwd));
     } else {
-      Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
+      Object.assign(
+        tools,
+        bashToolWithCwd(cwd),
+        fsTool(cwd),
+        applyPatchTool({ cwd }),
+      );
 
-      if (
-        subagents.enabled &&
-        subagentMeta.depth < subagents.maxDepth
-      ) {
+      if (subagents.enabled && subagentMeta.depth < subagents.maxDepth) {
         Object.assign(
           tools,
           subagentTools({
@@ -775,7 +1002,9 @@ export async function startBusAgentRunner(params: {
         getTools: () => tools,
         reportToolStatus: (update) => {
           bus
-            .publish(lilacEventTypes.EvtAgentOutputToolCall, update, { headers })
+            .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
+              headers,
+            })
             .catch((e: unknown) => {
               logger.error(
                 "failed to publish batch tool status",
@@ -810,9 +1039,25 @@ export async function startBusAgentRunner(params: {
     agent.setFollowUpMode("all");
     agent.setSteeringMode("all");
 
+    const toolPruneTransform: TransformMessagesFn = async (messages) => {
+      // First, remove pathological binary blobs from the *model-facing* view.
+      const scrubbed = scrubLargeBinaryForModelView(messages);
+
+      // Then, compact older tool outputs (placeholder) with session-stable state.
+      maybeMarkOldToolOutputsCompacted({
+        messages: scrubbed,
+        compactedToolCallIds: state.compactedToolCallIds,
+      });
+      return applyToolOutputCompactionView({
+        messages: scrubbed,
+        compactedToolCallIds: state.compactedToolCallIds,
+      });
+    };
+
     const unsubscribeCompaction = await attachAutoCompaction(agent, {
       model: resolved.spec,
       modelCapability: new ModelCapability(),
+      baseTransformMessages: toolPruneTransform,
     });
 
     state.agent = agent;
@@ -914,16 +1159,19 @@ export async function startBusAgentRunner(params: {
         bus
           .publish(
             lilacEventTypes.EvtAgentOutputToolCall,
-              {
-                toolCallId: event.toolCallId,
-                status: "end",
-                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
-                ok,
-                error:
-                  ok ? undefined : event.isError ? "tool error" : "batch failed",
-              },
-              { headers },
-            )
+            {
+              toolCallId: event.toolCallId,
+              status: "end",
+              display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
+              ok,
+              error: ok
+                ? undefined
+                : event.isError
+                  ? "tool error"
+                  : "batch failed",
+            },
+            { headers },
+          )
           .catch((e: unknown) => {
             logger.error(
               "failed to publish tool end",

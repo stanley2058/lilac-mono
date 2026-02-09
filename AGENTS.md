@@ -142,6 +142,8 @@ There is no active lint/formatter configuration in `apps/*` or `packages/*` (no 
     - `function isFoo(x: unknown): x is Foo { ... }`
 - Prefer type narrowing over casting (`as Foo`) when possible.
 - Prefer unions and discriminated unions for error/results.
+- Avoid erasing discriminated unions by narrowing to generic shapes (e.g. `isRecord(x): x is Record<string, unknown>`) on values that are already strongly typed; prefer checking the discriminant (`part.type === "tool-result"`) or use a type guard that returns the precise union member.
+- Avoid `as unknown as SomeType` casts that effectively act like `as any` (they hide concrete types and break narrowing). Prefer proper narrowing, precise type guards, or compiler-assisted inspection (e.g. typehint) to find the real type.
 - Prefer `Record<string, T>` to `{ [k: string]: T }`.
 - Prefer `readonly T[]` when you don’t mutate.
 - Use `satisfies` when validating object shapes without widening.

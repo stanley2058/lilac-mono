@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import JSON from "superjson";
-import type { AssistantContent, FilePart, ModelMessage, TextPart } from "ai";
+import type { ModelMessage } from "ai";
 import type { AdapterPlatform } from "@stanley2058/lilac-event-bus";
 import type { MsgRef } from "../surface/types";
 
@@ -53,204 +53,6 @@ function estimateChars(value: unknown): number {
   if (typeof value === "string") return value.length;
   if (value instanceof Uint8Array) return value.byteLength;
   return stringifyUnknown(value).length;
-}
-
-function pruneToolOutputs(messages: readonly ModelMessage[]): ModelMessage[] {
-  // OpenCode-style: keep recent tool outputs, clear older outputs but keep tool-result structure.
-  const PRUNE_PROTECT_CHARS = 40_000;
-  const PRUNE_MINIMUM_CHARS = 20_000;
-  const PRUNE_PROTECTED_TOOLS = new Set(["skill"]);
-  const PLACEHOLDER = "[Old tool result content cleared]";
-
-  let total = 0;
-  let pruned = 0;
-
-  const toPrune: Array<{ msgIndex: number; partIndex: number }> = [];
-
-  // Walk backwards over the original messages, collecting prune candidates.
-  for (let msgIndex = messages.length - 1; msgIndex >= 0; msgIndex--) {
-    const msg = messages[msgIndex]!;
-    if (msg.role !== "tool") continue;
-    if (!Array.isArray(msg.content)) continue;
-
-    for (let partIndex = msg.content.length - 1; partIndex >= 0; partIndex--) {
-      const part = msg.content[partIndex];
-      if (!part || typeof part !== "object") continue;
-      if (part.type !== "tool-result") continue;
-
-      const p = part;
-
-      const toolName = p.toolName;
-      if (toolName && PRUNE_PROTECTED_TOOLS.has(toolName)) continue;
-
-      const estimate = estimateChars(p.output);
-      total += estimate;
-
-      if (total > PRUNE_PROTECT_CHARS) {
-        pruned += estimate;
-        toPrune.push({ msgIndex, partIndex });
-      }
-    }
-  }
-
-  // Only apply if it helps materially.
-  if (pruned < PRUNE_MINIMUM_CHARS) {
-    return messages.map((m) => m as ModelMessage);
-  }
-
-  // Apply pruning using a shallow structural copy.
-  const out: ModelMessage[] = messages.map((m) => {
-    if (Array.isArray(m.content)) {
-      return {
-        ...m,
-        content: m.content.map((p) =>
-          p && typeof p === "object" ? { ...p } : p,
-        ),
-      } as ModelMessage;
-    }
-    return { ...m } as ModelMessage;
-  });
-
-  for (const item of toPrune) {
-    const msg = out[item.msgIndex];
-    if (!msg || msg.role !== "tool" || !Array.isArray(msg.content)) continue;
-    const part = msg.content[item.partIndex];
-    if (!part || typeof part !== "object") continue;
-    if (part.type !== "tool-result") continue;
-    part.output = { type: "text", value: PLACEHOLDER };
-  }
-
-  return out;
-}
-
-function scrubLargeBinary(messages: readonly ModelMessage[]): ModelMessage[] {
-  const MAX_BINARY_BYTES_PER_PART = 256 * 1024;
-  const MAX_BINARY_BYTES_TOTAL = 2 * 1024 * 1024;
-  const OMITTED = "[binary omitted]";
-
-  let totalBytes = 0;
-
-  const estimateBase64Bytes = (b64: string): number => {
-    // Approximate decoded bytes; sufficient for bounding storage.
-    const len = b64.length;
-    const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
-    const bytes = Math.floor((len * 3) / 4) - padding;
-    return Math.max(0, bytes);
-  };
-
-  const scrubFilePart = (part: FilePart): FilePart | TextPart => {
-    if (part.data instanceof Uint8Array) {
-      const bytes = part.data;
-      const tooBig = bytes.byteLength > MAX_BINARY_BYTES_PER_PART;
-      const tooMuch = totalBytes + bytes.byteLength > MAX_BINARY_BYTES_TOTAL;
-      if (tooBig || tooMuch) return { type: "text", text: OMITTED };
-      totalBytes += bytes.byteLength;
-      return part;
-    }
-    return part;
-  };
-
-  const out: ModelMessage[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const msg = { ...messages[i]! };
-
-    if (Array.isArray(msg.content)) {
-      // Shallow-clone parts so we can safely rewrite them.
-      const cloned = (msg.content as unknown[]).map((p) =>
-        p && typeof p === "object" ? { ...(p as Record<string, unknown>) } : p,
-      );
-      msg.content = cloned as unknown as typeof msg.content;
-    }
-
-    if (!Array.isArray(msg.content)) {
-      out.push(msg);
-      continue;
-    }
-
-    if (msg.role === "assistant") {
-      const content: AssistantContent = [];
-      for (const part of msg.content) {
-        if (part.type !== "file") {
-          content.push(part);
-          continue;
-        }
-
-        switch (part.type) {
-          case "file": {
-            content.push(scrubFilePart(part));
-            break;
-          }
-        }
-      }
-      msg.content = content;
-    }
-
-    if (msg.role === "tool" && Array.isArray(msg.content)) {
-      const content = (msg.content as unknown[]).map((part) => {
-        if (!part || typeof part !== "object") return part;
-        const p = part as Record<string, unknown>;
-        if (p["type"] !== "tool-result") return part;
-
-        const output = p["output"];
-        if (!output || typeof output !== "object") return part;
-
-        const o = output as Record<string, unknown>;
-        if (o["type"] !== "content") return part;
-        if (!Array.isArray(o["value"])) return part;
-
-        const value = o["value"] as unknown[];
-        const nextValue: unknown[] = [];
-
-        for (const item of value) {
-          if (!item || typeof item !== "object") {
-            nextValue.push(item);
-            continue;
-          }
-
-          const it = item as Record<string, unknown>;
-          const t = it["type"];
-          if (t !== "image-data" && t !== "file-data") {
-            nextValue.push(item);
-            continue;
-          }
-
-          const data = it["data"];
-          if (typeof data !== "string") {
-            nextValue.push(item);
-            continue;
-          }
-
-          const bytes = estimateBase64Bytes(data);
-          const tooBig = bytes > MAX_BINARY_BYTES_PER_PART;
-          const tooMuch = totalBytes + bytes > MAX_BINARY_BYTES_TOTAL;
-          if (tooBig || tooMuch) {
-            const mediaType =
-              typeof it["mediaType"] === "string" ? it["mediaType"] : "";
-            const filename =
-              typeof it["filename"] === "string" ? it["filename"] : "";
-            const detail =
-              filename || mediaType
-                ? ` (${[filename, mediaType].filter(Boolean).join(", ")})`
-                : "";
-            nextValue.push({ type: "text", text: `${OMITTED}${detail}` });
-            continue;
-          }
-
-          totalBytes += bytes;
-          nextValue.push(item);
-        }
-
-        p["output"] = { ...o, value: nextValue };
-        return p;
-      });
-
-      msg.content = content as unknown as typeof msg.content;
-    }
-
-    out.push(msg);
-  }
-
-  return out;
 }
 
 export class SqliteTranscriptStore implements TranscriptStore {
@@ -311,21 +113,10 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }): void {
     const now = Date.now();
 
-    // Remove oversized binary payloads (e.g. base64 tool attachments) before pruning tool outputs.
-    // This keeps recent tool metadata while avoiding pathological storage growth.
-    const scrubbed = scrubLargeBinary(input.messages);
-    const pruned = pruneToolOutputs(scrubbed);
-
-    const messagesJson = JSON.stringify(pruned);
-
-    // Basic bound: avoid storing pathological payloads.
-    const MAX_MESSAGES_JSON_CHARS = 10_000_000;
-    const finalJson =
-      messagesJson.length > MAX_MESSAGES_JSON_CHARS
-        ? JSON.stringify(
-            pruneToolOutputs(scrubLargeBinary(input.messages.slice(-1000))),
-          )
-        : messagesJson;
+    // Persist the full transcript as-is.
+    // Do not prune/compact tool outputs at persistence time; do that (if needed)
+    // only in the model-facing view right before sending.
+    const finalJson = JSON.stringify(input.messages);
 
     this.db.run(
       `
