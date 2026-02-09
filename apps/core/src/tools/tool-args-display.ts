@@ -113,7 +113,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-const DISPLAY_MAX_LEN = 40;
+const DISPLAY_MAX_LEN = 30;
 const PATH_HEAD_LEN = 14;
 const PATH_TAIL_LEN = 23;
 
