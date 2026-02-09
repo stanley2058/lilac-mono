@@ -5,17 +5,17 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.9",
-    "@ai-sdk/groq": "^3.0.4",
-    "@ai-sdk/openai": "^3.0.7",
-    "@ai-sdk/openai-compatible": "^2.0.4",
-    "@ai-sdk/xai": "^3.0.13",
-    "@openrouter/ai-sdk-provider": "^1.5.4",
+    "@ai-sdk/anthropic": "^3.0.39",
+    "@ai-sdk/groq": "^3.0.22",
+    "@ai-sdk/openai": "^3.0.26",
+    "@ai-sdk/openai-compatible": "^2.0.28",
+    "@ai-sdk/xai": "^3.0.49",
+    "@openrouter/ai-sdk-provider": "^2.1.1",
     "@stanley2058/simple-module-logger": "^0.0.3",
-    "ai": "^6.0.27",
-    "zod": "^4.3.5"
+    "ai": "^6.0.77",
+    "zod": "^4.3.6"
   }
 }
