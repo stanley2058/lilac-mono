@@ -152,7 +152,7 @@ export const readFileInputZod = z.object({
     .string()
     .optional()
     .describe(
-      "Optional working directory to resolve relative paths against (supports ~). Defaults to the tool root.",
+      "Optional working directory to resolve relative paths against (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
     ),
   startLine: z
     .number()
@@ -196,7 +196,7 @@ export const globInputZod = z.object({
     .string()
     .optional()
     .describe(
-      "Optional base directory to search from (supports ~). Defaults to the tool root.",
+      "Optional base directory to search from (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
     ),
   maxEntries: z
     .number()
@@ -231,7 +231,7 @@ export const grepInputZod = z.object({
     .string()
     .optional()
     .describe(
-      "Optional base directory to search from (supports ~). Defaults to the tool root.",
+      "Optional base directory to search from (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
     ),
   regex: z
     .boolean()

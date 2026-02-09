@@ -4,7 +4,12 @@ import { executeBash } from "./bash-impl";
 
 export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
-  cwd: z.string().optional().describe("Working directory (supports ~)"),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
+    ),
   timeoutMs: z.number().optional().describe("Timeout in ms (default: 1h)"),
   dangerouslyAllow: z
     .boolean()

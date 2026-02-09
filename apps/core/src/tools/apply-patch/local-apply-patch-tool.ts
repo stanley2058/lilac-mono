@@ -39,7 +39,9 @@ const inputSchema = z.object({
   cwd: z
     .string()
     .optional()
-    .describe("Optional base directory for relative patch paths"),
+    .describe(
+      "Optional base directory for relative patch paths. Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
+    ),
 });
 
 const outputSchema = z.object({

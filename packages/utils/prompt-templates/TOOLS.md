@@ -2,7 +2,7 @@
 
 You have access to three tiers of tools:
 
-1. bash & fs tools
+1. bash, read_file, glob, grep, apply_patch, batch
 2. `tools` CLI accessible via `bash`
 3. Skills (more below)
 
@@ -10,6 +10,15 @@ You have access to three tiers of tools:
 
 - Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`
 - Prefer `bun` over `node` and `npm`; `bunx` over `npx`
+
+## Remote Workdirs (SSH-style cwd)
+
+These tools: `bash`, `read_file`, `glob`, `grep`, `apply_patch` supports SSH-style working directory in `cwd`:
+
+- Format: `<host>:<path>`
+  - `<host>` must be a configured SSH host alias from the server's SSH config (see `ssh.hosts`).
+  - `<path>` may be absolute (`/repo`), tilde (`~/repo`), or relative (`repo` which anchors to `~/repo`).
+- When reading remote files, paths may be returned as `ssh://<host>/<path>` to avoid confusion with local paths.
 
 ## `tools` CLI
 
