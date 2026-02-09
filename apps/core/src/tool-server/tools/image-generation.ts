@@ -39,13 +39,13 @@ export function getSupportedModels() {
       openrouter: providers.openrouter?.imageModel("openai/gpt-5-image"),
     },
     nanobanana: {
-      vercel: providers.vercel?.imageModel("google/gemini-2.5-flash-image"),
+      vercel: undefined, // providers.vercel?.imageModel("google/gemini-2.5-flash-image"),
       openrouter: providers.openrouter?.imageModel(
         "google/gemini-2.5-flash-image",
       ),
     },
     "nanobanana-pro": {
-      vercel: providers.vercel?.imageModel("google/gemini-3-pro-image"),
+      vercel: undefined, // providers.vercel?.imageModel("google/gemini-3-pro-image"),
       openrouter: providers.openrouter?.imageModel(
         "google/gemini-3-pro-image-preview",
       ),
