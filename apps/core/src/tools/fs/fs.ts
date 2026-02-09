@@ -8,6 +8,15 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 
+import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
+import {
+  remoteGrep,
+  remoteGlob,
+  remoteReadFileBytes,
+  remoteReadTextFile,
+  toRemoteDebugPath,
+} from "./remote-fs";
+
 const pathSchema = z
   .string()
   .describe(
@@ -18,6 +27,9 @@ const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
 
 const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
 const MAX_INSTRUCTION_CHARS = 20_000;
+
+const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
+const REMOTE_MAX_ATTACHMENT_BYTES = 10_000_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -461,11 +473,63 @@ export function fsTool(cwd: string) {
           cwd: opCwd,
         });
 
+        const cwdTarget = parseSshCwdTarget(opCwd);
+
         const ext = path.extname(input.path).toLowerCase();
         const wantsAttachment = attachmentExts.has(ext);
 
         const res = wantsAttachment
           ? await (async () => {
+              if (cwdTarget.kind === "ssh") {
+                const bytesRes = await remoteReadFileBytes({
+                  host: cwdTarget.host,
+                  cwd: cwdTarget.cwd,
+                  filePath: input.path,
+                  denyPaths: REMOTE_DENY_PATHS,
+                  maxBytes: REMOTE_MAX_ATTACHMENT_BYTES,
+                });
+
+                if (!bytesRes.ok) {
+                  return {
+                    success: false as const,
+                    resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                    error: {
+                      code: "UNKNOWN" as const,
+                      message: bytesRes.error,
+                    },
+                  };
+                }
+
+                const bytes = Buffer.from(bytesRes.base64, "base64");
+                const remoteResolvedPath = toRemoteDebugPath(
+                  cwdTarget.host,
+                  bytesRes.resolvedPath,
+                );
+                const filename = path.basename(bytesRes.resolvedPath);
+
+                const detected = await fileTypeFromBuffer(bytes);
+                const mimeType =
+                  detected?.mime || inferMimeTypeFromFilename(filename);
+
+                binaryCacheByToolCallId.set(options.toolCallId, {
+                  resolvedPath: remoteResolvedPath,
+                  filename,
+                  mimeType,
+                  bytes,
+                  fileHash: bytesRes.fileHash,
+                });
+
+                return {
+                  success: true as const,
+                  kind: "attachment" as const,
+                  resolvedPath: remoteResolvedPath,
+                  fileHash: bytesRes.fileHash,
+                  filename,
+                  mimeType,
+                  bytes: bytesRes.bytesLength,
+                };
+              }
+
               const bytesRes = await fileSystem.readFileBytes(
                 { path: input.path },
                 opCwd,
@@ -511,19 +575,41 @@ export function fsTool(cwd: string) {
                   : {}),
               };
             })()
-          : await fileSystem.readFile(input, opCwd);
+          : cwdTarget.kind === "ssh"
+            ? await remoteReadTextFile({
+                host: cwdTarget.host,
+                cwd: cwdTarget.cwd,
+                input,
+                denyPaths: REMOTE_DENY_PATHS,
+              })
+            : await fileSystem.readFile(input, opCwd);
+
+        const resQualified = (() => {
+          if (cwdTarget.kind !== "ssh") return res;
+          if (isAttachmentOutput(res)) return res;
+          const resolvedPath = (res as any)?.resolvedPath;
+          if (typeof resolvedPath !== "string") return res;
+          return {
+            ...res,
+            resolvedPath: toRemoteDebugPath(cwdTarget.host, resolvedPath),
+          } as ReadFileOutput;
+        })();
 
         const withInstructions = await (async () => {
-          if (!res.success) return res;
-          if (isAttachmentOutput(res)) return res;
+          if (!resQualified.success) return resQualified;
+          if (isAttachmentOutput(resQualified)) return resQualified;
+          if (cwdTarget.kind === "ssh") {
+            // Skip instruction auto-loading for remote reads for now.
+            return resQualified;
+          }
           const instructions = await loadInstructionsForPath({
-            resolvedPath: res.resolvedPath,
+            resolvedPath: resQualified.resolvedPath,
             opCwd,
             messages: options.messages,
           });
-          if (!instructions) return res;
+          if (!instructions) return resQualified;
           return {
-            ...res,
+            ...resQualified,
             loadedInstructions: instructions.loaded,
             instructionsText: instructions.text,
           };
@@ -619,6 +705,25 @@ export function fsTool(cwd: string) {
           maxEntries: input.maxEntries,
         });
 
+        const cwdTarget = parseSshCwdTarget(opCwd);
+        if (cwdTarget.kind === "ssh") {
+          const res = await remoteGlob({
+            host: cwdTarget.host,
+            cwd: cwdTarget.cwd,
+            patterns: input.patterns,
+            maxEntries: input.maxEntries,
+            denyPaths: REMOTE_DENY_PATHS,
+          });
+
+          logger.info("fs.glob done", {
+            entryCount: res.entries.length,
+            truncated: res.truncated,
+            error: res.error,
+          });
+
+          return res;
+        }
+
         const res = await fileSystem.glob({
           patterns: input.patterns,
           maxEntries: input.maxEntries,
@@ -647,6 +752,29 @@ export function fsTool(cwd: string) {
           regex: input.regex,
           maxResults: input.maxResults,
         });
+
+        const cwdTarget = parseSshCwdTarget(opCwd);
+        if (cwdTarget.kind === "ssh") {
+          const res = await remoteGrep({
+            host: cwdTarget.host,
+            cwd: cwdTarget.cwd,
+            input: {
+              pattern: input.pattern,
+              regex: input.regex,
+              maxResults: input.maxResults,
+              fileExtensions: input.fileExtensions,
+              includeContextLines: input.includeContextLines,
+            },
+            denyPaths: REMOTE_DENY_PATHS,
+          });
+
+          logger.info("fs.grep done", {
+            resultCount: Array.isArray(res.results) ? res.results.length : 0,
+            error: res.error,
+          });
+
+          return res;
+        }
 
         const res = await fileSystem.grep({
           pattern: input.pattern,

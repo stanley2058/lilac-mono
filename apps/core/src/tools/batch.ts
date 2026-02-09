@@ -6,6 +6,8 @@ import { expandTilde } from "./fs/fs-impl";
 import { parsePatch } from "./apply-patch/local-apply-patch-tool";
 import { formatToolArgsForDisplay } from "./tool-args-display";
 
+import { parseSshCwdTarget } from "../ssh/ssh-cwd";
+
 const ALLOWED_TOOL_NAMES = [
   "read_file",
   "glob",
@@ -77,27 +79,85 @@ function resolveAgainstCwd(cwd: string, p: string): string {
   return path.isAbsolute(p) ? p : path.resolve(base, p);
 }
 
+function normalizeRemotePath(base: string, p: string): string {
+  const input = p.trim();
+  if (input.length === 0) return base;
+
+  if (input.startsWith("/")) {
+    return path.posix.normalize(input);
+  }
+
+  if (input === "~") return "~";
+  if (input.startsWith("~/")) {
+    const rel = input.slice(2);
+    const normalized = path.posix.normalize(rel);
+    return normalized === "." ? "~" : `~/${normalized.replace(/^\.\//, "")}`;
+  }
+
+  if (base.startsWith("/")) {
+    return path.posix.normalize(path.posix.resolve(base, input));
+  }
+
+  // base is "~" or "~/..." (pseudo-root); resolve without losing the tilde.
+  const baseSegs =
+    base === "~"
+      ? []
+      : base.startsWith("~/")
+        ? base
+            .slice(2)
+            .split("/")
+            .filter((s) => s.length > 0)
+        : base.split("/").filter((s) => s.length > 0);
+
+  const relSegs = input.split("/");
+  const segs: string[] = [...baseSegs];
+  for (const s of relSegs) {
+    if (s === "" || s === ".") continue;
+    if (s === "..") {
+      if (segs.length > 0) segs.pop();
+      continue;
+    }
+    segs.push(s);
+  }
+  return segs.length === 0 ? "~" : `~/${segs.join("/")}`;
+}
+
+function resolveTouchedPathKey(cwd: string, p: string): string {
+  const target = parseSshCwdTarget(cwd);
+  if (target.kind === "local") {
+    const resolved = resolveAgainstCwd(cwd, p);
+    // Stable absolute key.
+    return `file://${path.resolve(resolved)}`;
+  }
+
+  const base = target.cwd;
+  const resolvedRemote = normalizeRemotePath(base, p);
+  // Use a stable key space for remote paths.
+  const suffix = resolvedRemote.startsWith("/")
+    ? resolvedRemote
+    : `/${resolvedRemote}`;
+  return `ssh://${target.host}${suffix}`;
+}
+
 function collectApplyPatchTouchedPaths(params: {
   patchText: string;
   cwd: string;
 }): Set<string> {
   const hunks = parsePatch(params.patchText);
-  const baseResolved = path.resolve(expandTilde(params.cwd));
-
   const out = new Set<string>();
   for (const hunk of hunks) {
     if (hunk.type === "add") {
-      out.add(resolveAgainstCwd(baseResolved, hunk.path));
+      out.add(resolveTouchedPathKey(params.cwd, hunk.path));
       continue;
     }
     if (hunk.type === "delete") {
-      out.add(resolveAgainstCwd(baseResolved, hunk.path));
+      out.add(resolveTouchedPathKey(params.cwd, hunk.path));
       continue;
     }
     if (hunk.type === "update") {
-      out.add(resolveAgainstCwd(baseResolved, hunk.path));
+      out.add(resolveTouchedPathKey(params.cwd, hunk.path));
       if (hunk.movePath) {
-        out.add(resolveAgainstCwd(baseResolved, hunk.movePath));
+        out.add(resolveTouchedPathKey(params.cwd, hunk.movePath));
       }
       continue;
     }

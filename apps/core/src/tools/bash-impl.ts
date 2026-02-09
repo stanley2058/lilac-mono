@@ -6,6 +6,12 @@ import { expandTilde } from "./fs/fs-impl";
 
 import { getGithubEnvForBash } from "../github/github-app-token";
 
+import {
+  parseSshCwdTarget,
+  toBashSafetyCwdForRemote,
+} from "../ssh/ssh-cwd";
+import { sshExecBash } from "../ssh/ssh-exec";
+
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
 
@@ -217,7 +223,13 @@ export async function executeBash(
     abortSignal?: AbortSignal;
   } = {},
 ): Promise<BashToolOutput> {
-  const resolvedCwd = cwd ? expandTilde(cwd) : process.cwd();
+  const cwdTarget = parseSshCwdTarget(cwd);
+  const resolvedCwd =
+    cwdTarget.kind === "local"
+      ? cwdTarget.cwd
+        ? expandTilde(cwdTarget.cwd)
+        : process.cwd()
+      : cwdTarget.cwd;
 
   const redactedCommand = redactSecrets(command);
   const startedAt = Date.now();
@@ -232,7 +244,11 @@ export async function executeBash(
   });
 
   if (!dangerouslyAllow) {
-    const blocked = analyzeBashCommand(command, { cwd: resolvedCwd });
+    const safetyCwd =
+      cwdTarget.kind === "ssh"
+        ? toBashSafetyCwdForRemote(cwdTarget.cwd)
+        : resolvedCwd;
+    const blocked = analyzeBashCommand(command, { cwd: safetyCwd });
     if (blocked) {
       logger.warn("bash blocked", {
         command: redactedCommand,
@@ -331,6 +347,174 @@ export async function executeBash(
   }, effectiveTimeoutMs);
 
   try {
+    const execResult =
+      cwdTarget.kind === "ssh"
+        ? await sshExecBash({
+            host: cwdTarget.host,
+            cmd: command,
+            cwd: cwdTarget.cwd,
+            timeoutMs: effectiveTimeoutMs,
+            signal: controller.signal,
+            maxOutputChars: MAX_BASH_OUTPUT_CHARS,
+          })
+        : null;
+
+    if (cwdTarget.kind === "ssh" && execResult) {
+      const stdout = execResult.stdout;
+      const stderr = execResult.stderr;
+      const exitCode = execResult.exitCode;
+
+      const safeStdout = redactSecrets(stdout);
+      const safeStderr = redactSecrets(stderr);
+
+      const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
+      const outputTruncated =
+        streamCapped ||
+        safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+
+      const durationMs = execResult.durationMs;
+
+      if (execResult.aborted && timedOut) {
+        logger.warn("bash timeout", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          timeoutMs: effectiveTimeoutMs,
+          signal: DEFAULT_KILL_SIGNAL,
+          exitCode,
+          durationMs,
+          stdoutBytes: stdout.length,
+          stderrBytes: stderr.length,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+
+        return withLimitedOutput(
+          {
+            stdout: safeStdout,
+            stderr: safeStderr,
+            exitCode,
+            executionError: {
+              type: "timeout",
+              timeoutMs: effectiveTimeoutMs,
+              signal: DEFAULT_KILL_SIGNAL,
+            },
+          },
+          { truncated: outputTruncated },
+        );
+      }
+
+      if (execResult.aborted || aborted) {
+        logger.warn("bash aborted", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          timeoutMs: effectiveTimeoutMs,
+          signal: DEFAULT_KILL_SIGNAL,
+          exitCode,
+          durationMs,
+          stdoutBytes: stdout.length,
+          stderrBytes: stderr.length,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+
+        return withLimitedOutput(
+          {
+            stdout: safeStdout,
+            stderr: safeStderr,
+            exitCode,
+            executionError: {
+              type: "aborted",
+              signal: DEFAULT_KILL_SIGNAL,
+            },
+          },
+          { truncated: outputTruncated },
+        );
+      }
+
+      if (execResult.timedOut || timedOut) {
+        logger.warn("bash timeout", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          timeoutMs: effectiveTimeoutMs,
+          signal: DEFAULT_KILL_SIGNAL,
+          exitCode,
+          durationMs,
+          stdoutBytes: stdout.length,
+          stderrBytes: stderr.length,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+
+        return withLimitedOutput(
+          {
+            stdout: safeStdout,
+            stderr: safeStderr,
+            exitCode,
+            executionError: {
+              type: "timeout",
+              timeoutMs: effectiveTimeoutMs,
+              signal: DEFAULT_KILL_SIGNAL,
+            },
+          },
+          { truncated: outputTruncated },
+        );
+      }
+
+      if (outputTruncated) {
+        logger.warn("bash output truncated", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          exitCode,
+          durationMs,
+          stdoutChars: stdout.length,
+          stderrChars: stderr.length,
+          stdoutTotalChars: stdout.length,
+          stderrTotalChars: stderr.length,
+          stdoutCapped: execResult.capped.stdout,
+          stderrCapped: execResult.capped.stderr,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+      }
+
+      const ok = exitCode === 0;
+      if (ok) {
+        logger.info("bash done", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          exitCode,
+          durationMs,
+          stdoutBytes: stdout.length,
+          stderrBytes: stderr.length,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+      } else {
+        logger.warn("bash done (non-zero exit)", {
+          command: redactedCommand,
+          cwd: resolvedCwd,
+          exitCode,
+          durationMs,
+          stdoutBytes: stdout.length,
+          stderrBytes: stderr.length,
+          requestId: context?.requestId,
+          sessionId: context?.sessionId,
+          requestClient: context?.requestClient,
+        });
+      }
+
+      return withLimitedOutput(
+        { stdout: safeStdout, stderr: safeStderr, exitCode },
+        { truncated: outputTruncated },
+      );
+    }
+
+    // Local execution path.
     // Intentionally avoid a login shell here.
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.

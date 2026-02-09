@@ -123,6 +123,54 @@ describe("batch tool", () => {
     expect(await readFile(join(baseDir, "a.txt"), "utf-8")).toBe("hello\n");
   });
 
+  it("rejects overlapping remote apply_patch calls in a batch", async () => {
+    const tools = makeTools(baseDir);
+    const batch = getTool(tools, "batch");
+
+    const patch1 = [
+      "*** Begin Patch",
+      "*** Update File: a.txt",
+      "@@",
+      "-hello",
+      "+hello1",
+      "*** End Patch",
+    ].join("\n");
+
+    const patch2 = [
+      "*** Begin Patch",
+      "*** Update File: a.txt",
+      "@@",
+      "-hello",
+      "+hello2",
+      "*** End Patch",
+    ].join("\n");
+
+    await expect(
+      Promise.resolve(
+        batch.execute(
+          {
+            tool_calls: [
+              {
+                tool: "apply_patch",
+                parameters: { patchText: patch1, cwd: "myhost:/repo" },
+              },
+              {
+                tool: "apply_patch",
+                parameters: { patchText: patch2, cwd: "myhost:/repo" },
+              },
+            ],
+          },
+          {
+            toolCallId: "batch-remote-1",
+            messages: [],
+            abortSignal: undefined,
+            experimental_context: undefined,
+          },
+        ),
+      ),
+    ).rejects.toThrow(/overlapping paths/i);
+  });
+
   it("executes disjoint apply_patch calls in one batch", async () => {
     const tools = makeTools(baseDir);
     const batch = getTool(tools, "batch");

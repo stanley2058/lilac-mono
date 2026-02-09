@@ -1,9 +1,14 @@
 import { z } from "zod";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
+
+export { parseSshHostsFromConfigText } from "../../ssh/ssh-config";
+import {
+  readConfiguredSshHosts,
+  requireConfiguredSshHost,
+} from "../../ssh/ssh-config";
 
 const DEFAULT_SSH_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
@@ -70,67 +75,6 @@ async function loadProbeScript(): Promise<string> {
   return cachedProbeScript;
 }
 
-function resolveSshConfigPath(): string {
-  const fromEnv = process.env.LILAC_SSH_CONFIG_PATH;
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
-  return path.join(homedir(), ".ssh", "config");
-}
-
-function stripComment(line: string): string {
-  const idx = line.indexOf("#");
-  if (idx === -1) return line;
-  return line.slice(0, idx);
-}
-
-export function parseSshHostsFromConfigText(text: string): string[] {
-  const hosts: string[] = [];
-  const seen = new Set<string>();
-
-  const lines = text.split(/\r?\n/g);
-  for (const raw of lines) {
-    const noComment = stripComment(raw).trim();
-    if (!noComment) continue;
-
-    const match = /^Host\s+(.+)$/i.exec(noComment);
-    if (!match) continue;
-
-    const rest = match[1] ?? "";
-    const tokens = rest.split(/\s+/g).filter(Boolean);
-    for (const t of tokens) {
-      if (t.startsWith("!")) continue;
-      if (t.includes("*") || t.includes("?")) continue;
-      // Avoid advertising the global wildcard entry.
-      if (t === "*") continue;
-      if (!seen.has(t)) {
-        seen.add(t);
-        hosts.push(t);
-      }
-    }
-  }
-
-  return hosts;
-}
-
-async function readConfiguredHosts(): Promise<{
-  configPath: string;
-  hosts: string[];
-  exists: boolean;
-  readError?: string;
-}> {
-  const configPath = resolveSshConfigPath();
-  const file = Bun.file(configPath);
-  const exists = await file.exists();
-  if (!exists) return { configPath, hosts: [], exists: false };
-
-  try {
-    const text = await file.text();
-    const hosts = parseSshHostsFromConfigText(text);
-    return { configPath, hosts, exists: true };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { configPath, hosts: [], exists: true, readError: msg };
-  }
-}
 
 function truncateText(text: string, maxChars: number) {
   if (text.length <= maxChars) return { text, truncated: false as const };
@@ -175,6 +119,11 @@ __LILAC_CMD__
 )
 
 if [ -n "$CWD" ]; then
+  if [ "$CWD" = "~" ]; then
+    CWD="$HOME"
+  elif [[ "$CWD" == "~/"* ]]; then
+    CWD="$HOME/\${CWD:2}"
+  fi
   cd "$CWD"
 fi
 
@@ -192,28 +141,6 @@ async function buildProbeScript(input: ProbeInput): Promise<string> {
   return base.replace("__LILAC_CWD_VALUE__", cwd);
 }
 
-function requireConfiguredHost(
-  configured: { configPath: string; hosts: string[]; readError?: string },
-  host: string,
-) {
-  if (configured.readError) {
-    throw new Error(
-      `Failed to read SSH config at ${configured.configPath}: ${configured.readError}`,
-    );
-  }
-
-  if (configured.hosts.length === 0) {
-    throw new Error(
-      `No SSH hosts are configured. Add host aliases to ${configured.configPath} (and ensure known_hosts + keys are configured), then retry.`,
-    );
-  }
-
-  if (!configured.hosts.includes(host)) {
-    throw new Error(
-      `Unknown SSH host alias '${host}'. Use ssh.hosts to see configured aliases from ${configured.configPath}, or add an explicit Host entry.`,
-    );
-  }
-}
 
 export class SSH implements ServerTool {
   id = "ssh";
@@ -222,7 +149,7 @@ export class SSH implements ServerTool {
   async destroy(): Promise<void> {}
 
   async list() {
-    const { hosts, readError } = await readConfiguredHosts();
+    const { hosts, readError } = await readConfiguredSshHosts();
     const hidden = hosts.length === 0 && readError === undefined;
 
     return [
@@ -261,7 +188,8 @@ export class SSH implements ServerTool {
     opts?: { signal?: AbortSignal },
   ): Promise<unknown> {
     if (callableId === "ssh.hosts") {
-      const { configPath, hosts, exists, readError } = await readConfiguredHosts();
+      const { configPath, hosts, exists, readError } =
+        await readConfiguredSshHosts();
       return {
         configPath,
         exists,
@@ -273,8 +201,7 @@ export class SSH implements ServerTool {
     if (callableId === "ssh.run") {
       const input = runInputSchema.parse(rawInput);
 
-      const configured = await readConfiguredHosts();
-      requireConfiguredHost(configured, input.host);
+      await requireConfiguredSshHost(input.host);
 
       const effectiveTimeoutMs = input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS;
       const controller = new AbortController();
@@ -393,8 +320,7 @@ export class SSH implements ServerTool {
     if (callableId === "ssh.probe") {
       const input = probeInputSchema.parse(rawInput);
 
-      const configured = await readConfiguredHosts();
-      requireConfiguredHost(configured, input.host);
+      await requireConfiguredSshHost(input.host);
 
       const effectiveTimeoutMs = input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS;
       const controller = new AbortController();

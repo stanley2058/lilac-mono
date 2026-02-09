@@ -138,6 +138,11 @@ cwd_attempted=""
 cwd_used=""
 if [ -n "$CWD" ]; then
   cwd_attempted="$CWD"
+  if [ "$CWD" = "~" ]; then
+    CWD="$HOME"
+  elif [[ "$CWD" == "~/"* ]]; then
+    CWD="$HOME/${CWD:2}"
+  fi
   if cd "$CWD" 2>/dev/null; then
     cwd_used="$CWD"
   fi

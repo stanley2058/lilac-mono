@@ -7,6 +7,29 @@ import { resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { expandTilde } from "../fs/fs-impl";
 
+import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
+import { remoteApplyPatch } from "./remote-apply-patch";
+
+const REMOTE_DENY_RELATIVE_DIRS = [".ssh", ".aws", ".gnupg"] as const;
+
+function normalizeRelativePatchPath(p: string): string {
+  let s = p.trim();
+  while (s.startsWith("./")) s = s.slice(2);
+  return s;
+}
+
+function isDeniedRemotePatchPath(remoteCwd: string, patchPath: string): boolean {
+  // The remote denylist is intended to protect home-scoped secrets.
+  // We only enforce a simple relative-path restriction when the remote cwd is ~.
+  if (remoteCwd !== "~") return false;
+  const s = normalizeRelativePatchPath(patchPath);
+  for (const dir of REMOTE_DENY_RELATIVE_DIRS) {
+    if (s === dir) return true;
+    if (s.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
 const inputSchema = z.object({
   patchText: z
     .string()
@@ -525,6 +548,7 @@ export function localApplyPatchTool(defaultCwd: string) {
             : undefined;
         try {
           const cwd = input.cwd ?? defaultCwd;
+          const cwdTarget = parseSshCwdTarget(cwd);
           const hunks = parsePatch(input.patchText);
 
           logger.info("apply_patch start", {
@@ -539,6 +563,49 @@ export function localApplyPatchTool(defaultCwd: string) {
             paths: hunks.map((h) => h.path).slice(0, 20),
             pathsTruncated: hunks.length > 20,
           });
+
+          if (cwdTarget.kind === "ssh") {
+            for (const h of hunks) {
+              if (isDeniedRemotePatchPath(cwdTarget.cwd, h.path)) {
+                throw new Error(
+                  `Access denied: '${h.path}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
+                );
+              }
+              if (h.type === "update" && h.movePath) {
+                if (isDeniedRemotePatchPath(cwdTarget.cwd, h.movePath)) {
+                  throw new Error(
+                    `Access denied: '${h.movePath}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
+                  );
+                }
+              }
+            }
+
+            const remoteRes = await remoteApplyPatch({
+              host: cwdTarget.host,
+              cwd: cwdTarget.cwd,
+              patchText: input.patchText,
+            });
+            if (!remoteRes.ok) {
+              throw new Error(remoteRes.error);
+            }
+
+            const outputLines = remoteRes.output.split("\n");
+            const changedLines = outputLines
+              .slice(1)
+              .map((l) => l.trim())
+              .filter(Boolean);
+
+            logger.info("apply_patch done", {
+              requestId: ctx?.requestId,
+              sessionId: ctx?.sessionId,
+              ok: true,
+              changedCount: changedLines.length,
+              changed: changedLines.slice(0, 20),
+              changedTruncated: changedLines.length > 20,
+            });
+
+            return { status: "completed" as const, output: remoteRes.output };
+          }
 
           const output = await applyHunks(cwd, hunks);
 
