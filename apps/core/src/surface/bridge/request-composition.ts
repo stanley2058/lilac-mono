@@ -8,6 +8,11 @@ import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef, SurfaceMessage } from "../types";
 
+import {
+  isDiscordSessionDividerSurfaceMessage,
+  isDiscordSessionDividerText,
+} from "../discord/discord-session-divider";
+
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
 export type RequestCompositionResult = {
@@ -35,6 +40,124 @@ function shouldIncludeInModelContext(msg: SurfaceMessage): boolean {
 
   const isChat = getDiscordIsChatFromRaw(msg.raw);
   return isChat ?? true;
+}
+
+function compareDiscordSnowflakeLike(a: string, b: string): number {
+  try {
+    const ai = BigInt(a);
+    const bi = BigInt(b);
+    if (ai < bi) return -1;
+    if (ai > bi) return 1;
+    return 0;
+  } catch {
+    return a.localeCompare(b);
+  }
+}
+
+function compareDiscordMsgPosition(
+  a: { ts: number; messageId: string },
+  b: { ts: number; messageId: string },
+): number {
+  if (a.ts !== b.ts) return a.ts - b.ts;
+  return compareDiscordSnowflakeLike(a.messageId, b.messageId);
+}
+
+function applyDiscordSessionDividerCutoff(params: {
+  listOldestToNewest: readonly SurfaceMessage[];
+  botUserId: string;
+}): SurfaceMessage[] {
+  const { listOldestToNewest, botUserId } = params;
+
+  let lastDividerIndex = -1;
+  for (let i = 0; i < listOldestToNewest.length; i++) {
+    const m = listOldestToNewest[i]!;
+    if (isDiscordSessionDividerSurfaceMessage(m, botUserId)) {
+      lastDividerIndex = i;
+    }
+  }
+
+  if (lastDividerIndex < 0) return [...listOldestToNewest];
+  return listOldestToNewest.slice(lastDividerIndex + 1);
+}
+
+function applyDiscordSessionDividerCutoffToReplyChain(params: {
+  chainOldestToNewest: readonly ReplyChainMessage[];
+  botUserId: string;
+}): ReplyChainMessage[] {
+  const { chainOldestToNewest, botUserId } = params;
+
+  let lastDividerIndex = -1;
+  for (let i = 0; i < chainOldestToNewest.length; i++) {
+    const m = chainOldestToNewest[i]!;
+    if (m.authorId === botUserId && isDiscordSessionDividerText(m.text)) {
+      lastDividerIndex = i;
+    }
+  }
+  if (lastDividerIndex < 0) return [...chainOldestToNewest];
+  return chainOldestToNewest.slice(lastDividerIndex + 1);
+}
+
+async function findLastDiscordSessionDividerBefore(params: {
+  adapter: SurfaceAdapter;
+  channelId: string;
+  botUserId: string;
+  beforeMessageId: string;
+  /** Optional: stop scanning once we see this message id. */
+  stopAtMessageId?: string;
+}): Promise<{ ts: number; messageId: string } | null> {
+  const { adapter, channelId, botUserId, beforeMessageId, stopAtMessageId } =
+    params;
+
+  const sessionRef = { platform: "discord", channelId } as const;
+
+  let cursor: string | undefined = beforeMessageId;
+  let scanned = 0;
+  const MAX_MESSAGES = 2000;
+  const PAGE_SIZE = 200;
+
+  while (cursor && scanned < MAX_MESSAGES) {
+    const page = await adapter.listMsg(sessionRef, {
+      limit: Math.min(PAGE_SIZE, MAX_MESSAGES - scanned),
+      beforeMessageId: cursor,
+    });
+
+    if (!page || page.length === 0) return null;
+    scanned += page.length;
+
+    // listMsg order is adapter-specific; treat it as an unordered window for detection.
+    let newestDivider: { ts: number; messageId: string } | null = null;
+    for (const m of page) {
+      if (!isDiscordSessionDividerSurfaceMessage(m, botUserId)) continue;
+      const pos = { ts: m.ts, messageId: m.ref.messageId };
+      if (!newestDivider || compareDiscordMsgPosition(newestDivider, pos) < 0) {
+        newestDivider = pos;
+      }
+    }
+    if (newestDivider) return newestDivider;
+
+    if (stopAtMessageId && page.some((m) => m.ref.messageId === stopAtMessageId)) {
+      return null;
+    }
+
+    // Advance cursor to the oldest message id we saw.
+    let oldest = page[0]!;
+    for (const m of page) {
+      if (
+        compareDiscordMsgPosition(
+          { ts: m.ts, messageId: m.ref.messageId },
+          { ts: oldest.ts, messageId: oldest.ref.messageId },
+        ) < 0
+      ) {
+        oldest = m;
+      }
+    }
+
+    // Prevent infinite loops if the adapter returns a stable page.
+    if (oldest.ref.messageId === cursor) return null;
+    cursor = oldest.ref.messageId;
+  }
+
+  return null;
 }
 
 export type ComposeRecentChannelMessagesOpts = {
@@ -121,6 +244,10 @@ export async function composeRequestMessages(
     const isChat = getDiscordIsChatFromRaw(m.raw);
     return isChat ?? true;
   });
+
+  // IMPORTANT: session divider cutoff intentionally does NOT apply to explicit reply/mention
+  // chains. If the user replies to (or mentions within) an assistant message after a divider,
+  // they are explicitly re-opening that thread; we keep the full linked chain.
 
   // Step 2: merge by Discord window rules (same author + <= 7 min).
   const merged = mergeChainByDiscordWindow(filteredChain);
@@ -230,7 +357,33 @@ export async function composeRecentChannelMessages(
           triggerMsg,
         });
 
-        const merged = mergeChainByDiscordWindow(anchored);
+        const oldestAnchoredMessageId = anchored[0]?.messageId;
+
+        const divider = oldestAnchoredMessageId
+          ? await findLastDiscordSessionDividerBefore({
+              adapter,
+              channelId: opts.sessionId,
+              botUserId: opts.botUserId,
+              beforeMessageId: triggerMsg.ref.messageId,
+              stopAtMessageId: oldestAnchoredMessageId,
+            }).catch(() => null)
+          : null;
+
+        const anchoredAfterDivider = divider
+          ? anchored.filter((m) =>
+              compareDiscordMsgPosition(
+                { ts: m.ts, messageId: m.messageId },
+                divider,
+              ) > 0,
+            )
+          : anchored;
+
+        const anchoredCutChain = applyDiscordSessionDividerCutoffToReplyChain({
+          chainOldestToNewest: anchoredAfterDivider,
+          botUserId: opts.botUserId,
+        });
+
+        const merged = mergeChainByDiscordWindow(anchoredCutChain);
         const attState = createDiscordAttachmentState();
 
         const modelMessages: ModelMessage[] = [];
@@ -298,7 +451,7 @@ export async function composeRecentChannelMessages(
 
         return {
           messages: modelMessages,
-          chainMessageIds: anchored.map((m) => m.messageId),
+          chainMessageIds: anchoredCutChain.map((m) => m.messageId),
           mergedGroups: merged.map((m) => ({
             authorId: m.authorId,
             messageIds: [...m.messageIds],
@@ -337,18 +490,6 @@ export async function composeRecentChannelMessages(
     }
   }
 
-  function compareDiscordSnowflakeLike(a: string, b: string): number {
-    try {
-      const ai = BigInt(a);
-      const bi = BigInt(b);
-      if (ai < bi) return -1;
-      if (ai > bi) return 1;
-      return 0;
-    } catch {
-      return a.localeCompare(b);
-    }
-  }
-
   list.sort((a, b) => {
     if (a.ts !== b.ts) return a.ts - b.ts;
     return compareDiscordSnowflakeLike(a.ref.messageId, b.ref.messageId);
@@ -369,6 +510,32 @@ export async function composeRecentChannelMessages(
         (contextList.length > 0 ? contextList[contextList.length - 1]! : null))
     : null;
 
+  // Divider cutoff should apply before selection rules so we never include pre-divider
+  // content even if it is within the age/gap window.
+  // IMPORTANT: when using an activeAnchor, only consider messages up to the anchor.
+  // (Newer divider messages must not affect the historical anchor context.)
+  const dividerCutContextList = (() => {
+    if (shouldApplyActiveBurstRules && activeAnchor) {
+      const anchorTs = activeAnchor.ts;
+      const anchorId = activeAnchor.ref.messageId;
+      const eligibleToAnchor = contextList.filter((m) => {
+        if (m.ts < anchorTs) return true;
+        if (m.ts > anchorTs) return false;
+        return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
+      });
+
+      return applyDiscordSessionDividerCutoff({
+        listOldestToNewest: eligibleToAnchor,
+        botUserId: opts.botUserId,
+      });
+    }
+
+    return applyDiscordSessionDividerCutoff({
+      listOldestToNewest: contextList,
+      botUserId: opts.botUserId,
+    });
+  })();
+
   const ACTIVE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
   const ACTIVE_MAX_GAP_MS = 2 * 60 * 60 * 1000;
   const ACTIVE_TRANSCRIPT_MAX_AGE_MS = 1 * 60 * 60 * 1000;
@@ -381,7 +548,7 @@ export async function composeRecentChannelMessages(
 
     // Only include messages up to the anchor (avoid pulling in newer messages
     // that arrived after the gate decision).
-    const eligible = contextList.filter((m) => {
+    const eligible = dividerCutContextList.filter((m) => {
       if (m.ts < anchorTs) return true;
       if (m.ts > anchorTs) return false;
       return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
@@ -412,10 +579,17 @@ export async function composeRecentChannelMessages(
 
     selected = pickedNewestToOldest.reverse();
   } else {
-    selected = contextList.slice(Math.max(0, contextList.length - opts.limit));
+    selected = dividerCutContextList.slice(
+      Math.max(0, dividerCutContextList.length - opts.limit),
+    );
   }
 
-  const chain: ReplyChainMessage[] = selected.map((m) => ({
+  // Safety: exclude divider messages from context even if they are chat-like.
+  const selectedNoDivider = selected.filter(
+    (m) => !(m.userId === opts.botUserId && isDiscordSessionDividerText(m.text)),
+  );
+
+  const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => ({
     messageId: m.ref.messageId,
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
@@ -528,6 +702,9 @@ export async function composeSingleMessage(
   if (!m) return null;
 
   if (!shouldIncludeInModelContext(m)) return null;
+
+  // Never include session divider markers in model context.
+  if (isDiscordSessionDividerSurfaceMessage(m, opts.botUserId)) return null;
 
   const text =
     m.userId !== opts.botUserId

@@ -945,3 +945,336 @@ describe("request-composition system message filtering", () => {
     expect(out).toBe(null);
   });
 });
+
+describe("request-composition session divider", () => {
+  class DividerAdapter implements SurfaceAdapter {
+    constructor(private readonly messages: SurfaceMessage[]) {}
+
+    async connect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async disconnect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async getSelf(): Promise<SurfaceSelf> {
+      return { platform: "discord", userId: "bot", userName: "lilac" };
+    }
+    async getCapabilities(): Promise<AdapterCapabilities> {
+      throw new Error("not implemented");
+    }
+
+    async listSessions(): Promise<SurfaceSession[]> {
+      throw new Error("not implemented");
+    }
+
+    async startOutput(
+      _sessionRef: SessionRef,
+      _opts?: StartOutputOpts,
+    ): Promise<SurfaceOutputStream> {
+      throw new Error("not implemented");
+    }
+
+    async sendMsg(
+      _sessionRef: SessionRef,
+      _content: ContentOpts,
+      _opts?: SendOpts,
+    ): Promise<MsgRef> {
+      throw new Error("not implemented");
+    }
+
+    async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
+      return (
+        this.messages.find(
+          (m) =>
+            m.session.channelId === msgRef.channelId &&
+            m.ref.messageId === msgRef.messageId,
+        ) ?? null
+      );
+    }
+
+    async listMsg(
+      sessionRef: SessionRef,
+      opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      const inChannel = this.messages
+        .filter((m) => m.session.channelId === sessionRef.channelId)
+        .slice()
+        .sort((a, b) => a.ts - b.ts);
+
+      let filtered = inChannel;
+      if (opts?.beforeMessageId) {
+        const before = inChannel.find((m) => m.ref.messageId === opts.beforeMessageId);
+        if (before) {
+          filtered = filtered.filter((m) => m.ts < before.ts);
+        }
+      }
+
+      if (opts?.afterMessageId) {
+        const after = inChannel.find((m) => m.ref.messageId === opts.afterMessageId);
+        if (after) {
+          filtered = filtered.filter((m) => m.ts > after.ts);
+        }
+      }
+
+      const limit = Math.max(1, opts?.limit ?? 50);
+      return filtered.slice(Math.max(0, filtered.length - limit));
+    }
+
+    async editMsg(_msgRef: MsgRef, _content: ContentOpts): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async deleteMsg(_msgRef: MsgRef): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async getReplyContext(
+      _msgRef: MsgRef,
+      _opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      return [];
+    }
+
+    async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async removeReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+
+    async listReactions(_msgRef: MsgRef): Promise<string[]> {
+      return [];
+    }
+
+    async subscribe(_handler: AdapterEventHandler): Promise<AdapterSubscription> {
+      throw new Error("not implemented");
+    }
+
+    async getUnRead(_sessionRef: SessionRef): Promise<SurfaceMessage[]> {
+      throw new Error("not implemented");
+    }
+
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
+      throw new Error("not implemented");
+    }
+  }
+
+  it("cuts off recent context at the most recent divider", async () => {
+    const sessionId = "c";
+
+    const msgs: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "before",
+        ts: 1,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "d" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+        ts: 2,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_1",
+        ts: 3,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "3" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_2",
+        ts: 4,
+        raw: { discord: { isChat: true } },
+      },
+    ];
+
+    const adapter = new DividerAdapter(msgs);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+    });
+
+    expect(out.chainMessageIds).toEqual(["2", "3"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("after_1");
+    expect(combined).toContain("after_2");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+    expect(combined).not.toContain("before");
+  });
+
+  it("cuts off reply-chain context at the most recent divider", async () => {
+    const sessionId = "c";
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 1,
+      raw: { reference: {} },
+    };
+
+    const divider: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "div" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      ts: 50,
+      raw: { reference: {} },
+    };
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 1",
+      ts: 100,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 2",
+      ts: 110,
+      raw: { reference: { messageId: "m1", channelId: sessionId } },
+    };
+
+    const adapter = new DividerAdapter([root, divider, m1, m2]);
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "reply", msgRef: m2.ref },
+      maxDepth: 10,
+    });
+
+    // Reply chains intentionally ignore the divider.
+    expect(out.chainMessageIds).toEqual(["root", "m1", "m2"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("user msg 1");
+    expect(combined).toContain("user msg 2");
+    expect(combined).toContain("Root");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+
+  it("cuts off mention-thread context at the most recent divider", async () => {
+    const sessionId = "c";
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 1,
+      raw: { reference: {} },
+    };
+
+    const divider: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "div" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      ts: 50,
+      raw: { reference: {} },
+    };
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 1",
+      ts: 100,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "user msg 2",
+      ts: 110,
+      raw: { reference: {} },
+    };
+
+    const m3: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> user msg 3",
+      ts: 120,
+      raw: { reference: {} },
+    };
+
+    class MentionDividerAdapter extends DividerAdapter {
+      override async getReplyContext(
+        msgRef: MsgRef,
+        opts?: LimitOpts,
+      ): Promise<SurfaceMessage[]> {
+        const base = await this.readMsg(msgRef);
+        if (!base) return [];
+
+        const limit = opts?.limit ?? 50;
+        const all = [root, divider, m1, m2, m3].slice().sort((a, b) => a.ts - b.ts);
+        const half = Math.max(1, Math.floor(limit / 2));
+        const beforeAll = all.filter((m) => m.ts <= base.ts);
+        const before = beforeAll.slice(Math.max(0, beforeAll.length - half));
+        const after = all.filter((m) => m.ts > base.ts).slice(0, half);
+        return before.concat(after);
+      }
+    }
+
+    const adapter = new MentionDividerAdapter([root, divider, m1, m2, m3]);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+      triggerMsgRef: m3.ref,
+      triggerType: "mention",
+    });
+
+    expect(out.chainMessageIds).toEqual(["m1", "m2", "m3"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("user msg 1");
+    expect(combined).toContain("user msg 2");
+    expect(combined).toContain("user msg 3");
+    expect(combined).not.toContain("Root");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+});

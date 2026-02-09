@@ -1,7 +1,9 @@
 import {
   ActivityType,
+  ApplicationCommandOptionType,
   Client,
   type CacheType,
+  type ChatInputCommandInteraction,
   GatewayIntentBits,
   MessageFlags,
   MessageType,
@@ -57,6 +59,7 @@ import {
   sendDiscordStyledMessage,
 } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
+import { buildDiscordSessionDividerText } from "./discord-session-divider";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
@@ -172,6 +175,17 @@ function shouldAllowMessage(params: {
   return false;
 }
 
+type SendableDiscordChannel = {
+  send(options: unknown): Promise<unknown>;
+};
+
+function isTextSendableChannel(ch: unknown): ch is SendableDiscordChannel {
+  if (!ch || typeof ch !== "object") return false;
+  if (!("send" in ch)) return false;
+  const send = (ch as Record<string, unknown>)["send"];
+  return typeof send === "function";
+}
+
 export function isRoutableDiscordUserMessage(msg: Message): boolean {
   if (msg.author.bot) return false;
   if (msg.system) return false;
@@ -256,6 +270,16 @@ export class DiscordAdapter implements SurfaceAdapter {
       this.logger.info("ready", {
         userId: user.id,
         botName,
+      });
+
+      // Register/refresh slash commands on boot.
+      // Strategy:
+      // 1) check existence
+      // 2) ALWAYS update if exists
+      // 3) register if not exist
+      // This avoids stale command definitions when iterating.
+      await this.registerSlashCommands().catch((e: unknown) => {
+        this.logger.error("slash command registration failed", e);
       });
 
       const statusMessage = cfg.surface.discord.statusMessage;
@@ -898,6 +922,11 @@ export class DiscordAdapter implements SurfaceAdapter {
   }
 
   private async onInteractionCreate(interaction: Interaction<CacheType>) {
+    if (interaction.isChatInputCommand()) {
+      await this.onChatInputCommand(interaction);
+      return;
+    }
+
     if (!interaction.isButton()) return;
 
     const parsed = parseCancelCustomId(interaction.customId);
@@ -948,6 +977,214 @@ export class DiscordAdapter implements SurfaceAdapter {
       }
     } catch {
       // ignore
+    }
+  }
+
+  private async registerSlashCommands(): Promise<void> {
+    const client = this.client;
+    const cfg = this.cfg;
+    if (!client || !cfg) return;
+
+    const app = client.application;
+    if (!app) return;
+
+    // Ensure the application is fetched (discord.js sometimes lazily loads it).
+    await app.fetch().catch(() => null);
+
+    const definition = {
+      name: "lilac",
+      description: "Lilac bot commands",
+      options: [
+        {
+          type: ApplicationCommandOptionType.Subcommand,
+          name: "divider",
+          description: "Insert a session divider for context",
+          options: [
+            {
+              type: ApplicationCommandOptionType.String,
+              name: "label",
+              description: "Optional label for the divider",
+              required: false,
+            },
+          ],
+        },
+      ],
+    } as const;
+
+    const commands = await app.commands.fetch().catch(() => null);
+    const existing = commands?.find((c) => c.name === "lilac") ?? null;
+
+    if (existing) {
+      await app.commands.edit(existing.id, definition).catch((e: unknown) => {
+        this.logger.error("slash command update failed", e);
+        return null;
+      });
+      this.logger.info("slash command updated", {
+        name: "lilac",
+        id: existing.id,
+      });
+    } else {
+      const created = await app.commands.create(definition).catch((e: unknown) => {
+        this.logger.error("slash command register failed", e);
+        return null;
+      });
+      if (created) {
+        this.logger.info("slash command registered", {
+          name: "lilac",
+          id: created.id,
+        });
+      }
+    }
+
+    // Also upsert per-guild commands for faster propagation during development.
+    // These override global commands inside the guild.
+    const guildIds = cfg.surface.discord.allowedGuildIds;
+    for (const guildId of guildIds) {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) continue;
+
+      const gCommands = await guild.commands.fetch().catch(() => null);
+      const gExisting = gCommands?.find((c) => c.name === "lilac") ?? null;
+      if (gExisting) {
+        await guild.commands.edit(gExisting.id, definition).catch((e: unknown) => {
+          this.logger.error("guild slash command update failed", { guildId }, e);
+          return null;
+        });
+        continue;
+      }
+
+      await guild.commands.create(definition).catch((e: unknown) => {
+        this.logger.error("guild slash command register failed", { guildId }, e);
+        return null;
+      });
+    }
+  }
+
+  private async onChatInputCommand(
+    interaction: ChatInputCommandInteraction<CacheType>,
+  ): Promise<void> {
+    const cfg = this.cfg;
+    const client = this.client;
+    const self = this.self;
+
+    if (!cfg || !client || !self) {
+      // Not ready; best-effort ack.
+      try {
+        await interaction.reply({
+          content: "Bot is not ready yet.",
+          ephemeral: true,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (interaction.commandName !== "lilac") return;
+
+    const channelId = interaction.channelId;
+    const guildId = interaction.guildId;
+
+    if (!channelId) {
+      try {
+        await interaction.reply({
+          content: "This command must be used in a channel.",
+          ephemeral: true,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) {
+      try {
+        await interaction.reply({
+          content: "Not allowed in this channel.",
+          ephemeral: true,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    let sub: string | null = null;
+    try {
+      sub = interaction.options.getSubcommand();
+    } catch {
+      sub = null;
+    }
+
+    if (sub !== "divider") {
+      try {
+        await interaction.reply({
+          content: "Unknown subcommand.",
+          ephemeral: true,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const label = interaction.options.getString("label");
+
+    const content = buildDiscordSessionDividerText({
+      label,
+      createdByUserId: interaction.user?.id ?? null,
+      createdByUserName: interaction.user?.username ?? null,
+    });
+
+    try {
+      // Defer immediately to avoid the 3s interaction timeout.
+      try {
+        await interaction.deferReply({ ephemeral: true });
+      } catch {
+        // ignore
+      }
+
+      const ch = await client.channels.fetch(channelId).catch(() => null);
+      if (!isTextSendableChannel(ch)) {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({
+            content: "Channel not found or not text-based.",
+          });
+        } else {
+          await interaction.reply({
+            content: "Channel not found or not text-based.",
+            ephemeral: true,
+          });
+        }
+        return;
+      }
+
+      await ch.send({
+        content,
+        allowedMentions: { parse: [] },
+      });
+
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: "Inserted session divider." });
+      } else {
+        await interaction.reply({ content: "Inserted session divider.", ephemeral: true });
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({
+            content: `Failed to insert divider: ${msg}`,
+          });
+        } else {
+          await interaction.reply({
+            content: `Failed to insert divider: ${msg}`,
+            ephemeral: true,
+          });
+        }
+      } catch {
+        // ignore
+      }
     }
   }
 
