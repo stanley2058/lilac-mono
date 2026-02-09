@@ -460,6 +460,47 @@ describe("tool-server surface", () => {
     expect(res[0].ref.messageId).toBe("m1");
   });
 
+  it("includes discord message type hints in surface.messages.list", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "created a thread",
+            ts: 0,
+            raw: { discord: { type: 18, typeName: "ThreadCreated", isChat: false, system: true } },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+    })) as any[];
+
+    expect(res.length).toBe(1);
+    expect(res[0].platformMessageType).toBe("ThreadCreated");
+    expect(res[0].platformIsChat).toBe(false);
+    expect(res[0].platformIsSystem).toBe(true);
+  });
+
   it("errors clearly when sessionId looks like requestId", async () => {
     const channelId = "123";
     const cfg = testConfig({

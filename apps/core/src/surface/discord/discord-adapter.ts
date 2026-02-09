@@ -133,6 +133,19 @@ function getDisplayTextFromDiscordMessage(msg: Message): string {
   return "";
 }
 
+function isDiscordChatLikeMessage(msg: Message): boolean {
+  // Treat only real chat/reply messages as context candidates.
+  // Discord system messages can still have MessageType.Default; exclude via `msg.system`.
+  if (msg.system) return false;
+  return msg.type === MessageType.Default || msg.type === MessageType.Reply;
+}
+
+function getDiscordMessageTypeName(msg: Message): string {
+  // `MessageType` is a numeric enum; reverse mapping yields a stable label.
+  const name = (MessageType as unknown as Record<number, unknown>)[msg.type];
+  return typeof name === "string" && name.length > 0 ? name : String(msg.type);
+}
+
 function previewText(text: string, max = 400): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
@@ -1138,6 +1151,12 @@ export class DiscordAdapter implements SurfaceAdapter {
         reference: msg.reference ?? undefined,
         editedTs,
         attachments,
+        discord: {
+          system: msg.system,
+          type: msg.type,
+          typeName: getDiscordMessageTypeName(msg),
+          isChat: isDiscordChatLikeMessage(msg),
+        },
       },
     };
   }
@@ -1298,6 +1317,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       raw: {
         discord: {
           id: msg.id,
+          system: msg.system,
+          type: msg.type,
+          typeName: getDiscordMessageTypeName(msg),
+          isChat: isDiscordChatLikeMessage(msg),
           isDMBased: sessionKind === "dm",
           mentionsBot: false,
           replyToBot: false,
@@ -1448,6 +1471,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       raw: {
         discord: {
           id: msg.id,
+          system: msg.system,
+          type: msg.type,
+          typeName: getDiscordMessageTypeName(msg),
+          isChat: isDiscordChatLikeMessage(msg),
           // Best-effort: Discord update event may not expose channel type reliably.
           isDMBased: sessionKind === "dm",
           mentionsBot: false,

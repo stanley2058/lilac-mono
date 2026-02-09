@@ -483,6 +483,61 @@ function mustPresentString(v: unknown, label: string): string {
   throw new Error(`surface tool internal error: missing ${label}`);
 }
 
+function getDiscordMessageTypeMetaFromRaw(raw: unknown): {
+  typeId?: number;
+  typeName?: string;
+  isSystem?: boolean;
+  isChat?: boolean;
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+  if (!discord) return null;
+
+  const typeId = typeof discord["type"] === "number" ? (discord["type"] as number) : undefined;
+  const typeName =
+    typeof discord["typeName"] === "string" ? (discord["typeName"] as string) : undefined;
+  const isSystem = typeof discord["system"] === "boolean" ? (discord["system"] as boolean) : undefined;
+  const isChat = typeof discord["isChat"] === "boolean" ? (discord["isChat"] as boolean) : undefined;
+
+  if (typeId === undefined && typeName === undefined && isSystem === undefined && isChat === undefined) {
+    return null;
+  }
+
+  return { typeId, typeName, isSystem, isChat };
+}
+
+function decorateSurfaceMessageForListTool(msg: {
+  session?: unknown;
+  raw?: unknown;
+}): Record<string, unknown> {
+  // Keep the original shape, but add a small, explicit hint so agents don't
+  // have to inspect raw payloads to understand system/notification messages.
+  const out: Record<string, unknown> = { ...(msg as Record<string, unknown>) };
+
+  const session = msg.session;
+  const platform =
+    session && typeof session === "object" && "platform" in (session as any)
+      ? (session as any).platform
+      : undefined;
+
+  if (platform === "discord") {
+    const meta = getDiscordMessageTypeMetaFromRaw(msg.raw);
+    if (meta) {
+      if (typeof meta.typeName === "string") out["platformMessageType"] = meta.typeName;
+      else if (typeof meta.typeId === "number") out["platformMessageType"] = String(meta.typeId);
+      if (typeof meta.typeId === "number") out["platformMessageTypeId"] = meta.typeId;
+      if (typeof meta.isSystem === "boolean") out["platformIsSystem"] = meta.isSystem;
+      if (typeof meta.isChat === "boolean") out["platformIsChat"] = meta.isChat;
+    }
+  }
+
+  return out;
+}
+
 const sessionsListInputSchema = baseInputSchema;
 
 const messagesListInputSchema = baseInputSchema.extend({
@@ -1132,14 +1187,16 @@ export class Surface implements ServerTool {
     });
 
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
-    return messages.filter((m) => {
+    return messages
+      .filter((m) => {
       if (m.session.platform !== "discord") return false;
       return shouldAllowDiscordChannel({
         cfg,
         channelId: m.session.channelId,
         guildId: m.session.guildId,
       });
-    });
+      })
+      .map((m) => decorateSurfaceMessageForListTool(m));
   }
 
   private async callMessagesRead(
@@ -1265,7 +1322,7 @@ export class Surface implements ServerTool {
       return null;
     }
 
-    return msg;
+    return decorateSurfaceMessageForListTool(msg);
   }
 
   private async callMessagesSearch(

@@ -800,3 +800,148 @@ describe("request-composition active channel burst rules", () => {
     expect(text).toContain("old bot text");
   });
 });
+
+describe("request-composition system message filtering", () => {
+  class RawListAdapter implements SurfaceAdapter {
+    constructor(private readonly messages: SurfaceMessage[]) {}
+
+    async connect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async disconnect(): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async getSelf(): Promise<SurfaceSelf> {
+      throw new Error("not implemented");
+    }
+    async getCapabilities(): Promise<AdapterCapabilities> {
+      throw new Error("not implemented");
+    }
+    async listSessions(): Promise<SurfaceSession[]> {
+      throw new Error("not implemented");
+    }
+    async startOutput(
+      _sessionRef: SessionRef,
+      _opts?: StartOutputOpts,
+    ): Promise<SurfaceOutputStream> {
+      throw new Error("not implemented");
+    }
+    async sendMsg(
+      _sessionRef: SessionRef,
+      _content: ContentOpts,
+      _opts?: SendOpts,
+    ): Promise<MsgRef> {
+      throw new Error("not implemented");
+    }
+
+    async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
+      const m = this.messages.find(
+        (x) => x.session.channelId === msgRef.channelId && x.ref.messageId === msgRef.messageId,
+      );
+      return m ?? null;
+    }
+
+    async listMsg(
+      sessionRef: SessionRef,
+      _opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      return this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
+    }
+
+    async editMsg(_msgRef: MsgRef, _content: ContentOpts): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async deleteMsg(_msgRef: MsgRef): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async getReplyContext(
+      _msgRef: MsgRef,
+      _opts?: LimitOpts,
+    ): Promise<SurfaceMessage[]> {
+      return [];
+    }
+    async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async removeReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
+      throw new Error("not implemented");
+    }
+    async listReactions(_msgRef: MsgRef): Promise<string[]> {
+      return [];
+    }
+    async subscribe(_handler: AdapterEventHandler): Promise<AdapterSubscription> {
+      throw new Error("not implemented");
+    }
+    async getUnRead(_sessionRef: SessionRef): Promise<SurfaceMessage[]> {
+      throw new Error("not implemented");
+    }
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
+      throw new Error("not implemented");
+    }
+  }
+
+  it("excludes non-chat/system surface messages from default model context", async () => {
+    const sessionId = "c";
+
+    const mk = (id: string, ts: number, text: string, isChat: boolean): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text,
+      ts,
+      raw: { discord: { isChat } },
+    });
+
+    const msgs = [
+      mk("1", 1, "hello", true),
+      mk("sys", 2, "created a thread", false),
+      mk("2", 3, "world", true),
+    ];
+
+    const adapter = new RawListAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+    });
+
+    expect(out.chainMessageIds).toEqual(["1", "2"]);
+
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+
+    expect(combined).toContain("hello");
+    expect(combined).toContain("world");
+    expect(combined).not.toContain("created a thread");
+  });
+
+  it("returns null for composeSingleMessage when message is not chat", async () => {
+    const sessionId = "c";
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "sys" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: "created a thread",
+      ts: 0,
+      raw: { discord: { isChat: false } },
+    };
+
+    const adapter = new RawListAdapter([msg]);
+
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out).toBe(null);
+  });
+});

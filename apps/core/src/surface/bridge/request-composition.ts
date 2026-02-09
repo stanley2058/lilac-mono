@@ -16,6 +16,27 @@ export type RequestCompositionResult = {
   mergedGroups: Array<{ authorId: string; messageIds: string[] }>;
 };
 
+function getDiscordIsChatFromRaw(raw: unknown): boolean | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+  if (!discord) return undefined;
+  const isChat = discord["isChat"];
+  return typeof isChat === "boolean" ? isChat : undefined;
+}
+
+function shouldIncludeInModelContext(msg: SurfaceMessage): boolean {
+  // Listing and surface tools may include platform/system messages (e.g. Discord
+  // thread-created notices). By default, do not send those to the model.
+  if (msg.session.platform !== "discord") return true;
+
+  const isChat = getDiscordIsChatFromRaw(msg.raw);
+  return isChat ?? true;
+}
+
 export type ComposeRecentChannelMessagesOpts = {
   platform: "discord";
   sessionId: string;
@@ -96,8 +117,13 @@ export async function composeRequestMessages(
         maxDepth: opts.maxDepth,
       });
 
+  const filteredChain = chain.filter((m) => {
+    const isChat = getDiscordIsChatFromRaw(m.raw);
+    return isChat ?? true;
+  });
+
   // Step 2: merge by Discord window rules (same author + <= 7 min).
-  const merged = mergeChainByDiscordWindow(chain);
+  const merged = mergeChainByDiscordWindow(filteredChain);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.
   const attState = createDiscordAttachmentState();
@@ -174,7 +200,7 @@ export async function composeRequestMessages(
 
   return {
     messages: modelMessages,
-    chainMessageIds: chain.map((m) => m.messageId),
+    chainMessageIds: filteredChain.map((m) => m.messageId),
     mergedGroups: merged.map((m) => ({
       authorId: m.authorId,
       messageIds: [...m.messageIds],
@@ -328,14 +354,19 @@ export async function composeRecentChannelMessages(
     return compareDiscordSnowflakeLike(a.ref.messageId, b.ref.messageId);
   });
 
-  const triggerMsg =
-    opts.triggerMsgRef
-      ? list.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ??
-        fetchedTrigger
-      : null;
+  // The surface layer can include Discord system/notification messages (e.g.
+  // thread-created). Keep them listable via surface tools, but exclude them from
+  // the default model context.
+  const contextList = list.filter(shouldIncludeInModelContext);
+
+  const triggerMsg = opts.triggerMsgRef
+    ? contextList.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ??
+      null
+    : null;
 
   const activeAnchor = shouldApplyActiveBurstRules
-    ? (triggerMsg ?? (list.length > 0 ? list[list.length - 1]! : null))
+    ? (triggerMsg ??
+        (contextList.length > 0 ? contextList[contextList.length - 1]! : null))
     : null;
 
   const ACTIVE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
@@ -350,7 +381,7 @@ export async function composeRecentChannelMessages(
 
     // Only include messages up to the anchor (avoid pulling in newer messages
     // that arrived after the gate decision).
-    const eligible = list.filter((m) => {
+    const eligible = contextList.filter((m) => {
       if (m.ts < anchorTs) return true;
       if (m.ts > anchorTs) return false;
       return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
@@ -381,7 +412,7 @@ export async function composeRecentChannelMessages(
 
     selected = pickedNewestToOldest.reverse();
   } else {
-    selected = list.slice(Math.max(0, list.length - opts.limit));
+    selected = contextList.slice(Math.max(0, contextList.length - opts.limit));
   }
 
   const chain: ReplyChainMessage[] = selected.map((m) => ({
@@ -495,6 +526,8 @@ export async function composeSingleMessage(
 
   const m = await adapter.readMsg(opts.msgRef);
   if (!m) return null;
+
+  if (!shouldIncludeInModelContext(m)) return null;
 
   const text =
     m.userId !== opts.botUserId
