@@ -115,7 +115,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const DISPLAY_MAX_LEN = 30;
 const PATH_HEAD_LEN = 14;
-const PATH_TAIL_LEN = 23;
+const PATH_TAIL_LEN = 13;
 
 const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);

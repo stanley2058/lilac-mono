@@ -3,20 +3,20 @@ import { describe, expect, it } from "bun:test";
 import { formatToolArgsForDisplay } from "../../src/tools/tool-args-display";
 
 describe("formatToolArgsForDisplay", () => {
-  it("formats bash command and truncates to 40 chars including ellipsis", () => {
+  it("formats bash command and truncates to 30 chars including ellipsis", () => {
     expect(
       formatToolArgsForDisplay("bash", {
         command: "echo 12345678901234567890123456789012345678901234567890",
       }),
-    ).toBe(" echo 12345678901234567890123456789012...");
+    ).toBe(" echo 1234567890123456789012...");
   });
 
-  it("formats readFile path with middle truncation (14 ... 23)", () => {
+  it("formats readFile path with middle truncation (14 ... 13)", () => {
     expect(
       formatToolArgsForDisplay("read_file", {
         path: "/path/to/some/really/long/path/to/file.js",
       }),
-    ).toBe(" /path/to/some/...ly/long/path/to/file.js");
+    ).toBe(" /path/to/some/...th/to/file.js");
   });
 
   it("formats apply_patch (local) as first file + remaining count", () => {
@@ -35,7 +35,7 @@ describe("formatToolArgsForDisplay", () => {
     ].join("\n");
 
     expect(formatToolArgsForDisplay("apply_patch", { patchText })).toBe(
-      " /path/to/some/...y/long/path/to/file1.js (+3)",
+      " /path/to/some/...h/to/file1.js (+3)",
     );
   });
 
