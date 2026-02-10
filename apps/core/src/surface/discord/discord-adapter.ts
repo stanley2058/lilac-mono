@@ -1011,51 +1011,39 @@ export class DiscordAdapter implements SurfaceAdapter {
       ],
     } as const;
 
-    const commands = await app.commands.fetch().catch(() => null);
-    const existing = commands?.find((c) => c.name === "lilac") ?? null;
+    // Force-sync (bulk overwrite) so stale commands are removed.
+    // This is intentional: we treat the current code's command list as the
+    // source of truth for this application.
+    const desired = [definition];
+    await app.commands.set(desired).catch((e: unknown) => {
+      this.logger.error("slash command sync failed", e);
+      return null;
+    });
+    this.logger.info("slash commands synced", {
+      scope: "global",
+      count: desired.length,
+    });
 
-    if (existing) {
-      await app.commands.edit(existing.id, definition).catch((e: unknown) => {
-        this.logger.error("slash command update failed", e);
-        return null;
-      });
-      this.logger.info("slash command updated", {
-        name: "lilac",
-        id: existing.id,
-      });
-    } else {
-      const created = await app.commands.create(definition).catch((e: unknown) => {
-        this.logger.error("slash command register failed", e);
-        return null;
-      });
-      if (created) {
-        this.logger.info("slash command registered", {
-          name: "lilac",
-          id: created.id,
-        });
-      }
-    }
-
-    // Also upsert per-guild commands for faster propagation during development.
-    // These override global commands inside the guild.
-    const guildIds = cfg.surface.discord.allowedGuildIds;
+    // Force-sync guild overrides so stale per-guild commands are removed.
+    // For allowed guilds, we install the desired command set to get fast
+    // propagation. For all other guilds we clear guild commands so only the
+    // global set applies.
+    const allowedGuildIds = new Set(cfg.surface.discord.allowedGuildIds);
+    const guilds = await client.guilds.fetch().catch(() => null);
+    const guildIds = guilds ? [...guilds.keys()] : [...allowedGuildIds];
     for (const guildId of guildIds) {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) continue;
 
-      const gCommands = await guild.commands.fetch().catch(() => null);
-      const gExisting = gCommands?.find((c) => c.name === "lilac") ?? null;
-      if (gExisting) {
-        await guild.commands.edit(gExisting.id, definition).catch((e: unknown) => {
-          this.logger.error("guild slash command update failed", { guildId }, e);
-          return null;
-        });
-        continue;
-      }
-
-      await guild.commands.create(definition).catch((e: unknown) => {
-        this.logger.error("guild slash command register failed", { guildId }, e);
+      const desiredForGuild = allowedGuildIds.has(guildId) ? desired : [];
+      await guild.commands.set(desiredForGuild).catch((e: unknown) => {
+        this.logger.error("guild slash command sync failed", { guildId }, e);
         return null;
+      });
+      this.logger.info("slash commands synced", {
+        scope: "guild",
+        guildId,
+        count: desiredForGuild.length,
       });
     }
   }
