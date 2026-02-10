@@ -14,6 +14,7 @@ import {
   formatAvailableSkillsSection,
   getCoreConfig,
   ModelCapability,
+  type JSONObject,
   resolveLogLevel,
   resolveModelSlot,
 } from "@stanley2058/lilac-utils";
@@ -139,6 +140,99 @@ const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill"]);
 const MODEL_VIEW_MAX_BINARY_BYTES_PER_PART = 256 * 1024;
 const MODEL_VIEW_MAX_BINARY_BYTES_TOTAL = 2 * 1024 * 1024;
 const MODEL_VIEW_BINARY_OMITTED = "[binary omitted]";
+
+const ANTHROPIC_PROMPT_CACHE_CONTROL = {
+  type: "ephemeral",
+  ttl: "5m",
+} as const;
+
+const ANTHROPIC_UPSTREAM_PROVIDER_ORDER = [
+  "anthropic",
+  "vertex",
+  "bedrock",
+] as const;
+
+const ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS = {
+  anthropic: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
+  openrouter: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
+} as const satisfies NonNullable<ModelMessage["providerOptions"]>;
+
+function isAnthropicModelSpec(spec: string): boolean {
+  // Canonical format is provider/model. For gateway-style specs, Claude models
+  // typically appear as */anthropic/claude-... .
+  return spec.startsWith("anthropic/") || spec.includes("/anthropic/");
+}
+
+function mergeProviderOptions(
+  base: ModelMessage["providerOptions"],
+  patch: NonNullable<ModelMessage["providerOptions"]>,
+): NonNullable<ModelMessage["providerOptions"]> {
+  const out = (isRecord(base) ? { ...base } : {}) as NonNullable<
+    ModelMessage["providerOptions"]
+  >;
+
+  for (const [k, v] of Object.entries(patch)) {
+    const existing = (out as Record<string, unknown>)[k];
+    (out as Record<string, unknown>)[k] = isRecord(existing)
+      ? { ...existing, ...v }
+      : v;
+  }
+
+  return out;
+}
+
+function withProviderOptionsOnLastUserMessage(
+  messages: ModelMessage[],
+  providerOptions: NonNullable<ModelMessage["providerOptions"]>,
+): ModelMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.role !== "user") continue;
+
+    const merged = mergeProviderOptions(msg.providerOptions, providerOptions);
+    const next = { ...msg, providerOptions: merged } satisfies ModelMessage;
+    return [...messages.slice(0, i), next, ...messages.slice(i + 1)];
+  }
+
+  return messages;
+}
+
+function withStableAnthropicUpstreamOrder(
+  provider: string,
+  providerOptions: { [x: string]: JSONObject } | undefined,
+): { [x: string]: JSONObject } | undefined {
+  const base = providerOptions ?? {};
+
+  if (provider === "vercel") {
+    const existingGateway = isRecord(base["gateway"]) ? base["gateway"] : {};
+    return {
+      ...base,
+      gateway: {
+        ...existingGateway,
+        order: [...ANTHROPIC_UPSTREAM_PROVIDER_ORDER],
+      },
+    };
+  }
+
+  if (provider === "openrouter") {
+    const existingOpenRouter = isRecord(base["openrouter"]) ? base["openrouter"] : {};
+    const existingProvider =
+      isRecord(existingOpenRouter["provider"]) ? existingOpenRouter["provider"] : {};
+
+    return {
+      ...base,
+      openrouter: {
+        ...existingOpenRouter,
+        provider: {
+          ...existingProvider,
+          order: [...ANTHROPIC_UPSTREAM_PROVIDER_ORDER],
+        },
+      },
+    };
+  }
+
+  return providerOptions;
+}
 
 function estimateTokensFromValue(value: unknown): number {
   // Best-effort token estimate (OpenCode uses chars/4).
@@ -559,6 +653,24 @@ function computePercentages(chars: {
   ) as { S: number; A: number; U: number; TD: number; TR: number };
 
   return map;
+}
+
+function systemPromptToText(system: unknown): string {
+  if (typeof system === "string") return system;
+
+  if (Array.isArray(system)) {
+    return system
+      .map((m) => systemPromptToText(m))
+      .filter((s) => s.trim().length > 0)
+      .join("\n\n");
+  }
+
+  if (!isRecord(system)) return safeStringify(system);
+
+  const content = system["content"];
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(safeStringify).join("");
+  return safeStringify(content);
 }
 
 function buildInputCompositionLine(input: {
@@ -998,6 +1110,8 @@ export async function startBusAgentRunner(params: {
       runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
     );
 
+    const anthropicPromptCachingEnabled = isAnthropicModelSpec(resolved.spec);
+
     // Improve prompt caching stability by providing a session-scoped cache key.
     // This helps when many requests share a large common prefix (e.g. a long system prompt).
     // Only apply for OpenAI-backed providers.
@@ -1018,6 +1132,13 @@ export async function startBusAgentRunner(params: {
       };
     })();
 
+    const providerOptionsForAgent = anthropicPromptCachingEnabled
+      ? withStableAnthropicUpstreamOrder(
+          resolved.provider,
+          providerOptionsWithPromptCacheKey,
+        )
+      : providerOptionsWithPromptCacheKey;
+
     const systemPrompt = buildSystemPromptForProfile({
       baseSystemPrompt: cfg.agent.systemPrompt,
       profile: runProfile,
@@ -1027,6 +1148,14 @@ export async function startBusAgentRunner(params: {
           ? await maybeBuildSkillsSectionForPrimary()
           : null,
     });
+
+    const agentSystem = anthropicPromptCachingEnabled
+      ? {
+          role: "system" as const,
+          content: systemPrompt,
+          providerOptions: ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
+        }
+      : systemPrompt;
 
     logger.info("agent run starting", {
       requestId: next.requestId,
@@ -1089,10 +1218,10 @@ export async function startBusAgentRunner(params: {
     );
 
     const agent = new AiSdkPiAgent<ToolSet>({
-      system: systemPrompt,
+      system: agentSystem,
       model: resolved.model,
       tools,
-      providerOptions: providerOptionsWithPromptCacheKey,
+      providerOptions: providerOptionsForAgent,
       debug: {
         captureModelViewMessages: env.debug.contextDump.enabled,
       },
@@ -1119,10 +1248,17 @@ export async function startBusAgentRunner(params: {
         messages: scrubbed,
         compactedToolCallIds: state.compactedToolCallIds,
       });
-      return applyToolOutputCompactionView({
+
+      const compacted = applyToolOutputCompactionView({
         messages: scrubbed,
         compactedToolCallIds: state.compactedToolCallIds,
       });
+
+      if (!anthropicPromptCachingEnabled) return compacted;
+      return withProviderOptionsOnLastUserMessage(
+        compacted,
+        ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
+      );
     };
 
     const unsubscribeCompaction = await attachAutoCompaction(agent, {
@@ -1408,7 +1544,7 @@ export async function startBusAgentRunner(params: {
         : [];
 
       const icLine = buildInputCompositionLine({
-        system: agent.state.system,
+        system: systemPromptToText(agent.state.system),
         initialMessages,
         responseMessages,
         tools: agent.state.tools,

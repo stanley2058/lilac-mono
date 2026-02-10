@@ -21,6 +21,34 @@ function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function cloneMessage(message: ModelMessage): ModelMessage {
+  if (message.role === "assistant") {
+    return {
+      ...message,
+      content: Array.isArray(message.content)
+        ? message.content.map((p) => ({ ...p }))
+        : message.content,
+    };
+  }
+  if (message.role === "tool") {
+    return {
+      ...message,
+      content: message.content.map((p) => ({ ...p })),
+    };
+  }
+  if (message.role === "user" && Array.isArray(message.content)) {
+    return {
+      ...message,
+      content: message.content.map((p) => ({ ...p })),
+    };
+  }
+  return { ...message };
+}
+
+function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map(cloneMessage);
+}
+
 export type AutoCompactionOptions = {
   /** Canonical model identifier in `provider/modelstring` format. */
   model: ModelSpecifier;
@@ -342,7 +370,13 @@ export async function attachAutoCompaction(
       agent.replaceMessages(compacted, { reason: "compaction" });
 
       shouldCompact = false;
-      return compacted;
+
+      // Outbound-only: apply base transforms (e.g. tool pruning, caching markers)
+      // without mutating the canonical transcript we just persisted.
+      const outbound = cloneMessages(compacted);
+      return options.baseTransformMessages
+        ? await options.baseTransformMessages(outbound, context)
+        : outbound;
     } finally {
       inCompaction = false;
     }

@@ -15,10 +15,13 @@ import {
   type LanguageModel,
   type LanguageModelUsage,
   type ModelMessage,
+  type SystemModelMessage,
   type TextStreamPart,
   type Tool,
   type ToolSet,
 } from "ai";
+
+export type SystemPrompt = string | SystemModelMessage | SystemModelMessage[];
 
 /**
  * Controls how `steer()` messages are drained.
@@ -193,7 +196,7 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
  */
 export interface AiSdkPiAgentState<TOOLS extends ToolSet> {
   /** System prompt for the model. */
-  system: string;
+  system: SystemPrompt;
   /** AI SDK model instance used for `streamText()`. */
   model: LanguageModel;
   /** Toolset available to the model. */
@@ -230,7 +233,7 @@ type JSONObject = {
 
 export type TransformMessagesContext = {
   /** The system prompt that will be sent via `streamText({ system })`. */
-  system: string;
+  system: SystemPrompt;
   /** Abort signal for this turn (if present). */
   abortSignal?: AbortSignal;
 };
@@ -248,7 +251,7 @@ export type TransformMessagesFn = (
 
 export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   /** System prompt for the model. */
-  system: string;
+  system: SystemPrompt;
   /** AI SDK model instance used for `streamText()`. */
   model: LanguageModel;
   /** Optional toolset (defaults to empty). */
@@ -608,7 +611,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   /** Replace the system prompt used for subsequent turns. */
-  setSystem(system: string) {
+  setSystem(system: SystemPrompt) {
     this.state.system = system;
   }
 
