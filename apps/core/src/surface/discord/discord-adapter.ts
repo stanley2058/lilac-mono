@@ -1072,7 +1072,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       try {
         await interaction.reply({
           content: "Bot is not ready yet.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } catch {
         // ignore
@@ -1089,7 +1089,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       try {
         await interaction.reply({
           content: "This command must be used in a channel.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } catch {
         // ignore
@@ -1101,7 +1101,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       try {
         await interaction.reply({
           content: "Not allowed in this channel.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } catch {
         // ignore
@@ -1120,7 +1120,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       try {
         await interaction.reply({
           content: "Unknown subcommand.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } catch {
         // ignore
@@ -1139,7 +1139,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     try {
       // Defer immediately to avoid the 3s interaction timeout.
       try {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({
+          flags: MessageFlags.Ephemeral,
+        });
       } catch {
         // ignore
       }
@@ -1153,7 +1155,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         } else {
           await interaction.reply({
             content: "Channel not found or not text-based.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
         return;
@@ -1167,7 +1169,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: "Inserted session divider." });
       } else {
-        await interaction.reply({ content: "Inserted session divider.", ephemeral: true });
+        await interaction.reply({
+          content: "Inserted session divider.",
+          flags: MessageFlags.Ephemeral,
+        });
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1179,7 +1184,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         } else {
           await interaction.reply({
             content: `Failed to insert divider: ${msg}`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
       } catch {
