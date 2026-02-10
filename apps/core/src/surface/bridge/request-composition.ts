@@ -54,6 +54,14 @@ function compareDiscordSnowflakeLike(a: string, b: string): number {
   }
 }
 
+function compareDiscordMsgPosition(
+  a: { ts: number; messageId: string },
+  b: { ts: number; messageId: string },
+): number {
+  if (a.ts !== b.ts) return a.ts - b.ts;
+  return compareDiscordSnowflakeLike(a.messageId, b.messageId);
+}
+
 function applyDiscordSessionDividerCutoff(params: {
   listOldestToNewest: readonly SurfaceMessage[];
   botUserId: string;
@@ -70,6 +78,86 @@ function applyDiscordSessionDividerCutoff(params: {
 
   if (lastDividerIndex < 0) return [...listOldestToNewest];
   return listOldestToNewest.slice(lastDividerIndex + 1);
+}
+
+function applyDiscordSessionDividerCutoffToReplyChain(params: {
+  chainOldestToNewest: readonly ReplyChainMessage[];
+  botUserId: string;
+}): ReplyChainMessage[] {
+  const { chainOldestToNewest, botUserId } = params;
+
+  let lastDividerIndex = -1;
+  for (let i = 0; i < chainOldestToNewest.length; i++) {
+    const m = chainOldestToNewest[i]!;
+    if (m.authorId === botUserId && isDiscordSessionDividerText(m.text)) {
+      lastDividerIndex = i;
+    }
+  }
+  if (lastDividerIndex < 0) return [...chainOldestToNewest];
+  return chainOldestToNewest.slice(lastDividerIndex + 1);
+}
+
+async function findLastDiscordSessionDividerBefore(params: {
+  adapter: SurfaceAdapter;
+  channelId: string;
+  botUserId: string;
+  beforeMessageId: string;
+  /** Optional: stop scanning once we see this message id. */
+  stopAtMessageId?: string;
+}): Promise<{ ts: number; messageId: string } | null> {
+  const { adapter, channelId, botUserId, beforeMessageId, stopAtMessageId } =
+    params;
+
+  const sessionRef = { platform: "discord", channelId } as const;
+
+  let cursor: string | undefined = beforeMessageId;
+  let scanned = 0;
+  const MAX_MESSAGES = 2000;
+  const PAGE_SIZE = 200;
+
+  while (cursor && scanned < MAX_MESSAGES) {
+    const page = await adapter.listMsg(sessionRef, {
+      limit: Math.min(PAGE_SIZE, MAX_MESSAGES - scanned),
+      beforeMessageId: cursor,
+    });
+
+    if (!page || page.length === 0) return null;
+    scanned += page.length;
+
+    // listMsg order is adapter-specific; treat it as an unordered window for detection.
+    let newestDivider: { ts: number; messageId: string } | null = null;
+    for (const m of page) {
+      if (!isDiscordSessionDividerSurfaceMessage(m, botUserId)) continue;
+      const pos = { ts: m.ts, messageId: m.ref.messageId };
+      if (!newestDivider || compareDiscordMsgPosition(newestDivider, pos) < 0) {
+        newestDivider = pos;
+      }
+    }
+    if (newestDivider) return newestDivider;
+
+    if (stopAtMessageId && page.some((m) => m.ref.messageId === stopAtMessageId)) {
+      return null;
+    }
+
+    // Advance cursor to the oldest message id we saw.
+    let oldest = page[0]!;
+    for (const m of page) {
+      if (
+        compareDiscordMsgPosition(
+          { ts: m.ts, messageId: m.ref.messageId },
+          { ts: oldest.ts, messageId: oldest.ref.messageId },
+        ) < 0
+      ) {
+        oldest = m;
+      }
+    }
+
+    // Prevent infinite loops if the adapter returns a stable page.
+    if (oldest.ref.messageId === cursor) return null;
+    cursor = oldest.ref.messageId;
+  }
+
+  return null;
 }
 
 export type ComposeRecentChannelMessagesOpts = {
@@ -263,15 +351,121 @@ export async function composeRecentChannelMessages(
   // A reply is a strong "continue" signal.
   if (opts.triggerMsgRef && opts.triggerType === "mention") {
     const triggerMsg = await adapter.readMsg(opts.triggerMsgRef);
-    const ref = triggerMsg ? getReferenceFromRaw(triggerMsg.raw) : {};
-    if (ref.messageId) {
-      return await composeRequestMessages(adapter, {
-        platform: opts.platform,
-        botUserId: opts.botUserId,
-        botName: opts.botName,
-        transcriptStore: opts.transcriptStore,
-        trigger: { type: "reply", msgRef: opts.triggerMsgRef },
-      });
+    if (triggerMsg) {
+      // "Merge block" = a user's short burst of consecutive messages.
+      // If ANY message in the burst is a reply, treat the entire burst as a
+      // continuation of that reply thread.
+      const block = await resolveMergeBlockEndingAt(adapter, triggerMsg);
+      const anchor = findEarliestReplyAnchor(block);
+      if (anchor) {
+        const anchored = await fetchMentionThreadContext(adapter, {
+          platform: opts.platform,
+          botUserId: opts.botUserId,
+          botName: opts.botName,
+          triggerMsg,
+        });
+
+        const oldestAnchoredMessageId = anchored[0]?.messageId;
+
+        const divider = oldestAnchoredMessageId
+          ? await findLastDiscordSessionDividerBefore({
+              adapter,
+              channelId: opts.sessionId,
+              botUserId: opts.botUserId,
+              beforeMessageId: triggerMsg.ref.messageId,
+              stopAtMessageId: oldestAnchoredMessageId,
+            }).catch(() => null)
+          : null;
+
+        const anchoredAfterDivider = divider
+          ? anchored.filter((m) =>
+              compareDiscordMsgPosition(
+                { ts: m.ts, messageId: m.messageId },
+                divider,
+              ) > 0,
+            )
+          : anchored;
+
+        const anchoredCutChain = applyDiscordSessionDividerCutoffToReplyChain({
+          chainOldestToNewest: anchoredAfterDivider,
+          botUserId: opts.botUserId,
+        });
+
+        const merged = mergeChainByDiscordWindow(anchoredCutChain);
+        const attState = createDiscordAttachmentState();
+
+        const modelMessages: ModelMessage[] = [];
+        const seenTranscriptRequestIds = new Set<string>();
+
+        for (const chunk of merged) {
+          const isBot = chunk.authorId === opts.botUserId;
+          const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
+
+          const reactions = await safeListReactions(adapter, {
+            platform: opts.platform,
+            channelId: opts.sessionId,
+            messageId,
+          });
+
+          if (isBot && opts.transcriptStore) {
+            const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+              platform: opts.platform,
+              channelId: opts.sessionId,
+              messageId,
+            });
+            if (snap) {
+              if (!seenTranscriptRequestIds.has(snap.requestId)) {
+                modelMessages.push(...snap.messages);
+                seenTranscriptRequestIds.add(snap.requestId);
+              }
+              continue;
+            }
+          }
+
+          const normalized = normalizeText(chunk.text, {});
+          const header = formatDiscordAttributionHeader({
+            authorId: chunk.authorId,
+            authorName: chunk.authorName,
+            messageId,
+            reactions,
+          });
+
+          const mainText = `${header}\n${normalized}`.trimEnd();
+
+          if (isBot) {
+            modelMessages.push({
+              role: "assistant",
+              content: mainText,
+            } satisfies ModelMessage);
+            continue;
+          }
+
+          if (chunk.attachments.length === 0) {
+            modelMessages.push({
+              role: "user",
+              content: mainText,
+            } satisfies ModelMessage);
+            continue;
+          }
+
+          const parts: UserContent = [{ type: "text", text: mainText }];
+          await appendDiscordAttachmentsToUserContent(
+            parts,
+            chunk.attachments,
+            attState,
+          );
+          modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
+        }
+
+        return {
+          messages: modelMessages,
+          chainMessageIds: anchoredCutChain.map((m) => m.messageId),
+          mergedGroups: merged.map((m) => ({
+            authorId: m.authorId,
+            messageIds: [...m.messageIds],
+          })),
+        };
+      }
     }
   }
 
