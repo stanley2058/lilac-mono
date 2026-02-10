@@ -998,6 +998,26 @@ export async function startBusAgentRunner(params: {
       runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
     );
 
+    // Improve prompt caching stability by providing a session-scoped cache key.
+    // This helps when many requests share a large common prefix (e.g. a long system prompt).
+    // Only apply for OpenAI-backed providers.
+    const providerOptionsWithPromptCacheKey = (() => {
+      const provider = resolved.provider;
+      const supports = provider === "openai" || provider === "codex";
+      if (!supports) return resolved.providerOptions;
+
+      const base = resolved.providerOptions ?? {};
+      const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
+
+      return {
+        ...base,
+        openai: {
+          ...existingOpenAI,
+          promptCacheKey: sessionId,
+        },
+      };
+    })();
+
     const systemPrompt = buildSystemPromptForProfile({
       baseSystemPrompt: cfg.agent.systemPrompt,
       profile: runProfile,
@@ -1072,7 +1092,7 @@ export async function startBusAgentRunner(params: {
       system: systemPrompt,
       model: resolved.model,
       tools,
-      providerOptions: resolved.providerOptions,
+      providerOptions: providerOptionsWithPromptCacheKey,
       debug: {
         captureModelViewMessages: env.debug.contextDump.enabled,
       },
