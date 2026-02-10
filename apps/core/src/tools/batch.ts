@@ -239,7 +239,7 @@ export function batchTool(params: {
 
     const lines = recent.map((c, idx) => {
       const args = formatToolArgsForDisplay(c.tool, c.args);
-      const branch = idx === recent.length - 1 ? "└──" : "├──";
+      const branch = idx === recent.length - 1 ? "└─" : "├─";
       return `${branch} ${iconForChild(c)} ${c.tool}${args}`;
     });
 
