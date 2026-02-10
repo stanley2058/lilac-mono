@@ -111,8 +111,15 @@ export async function createCoreRuntime(
       // blocking XREAD/XREADGROUP calls.
       // Cap connections to avoid FD blowups, and warm a few so first-turn latency
       // doesn't include connection establishment.
-      max: 64,
-      warm: 16,
+      max: 16,
+      warm: 8,
+      autoscale: {
+        enabled: true,
+        min: 16,
+        cap: 256,
+        // Avoid resize thrash during bursts.
+        cooldownMs: 30_000,
+      },
     },
   });
 

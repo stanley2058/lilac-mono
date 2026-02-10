@@ -7,6 +7,7 @@ import type { RawBus } from "./raw-bus";
 import {
   RedisConnectionPool,
   type RedisConnectionPoolOptions,
+  type RedisConnectionPoolAutoscaleOptions,
 } from "./redis-connection-pool";
 import type {
   Cursor,
@@ -133,10 +134,12 @@ export type RedisStreamsBusOptions = {
    * publishes on a shared ioredis connection.
    */
   subscriberPool?: {
-    /** Max duplicated clients used by subscriptions. Default: 16. */
+    /** Initial max duplicated clients used by subscriptions. Default: 16. */
     max?: number;
     /** Optional background warm-up count. Default: 0. */
     warm?: number;
+    /** Optional autoscaling config (default disabled). */
+    autoscale?: RedisConnectionPoolAutoscaleOptions;
   };
 };
 
@@ -166,6 +169,7 @@ export class RedisStreamsBus implements RawBus {
       max,
       warm,
       onExhausted: "fallback_to_shared_with_warn",
+      autoscale: poolCfg?.autoscale,
       logger: this.logger,
       label: "event-bus:subscribe",
     };
