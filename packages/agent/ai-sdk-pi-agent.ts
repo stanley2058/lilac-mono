@@ -210,6 +210,16 @@ export interface AiSdkPiAgentState<TOOLS extends ToolSet> {
   error?: string;
   /** Provider-specific options. */
   providerOptions?: { [x: string]: JSONObject };
+
+  /** Debug-only state (optional, can be large). */
+  debug?: {
+    /** The exact messages array sent to the model for the last completed turn. */
+    lastModelViewMessages?: ModelMessage[];
+    /** Monotonic turn counter for lastModelViewMessages (1-based). */
+    lastModelViewTurn?: number;
+    /** When lastModelViewMessages was captured (Date.now()). */
+    lastModelViewCapturedAt?: number;
+  };
 }
 
 type JSONArray = JSONValue[];
@@ -255,6 +265,12 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   /** Optional provider-specific options. */
   providerOptions?: {
     [x: string]: JSONObject;
+  };
+
+  /** Optional debug features. */
+  debug?: {
+    /** Capture and store model-view messages per turn (can be large). */
+    captureModelViewMessages?: boolean;
   };
 };
 
@@ -542,6 +558,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private abortController: AbortController | undefined;
   private running: Promise<void> | undefined;
 
+  private turnCounter = 0;
+  private readonly captureModelViewMessages: boolean;
+
   private steeringMode: SteeringMode = "one-at-a-time";
   private followUpMode: FollowUpMode = "one-at-a-time";
   private steeringQueue: ModelMessage[] = [];
@@ -561,6 +580,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     this.transformMessages = options.transformMessages;
 
+    this.captureModelViewMessages =
+      options.debug?.captureModelViewMessages === true;
+
     this.state = {
       system: options.system,
       model: options.model,
@@ -570,6 +592,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       isStreaming: false,
       streamMessage: null,
       pendingToolCalls: new Set<string>(),
+      debug: this.captureModelViewMessages ? {} : undefined,
     };
   }
 
@@ -960,6 +983,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }> {
     this.emit({ type: "turn_start" });
 
+    const turnIndex = ++this.turnCounter;
+
     const getAbortReason = (): TurnAbortReason =>
       this.abortRequestedReason ??
       (this.pendingInterrupt ? "interrupt" : "manual");
@@ -986,6 +1011,14 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           phase: "model",
         });
       }
+    }
+
+    if (this.captureModelViewMessages) {
+      const cloned = messagesForModel.map(cloneMessage);
+      this.state.debug ??= {};
+      this.state.debug.lastModelViewMessages = cloned;
+      this.state.debug.lastModelViewTurn = turnIndex;
+      this.state.debug.lastModelViewCapturedAt = Date.now();
     }
 
     const lastMessage =

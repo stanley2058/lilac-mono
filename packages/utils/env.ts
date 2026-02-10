@@ -13,6 +13,10 @@ export function parseEnv() {
   const perfSampleRateRaw = env.LILAC_PERF_SAMPLE_RATE;
   const perfSampleRate = perfSampleRateRaw ? Number(perfSampleRateRaw) : 0;
 
+  const contextDumpEnabled =
+    env.LILAC_CONTEXT_DUMP === "1" || env.LILAC_CONTEXT_DUMP === "true";
+  const contextDumpDir = env.LILAC_CONTEXT_DUMP_DIR || "/data/debug";
+
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
@@ -73,6 +77,12 @@ export function parseEnv() {
         Number.isFinite(perfSampleRate) && perfSampleRate >= 0
           ? perfSampleRate
           : 0,
+    },
+    debug: {
+      contextDump: {
+        enabled: contextDumpEnabled,
+        dir: contextDumpDir,
+      },
     },
   } as const;
 }

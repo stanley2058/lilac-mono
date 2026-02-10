@@ -31,6 +31,10 @@ import {
   type TransformMessagesFn,
 } from "@stanley2058/lilac-agent";
 
+import fs from "node:fs/promises";
+import path from "node:path";
+import { Buffer } from "node:buffer";
+
 import { Logger } from "@stanley2058/simple-module-logger";
 
 import { applyPatchTool } from "../../tools/apply-patch";
@@ -54,6 +58,50 @@ function formatInt(n: number): string {
 function formatSeconds(ms: number): string {
   const sec = ms / 1000;
   return `${sec.toFixed(1)}s`;
+}
+
+function sanitizeFilenameToken(raw: string): string {
+  // Keep names mostly readable for humans (diff workflows) while preventing
+  // directory traversal or weird control chars.
+  return raw
+    .replace(/[\u0000-\u001F\u007F]/g, "_")
+    .replace(/[\\/]/g, "_")
+    .slice(0, 200);
+}
+
+function debugJsonStringify(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(
+    value,
+    (_key, v) => {
+      if (typeof v === "bigint") return v.toString();
+      if (v instanceof URL) return v.toString();
+      if (v instanceof Error) {
+        return {
+          name: v.name,
+          message: v.message,
+          stack: v.stack,
+        };
+      }
+
+      // Bun/Node Buffers are Uint8Array. Preserve byte identity as base64.
+      if (v instanceof Uint8Array) {
+        return {
+          __type: "Uint8Array",
+          base64: Buffer.from(v).toString("base64"),
+          byteLength: v.byteLength,
+        };
+      }
+
+      if (v && typeof v === "object") {
+        if (seen.has(v as object)) return "[circular]";
+        seen.add(v as object);
+      }
+
+      return v;
+    },
+    2,
+  );
 }
 
 type ToolsLike = Record<
@@ -1025,6 +1073,9 @@ export async function startBusAgentRunner(params: {
       model: resolved.model,
       tools,
       providerOptions: resolved.providerOptions,
+      debug: {
+        captureModelViewMessages: env.debug.contextDump.enabled,
+      },
     });
 
     agent.setContext({
@@ -1066,6 +1117,72 @@ export async function startBusAgentRunner(params: {
 
     const toolStartMs = new Map<string, number>();
 
+    const contextDumpEnabled = env.debug.contextDump.enabled;
+    const contextDumpDir = env.debug.contextDump.dir;
+    let turnEndCount = 0;
+
+    const dumpContextAfterTurn = async (event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "turn_end" }>) => {
+      if (!contextDumpEnabled) return;
+
+      const tsMs = Date.now();
+      const safeSessionId = sanitizeFilenameToken(headers.session_id);
+      const safeRequestId = sanitizeFilenameToken(headers.request_id);
+      const fileName = `${safeSessionId}-${safeRequestId}-${tsMs}.json`;
+      const filePath = path.join(contextDumpDir, fileName);
+
+      const modelView = agent.state.debug?.lastModelViewMessages;
+      const modelViewTurn = agent.state.debug?.lastModelViewTurn;
+
+      const payload = {
+        meta: {
+          tsMs,
+          ts: new Date(tsMs).toISOString(),
+          sessionId: headers.session_id,
+          requestId: headers.request_id,
+          requestClient: headers.request_client,
+          runProfile,
+          subagentDepth: subagentMeta.depth,
+          modelSpec: resolved.spec,
+          modelId: resolved.modelId,
+          turnEndIndex: turnEndCount,
+          modelViewTurn,
+        },
+        system: agent.state.system,
+        providerOptions: agent.state.providerOptions,
+        tools: {
+          names: Object.keys(agent.state.tools ?? {}),
+        },
+        usage: {
+          lastTurn: event.usage,
+          lastTurnTotal: event.totalUsage,
+        },
+        transcript: {
+          messages: agent.state.messages,
+        },
+        modelViewMessagesForTurn: modelView,
+      };
+
+      try {
+        await fs.mkdir(contextDumpDir, { recursive: true });
+        await fs.writeFile(filePath, debugJsonStringify(payload), "utf8");
+        logger.debug("context dump wrote", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          filePath,
+        });
+      } catch (e: unknown) {
+        logger.warn(
+          "context dump failed",
+          {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            filePath,
+          },
+          e,
+        );
+      }
+    };
+
     // Stats and timings for this run (agent model only).
     let initialMessages: ModelMessage[] = [];
     const runStats: {
@@ -1083,8 +1200,12 @@ export async function startBusAgentRunner(params: {
       }
 
       if (event.type === "turn_end") {
+        turnEndCount++;
         runStats.lastTurnFinishReason = event.finishReason;
         runStats.lastTurnEndAt = Date.now();
+
+        // Fire-and-forget debug dump; do not block the run.
+        void dumpContextAfterTurn(event);
       }
 
       if (
