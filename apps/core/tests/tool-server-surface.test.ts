@@ -281,10 +281,14 @@ describe("tool-server surface", () => {
       "surface.messages.list",
       {},
       { context: ctx },
-    )) as any[];
+    )) as {
+      meta: { order: string };
+      messages: Array<{ messageId: string }>;
+    };
 
-    expect(res.length).toBe(1);
-    expect(res[0].ref.messageId).toBe("m1");
+    expect(res.meta.order).toBe("ts_desc");
+    expect(res.messages.length).toBe(1);
+    expect(res.messages[0]?.messageId).toBe("m1");
   });
 
   it("searches per session and cools down healing", async () => {
@@ -351,12 +355,18 @@ describe("tool-server surface", () => {
       sessionId: c1,
       query: "deploy",
     })) as {
-      hits: Array<{ ref: { channelId: string }; userAlias?: string }>;
+      meta: {
+        session: { channelId: string };
+        order: string;
+      };
+      hits: Array<{ messageId: string; userAlias?: string }>;
       heal: { attempted: boolean; limit: number } | null;
     };
 
+    expect(first.meta.session.channelId).toBe(c1);
+    expect(first.meta.order).toBe("relevance");
     expect(first.hits.length).toBe(1);
-    expect(first.hits[0]!.ref.channelId).toBe(c1);
+    expect(first.hits[0]?.messageId).toBe("m1");
     expect(first.hits[0]!.userAlias).toBe("alice");
     expect(first.heal?.attempted).toBe(true);
     expect(first.heal?.limit).toBe(300);
@@ -416,9 +426,62 @@ describe("tool-server surface", () => {
       "surface.messages.read",
       {},
       { context: ctx },
-    )) as any;
+    )) as { message: { messageId: string } | null };
 
-    expect(msg?.ref?.messageId).toBe("m1");
+    expect(msg.message?.messageId).toBe("m1");
+  });
+
+  it("omits read raw payload by default and includes it on demand", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "hi",
+            ts: 0,
+            raw: { sample: true },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const base = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+    })) as {
+      message: { raw?: unknown } | null;
+    };
+
+    expect(base.message).not.toBeNull();
+    expect("raw" in (base.message ?? {})).toBe(false);
+
+    const withRaw = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+      includeRaw: true,
+    })) as {
+      message: { raw?: unknown } | null;
+    };
+
+    expect(withRaw.message?.raw).toEqual({ sample: true });
   });
 
   it("accepts discord:channel:<id> as sessionId", async () => {
@@ -454,10 +517,10 @@ describe("tool-server surface", () => {
     const res = (await tool.call("surface.messages.list", {
       client: "discord",
       sessionId: `discord:channel:${channelId}`,
-    })) as any[];
+    })) as { messages: Array<{ messageId: string }> };
 
-    expect(res.length).toBe(1);
-    expect(res[0].ref.messageId).toBe("m1");
+    expect(res.messages.length).toBe(1);
+    expect(res.messages[0]?.messageId).toBe("m1");
   });
 
   it("includes discord message type hints in surface.messages.list", async () => {
@@ -493,12 +556,152 @@ describe("tool-server surface", () => {
     const res = (await tool.call("surface.messages.list", {
       client: "discord",
       sessionId: channelId,
-    })) as any[];
+    })) as {
+      messages: Array<{
+        platformMessageType?: string;
+        platformIsChat?: boolean;
+        platformIsSystem?: boolean;
+      }>;
+    };
 
-    expect(res.length).toBe(1);
-    expect(res[0].platformMessageType).toBe("ThreadCreated");
-    expect(res[0].platformIsChat).toBe(false);
-    expect(res[0].platformIsSystem).toBe(true);
+    expect(res.messages.length).toBe(1);
+    expect(res.messages[0]?.platformMessageType).toBe("ThreadCreated");
+    expect(res.messages[0]?.platformIsChat).toBe(false);
+    expect(res.messages[0]?.platformIsSystem).toBe(true);
+  });
+
+  it("supports list order and includeRaw options", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u1",
+            text: "first",
+            ts: 100,
+            raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+          },
+          {
+            ref: { platform: "discord", channelId, messageId: "m2" },
+            session: { platform: "discord", channelId },
+            userId: "u2",
+            text: "second",
+            ts: 200,
+            raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+
+    const def = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+    })) as {
+      meta: { order: string };
+      messages: Array<{ messageId: string; raw?: unknown }>;
+    };
+
+    expect(def.meta.order).toBe("ts_desc");
+    expect(def.messages.map((m) => m.messageId)).toEqual(["m2", "m1"]);
+    expect("raw" in (def.messages[0] ?? {})).toBe(false);
+
+    const ascWithRaw = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      order: "ts_asc",
+      includeRaw: true,
+    })) as {
+      meta: { order: string };
+      messages: Array<{ messageId: string; raw?: unknown }>;
+    };
+
+    expect(ascWithRaw.meta.order).toBe("ts_asc");
+    expect(ascWithRaw.messages.map((m) => m.messageId)).toEqual(["m1", "m2"]);
+    expect(ascWithRaw.messages[0]?.raw).toBeDefined();
+  });
+
+  it("supports search order options", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u1",
+            text: "deploy alpha",
+            ts: 100,
+          },
+          {
+            ref: { platform: "discord", channelId, messageId: "m2" },
+            session: { platform: "discord", channelId },
+            userId: "u2",
+            text: "deploy beta",
+            ts: 200,
+          },
+        ],
+      },
+    );
+
+    const searchStore = new DiscordSearchStore(":memory:");
+    const search = new DiscordSearchService({ adapter, store: searchStore });
+    const tool = new Surface({ adapter, config: cfg, discordSearch: search });
+
+    const asc = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: channelId,
+      query: "deploy",
+      order: "ts_asc",
+    })) as {
+      meta: { order: string };
+      hits: Array<{ messageId: string }>;
+    };
+
+    expect(asc.meta.order).toBe("ts_asc");
+    expect(asc.hits.map((h) => h.messageId)).toEqual(["m1", "m2"]);
+
+    const desc = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: channelId,
+      query: "deploy",
+      order: "ts_desc",
+    })) as {
+      meta: { order: string };
+      hits: Array<{ messageId: string }>;
+    };
+
+    expect(desc.meta.order).toBe("ts_desc");
+    expect(desc.hits.map((h) => h.messageId)).toEqual(["m2", "m1"]);
+
+    searchStore.close();
   });
 
   it("errors clearly when sessionId looks like requestId", async () => {
@@ -725,12 +928,15 @@ describe("tool-server surface", () => {
       requestClient: "github",
     };
 
-    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as any;
+    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
+      meta: { session: { platform: string } };
+      message: { messageId: string; text: string } | null;
+    };
     expect(calls.length).toBe(1);
     expect(calls[0]).toEqual({ owner: "octo", repo: "repo", commentId: 345 });
-    expect(msg.ref.platform).toBe("github");
-    expect(msg.ref.messageId).toBe("345");
-    expect(msg.text).toBe("hello");
+    expect(msg.meta.session.platform).toBe("github");
+    expect(msg.message?.messageId).toBe("345");
+    expect(msg.message?.text).toBe("hello");
   });
 
   it("reads github issue body when messageId matches issue number", async () => {
@@ -776,11 +982,14 @@ describe("tool-server surface", () => {
       requestClient: "github",
     };
 
-    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as any;
-    expect(msg.ref.platform).toBe("github");
-    expect(msg.ref.messageId).toBe("12");
-    expect(msg.text).toContain("Title: t");
-    expect(msg.text).toContain("b");
+    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
+      meta: { session: { platform: string } };
+      message: { messageId: string; text: string } | null;
+    };
+    expect(msg.meta.session.platform).toBe("github");
+    expect(msg.message?.messageId).toBe("12");
+    expect(msg.message?.text).toContain("Title: t");
+    expect(msg.message?.text).toContain("b");
   });
 
   it("maps github reaction emoji to content on add", async () => {

@@ -12,6 +12,7 @@ import type {
   MsgRef,
   SessionRef,
   SurfaceAttachment,
+  SurfaceMessage,
   SurfaceReactionDetail,
   SurfaceReactionSummary,
   SurfaceSession,
@@ -510,21 +511,74 @@ function getDiscordMessageTypeMetaFromRaw(raw: unknown): {
   return { typeId, typeName, isSystem, isChat };
 }
 
-function decorateSurfaceMessageForListTool(msg: {
-  session?: unknown;
-  raw?: unknown;
-}): Record<string, unknown> {
-  // Keep the original shape, but add a small, explicit hint so agents don't
-  // have to inspect raw payloads to understand system/notification messages.
-  const out: Record<string, unknown> = { ...(msg as Record<string, unknown>) };
+const MESSAGE_LIST_ORDER_SCHEMA = z.enum(["ts_asc", "ts_desc"]);
+type MessageListOrder = z.infer<typeof MESSAGE_LIST_ORDER_SCHEMA>;
 
-  const session = msg.session;
-  const platform =
-    session && typeof session === "object" && "platform" in (session as any)
-      ? (session as any).platform
-      : undefined;
+const MESSAGE_SEARCH_ORDER_SCHEMA = z.enum(["relevance", "ts_asc", "ts_desc"]);
+type MessageSearchOrder = z.infer<typeof MESSAGE_SEARCH_ORDER_SCHEMA>;
 
-  if (platform === "discord") {
+function compareMessageIdLike(a: string, b: string): number {
+  try {
+    const ai = BigInt(a);
+    const bi = BigInt(b);
+    if (ai < bi) return -1;
+    if (ai > bi) return 1;
+    return 0;
+  } catch {
+    return a.localeCompare(b);
+  }
+}
+
+function compareSurfaceMessageChronological(a: SurfaceMessage, b: SurfaceMessage): number {
+  if (a.ts !== b.ts) return a.ts - b.ts;
+  return compareMessageIdLike(a.ref.messageId, b.ref.messageId);
+}
+
+function sortSurfaceMessages(
+  messages: readonly SurfaceMessage[],
+  order: MessageListOrder,
+): SurfaceMessage[] {
+  const sorted = [...messages].sort(compareSurfaceMessageChronological);
+  if (order === "ts_desc") sorted.reverse();
+  return sorted;
+}
+
+function toSessionMeta(session: SessionRef): {
+  platform: string;
+  channelId: string;
+  guildId?: string;
+  parentChannelId?: string;
+} {
+  if (session.platform === "discord") {
+    return {
+      platform: session.platform,
+      channelId: session.channelId,
+      guildId: session.guildId,
+      parentChannelId: session.parentChannelId,
+    };
+  }
+  return {
+    platform: session.platform,
+    channelId: session.channelId,
+  };
+}
+
+function toCompactMessage(
+  msg: SurfaceMessage,
+  opts: { includeRaw: boolean },
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    messageId: msg.ref.messageId,
+    userId: msg.userId,
+    userName: msg.userName,
+    text: msg.text,
+    ts: msg.ts,
+  };
+
+  if (typeof msg.editedTs === "number") out["editedTs"] = msg.editedTs;
+  if (typeof msg.deleted === "boolean") out["deleted"] = msg.deleted;
+
+  if (msg.session.platform === "discord") {
     const meta = getDiscordMessageTypeMetaFromRaw(msg.raw);
     if (meta) {
       if (typeof meta.typeName === "string") out["platformMessageType"] = meta.typeName;
@@ -535,7 +589,70 @@ function decorateSurfaceMessageForListTool(msg: {
     }
   }
 
+  if (opts.includeRaw && msg.raw !== undefined) {
+    out["raw"] = msg.raw;
+  }
+
   return out;
+}
+
+function buildMessagesListOutput(params: {
+  session: SessionRef;
+  messages: readonly SurfaceMessage[];
+  order: MessageListOrder;
+  includeRaw: boolean;
+}): {
+  meta: {
+    session: {
+      platform: string;
+      channelId: string;
+      guildId?: string;
+      parentChannelId?: string;
+    };
+    order: MessageListOrder;
+    count: number;
+  };
+  messages: Record<string, unknown>[];
+} {
+  const sorted = sortSurfaceMessages(params.messages, params.order);
+  const session = sorted[0]?.session ?? params.session;
+
+  return {
+    meta: {
+      session: toSessionMeta(session),
+      order: params.order,
+      count: sorted.length,
+    },
+    messages: sorted.map((msg) =>
+      toCompactMessage(msg, { includeRaw: params.includeRaw }),
+    ),
+  };
+}
+
+function buildMessagesReadOutput(params: {
+  session: SessionRef;
+  message: SurfaceMessage | null;
+  includeRaw: boolean;
+}): {
+  meta: {
+    session: {
+      platform: string;
+      channelId: string;
+      guildId?: string;
+      parentChannelId?: string;
+    };
+  };
+  message: Record<string, unknown> | null;
+} {
+  const session = params.message?.session ?? params.session;
+  return {
+    meta: {
+      session: toSessionMeta(session),
+    },
+    message: params.message
+      ? toCompactMessage(params.message, { includeRaw: params.includeRaw })
+      : null,
+  };
 }
 
 const sessionsListInputSchema = baseInputSchema;
@@ -565,6 +682,13 @@ const messagesListInputSchema = baseInputSchema.extend({
     .min(1)
     .optional()
     .describe("Optional message id cursor (list messages after this id)"),
+  order: MESSAGE_LIST_ORDER_SCHEMA.optional().describe(
+    "Optional sort order for returned messages (default: ts_desc).",
+  ),
+  includeRaw: z.coerce
+    .boolean()
+    .optional()
+    .describe("Include raw platform payloads (default: false)."),
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
@@ -582,6 +706,10 @@ const messagesReadInputSchema = baseInputSchema.extend({
     .describe(
       "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
+  includeRaw: z.coerce
+    .boolean()
+    .optional()
+    .describe("Include raw platform payloads (default: false)."),
 });
 
 const messagesSearchInputSchema = baseInputSchema.extend({
@@ -603,6 +731,9 @@ const messagesSearchInputSchema = baseInputSchema.extend({
     .max(100)
     .optional()
     .describe("Max matches (default: 20, max: 100)"),
+  order: MESSAGE_SEARCH_ORDER_SCHEMA.optional().describe(
+    "Sort order for hits (default: relevance).",
+  ),
 });
 
 const messagesSendInputSchema = baseInputSchema.extend({
@@ -1108,6 +1239,8 @@ export class Surface implements ServerTool {
       withDefaultSessionId(rawInput, ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+    const order: MessageListOrder = input.order ?? "ts_desc";
+    const includeRaw = input.includeRaw ?? false;
 
     if (client === "github") {
       const sessionId = mustPresentString(input.sessionId, "sessionId");
@@ -1127,7 +1260,7 @@ export class Surface implements ServerTool {
       });
 
       const sessionRef = asGithubSessionRef(sessionId);
-      return comments.map((c) => {
+      const messages: SurfaceMessage[] = comments.map((c) => {
         const login =
           c.user && typeof c.user.login === "string" ? c.user.login : undefined;
         const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
@@ -1144,6 +1277,13 @@ export class Surface implements ServerTool {
             htmlUrl: typeof c.html_url === "string" ? c.html_url : undefined,
           },
         };
+      });
+
+      return buildMessagesListOutput({
+        session: sessionRef,
+        messages,
+        order,
+        includeRaw,
       });
     }
 
@@ -1187,16 +1327,22 @@ export class Surface implements ServerTool {
     });
 
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
-    return messages
+    const filtered = messages
       .filter((m) => {
-      if (m.session.platform !== "discord") return false;
-      return shouldAllowDiscordChannel({
-        cfg,
-        channelId: m.session.channelId,
-        guildId: m.session.guildId,
+        if (m.session.platform !== "discord") return false;
+        return shouldAllowDiscordChannel({
+          cfg,
+          channelId: m.session.channelId,
+          guildId: m.session.guildId,
+        });
       });
-      })
-      .map((m) => decorateSurfaceMessageForListTool(m));
+
+    return buildMessagesListOutput({
+      session: sessionRef,
+      messages: filtered,
+      order,
+      includeRaw,
+    });
   }
 
   private async callMessagesRead(
@@ -1207,11 +1353,13 @@ export class Surface implements ServerTool {
       withDefaultMessageId(withDefaultSessionId(rawInput, ctx), ctx),
     );
     const client = resolveClient({ inputClient: input.client, ctx });
+    const includeRaw = input.includeRaw ?? false;
 
     if (client === "github") {
       const sessionId = mustPresentString(input.sessionId, "sessionId");
       const messageId = mustPresentString(input.messageId, "messageId");
       const thread = parseGithubSessionId(sessionId);
+      const sessionRef = asGithubSessionRef(sessionId);
 
       if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
         const issue = await this.gh().getIssue({
@@ -1227,9 +1375,9 @@ export class Surface implements ServerTool {
         const id =
           issue.user && typeof issue.user.id === "number" ? issue.user.id : null;
 
-        return {
+        const message: SurfaceMessage = {
           ref: asGithubMsgRef(sessionId, String(thread.number)),
-          session: asGithubSessionRef(sessionId),
+          session: sessionRef,
           userId: id !== null ? String(id) : login ?? "unknown",
           userName: login,
           text: `Title: ${issue.title}\n\n${issue.body ?? ""}`.trim(),
@@ -1240,6 +1388,12 @@ export class Surface implements ServerTool {
             htmlUrl: typeof issue.html_url === "string" ? issue.html_url : undefined,
           },
         };
+
+        return buildMessagesReadOutput({
+          session: sessionRef,
+          message,
+          includeRaw,
+        });
       }
 
       const commentId = Number(messageId);
@@ -1257,9 +1411,9 @@ export class Surface implements ServerTool {
         c.user && typeof c.user.login === "string" ? c.user.login : undefined;
       const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
 
-      return {
+      const message: SurfaceMessage = {
         ref: asGithubMsgRef(sessionId, String(c.id)),
-        session: asGithubSessionRef(sessionId),
+        session: sessionRef,
         userId: id !== null ? String(id) : login ?? "unknown",
         userName: login,
         text: typeof c.body === "string" ? c.body : "",
@@ -1269,6 +1423,12 @@ export class Surface implements ServerTool {
           htmlUrl: typeof c.html_url === "string" ? c.html_url : undefined,
         },
       };
+
+      return buildMessagesReadOutput({
+        session: sessionRef,
+        message,
+        includeRaw,
+      });
     }
 
     ensureDiscordClient(client);
@@ -1298,18 +1458,25 @@ export class Surface implements ServerTool {
       channelId,
       mustPresentString(input.messageId, "messageId"),
     );
+    const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
 
     if (hasCacheBurstProvider(this.params.adapter)) {
       await this.params.adapter.burstCache({
         msgRef,
-        sessionRef: asDiscordSessionRef(channelId, guildId ?? undefined),
+        sessionRef,
         reason: "surface_tool",
       });
     }
 
     const msg = await this.params.adapter.readMsg(msgRef);
 
-    if (!msg) return null;
+    if (!msg) {
+      return buildMessagesReadOutput({
+        session: sessionRef,
+        message: null,
+        includeRaw,
+      });
+    }
 
     if (
       msg.session.platform !== "discord" ||
@@ -1319,10 +1486,18 @@ export class Surface implements ServerTool {
         guildId: msg.session.guildId,
       })
     ) {
-      return null;
+      return buildMessagesReadOutput({
+        session: sessionRef,
+        message: null,
+        includeRaw,
+      });
     }
 
-    return decorateSurfaceMessageForListTool(msg);
+    return buildMessagesReadOutput({
+      session: sessionRef,
+      message: msg,
+      includeRaw,
+    });
   }
 
   private async callMessagesSearch(
@@ -1382,16 +1557,41 @@ export class Surface implements ServerTool {
     });
 
     const userAliasById = buildDiscordUserAliasById(cfg);
-    const hits = result.hits.map((hit) => ({
+    const baseHits = result.hits.map((hit) => ({
       ...hit,
       userAlias: userAliasById.get(hit.userId),
     }));
 
+    const order: MessageSearchOrder = input.order ?? "relevance";
+    const hits =
+      order === "relevance"
+        ? baseHits
+        : [...baseHits]
+            .sort((a, b) => compareSurfaceMessageChronological(a, b))
+            .map((hit) => hit);
+
+    if (order === "ts_desc") {
+      hits.reverse();
+    }
+
     return {
-      sessionId: channelId,
+      meta: {
+        session: toSessionMeta(sessionRef),
+        order,
+        count: hits.length,
+      },
       query: input.query,
       heal: result.heal,
-      hits,
+      hits: hits.map((hit) => ({
+        messageId: hit.ref.messageId,
+        userId: hit.userId,
+        userName: hit.userName,
+        userAlias: hit.userAlias,
+        text: hit.text,
+        ts: hit.ts,
+        editedTs: hit.editedTs,
+        score: hit.score,
+      })),
     };
   }
 
