@@ -50,7 +50,7 @@ cat payload.json | tools <tool> --stdin
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
 - `surface.sessions.list` — List cached sessions.
-- `surface.messages.list` — List messages for a session
+- `surface.messages.list` — List messages for a session (defaults: limit=50,order=ts_desc; use  --help  to see all options).
 - `surface.messages.read` — Read a message by id
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
