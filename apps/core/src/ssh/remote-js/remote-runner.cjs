@@ -310,19 +310,31 @@ async function opGlob(input, denyAbs) {
   const maxEntries = Number.isFinite(input.maxEntries)
     ? Number(input.maxEntries)
     : 100;
+  const mode = input.mode === "verbose" ? "verbose" : "lean";
 
   const filters = compileGlobFilters(patterns);
   const baseAbs = path.resolve(process.cwd());
   if (isDeniedPath(baseAbs, denyAbs)) {
+    if (mode === "lean") {
+      return {
+        mode,
+        truncated: false,
+        paths: [],
+        error: "Access denied: '" + baseAbs + "' is blocked for glob",
+      };
+    }
     return {
+      mode,
       truncated: false,
       entries: [],
       error: "Access denied: '" + baseAbs + "' is blocked for glob",
     };
   }
 
+  const paths = [];
   const entries = [];
   const state = { stop: false };
+  let truncated = false;
 
   await walkDir(
     baseAbs,
@@ -332,26 +344,50 @@ async function opGlob(input, denyAbs) {
       const relPosix = toPosixRel(rel);
       if (!matchesGlobs(relPosix, filters)) return;
 
+      if (mode === "lean") {
+        if (paths.length >= maxEntries) {
+          truncated = true;
+          state.stop = true;
+          return;
+        }
+        paths.push(relPosix);
+        return;
+      }
+
+      if (entries.length >= maxEntries) {
+        truncated = true;
+        state.stop = true;
+        return;
+      }
+
       let stats;
       try {
         stats = await fs.lstat(abs);
       } catch {
         return;
       }
+
       entries.push({
         path: relPosix,
         type: getFileTypeFromStats(stats),
         size: typeof stats.size === "number" ? stats.size : 0,
       });
-
-      if (entries.length >= maxEntries) state.stop = true;
     },
     state,
     denyAbs,
   );
 
+  if (mode === "lean") {
+    return {
+      mode,
+      truncated,
+      paths,
+    };
+  }
+
   return {
-    truncated: entries.length >= maxEntries,
+    mode,
+    truncated,
     entries,
   };
 }
@@ -365,6 +401,7 @@ async function opGrep(input, denyAbs) {
   const includeContextLines = Number.isFinite(input.includeContextLines)
     ? Number(input.includeContextLines)
     : 0;
+  const mode = input.mode === "verbose" ? "verbose" : "lean";
   const fileExtensions = Array.isArray(input.fileExtensions)
     ? input.fileExtensions.map((e) => String(e).replace(/^\./, ""))
     : [];
@@ -374,7 +411,18 @@ async function opGrep(input, denyAbs) {
     try {
       re = new RegExp(pattern, "g");
     } catch (e) {
+      if (mode === "lean") {
+        return {
+          mode,
+          truncated: false,
+          text: "",
+          error: "Invalid regex: " + (e instanceof Error ? e.message : String(e)),
+        };
+      }
       return {
+        mode,
+        truncated: false,
+        results: [],
         error: "Invalid regex: " + (e instanceof Error ? e.message : String(e)),
       };
     }
@@ -382,7 +430,20 @@ async function opGrep(input, denyAbs) {
 
   const baseAbs = path.resolve(process.cwd());
   if (isDeniedPath(baseAbs, denyAbs)) {
-    return { error: "Access denied: '" + baseAbs + "' is blocked for grep" };
+    if (mode === "lean") {
+      return {
+        mode,
+        truncated: false,
+        text: "",
+        error: "Access denied: '" + baseAbs + "' is blocked for grep",
+      };
+    }
+    return {
+      mode,
+      truncated: false,
+      results: [],
+      error: "Access denied: '" + baseAbs + "' is blocked for grep",
+    };
   }
 
   const contextTextFor = (lines, idx) => {
@@ -395,7 +456,14 @@ async function opGrep(input, denyAbs) {
   };
 
   const results = [];
+  const linesOut = [];
   const state = { stop: false };
+  let truncated = false;
+
+  const toLeanLine = (file, line, text) => {
+    const snippet = String(text).replace(/\s+/g, " ").trim();
+    return file + ":" + line + ": " + snippet;
+  };
 
   const extSet = new Set(fileExtensions);
   const shouldCheckExt = extSet.size > 0;
@@ -422,45 +490,69 @@ async function opGrep(input, denyAbs) {
       for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i] || "";
         if (!regex) {
+          const submatches = [];
           let start = 0;
           while (true) {
             const idx = lineText.indexOf(pattern, start);
             if (idx === -1) break;
+            submatches.push({ match: pattern, start: idx, end: idx + pattern.length });
+            start = idx + Math.max(1, pattern.length);
+          }
+
+          if (submatches.length === 0) continue;
+
+          const count = mode === "lean" ? linesOut.length : results.length;
+          if (count >= maxResults) {
+            truncated = true;
+            state.stop = true;
+            return;
+          }
+
+          const contextText = contextTextFor(lines, i);
+          if (mode === "lean") {
+            linesOut.push(toLeanLine(relPosix, i + 1, contextText));
+          } else {
             results.push({
               file: relPosix,
               line: i + 1,
-              column: idx + 1,
-              text: contextTextFor(lines, i),
-              submatches: [
-                { match: pattern, start: idx, end: idx + pattern.length },
-              ],
+              column: (submatches[0]?.start || 0) + 1,
+              text: contextText,
+              submatches,
             });
-            if (results.length >= maxResults) {
-              state.stop = true;
-              return;
-            }
-            start = idx + Math.max(1, pattern.length);
           }
         } else {
           re.lastIndex = 0;
+          const submatches = [];
           while (true) {
             const m = re.exec(lineText);
             if (!m) break;
             const matchText = m[0] || "";
             const start = m.index || 0;
             const end = start + matchText.length;
+            submatches.push({ match: matchText, start, end });
+            if (matchText.length === 0) re.lastIndex++;
+          }
+
+          if (submatches.length === 0) continue;
+
+          const count = mode === "lean" ? linesOut.length : results.length;
+          if (count >= maxResults) {
+            truncated = true;
+            state.stop = true;
+            return;
+          }
+
+          const contextText = contextTextFor(lines, i);
+          if (mode === "lean") {
+            linesOut.push(toLeanLine(relPosix, i + 1, contextText));
+          } else {
             results.push({
               file: relPosix,
               line: i + 1,
-              column: start + 1,
-              text: contextTextFor(lines, i),
-              submatches: [{ match: matchText, start, end }],
+              column: (submatches[0]?.start || 0) + 1,
+              text: contextText,
+              submatches,
             });
-            if (results.length >= maxResults) {
-              state.stop = true;
-              return;
-            }
-            if (matchText.length === 0) re.lastIndex++;
           }
         }
       }
@@ -469,7 +561,19 @@ async function opGrep(input, denyAbs) {
     denyAbs,
   );
 
-  return { results };
+  if (mode === "lean") {
+    return {
+      mode,
+      truncated,
+      text: linesOut.join("\n"),
+    };
+  }
+
+  return {
+    mode,
+    truncated,
+    results,
+  };
 }
 
 // apply_patch implementation (ported from local apply_patch tool)

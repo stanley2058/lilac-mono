@@ -24,6 +24,7 @@ const pathSchema = z
   );
 
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
+const searchModeSchema = z.enum(["lean", "verbose"]);
 
 const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
 const MAX_INSTRUCTION_CHARS = 20_000;
@@ -204,21 +205,33 @@ export const globInputZod = z.object({
     .positive()
     .optional()
     .describe("Maximum number of matched paths to return (default: 100)."),
+  mode: searchModeSchema
+    .optional()
+    .describe("Output mode. Default is 'lean'. Use 'verbose' for metadata."),
 });
 
 type GlobInput = z.infer<typeof globInputZod>;
 
-const globOutputZod = z.object({
-  truncated: z.boolean(),
-  entries: z.array(
-    z.object({
-      path: z.string(),
-      type: globEntryTypeSchema,
-      size: z.number(),
-    }),
-  ),
-  error: z.string().optional(),
-});
+const globOutputZod = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("lean"),
+    truncated: z.boolean(),
+    paths: z.array(z.string()),
+    error: z.string().optional(),
+  }),
+  z.object({
+    mode: z.literal("verbose"),
+    truncated: z.boolean(),
+    entries: z.array(
+      z.object({
+        path: z.string(),
+        type: globEntryTypeSchema,
+        size: z.number(),
+      }),
+    ),
+    error: z.string().optional(),
+  }),
+]);
 
 type GlobOutput = z.infer<typeof globOutputZod>;
 
@@ -253,13 +266,26 @@ export const grepInputZod = z.object({
     .nonnegative()
     .optional()
     .describe("Include N context lines around each match."),
+  mode: searchModeSchema
+    .optional()
+    .describe(
+      "Output mode. Default is 'lean' (text lines). Use 'verbose' for match metadata.",
+    ),
 });
 
 type GrepInput = z.infer<typeof grepInputZod>;
 
-const grepOutputZod = z.object({
-  results: z
-    .array(
+const grepOutputZod = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("lean"),
+    truncated: z.boolean(),
+    text: z.string(),
+    error: z.string().optional(),
+  }),
+  z.object({
+    mode: z.literal("verbose"),
+    truncated: z.boolean(),
+    results: z.array(
       z.object({
         file: z.string(),
         line: z.number(),
@@ -275,12 +301,23 @@ const grepOutputZod = z.object({
           )
           .optional(),
       }),
-    )
-    .optional(),
-  error: z.string().optional(),
-});
+    ),
+    error: z.string().optional(),
+  }),
+]);
 
 type GrepOutput = z.infer<typeof grepOutputZod>;
+
+function countGlobItems(output: GlobOutput): number {
+  if (output.mode === "lean") return output.paths.length;
+  return output.entries.length;
+}
+
+function countGrepItems(output: GrepOutput): number {
+  if (output.mode === "verbose") return output.results.length;
+  if (!output.text.trim()) return 0;
+  return output.text.split("\n").filter((line) => line.length > 0).length;
+}
 
 const instructionFieldsZod = z.object({
   loadedInstructions: z
@@ -695,14 +732,16 @@ export function fsTool(cwd: string) {
 
     glob: tool<GlobInput, GlobOutput>({
       description:
-        "Match filesystem paths using glob patterns. Returns path/type/size entries.",
+        "Match filesystem paths using glob patterns. Defaults to lean path-only output; use mode='verbose' for path/type/size entries.",
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
+        const mode = input.mode ?? "lean";
         logger.info("fs.glob", {
           patterns: input.patterns,
           cwd: opCwd,
           maxEntries: input.maxEntries,
+          mode,
         });
 
         const cwdTarget = parseSshCwdTarget(opCwd);
@@ -712,13 +751,15 @@ export function fsTool(cwd: string) {
             cwd: cwdTarget.cwd,
             patterns: input.patterns,
             maxEntries: input.maxEntries,
+            mode,
             denyPaths: REMOTE_DENY_PATHS,
           });
 
           logger.info("fs.glob done", {
-            entryCount: res.entries.length,
+            entryCount: countGlobItems(res),
             truncated: res.truncated,
             error: res.error,
+            mode: res.mode,
           });
 
           return res;
@@ -728,12 +769,14 @@ export function fsTool(cwd: string) {
           patterns: input.patterns,
           maxEntries: input.maxEntries,
           baseDir: opCwd,
+          mode,
         });
 
         logger.info("fs.glob done", {
-          entryCount: res.entries.length,
+          entryCount: countGlobItems(res),
           truncated: res.truncated,
           error: res.error,
+          mode: res.mode,
         });
 
         return res;
@@ -742,15 +785,17 @@ export function fsTool(cwd: string) {
 
     grep: tool<GrepInput, GrepOutput>({
       description:
-        "Search file contents with ripgrep. Supports literal or regex modes.",
+        "Search file contents with ripgrep. Defaults to lean text output; use mode='verbose' for match metadata.",
       inputSchema: grepInputZod,
       outputSchema: grepOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
+        const mode = input.mode ?? "lean";
         logger.info("fs.grep", {
           pattern: input.pattern,
           cwd: opCwd,
           regex: input.regex,
           maxResults: input.maxResults,
+          mode,
         });
 
         const cwdTarget = parseSshCwdTarget(opCwd);
@@ -764,13 +809,16 @@ export function fsTool(cwd: string) {
               maxResults: input.maxResults,
               fileExtensions: input.fileExtensions,
               includeContextLines: input.includeContextLines,
+              mode,
             },
             denyPaths: REMOTE_DENY_PATHS,
           });
 
           logger.info("fs.grep done", {
-            resultCount: Array.isArray(res.results) ? res.results.length : 0,
+            resultCount: countGrepItems(res),
+            truncated: res.truncated,
             error: res.error,
+            mode: res.mode,
           });
 
           return res;
@@ -783,11 +831,14 @@ export function fsTool(cwd: string) {
           fileExtensions: input.fileExtensions,
           includeContextLines: input.includeContextLines,
           baseDir: opCwd,
+          mode,
         });
 
         logger.info("fs.grep done", {
-          resultCount: Array.isArray(res.results) ? res.results.length : 0,
+          resultCount: countGrepItems(res),
+          truncated: res.truncated,
           error: res.error,
+          mode: res.mode,
         });
 
         return res;

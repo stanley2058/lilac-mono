@@ -71,11 +71,19 @@ export type RemoteGlobEntry = {
   size: number;
 };
 
-export type RemoteGlobOutput = {
-  truncated: boolean;
-  entries: RemoteGlobEntry[];
-  error?: string;
-};
+export type RemoteGlobOutput =
+  | {
+      mode: "lean";
+      truncated: boolean;
+      paths: string[];
+      error?: string;
+    }
+  | {
+      mode: "verbose";
+      truncated: boolean;
+      entries: RemoteGlobEntry[];
+      error?: string;
+    };
 
 export type RemoteGrepMatch = {
   file: string;
@@ -85,10 +93,19 @@ export type RemoteGrepMatch = {
   submatches?: { match: string; start: number; end: number }[];
 };
 
-export type RemoteGrepOutput = {
-  results?: RemoteGrepMatch[];
-  error?: string;
-};
+export type RemoteGrepOutput =
+  | {
+      mode: "lean";
+      truncated: boolean;
+      text: string;
+      error?: string;
+    }
+  | {
+      mode: "verbose";
+      truncated: boolean;
+      results: RemoteGrepMatch[];
+      error?: string;
+    };
 
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 500_000;
@@ -162,9 +179,11 @@ export async function remoteGlob(params: {
   cwd: string;
   patterns: readonly string[];
   maxEntries?: number;
+  mode?: "lean" | "verbose";
   denyPaths: readonly string[];
   timeoutMs?: number;
 }): Promise<RemoteGlobOutput> {
+  const mode = params.mode ?? "lean";
   const js = await getRemoteRunnerJsText();
   const res = await sshExecScriptJson<RemoteGlobOutput>({
     host: params.host,
@@ -176,6 +195,7 @@ export async function remoteGlob(params: {
       input: {
         patterns: params.patterns,
         maxEntries: params.maxEntries,
+        mode,
       },
     },
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -183,7 +203,10 @@ export async function remoteGlob(params: {
   });
 
   if (!res.ok) {
-    return { truncated: false, entries: [], error: res.error };
+    if (mode === "lean") {
+      return { mode, truncated: false, paths: [], error: res.error };
+    }
+    return { mode, truncated: false, entries: [], error: res.error };
   }
 
   return res.value;
@@ -198,10 +221,12 @@ export async function remoteGrep(params: {
     maxResults?: number;
     fileExtensions?: readonly string[];
     includeContextLines?: number;
+    mode?: "lean" | "verbose";
   };
   denyPaths: readonly string[];
   timeoutMs?: number;
 }): Promise<RemoteGrepOutput> {
+  const mode = params.input.mode ?? "lean";
   const js = await getRemoteRunnerJsText();
   const res = await sshExecScriptJson<RemoteGrepOutput>({
     host: params.host,
@@ -216,6 +241,7 @@ export async function remoteGrep(params: {
         maxResults: params.input.maxResults,
         fileExtensions: params.input.fileExtensions,
         includeContextLines: params.input.includeContextLines,
+        mode,
       },
     },
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -223,7 +249,10 @@ export async function remoteGrep(params: {
   });
 
   if (!res.ok) {
-    return { error: res.error };
+    if (mode === "lean") {
+      return { mode, truncated: false, text: "", error: res.error };
+    }
+    return { mode, truncated: false, results: [], error: res.error };
   }
 
   return res.value;
