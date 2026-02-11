@@ -3,8 +3,11 @@ import { z } from "zod";
 import {
   lilacEventTypes,
   outReqTopic,
+  type AdapterPlatform,
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { requireRequestContext } from "../shared/req-context";
 
 const subagentDelegateInputSchema = z.object({
@@ -44,6 +47,16 @@ type SubagentDelegateInput = z.infer<typeof subagentDelegateInputSchema>;
 type SubagentDelegateOutput = z.infer<typeof subagentDelegateOutputSchema>;
 type SubagentStatus = z.infer<typeof subagentStatusSchema>;
 
+type ChildToolStatus = "running" | "done";
+
+type ChildToolState = {
+  toolCallId: string;
+  status: ChildToolStatus;
+  ok: boolean | null;
+  display: string;
+  updatedSeq: number;
+};
+
 type RequestContextLike = {
   requestId: string;
   sessionId: string;
@@ -66,6 +79,21 @@ function parseDepth(ctx: unknown): number {
   return 0;
 }
 
+function toAdapterPlatform(value: string): AdapterPlatform {
+  switch (value) {
+    case "discord":
+    case "github":
+    case "whatsapp":
+    case "slack":
+    case "telegram":
+    case "web":
+    case "unknown":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
 function clampTimeoutMs(input: number | undefined, defaults: {
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
@@ -73,6 +101,53 @@ function clampTimeoutMs(input: number | undefined, defaults: {
   const requested = input ?? defaults.defaultTimeoutMs;
   const normalized = Math.max(1_000, Math.trunc(requested));
   return Math.min(normalized, defaults.maxTimeoutMs);
+}
+
+function truncateEnd(input: string, maxLen: number): string {
+  if (input.length <= maxLen) return input;
+  if (maxLen <= 3) return "...".slice(0, maxLen);
+  return input.slice(0, maxLen - 3) + "...";
+}
+
+function normalizeToolDisplay(display: string): string {
+  return display
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function childToolIcon(state: ChildToolState): string {
+  if (state.status === "running") return ">";
+  if (state.ok) return "+";
+  return "x";
+}
+
+function renderSubagentDisplay(params: {
+  profile: "explore";
+  children: ReadonlyMap<string, ChildToolState>;
+}): string {
+  const children = Array.from(params.children.values());
+  const total = children.length;
+  const done = children.filter((c) => c.status === "done").length;
+  const header = `subagent (${params.profile}; ${done}/${total} done)`;
+
+  if (children.length === 0) return header;
+
+  const recent = children
+    .filter((c) => c.updatedSeq > 0)
+    .sort((a, b) => b.updatedSeq - a.updatedSeq)
+    .slice(0, 3)
+    .sort((a, b) => a.updatedSeq - b.updatedSeq);
+
+  if (recent.length === 0) return header;
+
+  const lines = recent.map((c, idx) => {
+    const branch = idx === recent.length - 1 ? "`-" : "|-";
+    const display = normalizeToolDisplay(c.display || "tool");
+    return `${branch} ${childToolIcon(c)} ${truncateEnd(display, 120)}`;
+  });
+
+  return [header, ...lines].join("\n");
 }
 
 function buildExplorePrompt(task: string): ModelMessage {
@@ -104,6 +179,10 @@ export function subagentTools(params: {
   maxDepth: number;
 }) {
   const { bus } = params;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "tool:subagent_delegate",
+  });
 
   return {
     subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
@@ -143,10 +222,46 @@ export function subagentTools(params: {
           subagent_depth: String(depth + 1),
         };
 
+        const parentHeaders = {
+          request_id: ctx.requestId,
+          session_id: ctx.sessionId,
+          request_client: toAdapterPlatform(ctx.requestClient),
+        };
+
+        logger.info("subagent delegate start", {
+          requestId: ctx.requestId,
+          sessionId: ctx.sessionId,
+          parentToolCallId: toolCallId,
+          profile: input.profile,
+          parentDepth: depth,
+          childDepth: depth + 1,
+          timeoutMs,
+          task: truncateEnd(input.task.replace(/\s+/g, " ").trim(), 240),
+        });
+
         const subId = `${childRequestId}:${Math.random().toString(16).slice(2)}`;
 
         let lifecycleDetail: string | undefined;
         let finalText = "";
+        const childTools = new Map<string, ChildToolState>();
+        let childUpdateSeq = 0;
+
+        const publishSubagentProgress = async () => {
+          const display = renderSubagentDisplay({
+            profile: input.profile,
+            children: childTools,
+          });
+
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputToolCall,
+            {
+              toolCallId,
+              status: "start",
+              display,
+            },
+            { headers: parentHeaders },
+          );
+        };
 
         let settleFn: ((value: {
           status: SubagentStatus;
@@ -186,6 +301,49 @@ export function subagentTools(params: {
               finalText += msg.data.delta;
             }
 
+            if (msg.type === lilacEventTypes.EvtAgentOutputToolCall) {
+              const existing = childTools.get(msg.data.toolCallId);
+              const next: ChildToolState = {
+                toolCallId: msg.data.toolCallId,
+                status:
+                  msg.data.status === "end"
+                    ? "done"
+                    : "running",
+                ok:
+                  msg.data.status === "end"
+                    ? msg.data.ok === true
+                    : (existing?.ok ?? null),
+                display: msg.data.display,
+                updatedSeq: ++childUpdateSeq,
+              };
+
+              childTools.set(next.toolCallId, next);
+
+              logger.debug("subagent child tool", {
+                requestId: ctx.requestId,
+                sessionId: ctx.sessionId,
+                parentToolCallId: toolCallId,
+                childRequestId,
+                childToolCallId: msg.data.toolCallId,
+                childStatus: msg.data.status,
+                childOk: msg.data.ok,
+                display: truncateEnd(normalizeToolDisplay(msg.data.display), 160),
+              });
+
+              await publishSubagentProgress().catch((e: unknown) => {
+                logger.warn(
+                  "subagent progress publish failed",
+                  {
+                    requestId: ctx.requestId,
+                    sessionId: ctx.sessionId,
+                    parentToolCallId: toolCallId,
+                    childRequestId,
+                  },
+                  e,
+                );
+              });
+            }
+
             if (msg.type === lilacEventTypes.EvtAgentOutputResponseText) {
               finalText = msg.data.finalText;
               settle({ status: "resolved" });
@@ -212,6 +370,14 @@ export function subagentTools(params: {
 
             if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
               lifecycleDetail = msg.data.detail;
+              logger.debug("subagent lifecycle", {
+                requestId: ctx.requestId,
+                sessionId: ctx.sessionId,
+                parentToolCallId: toolCallId,
+                childRequestId,
+                state: msg.data.state,
+                detail: msg.data.detail,
+              });
               if (msg.data.state === "failed") {
                 settle({ status: "failed", detail: msg.data.detail });
               }
@@ -237,6 +403,14 @@ export function subagentTools(params: {
         };
 
         const cancelChild = async (detail: string) => {
+          logger.warn("subagent child cancel requested", {
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            parentToolCallId: toolCallId,
+            childRequestId,
+            detail,
+          });
+
           await bus.publish(
             lilacEventTypes.CmdRequestMessage,
             {
@@ -299,6 +473,22 @@ export function subagentTools(params: {
           const status = outcome.status;
           const ok = status === "resolved";
 
+          logger.info("subagent delegate done", {
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            parentToolCallId: toolCallId,
+            childRequestId,
+            childSessionId,
+            profile: input.profile,
+            status,
+            ok,
+            durationMs,
+            timeoutMs,
+            childToolsTotal: childTools.size,
+            childToolsDone: Array.from(childTools.values()).filter((c) => c.status === "done")
+              .length,
+          });
+
           return {
             ok,
             status,
@@ -310,6 +500,21 @@ export function subagentTools(params: {
             finalText,
             detail: outcome.detail ?? lifecycleDetail,
           };
+        } catch (e: unknown) {
+          logger.error(
+            "subagent delegate failed",
+            {
+              requestId: ctx.requestId,
+              sessionId: ctx.sessionId,
+              parentToolCallId: toolCallId,
+              childRequestId,
+              childSessionId,
+              profile: input.profile,
+              timeoutMs,
+            },
+            e,
+          );
+          throw e;
         } finally {
           abortListener?.();
           await stopAll();

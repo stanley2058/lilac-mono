@@ -443,6 +443,12 @@ function getBatchOkFromResult(result: unknown): boolean | null {
   return typeof v === "boolean" ? v : null;
 }
 
+function getSubagentOkFromResult(result: unknown): boolean | null {
+  if (!isRecord(result)) return null;
+  const v = result["ok"];
+  return typeof v === "boolean" ? v : null;
+}
+
 function getToolDefsText(tools: ToolsLike | null): string {
   if (!tools) return "";
   const entries = Object.entries(tools);
@@ -1423,6 +1429,8 @@ export async function startBusAgentRunner(params: {
         const ok =
           event.toolName === "batch"
             ? (getBatchOkFromResult(event.result) ?? !event.isError)
+            : event.toolName === "subagent_delegate"
+              ? (getSubagentOkFromResult(event.result) ?? !event.isError)
             : !event.isError;
 
         logger.debug("tool finished", {

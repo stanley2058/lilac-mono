@@ -66,8 +66,14 @@ function isBatchToolDisplay(display: string): boolean {
   return trimmed.startsWith("batch") || trimmed.startsWith("[batch]");
 }
 
+function isSubagentToolDisplay(display: string): boolean {
+  const trimmed = display.trimStart();
+  // Back-compat: older displays may include a bracketed prefix.
+  return trimmed.startsWith("subagent") || trimmed.startsWith("[subagent]");
+}
+
 function normalizeToolDisplayForDiscord(display: string): string {
-  if (isBatchToolDisplay(display)) return display;
+  if (isBatchToolDisplay(display) || isSubagentToolDisplay(display)) return display;
   return display
     .replace(/\s*\n+\s*/g, " ")
     .replace(/\s+/g, " ")

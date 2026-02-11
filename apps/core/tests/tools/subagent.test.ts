@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   createLilacBus,
   lilacEventTypes,
+  outReqTopic,
   type HandleContext,
   type Message,
   type PublishOptions,
@@ -337,5 +338,162 @@ describe("subagent_delegate tool", () => {
 
     expect(res.timeoutMs).toBe(4_000);
     expect(res.status).toBe("resolved");
+  });
+
+  it("surfaces child tool execution progress on the parent tool line", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+    });
+
+    const parentRequestId = "r:4";
+    const parentToolCallId = "tool-4";
+    const parentUpdates: Array<{ status: "start" | "end"; display: string }> = [];
+
+    await bus.subscribeTopic(
+      outReqTopic(parentRequestId),
+      {
+        mode: "fanout",
+        subscriptionId: "subagent-test-parent-out-1",
+        consumerId: "subagent-test-parent-out-1",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.EvtAgentOutputToolCall) {
+          await ctx.commit();
+          return;
+        }
+
+        if (msg.data.toolCallId !== parentToolCallId) {
+          await ctx.commit();
+          return;
+        }
+
+        parentUpdates.push({
+          status: msg.data.status,
+          display: msg.data.display,
+        });
+        await ctx.commit();
+      },
+    );
+
+    await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "subagent-test-worker-3",
+        consumerId: "subagent-test-worker-3",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+          await ctx.commit();
+          return;
+        }
+
+        const requestId = msg.headers?.request_id;
+        const sessionId = msg.headers?.session_id;
+        const requestClient = msg.headers?.request_client;
+        if (!requestId || !sessionId || !requestClient) {
+          await ctx.commit();
+          return;
+        }
+
+        if (msg.data.queue !== "prompt") {
+          await ctx.commit();
+          return;
+        }
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputToolCall,
+          {
+            toolCallId: "child-tool-1",
+            status: "start",
+            display: "grep auth src",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputToolCall,
+          {
+            toolCallId: "child-tool-1",
+            status: "end",
+            ok: true,
+            display: "grep auth src",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: "done",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await ctx.commit();
+      },
+    );
+
+    const res = await resolveExecuteResult(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Map auth flow" },
+        {
+          toolCallId: parentToolCallId,
+          messages: [],
+          experimental_context: {
+            requestId: parentRequestId,
+            sessionId: "s:4",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    );
+
+    expect(res.status).toBe("resolved");
+    expect(parentUpdates.length).toBeGreaterThan(0);
+    const latestDisplay = parentUpdates[parentUpdates.length - 1]?.display ?? "";
+    expect(latestDisplay).toContain("subagent (explore;");
+    expect(latestDisplay).toContain("grep auth src");
   });
 });
