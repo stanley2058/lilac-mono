@@ -31,6 +31,7 @@ import {
   getGithubLatestRequestForSession,
   getGithubRequestMeta,
 } from "../../github/github-state";
+import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -414,6 +415,15 @@ export async function bridgeBusToAdapter(params: {
 
     let outTextAcc = "";
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
+    const createdOutputRefs: MsgRef[] = [];
+    const createdOutputRefKeys = new Set<string>();
+
+    const recordCreatedOutputRef = (msgRef: MsgRef) => {
+      const key = `${msgRef.platform}:${msgRef.channelId}:${msgRef.messageId}`;
+      if (createdOutputRefKeys.has(key)) return;
+      createdOutputRefKeys.add(key);
+      createdOutputRefs.push(msgRef);
+    };
 
     // Serialize all mutations to the active output stream so reanchor doesn't race.
     let op = Promise.resolve();
@@ -425,6 +435,8 @@ export async function bridgeBusToAdapter(params: {
     let streamToken = 0;
 
     const publishCreatedForToken = (token: number) => (msgRef: MsgRef) => {
+      recordCreatedOutputRef(msgRef);
+
       // Only publish created messages for the currently active output stream.
       // This prevents a reanchor from temporarily treating "frozen" follow-up messages
       // (e.g. attachment flushes) as the active streaming target.
@@ -502,6 +514,23 @@ export async function bridgeBusToAdapter(params: {
     let stopped = false;
     let outputSub: { stop(): Promise<void> } | null = null;
     let firstOutLogged = false;
+
+    const deleteCreatedOutputMessages = async () => {
+      if (platform !== "discord") return;
+
+      for (let i = createdOutputRefs.length - 1; i >= 0; i--) {
+        const ref = createdOutputRefs[i];
+        if (!ref) continue;
+
+        await adapter.deleteMsg(ref).catch((e: unknown) => {
+          logger.debug(
+            "failed to delete skipped output message",
+            { requestId, sessionId, messageId: ref.messageId },
+            e,
+          );
+        });
+      }
+    };
 
     const relayStop = async () => {
       if (stopped) return;
@@ -607,6 +636,34 @@ export async function bridgeBusToAdapter(params: {
             }
 
             case lilacEventTypes.EvtAgentOutputResponseText: {
+              const delivery =
+                outMsg.data.delivery ??
+                resolveReplyDeliveryFromFinalText(outMsg.data.finalText);
+
+              if (delivery === "skip") {
+                await out.abort("skip").catch(() => undefined);
+                await deleteCreatedOutputMessages();
+                await relayStop();
+
+                if (platform === "github") {
+                  await cleanupGithubAck({ logger, requestId, sessionId }).catch(
+                    (e: unknown) => {
+                      logger.warn(
+                        "github ack cleanup failed",
+                        { requestId, sessionId },
+                        e,
+                      );
+                    },
+                  );
+                }
+
+                logger.info("reply relay skipped final surface reply", {
+                  requestId,
+                  sessionId,
+                });
+                return;
+              }
+
               if (platform === "github") {
                 const latest = getGithubLatestRequestForSession(sessionId);
                 if (latest && latest !== requestId) {

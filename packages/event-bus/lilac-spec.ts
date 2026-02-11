@@ -245,6 +245,8 @@ export type EvtAgentOutputDeltaTextData = {
 export type EvtAgentOutputResponseTextData = {
   /** The full response text accumulated across all deltas. */
   finalText: string;
+  /** Delivery directive for surfaces. Defaults to "reply" when omitted. */
+  delivery?: "reply" | "skip";
 };
 
 export type EvtAgentOutputResponseBinaryData = {

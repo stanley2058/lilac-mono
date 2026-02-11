@@ -46,6 +46,7 @@ import { subagentTools } from "../../tools/subagent";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -1494,7 +1495,18 @@ export async function startBusAgentRunner(params: {
         finalText = "Cancelled.";
       }
 
-      if (params.transcriptStore) {
+      const delivery = resolveReplyDeliveryFromFinalText(finalText);
+      const shouldSkipSurfaceReply = delivery === "skip";
+      if (shouldSkipSurfaceReply) {
+        logger.info("agent requested skip reply", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+        });
+        finalText = "";
+      }
+
+      // Intentional: skip-reply turns are not persisted for transcript expansion.
+      if (params.transcriptStore && !shouldSkipSurfaceReply) {
         try {
           const responseMessages = runStats.finalMessages
             ? runStats.finalMessages.slice(initialMessages.length)
@@ -1521,7 +1533,7 @@ export async function startBusAgentRunner(params: {
 
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
-        { finalText },
+        { finalText, delivery },
         { headers },
       );
 

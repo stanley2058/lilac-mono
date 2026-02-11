@@ -113,8 +113,15 @@ class FakeOutputStream {
   public readonly parts: SurfaceOutputPart[] = [];
   public finished = false;
   public aborted: string | undefined;
+  private created = false;
+
+  constructor(private readonly onFirstPush?: () => void) {}
 
   async push(part: SurfaceOutputPart): Promise<void> {
+    if (!this.created) {
+      this.created = true;
+      this.onFirstPush?.();
+    }
     this.parts.push(part);
   }
 
@@ -136,6 +143,8 @@ class FakeAdapter implements SurfaceAdapter {
   public streams: FakeOutputStream[] = [];
   public typingStarts: SessionRef[] = [];
   public typingStops = 0;
+  public deletedMsgs: MsgRef[] = [];
+  private nextOutputMessageId = 1;
 
   async connect(): Promise<void> {
     throw new Error("not implemented");
@@ -156,7 +165,15 @@ class FakeAdapter implements SurfaceAdapter {
   async startOutput(sessionRef: SessionRef, opts?: StartOutputOpts) {
     this.lastStart = { sessionRef, opts };
     this.starts.push({ sessionRef, opts });
-    const s = new FakeOutputStream();
+    const outputMessageId = `m_out_${this.nextOutputMessageId++}`;
+    const s = new FakeOutputStream(() => {
+      if (sessionRef.platform !== "discord") return;
+      opts?.onMessageCreated?.({
+        platform: "discord",
+        channelId: sessionRef.channelId,
+        messageId: outputMessageId,
+      });
+    });
     this.stream = s;
     this.streams.push(s);
     return s;
@@ -183,8 +200,8 @@ class FakeAdapter implements SurfaceAdapter {
   async editMsg(_msgRef: MsgRef, _content: ContentOpts): Promise<void> {
     throw new Error("not implemented");
   }
-  async deleteMsg(_msgRef: MsgRef): Promise<void> {
-    throw new Error("not implemented");
+  async deleteMsg(msgRef: MsgRef): Promise<void> {
+    this.deletedMsgs.push(msgRef);
   }
   async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
@@ -481,6 +498,60 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.stream?.aborted).toBe("cancel");
     expect(adapter.typingStops).toBe(1);
+
+    await bridge.stop();
+  });
+
+  it("skips final reply and deletes streamed discord messages", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_skip";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "working" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "NO_REPLY" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.aborted).toBe("skip");
+    expect(adapter.stream?.finished).toBe(false);
+    expect(adapter.deletedMsgs).toHaveLength(1);
+    expect(adapter.deletedMsgs[0]).toEqual({
+      platform: "discord",
+      channelId: "chan",
+      messageId: "m_out_1",
+    });
+    expect(adapter.stream?.parts).toEqual([{ type: "text.delta", delta: "working" }]);
 
     await bridge.stop();
   });
