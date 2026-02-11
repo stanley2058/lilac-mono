@@ -126,6 +126,9 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
       ...extraArgs,
     ];
 
+    // Per-file cap as a best-effort optimization. Global cap is still enforced below.
+    args.push("--max-count", String(limit + 1));
+
     if (!regex) args.push("--fixed-strings");
 
     for (const glob of globs) args.push("--glob", glob);
@@ -142,6 +145,7 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
     let stdoutRemainder = "";
     let reachedLimit = false;
     let settled = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const settleResolve = (value: RipgrepResult) => {
       if (settled) return;
@@ -158,10 +162,31 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
     const stopAtLimit = () => {
       if (reachedLimit) return;
       reachedLimit = true;
-      child.kill("SIGTERM");
+
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+
+      forceKillTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 300);
+
+      // Stop parsing buffered output once we know we have N+1.
+      try {
+        child.stdout.destroy();
+      } catch {
+        // ignore
+      }
     };
 
     const processLine = (line: string) => {
+      if (reachedLimit) return;
       if (line.length === 0) return;
       if (matches.length > limit) {
         stopAtLimit();
@@ -183,13 +208,19 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
+      if (reachedLimit) return;
+
       stdoutRemainder += chunk;
-      while (true) {
+      while (!reachedLimit) {
         const newlineIndex = stdoutRemainder.indexOf("\n");
         if (newlineIndex === -1) break;
         const line = stdoutRemainder.slice(0, newlineIndex);
         stdoutRemainder = stdoutRemainder.slice(newlineIndex + 1);
         processLine(line);
+      }
+
+      if (reachedLimit) {
+        stdoutRemainder = "";
       }
     });
 
@@ -198,16 +229,24 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
       stderrBuf += c;
     });
 
-    child.on("error", (err) => settleReject(err));
+    child.on("error", (err) => {
+      if (reachedLimit) return;
+      settleReject(err);
+    });
 
     child.on("close", (code, signal) => {
-      if (stdoutRemainder.length > 0) {
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = undefined;
+      }
+
+      if (!reachedLimit && stdoutRemainder.length > 0) {
         processLine(stdoutRemainder);
         stdoutRemainder = "";
       }
 
       const exitedNormally = code === 0 || code === 1;
-      const exitedAtLimit = reachedLimit && signal === "SIGTERM";
+      const exitedAtLimit = reachedLimit && (signal === "SIGTERM" || signal === "SIGKILL");
 
       if (exitedNormally || exitedAtLimit) {
         const truncated = matches.length > limit;
