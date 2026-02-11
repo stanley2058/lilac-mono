@@ -176,6 +176,39 @@ describe("fs search parity (local vs remote runner)", () => {
     expect(localEntries).toEqual(remoteEntries);
   });
 
+  it("glob negate patterns match and do not leak node_modules", async () => {
+    await mkdir(path.join(baseDir, "node_modules", "pkg"), { recursive: true });
+    await writeFile(
+      path.join(baseDir, "node_modules", "pkg", "ignored.ts"),
+      "export const ignored = true;\n",
+    );
+
+    const local = await fsTool.glob({
+      patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
+      mode: "lean",
+    });
+    const remote = await runRemoteOp<GlobResult>({
+      cwd: baseDir,
+      op: "fs.glob",
+      input: {
+        patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
+        mode: "lean",
+      },
+    });
+
+    expect(local.mode).toBe("lean");
+    expect(remote.mode).toBe("lean");
+    if (local.mode !== "lean" || remote.mode !== "lean") {
+      throw new Error("expected lean glob outputs");
+    }
+
+    const localPaths = local.paths.map(normalizePathPrefix).sort();
+    const remotePaths = remote.paths.map(normalizePathPrefix).sort();
+
+    expect(localPaths).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"]);
+    expect(localPaths).toEqual(remotePaths);
+  });
+
   it("grep lean and verbose outputs match", async () => {
     const localLean = await fsTool.grep({
       pattern: "alpha",
@@ -282,5 +315,36 @@ describe("fs search parity (local vs remote runner)", () => {
     expect(overflowRemote.truncated).toBe(true);
     expect(overflowLocal.results.length).toBe(3);
     expect(overflowRemote.results.length).toBe(3);
+  });
+
+  it("grep skips binary-like files in both local and remote", async () => {
+    await writeFile(
+      path.join(baseDir, "binary.undo"),
+      Buffer.from([0x41, 0x00, 0x47, 0x45, 0x4e, 0x54, 0x53, 0x2e, 0x6d, 0x64]),
+    );
+
+    const local = await fsTool.grep({
+      pattern: "AGENTS.md",
+      mode: "lean",
+    });
+    const remote = await runRemoteOp<GrepResult>({
+      cwd: baseDir,
+      op: "fs.grep",
+      input: {
+        pattern: "AGENTS.md",
+        mode: "lean",
+      },
+    });
+
+    expect(local.mode).toBe("lean");
+    expect(remote.mode).toBe("lean");
+    if (local.mode !== "lean" || remote.mode !== "lean") {
+      throw new Error("expected lean grep outputs");
+    }
+
+    expect(normalizeLeanText(local.text)).toEqual([]);
+    expect(normalizeLeanText(remote.text)).toEqual([]);
+    expect(local.truncated).toBe(false);
+    expect(remote.truncated).toBe(false);
   });
 });

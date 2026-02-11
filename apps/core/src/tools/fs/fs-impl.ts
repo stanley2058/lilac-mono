@@ -1115,10 +1115,46 @@ export class FileSystem {
 
       this.assertAllowed(resolvedBaseDir, "glob");
 
+      const includes: string[] = [];
+      const excludes: string[] = [];
+      for (const pattern of patterns) {
+        if (!pattern) continue;
+        if (pattern.startsWith("!")) {
+          const negated = pattern.slice(1);
+          if (negated.length > 0) {
+            excludes.push(negated);
+          }
+          continue;
+        }
+        includes.push(pattern);
+      }
+
+      if (includes.length === 0) {
+        if (mode === "lean") {
+          return {
+            mode,
+            truncated: false,
+            paths: [],
+          };
+        }
+        return {
+          mode,
+          truncated: false,
+          entries: [],
+        };
+      }
+
       const paths: string[] = [];
       const entries: GlobEntry[] = [];
+      const seen = new Set<string>();
       let truncated = false;
-      for await (const entry of fs.glob(patterns, { cwd: resolvedBaseDir })) {
+      for await (const entry of fs.glob(includes, {
+        cwd: resolvedBaseDir,
+        exclude: excludes.length > 0 ? excludes : undefined,
+      })) {
+        if (seen.has(entry)) continue;
+        seen.add(entry);
+
         const abs = resolve(join(resolvedBaseDir, entry));
         if (this.isDeniedPath(abs)) continue;
 

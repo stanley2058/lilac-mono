@@ -159,6 +159,21 @@ function matchesGlobs(relPosix, filters) {
   return true;
 }
 
+function isLikelyBinary(buf) {
+  if (!buf || typeof buf.length !== "number" || buf.length === 0) return false;
+  const sampleSize = Math.min(buf.length, 8192);
+  let suspicious = 0;
+  for (let i = 0; i < sampleSize; i++) {
+    const byte = buf[i];
+    if (byte === 0) return true;
+    const isControl = byte < 32 && byte !== 9 && byte !== 10 && byte !== 13;
+    if (isControl || byte === 127) {
+      suspicious += 1;
+    }
+  }
+  return suspicious / sampleSize > 0.3;
+}
+
 async function opReadText(input, denyAbs) {
   const inPath = String(input.path || "");
   const expanded = expandTilde(inPath);
@@ -478,12 +493,16 @@ async function opGrep(input, denyAbs) {
         if (!extSet.has(ext)) return;
       }
 
-      let content;
+      let bytes;
       try {
-        content = await fs.readFile(abs, "utf8");
+        bytes = await fs.readFile(abs);
       } catch {
         return;
       }
+
+      if (isLikelyBinary(bytes)) return;
+
+      const content = bytes.toString("utf8");
 
       const relPosix = toPosixRel(path.relative(baseAbs, abs));
       const lines = content.split("\n");

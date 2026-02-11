@@ -85,6 +85,47 @@ describe("fs tool search wrappers", () => {
     expect(out.entries.every((e) => typeof e.size === "number")).toBe(true);
   });
 
+  it("glob applies negate patterns and dedupes overlapping includes", async () => {
+    const tools = fsTool(baseDir);
+    await mkdir(path.join(baseDir, "node_modules", "dep"), { recursive: true });
+    await writeFile(
+      path.join(baseDir, "node_modules", "dep", "ignored.ts"),
+      "export const ignored = true;\n",
+    );
+
+    const out = await resolveExecuteResult(
+      tools.glob.execute!(
+        {
+          patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
+        },
+        { toolCallId: "g2b", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("lean");
+    if (out.mode !== "lean") {
+      throw new Error("expected lean glob output");
+    }
+
+    const sorted = out.paths.sort();
+    expect(sorted).toEqual(["src/a.ts", "src/b.ts"]);
+
+    const outShallowNegate = await resolveExecuteResult(
+      tools.glob.execute!(
+        {
+          patterns: ["**/*.ts", "!node_modules/**"],
+        },
+        { toolCallId: "g2c", messages: [] },
+      ),
+    );
+
+    expect(outShallowNegate.mode).toBe("lean");
+    if (outShallowNegate.mode !== "lean") {
+      throw new Error("expected lean glob output");
+    }
+    expect(outShallowNegate.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
   it("grep defaults to lean text output", async () => {
     const tools = fsTool(baseDir);
 

@@ -319,7 +319,16 @@ if [ -n "$REMOTE_CWD" ]; then
   elif [[ "$REMOTE_CWD" == "~/"* ]]; then
     REMOTE_CWD="$HOME/\${REMOTE_CWD:2}"
   fi
-  cd "$REMOTE_CWD"
+
+  if [ ! -d "$REMOTE_CWD" ]; then
+    echo '{"ok":false,"error":"Remote cwd does not exist or is not a directory"}'
+    exit 0
+  fi
+
+  if ! cd "$REMOTE_CWD"; then
+    echo '{"ok":false,"error":"Remote cwd is not accessible"}'
+    exit 0
+  fi
 fi
 
 TMP_JS=""
