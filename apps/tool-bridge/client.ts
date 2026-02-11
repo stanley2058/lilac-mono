@@ -38,10 +38,208 @@ type ToolOutputFull = {
   hidden?: boolean;
 };
 
+let callableIdsCache: string[] | undefined;
+
+function parseCallableIdsFromListPayload(payload: unknown): string[] {
+  if (!isRecord(payload)) return [];
+  const tools = payload.tools;
+  if (!Array.isArray(tools)) return [];
+
+  const callableIds: string[] = [];
+  for (const item of tools) {
+    if (!isRecord(item)) continue;
+    const callableId = item.callableId;
+    if (typeof callableId !== "string" || callableId.length === 0) continue;
+    callableIds.push(callableId);
+  }
+
+  return callableIds;
+}
+
+async function listCallableIdsBestEffort(): Promise<string[]> {
+  if (callableIdsCache !== undefined) return callableIdsCache;
+
+  try {
+    const res = await fetchNoTimeout(`${BACKEND_URL}/list`);
+    if (!res.ok) {
+      callableIdsCache = [];
+      return callableIdsCache;
+    }
+    const payload = (await res.json()) as unknown;
+    callableIdsCache = parseCallableIdsFromListPayload(payload);
+    return callableIdsCache;
+  } catch {
+    callableIdsCache = [];
+    return callableIdsCache;
+  }
+}
+
+function maybeString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function extractErrorMessage(payload: unknown): string | undefined {
+  const asString = maybeString(payload);
+  if (asString) return asString;
+
+  if (!isRecord(payload)) return undefined;
+
+  const directMessage = maybeString(payload.message);
+  if (directMessage) return directMessage;
+
+  const outputMessage = maybeString(payload.output);
+  if (outputMessage) return outputMessage;
+
+  const errorValue = payload.error;
+  const nested = extractErrorMessage(errorValue);
+  if (nested) return nested;
+
+  return undefined;
+}
+
+async function readHttpErrorMessage(res: Response): Promise<string | undefined> {
+  let body = "";
+  try {
+    body = (await res.text()).trim();
+  } catch {
+    return undefined;
+  }
+  if (!body) return undefined;
+
+  try {
+    const payload = JSON.parse(body) as unknown;
+    return extractErrorMessage(payload) ?? body;
+  } catch {
+    return body;
+  }
+}
+
+function formatHttpStatus(res: Response): string {
+  return res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+}
+
+function formatHttpFailure(action: string, res: Response, message?: string): string {
+  if (message) return `Failed to ${action}: ${message}`;
+  return `Failed to ${action}: ${formatHttpStatus(res)}`;
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+
+  let prev = Array.from({ length: right.length + 1 }, (_, i) => i);
+
+  for (let i = 1; i <= left.length; i++) {
+    const curr: number[] = [i];
+    const leftChar = left[i - 1] ?? "";
+
+    for (let j = 1; j <= right.length; j++) {
+      const rightChar = right[j - 1] ?? "";
+      const deletion = (prev[j] ?? Number.MAX_SAFE_INTEGER) + 1;
+      const insertion = (curr[j - 1] ?? Number.MAX_SAFE_INTEGER) + 1;
+      const substitution =
+        (prev[j - 1] ?? Number.MAX_SAFE_INTEGER) +
+        (leftChar === rightChar ? 0 : 1);
+      curr[j] = Math.min(deletion, insertion, substitution);
+    }
+
+    prev = curr;
+  }
+
+  return prev[right.length] ?? Number.MAX_SAFE_INTEGER;
+}
+
+function pickCallableSuggestion(
+  callableId: string,
+  candidates: readonly string[],
+): string | undefined {
+  const query = callableId.trim();
+  if (!query) return undefined;
+
+  const queryLower = query.toLowerCase();
+  const queryRoot = queryLower.split(".")[0] ?? "";
+
+  let bestCandidate: string | undefined;
+  let bestScore = Number.MAX_SAFE_INTEGER;
+
+  for (const candidate of candidates) {
+    const candidateLower = candidate.toLowerCase();
+    if (candidateLower === queryLower) continue;
+
+    let score = levenshteinDistance(queryLower, candidateLower);
+
+    const candidateRoot = candidateLower.split(".")[0] ?? "";
+    if (queryRoot && candidateRoot && queryRoot !== candidateRoot) {
+      score += 2;
+    }
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+      continue;
+    }
+
+    if (
+      score === bestScore &&
+      bestCandidate &&
+      candidate.length < bestCandidate.length
+    ) {
+      bestCandidate = candidate;
+    }
+  }
+
+  if (!bestCandidate) return undefined;
+
+  const threshold = Math.max(
+    2,
+    Math.ceil(Math.max(query.length, bestCandidate.length) * 0.25),
+  );
+  if (bestScore > threshold) return undefined;
+
+  return bestCandidate;
+}
+
+async function buildCallableIdErrorMessage(params: {
+  action: string;
+  callableId: string;
+  res: Response;
+  detail?: string;
+}): Promise<string> {
+  const isNotFound = params.res.status === 404;
+  const looksLikeUnknownCallable =
+    isNotFound || (params.detail?.includes("Unknown callable ID") ?? false);
+
+  if (!looksLikeUnknownCallable) {
+    return formatHttpFailure(params.action, params.res, params.detail);
+  }
+
+  const callableIds = await listCallableIdsBestEffort();
+  const suggestion = pickCallableSuggestion(params.callableId, callableIds);
+  if (suggestion) {
+    return `Unknown callable ID '${params.callableId}'. Did you mean '${suggestion}'?`;
+  }
+
+  const base =
+    params.detail && params.detail.length > 0
+      ? params.detail
+      : `Unknown callable ID '${params.callableId}'`;
+  if (base.endsWith(".")) {
+    return `${base} Run 'tools --list' to see available callable IDs.`;
+  }
+  return `${base}. Run 'tools --list' to see available callable IDs.`;
+}
+
 async function listTools() {
   const res = await fetchNoTimeout(`${BACKEND_URL}/list`);
   if (!res.ok) {
-    throw new Error(`Failed to fetch tools list: ${res.statusText}`);
+    const detail = await readHttpErrorMessage(res);
+    throw new Error(formatHttpFailure("fetch tools list", res, detail));
   }
   const json = await res.json();
   return json as {
@@ -54,7 +252,15 @@ async function toolHelp(callableId: string) {
     `${BACKEND_URL}/help/${encodeURIComponent(callableId)}`,
   );
   if (!res.ok) {
-    throw new Error(`Failed to fetch tool help: ${res.statusText}`);
+    const detail = await readHttpErrorMessage(res);
+    throw new Error(
+      await buildCallableIdErrorMessage({
+        action: "fetch tool help",
+        callableId,
+        res,
+        detail,
+      }),
+    );
   }
   const json = await res.json();
   return json as ToolOutputFull;
@@ -84,7 +290,15 @@ async function callTool(callableId: string, input: Record<string, unknown>) {
     }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to call tool: ${res.statusText}`);
+    const detail = await readHttpErrorMessage(res);
+    throw new Error(
+      await buildCallableIdErrorMessage({
+        action: "call tool",
+        callableId,
+        res,
+        detail,
+      }),
+    );
   }
   const json = await res.json();
   return json as
