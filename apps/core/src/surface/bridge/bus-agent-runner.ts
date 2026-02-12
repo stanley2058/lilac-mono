@@ -46,6 +46,7 @@ import { subagentTools } from "../../tools/subagent";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 function consumerId(prefix: string): string {
@@ -125,6 +126,19 @@ function safeStringify(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function buildResumePrompt(partialText: string): ModelMessage {
+  const base =
+    "System notice: the server restarted during your previous turn. Continue from the last stable boundary. If a tool was interrupted, treat it as failed with error: server restarted, and proceed safely.";
+  const content = partialText.trim().length > 0
+    ? `${base}\n\nPartial response already shown to user:\n\n${partialText}\n\nContinue from there without duplicating already visible text.`
+    : `${base}\n\nNo visible partial response was persisted.`;
+
+  return {
+    role: "user",
+    content,
+  };
 }
 
 // OpenCode-style tool output pruning:
@@ -761,7 +775,32 @@ type Enqueued = {
   queue: RequestQueueMode;
   messages: ModelMessage[];
   raw?: unknown;
+  recovery?: {
+    checkpointMessages: ModelMessage[];
+    partialText: string;
+  };
 };
+
+export type AgentRunnerRecoveryEntry = {
+  kind: "active" | "queued";
+  requestId: string;
+  sessionId: string;
+  requestClient: AdapterPlatform;
+  queue: RequestQueueMode;
+  messages: ModelMessage[];
+  raw?: unknown;
+  recovery?: {
+    checkpointMessages: ModelMessage[];
+    partialText: string;
+  };
+};
+
+class RestartDrainingAbort extends Error {
+  constructor() {
+    super("server restarting");
+    this.name = "RestartDrainingAbort";
+  }
+}
 
 function parseRouterSessionModeFromRaw(
   raw: unknown,
@@ -878,6 +917,16 @@ type SessionQueue = {
   agent: AiSdkPiAgent<ToolSet> | null;
   queue: Enqueued[];
   activeRequestId: string | null;
+  activeRun:
+    | {
+        requestId: string;
+        sessionId: string;
+        requestClient: AdapterPlatform;
+        queue: RequestQueueMode;
+        raw?: unknown;
+        partialText: string;
+      }
+    | null;
   /** Track toolCallIds whose outputs are compacted in the model-facing view. */
   compactedToolCallIds: Set<string>;
 };
@@ -902,6 +951,9 @@ export async function startBusAgentRunner(params: {
 
   const bySession = new Map<string, SessionQueue>();
   const cancelledByRequestId = new Set<string>();
+  const restartAbortRequestIds = new Set<string>();
+  const forcedRecoveryByRequestId = new Map<string, AgentRunnerRecoveryEntry>();
+  let draining = false;
 
   const sub = await bus.subscribeTopic(
     "cmd.request",
@@ -961,6 +1013,16 @@ export async function startBusAgentRunner(params: {
         raw: msg.data.raw,
       };
 
+      if (draining) {
+        logger.info("dropping request message while draining", {
+          requestId,
+          sessionId,
+          queue: msg.data.queue,
+        });
+        await ctx.commit();
+        return;
+      }
+
       const state =
         bySession.get(sessionId) ??
         ({
@@ -968,6 +1030,7 @@ export async function startBusAgentRunner(params: {
           agent: null,
           queue: [] as Enqueued[],
           activeRequestId: null,
+          activeRun: null,
           compactedToolCallIds: new Set<string>(),
         } satisfies SessionQueue);
       bySession.set(sessionId, state);
@@ -1054,6 +1117,132 @@ export async function startBusAgentRunner(params: {
     },
   );
 
+  let subscriptionStopped = false;
+  const stopSubscription = async () => {
+    if (subscriptionStopped) return;
+    subscriptionStopped = true;
+    await sub.stop();
+  };
+
+  function buildActiveRecoveryEntry(state: SessionQueue): AgentRunnerRecoveryEntry | null {
+    if (!state.running || !state.agent || !state.activeRun) return null;
+
+    const checkpointMessages = buildSafeRecoveryCheckpoint(
+      state.agent.state.messages,
+      "server restarted",
+    );
+
+    return {
+      kind: "active",
+      requestId: state.activeRun.requestId,
+      sessionId: state.activeRun.sessionId,
+      requestClient: state.activeRun.requestClient,
+      queue: "prompt",
+      messages: [],
+      raw: state.activeRun.raw,
+      recovery: {
+        checkpointMessages,
+        partialText: state.activeRun.partialText,
+      },
+    };
+  }
+
+  async function beginDrain(opts?: { deadlineMs?: number }) {
+    draining = true;
+    await stopSubscription();
+
+    const deadlineMs = Math.max(1, opts?.deadlineMs ?? 3_000);
+    const startedAt = Date.now();
+
+    const hasRunning = () => [...bySession.values()].some((s) => s.running);
+
+    while (hasRunning() && Date.now() - startedAt < deadlineMs) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    if (!hasRunning()) return;
+
+    for (const state of bySession.values()) {
+      if (!state.running || !state.agent || !state.activeRun) continue;
+
+      const recovery = buildActiveRecoveryEntry(state);
+      if (recovery) {
+        forcedRecoveryByRequestId.set(recovery.requestId, recovery);
+        restartAbortRequestIds.add(recovery.requestId);
+      }
+
+      state.agent.abort();
+    }
+
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  function snapshotRecoverables(): AgentRunnerRecoveryEntry[] {
+    const out: AgentRunnerRecoveryEntry[] = [];
+    const seenActive = new Set<string>();
+
+    for (const forced of forcedRecoveryByRequestId.values()) {
+      out.push(forced);
+      seenActive.add(forced.requestId);
+    }
+
+    for (const state of bySession.values()) {
+      const active = buildActiveRecoveryEntry(state);
+      if (active && !seenActive.has(active.requestId)) {
+        out.push(active);
+        seenActive.add(active.requestId);
+      }
+
+      for (const queued of state.queue) {
+        out.push({
+          kind: "queued",
+          requestId: queued.requestId,
+          sessionId: queued.sessionId,
+          requestClient: queued.requestClient,
+          queue: queued.queue,
+          messages: queued.messages,
+          raw: queued.raw,
+        });
+      }
+    }
+
+    return out;
+  }
+
+  function restoreRecoverables(entries: readonly AgentRunnerRecoveryEntry[]) {
+    if (entries.length === 0) return;
+
+    for (const entry of entries) {
+      const state =
+        bySession.get(entry.sessionId) ??
+        ({
+          running: false,
+          agent: null,
+          queue: [] as Enqueued[],
+          activeRequestId: null,
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        } satisfies SessionQueue);
+      bySession.set(entry.sessionId, state);
+
+      state.queue.push({
+        requestId: entry.requestId,
+        sessionId: entry.sessionId,
+        requestClient: entry.requestClient,
+        queue: entry.queue,
+        messages: entry.messages,
+        raw: entry.raw,
+        recovery: entry.recovery,
+      });
+
+      if (!state.running) {
+        drainSessionQueue(entry.sessionId, state).catch((e: unknown) => {
+          logger.error("drainSessionQueue failed", { sessionId: entry.sessionId }, e);
+        });
+      }
+    }
+  }
+
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
     if (state.running) return;
 
@@ -1062,6 +1251,14 @@ export async function startBusAgentRunner(params: {
 
     state.running = true;
     state.activeRequestId = next.requestId;
+    state.activeRun = {
+      requestId: next.requestId,
+      sessionId: next.sessionId,
+      requestClient: next.requestClient,
+      queue: next.queue,
+      raw: next.raw,
+      partialText: next.recovery?.partialText ?? "",
+    };
 
     const runStartedAt = Date.now();
 
@@ -1106,7 +1303,9 @@ export async function startBusAgentRunner(params: {
       headers,
       state: "running",
       detail:
-        next.queue !== "prompt"
+        next.recovery
+          ? "resumed after server restart"
+          : next.queue !== "prompt"
           ? `coerced queue=${next.queue} to prompt (no active run)`
           : undefined,
     });
@@ -1171,7 +1370,10 @@ export async function startBusAgentRunner(params: {
       runProfile,
       subagentDepth: subagentMeta.depth,
       model: resolved.spec,
+      isRecoveryResume: Boolean(next.recovery),
       messageCount: next.messages.length,
+      recoveryCheckpointMessageCount:
+        next.recovery?.checkpointMessages.length ?? 0,
       queuedForSession: state.queue.length,
     });
 
@@ -1227,6 +1429,7 @@ export async function startBusAgentRunner(params: {
     const agent = new AiSdkPiAgent<ToolSet>({
       system: agentSystem,
       model: resolved.model,
+      messages: next.recovery?.checkpointMessages ?? [],
       tools,
       providerOptions: providerOptionsForAgent,
       debug: {
@@ -1348,6 +1551,7 @@ export async function startBusAgentRunner(params: {
 
     // Stats and timings for this run (agent model only).
     let initialMessages: ModelMessage[] = [];
+    let responseStartIndex = 0;
     const runStats: {
       totalUsage?: LanguageModelUsage;
       finalMessages?: ModelMessage[];
@@ -1379,6 +1583,9 @@ export async function startBusAgentRunner(params: {
 
         const delta = event.assistantMessageEvent.delta;
         finalText += delta;
+        if (state.activeRun && state.activeRun.requestId === next.requestId) {
+          state.activeRun.partialText += delta;
+        }
 
         bus
           .publish(
@@ -1431,7 +1638,8 @@ export async function startBusAgentRunner(params: {
             ? (getBatchOkFromResult(event.result) ?? !event.isError)
             : event.toolName === "subagent_delegate"
               ? (getSubagentOkFromResult(event.result) ?? !event.isError)
-            : !event.isError;
+              : !event.isError;
+        const interruptedForRestart = restartAbortRequestIds.has(headers.request_id);
 
         logger.debug("tool finished", {
           requestId: headers.request_id,
@@ -1452,8 +1660,12 @@ export async function startBusAgentRunner(params: {
               ok,
               error: ok
                 ? undefined
+                : interruptedForRestart
+                  ? "server restarted"
                 : event.isError
-                  ? "tool error"
+                  ? typeof event.result === "string"
+                    ? event.result
+                    : "tool error"
                   : "batch failed",
             },
             { headers },
@@ -1488,15 +1700,25 @@ export async function startBusAgentRunner(params: {
     });
 
     try {
-      // First message should be a prompt.
-      // If additional messages for the same request id were queued before the run started,
-      // merge them into the initial prompt so they don't become separate runs.
-      const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
-      initialMessages = [...mergedInitial];
+      if (next.recovery) {
+        initialMessages = [buildResumePrompt(next.recovery.partialText)];
+      } else {
+        // First message should be a prompt.
+        // If additional messages for the same request id were queued before the run started,
+        // merge them into the initial prompt so they don't become separate runs.
+        const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
+        initialMessages = [...mergedInitial];
+      }
 
-      await agent.prompt(mergedInitial);
+      responseStartIndex = agent.state.messages.length + initialMessages.length;
+
+      await agent.prompt(initialMessages);
 
       await agent.waitForIdle();
+
+      if (restartAbortRequestIds.delete(headers.request_id)) {
+        throw new RestartDrainingAbort();
+      }
 
       const isCancelled = cancelledByRequestId.has(headers.request_id);
       if (isCancelled && !finalText) {
@@ -1517,8 +1739,8 @@ export async function startBusAgentRunner(params: {
       if (params.transcriptStore && !shouldSkipSurfaceReply) {
         try {
           const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(initialMessages.length)
-            : agent.state.messages.slice(initialMessages.length);
+            ? runStats.finalMessages.slice(responseStartIndex)
+            : agent.state.messages.slice(responseStartIndex);
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
@@ -1560,7 +1782,7 @@ export async function startBusAgentRunner(params: {
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
       const responseMessages = runStats.finalMessages
-        ? runStats.finalMessages.slice(initialMessages.length)
+        ? runStats.finalMessages.slice(responseStartIndex)
         : [];
 
       const icLine = buildInputCompositionLine({
@@ -1598,13 +1820,22 @@ export async function startBusAgentRunner(params: {
         detail: isCancelled ? "cancelled by interrupt" : undefined,
       });
     } catch (e) {
+      if (e instanceof RestartDrainingAbort) {
+        logger.info("agent run interrupted for graceful restart", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          durationMs: Date.now() - runStartedAt,
+        });
+        return;
+      }
+
       const msg = e instanceof Error ? e.message : String(e);
 
       if (params.transcriptStore) {
         try {
           const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(initialMessages.length)
-            : agent.state.messages.slice(initialMessages.length);
+            ? runStats.finalMessages.slice(responseStartIndex)
+            : agent.state.messages.slice(responseStartIndex);
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
@@ -1644,8 +1875,10 @@ export async function startBusAgentRunner(params: {
       unsubscribeCompaction();
       state.agent = null;
       state.activeRequestId = null;
+      state.activeRun = null;
       state.running = false;
       cancelledByRequestId.delete(headers.request_id);
+      restartAbortRequestIds.delete(headers.request_id);
       drainSessionQueue(sessionId, state).catch((e: unknown) => {
         logger.error("drainSessionQueue failed", { sessionId }, e);
       });
@@ -1653,9 +1886,14 @@ export async function startBusAgentRunner(params: {
   }
 
   return {
+    beginDrain,
+    snapshotRecoverables,
+    restoreRecoverables,
     stop: async () => {
-      await sub.stop();
+      await stopSubscription();
       bySession.clear();
+      forcedRecoveryByRequestId.clear();
+      restartAbortRequestIds.clear();
     },
   };
 }

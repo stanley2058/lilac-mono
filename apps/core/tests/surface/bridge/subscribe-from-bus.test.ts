@@ -80,10 +80,29 @@ function createInMemoryRawBus(): RawBus {
       };
       subs.add(entry);
 
-      if (opts.mode === "tail" && opts.offset?.type === "begin") {
+      if (opts.mode === "tail") {
         const existing = topics.get(topic) ?? [];
-        for (const m of existing) {
-          await handler(m as unknown as Message<TData>, { cursor: m.id, commit: async () => {} });
+        if (opts.offset?.type === "begin") {
+          for (const m of existing) {
+            await handler(m as unknown as Message<TData>, {
+              cursor: m.id,
+              commit: async () => {},
+            });
+          }
+        } else if (opts.offset?.type === "cursor") {
+          let seenCursor = false;
+          for (const m of existing) {
+            if (!seenCursor) {
+              if (m.id === opts.offset.cursor) {
+                seenCursor = true;
+              }
+              continue;
+            }
+            await handler(m as unknown as Message<TData>, {
+              cursor: m.id,
+              commit: async () => {},
+            });
+          }
         }
       }
 
@@ -662,6 +681,256 @@ describe("bridgeBusToAdapter", () => {
       { type: "text.set", text: "NO_REPLY because ..." },
     ]);
     expect(adapter.stream?.finished).toBe(true);
+
+    await bridge.stop();
+  });
+
+  it("snapshots active relay state for graceful restart", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_snapshot";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "hello" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "tool-1",
+        status: "start",
+        display: "bash ls",
+      },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const snapshots = bridge.snapshotRelays();
+    expect(snapshots).toHaveLength(1);
+
+    const snapshot = snapshots[0]!;
+    expect(snapshot.requestId).toBe(requestId);
+    expect(snapshot.visibleText).toBe("hello");
+    expect(snapshot.createdOutputRefs).toEqual([
+      {
+        platform: "discord",
+        channelId: "chan",
+        messageId: "m_out_1",
+      },
+    ]);
+    expect(snapshot.toolStatus).toEqual([
+      {
+        toolCallId: "tool-1",
+        status: "start",
+        display: "bash ls",
+        ok: undefined,
+        error: undefined,
+      },
+    ]);
+    expect(typeof snapshot.outCursor).toBe("string");
+
+    await bridge.stop();
+  });
+
+  it("restores relay from snapshot with cursor resume and primed output", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapterA = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore";
+
+    const bridgeA = await bridgeBusToAdapter({
+      adapter: adapterA,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter-a",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "tool-2",
+        status: "start",
+        display: "grep x",
+      },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const snapshot = bridgeA.snapshotRelays()[0]!;
+    await bridgeA.stop();
+
+    const adapterB = new FakeAdapter();
+    const bridgeB = await bridgeBusToAdapter({
+      adapter: adapterB,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter-b",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridgeB.restoreRelays([snapshot]);
+
+    expect(adapterB.starts).toHaveLength(1);
+    expect(adapterB.starts[0]?.opts?.resume?.created).toEqual(
+      snapshot.createdOutputRefs,
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ab" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapterB.stream?.parts[0]).toEqual({ type: "text.set", text: "a" });
+    expect(
+      adapterB.stream?.parts.some(
+        (p) =>
+          p.type === "tool.status" &&
+          p.update.toolCallId === "tool-2" &&
+          p.update.status === "start",
+      ),
+    ).toBe(true);
+    expect(
+      adapterB.stream?.parts.some(
+        (p) => p.type === "text.delta" && p.delta === "b",
+      ),
+    ).toBe(true);
+    expect(adapterB.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
+
+    await bridgeB.stop();
+  });
+
+  it("uses resume metadata only for first restored startOutput", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_resume_once";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        routerSessionMode: "active",
+        replyTo: {
+          platform: "discord",
+          channelId: "chan",
+          messageId: "msg_resume_once",
+        },
+        createdOutputRefs: [
+          {
+            platform: "discord",
+            channelId: "chan",
+            messageId: "m_out_1",
+          },
+        ],
+        visibleText: "partial",
+        toolStatus: [],
+        outCursor: "100-0",
+      },
+    ]);
+
+    expect(adapter.starts).toHaveLength(1);
+    expect(adapter.starts[0]?.opts?.resume?.created).toEqual([
+      {
+        platform: "discord",
+        channelId: "chan",
+        messageId: "m_out_1",
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      {
+        inheritReplyTo: false,
+        replyTo: {
+          platform: "discord",
+          channelId: "chan",
+          messageId: "new_anchor",
+        },
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.starts).toHaveLength(2);
+    expect(adapter.starts[1]?.opts?.resume).toBeUndefined();
+    expect(adapter.starts[1]?.opts?.replyTo).toEqual({
+      platform: "discord",
+      channelId: "chan",
+      messageId: "new_anchor",
+    });
 
     await bridge.stop();
   });

@@ -115,6 +115,40 @@ async function fetchTextChannel(
   return ch;
 }
 
+async function fetchExistingMessagesForResume(params: {
+  channel: TextBasedChannel;
+  channelId: string;
+  refs: readonly MsgRef[];
+}): Promise<Message[]> {
+  const { channel, channelId, refs } = params;
+  if (refs.length === 0) return [];
+
+  const messagesApi = (channel as unknown as {
+    messages?: { fetch: (messageId: string) => Promise<Message> };
+  }).messages;
+
+  if (!messagesApi || typeof messagesApi.fetch !== "function") {
+    return [];
+  }
+
+  const out: Message[] = [];
+  const seen = new Set<string>();
+
+  for (const ref of refs) {
+    if (ref.platform !== "discord") continue;
+    if (ref.channelId !== channelId) continue;
+    if (seen.has(ref.messageId)) continue;
+
+    const msg = await messagesApi.fetch(ref.messageId).catch(() => null);
+    if (!msg) continue;
+
+    seen.add(ref.messageId);
+    out.push(msg);
+  }
+
+  return out;
+}
+
 function toDiscordFiles(
   attachments: readonly SurfaceAttachment[],
 ): MessageCreateOptions["files"] {
@@ -209,8 +243,6 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     // Discord supports up to 10 attachments per message.
     const MAX_FILES = 10;
-    const initialAttachments = this.pendingAttachments.slice(0, MAX_FILES);
-    const remainingAttachments = this.pendingAttachments.slice(MAX_FILES);
 
     this.cancelCustomId = (() => {
       const requestId = this.deps.opts?.requestId;
@@ -232,26 +264,49 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       return [row];
     };
 
-    const first = await channel.send({
-      // content must be non-empty to avoid Discord errors when sending only embeds.
-      content: "*Replying...*",
-      reply:
-        this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
-          ? { messageReference: this.deps.opts.replyTo.messageId }
-          : undefined,
-      files: toDiscordFiles(initialAttachments),
-      components: buildCancelComponents(true),
-      allowedMentions: { parse: [], repliedUser: false },
+    const resumedMessages = await fetchExistingMessagesForResume({
+      channel,
+      channelId: sessionRef.channelId,
+      refs: this.deps.opts?.resume?.created ?? [],
     });
+    const resumed = resumedMessages.length > 0;
+
+    const initialAttachments = resumed
+      ? []
+      : this.pendingAttachments.slice(0, MAX_FILES);
+    const remainingAttachments = resumed
+      ? this.pendingAttachments.slice()
+      : this.pendingAttachments.slice(MAX_FILES);
+
+    const first = resumedMessages[0] ??
+      (await channel.send({
+        // content must be non-empty to avoid Discord errors when sending only embeds.
+        content: "*Replying...*",
+        reply:
+          this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
+            ? { messageReference: this.deps.opts.replyTo.messageId }
+            : undefined,
+        files: toDiscordFiles(initialAttachments),
+        components: buildCancelComponents(true),
+        allowedMentions: { parse: [], repliedUser: false },
+      }));
 
     this.firstMsg = first;
-    {
+    if (resumed) {
+      const seen = new Set<string>();
+      for (const m of resumedMessages) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        this.created.push(asDiscordMsgRef(sessionRef.channelId, m.id));
+      }
+      this.lastMsg = resumedMessages[resumedMessages.length - 1] ?? first;
+    } else {
       const ref = asDiscordMsgRef(sessionRef.channelId, first.id);
       this.created.push(ref);
       this.notifyCreated(ref);
     }
 
-    // Keep any overflow attachments for follow-up messages.
+    // Keep overflow/new attachments for follow-up messages.
     this.pendingAttachments = remainingAttachments;
 
     // Special case: attachments-only output (no text and no tool lines).

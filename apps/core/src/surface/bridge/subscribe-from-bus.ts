@@ -169,11 +169,28 @@ async function cleanupGithubAck(input: {
 }
 
 type ActiveRelay = {
+  requestId: string;
+  sessionId: string;
+  requestClient?: string;
   stop(): Promise<void>;
   cancel(): Promise<void>;
   startedAt: number;
   firstOutLogged: boolean;
   reanchor(input: { inheritReplyTo: boolean; replyTo?: MsgRef }): Promise<void>;
+  snapshot(): BusToAdapterRelaySnapshot;
+};
+
+export type BusToAdapterRelaySnapshot = {
+  requestId: string;
+  sessionId: string;
+  requestClient?: string;
+  platform: "discord" | "github";
+  routerSessionMode?: "mention" | "active";
+  replyTo?: MsgRef;
+  createdOutputRefs: MsgRef[];
+  visibleText: string;
+  toolStatus: SurfaceToolStatusUpdate[];
+  outCursor?: string;
 };
 
 function toMsgRefFromSurfaceMsgRef(raw: unknown): MsgRef | null {
@@ -214,6 +231,18 @@ export async function bridgeBusToAdapter(params: {
   } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
+  let draining = false;
+  let ingressStopped = false;
+
+  const stopIngress = async () => {
+    if (ingressStopped) return;
+    ingressStopped = true;
+    await Promise.all([
+      sub.stop(),
+      cmdSurfaceSub.stop(),
+      cmdRequestSub.stop(),
+    ]);
+  };
 
   const cmdRequestSub = await bus.subscribeTopic(
     "cmd.request",
@@ -381,6 +410,7 @@ export async function bridgeBusToAdapter(params: {
         requestId,
         sessionId,
         routerSessionMode,
+        requestClient,
         idleTimeoutMs,
       });
 
@@ -397,7 +427,9 @@ export async function bridgeBusToAdapter(params: {
     requestId: string;
     sessionId: string;
     routerSessionMode?: "mention" | "active";
+    requestClient?: string;
     idleTimeoutMs: number;
+    restore?: BusToAdapterRelaySnapshot;
   }): Promise<ActiveRelay> {
     const { requestId, sessionId, idleTimeoutMs } = input;
 
@@ -413,16 +445,30 @@ export async function bridgeBusToAdapter(params: {
         ? parseDiscordReplyTo({ requestId, sessionId })
         : parseGithubReplyTo({ requestId, sessionId });
 
-    const baseReplyTo = replyTo ?? undefined;
+    const baseReplyTo = input.restore?.replyTo ?? replyTo ?? undefined;
     let currentReplyTo: MsgRef | undefined = baseReplyTo;
 
-    let outTextAcc = "";
-    let visibleTextAcc = "";
+    let outTextAcc = input.restore?.visibleText ?? "";
+    let visibleTextAcc = input.restore?.visibleText ?? "";
     let pendingNoReplyPrefix = "";
     let bufferNoReplyPrefix = true;
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
+    if (input.restore) {
+      for (const update of input.restore.toolStatus) {
+        toolStatusById.set(update.toolCallId, update);
+      }
+    }
     const createdOutputRefs: MsgRef[] = [];
     const createdOutputRefKeys = new Set<string>();
+    if (input.restore) {
+      for (const ref of input.restore.createdOutputRefs) {
+        const key = `${ref.platform}:${ref.channelId}:${ref.messageId}`;
+        if (createdOutputRefKeys.has(key)) continue;
+        createdOutputRefKeys.add(key);
+        createdOutputRefs.push(ref);
+      }
+    }
+    let lastOutCursor = input.restore?.outCursor;
 
     const recordCreatedOutputRef = (msgRef: MsgRef) => {
       const key = `${msgRef.platform}:${msgRef.channelId}:${msgRef.messageId}`;
@@ -475,6 +521,8 @@ export async function bridgeBusToAdapter(params: {
         });
     };
 
+    let useResumeOpts = Boolean(input.restore);
+
     const buildStartOpts = (
       overrideReplyTo: MsgRef | undefined,
       token: number,
@@ -483,6 +531,13 @@ export async function bridgeBusToAdapter(params: {
         replyTo: overrideReplyTo,
         requestId,
         onMessageCreated: publishCreatedForToken(token),
+        ...(useResumeOpts
+          ? {
+              resume: {
+                created: createdOutputRefs.slice(),
+              },
+            }
+          : {}),
       };
       if (input.routerSessionMode) {
         startOpts.sessionMode = input.routerSessionMode;
@@ -495,6 +550,45 @@ export async function bridgeBusToAdapter(params: {
       sessionRef,
       buildStartOpts(baseReplyTo, streamToken),
     );
+    useResumeOpts = false;
+
+    if (input.restore) {
+      // Re-publish existing output refs so router active-output tracking can recover.
+      for (const ref of createdOutputRefs) {
+        bus
+          .publish(
+            lilacEventTypes.EvtSurfaceOutputMessageCreated,
+            {
+              msgRef: {
+                platform: ref.platform,
+                channelId: ref.channelId,
+                messageId: ref.messageId,
+              },
+            },
+            {
+              headers: {
+                request_id: requestId,
+                session_id: sessionId,
+                request_client: input.platform,
+              },
+            },
+          )
+          .catch((e: unknown) => {
+            logger.debug(
+              "failed to publish restored output message created",
+              { requestId, sessionId, messageId: ref.messageId },
+              e,
+            );
+          });
+      }
+
+      if (visibleTextAcc.trim().length > 0) {
+        await out.push({ type: "text.set", text: visibleTextAcc });
+      }
+      for (const update of toolStatusById.values()) {
+        await out.push({ type: "tool.status", update });
+      }
+    }
 
     let typing: TypingIndicatorSubscription | null = null;
 
@@ -570,10 +664,12 @@ export async function bridgeBusToAdapter(params: {
       outReqTopic(requestId),
       {
         mode: "tail",
-        offset: { type: "begin" },
+        offset: lastOutCursor
+          ? { type: "cursor", cursor: lastOutCursor }
+          : { type: "begin" },
         batch: { maxWaitMs: 250 },
       },
-      async (outMsg) => {
+      async (outMsg, outCtx) => {
         if (env.perf.log && !firstOutLogged) {
           firstOutLogged = true;
           const now = Date.now();
@@ -606,6 +702,7 @@ export async function bridgeBusToAdapter(params: {
           switch (outMsg.type) {
             case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
               // ignored for now
+              lastOutCursor = outCtx.cursor;
               break;
             }
 
@@ -620,6 +717,7 @@ export async function bridgeBusToAdapter(params: {
 
               pendingNoReplyPrefix += outMsg.data.delta;
               if (isPossibleNoReplyPrefix(pendingNoReplyPrefix)) {
+                lastOutCursor = outCtx.cursor;
                 break;
               }
 
@@ -627,6 +725,7 @@ export async function bridgeBusToAdapter(params: {
               part = { type: "text.delta", delta: pendingNoReplyPrefix };
               visibleTextAcc += pendingNoReplyPrefix;
               pendingNoReplyPrefix = "";
+              lastOutCursor = outCtx.cursor;
               break;
             }
 
@@ -645,6 +744,7 @@ export async function bridgeBusToAdapter(params: {
                 type: "tool.status",
                 update,
               };
+              lastOutCursor = outCtx.cursor;
               break;
             }
 
@@ -653,6 +753,7 @@ export async function bridgeBusToAdapter(params: {
                 type: "attachment.add",
                 attachment: toAttachment(outMsg.data),
               };
+              lastOutCursor = outCtx.cursor;
               break;
             }
 
@@ -682,6 +783,7 @@ export async function bridgeBusToAdapter(params: {
                   requestId,
                   sessionId,
                 });
+                lastOutCursor = outCtx.cursor;
                 return;
               }
 
@@ -695,6 +797,7 @@ export async function bridgeBusToAdapter(params: {
                   });
                   await out.abort("superseded").catch(() => undefined);
                   await relayStop();
+                  lastOutCursor = outCtx.cursor;
                   return;
                 }
               }
@@ -740,6 +843,7 @@ export async function bridgeBusToAdapter(params: {
                 sessionId,
                 finalTextChars: outMsg.data.finalText.length,
               });
+              lastOutCursor = outCtx.cursor;
               return;
             }
 
@@ -750,6 +854,8 @@ export async function bridgeBusToAdapter(params: {
           if (part) {
             await out.push(part);
           }
+
+          lastOutCursor = outCtx.cursor;
         });
       },
     );
@@ -774,6 +880,9 @@ export async function bridgeBusToAdapter(params: {
     }
 
     return {
+      requestId,
+      sessionId,
+      requestClient: input.requestClient,
       stop: relayStop,
       cancel: async () => {
         await enqueue(async () => {
@@ -816,14 +925,60 @@ export async function bridgeBusToAdapter(params: {
           }
         });
       },
+      snapshot: () => ({
+        requestId,
+        sessionId,
+        requestClient: input.requestClient,
+        platform: input.platform,
+        routerSessionMode: input.routerSessionMode,
+        replyTo: currentReplyTo,
+        createdOutputRefs: createdOutputRefs.slice(),
+        visibleText: visibleTextAcc,
+        toolStatus: [...toolStatusById.values()],
+        outCursor: lastOutCursor,
+      }),
     };
   }
 
   return {
+    beginDrain: async (opts?: { deadlineMs?: number }) => {
+      draining = true;
+      await stopIngress();
+
+      const deadlineMs = Math.max(1, opts?.deadlineMs ?? 3_000);
+      const startedAt = Date.now();
+
+      while (activeRelays.size > 0 && Date.now() - startedAt < deadlineMs) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    },
+    snapshotRelays: (): BusToAdapterRelaySnapshot[] => {
+      return [...activeRelays.values()].map((r) => r.snapshot());
+    },
+    restoreRelays: async (snapshots: readonly BusToAdapterRelaySnapshot[]) => {
+      if (draining) return;
+
+      for (const snapshot of snapshots) {
+        if (snapshot.platform !== platform) continue;
+        if (activeRelays.has(snapshot.requestId)) continue;
+
+        const relay = await startRelay({
+          adapter,
+          bus,
+          platform,
+          requestId: snapshot.requestId,
+          sessionId: snapshot.sessionId,
+          routerSessionMode: snapshot.routerSessionMode,
+          requestClient: snapshot.requestClient,
+          idleTimeoutMs,
+          restore: snapshot,
+        });
+
+        activeRelays.set(snapshot.requestId, relay);
+      }
+    },
     stop: async () => {
-      await sub.stop();
-      await cmdSurfaceSub.stop();
-      await cmdRequestSub.stop();
+      await stopIngress();
       await Promise.all([...activeRelays.values()].map((r) => r.stop()));
     },
   };

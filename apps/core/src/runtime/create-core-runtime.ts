@@ -44,6 +44,10 @@ import {
   createRequestMessageCache,
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
+import {
+  SqliteGracefulRestartStore,
+  type GracefulRestartSnapshot,
+} from "./graceful-restart-store";
 
 export type CoreRuntime = {
   start(): Promise<void>;
@@ -141,19 +145,51 @@ export async function createCoreRuntime(
   let stopRouter: { stop(): Promise<void> } | null = null;
   let stopWorkflow: { stop(): Promise<void> } | null = null;
   let stopWorkflowScheduler: { stop(): Promise<void> } | null = null;
-  let stopBusToAdapter: { stop(): Promise<void> } | null = null;
-  let stopGithubBusToAdapter: { stop(): Promise<void> } | null = null;
-  let stopAgentRunner: { stop(): Promise<void> } | null = null;
+  let stopBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
+  let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null =
+    null;
+  let stopAgentRunner: Awaited<ReturnType<typeof startBusAgentRunner>> | null = null;
 
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
   let requestMessageCache: RequestMessageCache | null = null;
+  let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
+  let runtimeFullyStarted = false;
 
   let toolServer: {
     init(): Promise<void>;
     start(port: number): Promise<void>;
     stop(): Promise<void>;
   } | null = null;
+
+  const GRACEFUL_RESTART_DEADLINE_MS = 3_000;
+
+  async function restoreGracefulSnapshot(snapshot: GracefulRestartSnapshot) {
+    logger.info("Restoring graceful restart snapshot", {
+      createdAt: snapshot.createdAt,
+      agentEntries: snapshot.agent.length,
+      relayEntries: snapshot.relays.length,
+    });
+
+    if (stopBusToAdapter) {
+      await stopBusToAdapter.restoreRelays(
+        snapshot.relays.filter((r) => r.platform === "discord"),
+      );
+    }
+
+    if (stopGithubBusToAdapter) {
+      await stopGithubBusToAdapter.restoreRelays(
+        snapshot.relays.filter((r) => r.platform === "github"),
+      );
+    }
+
+    stopAgentRunner?.restoreRecoverables(snapshot.agent);
+
+    logger.info("Graceful restart snapshot restored", {
+      agentEntries: snapshot.agent.length,
+      relayEntries: snapshot.relays.length,
+    });
+  }
 
   async function start(): Promise<void> {
     if (started) return;
@@ -164,6 +200,10 @@ export async function createCoreRuntime(
 
       // Ensure data dir exists before creating sqlite-backed stores.
       await fs.mkdir(env.dataDir, { recursive: true });
+
+      gracefulRestartStore = new SqliteGracefulRestartStore(
+        path.join(env.dataDir, "graceful-restart.db"),
+      );
 
       transcriptStore = new SqliteTranscriptStore(resolveTranscriptDbPath());
       discordSearchStore = new DiscordSearchStore(resolveDiscordSearchDbPath());
@@ -321,6 +361,16 @@ export async function createCoreRuntime(
         cwd,
       });
 
+      const snapshot =
+        gracefulRestartStore?.loadAndConsumeCompletedSnapshot() ?? null;
+      if (snapshot) {
+        await restoreGracefulSnapshot(snapshot).catch((e: unknown) => {
+          logger.error("Failed to restore graceful restart snapshot", e);
+        });
+      }
+
+      runtimeFullyStarted = true;
+
       logger.info(
         `Core runtime started (tool-server port=${toolServerPort}, subscriptionPrefix=${subscriptionPrefix})`,
       );
@@ -344,6 +394,75 @@ export async function createCoreRuntime(
         await fn();
       } catch (e) {
         stopErrors.push({ label, error: e });
+      }
+    }
+
+    if (runtimeFullyStarted && stopAgentRunner && gracefulRestartStore) {
+      const agentRunner = stopAgentRunner;
+
+      await safe(
+        "graceful.ingress.bridgeAdapterToBus.stop",
+        () => stopAdapterToBus?.stop() ?? Promise.resolve(),
+      );
+      stopAdapterToBus = null;
+
+      await safe("graceful.ingress.router.stop", () => stopRouter?.stop() ?? Promise.resolve());
+      stopRouter = null;
+
+      await safe("graceful.ingress.workflow.stop", () => stopWorkflow?.stop() ?? Promise.resolve());
+      stopWorkflow = null;
+
+      await safe(
+        "graceful.ingress.workflowScheduler.stop",
+        () => stopWorkflowScheduler?.stop() ?? Promise.resolve(),
+      );
+      stopWorkflowScheduler = null;
+
+      await safe("graceful.ingress.githubWebhook.stop", () => {
+        return stopGithubWebhook?.stop() ?? Promise.resolve();
+      });
+      stopGithubWebhook = null;
+
+      await safe("graceful.agentRunner.beginDrain", () =>
+        agentRunner.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }),
+      );
+
+      await safe("graceful.discordBridge.beginDrain", () =>
+        stopBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+        Promise.resolve(),
+      );
+
+      await safe("graceful.githubBridge.beginDrain", () =>
+        stopGithubBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+        Promise.resolve(),
+      );
+
+      const agentRecoverables = agentRunner.snapshotRecoverables();
+      const relayRecoverables = [
+        ...(stopBusToAdapter?.snapshotRelays() ?? []),
+        ...(stopGithubBusToAdapter?.snapshotRelays() ?? []),
+      ];
+
+      if (agentRecoverables.length > 0 || relayRecoverables.length > 0) {
+        await safe("graceful.store.saveCompletedSnapshot", async () => {
+          gracefulRestartStore?.saveCompletedSnapshot({
+            version: 1,
+            createdAt: Date.now(),
+            deadlineMs: GRACEFUL_RESTART_DEADLINE_MS,
+            agent: agentRecoverables,
+            relays: relayRecoverables,
+          });
+        });
+
+        logger.info("Saved graceful restart snapshot", {
+          deadlineMs: GRACEFUL_RESTART_DEADLINE_MS,
+          agentEntries: agentRecoverables.length,
+          relayEntries: relayRecoverables.length,
+        });
+      } else {
+        await safe("graceful.store.clear", async () => {
+          gracefulRestartStore?.clear();
+        });
       }
     }
 
@@ -403,7 +522,13 @@ export async function createCoreRuntime(
       discordSearchStore = null;
       discordSearchService = null;
     });
+    await safe("gracefulRestartStore.close", async () => {
+      gracefulRestartStore?.close();
+      gracefulRestartStore = null;
+    });
     await safe("bus.close", () => bus.close());
+
+    runtimeFullyStarted = false;
 
     if (stopErrors.length > 0) {
       logger.error({ stopErrors });

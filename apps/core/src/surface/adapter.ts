@@ -45,6 +45,11 @@ export type StartOutputOpts = {
   requestId?: string;
   /** Optional hook invoked when the surface creates a message for this stream. */
   onMessageCreated?: (msgRef: MsgRef) => void;
+  /** Optional resume metadata used to continue editing an existing output chain. */
+  resume?: {
+    /** Previously created output messages for this request (oldest to newest). */
+    created: MsgRef[];
+  };
 };
 
 export type AdapterSubscription = {
