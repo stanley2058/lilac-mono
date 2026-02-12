@@ -54,31 +54,31 @@ describe("fs tool search wrappers", () => {
       tools.glob.execute!({ patterns: ["src/**/*.ts"] }, { toolCallId: "g1", messages: [] }),
     );
 
-    expect(out.mode).toBe("lean");
+    expect(out.mode).toBe("default");
     expect(out.error).toBeUndefined();
-    if (out.mode !== "lean") {
-      throw new Error("expected lean glob output");
+    if (out.mode !== "default") {
+      throw new Error("expected default glob output");
     }
     expect(out.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
-  it("glob returns metadata in verbose mode", async () => {
+  it("glob returns metadata in detailed mode", async () => {
     const tools = fsTool(baseDir);
 
     const out = await resolveExecuteResult(
       tools.glob.execute!(
         {
           patterns: ["src/**/*.ts"],
-          mode: "verbose",
+          mode: "detailed",
         },
         { toolCallId: "g2", messages: [] },
       ),
     );
 
-    expect(out.mode).toBe("verbose");
+    expect(out.mode).toBe("detailed");
     expect(out.error).toBeUndefined();
-    if (out.mode !== "verbose") {
-      throw new Error("expected verbose glob output");
+    if (out.mode !== "detailed") {
+      throw new Error("expected detailed glob output");
     }
     const paths = out.entries.map((e) => e.path).sort();
     expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
@@ -102,9 +102,9 @@ describe("fs tool search wrappers", () => {
       ),
     );
 
-    expect(out.mode).toBe("lean");
-    if (out.mode !== "lean") {
-      throw new Error("expected lean glob output");
+    expect(out.mode).toBe("default");
+    if (out.mode !== "default") {
+      throw new Error("expected default glob output");
     }
 
     const sorted = out.paths.sort();
@@ -119,14 +119,14 @@ describe("fs tool search wrappers", () => {
       ),
     );
 
-    expect(outShallowNegate.mode).toBe("lean");
-    if (outShallowNegate.mode !== "lean") {
-      throw new Error("expected lean glob output");
+    expect(outShallowNegate.mode).toBe("default");
+    if (outShallowNegate.mode !== "default") {
+      throw new Error("expected default glob output");
     }
     expect(outShallowNegate.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
-  it("grep defaults to lean text output", async () => {
+  it("grep defaults to structured default output", async () => {
     const tools = fsTool(baseDir);
 
     const out = await resolveExecuteResult(
@@ -140,15 +140,13 @@ describe("fs tool search wrappers", () => {
       ),
     );
 
-    expect(out.mode).toBe("lean");
+    expect(out.mode).toBe("default");
     expect(out.error).toBeUndefined();
-    if (out.mode !== "lean") {
-      throw new Error("expected lean grep output");
+    if (out.mode !== "default") {
+      throw new Error("expected default grep output");
     }
-    const lines = out.text
-      .split("\n")
-      .map((line) => line.replace(/^\.\//, ""))
-      .filter((line) => line.length > 0)
+    const lines = out.results
+      .map((r) => `${r.file.replace(/^\.\//, "")}:${r.line}: ${r.text}`)
       .sort();
     expect(lines.length).toBe(2);
     expect(lines[0]?.startsWith("src/a.ts:1:")).toBe(true);
@@ -156,7 +154,7 @@ describe("fs tool search wrappers", () => {
     expect(out.truncated).toBe(false);
   });
 
-  it("grep returns metadata in verbose mode", async () => {
+  it("grep returns metadata in detailed mode", async () => {
     const tools = fsTool(baseDir);
 
     const out = await resolveExecuteResult(
@@ -164,16 +162,16 @@ describe("fs tool search wrappers", () => {
         {
           pattern: "alpha",
           fileExtensions: ["ts"],
-          mode: "verbose",
+          mode: "detailed",
         },
         { toolCallId: "g4", messages: [] },
       ),
     );
 
-    expect(out.mode).toBe("verbose");
+    expect(out.mode).toBe("detailed");
     expect(out.error).toBeUndefined();
-    if (out.mode !== "verbose") {
-      throw new Error("expected verbose grep output");
+    if (out.mode !== "detailed") {
+      throw new Error("expected detailed grep output");
     }
     const files = out.results.map((r) => r.file.replace(/^\.\//, "")).sort();
     expect(files).toEqual(["src/a.ts", "src/b.ts"]);
@@ -193,26 +191,26 @@ describe("fs tool search wrappers", () => {
       ].join("\n") + "\n",
     );
 
-    const verbose = await resolveExecuteResult(
+    const detailed = await resolveExecuteResult(
       tools.grep.execute!(
         {
           pattern: "alpha",
           fileExtensions: ["ts"],
-          mode: "verbose",
+          mode: "detailed",
           maxResults: 3,
         },
         { toolCallId: "g5", messages: [] },
       ),
     );
 
-    expect(verbose.mode).toBe("verbose");
-    if (verbose.mode !== "verbose") {
-      throw new Error("expected verbose grep output");
+    expect(detailed.mode).toBe("detailed");
+    if (detailed.mode !== "detailed") {
+      throw new Error("expected detailed grep output");
     }
-    expect(verbose.results.length).toBe(3);
-    expect(verbose.truncated).toBe(true);
+    expect(detailed.results.length).toBe(3);
+    expect(detailed.truncated).toBe(true);
 
-    const lean = await resolveExecuteResult(
+    const defaults = await resolveExecuteResult(
       tools.grep.execute!(
         {
           pattern: "alpha",
@@ -223,11 +221,11 @@ describe("fs tool search wrappers", () => {
       ),
     );
 
-    expect(lean.mode).toBe("lean");
-    if (lean.mode !== "lean") {
-      throw new Error("expected lean grep output");
+    expect(defaults.mode).toBe("default");
+    if (defaults.mode !== "default") {
+      throw new Error("expected default grep output");
     }
-    expect(lean.text.split("\n").filter((line) => line.length > 0).length).toBe(2);
-    expect(lean.truncated).toBe(true);
+    expect(defaults.results.length).toBe(2);
+    expect(defaults.truncated).toBe(true);
   });
 });

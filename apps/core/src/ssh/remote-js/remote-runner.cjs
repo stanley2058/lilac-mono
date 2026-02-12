@@ -325,12 +325,12 @@ async function opGlob(input, denyAbs) {
   const maxEntries = Number.isFinite(input.maxEntries)
     ? Number(input.maxEntries)
     : 100;
-  const mode = input.mode === "verbose" ? "verbose" : "lean";
+  const mode = input.mode === "detailed" ? "detailed" : "default";
 
   const filters = compileGlobFilters(patterns);
   const baseAbs = path.resolve(process.cwd());
   if (isDeniedPath(baseAbs, denyAbs)) {
-    if (mode === "lean") {
+    if (mode === "default") {
       return {
         mode,
         truncated: false,
@@ -359,7 +359,7 @@ async function opGlob(input, denyAbs) {
       const relPosix = toPosixRel(rel);
       if (!matchesGlobs(relPosix, filters)) return;
 
-      if (mode === "lean") {
+      if (mode === "default") {
         if (paths.length >= maxEntries) {
           truncated = true;
           state.stop = true;
@@ -392,7 +392,7 @@ async function opGlob(input, denyAbs) {
     denyAbs,
   );
 
-  if (mode === "lean") {
+  if (mode === "default") {
     return {
       mode,
       truncated,
@@ -416,7 +416,7 @@ async function opGrep(input, denyAbs) {
   const includeContextLines = Number.isFinite(input.includeContextLines)
     ? Number(input.includeContextLines)
     : 0;
-  const mode = input.mode === "verbose" ? "verbose" : "lean";
+  const mode = input.mode === "detailed" ? "detailed" : "default";
   const fileExtensions = Array.isArray(input.fileExtensions)
     ? input.fileExtensions.map((e) => String(e).replace(/^\./, ""))
     : [];
@@ -426,11 +426,11 @@ async function opGrep(input, denyAbs) {
     try {
       re = new RegExp(pattern, "g");
     } catch (e) {
-      if (mode === "lean") {
+      if (mode === "default") {
         return {
           mode,
           truncated: false,
-          text: "",
+          results: [],
           error: "Invalid regex: " + (e instanceof Error ? e.message : String(e)),
         };
       }
@@ -445,11 +445,11 @@ async function opGrep(input, denyAbs) {
 
   const baseAbs = path.resolve(process.cwd());
   if (isDeniedPath(baseAbs, denyAbs)) {
-    if (mode === "lean") {
+    if (mode === "default") {
       return {
         mode,
         truncated: false,
-        text: "",
+        results: [],
         error: "Access denied: '" + baseAbs + "' is blocked for grep",
       };
     }
@@ -470,15 +470,16 @@ async function opGrep(input, denyAbs) {
     return lines.slice(startIdx, endIdx + 1).join("\n") + "\n";
   };
 
-  const results = [];
-  const linesOut = [];
+  const detailedResults = [];
+  const defaultResults = [];
   const state = { stop: false };
   let truncated = false;
 
-  const toLeanLine = (file, line, text) => {
-    const snippet = String(text).replace(/\s+/g, " ").trim();
-    return file + ":" + line + ": " + snippet;
-  };
+  const toDefaultResult = (file, line, text) => ({
+    file,
+    line,
+    text,
+  });
 
   const extSet = new Set(fileExtensions);
   const shouldCheckExt = extSet.size > 0;
@@ -520,7 +521,8 @@ async function opGrep(input, denyAbs) {
 
           if (submatches.length === 0) continue;
 
-          const count = mode === "lean" ? linesOut.length : results.length;
+          const count =
+            mode === "default" ? defaultResults.length : detailedResults.length;
           if (count >= maxResults) {
             truncated = true;
             state.stop = true;
@@ -528,10 +530,10 @@ async function opGrep(input, denyAbs) {
           }
 
           const contextText = contextTextFor(lines, i);
-          if (mode === "lean") {
-            linesOut.push(toLeanLine(relPosix, i + 1, contextText));
+          if (mode === "default") {
+            defaultResults.push(toDefaultResult(relPosix, i + 1, contextText));
           } else {
-            results.push({
+            detailedResults.push({
               file: relPosix,
               line: i + 1,
               column: (submatches[0]?.start || 0) + 1,
@@ -554,7 +556,8 @@ async function opGrep(input, denyAbs) {
 
           if (submatches.length === 0) continue;
 
-          const count = mode === "lean" ? linesOut.length : results.length;
+          const count =
+            mode === "default" ? defaultResults.length : detailedResults.length;
           if (count >= maxResults) {
             truncated = true;
             state.stop = true;
@@ -562,10 +565,10 @@ async function opGrep(input, denyAbs) {
           }
 
           const contextText = contextTextFor(lines, i);
-          if (mode === "lean") {
-            linesOut.push(toLeanLine(relPosix, i + 1, contextText));
+          if (mode === "default") {
+            defaultResults.push(toDefaultResult(relPosix, i + 1, contextText));
           } else {
-            results.push({
+            detailedResults.push({
               file: relPosix,
               line: i + 1,
               column: (submatches[0]?.start || 0) + 1,
@@ -580,18 +583,18 @@ async function opGrep(input, denyAbs) {
     denyAbs,
   );
 
-  if (mode === "lean") {
+  if (mode === "default") {
     return {
       mode,
       truncated,
-      text: linesOut.join("\n"),
+      results: defaultResults,
     };
   }
 
   return {
     mode,
     truncated,
-    results,
+    results: detailedResults,
   };
 }
 

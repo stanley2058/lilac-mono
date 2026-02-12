@@ -198,7 +198,7 @@ export type FileEdit =
       expectedMatches?: number | "any";
     };
 
-export const SEARCH_MODES = ["lean", "verbose"] as const;
+export const SEARCH_MODES = ["default", "detailed"] as const;
 export type SearchMode = (typeof SEARCH_MODES)[number];
 
 export type GlobEntry = {
@@ -217,13 +217,13 @@ export type GlobEntry = {
 
 export type GlobResult =
   | {
-      mode: "lean";
+      mode: "default";
       truncated: boolean;
       paths: string[];
       error?: string;
     }
   | {
-      mode: "verbose";
+      mode: "detailed";
       truncated: boolean;
       entries: GlobEntry[];
       error?: string;
@@ -231,13 +231,17 @@ export type GlobResult =
 
 export type GrepResult =
   | {
-      mode: "lean";
+      mode: "default";
       truncated: boolean;
-      text: string;
+      results: {
+        file: string;
+        line: number;
+        text: string;
+      }[];
       error?: string;
     }
   | {
-      mode: "verbose";
+      mode: "detailed";
       truncated: boolean;
       results: {
         file: string;
@@ -263,7 +267,7 @@ export type GlobOpts = {
    */
   maxEntries?: number;
   /**
-   * Output verbosity mode. Default is lean.
+   * Output verbosity mode. Default is default.
    */
   mode?: SearchMode;
 };
@@ -278,7 +282,7 @@ export type GrepOpts = {
   fileExtensions?: string[];
   includeContextLines?: number;
   /**
-   * Output verbosity mode. Default is lean.
+   * Output verbosity mode. Default is default.
    */
   mode?: SearchMode;
 };
@@ -1110,7 +1114,7 @@ export class FileSystem {
    */
   async glob({ patterns, ...opts }: GlobOpts & { patterns: string[] }): Promise<GlobResult> {
     try {
-      const { baseDir = this.root, maxEntries = 100, mode = "lean" } = opts;
+      const { baseDir = this.root, maxEntries = 100, mode = "default" } = opts;
       const resolvedBaseDir = this.resolvePath(baseDir);
 
       this.assertAllowed(resolvedBaseDir, "glob");
@@ -1130,7 +1134,7 @@ export class FileSystem {
       }
 
       if (includes.length === 0) {
-        if (mode === "lean") {
+        if (mode === "default") {
           return {
             mode,
             truncated: false,
@@ -1158,13 +1162,13 @@ export class FileSystem {
         const abs = resolve(join(resolvedBaseDir, entry));
         if (this.isDeniedPath(abs)) continue;
 
-        const count = mode === "lean" ? paths.length : entries.length;
+        const count = mode === "default" ? paths.length : entries.length;
         if (count >= maxEntries) {
           truncated = true;
           break;
         }
 
-        if (mode === "lean") {
+        if (mode === "default") {
           paths.push(entry);
           continue;
         }
@@ -1177,7 +1181,7 @@ export class FileSystem {
         });
       }
 
-      if (mode === "lean") {
+      if (mode === "default") {
         return {
           mode,
           truncated,
@@ -1192,8 +1196,8 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const mode = opts.mode ?? "lean";
-      if (mode === "lean") {
+      const mode = opts.mode ?? "default";
+      if (mode === "default") {
         return { mode, truncated: false, paths: [], error: msg };
       }
       return { mode, truncated: false, entries: [], error: msg };
@@ -1208,7 +1212,7 @@ export class FileSystem {
         maxResults = 100,
         fileExtensions = [],
         includeContextLines = 0,
-        mode = "lean",
+        mode = "default",
       } = opts;
 
       const resolvedBaseDir = this.resolvePath(baseDir);
@@ -1242,17 +1246,16 @@ export class FileSystem {
         extraArgs,
       });
 
-      if (mode === "lean") {
-        const text = ripgrepResult.matches
-          .map((match) => {
-            const snippet = match.text.replace(/\s+/g, " ").trim();
-            return `${match.file}:${match.line}: ${snippet}`;
-          })
-          .join("\n");
+      if (mode === "default") {
+        const results = ripgrepResult.matches.map((match) => ({
+          file: match.file,
+          line: match.line,
+          text: match.text,
+        }));
         return {
           mode,
           truncated: ripgrepResult.truncated,
-          text,
+          results,
         };
       }
 
@@ -1263,9 +1266,9 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const mode = opts.mode ?? "lean";
-      if (mode === "lean") {
-        return { mode, truncated: false, text: "", error: msg };
+      const mode = opts.mode ?? "default";
+      if (mode === "default") {
+        return { mode, truncated: false, results: [], error: msg };
       }
       return { mode, truncated: false, results: [], error: msg };
     }

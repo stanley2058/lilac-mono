@@ -73,13 +73,13 @@ export type RemoteGlobEntry = {
 
 export type RemoteGlobOutput =
   | {
-      mode: "lean";
+      mode: "default";
       truncated: boolean;
       paths: string[];
       error?: string;
     }
   | {
-      mode: "verbose";
+      mode: "detailed";
       truncated: boolean;
       entries: RemoteGlobEntry[];
       error?: string;
@@ -95,13 +95,17 @@ export type RemoteGrepMatch = {
 
 export type RemoteGrepOutput =
   | {
-      mode: "lean";
+      mode: "default";
       truncated: boolean;
-      text: string;
+      results: {
+        file: string;
+        line: number;
+        text: string;
+      }[];
       error?: string;
     }
   | {
-      mode: "verbose";
+      mode: "detailed";
       truncated: boolean;
       results: RemoteGrepMatch[];
       error?: string;
@@ -179,11 +183,11 @@ export async function remoteGlob(params: {
   cwd: string;
   patterns: readonly string[];
   maxEntries?: number;
-  mode?: "lean" | "verbose";
+  mode?: "default" | "detailed";
   denyPaths: readonly string[];
   timeoutMs?: number;
 }): Promise<RemoteGlobOutput> {
-  const mode = params.mode ?? "lean";
+  const mode = params.mode ?? "default";
   const js = await getRemoteRunnerJsText();
   const res = await sshExecScriptJson<RemoteGlobOutput>({
     host: params.host,
@@ -203,7 +207,7 @@ export async function remoteGlob(params: {
   });
 
   if (!res.ok) {
-    if (mode === "lean") {
+    if (mode === "default") {
       return { mode, truncated: false, paths: [], error: res.error };
     }
     return { mode, truncated: false, entries: [], error: res.error };
@@ -221,12 +225,12 @@ export async function remoteGrep(params: {
     maxResults?: number;
     fileExtensions?: readonly string[];
     includeContextLines?: number;
-    mode?: "lean" | "verbose";
+    mode?: "default" | "detailed";
   };
   denyPaths: readonly string[];
   timeoutMs?: number;
 }): Promise<RemoteGrepOutput> {
-  const mode = params.input.mode ?? "lean";
+  const mode = params.input.mode ?? "default";
   const js = await getRemoteRunnerJsText();
   const res = await sshExecScriptJson<RemoteGrepOutput>({
     host: params.host,
@@ -249,8 +253,8 @@ export async function remoteGrep(params: {
   });
 
   if (!res.ok) {
-    if (mode === "lean") {
-      return { mode, truncated: false, text: "", error: res.error };
+    if (mode === "default") {
+      return { mode, truncated: false, results: [], error: res.error };
     }
     return { mode, truncated: false, results: [], error: res.error };
   }

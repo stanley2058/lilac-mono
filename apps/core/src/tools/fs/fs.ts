@@ -24,7 +24,7 @@ const pathSchema = z
   );
 
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
-const searchModeSchema = z.enum(["lean", "verbose"]);
+const searchModeSchema = z.enum(["default", "detailed"]);
 
 const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
 const MAX_INSTRUCTION_CHARS = 20_000;
@@ -207,20 +207,22 @@ export const globInputZod = z.object({
     .describe("Maximum number of matched paths to return (default: 100)."),
   mode: searchModeSchema
     .optional()
-    .describe("Output mode. Default is 'lean'. Use 'verbose' for metadata."),
+    .describe(
+      "Output mode. Recommended: 'default'. Use 'detailed' only when you need file type/size metadata.",
+    ),
 });
 
 type GlobInput = z.infer<typeof globInputZod>;
 
 const globOutputZod = z.discriminatedUnion("mode", [
   z.object({
-    mode: z.literal("lean"),
+    mode: z.literal("default"),
     truncated: z.boolean(),
     paths: z.array(z.string()),
     error: z.string().optional(),
   }),
   z.object({
-    mode: z.literal("verbose"),
+    mode: z.literal("detailed"),
     truncated: z.boolean(),
     entries: z.array(
       z.object({
@@ -269,7 +271,7 @@ export const grepInputZod = z.object({
   mode: searchModeSchema
     .optional()
     .describe(
-      "Output mode. Default is 'lean' (text lines). Use 'verbose' for match metadata.",
+      "Output mode. Recommended: 'default'. Use 'detailed' only when you need column/submatches metadata.",
     ),
 });
 
@@ -277,13 +279,19 @@ type GrepInput = z.infer<typeof grepInputZod>;
 
 const grepOutputZod = z.discriminatedUnion("mode", [
   z.object({
-    mode: z.literal("lean"),
+    mode: z.literal("default"),
     truncated: z.boolean(),
-    text: z.string(),
+    results: z.array(
+      z.object({
+        file: z.string(),
+        line: z.number(),
+        text: z.string(),
+      }),
+    ),
     error: z.string().optional(),
   }),
   z.object({
-    mode: z.literal("verbose"),
+    mode: z.literal("detailed"),
     truncated: z.boolean(),
     results: z.array(
       z.object({
@@ -309,14 +317,12 @@ const grepOutputZod = z.discriminatedUnion("mode", [
 type GrepOutput = z.infer<typeof grepOutputZod>;
 
 function countGlobItems(output: GlobOutput): number {
-  if (output.mode === "lean") return output.paths.length;
+  if (output.mode === "default") return output.paths.length;
   return output.entries.length;
 }
 
 function countGrepItems(output: GrepOutput): number {
-  if (output.mode === "verbose") return output.results.length;
-  if (!output.text.trim()) return 0;
-  return output.text.split("\n").filter((line) => line.length > 0).length;
+  return output.results.length;
 }
 
 const instructionFieldsZod = z.object({
@@ -732,11 +738,11 @@ export function fsTool(cwd: string) {
 
     glob: tool<GlobInput, GlobOutput>({
       description:
-        "Match filesystem paths using glob patterns. Defaults to lean path-only output; use mode='verbose' for path/type/size entries.",
+        "Match filesystem paths using glob patterns. Recommended mode='default' for paths only; use mode='detailed' only when you need type/size.",
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
-        const mode = input.mode ?? "lean";
+        const mode = input.mode ?? "default";
         logger.info("fs.glob", {
           patterns: input.patterns,
           cwd: opCwd,
@@ -785,11 +791,11 @@ export function fsTool(cwd: string) {
 
     grep: tool<GrepInput, GrepOutput>({
       description:
-        "Search file contents with ripgrep. Defaults to lean text output; use mode='verbose' for match metadata.",
+        "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata.",
       inputSchema: grepInputZod,
       outputSchema: grepOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
-        const mode = input.mode ?? "lean";
+        const mode = input.mode ?? "default";
         logger.info("fs.grep", {
           pattern: input.pattern,
           cwd: opCwd,

@@ -68,16 +68,25 @@ function normalizePathPrefix(p: string): string {
   return p.replace(/^\.\//, "");
 }
 
-function normalizeLeanText(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => line.replace(/^\.\//, ""))
-    .sort();
+function normalizeDefaultResults(
+  results: NonNullable<Extract<GrepResult, { mode: "default" }>["results"]>,
+) {
+  return results
+    .map((match) => ({
+      file: normalizePathPrefix(match.file),
+      line: match.line,
+      text: match.text,
+    }))
+    .sort((a, b) => {
+      if (a.file !== b.file) return a.file.localeCompare(b.file);
+      if (a.line !== b.line) return a.line - b.line;
+      return a.text.localeCompare(b.text);
+    });
 }
 
-function normalizeVerboseResults(results: NonNullable<Extract<GrepResult, { mode: "verbose" }>["results"]>) {
+function normalizeDetailedResults(
+  results: NonNullable<Extract<GrepResult, { mode: "detailed" }>["results"]>,
+) {
   return results
     .map((match) => ({
       file: normalizePathPrefix(match.file),
@@ -121,21 +130,21 @@ describe("fs search parity (local vs remote runner)", () => {
     await rm(baseDir, { recursive: true, force: true });
   });
 
-  it("glob lean and verbose outputs match", async () => {
+  it("glob default and detailed outputs match", async () => {
     const localLean = await fsTool.glob({
       patterns: ["src/**/*.ts"],
-      mode: "lean",
+      mode: "default",
     });
     const remoteLean = await runRemoteOp<GlobResult>({
       cwd: baseDir,
       op: "fs.glob",
-      input: { patterns: ["src/**/*.ts"], mode: "lean" },
+      input: { patterns: ["src/**/*.ts"], mode: "default" },
     });
 
-    expect(localLean.mode).toBe("lean");
-    expect(remoteLean.mode).toBe("lean");
-    if (localLean.mode !== "lean" || remoteLean.mode !== "lean") {
-      throw new Error("expected lean glob outputs");
+    expect(localLean.mode).toBe("default");
+    expect(remoteLean.mode).toBe("default");
+    if (localLean.mode !== "default" || remoteLean.mode !== "default") {
+      throw new Error("expected default glob outputs");
     }
     expect(localLean.truncated).toBe(remoteLean.truncated);
     expect(localLean.paths.map(normalizePathPrefix).sort()).toEqual(
@@ -144,18 +153,18 @@ describe("fs search parity (local vs remote runner)", () => {
 
     const localVerbose = await fsTool.glob({
       patterns: ["src/**/*.ts"],
-      mode: "verbose",
+      mode: "detailed",
     });
     const remoteVerbose = await runRemoteOp<GlobResult>({
       cwd: baseDir,
       op: "fs.glob",
-      input: { patterns: ["src/**/*.ts"], mode: "verbose" },
+      input: { patterns: ["src/**/*.ts"], mode: "detailed" },
     });
 
-    expect(localVerbose.mode).toBe("verbose");
-    expect(remoteVerbose.mode).toBe("verbose");
-    if (localVerbose.mode !== "verbose" || remoteVerbose.mode !== "verbose") {
-      throw new Error("expected verbose glob outputs");
+    expect(localVerbose.mode).toBe("detailed");
+    expect(remoteVerbose.mode).toBe("detailed");
+    if (localVerbose.mode !== "detailed" || remoteVerbose.mode !== "detailed") {
+      throw new Error("expected detailed glob outputs");
     }
 
     const localEntries = localVerbose.entries
@@ -185,21 +194,21 @@ describe("fs search parity (local vs remote runner)", () => {
 
     const local = await fsTool.glob({
       patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
-      mode: "lean",
+      mode: "default",
     });
     const remote = await runRemoteOp<GlobResult>({
       cwd: baseDir,
       op: "fs.glob",
       input: {
         patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
-        mode: "lean",
+        mode: "default",
       },
     });
 
-    expect(local.mode).toBe("lean");
-    expect(remote.mode).toBe("lean");
-    if (local.mode !== "lean" || remote.mode !== "lean") {
-      throw new Error("expected lean glob outputs");
+    expect(local.mode).toBe("default");
+    expect(remote.mode).toBe("default");
+    if (local.mode !== "default" || remote.mode !== "default") {
+      throw new Error("expected default glob outputs");
     }
 
     const localPaths = local.paths.map(normalizePathPrefix).sort();
@@ -209,11 +218,11 @@ describe("fs search parity (local vs remote runner)", () => {
     expect(localPaths).toEqual(remotePaths);
   });
 
-  it("grep lean and verbose outputs match", async () => {
+  it("grep default and detailed outputs match", async () => {
     const localLean = await fsTool.grep({
       pattern: "alpha",
       fileExtensions: ["ts"],
-      mode: "lean",
+      mode: "default",
     });
     const remoteLean = await runRemoteOp<GrepResult>({
       cwd: baseDir,
@@ -221,22 +230,24 @@ describe("fs search parity (local vs remote runner)", () => {
       input: {
         pattern: "alpha",
         fileExtensions: ["ts"],
-        mode: "lean",
+        mode: "default",
       },
     });
 
-    expect(localLean.mode).toBe("lean");
-    expect(remoteLean.mode).toBe("lean");
-    if (localLean.mode !== "lean" || remoteLean.mode !== "lean") {
-      throw new Error("expected lean grep outputs");
+    expect(localLean.mode).toBe("default");
+    expect(remoteLean.mode).toBe("default");
+    if (localLean.mode !== "default" || remoteLean.mode !== "default") {
+      throw new Error("expected default grep outputs");
     }
     expect(localLean.truncated).toBe(remoteLean.truncated);
-    expect(normalizeLeanText(localLean.text)).toEqual(normalizeLeanText(remoteLean.text));
+    expect(normalizeDefaultResults(localLean.results)).toEqual(
+      normalizeDefaultResults(remoteLean.results),
+    );
 
     const localVerbose = await fsTool.grep({
       pattern: "alpha",
       fileExtensions: ["ts"],
-      mode: "verbose",
+      mode: "detailed",
     });
     const remoteVerbose = await runRemoteOp<GrepResult>({
       cwd: baseDir,
@@ -244,19 +255,19 @@ describe("fs search parity (local vs remote runner)", () => {
       input: {
         pattern: "alpha",
         fileExtensions: ["ts"],
-        mode: "verbose",
+        mode: "detailed",
       },
     });
 
-    expect(localVerbose.mode).toBe("verbose");
-    expect(remoteVerbose.mode).toBe("verbose");
-    if (localVerbose.mode !== "verbose" || remoteVerbose.mode !== "verbose") {
-      throw new Error("expected verbose grep outputs");
+    expect(localVerbose.mode).toBe("detailed");
+    expect(remoteVerbose.mode).toBe("detailed");
+    if (localVerbose.mode !== "detailed" || remoteVerbose.mode !== "detailed") {
+      throw new Error("expected detailed grep outputs");
     }
 
     expect(localVerbose.truncated).toBe(remoteVerbose.truncated);
-    expect(normalizeVerboseResults(localVerbose.results)).toEqual(
-      normalizeVerboseResults(remoteVerbose.results),
+    expect(normalizeDetailedResults(localVerbose.results)).toEqual(
+      normalizeDetailedResults(remoteVerbose.results),
     );
   });
 
@@ -264,7 +275,7 @@ describe("fs search parity (local vs remote runner)", () => {
     const exactLocal = await fsTool.grep({
       pattern: "alpha",
       fileExtensions: ["ts"],
-      mode: "lean",
+      mode: "default",
       maxResults: 3,
     });
     const exactRemote = await runRemoteOp<GrepResult>({
@@ -273,15 +284,15 @@ describe("fs search parity (local vs remote runner)", () => {
       input: {
         pattern: "alpha",
         fileExtensions: ["ts"],
-        mode: "lean",
+        mode: "default",
         maxResults: 3,
       },
     });
 
-    expect(exactLocal.mode).toBe("lean");
-    expect(exactRemote.mode).toBe("lean");
-    if (exactLocal.mode !== "lean" || exactRemote.mode !== "lean") {
-      throw new Error("expected lean grep outputs");
+    expect(exactLocal.mode).toBe("default");
+    expect(exactRemote.mode).toBe("default");
+    if (exactLocal.mode !== "default" || exactRemote.mode !== "default") {
+      throw new Error("expected default grep outputs");
     }
     expect(exactLocal.truncated).toBe(false);
     expect(exactRemote.truncated).toBe(false);
@@ -291,7 +302,7 @@ describe("fs search parity (local vs remote runner)", () => {
     const overflowLocal = await fsTool.grep({
       pattern: "alpha",
       fileExtensions: ["ts"],
-      mode: "verbose",
+      mode: "detailed",
       maxResults: 3,
     });
     const overflowRemote = await runRemoteOp<GrepResult>({
@@ -300,15 +311,15 @@ describe("fs search parity (local vs remote runner)", () => {
       input: {
         pattern: "alpha",
         fileExtensions: ["ts"],
-        mode: "verbose",
+        mode: "detailed",
         maxResults: 3,
       },
     });
 
-    expect(overflowLocal.mode).toBe("verbose");
-    expect(overflowRemote.mode).toBe("verbose");
-    if (overflowLocal.mode !== "verbose" || overflowRemote.mode !== "verbose") {
-      throw new Error("expected verbose grep outputs");
+    expect(overflowLocal.mode).toBe("detailed");
+    expect(overflowRemote.mode).toBe("detailed");
+    if (overflowLocal.mode !== "detailed" || overflowRemote.mode !== "detailed") {
+      throw new Error("expected detailed grep outputs");
     }
 
     expect(overflowLocal.truncated).toBe(true);
@@ -325,25 +336,25 @@ describe("fs search parity (local vs remote runner)", () => {
 
     const local = await fsTool.grep({
       pattern: "AGENTS.md",
-      mode: "lean",
+      mode: "default",
     });
     const remote = await runRemoteOp<GrepResult>({
       cwd: baseDir,
       op: "fs.grep",
       input: {
         pattern: "AGENTS.md",
-        mode: "lean",
+        mode: "default",
       },
     });
 
-    expect(local.mode).toBe("lean");
-    expect(remote.mode).toBe("lean");
-    if (local.mode !== "lean" || remote.mode !== "lean") {
-      throw new Error("expected lean grep outputs");
+    expect(local.mode).toBe("default");
+    expect(remote.mode).toBe("default");
+    if (local.mode !== "default" || remote.mode !== "default") {
+      throw new Error("expected default grep outputs");
     }
 
-    expect(normalizeLeanText(local.text)).toEqual([]);
-    expect(normalizeLeanText(remote.text)).toEqual([]);
+    expect(normalizeDefaultResults(local.results)).toEqual([]);
+    expect(normalizeDefaultResults(remote.results)).toEqual([]);
     expect(local.truncated).toBe(false);
     expect(remote.truncated).toBe(false);
   });
