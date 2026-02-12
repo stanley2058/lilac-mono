@@ -31,7 +31,10 @@ import {
   getGithubLatestRequestForSession,
   getGithubRequestMeta,
 } from "../../github/github-state";
-import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
+import {
+  isPossibleNoReplyPrefix,
+  resolveReplyDeliveryFromFinalText,
+} from "./reply-directive";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -414,6 +417,9 @@ export async function bridgeBusToAdapter(params: {
     let currentReplyTo: MsgRef | undefined = baseReplyTo;
 
     let outTextAcc = "";
+    let visibleTextAcc = "";
+    let pendingNoReplyPrefix = "";
+    let bufferNoReplyPrefix = true;
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
     const createdOutputRefs: MsgRef[] = [];
     const createdOutputRefKeys = new Set<string>();
@@ -605,7 +611,22 @@ export async function bridgeBusToAdapter(params: {
 
             case lilacEventTypes.EvtAgentOutputDeltaText: {
               outTextAcc += outMsg.data.delta;
-              part = { type: "text.delta", delta: outMsg.data.delta };
+
+              if (!bufferNoReplyPrefix) {
+                part = { type: "text.delta", delta: outMsg.data.delta };
+                visibleTextAcc += outMsg.data.delta;
+                break;
+              }
+
+              pendingNoReplyPrefix += outMsg.data.delta;
+              if (isPossibleNoReplyPrefix(pendingNoReplyPrefix)) {
+                break;
+              }
+
+              bufferNoReplyPrefix = false;
+              part = { type: "text.delta", delta: pendingNoReplyPrefix };
+              visibleTextAcc += pendingNoReplyPrefix;
+              pendingNoReplyPrefix = "";
               break;
             }
 
@@ -679,6 +700,9 @@ export async function bridgeBusToAdapter(params: {
               }
 
               outTextAcc = outMsg.data.finalText;
+              visibleTextAcc = outTextAcc;
+              pendingNoReplyPrefix = "";
+              bufferNoReplyPrefix = false;
               await out.push({ type: "text.set", text: outTextAcc });
               const res = await out.finish();
 
@@ -782,8 +806,8 @@ export async function bridgeBusToAdapter(params: {
             buildStartOpts(nextReplyTo, streamToken),
           );
 
-          if (outTextAcc.trim().length > 0) {
-            await out.push({ type: "text.set", text: outTextAcc });
+          if (visibleTextAcc.trim().length > 0) {
+            await out.push({ type: "text.set", text: visibleTextAcc });
           }
 
           // Replay tool status lines so the new stream shows current Actions.
