@@ -16,6 +16,7 @@ This file gives AI coding agents (OpenCode/Cursor/Copilot/etc.) practical repo c
 
 - `apps/core/`: core runtime/tools (Bash + filesystem tooling) with Bun tests.
 - `apps/tool-bridge/`: CLI/tool bridge, builds to `dist/`.
+- `apps/opencode-controller/`: OpenCode controller CLI, builds to `dist/`.
 - `packages/utils/`: shared utilities (env/provider config).
 - `packages/agent/`: agent logic.
 - `packages/event-bus/`: Redis Streams event bus + tests.
@@ -27,6 +28,7 @@ From the package you’re touching:
 
 - `cd apps/core && bun install`
 - `cd apps/tool-bridge && bun install`
+- `cd apps/opencode-controller && bun install`
 - `cd packages/event-bus && bun install`
 - `cd packages/utils && bun install`
 - `cd packages/agent && bun install`
@@ -60,9 +62,11 @@ Examples:
 
 ## Build / Test / Typecheck
 
-### apps/tool-bridge
+### Build
 
-- Build: `cd apps/tool-bridge && bun run build`
+- `apps/tool-bridge`: `cd apps/tool-bridge && bun run build`
+  - Runs `build.ts` and makes `dist/index.js` executable.
+- `apps/opencode-controller`: `cd apps/opencode-controller && bun run build`
   - Runs `build.ts` and makes `dist/index.js` executable.
 
 ### Testing (Bun)
@@ -71,6 +75,7 @@ Tests use Bun’s built-in runner + `bun:test`.
 
 - Run all tests in a package:
   - `cd apps/core && bun test`
+  - `cd packages/utils && bun test`
   - `cd packages/event-bus && bun test`
 
 - Run the monorepo test harness from repo root:

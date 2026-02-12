@@ -1,8 +1,8 @@
 # Lilac Monorepo: Structure, Terminology, And Working Mental Model
 
-This repo is an event-driven “agent runtime” built around a typed event bus (Redis Streams), a surface adapter (Discord today), and **layered tools** that are **progressively disclosed** to the agent:
+This repo is an event-driven “agent runtime” built around a typed event bus (Redis Streams), surface adapters (Discord with optional GitHub ingress), and **layered tools** that are **progressively disclosed** to the agent:
 
-- Level 1 (direct AI SDK tools): low-level local tools the LLM can call during generation (`bash`, `read_file`, `apply_patch`).
+- Level 1 (direct AI SDK tools): low-level local tools the LLM can call during generation (`bash`, `read_file`, `glob`, `grep`, `apply_patch`, `batch`, and `subagent_delegate` when enabled).
 - Level 2 (tool server + `tools` CLI): a stable HTTP tool API (Elysia) exposed via the `tools` CLI (and usable by the agent through `bash`).
 - Level 3 (skills): higher-level, file-based “skill bundles” discovered on disk and loaded on-demand.
 
@@ -10,12 +10,13 @@ All three are “for the agent”; the layering is mostly about keeping the defa
 
 The main loop is:
 
-1. A surface adapter ingests platform events (Discord messages/reactions) and persists a local cache.
-2. Those adapter events are published onto the bus (`evt.adapter`).
-3. A router turns adapter events into request messages (`cmd.request.message`) based on per-session routing mode.
-4. An agent runner consumes request messages, runs an LLM (AI SDK) with local tools, and publishes streamed output to request-scoped topics (`out.req.<request_id>`).
-5. A relay subscribes to `out.req.<request_id>` and streams output back to the surface (Discord).
-6. Optional: a workflow service creates durable “wait for reply / timeout” tasks and later publishes a resume request.
+1. Surface ingress receives platform events (Discord adapter events and optional GitHub webhook triggers).
+2. Discord adapter events are published onto the bus (`evt.adapter`).
+3. A router turns Discord adapter events into request messages (`cmd.request.message`) based on per-session routing mode.
+4. GitHub webhook handlers can publish `cmd.request.message` directly for GitHub-triggered runs.
+5. An agent runner consumes request messages, runs an LLM (AI SDK) with local tools, and publishes streamed output to request-scoped topics (`out.req.<request_id>`).
+6. A relay subscribes to `out.req.<request_id>` and streams output back to surface adapters (Discord and GitHub).
+7. Optional: a workflow service creates durable “wait for reply / timeout” tasks and later publishes a resume request.
 
 This document explains where things live, the words used in code, and the project’s “shape” so you don’t have to re-derive it each time.
 
@@ -26,7 +27,7 @@ This document explains where things live, the words used in code, and the projec
 Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams as git submodules and is treated as read-only.
 
 - `apps/core/`
-  - The core runtime process (Discord adapter + event bus + router + agent runner + workflow service/scheduler + tool server).
+  - The core runtime process (Discord + optional GitHub surfaces, event bus, router, agent runner, workflow service/scheduler, tool server, and runtime recovery/search services).
   - Entry: `apps/core/src/runtime/main.ts` (starts/stops `createCoreRuntime()`).
   - Most of the “system wiring” is in `apps/core/src/runtime/create-core-runtime.ts`.
 
@@ -35,6 +36,11 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - CLI client: `apps/tool-bridge/client.ts`.
   - Tool server (no bus, no surface adapter by default): `apps/tool-bridge/index.ts`.
   - Build script: `apps/tool-bridge/build.ts` (produces `dist/index.js`, used as the `tools` binary).
+
+- `apps/opencode-controller/`
+  - OpenCode SDK wrapper CLI (`lilac-opencode`), designed for local and automation/ssh workflows.
+  - Entry/client: `apps/opencode-controller/client.ts`.
+  - Build script: `apps/opencode-controller/build.ts` (produces `dist/index.js`).
 
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.
@@ -102,8 +108,8 @@ Implementation note: subscriptions use a small Redis connection pool because Red
 The “request-scoped” part of the system uses consistent headers on bus messages:
 
 - `request_id`: correlates everything for a single agent run.
-- `session_id`: the surface session (Discord channel/thread id).
-- `request_client`: the adapter platform, e.g. `discord`.
+- `session_id`: the surface session (e.g. Discord channel/thread id or `OWNER/REPO#number` for GitHub).
+- `request_client`: source platform (`discord`, `github`, or `unknown`).
 
 Many flows treat missing `request_id` as an error (especially request lifecycle and output events).
 
@@ -111,8 +117,8 @@ Many flows treat missing `request_id` as an error (especially request lifecycle 
 
 “Surface” is the user-facing platform integration layer.
 
-- Adapter: implements `SurfaceAdapter` (Discord implementation is `apps/core/src/surface/discord/discord-adapter.ts`).
-- Session: a chat container (Discord channel/thread/DM). In practice, `sessionId` is usually the Discord channel id.
+- Adapter: implements `SurfaceAdapter` (`apps/core/src/surface/discord/discord-adapter.ts`, `apps/core/src/surface/github/github-adapter.ts`).
+- Session: a platform container (Discord channel/thread/DM or GitHub `OWNER/REPO#number`).
 - Message refs:
   - `SessionRef` / `MsgRef` are small structs that identify sessions/messages across platforms.
 
@@ -120,7 +126,7 @@ The Discord adapter also maintains a local SQLite cache (`discord-surface.db`) f
 
 ### Router
 
-The router subscribes to `evt.adapter` and decides whether to create/append to an agent request.
+The router subscribes to `evt.adapter` and decides whether to create/append to an agent request for Discord events.
 
 - Implementation: `apps/core/src/surface/bridge/bus-request-router.ts`.
 - Routing modes:
@@ -133,6 +139,8 @@ Active-mode details:
 - It can optionally run a “gate” (small/fast model) to decide whether the bot should reply.
 
 When the router forwards, it publishes `cmd.request.message` (topic: `cmd.request`) containing `ModelMessage[]`.
+
+GitHub webhook ingress can also publish `cmd.request.message` directly (without passing through routing on `evt.adapter`).
 
 ### Request / Queue Modes
 
@@ -205,9 +213,11 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Used inside `apps/core/src/surface/bridge/bus-agent-runner.ts` via AI SDK tool calling.
    - Implementations: `apps/core/src/tools/*`.
    - Key ones:
-     - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
-     - `read_file` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg`).
-     - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`).
+      - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
+      - `read_file`, `glob`, `grep` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg`).
+      - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`).
+      - `batch` (`apps/core/src/tools/batch.ts`) for concurrent tool execution.
+      - `subagent_delegate` (`apps/core/src/tools/subagent.ts`) when `agent.subagents` is enabled and depth limits allow delegation.
 
 2. Level 2: tool server tools + the `tools` CLI
    - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.
@@ -250,8 +260,10 @@ Expected contents over time:
 - `core-config.yaml` (seeded from `packages/utils/config-templates/core-config.example.yaml` if missing)
 - `prompts/` (seeded from `packages/utils/prompt-templates/*` if missing)
 - `discord-surface.db` (Discord cache DB; default path)
+- `discord-search.db` (Discord search index DB)
 - `agent-transcripts.db` (agent transcript/turn cache used by routing/gating)
 - `data.sqlite3` (default SQLite DB for workflow store; override via `SQLITE_URL`)
+- `graceful-restart.db` (in-flight relay/agent recovery snapshots)
 - `skills/` (skill bundles installed/seeded for discovery)
 - `secret/` (persisted secrets, e.g. GitHub App credentials, GPG home)
 - `workspace/` (default working directory for bash/fs tools in the core runtime)
@@ -277,6 +289,7 @@ Key sections:
 
 - `surface.router`: mention/active routing config.
 - `surface.discord`: bot token env var name, allowlists, botName.
+- `agent.subagents`: subagent enablement/depth/timeout/profile config.
 - `models`: model slots (`main`, `fast`) with optional preset aliases.
 - `entity`: optional aliasing/mention rewriting for users/sessions.
 
@@ -289,6 +302,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `DATA_DIR` (where config/prompt/db live)
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
+- `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
 - `TAVILY_API_KEY` (enables `tools search` and `tools fetch --mode=tavily`)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
@@ -301,13 +315,16 @@ Parsed in `packages/utils/env.ts`. The important ones:
 
 Startup order is intentional:
 
-1. Bridge adapter -> bus (so early Discord events don’t get lost)
-2. Workflow service + scheduler (subscribes to adapter events; handles time-based triggers)
-3. Router (subscribes to adapter events and request lifecycle)
-4. Tool server + request message cache (so tools can see request messages)
-5. Connect adapter
-6. Bridge bus -> adapter (so output relay is ready)
-7. Agent runner (so it can’t publish replies before relay is online)
+1. Start Discord search indexer
+2. Bridge adapter -> bus (so early Discord events don’t get lost)
+3. Workflow service + scheduler (subscribes to adapter events; handles time-based triggers)
+4. Router (subscribes to adapter events and request lifecycle)
+5. Tool server + request message cache (so tools can see request messages)
+6. Connect Discord adapter
+7. Bridge bus -> Discord adapter (so output relay is ready)
+8. Optionally start GitHub webhook ingress + bus -> GitHub relay (if GitHub App secret exists)
+9. Agent runner (so it can’t publish replies before relays are online)
+10. Optionally restore graceful-restart snapshots
 
 Shutdown happens in reverse (best-effort).
 
@@ -341,6 +358,9 @@ Shutdown happens in reverse (best-effort).
 - Build `tools` CLI:
   - `cd apps/tool-bridge && bun run build`
 
+- Build `lilac-opencode` CLI:
+  - `cd apps/opencode-controller && bun run build`
+
 - Run tests:
   - Root harness: `bun test`
   - Per workspace: `cd apps/core && bun test` (and similarly for `packages/*` that have tests)
@@ -356,7 +376,9 @@ Shutdown happens in reverse (best-effort).
 - Discord allowlist is strict: if both `allowedChannelIds` and `allowedGuildIds` are empty, the bot ignores all Discord traffic.
 - Request IDs are meaningful:
   - `discord:<channelId>:<messageId>` implies “reply to this message”.
+  - `github:<owner/repo#number>:<triggerId>[:<suffix>]` identifies GitHub-triggered runs.
   - `wf:<workflowId>:<seq>` is a workflow resume request.
+  - `sub:<parent_request_id>:<uuid>` identifies delegated subagent runs.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
 - The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
