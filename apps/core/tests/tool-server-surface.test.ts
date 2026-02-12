@@ -783,7 +783,8 @@ describe("tool-server surface", () => {
     const res = await tool.call("surface.messages.send", {
       sessionId: "#ops",
       text: "hi",
-      paths: [p],
+      paths: p,
+      filenames: "renamed.txt",
       client: "discord",
     });
 
@@ -794,7 +795,7 @@ describe("tool-server surface", () => {
     const sent = adapter.sendCalls[0]!;
     expect(sent.content.text).toBe("hi");
     expect(sent.content.attachments?.length).toBe(1);
-    expect(sent.content.attachments?.[0]?.filename).toBe("hello.txt");
+    expect(sent.content.attachments?.[0]?.filename).toBe("renamed.txt");
   });
 
   it("allows guild allowlist when channel is not cached", async () => {

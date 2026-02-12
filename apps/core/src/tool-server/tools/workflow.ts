@@ -34,6 +34,14 @@ function tryHeaders(
   };
 }
 
+const optionalNonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
+
 export class Workflow implements ServerTool {
   id = "workflow";
 
@@ -80,9 +88,9 @@ export class Workflow implements ServerTool {
         input: [
           "--session-id=<string> | Target session/channel (raw id, <#id>, or configured token alias)",
           "--text=<string> | Message to send",
-          "--paths=<string[]> | Optional local attachment paths",
-          "--filenames=<string[]> | Optional filenames for each attachment",
-          "--mime-types=<string[]> | Optional mime types for each attachment",
+          "--paths=<string | string[]> | Optional local attachment paths",
+          "--filenames=<string | string[]> | Optional filenames for each attachment",
+          "--mime-types=<string | string[]> | Optional mime types for each attachment",
           "--reply-to-message-id=<string> | Optional reply target id",
           "--task-description=<string> | Description for the wait_for_reply task",
           "--summary=<string> | Workflow summary to be used on resume",
@@ -534,9 +542,9 @@ export class Workflow implements ServerTool {
 const workflowSendAndWaitInputSchema = z.object({
   sessionId: z.string().min(1),
   text: z.string().min(1),
-  paths: z.array(z.string().min(1)).optional(),
-  filenames: z.array(z.string().min(1)).optional(),
-  mimeTypes: z.array(z.string().min(1)).optional(),
+  paths: optionalNonEmptyStringListInputSchema,
+  filenames: optionalNonEmptyStringListInputSchema,
+  mimeTypes: optionalNonEmptyStringListInputSchema,
   replyToMessageId: z.string().min(1).optional(),
   taskDescription: z.string().min(1),
   summary: z.string().min(1),

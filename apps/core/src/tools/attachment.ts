@@ -28,6 +28,18 @@ const DISCORD_CDN_HOSTS = new Set([
   "media.discordapp.net",
 ]);
 
+const nonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .transform((value) => (Array.isArray(value) ? value : [value]));
+
+const optionalNonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
+
 function asBuffer(data: unknown): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof Uint8Array) return Buffer.from(data);
@@ -48,18 +60,14 @@ function asBuffer(data: unknown): Buffer {
 
 const attachmentAddFilesInputSchema = z
   .object({
-    paths: z
-      .array(z.string().min(1))
-      .min(1)
+    paths: nonEmptyStringListInputSchema
       .describe("Local file paths to attach (resolved relative to tool cwd)"),
-    filenames: z
-      .array(z.string().min(1))
-      .optional()
-      .describe("Optional filenames for each attachment"),
-    mimeTypes: z
-      .array(z.string().min(1))
-      .optional()
-      .describe("Optional mime types for each attachment"),
+    filenames: optionalNonEmptyStringListInputSchema.describe(
+      "Optional filenames for each attachment",
+    ),
+    mimeTypes: optionalNonEmptyStringListInputSchema.describe(
+      "Optional mime types for each attachment",
+    ),
   })
   .describe("Add one or more attachments from local files.");
 

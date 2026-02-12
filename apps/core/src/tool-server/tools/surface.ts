@@ -736,6 +736,14 @@ const messagesSearchInputSchema = baseInputSchema.extend({
   ),
 });
 
+const optionalNonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
+
 const messagesSendInputSchema = baseInputSchema.extend({
   sessionId: z
     .string()
@@ -746,17 +754,11 @@ const messagesSendInputSchema = baseInputSchema.extend({
     ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
-  paths: z
-    .array(z.string().min(1))
-    .optional()
+  paths: optionalNonEmptyStringListInputSchema
     .describe("Local file paths to attach (resolved relative to request cwd)"),
-  filenames: z
-    .array(z.string().min(1))
-    .optional()
+  filenames: optionalNonEmptyStringListInputSchema
     .describe("Optional filenames for each attachment"),
-  mimeTypes: z
-    .array(z.string().min(1))
-    .optional()
+  mimeTypes: optionalNonEmptyStringListInputSchema
     .describe("Optional mime types for each attachment"),
 });
 

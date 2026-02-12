@@ -34,6 +34,18 @@ const DISCORD_CDN_HOSTS = new Set([
 
 type RequestHeaders = RequiredToolServerHeaders;
 
+const nonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .transform((value) => (Array.isArray(value) ? value : [value]));
+
+const optionalNonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
+
 function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "attachment");
 }
@@ -95,20 +107,16 @@ async function downloadToBuffer(input: unknown): Promise<{
 
 const attachmentAddFilesInputSchema = z
   .object({
-    paths: z
-      .array(z.string().min(1))
-      .min(1)
+    paths: nonEmptyStringListInputSchema
       .describe(
         "Local file paths to attach (resolved relative to request cwd)",
       ),
-    filenames: z
-      .array(z.string().min(1))
-      .optional()
-      .describe("Optional filenames for each attachment"),
-    mimeTypes: z
-      .array(z.string().min(1))
-      .optional()
-      .describe("Optional mime types for each attachment"),
+    filenames: optionalNonEmptyStringListInputSchema.describe(
+      "Optional filenames for each attachment",
+    ),
+    mimeTypes: optionalNonEmptyStringListInputSchema.describe(
+      "Optional mime types for each attachment",
+    ),
   })
   .describe("Add one or more attachments from local files.");
 
@@ -202,11 +210,11 @@ export class Attachment implements ServerTool {
         name: "Attachment Add Files",
         description:
           "Reads local files and attaches them to the current reply.",
-        shortInput: ["--paths=<string[]>"],
+        shortInput: ["--paths=<string | string[]>"],
         input: [
-          "--paths=<string[]> | Local file paths",
-          "--filenames=<string[]> | Optional filenames (same length as paths)",
-          "--mimeTypes=<string[]> | Optional mime types (same length as paths)",
+          "--paths=<string | string[]> | Local file paths",
+          "--filenames=<string | string[]> | Optional filenames (same length as paths)",
+          "--mimeTypes=<string | string[]> | Optional mime types (same length as paths)",
         ],
       },
       {
