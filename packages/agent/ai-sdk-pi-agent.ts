@@ -553,7 +553,7 @@ function truncateToLastValidBoundary(messages: ModelMessage[]): {
  *
  * Notable behavior:
  * - The model can emit tool calls, but tools are executed locally by this wrapper.
- * - `steer()` can interrupt tool execution boundaries.
+ * - `steer()` is injected at turn boundaries (after the current tool phase).
  * - `interrupt()` aborts, rewinds to a valid boundary, appends a message, and reruns.
  */
 export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
@@ -683,8 +683,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /**
    * Queue a steering message.
    *
-   * Steering is checked after each locally executed tool call; if present, the
-   * remaining tool calls are skipped and the steering message(s) are appended.
+   * Steering is checked at turn boundaries. If a turn is executing tools,
+   * queued steering messages are injected after the current tool phase completes.
    */
   steer(message: string | ModelMessage) {
     this.steeringQueue.push(makeUserMessage(message));
@@ -1312,18 +1312,35 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       error?: unknown;
     }>,
   ): Promise<boolean> {
-    for (let i = 0; i < toolCalls.length; i++) {
-      if (this.abortController?.signal.aborted) {
-        const reason: TurnAbortReason =
-          this.abortRequestedReason ??
-          (this.pendingInterrupt ? "interrupt" : "manual");
-        throw new TurnAbortedError({ reason, phase: "tools" });
-      }
+    type ToolCall = (typeof toolCalls)[number];
+    type ToolExecutionOutcome = {
+      result: unknown;
+      isError: boolean;
+      toolOutput: any;
+    };
+    type IndexedToolCall = {
+      index: number;
+      call: ToolCall;
+    };
 
-      const call = toolCalls[i]!;
-      const tool = this.state.tools[call.toolName] as
-        | Tool<any, any>
-        | undefined;
+    const PARALLEL_SAFE_TOOL_NAMES = new Set<string>([
+      "read_file",
+      "glob",
+      "grep",
+    ]);
+    const MAX_PARALLEL_TOOLS = 4;
+
+    const getAbortReason = (): TurnAbortReason =>
+      this.abortRequestedReason ??
+      (this.pendingInterrupt ? "interrupt" : "manual");
+
+    const isAborted = (): boolean => this.abortController?.signal.aborted === true;
+
+    const canRunInParallel = (call: ToolCall): boolean =>
+      PARALLEL_SAFE_TOOL_NAMES.has(call.toolName);
+
+    const executeOne = async (call: ToolCall): Promise<ToolExecutionOutcome> => {
+      const tool = this.state.tools[call.toolName] as Tool<any, any> | undefined;
 
       this.state.pendingToolCalls.add(call.toolCallId);
       this.emit({
@@ -1431,83 +1448,128 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         isError,
       });
 
-      const toolMessage: ModelMessage = {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            output: toolOutput,
-          },
-        ],
+      return {
+        result,
+        isError,
+        toolOutput,
       };
+    };
 
-      this.state.messages.push(toolMessage);
-      this.emit({ type: "message_start", message: cloneMessage(toolMessage) });
-      this.emit({ type: "message_end", message: cloneMessage(toolMessage) });
+    const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(
+      toolCalls.length,
+    );
+    let nextAppendIndex = 0;
 
-      if (this.abortController?.signal.aborted) {
-        const reason: TurnAbortReason =
-          this.abortRequestedReason ??
-          (this.pendingInterrupt ? "interrupt" : "manual");
-        throw new TurnAbortedError({ reason, phase: "tools" });
+    const appendReadyOutcomes = () => {
+      while (nextAppendIndex < toolCalls.length) {
+        const call = toolCalls[nextAppendIndex]!;
+        const outcome = outcomes[nextAppendIndex];
+        if (!outcome) break;
+
+        const toolMessage: ModelMessage = {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              output: outcome.toolOutput,
+            },
+          ],
+        };
+
+        this.state.messages.push(toolMessage);
+        this.emit({ type: "message_start", message: cloneMessage(toolMessage) });
+        this.emit({ type: "message_end", message: cloneMessage(toolMessage) });
+
+        nextAppendIndex += 1;
+      }
+    };
+
+    let parallelBucket: IndexedToolCall[] = [];
+    let stoppedDueToAbort = false;
+
+    const flushParallelBucket = async () => {
+      if (parallelBucket.length === 0) return;
+      const pending = parallelBucket;
+      parallelBucket = [];
+
+      let next = 0;
+      const workers = Array.from(
+        { length: Math.min(MAX_PARALLEL_TOOLS, pending.length) },
+        () =>
+          (async () => {
+            while (true) {
+              if (isAborted()) return;
+              const current = next;
+              if (current >= pending.length) return;
+              next += 1;
+
+              const { index, call } = pending[current]!;
+              if (isAborted()) return;
+
+              outcomes[index] = await executeOne(call);
+              appendReadyOutcomes();
+            }
+          })(),
+      );
+
+      await Promise.all(workers);
+    };
+
+    // Execute parallel-safe calls concurrently. Keep apply_patch and other
+    // non-safe tools sequential in model-emitted order.
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (isAborted()) {
+        stoppedDueToAbort = true;
+        break;
       }
 
-      const steering = takeQueued(this.steeringMode, this.steeringQueue);
-      if (steering.length > 0) {
-        // Steering should include any buffered follow-ups.
-        const followUpsAll = takeAll(this.followUpQueue);
+      const call = toolCalls[i]!;
 
-        // Skip remaining tools (pi-agent behavior)
-        for (const skipped of toolCalls.slice(i + 1)) {
-          this.emit({
-            type: "tool_execution_start",
-            toolCallId: skipped.toolCallId,
-            toolName: skipped.toolName,
-            args: skipped.input,
-          });
-          this.emit({
-            type: "tool_execution_end",
-            toolCallId: skipped.toolCallId,
-            toolName: skipped.toolName,
-            args: skipped.input,
-            result: "Skipped due to steering message.",
-            isError: true,
-          });
-
-          const skippedToolMessage: ModelMessage = {
-            role: "tool",
-            content: [
-              {
-                type: "tool-result",
-                toolCallId: skipped.toolCallId,
-                toolName: skipped.toolName,
-                output: {
-                  type: "error-text",
-                  value: "Skipped due to steering message.",
-                },
-              },
-            ],
-          };
-          this.state.messages.push(skippedToolMessage);
-          this.emit({
-            type: "message_start",
-            message: cloneMessage(skippedToolMessage),
-          });
-          this.emit({
-            type: "message_end",
-            message: cloneMessage(skippedToolMessage),
-          });
+      if (!canRunInParallel(call)) {
+        await flushParallelBucket();
+        if (isAborted()) {
+          stoppedDueToAbort = true;
+          break;
         }
 
-        const merged = mergeUserMessages([...followUpsAll, ...steering]);
-        for (const msg of merged) {
-          this.appendMessage(msg);
-        }
-
-        return true;
+        outcomes[i] = await executeOne(call);
+        appendReadyOutcomes();
+        continue;
       }
+
+      parallelBucket.push({ index: i, call });
+    }
+
+    if (!stoppedDueToAbort) {
+      await flushParallelBucket();
+      if (isAborted()) {
+        stoppedDueToAbort = true;
+      }
+    }
+
+    if (!stoppedDueToAbort && nextAppendIndex !== toolCalls.length) {
+      const missing = toolCalls[nextAppendIndex]!;
+      throw new Error(
+        `Missing tool execution outcome for toolCallId=${missing.toolCallId}`,
+      );
+    }
+
+    if (isAborted()) {
+      throw new TurnAbortedError({ reason: getAbortReason(), phase: "tools" });
+    }
+
+    const steering = takeQueued(this.steeringMode, this.steeringQueue);
+    if (steering.length > 0) {
+      // Steering should include any buffered follow-ups.
+      const followUpsAll = takeAll(this.followUpQueue);
+      const merged = mergeUserMessages([...followUpsAll, ...steering]);
+      for (const msg of merged) {
+        this.appendMessage(msg);
+      }
+
+      return true;
     }
 
     return false;

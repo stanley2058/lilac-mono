@@ -249,8 +249,8 @@ export function batchTool(params: {
   return {
     batch: tool({
       description: [
-        "Execute multiple tool calls in parallel.",
-        "Use this to speed up independent read_file/glob/grep/bash/apply_patch operations.",
+        "Execute multiple tool calls in parallel. Prefer this tool when your following operations are independent.",
+        "Supports independent read_file/glob/grep/bash/apply_patch operations.",
         "Notes:",
         "- All calls start in parallel; ordering is not guaranteed.",
         "- Partial failures do not stop other tool calls.",

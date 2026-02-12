@@ -343,7 +343,7 @@ const readFileSuccessBaseZod = z
     hasMoreLines: z.boolean(),
     truncatedByChars: z.boolean(),
   })
-  .merge(instructionFieldsZod);
+  .extend(instructionFieldsZod.shape);
 
 const readFileAttachmentSuccessZod = z
   .object({
@@ -355,7 +355,7 @@ const readFileAttachmentSuccessZod = z
     mimeType: z.string(),
     bytes: z.number(),
   })
-  .merge(instructionFieldsZod);
+  .extend(instructionFieldsZod.shape);
 
 const readFileOutputZod = z.union([
   readFileSuccessBaseZod.extend({
