@@ -3,7 +3,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { FileSystem, type GlobResult, type GrepResult } from "../../src/tools/fs/fs-impl";
+import {
+  FileSystem,
+  type EditFileResult,
+  type GlobResult,
+  type GrepResult,
+} from "../../src/tools/fs/fs-impl";
 
 const runnerPath = path.resolve(
   import.meta.dir,
@@ -357,5 +362,118 @@ describe("fs search parity (local vs remote runner)", () => {
     expect(normalizeDefaultResults(remote.results)).toEqual([]);
     expect(local.truncated).toBe(false);
     expect(remote.truncated).toBe(false);
+  });
+
+  it("edit default snippet replacement matches between local and remote", async () => {
+    await writeFile(path.join(baseDir, "edit-local.ts"), "const value = alpha;\n");
+    await writeFile(path.join(baseDir, "edit-remote.ts"), "const value = alpha;\n");
+
+    const localRead = await fsTool.readFile({ path: "edit-local.ts" });
+    expect(localRead.success).toBe(true);
+    if (!localRead.success) throw new Error("local read failed");
+
+    const local = await fsTool.editFile({
+      path: "edit-local.ts",
+      expectedHash: localRead.fileHash,
+      edits: [
+        {
+          type: "replace_snippet",
+          target: "alpha",
+          newText: "beta",
+        },
+      ],
+    });
+
+    const remoteRead = await runRemoteOp<{
+      success: true;
+      fileHash: string;
+      resolvedPath: string;
+    }>({
+      cwd: baseDir,
+      op: "fs.read_text",
+      input: { path: "edit-remote.ts" },
+    });
+
+    const remote = await runRemoteOp<EditFileResult>({
+      cwd: baseDir,
+      op: "fs.edit",
+      input: {
+        path: "edit-remote.ts",
+        expectedHash: remoteRead.fileHash,
+        edits: [
+          {
+            type: "replace_snippet",
+            target: "alpha",
+            newText: "beta",
+          },
+        ],
+      },
+    });
+
+    expect(local.success).toBe(true);
+    expect(remote.success).toBe(true);
+    if (!local.success || !remote.success) {
+      throw new Error("edit failed unexpectedly");
+    }
+
+    expect(local.replacementsMade).toBe(remote.replacementsMade);
+    expect(local.changesMade).toBe(remote.changesMade);
+  });
+
+  it("edit malformed regex error matches between local and remote", async () => {
+    await writeFile(path.join(baseDir, "edit-error.ts"), "alpha\n");
+
+    const localRead = await fsTool.readFile({ path: "edit-error.ts" });
+    expect(localRead.success).toBe(true);
+    if (!localRead.success) throw new Error("local read failed");
+
+    const local = await fsTool.editFile({
+      path: "edit-error.ts",
+      expectedHash: localRead.fileHash,
+      edits: [
+        {
+          type: "replace_snippet",
+          matching: "regex",
+          target: "(",
+          newText: "beta",
+        },
+      ],
+    });
+
+    const remoteRead = await runRemoteOp<{
+      success: true;
+      fileHash: string;
+      resolvedPath: string;
+    }>({
+      cwd: baseDir,
+      op: "fs.read_text",
+      input: { path: "edit-error.ts" },
+    });
+
+    const remote = await runRemoteOp<EditFileResult>({
+      cwd: baseDir,
+      op: "fs.edit",
+      input: {
+        path: "edit-error.ts",
+        expectedHash: remoteRead.fileHash,
+        edits: [
+          {
+            type: "replace_snippet",
+            matching: "regex",
+            target: "(",
+            newText: "beta",
+          },
+        ],
+      },
+    });
+
+    expect(local.success).toBe(false);
+    expect(remote.success).toBe(false);
+    if (local.success || remote.success) {
+      throw new Error("expected edit to fail");
+    }
+
+    expect(local.error.code).toBe("INVALID_REGEX");
+    expect(remote.error.code).toBe("INVALID_REGEX");
   });
 });

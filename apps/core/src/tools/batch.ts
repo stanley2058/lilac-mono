@@ -2,39 +2,53 @@ import path from "node:path";
 
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import type { EditingToolMode } from "@stanley2058/lilac-utils";
 import { expandTilde } from "./fs/fs-impl";
 import { parsePatch } from "./apply-patch/local-apply-patch-tool";
 import { formatToolArgsForDisplay } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
-const ALLOWED_TOOL_NAMES = [
+const ALL_TOOL_NAMES = [
   "read_file",
   "glob",
   "grep",
   "bash",
   "apply_patch",
+  "edit_file",
 ] as const;
-type AllowedToolName = (typeof ALLOWED_TOOL_NAMES)[number];
+type AllowedToolName = (typeof ALL_TOOL_NAMES)[number];
 
-const toolCallSchema = z.object({
-  tool: z.enum(ALLOWED_TOOL_NAMES).describe("Tool name to execute"),
-  parameters: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .default({})
-    .describe("Tool arguments (object)"),
-});
+const ALLOWED_TOOL_NAMES_BY_MODE = {
+  apply_patch: ["read_file", "glob", "grep", "bash", "apply_patch"],
+  edit_file: ["read_file", "glob", "grep", "bash", "edit_file"],
+  none: ["read_file", "glob", "grep", "bash"],
+} as const;
 
-const batchInputSchema = z.object({
-  tool_calls: z
-    .array(toolCallSchema)
-    .min(1)
-    .max(25)
-    .describe("Array of tool calls to execute in parallel"),
-});
+function makeToolCallSchema(
+  allowedToolNames: readonly [string, ...string[]],
+) {
+  return z.object({
+    tool: z.enum(allowedToolNames).describe("Tool name to execute"),
+    parameters: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .default({})
+      .describe("Tool arguments (object)"),
+  });
+}
 
-type BatchInput = z.infer<typeof batchInputSchema>;
+function makeBatchInputSchema(
+  allowedToolNames: readonly [string, ...string[]],
+) {
+  return z.object({
+    tool_calls: z
+      .array(makeToolCallSchema(allowedToolNames))
+      .min(1)
+      .max(25)
+      .describe("Array of tool calls to execute in parallel"),
+  });
+}
 
 const batchOutputSchema = z.object({
   ok: z.boolean(),
@@ -167,10 +181,14 @@ function collectApplyPatchTouchedPaths(params: {
   return out;
 }
 
-function toolSetLookup(
-  tools: ToolSet,
-  name: AllowedToolName,
-): ToolLike | undefined {
+function collectEditFileTouchedPaths(params: {
+  path: string;
+  cwd: string;
+}): Set<string> {
+  return new Set([resolveTouchedPathKey(params.cwd, params.path)]);
+}
+
+function toolSetLookup(tools: ToolSet, name: string): ToolLike | undefined {
   const v = (tools as unknown as Record<string, unknown>)[name];
   if (!v || typeof v !== "object") return undefined;
   return v as ToolLike;
@@ -179,6 +197,7 @@ function toolSetLookup(
 export function batchTool(params: {
   defaultCwd: string;
   getTools: () => ToolSet;
+  editingMode?: EditingToolMode | "none";
   reportToolStatus?: (update: {
     toolCallId: string;
     status: "start" | "end";
@@ -188,6 +207,14 @@ export function batchTool(params: {
   }) => void | Promise<void>;
 }) {
   const { defaultCwd, getTools, reportToolStatus } = params;
+  const editingMode = params.editingMode ?? "apply_patch";
+  const allowedToolNames = ALLOWED_TOOL_NAMES_BY_MODE[
+    editingMode
+  ] as unknown as [string, ...string[]];
+  const batchInputSchema = makeBatchInputSchema(allowedToolNames);
+  const editCallDescription = editingMode === "none"
+    ? "Supports independent read_file/glob/grep/bash operations."
+    : `Supports independent read_file/glob/grep/bash/${editingMode} operations.`;
 
   const reportSafe = (update: {
     toolCallId: string;
@@ -204,7 +231,7 @@ export function batchTool(params: {
 
   type ChildStatus = "pending" | "running" | "done";
   type ChildState = {
-    tool: AllowedToolName;
+    tool: string;
     args: unknown;
     status: ChildStatus;
     ok: boolean | null;
@@ -250,44 +277,61 @@ export function batchTool(params: {
     batch: tool({
       description: [
         "Execute multiple tool calls in parallel. Prefer this tool when your following operations are independent.",
-        "Supports independent read_file/glob/grep/bash/apply_patch operations.",
+        editCallDescription,
         "Notes:",
         "- All calls start in parallel; ordering is not guaranteed.",
         "- Partial failures do not stop other tool calls.",
-        "- If multiple apply_patch calls touch the same file path, the entire batch is rejected.",
+        "- If multiple edit calls touch the same file path, the entire batch is rejected.",
       ].join("\n"),
       inputSchema: batchInputSchema,
       outputSchema: batchOutputSchema,
-      execute: async (input: BatchInput, options) => {
+      execute: async (input, options) => {
         const calls = input.tool_calls;
         const tools = getTools();
 
-        // Preflight: reject apply_patch calls that overlap on touched paths.
+        const activeEditTool =
+          editingMode === "none" ? null : editingMode;
+
+        // Preflight: reject active edit calls that overlap on touched paths.
         const seen = new Map<string, number>();
         const conflicts: string[] = [];
         for (let i = 0; i < calls.length; i++) {
           const call = calls[i]!;
-          if (call.tool !== "apply_patch") continue;
+          if (!activeEditTool || call.tool !== activeEditTool) continue;
           const raw = call.parameters;
-          if (!isRecord(raw) || typeof raw["patchText"] !== "string") {
-            throw new Error(
-              "batch: apply_patch parameters must include patchText (string)",
-            );
-          }
+          const cwd = isRecord(raw) && typeof raw["cwd"] === "string"
+            ? raw["cwd"]
+            : defaultCwd;
 
-          const cwd =
-            typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
+          let touched: Set<string>;
 
-          let touched: Set<string> | null = null;
-          try {
-            touched = collectApplyPatchTouchedPaths({
-              patchText: String(raw["patchText"]),
+          if (activeEditTool === "apply_patch") {
+            if (!isRecord(raw) || typeof raw["patchText"] !== "string") {
+              throw new Error(
+                "batch: apply_patch parameters must include patchText (string)",
+              );
+            }
+
+            try {
+              touched = collectApplyPatchTouchedPaths({
+                patchText: String(raw["patchText"]),
+                cwd,
+              });
+            } catch {
+              // If the patch is invalid we can't preflight touched paths.
+              // Let the apply_patch tool handle the error for this call.
+              continue;
+            }
+          } else {
+            if (!isRecord(raw) || typeof raw["path"] !== "string") {
+              throw new Error(
+                "batch: edit_file parameters must include path (string)",
+              );
+            }
+            touched = collectEditFileTouchedPaths({
+              path: String(raw["path"]),
               cwd,
             });
-          } catch {
-            // If the patch is invalid we can't preflight touched paths.
-            // Let the apply_patch tool handle the error for this call.
-            continue;
           }
 
           for (const p of touched) {
@@ -307,9 +351,9 @@ export function batchTool(params: {
           if (more > 0) lines.push(`- ... and ${more} more`);
           throw new Error(
             [
-              "batch rejected: apply_patch calls touch overlapping paths:",
+              "batch rejected: edit calls touch overlapping paths:",
               ...lines,
-              "Tip: combine edits into a single apply_patch call per file.",
+              "Tip: combine edits into a single edit call per file.",
             ].join("\n"),
           );
         }

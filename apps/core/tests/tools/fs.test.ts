@@ -234,4 +234,76 @@ describe("fs tool", () => {
     expect(ok.replacementsMade).toBe(2);
     expect(await readFile(join(baseDir, "e.txt"), "utf-8")).toBe("bar bar");
   });
+
+  it("replace_snippet reports INVALID_REGEX for malformed regex", async () => {
+    await writeFile(join(baseDir, "regex.txt"), "abc");
+
+    const readRes = await fsTool.readFile({ path: "regex.txt" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success) return;
+
+    const denied = await fsTool.editFile({
+      path: "regex.txt",
+      edits: [
+        {
+          type: "replace_snippet",
+          target: "(",
+          matching: "regex",
+          newText: "x",
+        },
+      ],
+    });
+
+    expect(denied.success).toBe(false);
+    if (denied.success) return;
+    expect(denied.error.code).toBe("INVALID_REGEX");
+  });
+
+  it("replace_snippet reports INVALID_EDIT on non-positive occurrence", async () => {
+    await writeFile(join(baseDir, "occurrence.txt"), "abc");
+
+    const readRes = await fsTool.readFile({ path: "occurrence.txt" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success) return;
+
+    const denied = await fsTool.editFile({
+      path: "occurrence.txt",
+      edits: [
+        {
+          type: "replace_snippet",
+          target: "a",
+          newText: "z",
+          occurrence: 0,
+        },
+      ],
+    });
+
+    expect(denied.success).toBe(false);
+    if (denied.success) return;
+    expect(denied.error.code).toBe("INVALID_EDIT");
+  });
+
+  it("replace_snippet reports NOT_ENOUGH_MATCHES when expected count is too high", async () => {
+    await writeFile(join(baseDir, "matches.txt"), "alpha");
+
+    const readRes = await fsTool.readFile({ path: "matches.txt" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success) return;
+
+    const denied = await fsTool.editFile({
+      path: "matches.txt",
+      edits: [
+        {
+          type: "replace_snippet",
+          target: "alpha",
+          newText: "beta",
+          expectedMatches: 2,
+        },
+      ],
+    });
+
+    expect(denied.success).toBe(false);
+    if (denied.success) return;
+    expect(denied.error.code).toBe("NOT_ENOUGH_MATCHES");
+  });
 });

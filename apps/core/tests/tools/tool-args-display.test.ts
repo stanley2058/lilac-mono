@@ -39,6 +39,16 @@ describe("formatToolArgsForDisplay", () => {
     );
   });
 
+  it("formats edit_file path with middle truncation", () => {
+    expect(
+      formatToolArgsForDisplay("edit_file", {
+        path: "/path/to/some/really/long/path/to/file.js",
+        oldText: "a",
+        newText: "b",
+      }),
+    ).toBe(" /path/to/some/...th/to/file.js");
+  });
+
   it("formats grep as pattern + cwd", () => {
     expect(
       formatToolArgsForDisplay("grep", {
@@ -61,5 +71,6 @@ describe("formatToolArgsForDisplay", () => {
     expect(formatToolArgsForDisplay("bash", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("read_file", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("apply_patch", { nope: true })).toBe("");
+    expect(formatToolArgsForDisplay("edit_file", { nope: true })).toBe("");
   });
 });

@@ -3,7 +3,13 @@ import { z } from "zod/v4";
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { fileTypeFromBuffer } from "file-type/core";
-import { READ_ERROR_CODES, FileSystem, expandTilde } from "./fs-impl";
+import {
+  EDIT_ERROR_CODES,
+  READ_ERROR_CODES,
+  FileSystem,
+  expandTilde,
+  type FileEdit,
+} from "./fs-impl";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
@@ -12,6 +18,7 @@ import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import {
   remoteGrep,
   remoteGlob,
+  remoteEditFile,
   remoteReadFileBytes,
   remoteReadTextFile,
   toRemoteDebugPath,
@@ -24,6 +31,7 @@ const pathSchema = z
   );
 
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
+const editErrorCodeSchema = z.enum(EDIT_ERROR_CODES);
 const searchModeSchema = z.enum(["default", "detailed"]);
 
 const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
@@ -316,6 +324,67 @@ const grepOutputZod = z.discriminatedUnion("mode", [
 
 type GrepOutput = z.infer<typeof grepOutputZod>;
 
+const expectedMatchesSchema = z.union([
+  z.literal("any"),
+  z.number().int().positive(),
+]);
+
+export const editFileInputZod = z.object({
+  path: pathSchema,
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
+    ),
+  oldText: z
+    .string()
+    .min(1)
+    .describe("Exact text to find and replace. Must uniquely match by default."),
+  newText: z.string().describe("Replacement text."),
+  matching: z
+    .enum(["exact", "regex"])
+    .optional()
+    .describe("Matching mode. Default: exact."),
+  replaceAll: z
+    .boolean()
+    .optional()
+    .describe("Replace all matches when true. Default: false (single replacement)."),
+  expectedMatches: expectedMatchesSchema
+    .optional()
+    .describe(
+      "Expected number of matches. Default: 1 when replaceAll=false, otherwise 'any'.",
+    ),
+  expectedHash: z
+    .string()
+    .optional()
+    .describe("Optional optimistic concurrency hash from read_file."),
+});
+
+type EditFileInput = z.infer<typeof editFileInputZod>;
+
+const editFileOutputZod = z.union([
+  z.object({
+    success: z.literal(true),
+    resolvedPath: z.string(),
+    oldHash: z.string(),
+    newHash: z.string(),
+    changesMade: z.boolean(),
+    replacementsMade: z.number(),
+  }),
+  z.object({
+    success: z.literal(false),
+    resolvedPath: z.string(),
+    currentHash: z.string().optional(),
+    error: z.object({
+      code: editErrorCodeSchema,
+      message: z.string(),
+    }),
+  }),
+]);
+
+type EditFileOutput = z.infer<typeof editFileOutputZod>;
+
 function countGlobItems(output: GlobOutput): number {
   if (output.mode === "default") return output.paths.length;
   return output.entries.length;
@@ -385,11 +454,49 @@ const readFileOutputZod = z.union([
 
 type ReadFileOutput = z.infer<typeof readFileOutputZod>;
 
-export function fsTool(cwd: string) {
+function resolveExpectedMatches(input: EditFileInput): "any" | number {
+  if (input.expectedMatches !== undefined) return input.expectedMatches;
+  return input.replaceAll ? "any" : 1;
+}
+
+function normalizeEditOutput(output: {
+  success: boolean;
+  resolvedPath: string;
+  oldHash?: string;
+  newHash?: string;
+  changesMade?: boolean;
+  replacementsMade?: number;
+  currentHash?: string;
+  error?: { code: (typeof EDIT_ERROR_CODES)[number]; message: string };
+}): EditFileOutput {
+  if (output.success) {
+    return {
+      success: true,
+      resolvedPath: output.resolvedPath,
+      oldHash: output.oldHash ?? "",
+      newHash: output.newHash ?? "",
+      changesMade: Boolean(output.changesMade),
+      replacementsMade: output.replacementsMade ?? 0,
+    };
+  }
+
+  return {
+    success: false,
+    resolvedPath: output.resolvedPath,
+    currentHash: output.currentHash,
+    error: output.error ?? {
+      code: "UNKNOWN",
+      message: "Unknown edit error",
+    },
+  };
+}
+
+export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
   const logger = new Logger({
     logLevel: resolveLogLevel(),
     module: "tool:fs",
   });
+  const includeEditFile = opts?.includeEditFile ?? false;
 
   const toolRootAbs = path.resolve(expandTilde(cwd));
 
@@ -428,6 +535,52 @@ export function fsTool(cwd: string) {
       fileHash: string;
     }
   >();
+
+  const remoteFileAccessByResolvedPath = new Map<string, string>();
+  const remoteResolvedPathByLookup = new Map<string, string>();
+
+  function remoteResolvedPathKey(host: string, resolvedPath: string): string {
+    return `${host}|${resolvedPath}`;
+  }
+
+  function remoteLookupKey(host: string, remoteCwd: string, inputPath: string): string {
+    return `${host}|${remoteCwd}|${inputPath}`;
+  }
+
+  function recordRemoteFileAccess(params: {
+    host: string;
+    remoteCwd: string;
+    inputPath: string;
+    resolvedPath: string;
+    fileHash: string;
+  }) {
+    remoteFileAccessByResolvedPath.set(
+      remoteResolvedPathKey(params.host, params.resolvedPath),
+      params.fileHash,
+    );
+    remoteResolvedPathByLookup.set(
+      remoteLookupKey(params.host, params.remoteCwd, params.inputPath),
+      params.resolvedPath,
+    );
+  }
+
+  function lookupRemoteReadHash(params: {
+    host: string;
+    remoteCwd: string;
+    inputPath: string;
+  }): { resolvedPath: string; hash: string } | null {
+    const resolvedPath = remoteResolvedPathByLookup.get(
+      remoteLookupKey(params.host, params.remoteCwd, params.inputPath),
+    );
+    if (!resolvedPath) return null;
+
+    const hash = remoteFileAccessByResolvedPath.get(
+      remoteResolvedPathKey(params.host, resolvedPath),
+    );
+    if (!hash) return null;
+
+    return { resolvedPath, hash };
+  }
 
   function isAttachmentOutput(
     output: ReadFileOutput,
@@ -504,7 +657,7 @@ export function fsTool(cwd: string) {
     };
   }
 
-  return {
+  const baseTools = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description:
         "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider.",
@@ -548,6 +701,13 @@ export function fsTool(cwd: string) {
                   cwdTarget.host,
                   bytesRes.resolvedPath,
                 );
+                recordRemoteFileAccess({
+                  host: cwdTarget.host,
+                  remoteCwd: cwdTarget.cwd,
+                  inputPath: input.path,
+                  resolvedPath: bytesRes.resolvedPath,
+                  fileHash: bytesRes.fileHash,
+                });
                 const filename = path.basename(bytesRes.resolvedPath);
 
                 const detected = await fileTypeFromBuffer(bytes);
@@ -619,12 +779,24 @@ export function fsTool(cwd: string) {
               };
             })()
           : cwdTarget.kind === "ssh"
-            ? await remoteReadTextFile({
-                host: cwdTarget.host,
-                cwd: cwdTarget.cwd,
-                input,
-                denyPaths: REMOTE_DENY_PATHS,
-              })
+            ? await (async () => {
+                const remoteRes = await remoteReadTextFile({
+                  host: cwdTarget.host,
+                  cwd: cwdTarget.cwd,
+                  input,
+                  denyPaths: REMOTE_DENY_PATHS,
+                });
+                if (remoteRes.success) {
+                  recordRemoteFileAccess({
+                    host: cwdTarget.host,
+                    remoteCwd: cwdTarget.cwd,
+                    inputPath: input.path,
+                    resolvedPath: remoteRes.resolvedPath,
+                    fileHash: remoteRes.fileHash,
+                  });
+                }
+                return remoteRes;
+              })()
             : await fileSystem.readFile(input, opCwd);
 
         const resQualified = (() => {
@@ -845,6 +1017,121 @@ export function fsTool(cwd: string) {
           truncated: res.truncated,
           error: res.error,
           mode: res.mode,
+        });
+
+        return res;
+      },
+    }),
+  };
+
+  if (!includeEditFile) {
+    return baseTools;
+  }
+
+  return {
+    ...baseTools,
+    edit_file: tool<EditFileInput, EditFileOutput>({
+      description:
+        "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches.",
+      inputSchema: editFileInputZod,
+      outputSchema: editFileOutputZod,
+      execute: async ({ cwd: opCwd, ...input }) => {
+        logger.info("fs.editFile", {
+          path: input.path,
+          cwd: opCwd,
+          replaceAll: input.replaceAll,
+          matching: input.matching,
+        });
+
+        const occurrence: "all" | "first" = input.replaceAll
+          ? "all"
+          : "first";
+        const editPayload: {
+          path: string;
+          edits: FileEdit[];
+          expectedHash?: string;
+        } = {
+          path: input.path,
+          edits: [
+            {
+              type: "replace_snippet" as const,
+              target: input.oldText,
+              matching: input.matching,
+              newText: input.newText,
+              occurrence,
+              expectedMatches: resolveExpectedMatches(input),
+            },
+          ],
+          expectedHash: input.expectedHash,
+        };
+
+        const cwdTarget = parseSshCwdTarget(opCwd);
+        const res = cwdTarget.kind === "ssh"
+          ? await (async () => {
+              let expectedHash = input.expectedHash;
+              let resolvedPathHint: string | undefined;
+
+              if (!expectedHash) {
+                const prior = lookupRemoteReadHash({
+                  host: cwdTarget.host,
+                  remoteCwd: cwdTarget.cwd,
+                  inputPath: input.path,
+                });
+                if (!prior) {
+                  return {
+                    success: false as const,
+                    resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                    error: {
+                      code: "NOT_READ" as const,
+                      message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, input.path)}`,
+                    },
+                  };
+                }
+                expectedHash = prior.hash;
+                resolvedPathHint = prior.resolvedPath;
+              }
+
+              const remoteRes = await remoteEditFile({
+                host: cwdTarget.host,
+                cwd: cwdTarget.cwd,
+                input: {
+                  path: editPayload.path,
+                  edits: editPayload.edits,
+                  expectedHash,
+                },
+                denyPaths: REMOTE_DENY_PATHS,
+              });
+
+              if (remoteRes.success) {
+                recordRemoteFileAccess({
+                  host: cwdTarget.host,
+                  remoteCwd: cwdTarget.cwd,
+                  inputPath: input.path,
+                  resolvedPath: remoteRes.resolvedPath,
+                  fileHash: remoteRes.newHash,
+                });
+              } else if (resolvedPathHint) {
+                remoteResolvedPathByLookup.set(
+                  remoteLookupKey(cwdTarget.host, cwdTarget.cwd, input.path),
+                  resolvedPathHint,
+                );
+              }
+
+              return normalizeEditOutput({
+                ...remoteRes,
+                resolvedPath: toRemoteDebugPath(
+                  cwdTarget.host,
+                  remoteRes.resolvedPath,
+                ),
+              });
+            })()
+          : normalizeEditOutput(await fileSystem.editFile(editPayload, opCwd));
+
+        logger.info("fs.editFile done", {
+          path: res.resolvedPath,
+          ok: res.success,
+          error: res.success ? undefined : res.error,
+          replacementsMade: res.success ? res.replacementsMade : undefined,
         });
 
         return res;

@@ -14,6 +14,7 @@ import {
   formatAvailableSkillsSection,
   getCoreConfig,
   ModelCapability,
+  resolveEditingToolMode,
   type JSONObject,
   resolveLogLevel,
   resolveModelSlot,
@@ -880,14 +881,14 @@ function buildSystemPromptForProfile(params: {
   profile: AgentRunProfile;
   exploreOverlay?: string;
   skillsSection?: string | null;
+  activeEditingTool?: "apply_patch" | "edit_file" | null;
 }): string {
   if (params.profile !== "explore") {
-    if (!params.skillsSection || params.skillsSection.trim().length === 0) {
-      return params.baseSystemPrompt;
+    const parts = [params.baseSystemPrompt];
+    if (params.skillsSection && params.skillsSection.trim().length > 0) {
+      parts.push(params.skillsSection.trim());
     }
-    return [params.baseSystemPrompt, "", params.skillsSection.trim()].join(
-      "\n",
-    );
+    return parts.join("\n\n");
   }
 
   return [
@@ -1315,6 +1316,10 @@ export async function startBusAgentRunner(params: {
       cfg,
       runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
     );
+    const editingToolMode = resolveEditingToolMode({
+      provider: resolved.provider,
+      modelId: resolved.modelId,
+    });
 
     const anthropicPromptCachingEnabled = isAnthropicModelSpec(resolved.spec);
 
@@ -1348,6 +1353,7 @@ export async function startBusAgentRunner(params: {
     const systemPrompt = buildSystemPromptForProfile({
       baseSystemPrompt: cfg.agent.systemPrompt,
       profile: runProfile,
+      activeEditingTool: runProfile === "primary" ? editingToolMode : null,
       exploreOverlay: subagents.profiles.explore.promptOverlay,
       skillsSection:
         runProfile === "primary"
@@ -1370,6 +1376,7 @@ export async function startBusAgentRunner(params: {
       runProfile,
       subagentDepth: subagentMeta.depth,
       model: resolved.spec,
+      editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
       isRecoveryResume: Boolean(next.recovery),
       messageCount: next.messages.length,
       recoveryCheckpointMessageCount:
@@ -1384,9 +1391,13 @@ export async function startBusAgentRunner(params: {
       Object.assign(
         tools,
         bashToolWithCwd(cwd),
-        fsTool(cwd),
-        applyPatchTool({ cwd }),
+        fsTool(cwd, {
+          includeEditFile: editingToolMode === "edit_file",
+        }),
       );
+      if (editingToolMode === "apply_patch") {
+        Object.assign(tools, applyPatchTool({ cwd }));
+      }
 
       if (subagents.enabled && subagentMeta.depth < subagents.maxDepth) {
         Object.assign(
@@ -1406,6 +1417,7 @@ export async function startBusAgentRunner(params: {
       batchTool({
         defaultCwd: cwd,
         getTools: () => tools,
+        editingMode: runProfile === "explore" ? "none" : editingToolMode,
         reportToolStatus: (update) => {
           bus
             .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {

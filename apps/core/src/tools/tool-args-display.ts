@@ -2,7 +2,12 @@ import { asSchema } from "ai";
 import { z } from "zod";
 
 import { bashInputSchema } from "./bash";
-import { globInputZod, grepInputZod, readFileInputZod } from "./fs/fs";
+import {
+  editFileInputZod,
+  globInputZod,
+  grepInputZod,
+  readFileInputZod,
+} from "./fs/fs";
 
 type ValidationResult<T> =
   | { success: true; value: T }
@@ -201,6 +206,15 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
       truncateMiddle(first, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN) +
       suffix
     );
+  },
+
+  edit_file: (args) => {
+    const parsed = safeValidateSync<{ path: string }>(editFileInputZod, args);
+    if (!parsed) return "";
+
+    const p = parsed.path.trim();
+    if (!p) return "";
+    return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
   },
 
   batch: (args) => {

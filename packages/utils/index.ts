@@ -10,3 +10,4 @@ export * from "./skills";
 export * from "./find-root";
 export * from "./logging";
 export * from "./vcs-env";
+export * from "./model-edit-mode";

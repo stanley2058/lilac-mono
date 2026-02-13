@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { ToolSet } from "ai";
+import { asSchema, type ToolSet } from "ai";
 
 import { applyPatchTool } from "../../src/tools/apply-patch";
 import { bashToolWithCwd } from "../../src/tools/bash";
@@ -22,14 +22,33 @@ type ExecTool = {
   ) => Promise<unknown> | unknown;
 };
 
-function makeTools(cwd: string): ToolSet {
+function makeTools(
+  cwd: string,
+  opts?: {
+    editingMode?: "apply_patch" | "edit_file" | "none";
+    includeApplyPatch?: boolean;
+    includeEditFile?: boolean;
+  },
+): ToolSet {
+  const editingMode = opts?.editingMode ?? "apply_patch";
+  const includeApplyPatch = opts?.includeApplyPatch ?? editingMode === "apply_patch";
+  const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
+
   const tools: ToolSet = {} as ToolSet;
-  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
+  Object.assign(
+    tools,
+    bashToolWithCwd(cwd),
+    fsTool(cwd, { includeEditFile }),
+  );
+  if (includeApplyPatch) {
+    Object.assign(tools, applyPatchTool({ cwd }));
+  }
   Object.assign(
     tools,
     batchTool({
       defaultCwd: cwd,
       getTools: () => tools,
+      editingMode,
     }),
   );
   return tools;
@@ -38,14 +57,31 @@ function makeTools(cwd: string): ToolSet {
 function makeToolsWithBatchReporter(
   cwd: string,
   reportToolStatus: Parameters<typeof batchTool>[0]["reportToolStatus"],
+  opts?: {
+    editingMode?: "apply_patch" | "edit_file" | "none";
+    includeApplyPatch?: boolean;
+    includeEditFile?: boolean;
+  },
 ): ToolSet {
+  const editingMode = opts?.editingMode ?? "apply_patch";
+  const includeApplyPatch = opts?.includeApplyPatch ?? editingMode === "apply_patch";
+  const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
+
   const tools: ToolSet = {} as ToolSet;
-  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd), applyPatchTool({ cwd }));
+  Object.assign(
+    tools,
+    bashToolWithCwd(cwd),
+    fsTool(cwd, { includeEditFile }),
+  );
+  if (includeApplyPatch) {
+    Object.assign(tools, applyPatchTool({ cwd }));
+  }
   Object.assign(
     tools,
     batchTool({
       defaultCwd: cwd,
       getTools: () => tools,
+      editingMode,
       reportToolStatus,
     }),
   );
@@ -324,5 +360,74 @@ describe("batch tool", () => {
     const lastEnd = [...updates].reverse().find((u) => u.status === "end");
     expect(lastEnd).toBeTruthy();
     expect(lastEnd!.display).toBe("batch (5 tools)");
+  });
+
+  it("exposes only edit_file in batch schema for non-openai mode", async () => {
+    const tools = makeTools(baseDir, {
+      editingMode: "edit_file",
+      includeEditFile: true,
+      includeApplyPatch: false,
+    });
+    const batch = tools.batch as unknown as { inputSchema: unknown };
+    const schema = asSchema(batch.inputSchema as never).jsonSchema as unknown as {
+      properties?: {
+        tool_calls?: {
+          items?: {
+            properties?: { tool?: { enum?: string[] } };
+          };
+        };
+      };
+    };
+
+    const enumValues =
+      schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
+    expect(enumValues).toContain("edit_file");
+    expect(enumValues).not.toContain("apply_patch");
+  });
+
+  it("rejects a batch when edit_file calls touch the same path", async () => {
+    const tools = makeTools(baseDir, {
+      editingMode: "edit_file",
+      includeEditFile: true,
+      includeApplyPatch: false,
+    });
+    const batch = getTool(tools, "batch");
+
+    await writeFile(join(baseDir, "same.txt"), "alpha\n");
+
+    await expect(
+      Promise.resolve(
+        batch.execute(
+          {
+            tool_calls: [
+              {
+                tool: "edit_file",
+                parameters: {
+                  path: "same.txt",
+                  oldText: "alpha",
+                  newText: "bravo",
+                  cwd: baseDir,
+                },
+              },
+              {
+                tool: "edit_file",
+                parameters: {
+                  path: "same.txt",
+                  oldText: "alpha",
+                  newText: "charlie",
+                  cwd: baseDir,
+                },
+              },
+            ],
+          },
+          {
+            toolCallId: "batch-edit-overlap",
+            messages: [],
+            abortSignal: undefined,
+            experimental_context: undefined,
+          },
+        ),
+      ),
+    ).rejects.toThrow(/overlapping paths/i);
   });
 });

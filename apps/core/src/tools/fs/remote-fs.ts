@@ -1,5 +1,6 @@
 import { sshExecScriptJson } from "../../ssh/ssh-exec";
 import { getRemoteRunnerJsText } from "../../ssh/remote-js";
+import type { FileEdit } from "./fs-impl";
 
 export type RemoteReadTextInput = {
   path: string;
@@ -109,6 +110,43 @@ export type RemoteGrepOutput =
       truncated: boolean;
       results: RemoteGrepMatch[];
       error?: string;
+    };
+
+export type RemoteEditInput = {
+  path: string;
+  edits: FileEdit[];
+  expectedHash?: string;
+};
+
+export type RemoteEditOutput =
+  | {
+      success: true;
+      resolvedPath: string;
+      oldHash: string;
+      newHash: string;
+      changesMade: boolean;
+      replacementsMade: number;
+    }
+  | {
+      success: false;
+      resolvedPath: string;
+      currentHash?: string;
+      error: {
+        code:
+          | "NOT_FOUND"
+          | "PERMISSION"
+          | "UNKNOWN"
+          | "NOT_READ"
+          | "HASH_MISMATCH"
+          | "INVALID_RANGE"
+          | "RANGE_MISMATCH"
+          | "NO_MATCHES"
+          | "TOO_MANY_MATCHES"
+          | "NOT_ENOUGH_MATCHES"
+          | "INVALID_REGEX"
+          | "INVALID_EDIT";
+        message: string;
+      };
     };
 
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
@@ -257,6 +295,38 @@ export async function remoteGrep(params: {
       return { mode, truncated: false, results: [], error: res.error };
     }
     return { mode, truncated: false, results: [], error: res.error };
+  }
+
+  return res.value;
+}
+
+export async function remoteEditFile(params: {
+  host: string;
+  cwd: string;
+  input: RemoteEditInput;
+  denyPaths: readonly string[];
+  timeoutMs?: number;
+}): Promise<RemoteEditOutput> {
+  const js = await getRemoteRunnerJsText();
+  const res = await sshExecScriptJson<RemoteEditOutput>({
+    host: params.host,
+    cwd: params.cwd,
+    js,
+    input: {
+      op: "fs.edit",
+      denyPaths: params.denyPaths,
+      input: params.input,
+    },
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
+  });
+
+  if (!res.ok) {
+    return {
+      success: false,
+      resolvedPath: params.input.path,
+      error: { code: "UNKNOWN", message: res.error },
+    };
   }
 
   return res.value;

@@ -47,6 +47,14 @@ describe("fs tool search wrappers", () => {
     await rm(baseDir, { recursive: true, force: true });
   });
 
+  it("exposes edit_file only when enabled", async () => {
+    const defaultTools = fsTool(baseDir);
+    const editEnabledTools = fsTool(baseDir, { includeEditFile: true });
+
+    expect("edit_file" in defaultTools).toBe(false);
+    expect("edit_file" in editEnabledTools).toBe(true);
+  });
+
   it("glob lists matching paths", async () => {
     const tools = fsTool(baseDir);
 
@@ -80,9 +88,9 @@ describe("fs tool search wrappers", () => {
     if (out.mode !== "detailed") {
       throw new Error("expected detailed glob output");
     }
-    const paths = out.entries.map((e) => e.path).sort();
+    const paths = out.entries.map((e: { path: string }) => e.path).sort();
     expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
-    expect(out.entries.every((e) => typeof e.size === "number")).toBe(true);
+    expect(out.entries.every((e: { size: number }) => typeof e.size === "number")).toBe(true);
   });
 
   it("glob applies negate patterns and dedupes overlapping includes", async () => {
@@ -146,7 +154,7 @@ describe("fs tool search wrappers", () => {
       throw new Error("expected default grep output");
     }
     const lines = out.results
-      .map((r) => `${r.file.replace(/^\.\//, "")}:${r.line}: ${r.text}`)
+      .map((r: { file: string; line: number; text: string }) => `${r.file.replace(/^\.\//, "")}:${r.line}: ${r.text}`)
       .sort();
     expect(lines.length).toBe(2);
     expect(lines[0]?.startsWith("src/a.ts:1:")).toBe(true);
@@ -173,9 +181,9 @@ describe("fs tool search wrappers", () => {
     if (out.mode !== "detailed") {
       throw new Error("expected detailed grep output");
     }
-    const files = out.results.map((r) => r.file.replace(/^\.\//, "")).sort();
+    const files = out.results.map((r: { file: string }) => r.file.replace(/^\.\//, "")).sort();
     expect(files).toEqual(["src/a.ts", "src/b.ts"]);
-    expect(out.results.every((r) => typeof r.column === "number")).toBe(true);
+    expect(out.results.every((r: { column: number }) => typeof r.column === "number")).toBe(true);
   });
 
   it("grep enforces global maxResults", async () => {

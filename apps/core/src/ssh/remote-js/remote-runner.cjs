@@ -598,6 +598,465 @@ async function opGrep(input, denyAbs) {
   };
 }
 
+const EDIT_ERROR_CODES = [
+  "NOT_FOUND",
+  "PERMISSION",
+  "UNKNOWN",
+  "NOT_READ",
+  "HASH_MISMATCH",
+  "INVALID_RANGE",
+  "RANGE_MISMATCH",
+  "NO_MATCHES",
+  "TOO_MANY_MATCHES",
+  "NOT_ENOUGH_MATCHES",
+  "INVALID_REGEX",
+  "INVALID_EDIT",
+];
+
+function toEditErrorCode(rawCode) {
+  if (typeof rawCode !== "string") return "UNKNOWN";
+  return EDIT_ERROR_CODES.includes(rawCode) ? rawCode : "UNKNOWN";
+}
+
+function hashText(content) {
+  return crypto.createHash("sha256").update(content).digest("hex");
+}
+
+function countExactOccurrences(haystack, needle) {
+  if (needle.length === 0) return 0;
+  let count = 0;
+  let i = 0;
+  while (true) {
+    i = haystack.indexOf(needle, i);
+    if (i === -1) break;
+    count += 1;
+    i += needle.length;
+  }
+  return count;
+}
+
+function replaceExactOccurrences(haystack, needle, replacement, maxReplacements) {
+  if (needle.length === 0) {
+    return { result: haystack, replacementsMade: 0 };
+  }
+
+  let replacementsMade = 0;
+  let start = 0;
+  let result = "";
+  while (replacementsMade < maxReplacements) {
+    const idx = haystack.indexOf(needle, start);
+    if (idx === -1) break;
+    result += haystack.slice(start, idx) + replacement;
+    start = idx + needle.length;
+    replacementsMade += 1;
+  }
+
+  result += haystack.slice(start);
+  return { result, replacementsMade };
+}
+
+function countRegexMatches(haystack, re) {
+  let count = 0;
+  re.lastIndex = 0;
+  while (true) {
+    const match = re.exec(haystack);
+    if (!match) break;
+    count += 1;
+    if (match[0].length === 0) re.lastIndex += 1;
+  }
+  return count;
+}
+
+function replaceRegexOccurrences(haystack, re, replacement, maxReplacements) {
+  let replacementsMade = 0;
+  let lastIndex = 0;
+  let result = "";
+
+  re.lastIndex = 0;
+  while (replacementsMade < maxReplacements) {
+    const match = re.exec(haystack);
+    if (!match) break;
+
+    result += haystack.slice(lastIndex, match.index) + replacement;
+    lastIndex = match.index + match[0].length;
+    replacementsMade += 1;
+
+    if (match[0].length === 0) re.lastIndex += 1;
+  }
+
+  result += haystack.slice(lastIndex);
+  return { result, replacementsMade };
+}
+
+function enforceExpectedMatches(matchesFound, expected, target) {
+  if (expected === "any") {
+    if (matchesFound === 0) {
+      throw Object.assign(
+        new Error("No matches found for target: " + target),
+        { code: "NO_MATCHES" },
+      );
+    }
+    return;
+  }
+
+  if (matchesFound === 0) {
+    throw Object.assign(
+      new Error("No matches found for target: " + target),
+      { code: "NO_MATCHES" },
+    );
+  }
+
+  if (matchesFound > expected) {
+    throw Object.assign(
+      new Error(
+        "Too many matches found (" +
+          matchesFound +
+          "); expected " +
+          expected +
+          " for target: " +
+          target,
+      ),
+      { code: "TOO_MANY_MATCHES" },
+    );
+  }
+
+  if (matchesFound < expected) {
+    throw Object.assign(
+      new Error(
+        "Not enough matches found (" +
+          matchesFound +
+          "); expected " +
+          expected +
+          " for target: " +
+          target,
+      ),
+      { code: "NOT_ENOUGH_MATCHES" },
+    );
+  }
+}
+
+function validateRange(lines, startLine, endLine) {
+  if (
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    startLine < 1 ||
+    endLine < startLine ||
+    endLine > lines.length
+  ) {
+    throw Object.assign(
+      new Error(
+        "Invalid range " +
+          startLine +
+          "-" +
+          endLine +
+          ". File has " +
+          lines.length +
+          " lines.",
+      ),
+      { code: "INVALID_RANGE" },
+    );
+  }
+}
+
+async function opEdit(input, denyAbs) {
+  const inPath = String(input.path || "");
+  const expanded = expandTilde(inPath);
+  const resolvedPath = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(process.cwd(), expanded);
+
+  try {
+    assertAllowed(resolvedPath, denyAbs, "editFile");
+
+    const edits = Array.isArray(input.edits) ? input.edits : [];
+    const expectedHash =
+      typeof input.expectedHash === "string" && input.expectedHash.length > 0
+        ? input.expectedHash
+        : undefined;
+
+    const file = await fs.readFile(resolvedPath, "utf8");
+    const oldHash = hashText(file);
+
+    if (expectedHash && expectedHash !== oldHash) {
+      return {
+        success: false,
+        resolvedPath,
+        currentHash: oldHash,
+        error: {
+          code: "HASH_MISMATCH",
+          message: "File has changed since last read: " + resolvedPath,
+        },
+      };
+    }
+
+    let lines = file.split("\n");
+    let replacementsMade = 0;
+
+    for (let i = 0; i < edits.length; i++) {
+      const edit = edits[i];
+      const type =
+        edit && typeof edit === "object" && typeof edit.type === "string"
+          ? edit.type
+          : "";
+
+      try {
+        switch (type) {
+          case "replace_range": {
+            const range =
+              edit && typeof edit === "object" && edit.range
+                ? edit.range
+                : {};
+            const startLine = Number(range.startLine);
+            const endLine = Number(range.endLine);
+            const newText = String(edit.newText ?? "");
+            const expectedOldText =
+              typeof edit.expectedOldText === "string"
+                ? edit.expectedOldText
+                : undefined;
+
+            validateRange(lines, startLine, endLine);
+
+            if (expectedOldText !== undefined) {
+              const actual = lines.slice(startLine - 1, endLine).join("\n");
+              if (actual !== expectedOldText) {
+                throw Object.assign(
+                  new Error(
+                    "Range content mismatch for " +
+                      startLine +
+                      "-" +
+                      endLine +
+                      ". Re-read the file and try again.",
+                  ),
+                  { code: "RANGE_MISMATCH" },
+                );
+              }
+            }
+
+            lines.splice(
+              startLine - 1,
+              endLine - startLine + 1,
+              ...newText.split("\n"),
+            );
+            break;
+          }
+          case "insert_at": {
+            const line = Number(edit.line);
+            const newText = String(edit.newText ?? "");
+            if (!Number.isInteger(line) || line < 1 || line > lines.length + 1) {
+              throw Object.assign(
+                new Error(
+                  "Invalid insert line " +
+                    line +
+                    ". Must be between 1 and " +
+                    (lines.length + 1) +
+                    ".",
+                ),
+                { code: "INVALID_RANGE" },
+              );
+            }
+
+            lines.splice(line - 1, 0, ...newText.split("\n"));
+            break;
+          }
+          case "delete_range": {
+            const range =
+              edit && typeof edit === "object" && edit.range
+                ? edit.range
+                : {};
+            const startLine = Number(range.startLine);
+            const endLine = Number(range.endLine);
+            const expectedOldText =
+              typeof edit.expectedOldText === "string"
+                ? edit.expectedOldText
+                : undefined;
+
+            validateRange(lines, startLine, endLine);
+
+            if (expectedOldText !== undefined) {
+              const actual = lines.slice(startLine - 1, endLine).join("\n");
+              if (actual !== expectedOldText) {
+                throw Object.assign(
+                  new Error(
+                    "Range content mismatch for " +
+                      startLine +
+                      "-" +
+                      endLine +
+                      ". Re-read the file and try again.",
+                  ),
+                  { code: "RANGE_MISMATCH" },
+                );
+              }
+            }
+
+            lines.splice(startLine - 1, endLine - startLine + 1);
+            break;
+          }
+          case "replace_snippet": {
+            const target = String(edit.target ?? "");
+            const matching = edit.matching === "regex" ? "regex" : "exact";
+            const newText = String(edit.newText ?? "");
+            const hasOccurrenceProp =
+              edit &&
+              typeof edit === "object" &&
+              Object.prototype.hasOwnProperty.call(edit, "occurrence");
+            let occurrence = "first";
+            if (edit.occurrence === "all" || edit.occurrence === "first") {
+              occurrence = edit.occurrence;
+            } else if (typeof edit.occurrence === "number") {
+              occurrence = edit.occurrence;
+            } else if (hasOccurrenceProp && edit.occurrence !== undefined) {
+              throw Object.assign(
+                new Error("occurrence must be 'first', 'all', or a positive number"),
+                { code: "INVALID_EDIT" },
+              );
+            }
+            const expectedMatchesRaw =
+              edit.expectedMatches === "any"
+                ? "any"
+                : Number(edit.expectedMatches);
+
+            if (target.length === 0) {
+              throw Object.assign(new Error("target must not be empty"), {
+                code: "INVALID_EDIT",
+              });
+            }
+
+            if (matching === "exact" && target === newText) {
+              throw Object.assign(
+                new Error("newText is identical to target; edit would be a no-op"),
+                { code: "INVALID_EDIT" },
+              );
+            }
+
+            if (
+              typeof occurrence === "number" &&
+              (!Number.isInteger(occurrence) || occurrence <= 0)
+            ) {
+              throw Object.assign(
+                new Error("occurrence must be a positive number"),
+                { code: "INVALID_EDIT" },
+              );
+            }
+
+            const maxReplace =
+              typeof occurrence === "number"
+                ? occurrence
+                : occurrence === "all"
+                  ? Number.MAX_SAFE_INTEGER
+                  : 1;
+
+            let expectedMatches = 1;
+            if (expectedMatchesRaw === "any") {
+              expectedMatches = "any";
+            } else if (
+              Number.isInteger(expectedMatchesRaw) &&
+              expectedMatchesRaw > 0
+            ) {
+              expectedMatches = expectedMatchesRaw;
+            } else if ("expectedMatches" in edit) {
+              throw Object.assign(
+                new Error("expectedMatches must be a positive number or 'any'"),
+                { code: "INVALID_EDIT" },
+              );
+            }
+
+            const content = lines.join("\n");
+
+            if (matching === "exact") {
+              const matchesFound = countExactOccurrences(content, target);
+              enforceExpectedMatches(matchesFound, expectedMatches, target);
+
+              const replaced = replaceExactOccurrences(
+                content,
+                target,
+                newText,
+                maxReplace,
+              );
+              lines = replaced.result.split("\n");
+              replacementsMade += replaced.replacementsMade;
+            } else {
+              let re;
+              try {
+                re = new RegExp(target, "g");
+              } catch (e) {
+                throw Object.assign(
+                  new Error(
+                    "Invalid regex: " +
+                      (e instanceof Error ? e.message : String(e)),
+                  ),
+                  { code: "INVALID_REGEX" },
+                );
+              }
+
+              const matchesFound = countRegexMatches(content, re);
+              enforceExpectedMatches(matchesFound, expectedMatches, target);
+
+              const replaced = replaceRegexOccurrences(
+                content,
+                re,
+                newText,
+                maxReplace,
+              );
+              lines = replaced.result.split("\n");
+              replacementsMade += replaced.replacementsMade;
+            }
+            break;
+          }
+          default:
+            throw Object.assign(
+              new Error("Unknown edit type: " + String(type)),
+              { code: "INVALID_EDIT" },
+            );
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const code =
+          e && typeof e === "object" && "code" in e
+            ? toEditErrorCode(e.code)
+            : "UNKNOWN";
+        return {
+          success: false,
+          resolvedPath,
+          currentHash: oldHash,
+          error: { code, message: msg },
+        };
+      }
+    }
+
+    const nextContent = lines.join("\n");
+    const newHash = hashText(nextContent);
+    const changesMade = newHash !== oldHash;
+    if (changesMade) {
+      await fs.writeFile(resolvedPath, nextContent, "utf8");
+    }
+
+    return {
+      success: true,
+      resolvedPath,
+      oldHash,
+      newHash,
+      changesMade,
+      replacementsMade,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const code =
+      e && typeof e === "object" && "code" in e ? String(e.code) : "";
+    const errorCode =
+      code === "ENOENT"
+        ? "NOT_FOUND"
+        : code === "EACCES" || code === "EPERM"
+          ? "PERMISSION"
+          : "UNKNOWN";
+
+    return {
+      success: false,
+      resolvedPath,
+      error: { code: errorCode, message: msg },
+    };
+  }
+}
+
 // apply_patch implementation (ported from local apply_patch tool)
 
 function stripHeredoc(input) {
@@ -1033,6 +1492,10 @@ async function main() {
     }
     if (op === "fs.grep") {
       ok(await opGrep(input, denyAbs));
+      return;
+    }
+    if (op === "fs.edit") {
+      ok(await opEdit(input, denyAbs));
       return;
     }
     if (op === "apply_patch") {
