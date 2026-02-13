@@ -4,7 +4,7 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { EditingToolMode } from "@stanley2058/lilac-utils";
 import { expandTilde } from "./fs/fs-impl";
-import { parsePatch } from "./apply-patch/local-apply-patch-tool";
+import { parsePatch } from "./apply-patch/apply-patch-core";
 import { formatToolArgsForDisplay } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";

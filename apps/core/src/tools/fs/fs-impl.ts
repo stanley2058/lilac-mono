@@ -1,4 +1,5 @@
 import type { Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
@@ -1275,7 +1276,17 @@ export class FileSystem {
   }
 
   private hash(input: string | Uint8Array) {
-    return Bun.hash.xxHash3(input).toString(16);
+    if (
+      typeof Bun !== "undefined" &&
+      Bun.hash &&
+      typeof Bun.hash.xxHash3 === "function"
+    ) {
+      return Bun.hash.xxHash3(input).toString(16);
+    }
+
+    const hasher = createHash("sha256");
+    hasher.update(input);
+    return hasher.digest("hex");
   }
 
   private getFileTypeFromStats(stats: Stats) {

@@ -6,6 +6,9 @@
   },
   "type": "module",
   "private": true,
+  "scripts": {
+    "build:remote-runner": "bun run build-remote-runner.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/mdast": "^4.0.4",
