@@ -521,6 +521,68 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("stops typing on failed lifecycle and still delivers final output", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_failed_lifecycle";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "failed", detail: "boom" },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.typingStops).toBe(1);
+    expect(adapter.stream?.finished).toBe(false);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "Error: boom" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts).toEqual([{ type: "text.set", text: "Error: boom" }]);
+    expect(adapter.stream?.finished).toBe(true);
+    // Ensure lifecycle-triggered typing stop is idempotent with relay stop.
+    expect(adapter.typingStops).toBe(1);
+
+    await bridge.stop();
+  });
+
   it("skips final reply and deletes streamed discord messages", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

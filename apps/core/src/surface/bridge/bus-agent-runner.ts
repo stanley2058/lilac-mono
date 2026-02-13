@@ -1276,292 +1276,6 @@ export async function startBusAgentRunner(params: {
       ...(routerSessionMode ? { router_session_mode: routerSessionMode } : {}),
     };
 
-    const maxSubagentDepth = subagents.maxDepth;
-    if (subagentMeta.depth > maxSubagentDepth) {
-      const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
-      await publishLifecycle({
-        bus,
-        headers,
-        state: "failed",
-        detail,
-      });
-      await bus.publish(
-        lilacEventTypes.EvtAgentOutputResponseText,
-        { finalText: `Error: ${detail}` },
-        { headers },
-      );
-
-      state.activeRequestId = null;
-      state.running = false;
-      drainSessionQueue(sessionId, state).catch((e: unknown) => {
-        logger.error("drainSessionQueue failed", { sessionId }, e);
-      });
-      return;
-    }
-
-    await publishLifecycle({
-      bus,
-      headers,
-      state: "running",
-      detail:
-        next.recovery
-          ? "resumed after server restart"
-          : next.queue !== "prompt"
-          ? `coerced queue=${next.queue} to prompt (no active run)`
-          : undefined,
-    });
-    await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
-
-    const resolved = resolveModelSlot(
-      cfg,
-      runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
-    );
-    const editingToolMode = resolveEditingToolMode({
-      provider: resolved.provider,
-      modelId: resolved.modelId,
-    });
-
-    const anthropicPromptCachingEnabled = isAnthropicModelSpec(resolved.spec);
-
-    // Improve prompt caching stability by providing a session-scoped cache key.
-    // This helps when many requests share a large common prefix (e.g. a long system prompt).
-    // Only apply for OpenAI-backed providers.
-    const providerOptionsWithPromptCacheKey = (() => {
-      const provider = resolved.provider;
-      const supports = provider === "openai" || provider === "codex";
-      if (!supports) return resolved.providerOptions;
-
-      const base = resolved.providerOptions ?? {};
-      const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
-
-      return {
-        ...base,
-        openai: {
-          ...existingOpenAI,
-          promptCacheKey: sessionId,
-        },
-      };
-    })();
-
-    const providerOptionsForAgent = anthropicPromptCachingEnabled
-      ? withStableAnthropicUpstreamOrder(
-          resolved.provider,
-          providerOptionsWithPromptCacheKey,
-        )
-      : providerOptionsWithPromptCacheKey;
-
-    const systemPrompt = buildSystemPromptForProfile({
-      baseSystemPrompt: cfg.agent.systemPrompt,
-      profile: runProfile,
-      activeEditingTool: runProfile === "primary" ? editingToolMode : null,
-      exploreOverlay: subagents.profiles.explore.promptOverlay,
-      skillsSection:
-        runProfile === "primary"
-          ? await maybeBuildSkillsSectionForPrimary()
-          : null,
-    });
-
-    const agentSystem = anthropicPromptCachingEnabled
-      ? {
-          role: "system" as const,
-          content: systemPrompt,
-          providerOptions: ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
-        }
-      : systemPrompt;
-
-    logger.info("agent run starting", {
-      requestId: next.requestId,
-      sessionId: next.sessionId,
-      requestClient: next.requestClient,
-      runProfile,
-      subagentDepth: subagentMeta.depth,
-      model: resolved.spec,
-      editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
-      isRecoveryResume: Boolean(next.recovery),
-      messageCount: next.messages.length,
-      recoveryCheckpointMessageCount:
-        next.recovery?.checkpointMessages.length ?? 0,
-      queuedForSession: state.queue.length,
-    });
-
-    const tools: ToolSet = {} as ToolSet;
-    if (runProfile === "explore") {
-      Object.assign(tools, fsTool(cwd));
-    } else {
-      Object.assign(
-        tools,
-        bashToolWithCwd(cwd),
-        fsTool(cwd, {
-          includeEditFile: editingToolMode === "edit_file",
-        }),
-      );
-      if (editingToolMode === "apply_patch") {
-        Object.assign(tools, applyPatchTool({ cwd }));
-      }
-
-      if (subagents.enabled && subagentMeta.depth < subagents.maxDepth) {
-        Object.assign(
-          tools,
-          subagentTools({
-            bus,
-            defaultTimeoutMs: subagents.defaultTimeoutMs,
-            maxTimeoutMs: subagents.maxTimeoutMs,
-            maxDepth: subagents.maxDepth,
-          }),
-        );
-      }
-    }
-
-    Object.assign(
-      tools,
-      batchTool({
-        defaultCwd: cwd,
-        getTools: () => tools,
-        editingMode: runProfile === "explore" ? "none" : editingToolMode,
-        reportToolStatus: (update) => {
-          bus
-            .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
-              headers,
-            })
-            .catch((e: unknown) => {
-              logger.error(
-                "failed to publish batch tool status",
-                {
-                  requestId: headers.request_id,
-                  sessionId: headers.session_id,
-                  toolCallId: update.toolCallId,
-                },
-                e,
-              );
-            });
-        },
-      }),
-    );
-
-    const agent = new AiSdkPiAgent<ToolSet>({
-      system: agentSystem,
-      model: resolved.model,
-      messages: next.recovery?.checkpointMessages ?? [],
-      tools,
-      providerOptions: providerOptionsForAgent,
-      debug: {
-        captureModelViewMessages: env.debug.contextDump.enabled,
-      },
-    });
-
-    agent.setContext({
-      sessionId: next.sessionId,
-      requestId: next.requestId,
-      requestClient: next.requestClient,
-      subagentDepth: subagentMeta.depth,
-      subagentProfile: runProfile,
-    });
-
-    // Drain all buffered messages at boundaries (better UX in chat surfaces).
-    agent.setFollowUpMode("all");
-    agent.setSteeringMode("all");
-
-    const toolPruneTransform: TransformMessagesFn = async (messages) => {
-      // First, remove pathological binary blobs from the *model-facing* view.
-      const scrubbed = scrubLargeBinaryForModelView(messages);
-
-      // Then, compact older tool outputs (placeholder) with session-stable state.
-      maybeMarkOldToolOutputsCompacted({
-        messages: scrubbed,
-        compactedToolCallIds: state.compactedToolCallIds,
-      });
-
-      const compacted = applyToolOutputCompactionView({
-        messages: scrubbed,
-        compactedToolCallIds: state.compactedToolCallIds,
-      });
-
-      if (!anthropicPromptCachingEnabled) return compacted;
-      return withProviderOptionsOnLastUserMessage(
-        compacted,
-        ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
-      );
-    };
-
-    const unsubscribeCompaction = await attachAutoCompaction(agent, {
-      model: resolved.spec,
-      modelCapability: new ModelCapability(),
-      baseTransformMessages: toolPruneTransform,
-    });
-
-    state.agent = agent;
-
-    let finalText = "";
-
-    const toolStartMs = new Map<string, number>();
-
-    const contextDumpEnabled = env.debug.contextDump.enabled;
-    const contextDumpDir = env.debug.contextDump.dir;
-    let turnEndCount = 0;
-
-    const dumpContextAfterTurn = async (event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "turn_end" }>) => {
-      if (!contextDumpEnabled) return;
-
-      const tsMs = Date.now();
-      const safeSessionId = sanitizeFilenameToken(headers.session_id);
-      const safeRequestId = sanitizeFilenameToken(headers.request_id);
-      const fileName = `${safeSessionId}-${safeRequestId}-${tsMs}.json`;
-      const filePath = path.join(contextDumpDir, fileName);
-
-      const modelView = agent.state.debug?.lastModelViewMessages;
-      const modelViewTurn = agent.state.debug?.lastModelViewTurn;
-
-      const payload = {
-        meta: {
-          tsMs,
-          ts: new Date(tsMs).toISOString(),
-          sessionId: headers.session_id,
-          requestId: headers.request_id,
-          requestClient: headers.request_client,
-          runProfile,
-          subagentDepth: subagentMeta.depth,
-          modelSpec: resolved.spec,
-          modelId: resolved.modelId,
-          turnEndIndex: turnEndCount,
-          modelViewTurn,
-        },
-        system: agent.state.system,
-        providerOptions: agent.state.providerOptions,
-        tools: {
-          names: Object.keys(agent.state.tools ?? {}),
-        },
-        usage: {
-          lastTurn: event.usage,
-          lastTurnTotal: event.totalUsage,
-        },
-        transcript: {
-          messages: agent.state.messages,
-        },
-        modelViewMessagesForTurn: modelView,
-      };
-
-      try {
-        await fs.mkdir(contextDumpDir, { recursive: true });
-        await fs.writeFile(filePath, debugJsonStringify(payload), "utf8");
-        logger.debug("context dump wrote", {
-          requestId: headers.request_id,
-          sessionId: headers.session_id,
-          filePath,
-        });
-      } catch (e: unknown) {
-        logger.warn(
-          "context dump failed",
-          {
-            requestId: headers.request_id,
-            sessionId: headers.session_id,
-            filePath,
-          },
-          e,
-        );
-      }
-    };
-
-    // Stats and timings for this run (agent model only).
     let initialMessages: ModelMessage[] = [];
     let responseStartIndex = 0;
     const runStats: {
@@ -1572,146 +1286,432 @@ export async function startBusAgentRunner(params: {
       lastTurnEndAt?: number;
     } = {};
 
-    const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
-      if (event.type === "agent_end") {
-        runStats.totalUsage = event.totalUsage;
-        runStats.finalMessages = event.messages;
-      }
-
-      if (event.type === "turn_end") {
-        turnEndCount++;
-        runStats.lastTurnFinishReason = event.finishReason;
-        runStats.lastTurnEndAt = Date.now();
-
-        // Fire-and-forget debug dump; do not block the run.
-        void dumpContextAfterTurn(event);
-      }
-
-      if (
-        event.type === "message_update" &&
-        event.assistantMessageEvent.type === "text_delta"
-      ) {
-        runStats.firstTextDeltaAt ??= Date.now();
-
-        const delta = event.assistantMessageEvent.delta;
-        finalText += delta;
-        if (state.activeRun && state.activeRun.requestId === next.requestId) {
-          state.activeRun.partialText += delta;
-        }
-
-        bus
-          .publish(
-            lilacEventTypes.EvtAgentOutputDeltaText,
-            { delta },
-            { headers },
-          )
-          .catch((e: unknown) => {
-            logger.error(
-              "failed to publish output delta",
-              { requestId: headers.request_id, sessionId: headers.session_id },
-              e,
-            );
-          });
-      }
-
-      if (event.type === "tool_execution_start") {
-        toolStartMs.set(event.toolCallId, Date.now());
-
-        bus
-          .publish(
-            lilacEventTypes.EvtAgentOutputToolCall,
-            {
-              toolCallId: event.toolCallId,
-              status: "start",
-              display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
-            },
-            { headers },
-          )
-          .catch((e: unknown) => {
-            logger.error(
-              "failed to publish tool start",
-              {
-                requestId: headers.request_id,
-                sessionId: headers.session_id,
-                toolCallId: event.toolCallId,
-                toolName: event.toolName,
-              },
-              e,
-            );
-          });
-      }
-
-      if (event.type === "tool_execution_end") {
-        const started = toolStartMs.get(event.toolCallId);
-        const toolDurationMs = started ? Date.now() - started : undefined;
-
-        const ok =
-          event.toolName === "batch"
-            ? (getBatchOkFromResult(event.result) ?? !event.isError)
-            : event.toolName === "subagent_delegate"
-              ? (getSubagentOkFromResult(event.result) ?? !event.isError)
-              : !event.isError;
-        const interruptedForRestart = restartAbortRequestIds.has(headers.request_id);
-
-        logger.debug("tool finished", {
-          requestId: headers.request_id,
-          sessionId: headers.session_id,
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          ok,
-          durationMs: toolDurationMs,
-        });
-
-        bus
-          .publish(
-            lilacEventTypes.EvtAgentOutputToolCall,
-            {
-              toolCallId: event.toolCallId,
-              status: "end",
-              display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
-              ok,
-              error: ok
-                ? undefined
-                : interruptedForRestart
-                  ? "server restarted"
-                : event.isError
-                  ? typeof event.result === "string"
-                    ? event.result
-                    : "tool error"
-                  : "batch failed",
-            },
-            { headers },
-          )
-          .catch((e: unknown) => {
-            logger.error(
-              "failed to publish tool end",
-              {
-                requestId: headers.request_id,
-                sessionId: headers.session_id,
-                toolCallId: event.toolCallId,
-                toolName: event.toolName,
-              },
-              e,
-            );
-          });
-      }
-
-      if (event.type === "agent_end") {
-        // Best-effort fallback: if deltas didn't populate finalText, take last assistant string.
-        if (!finalText) {
-          const last = event.messages[event.messages.length - 1];
-          if (
-            last &&
-            last.role === "assistant" &&
-            typeof last.content === "string"
-          ) {
-            finalText = last.content;
-          }
-        }
-      }
-    });
+    let resolvedModelLabel = "unknown";
+    let activeAgent: AiSdkPiAgent<ToolSet> | null = null;
+    let unsubscribe = () => {};
+    let unsubscribeCompaction = () => {};
 
     try {
+      const maxSubagentDepth = subagents.maxDepth;
+      if (subagentMeta.depth > maxSubagentDepth) {
+        const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
+        await publishLifecycle({
+          bus,
+          headers,
+          state: "failed",
+          detail,
+        });
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          { finalText: `Error: ${detail}` },
+          { headers },
+        );
+        return;
+      }
+
+      await publishLifecycle({
+        bus,
+        headers,
+        state: "running",
+        detail:
+          next.recovery
+            ? "resumed after server restart"
+            : next.queue !== "prompt"
+            ? `coerced queue=${next.queue} to prompt (no active run)`
+            : undefined,
+      });
+      await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+
+      const resolved = resolveModelSlot(
+        cfg,
+        runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
+      );
+      resolvedModelLabel = resolved.modelId;
+      const editingToolMode = resolveEditingToolMode({
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+      });
+
+      const anthropicPromptCachingEnabled = isAnthropicModelSpec(resolved.spec);
+
+      // Improve prompt caching stability by providing a session-scoped cache key.
+      // This helps when many requests share a large common prefix (e.g. a long system prompt).
+      // Only apply for OpenAI-backed providers.
+      const providerOptionsWithPromptCacheKey = (() => {
+        const provider = resolved.provider;
+        const supports = provider === "openai" || provider === "codex";
+        if (!supports) return resolved.providerOptions;
+
+        const base = resolved.providerOptions ?? {};
+        const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
+
+        return {
+          ...base,
+          openai: {
+            ...existingOpenAI,
+            promptCacheKey: sessionId,
+          },
+        };
+      })();
+
+      const providerOptionsForAgent = anthropicPromptCachingEnabled
+        ? withStableAnthropicUpstreamOrder(
+            resolved.provider,
+            providerOptionsWithPromptCacheKey,
+          )
+        : providerOptionsWithPromptCacheKey;
+
+      const systemPrompt = buildSystemPromptForProfile({
+        baseSystemPrompt: cfg.agent.systemPrompt,
+        profile: runProfile,
+        activeEditingTool: runProfile === "primary" ? editingToolMode : null,
+        exploreOverlay: subagents.profiles.explore.promptOverlay,
+        skillsSection:
+          runProfile === "primary"
+            ? await maybeBuildSkillsSectionForPrimary()
+            : null,
+      });
+
+      const agentSystem = anthropicPromptCachingEnabled
+        ? {
+            role: "system" as const,
+            content: systemPrompt,
+            providerOptions: ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
+          }
+        : systemPrompt;
+
+      logger.info("agent run starting", {
+        requestId: next.requestId,
+        sessionId: next.sessionId,
+        requestClient: next.requestClient,
+        runProfile,
+        subagentDepth: subagentMeta.depth,
+        model: resolved.spec,
+        editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
+        isRecoveryResume: Boolean(next.recovery),
+        messageCount: next.messages.length,
+        recoveryCheckpointMessageCount:
+          next.recovery?.checkpointMessages.length ?? 0,
+        queuedForSession: state.queue.length,
+      });
+
+      const tools: ToolSet = {} as ToolSet;
+      if (runProfile === "explore") {
+        Object.assign(tools, fsTool(cwd));
+      } else {
+        Object.assign(
+          tools,
+          bashToolWithCwd(cwd),
+          fsTool(cwd, {
+            includeEditFile: editingToolMode === "edit_file",
+          }),
+        );
+        if (editingToolMode === "apply_patch") {
+          Object.assign(tools, applyPatchTool({ cwd }));
+        }
+
+        if (subagents.enabled && subagentMeta.depth < subagents.maxDepth) {
+          Object.assign(
+            tools,
+            subagentTools({
+              bus,
+              defaultTimeoutMs: subagents.defaultTimeoutMs,
+              maxTimeoutMs: subagents.maxTimeoutMs,
+              maxDepth: subagents.maxDepth,
+            }),
+          );
+        }
+      }
+
+      Object.assign(
+        tools,
+        batchTool({
+          defaultCwd: cwd,
+          getTools: () => tools,
+          editingMode: runProfile === "explore" ? "none" : editingToolMode,
+          reportToolStatus: (update) => {
+            bus
+              .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
+                headers,
+              })
+              .catch((e: unknown) => {
+                logger.error(
+                  "failed to publish batch tool status",
+                  {
+                    requestId: headers.request_id,
+                    sessionId: headers.session_id,
+                    toolCallId: update.toolCallId,
+                  },
+                  e,
+                );
+              });
+          },
+        }),
+      );
+
+      const agent = new AiSdkPiAgent<ToolSet>({
+        system: agentSystem,
+        model: resolved.model,
+        messages: next.recovery?.checkpointMessages ?? [],
+        tools,
+        providerOptions: providerOptionsForAgent,
+        debug: {
+          captureModelViewMessages: env.debug.contextDump.enabled,
+        },
+      });
+      activeAgent = agent;
+
+      agent.setContext({
+        sessionId: next.sessionId,
+        requestId: next.requestId,
+        requestClient: next.requestClient,
+        subagentDepth: subagentMeta.depth,
+        subagentProfile: runProfile,
+      });
+
+      // Drain all buffered messages at boundaries (better UX in chat surfaces).
+      agent.setFollowUpMode("all");
+      agent.setSteeringMode("all");
+
+      const toolPruneTransform: TransformMessagesFn = async (messages) => {
+        // First, remove pathological binary blobs from the *model-facing* view.
+        const scrubbed = scrubLargeBinaryForModelView(messages);
+
+        // Then, compact older tool outputs (placeholder) with session-stable state.
+        maybeMarkOldToolOutputsCompacted({
+          messages: scrubbed,
+          compactedToolCallIds: state.compactedToolCallIds,
+        });
+
+        const compacted = applyToolOutputCompactionView({
+          messages: scrubbed,
+          compactedToolCallIds: state.compactedToolCallIds,
+        });
+
+        if (!anthropicPromptCachingEnabled) return compacted;
+        return withProviderOptionsOnLastUserMessage(
+          compacted,
+          ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
+        );
+      };
+
+      unsubscribeCompaction = await attachAutoCompaction(agent, {
+        model: resolved.spec,
+        modelCapability: new ModelCapability(),
+        baseTransformMessages: toolPruneTransform,
+      });
+
+      state.agent = agent;
+
+      let finalText = "";
+
+      const toolStartMs = new Map<string, number>();
+
+      const contextDumpEnabled = env.debug.contextDump.enabled;
+      const contextDumpDir = env.debug.contextDump.dir;
+      let turnEndCount = 0;
+
+      const dumpContextAfterTurn = async (event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "turn_end" }>) => {
+        if (!contextDumpEnabled) return;
+
+        const tsMs = Date.now();
+        const safeSessionId = sanitizeFilenameToken(headers.session_id);
+        const safeRequestId = sanitizeFilenameToken(headers.request_id);
+        const fileName = `${safeSessionId}-${safeRequestId}-${tsMs}.json`;
+        const filePath = path.join(contextDumpDir, fileName);
+
+        const modelView = agent.state.debug?.lastModelViewMessages;
+        const modelViewTurn = agent.state.debug?.lastModelViewTurn;
+
+        const payload = {
+          meta: {
+            tsMs,
+            ts: new Date(tsMs).toISOString(),
+            sessionId: headers.session_id,
+            requestId: headers.request_id,
+            requestClient: headers.request_client,
+            runProfile,
+            subagentDepth: subagentMeta.depth,
+            modelSpec: resolved.spec,
+            modelId: resolved.modelId,
+            turnEndIndex: turnEndCount,
+            modelViewTurn,
+          },
+          system: agent.state.system,
+          providerOptions: agent.state.providerOptions,
+          tools: {
+            names: Object.keys(agent.state.tools ?? {}),
+          },
+          usage: {
+            lastTurn: event.usage,
+            lastTurnTotal: event.totalUsage,
+          },
+          transcript: {
+            messages: agent.state.messages,
+          },
+          modelViewMessagesForTurn: modelView,
+        };
+
+        try {
+          await fs.mkdir(contextDumpDir, { recursive: true });
+          await fs.writeFile(filePath, debugJsonStringify(payload), "utf8");
+          logger.debug("context dump wrote", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            filePath,
+          });
+        } catch (e: unknown) {
+          logger.warn(
+            "context dump failed",
+            {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              filePath,
+            },
+            e,
+          );
+        }
+      };
+
+      unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
+        if (event.type === "agent_end") {
+          runStats.totalUsage = event.totalUsage;
+          runStats.finalMessages = event.messages;
+        }
+
+        if (event.type === "turn_end") {
+          turnEndCount++;
+          runStats.lastTurnFinishReason = event.finishReason;
+          runStats.lastTurnEndAt = Date.now();
+
+          // Fire-and-forget debug dump; do not block the run.
+          void dumpContextAfterTurn(event);
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          runStats.firstTextDeltaAt ??= Date.now();
+
+          const delta = event.assistantMessageEvent.delta;
+          finalText += delta;
+          if (state.activeRun && state.activeRun.requestId === next.requestId) {
+            state.activeRun.partialText += delta;
+          }
+
+          bus
+            .publish(
+              lilacEventTypes.EvtAgentOutputDeltaText,
+              { delta },
+              { headers },
+            )
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish output delta",
+                { requestId: headers.request_id, sessionId: headers.session_id },
+                e,
+              );
+            });
+        }
+
+        if (event.type === "tool_execution_start") {
+          toolStartMs.set(event.toolCallId, Date.now());
+
+          bus
+            .publish(
+              lilacEventTypes.EvtAgentOutputToolCall,
+              {
+                toolCallId: event.toolCallId,
+                status: "start",
+                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
+              },
+              { headers },
+            )
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish tool start",
+                {
+                  requestId: headers.request_id,
+                  sessionId: headers.session_id,
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                },
+                e,
+              );
+            });
+        }
+
+        if (event.type === "tool_execution_end") {
+          const started = toolStartMs.get(event.toolCallId);
+          const toolDurationMs = started ? Date.now() - started : undefined;
+
+          const ok =
+            event.toolName === "batch"
+              ? (getBatchOkFromResult(event.result) ?? !event.isError)
+              : event.toolName === "subagent_delegate"
+                ? (getSubagentOkFromResult(event.result) ?? !event.isError)
+                : !event.isError;
+          const interruptedForRestart = restartAbortRequestIds.has(headers.request_id);
+
+          logger.debug("tool finished", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            ok,
+            durationMs: toolDurationMs,
+          });
+
+          bus
+            .publish(
+              lilacEventTypes.EvtAgentOutputToolCall,
+              {
+                toolCallId: event.toolCallId,
+                status: "end",
+                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
+                ok,
+                error: ok
+                  ? undefined
+                  : interruptedForRestart
+                    ? "server restarted"
+                    : event.isError
+                      ? typeof event.result === "string"
+                        ? event.result
+                        : "tool error"
+                      : "batch failed",
+              },
+              { headers },
+            )
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish tool end",
+                {
+                  requestId: headers.request_id,
+                  sessionId: headers.session_id,
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                },
+                e,
+              );
+            });
+        }
+
+        if (event.type === "agent_end") {
+          // Best-effort fallback: if deltas didn't populate finalText, take last assistant string.
+          if (!finalText) {
+            const last = event.messages[event.messages.length - 1];
+            if (
+              last &&
+              last.role === "assistant" &&
+              typeof last.content === "string"
+            ) {
+              finalText = last.content;
+            }
+          }
+        }
+      });
+
       if (next.recovery) {
         initialMessages = [buildResumePrompt(next.recovery.partialText)];
       } else {
@@ -1762,7 +1762,7 @@ export async function startBusAgentRunner(params: {
             // The request context is reconstructed from the surface thread.
             messages: responseMessages,
             finalText,
-            modelLabel: resolved.modelId,
+            modelLabel: resolvedModelLabel,
           });
         } catch (e) {
           logger.error(
@@ -1847,7 +1847,7 @@ export async function startBusAgentRunner(params: {
         try {
           const responseMessages = runStats.finalMessages
             ? runStats.finalMessages.slice(responseStartIndex)
-            : agent.state.messages.slice(responseStartIndex);
+            : (activeAgent?.state.messages.slice(responseStartIndex) ?? []);
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
@@ -1855,7 +1855,7 @@ export async function startBusAgentRunner(params: {
             requestClient: headers.request_client,
             messages: responseMessages,
             finalText: `Error: ${msg}`,
-            modelLabel: resolved.modelId,
+            modelLabel: resolvedModelLabel,
           });
         } catch (err) {
           logger.error(

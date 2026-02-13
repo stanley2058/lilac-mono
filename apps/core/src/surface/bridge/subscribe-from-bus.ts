@@ -172,6 +172,7 @@ type ActiveRelay = {
   requestId: string;
   sessionId: string;
   requestClient?: string;
+  stopTyping(): Promise<void>;
   stop(): Promise<void>;
   cancel(): Promise<void>;
   startedAt: number;
@@ -231,6 +232,16 @@ export async function bridgeBusToAdapter(params: {
   } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
+  const terminalLifecycleByRequestId = new Map<string, number>();
+  const TERMINAL_LIFECYCLE_TTL_MS = 5 * 60 * 1000;
+
+  const pruneTerminalLifecycleCache = (nowMs: number) => {
+    for (const [rid, ts] of terminalLifecycleByRequestId) {
+      if (nowMs - ts > TERMINAL_LIFECYCLE_TTL_MS) {
+        terminalLifecycleByRequestId.delete(rid);
+      }
+    }
+  };
   let draining = false;
   let ingressStopped = false;
 
@@ -355,7 +366,13 @@ export async function bridgeBusToAdapter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.EvtRequestReply) return;
+      if (
+        msg.type !== lilacEventTypes.EvtRequestReply &&
+        msg.type !== lilacEventTypes.EvtRequestLifecycleChanged
+      ) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
@@ -372,6 +389,37 @@ export async function bridgeBusToAdapter(params: {
       }
 
       if (requestClient && requestClient !== platform) {
+        await ctx.commit();
+        return;
+      }
+
+      pruneTerminalLifecycleCache(Date.now());
+
+      if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
+        if (
+          msg.data.state === "resolved" ||
+          msg.data.state === "failed" ||
+          msg.data.state === "cancelled"
+        ) {
+          terminalLifecycleByRequestId.set(requestId, Date.now());
+
+          const relay = activeRelays.get(requestId);
+          if (relay) {
+            await relay.stopTyping().catch((e: unknown) => {
+              logger.debug(
+                "failed to stop relay typing from lifecycle event",
+                {
+                  requestId,
+                  sessionId,
+                  lifecycleState: msg.data.state,
+                },
+                e,
+              );
+            });
+            terminalLifecycleByRequestId.delete(requestId);
+          }
+        }
+
         await ctx.commit();
         return;
       }
@@ -415,6 +463,17 @@ export async function bridgeBusToAdapter(params: {
       });
 
       activeRelays.set(requestId, relay);
+
+      if (terminalLifecycleByRequestId.has(requestId)) {
+        await relay.stopTyping().catch((e: unknown) => {
+          logger.debug(
+            "failed to stop relay typing after delayed terminal lifecycle",
+            { requestId, sessionId },
+            e,
+          );
+        });
+        terminalLifecycleByRequestId.delete(requestId);
+      }
 
       await ctx.commit();
     },
@@ -592,6 +651,17 @@ export async function bridgeBusToAdapter(params: {
 
     let typing: TypingIndicatorSubscription | null = null;
 
+    const stopTyping = async () => {
+      const currentTyping = typing;
+      typing = null;
+      if (!currentTyping) return;
+      try {
+        await currentTyping.stop();
+      } catch {
+        // ignore
+      }
+    };
+
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const bumpTimeout = () => {
       if (timeout) clearTimeout(timeout);
@@ -639,17 +709,14 @@ export async function bridgeBusToAdapter(params: {
         clearTimeout(timeout);
         timeout = null;
       }
-      try {
-        await typing?.stop();
-      } catch {
-        // ignore
-      }
+      await stopTyping();
       try {
         await outputSub?.stop();
       } catch {
         // ignore
       }
       activeRelays.delete(requestId);
+      terminalLifecycleByRequestId.delete(requestId);
 
       logger.info("reply relay stopped", {
         requestId,
@@ -883,6 +950,7 @@ export async function bridgeBusToAdapter(params: {
       requestId,
       sessionId,
       requestClient: input.requestClient,
+      stopTyping,
       stop: relayStop,
       cancel: async () => {
         await enqueue(async () => {
