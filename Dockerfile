@@ -91,8 +91,10 @@ COPY . .
 RUN chown -R lilac:lilac /app
 USER lilac
 
-# Build the tool-bridge client bundle
+# Build client bundles
 RUN (cd apps/tool-bridge && bun run build)
+RUN (cd apps/core && bun run build:remote-runner)
+
 USER root
 # Make `tools` available globally
 RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
