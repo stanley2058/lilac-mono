@@ -39,6 +39,7 @@ const jsonObjectSchema: z.ZodType<JSONObject> = z.record(
 
 type AgentConfig = {
   systemPrompt: string;
+  statsForNerds?: boolean | { verbose: boolean };
   subagents?: {
     enabled: boolean;
     maxDepth: number;
@@ -52,6 +53,15 @@ type AgentConfig = {
     };
   };
 };
+
+const statsForNerdsSchema = z
+  .union([
+    z.boolean(),
+    z.object({
+      verbose: z.boolean().default(false),
+    }),
+  ])
+  .default(false);
 
 const subagentProfileSchema = z.object({
   modelSlot: z.enum(["main", "fast"]).default("main"),
@@ -179,6 +189,7 @@ export const coreConfigSchema = z.object({
 
   agent: z
     .object({
+      statsForNerds: statsForNerdsSchema,
       subagents: subagentsSchema.default({
         enabled: true,
         maxDepth: 1,
@@ -190,6 +201,7 @@ export const coreConfigSchema = z.object({
       }),
     })
     .default({
+      statsForNerds: false,
       subagents: {
         enabled: true,
         maxDepth: 1,

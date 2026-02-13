@@ -46,6 +46,10 @@ export class GithubOutputStream implements SurfaceOutputStream {
         // Ignore (no streaming UI for GitHub).
         return;
       }
+      case "meta.stats": {
+        // Ignore (no dedicated stats UI for GitHub).
+        return;
+      }
       default: {
         const _exhaustive: never = part;
         return _exhaustive;
