@@ -23,6 +23,7 @@ export type SurfaceToolStatusUpdate = {
 export type SurfaceOutputPart =
   | { type: "text.delta"; delta: string }
   | { type: "text.set"; text: string }
+  | { type: "meta.stats"; line: string }
   | { type: "tool.status"; update: SurfaceToolStatusUpdate }
   | { type: "attachment.add"; attachment: SurfaceAttachment };
 

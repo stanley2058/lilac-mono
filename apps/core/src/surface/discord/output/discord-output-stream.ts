@@ -177,6 +177,7 @@ async function safeEdit(
 export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly created: MsgRef[] = [];
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
+  private statsForNerdsLine: string | null = null;
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -311,7 +312,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     // Special case: attachments-only output (no text and no tool lines).
     // In this case we don't start the embed pusher at all.
-    if (this.textAcc.length === 0 && this.toolLines.length === 0) {
+    if (
+      this.textAcc.length === 0 &&
+      this.toolLines.length === 0 &&
+      this.statsForNerdsLine === null
+    ) {
       this.lastMsg = first;
       this.running = Promise.resolve();
       return;
@@ -367,6 +372,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             this.toolLines.map((t) => t.line),
             4,
           ),
+        getStatsLine: () => this.statsForNerdsLine,
         getMaxLength,
         streamDone: this.done.promise,
         useSmartSplitting: this.deps.useSmartSplitting,
@@ -413,6 +419,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         return;
       case "text.set":
         this.textAcc = part.text;
+        await this.ensureStarted();
+        return;
+      case "meta.stats":
+        this.statsForNerdsLine = part.line.trim().length > 0 ? part.line : null;
         await this.ensureStarted();
         return;
       case "tool.status": {

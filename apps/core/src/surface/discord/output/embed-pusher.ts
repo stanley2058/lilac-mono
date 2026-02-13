@@ -21,10 +21,21 @@ function buildActionsValue(lines: readonly string[]): string {
   return clamped.join("\n");
 }
 
+function buildStatsValue(line: string): string {
+  const wrapped = line.startsWith("*") && line.endsWith("*")
+    ? line
+    : `*${line}*`;
+  const maxLength = 1024;
+  const overflow = "...*";
+  if (wrapped.length <= maxLength) return wrapped;
+  return wrapped.slice(0, maxLength - overflow.length) + overflow;
+}
+
 function buildEmbed(params: {
   description: string;
   color: number;
   actionsLines: readonly string[];
+  statsLine?: string | null;
   isStreaming: boolean;
 }): EmbedBuilder {
   const emb = new EmbedBuilder();
@@ -35,6 +46,14 @@ function buildEmbed(params: {
     emb.addFields({
       name: "Actions",
       value: buildActionsValue(params.actionsLines),
+      inline: false,
+    });
+  }
+
+  if (!params.isStreaming && params.statsLine) {
+    emb.addFields({
+      name: " ",
+      value: buildStatsValue(params.statsLine),
       inline: false,
     });
   }
@@ -62,6 +81,7 @@ export async function startEmbedPusher(params: {
   createReply: (parent: Message, emb: EmbedBuilder) => Promise<Message>;
   getContent: () => string;
   getActionsLines: () => readonly string[];
+  getStatsLine?: () => string | null;
   getMaxLength: (isStreaming: boolean) => number;
   streamDone: Promise<void>;
   useSmartSplitting: boolean;
@@ -89,6 +109,7 @@ export async function startEmbedPusher(params: {
   const sentDescriptions: string[] = [];
   const sentColors: number[] = [];
   const sentActions: string[] = [];
+  const sentStats: string[] = [];
 
   let responseQueue: string[] = [];
 
@@ -103,9 +124,13 @@ export async function startEmbedPusher(params: {
     });
 
     const actionsLines = params.getActionsLines();
+    const statsLine = params.getStatsLine?.() ?? null;
 
-    // Allow tool progress (Actions) to render even before any text is produced.
-    if (displayChunks.length === 0 && actionsLines.length > 0) {
+    // Allow tool progress (Actions) / stats to render before any text is produced.
+    if (
+      displayChunks.length === 0 &&
+      (actionsLines.length > 0 || !!statsLine)
+    ) {
       displayChunks = [""];
     }
 
@@ -128,6 +153,9 @@ export async function startEmbedPusher(params: {
       const color = showStreamIndicator
         ? EMBED_COLOR_INCOMPLETE
         : EMBED_COLOR_COMPLETE;
+      const statsLineForChunk = !showStreamIndicator && isLast
+        ? statsLine
+        : null;
 
       // Only show actions while streaming. Once done, actions disappear.
       const actionsValue =
@@ -139,6 +167,7 @@ export async function startEmbedPusher(params: {
         description,
         color,
         actionsLines,
+        statsLine: statsLineForChunk,
         isStreaming: showStreamIndicator,
       });
 
@@ -158,6 +187,7 @@ export async function startEmbedPusher(params: {
         sentDescriptions[i] = description;
         sentColors[i] = color;
         sentActions[i] = actionsValue;
+        sentStats[i] = statsLineForChunk ?? "";
         didUpdate = true;
         continue;
       }
@@ -165,7 +195,8 @@ export async function startEmbedPusher(params: {
       if (
         sentDescriptions[i] !== description ||
         sentColors[i] !== color ||
-        sentActions[i] !== actionsValue
+        sentActions[i] !== actionsValue ||
+        sentStats[i] !== (statsLineForChunk ?? "")
       ) {
         await params.safeEdit(chunkMessages[i]!, {
           embeds: [emb],
@@ -174,6 +205,7 @@ export async function startEmbedPusher(params: {
         sentDescriptions[i] = description;
         sentColors[i] = color;
         sentActions[i] = actionsValue;
+        sentStats[i] = statsLineForChunk ?? "";
         didUpdate = true;
       }
     }

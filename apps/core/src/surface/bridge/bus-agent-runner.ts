@@ -714,6 +714,25 @@ function buildInputCompositionLine(input: {
   return `[IC] S: ${pct.S}%; A: ${pct.A}%; U: ${pct.U}%; TD: ${pct.TD}%; TR: ${pct.TR}%`;
 }
 
+type StatsForNerdsOptions = {
+  enabled: boolean;
+  verbose: boolean;
+};
+
+function getStatsForNerdsOptions(
+  statsForNerds: CoreConfig["agent"]["statsForNerds"] | undefined,
+): StatsForNerdsOptions {
+  if (statsForNerds === true) {
+    return { enabled: true, verbose: false };
+  }
+
+  if (statsForNerds && typeof statsForNerds === "object") {
+    return { enabled: true, verbose: statsForNerds.verbose === true };
+  }
+
+  return { enabled: false, verbose: false };
+}
+
 function buildStatsLine(params: {
   modelLabel: string;
   usage: LanguageModelUsage | undefined;
@@ -1773,13 +1792,7 @@ export async function startBusAgentRunner(params: {
         }
       }
 
-      await bus.publish(
-        lilacEventTypes.EvtAgentOutputResponseText,
-        { finalText, delivery },
-        { headers },
-      );
-
-      // Log stats in the js-llmcord-ish one-liner format.
+      // Build stats in the js-llmcord-ish one-liner format.
       const endAt = runStats.lastTurnEndAt ?? Date.now();
       const ttftMs = runStats.firstTextDeltaAt
         ? runStats.firstTextDeltaAt - runStartedAt
@@ -1812,6 +1825,25 @@ export async function startBusAgentRunner(params: {
         tps,
         icLine,
       });
+
+      const statsForNerds = getStatsForNerdsOptions(
+        cfg.agent.statsForNerds,
+      );
+      const statsForNerdsLine = statsForNerds.enabled
+        ? buildStatsLine({
+            modelLabel,
+            usage: runStats.totalUsage,
+            ttftMs,
+            tps,
+            icLine: statsForNerds.verbose ? icLine : null,
+          })
+        : undefined;
+
+      await bus.publish(
+        lilacEventTypes.EvtAgentOutputResponseText,
+        { finalText, delivery, statsForNerdsLine },
+        { headers },
+      );
 
       logger.info(statsLine, {
         requestId: headers.request_id,

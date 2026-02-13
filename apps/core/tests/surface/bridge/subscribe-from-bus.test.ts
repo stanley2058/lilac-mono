@@ -331,6 +331,56 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("forwards final stats metadata before final text", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_stats";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    const statsLine =
+      "*[M]: gpt-5.2; [T]: ↑545,325 (NC: 196,269) ↓6,617 (R: 4,553); [TTFT]: 174.0s; [TPS]: 37.4*";
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      {
+        finalText: "final",
+        statsForNerdsLine: statsLine,
+      },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts).toEqual([
+      { type: "meta.stats", line: statsLine },
+      { type: "text.set", text: "final" },
+    ]);
+    expect(adapter.stream?.finished).toBe(true);
+
+    await bridge.stop();
+  });
+
   it("does not start a relay twice for duplicate reply events", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

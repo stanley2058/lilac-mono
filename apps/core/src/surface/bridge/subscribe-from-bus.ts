@@ -869,6 +869,13 @@ export async function bridgeBusToAdapter(params: {
                 }
               }
 
+              const statsLineRaw = outMsg.data.statsForNerdsLine;
+              const statsLine =
+                typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
+              if (statsLine.length > 0) {
+                await out.push({ type: "meta.stats", line: statsLine });
+              }
+
               outTextAcc = outMsg.data.finalText;
               visibleTextAcc = outTextAcc;
               pendingNoReplyPrefix = "";

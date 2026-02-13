@@ -55,6 +55,13 @@ surface:
 
 
 agent:
+  # Optional: include token/model timing stats in final response metadata.
+  #
+  # - false: disable stats metadata on response events (default)
+  # - true: enable concise stats line ([M], [T], [TTFT], [TPS])
+  # - { verbose: true }: also include input composition ([IC] ...)
+  statsForNerds: false
+
   subagents:
     # Master switch for delegate-style subagents.
     enabled: true

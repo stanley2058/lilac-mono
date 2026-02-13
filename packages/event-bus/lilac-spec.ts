@@ -247,6 +247,8 @@ export type EvtAgentOutputResponseTextData = {
   finalText: string;
   /** Delivery directive for surfaces. Defaults to "reply" when omitted. */
   delivery?: "reply" | "skip";
+  /** Optional one-line token/model stats for surface rendering. */
+  statsForNerdsLine?: string;
 };
 
 export type EvtAgentOutputResponseBinaryData = {
