@@ -7,7 +7,6 @@ surface:
     # - mention: only start a request on mention/reply-to-bot (default for guild channels)
     # - active: treat the channel like a DM (respond to everything)
     defaultMode: mention
-
     # Per-session routing mode overrides. Key is the session/channel id.
     sessionModes: {}
     # sessionModes:
@@ -52,7 +51,6 @@ surface:
     mentionNotifications:
       enabled: false
       maxUsers: 5
-
 
 agent:
   subagents:

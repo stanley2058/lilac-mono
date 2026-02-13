@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # Non-root user (needed for bun/npm global installs)
-RUN useradd -m -u 1000 -s /bin/bash lilac
+RUN useradd -m -u 3000 -s /bin/bash lilac
 ENV HOME=/home/lilac
 ENV DATA_DIR=/data
 ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
