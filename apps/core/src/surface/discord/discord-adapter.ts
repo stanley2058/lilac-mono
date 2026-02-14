@@ -1012,8 +1012,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private async registerSlashCommands(): Promise<void> {
     const client = this.client;
-    const cfg = this.cfg;
-    if (!client || !cfg) return;
+    if (!client) return;
 
     const app = client.application;
     if (!app) return;
@@ -1059,26 +1058,22 @@ export class DiscordAdapter implements SurfaceAdapter {
       count: desired.length,
     });
 
-    // Force-sync guild overrides so stale per-guild commands are removed.
-    // For allowed guilds, we install the desired command set to get fast
-    // propagation. For all other guilds we clear guild commands so only the
-    // global set applies.
-    const allowedGuildIds = new Set(cfg.surface.discord.allowedGuildIds);
+    // Global-only strategy: clear guild-scoped commands to avoid duplicate
+    // entries in Discord command pickers.
     const guilds = await client.guilds.fetch().catch(() => null);
-    const guildIds = guilds ? [...guilds.keys()] : [...allowedGuildIds];
+    const guildIds = guilds ? [...guilds.keys()] : [];
     for (const guildId of guildIds) {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) continue;
 
-      const desiredForGuild = allowedGuildIds.has(guildId) ? desired : [];
-      await guild.commands.set(desiredForGuild).catch((e: unknown) => {
+      await guild.commands.set([]).catch((e: unknown) => {
         this.logger.error("guild slash command sync failed", { guildId }, e);
         return null;
       });
       this.logger.info("slash commands synced", {
         scope: "guild",
         guildId,
-        count: desiredForGuild.length,
+        count: 0,
       });
     }
   }
