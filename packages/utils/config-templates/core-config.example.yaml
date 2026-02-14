@@ -69,7 +69,7 @@ agent:
     maxDepth: 1
     # Default timeout applied by subagent.delegate when timeoutMs is omitted.
     defaultTimeoutMs: 180000
-    # Hard cap for subagent timeout (max 8 minutes).
+    # Hard cap for subagent timeout.
     maxTimeoutMs: 480000
     profiles:
       explore:

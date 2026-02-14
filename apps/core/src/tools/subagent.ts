@@ -21,7 +21,9 @@ const subagentDelegateInputSchema = z.object({
     .int()
     .positive()
     .optional()
-    .describe("Optional timeout in ms. Hard-capped at 8 minutes."),
+    .describe(
+      "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
+    ),
 });
 
 const subagentStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
