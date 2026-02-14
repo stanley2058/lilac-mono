@@ -553,6 +553,18 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
     );
   }
 
+  function isReadTextOutput(
+    output: ReadFileOutput,
+  ): output is Extract<ReadFileOutput, { success: true; format: "raw" | "numbered" }> {
+    if (!output || typeof output !== "object") return false;
+    const o = output as Record<string, unknown>;
+    return (
+      o["success"] === true &&
+      (o["format"] === "raw" || o["format"] === "numbered") &&
+      typeof o["resolvedPath"] === "string"
+    );
+  }
+
   async function loadInstructionsForPath(params: {
     resolvedPath: string;
     opCwd?: string;
@@ -617,12 +629,17 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
       inputSchema: readFileInputZod,
       outputSchema: readFileOutputZod,
       execute: async ({ cwd: opCwd, ...input }, options) => {
+        const cwdTarget = parseSshCwdTarget(opCwd);
+
         logger.info("fs.readFile", {
           path: input.path,
           cwd: opCwd,
+          target: cwdTarget.kind,
+          startLine: input.startLine,
+          maxLines: input.maxLines,
+          maxCharacters: input.maxCharacters,
+          format: input.format ?? "raw",
         });
-
-        const cwdTarget = parseSshCwdTarget(opCwd);
 
         const ext = path.extname(input.path).toLowerCase();
         const wantsAttachment = attachmentExts.has(ext);
@@ -775,15 +792,45 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           };
         })();
 
+        const loadedInstructionCount =
+          withInstructions.success &&
+          "loadedInstructions" in withInstructions &&
+          Array.isArray(withInstructions.loadedInstructions)
+            ? withInstructions.loadedInstructions.length
+            : 0;
+
+        const textReadSummary = isReadTextOutput(withInstructions)
+          ? {
+              outputFormat: withInstructions.format,
+              startLine: withInstructions.startLine,
+              endLine: withInstructions.endLine,
+              totalLines: withInstructions.totalLines,
+              hasMoreLines: withInstructions.hasMoreLines,
+              truncatedByChars: withInstructions.truncatedByChars,
+              returnedLines: Math.max(0, withInstructions.endLine - withInstructions.startLine + 1),
+              returnedChars:
+                withInstructions.format === "raw"
+                  ? withInstructions.content.length
+                  : withInstructions.numberedContent.length,
+            }
+          : undefined;
+
+        const attachmentSummary = isAttachmentOutput(withInstructions)
+          ? {
+              kind: "attachment" as const,
+              mimeType: withInstructions.mimeType,
+              filename: withInstructions.filename,
+              bytes: withInstructions.bytes,
+            }
+          : undefined;
+
         logger.info("fs.readFile done", {
           path: withInstructions.resolvedPath,
           ok: withInstructions.success,
-          loadedInstructions:
-            withInstructions.success &&
-            "loadedInstructions" in withInstructions &&
-            Array.isArray((withInstructions as any).loadedInstructions)
-              ? (withInstructions as any).loadedInstructions.length
-              : 0,
+          target: cwdTarget.kind,
+          loadedInstructions: loadedInstructionCount,
+          ...textReadSummary,
+          ...attachmentSummary,
           error: withInstructions.success ? undefined : withInstructions.error,
         });
 
@@ -860,14 +907,16 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
       outputSchema: globOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
         const mode = input.mode ?? "default";
+        const cwdTarget = parseSshCwdTarget(opCwd);
+
         logger.info("fs.glob", {
           patterns: input.patterns,
           cwd: opCwd,
+          target: cwdTarget.kind,
           maxEntries: input.maxEntries,
           mode,
         });
 
-        const cwdTarget = parseSshCwdTarget(opCwd);
         if (cwdTarget.kind === "ssh") {
           const res = await remoteGlob({
             host: cwdTarget.host,
@@ -913,15 +962,19 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
       outputSchema: grepOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
         const mode = input.mode ?? "default";
+        const cwdTarget = parseSshCwdTarget(opCwd);
+
         logger.info("fs.grep", {
           pattern: input.pattern,
           cwd: opCwd,
+          target: cwdTarget.kind,
           regex: input.regex,
+          fileExtensions: input.fileExtensions,
+          includeContextLines: input.includeContextLines,
           maxResults: input.maxResults,
           mode,
         });
 
-        const cwdTarget = parseSshCwdTarget(opCwd);
         if (cwdTarget.kind === "ssh") {
           const res = await remoteGrep({
             host: cwdTarget.host,
@@ -981,11 +1034,17 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
       inputSchema: editFileInputZod,
       outputSchema: editFileOutputZod,
       execute: async ({ cwd: opCwd, ...input }) => {
+        const cwdTarget = parseSshCwdTarget(opCwd);
+
         logger.info("fs.editFile", {
           path: input.path,
           cwd: opCwd,
+          target: cwdTarget.kind,
           replaceAll: input.replaceAll,
           matching: input.matching,
+          expectedMatches: resolveExpectedMatches(input),
+          expectedHashProvided:
+            typeof input.expectedHash === "string" && input.expectedHash.length > 0,
         });
 
         const occurrence: "all" | "first" = input.replaceAll ? "all" : "first";
@@ -1008,7 +1067,6 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           expectedHash: input.expectedHash,
         };
 
-        const cwdTarget = parseSshCwdTarget(opCwd);
         const res =
           cwdTarget.kind === "ssh"
             ? await (async () => {

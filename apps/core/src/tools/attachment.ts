@@ -1,5 +1,7 @@
 import { tool, type ModelMessage } from "ai";
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { fileTypeFromBuffer } from "file-type/core";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -210,6 +212,10 @@ async function downloadToBuffer(input: unknown): Promise<{
 
 export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
   const { bus, cwd } = params;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "tool:attachment",
+  });
 
   return {
     "attachment.add_files": tool({
@@ -218,66 +224,103 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       outputSchema: attachmentAddOutputSchema,
       execute: async (input, { experimental_context }) => {
         const ctx = requireRequestContext(experimental_context, "attachment.add_files");
+        const startedAt = Date.now();
 
-        let totalBytes = 0;
+        logger.info("attachment.add_files", {
+          requestId: ctx.requestId,
+          sessionId: ctx.sessionId,
+          requestClient: ctx.requestClient,
+          cwd,
+          pathCount: input.paths.length,
+          filenameCount: input.filenames?.length,
+          mimeTypeCount: input.mimeTypes?.length,
+        });
 
-        const out: Array<{
-          filename: string;
-          mimeType: string;
-          bytes: number;
-        }> = [];
+        try {
+          let totalBytes = 0;
 
-        for (let i = 0; i < input.paths.length; i++) {
-          const p = input.paths[i]!;
-          const resolvedPath = resolveToolPath(cwd, p);
+          const out: Array<{
+            filename: string;
+            mimeType: string;
+            bytes: number;
+          }> = [];
 
-          const st = await fs.stat(resolvedPath);
-          if (!st.isFile()) {
-            throw new Error(`Not a file: ${resolvedPath}`);
-          }
+          for (let i = 0; i < input.paths.length; i++) {
+            const p = input.paths[i]!;
+            const resolvedPath = resolveToolPath(cwd, p);
 
-          if (st.size > DEFAULT_OUTBOUND_MAX_FILE_BYTES) {
-            throw new Error(
-              `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${resolvedPath}`,
-            );
-          }
+            const st = await fs.stat(resolvedPath);
+            if (!st.isFile()) {
+              throw new Error(`Not a file: ${resolvedPath}`);
+            }
 
-          totalBytes += st.size;
-          if (totalBytes > DEFAULT_OUTBOUND_MAX_TOTAL_BYTES) {
-            throw new Error(
-              `Total attachment bytes too large (${totalBytes} bytes). Max is ${DEFAULT_OUTBOUND_MAX_TOTAL_BYTES} bytes.`,
-            );
-          }
+            if (st.size > DEFAULT_OUTBOUND_MAX_FILE_BYTES) {
+              throw new Error(
+                `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${resolvedPath}`,
+              );
+            }
 
-          const bytes = await fs.readFile(resolvedPath);
+            totalBytes += st.size;
+            if (totalBytes > DEFAULT_OUTBOUND_MAX_TOTAL_BYTES) {
+              throw new Error(
+                `Total attachment bytes too large (${totalBytes} bytes). Max is ${DEFAULT_OUTBOUND_MAX_TOTAL_BYTES} bytes.`,
+              );
+            }
 
-          const filename = (input.filenames && input.filenames[i]) || basename(resolvedPath);
+            const bytes = await fs.readFile(resolvedPath);
 
-          const typeFromBytes = await fileTypeFromBuffer(bytes);
+            const filename = (input.filenames && input.filenames[i]) || basename(resolvedPath);
 
-          const mimeType =
-            (input.mimeTypes && input.mimeTypes[i]) ||
-            typeFromBytes?.mime ||
-            inferMimeTypeFromFilename(filename);
+            const typeFromBytes = await fileTypeFromBuffer(bytes);
 
-          const dataBase64 = Buffer.from(bytes).toString("base64");
+            const mimeType =
+              (input.mimeTypes && input.mimeTypes[i]) ||
+              typeFromBytes?.mime ||
+              inferMimeTypeFromFilename(filename);
 
-          await bus.publish(
-            lilacEventTypes.EvtAgentOutputResponseBinary,
-            { mimeType, dataBase64, filename },
-            {
-              headers: {
-                request_id: ctx.requestId,
-                session_id: ctx.sessionId,
-                request_client: ctx.requestClient,
+            const dataBase64 = Buffer.from(bytes).toString("base64");
+
+            await bus.publish(
+              lilacEventTypes.EvtAgentOutputResponseBinary,
+              { mimeType, dataBase64, filename },
+              {
+                headers: {
+                  request_id: ctx.requestId,
+                  session_id: ctx.sessionId,
+                  request_client: ctx.requestClient,
+                },
               },
+            );
+
+            out.push({ filename, mimeType, bytes: bytes.byteLength });
+          }
+
+          const result = { ok: true as const, attachments: out };
+
+          logger.info("attachment.add_files done", {
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            requestClient: ctx.requestClient,
+            durationMs: Date.now() - startedAt,
+            attachmentCount: out.length,
+            totalBytes: out.reduce((sum, att) => sum + att.bytes, 0),
+          });
+
+          return result;
+        } catch (e) {
+          logger.error(
+            "attachment.add_files failed",
+            {
+              requestId: ctx.requestId,
+              sessionId: ctx.sessionId,
+              requestClient: ctx.requestClient,
+              durationMs: Date.now() - startedAt,
+              pathCount: input.paths.length,
             },
+            e,
           );
-
-          out.push({ filename, mimeType, bytes: bytes.byteLength });
+          throw e;
         }
-
-        return { ok: true, attachments: out };
       },
     }),
 
@@ -289,79 +332,134 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       inputSchema: attachmentDownloadInputSchema,
       outputSchema: attachmentDownloadOutputSchema,
       execute: async (input, options) => {
+        const startedAt = Date.now();
         const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
+        const context =
+          options.experimental_context && typeof options.experimental_context === "object"
+            ? (options.experimental_context as Record<string, unknown>)
+            : undefined;
+        const requestId =
+          typeof context?.["requestId"] === "string" ? context["requestId"] : undefined;
+        const sessionId =
+          typeof context?.["sessionId"] === "string" ? context["sessionId"] : undefined;
+        const requestClient =
+          typeof context?.["requestClient"] === "string" ? context["requestClient"] : undefined;
 
-        const attachments = collectUserAttachments(options.messages);
-        if (attachments.length === 0) {
-          return { ok: true, downloadDir, files: [] };
-        }
+        logger.info("attachment.download", {
+          requestId,
+          sessionId,
+          requestClient,
+          downloadDir,
+        });
 
-        await fs.mkdir(downloadDir, { recursive: true });
-
-        const files: AttachmentDownloadOutput["files"] = [];
-        const seenSha10 = new Set<string>();
-
-        let totalBytes = 0;
-
-        for (const att of attachments) {
-          const downloaded = await downloadToBuffer(att.data);
-
-          if (downloaded.bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-            throw new Error(
-              `Attachment too large (${downloaded.bytes.byteLength} bytes). Max is ${DEFAULT_INBOUND_MAX_FILE_BYTES} bytes.`,
-            );
+        try {
+          const attachments = collectUserAttachments(options.messages);
+          if (attachments.length === 0) {
+            const emptyResult = { ok: true as const, downloadDir, files: [] };
+            logger.info("attachment.download done", {
+              requestId,
+              sessionId,
+              requestClient,
+              durationMs: Date.now() - startedAt,
+              attachmentCount: 0,
+              fileCount: 0,
+              totalBytes: 0,
+            });
+            return emptyResult;
           }
 
-          totalBytes += downloaded.bytes.byteLength;
-          if (totalBytes > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
-            throw new Error(
-              `Total attachment bytes too large (${totalBytes} bytes). Max is ${DEFAULT_INBOUND_MAX_TOTAL_BYTES} bytes.`,
-            );
+          await fs.mkdir(downloadDir, { recursive: true });
+
+          const files: AttachmentDownloadOutput["files"] = [];
+          const seenSha10 = new Set<string>();
+
+          let totalBytes = 0;
+
+          for (const att of attachments) {
+            const downloaded = await downloadToBuffer(att.data);
+
+            if (downloaded.bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
+              throw new Error(
+                `Attachment too large (${downloaded.bytes.byteLength} bytes). Max is ${DEFAULT_INBOUND_MAX_FILE_BYTES} bytes.`,
+              );
+            }
+
+            totalBytes += downloaded.bytes.byteLength;
+            if (totalBytes > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
+              throw new Error(
+                `Total attachment bytes too large (${totalBytes} bytes). Max is ${DEFAULT_INBOUND_MAX_TOTAL_BYTES} bytes.`,
+              );
+            }
+
+            const detected = await fileTypeFromBuffer(downloaded.bytes);
+
+            const mimeType =
+              detected?.mime ||
+              downloaded.contentType?.split(";")[0]?.trim() ||
+              att.mediaTypeHint ||
+              (att.filenameHint ? inferMimeTypeFromFilename(att.filenameHint) : undefined);
+
+            const sha256 = createHash("sha256").update(downloaded.bytes).digest("hex");
+            const sha10 = sha256.slice(0, 10);
+
+            if (seenSha10.has(sha10)) {
+              continue;
+            }
+            seenSha10.add(sha10);
+
+            const extFromFileType = detected?.ext ? `.${detected.ext}` : "";
+            const extFromFilename = att.filenameHint ? extname(att.filenameHint) : "";
+            const extFromMime = mimeType ? inferExtensionFromMimeType(mimeType) : "";
+
+            const ext = sanitizeExtension(extFromFileType || extFromFilename || extFromMime);
+            const target = join(downloadDir, `${sha10}${ext}`);
+
+            // Only write missing.
+            const exists = await fs
+              .access(target)
+              .then(() => true)
+              .catch(() => false);
+
+            if (!exists) {
+              await fs.writeFile(target, downloaded.bytes);
+            }
+
+            files.push({
+              path: target,
+              sha10,
+              bytes: downloaded.bytes.byteLength,
+              sourceUrl: downloaded.sourceUrl ?? "inline",
+              mimeType,
+            });
           }
 
-          const detected = await fileTypeFromBuffer(downloaded.bytes);
+          const result = { ok: true as const, downloadDir, files };
 
-          const mimeType =
-            detected?.mime ||
-            downloaded.contentType?.split(";")[0]?.trim() ||
-            att.mediaTypeHint ||
-            (att.filenameHint ? inferMimeTypeFromFilename(att.filenameHint) : undefined);
-
-          const sha256 = createHash("sha256").update(downloaded.bytes).digest("hex");
-          const sha10 = sha256.slice(0, 10);
-
-          if (seenSha10.has(sha10)) {
-            continue;
-          }
-          seenSha10.add(sha10);
-
-          const extFromFileType = detected?.ext ? `.${detected.ext}` : "";
-          const extFromFilename = att.filenameHint ? extname(att.filenameHint) : "";
-          const extFromMime = mimeType ? inferExtensionFromMimeType(mimeType) : "";
-
-          const ext = sanitizeExtension(extFromFileType || extFromFilename || extFromMime);
-          const target = join(downloadDir, `${sha10}${ext}`);
-
-          // Only write missing.
-          const exists = await fs
-            .access(target)
-            .then(() => true)
-            .catch(() => false);
-
-          if (!exists) {
-            await fs.writeFile(target, downloaded.bytes);
-          }
-
-          files.push({
-            path: target,
-            sha10,
-            bytes: downloaded.bytes.byteLength,
-            sourceUrl: downloaded.sourceUrl ?? "inline",
-            mimeType,
+          logger.info("attachment.download done", {
+            requestId,
+            sessionId,
+            requestClient,
+            durationMs: Date.now() - startedAt,
+            attachmentCount: attachments.length,
+            fileCount: files.length,
+            totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
           });
-        }
 
-        return { ok: true, downloadDir, files };
+          return result;
+        } catch (e) {
+          logger.error(
+            "attachment.download failed",
+            {
+              requestId,
+              sessionId,
+              requestClient,
+              durationMs: Date.now() - startedAt,
+              downloadDir,
+            },
+            e,
+          );
+          throw e;
+        }
       },
     }),
   };

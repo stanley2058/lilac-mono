@@ -226,7 +226,9 @@ export async function executeBash(
   logger.info("bash exec", {
     command: redactedCommand,
     cwd: resolvedCwd,
+    target: cwdTarget.kind,
     timeoutMs: timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
+    dangerouslyAllow: dangerouslyAllow === true,
     requestId: context?.requestId,
     sessionId: context?.sessionId,
     requestClient: context?.requestClient,

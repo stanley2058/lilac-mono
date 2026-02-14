@@ -1,10 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { requireRequestContext } from "../../shared/req-context";
 
 export function workflowTool(params: { bus: LilacBus }) {
   const { bus } = params;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "tool:workflow",
+  });
 
   const workflowCreateInputSchema = z.object({
     summary: z.string().min(1).describe("Compact snapshot of what we were doing"),
@@ -37,54 +43,36 @@ export function workflowTool(params: { bus: LilacBus }) {
       outputSchema: workflowCreateOutputSchema,
       execute: async (input, { experimental_context }) => {
         const ctx = requireRequestContext(experimental_context, "workflow");
+        const startedAt = Date.now();
 
-        const workflowId = `wf:${crypto.randomUUID()}`;
+        logger.info("workflow.create", {
+          requestId: ctx.requestId,
+          sessionId: ctx.sessionId,
+          requestClient: ctx.requestClient,
+          taskCount: input.tasks.length,
+          summaryChars: input.summary.length,
+        });
 
-        await bus.publish(
-          lilacEventTypes.CmdWorkflowCreate,
-          {
-            workflowId,
-            definition: {
-              version: 2,
-              origin: {
-                request_id: ctx.requestId,
-                session_id: ctx.sessionId,
-                request_client: ctx.requestClient,
-              },
-              resumeTarget: {
-                session_id: ctx.sessionId,
-                request_client: ctx.requestClient,
-              },
-              summary: input.summary,
-              completion: "all",
-            },
-          },
-          {
-            headers: {
-              request_id: ctx.requestId,
-              session_id: ctx.sessionId,
-              request_client: ctx.requestClient,
-            },
-          },
-        );
-
-        const taskIds: string[] = [];
-
-        for (let i = 0; i < input.tasks.length; i++) {
-          const t = input.tasks[i]!;
-          const taskId = `t:${i + 1}:${crypto.randomUUID()}`;
-          taskIds.push(taskId);
+        try {
+          const workflowId = `wf:${crypto.randomUUID()}`;
 
           await bus.publish(
-            lilacEventTypes.CmdWorkflowTaskCreate,
+            lilacEventTypes.CmdWorkflowCreate,
             {
               workflowId,
-              taskId,
-              kind: "discord.wait_for_reply",
-              description: t.description,
-              input: {
-                channelId: t.sessionId,
-                messageId: t.messageId,
+              definition: {
+                version: 2,
+                origin: {
+                  request_id: ctx.requestId,
+                  session_id: ctx.sessionId,
+                  request_client: ctx.requestClient,
+                },
+                resumeTarget: {
+                  session_id: ctx.sessionId,
+                  request_client: ctx.requestClient,
+                },
+                summary: input.summary,
+                completion: "all",
               },
             },
             {
@@ -95,9 +83,60 @@ export function workflowTool(params: { bus: LilacBus }) {
               },
             },
           );
-        }
 
-        return { ok: true, workflowId, taskIds };
+          const taskIds: string[] = [];
+
+          for (let i = 0; i < input.tasks.length; i++) {
+            const t = input.tasks[i]!;
+            const taskId = `t:${i + 1}:${crypto.randomUUID()}`;
+            taskIds.push(taskId);
+
+            await bus.publish(
+              lilacEventTypes.CmdWorkflowTaskCreate,
+              {
+                workflowId,
+                taskId,
+                kind: "discord.wait_for_reply",
+                description: t.description,
+                input: {
+                  channelId: t.sessionId,
+                  messageId: t.messageId,
+                },
+              },
+              {
+                headers: {
+                  request_id: ctx.requestId,
+                  session_id: ctx.sessionId,
+                  request_client: ctx.requestClient,
+                },
+              },
+            );
+          }
+
+          logger.info("workflow.create done", {
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            requestClient: ctx.requestClient,
+            workflowId,
+            taskCount: taskIds.length,
+            durationMs: Date.now() - startedAt,
+          });
+
+          return { ok: true, workflowId, taskIds };
+        } catch (e) {
+          logger.error(
+            "workflow.create failed",
+            {
+              requestId: ctx.requestId,
+              sessionId: ctx.sessionId,
+              requestClient: ctx.requestClient,
+              taskCount: input.tasks.length,
+              durationMs: Date.now() - startedAt,
+            },
+            e,
+          );
+          throw e;
+        }
       },
     }),
   };
