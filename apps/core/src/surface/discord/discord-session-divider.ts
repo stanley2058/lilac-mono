@@ -8,10 +8,10 @@ export function buildDiscordSessionDividerText(params?: {
   createdByUserName?: string | null;
   now?: Date;
 }): string {
-  const now = params?.now ?? new Date();
-  const ts = now.toISOString();
-
-  const label = typeof params?.label === "string" ? params.label.trim() : "";
+  const label =
+    typeof params?.label === "string"
+      ? params.label.replace(/\s+/gu, " ").trim()
+      : "";
   const labelPart = label ? `: ${label}` : "";
 
   const who = (() => {
@@ -32,17 +32,32 @@ export function buildDiscordSessionDividerText(params?: {
 
   const whoPart = who ? ` (${who})` : "";
 
-  // Keep the marker on its own line so detection is stable even if the user copies the message.
-  return [`--- Session Divider${labelPart} ---${whoPart}`, DISCORD_SESSION_DIVIDER_MARKER, ts].join(
-    "\n",
-  );
+  return `${DISCORD_SESSION_DIVIDER_MARKER}${whoPart}${labelPart}`;
 }
 
 export function isDiscordSessionDividerText(text: string): boolean {
-  // Structure-based detection to avoid accidental cutoffs if the bot ever prints the marker.
-  // Requirements:
-  // - header line starts with our divider prefix
-  // - marker appears on its own line
+  const trimmed = text.trim();
+
+  if (trimmed === DISCORD_SESSION_DIVIDER_MARKER) return true;
+
+  if (trimmed.startsWith(`${DISCORD_SESSION_DIVIDER_MARKER} (by `)) {
+    const prefixLen = `${DISCORD_SESSION_DIVIDER_MARKER} (by `.length;
+    const closeParen = trimmed.indexOf(")", prefixLen);
+    if (closeParen <= prefixLen) return false;
+    const rest = trimmed.slice(closeParen + 1);
+    if (rest.length === 0) return true;
+    if (rest.startsWith(": ") && rest.length > 2) return true;
+    return false;
+  }
+
+  if (
+    trimmed.startsWith(`${DISCORD_SESSION_DIVIDER_MARKER}: `) &&
+    trimmed.length > `${DISCORD_SESSION_DIVIDER_MARKER}: `.length
+  ) {
+    return true;
+  }
+
+  // Backward compatibility with the old multi-line divider format.
   if (!text.startsWith("--- Session Divider")) return false;
 
   const escapeRegExp = (input: string) =>
@@ -61,5 +76,12 @@ export function isDiscordSessionDividerSurfaceMessage(
 ): boolean {
   if (msg.session.platform !== "discord") return false;
   if (msg.userId !== botUserId) return false;
+  return isDiscordSessionDividerText(msg.text);
+}
+
+export function isDiscordSessionDividerSurfaceMessageAnyAuthor(
+  msg: SurfaceMessage,
+): boolean {
+  if (msg.session.platform !== "discord") return false;
   return isDiscordSessionDividerText(msg.text);
 }

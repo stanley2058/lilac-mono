@@ -9,6 +9,7 @@ import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef, SurfaceMessage } from "../types";
 
 import {
+  isDiscordSessionDividerSurfaceMessageAnyAuthor,
   isDiscordSessionDividerSurfaceMessage,
   isDiscordSessionDividerText,
 } from "../discord/discord-session-divider";
@@ -242,12 +243,14 @@ export async function composeRequestMessages(
 
   const filteredChain = chain.filter((m) => {
     const isChat = getDiscordIsChatFromRaw(m.raw);
-    return isChat ?? true;
+    if (!(isChat ?? true)) return false;
+    return !isDiscordSessionDividerText(m.text);
   });
 
   // IMPORTANT: session divider cutoff intentionally does NOT apply to explicit reply/mention
   // chains. If the user replies to (or mentions within) an assistant message after a divider,
   // they are explicitly re-opening that thread; we keep the full linked chain.
+  // Divider markers are still always excluded from model context.
 
   // Step 2: merge by Discord window rules (same author + <= 7 min).
   const merged = mergeChainByDiscordWindow(filteredChain);
@@ -391,7 +394,11 @@ export async function composeRecentChannelMessages(
           botUserId: opts.botUserId,
         });
 
-        const merged = mergeChainByDiscordWindow(anchoredCutChain);
+        const anchoredNoDivider = anchoredCutChain.filter(
+          (m) => !isDiscordSessionDividerText(m.text),
+        );
+
+        const merged = mergeChainByDiscordWindow(anchoredNoDivider);
         const attState = createDiscordAttachmentState();
 
         const modelMessages: ModelMessage[] = [];
@@ -459,7 +466,7 @@ export async function composeRecentChannelMessages(
 
         return {
           messages: modelMessages,
-          chainMessageIds: anchoredCutChain.map((m) => m.messageId),
+          chainMessageIds: anchoredNoDivider.map((m) => m.messageId),
           mergedGroups: merged.map((m) => ({
             authorId: m.authorId,
             messageIds: [...m.messageIds],
@@ -597,7 +604,7 @@ export async function composeRecentChannelMessages(
 
   // Safety: exclude divider messages from context even if they are chat-like.
   const selectedNoDivider = selected.filter(
-    (m) => !(m.userId === opts.botUserId && isDiscordSessionDividerText(m.text)),
+    (m) => !isDiscordSessionDividerSurfaceMessageAnyAuthor(m),
   );
 
   const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => ({
@@ -715,7 +722,7 @@ export async function composeSingleMessage(
   if (!shouldIncludeInModelContext(m)) return null;
 
   // Never include session divider markers in model context.
-  if (isDiscordSessionDividerSurfaceMessage(m, opts.botUserId)) return null;
+  if (isDiscordSessionDividerSurfaceMessageAnyAuthor(m)) return null;
 
   const text =
     m.userId !== opts.botUserId

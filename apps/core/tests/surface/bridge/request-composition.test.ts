@@ -1389,7 +1389,7 @@ describe("request-composition session divider", () => {
         session: { platform: "discord", channelId: sessionId },
         userId: "bot",
         userName: "lilac",
-        text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
         ts: 2,
         raw: { discord: { isChat: true } },
       },
@@ -1432,6 +1432,118 @@ describe("request-composition session divider", () => {
     expect(combined).not.toContain("before");
   });
 
+  it("does not cut off context at divider from a different bot id", async () => {
+    const sessionId = "c";
+
+    const msgs: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "before",
+        ts: 1,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "d_other" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot_other",
+        userName: "lilac-other",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
+        ts: 2,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_1",
+        ts: 3,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "3" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_2",
+        ts: 4,
+        raw: { discord: { isChat: true } },
+      },
+    ];
+
+    const adapter = new DividerAdapter(msgs);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+    });
+
+    expect(out.chainMessageIds).toEqual(["1", "2", "3"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("before");
+    expect(combined).toContain("after_1");
+    expect(combined).toContain("after_2");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+
+  it("still recognizes legacy divider format for cutoff", async () => {
+    const sessionId = "c";
+
+    const msgs: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "before",
+        ts: 1,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "d" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+        ts: 2,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_1",
+        ts: 3,
+        raw: { discord: { isChat: true } },
+      },
+    ];
+
+    const adapter = new DividerAdapter(msgs);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+    });
+
+    expect(out.chainMessageIds).toEqual(["2"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("after_1");
+    expect(combined).not.toContain("before");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+
   it("cuts off reply-chain context at the most recent divider", async () => {
     const sessionId = "c";
 
@@ -1450,7 +1562,7 @@ describe("request-composition session divider", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      text: "[LILAC_SESSION_DIVIDER] (by user)",
       ts: 50,
       raw: { reference: {} },
     };
@@ -1514,7 +1626,7 @@ describe("request-composition session divider", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      text: "[LILAC_SESSION_DIVIDER] (by user)",
       ts: 50,
       raw: { reference: {} },
     };
