@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema, resolveModelRef, resolveModelSlot, type CoreConfig } from "../index";
+import {
+  CODEX_BASE_INSTRUCTIONS,
+  coreConfigSchema,
+  resolveModelRef,
+  resolveModelSlot,
+  type CoreConfig,
+} from "../index";
 
 function baseConfig(): CoreConfig {
   const parsed = coreConfigSchema.parse({});
@@ -61,7 +67,45 @@ describe("resolveModelSlot", () => {
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.providerOptions).toEqual({
-      openai: { temperature: 0.2 },
+      openai: {
+        temperature: 0.2,
+        parallelToolCalls: true,
+      },
+    });
+  });
+
+  it("enables openai.parallelToolCalls by default for openai models", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openai/gpt-4o",
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.providerOptions).toEqual({
+      openai: {
+        parallelToolCalls: true,
+      },
+    });
+  });
+
+  it("respects explicit openai.parallelToolCalls=false", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openai/gpt-4o",
+      options: {
+        openai: {
+          parallelToolCalls: false,
+          temperature: 0.1,
+        },
+      },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.providerOptions).toEqual({
+      openai: {
+        parallelToolCalls: false,
+        temperature: 0.1,
+      },
     });
   });
 
@@ -76,10 +120,27 @@ describe("resolveModelSlot", () => {
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.providerOptions?.openai?.instructions).toBe("hello");
+    expect(resolved.providerOptions?.openai?.parallelToolCalls).toBe(true);
     expect(resolved.providerOptions?.openai?.store).toBe(false);
 
     // Ensure the meta key is not forwarded.
     expect(resolved.providerOptions?.codex_instructions).toBeUndefined();
+  });
+
+  it("applies codex defaults when options are omitted", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "codex/gpt-4o",
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.providerOptions).toEqual({
+      openai: {
+        instructions: CODEX_BASE_INSTRUCTIONS,
+        parallelToolCalls: true,
+        store: false,
+      },
+    });
   });
 
   it("resolves alias refs and merges preset options with override options", () => {

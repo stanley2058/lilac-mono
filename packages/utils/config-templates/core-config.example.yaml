@@ -104,6 +104,10 @@ models:
     model: "openrouter/openai/gpt-4o"
     # options:
     #   temperature: 0.2
+    #   # For openai/codex providers, parallelToolCalls defaults to true.
+    #   # Set false to force sequential provider-side tool calling.
+    #   openai:
+    #     parallelToolCalls: false
 
   # Fast/cheap model for lightweight features (router gate, etc.)
   fast:
