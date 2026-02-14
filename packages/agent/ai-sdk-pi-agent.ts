@@ -1401,7 +1401,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       };
     };
 
-    const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(toolCalls.length);
+    const outcomes: Array<ToolExecutionOutcome | undefined> = Array.from({
+      length: toolCalls.length,
+    });
     let nextAppendIndex = 0;
 
     const appendReadyOutcomes = () => {

@@ -19,10 +19,6 @@ import type {
 import { computeNextCronAtMs } from "./cron";
 import { buildScheduledJobMessages } from "./scheduled-request";
 
-function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
 function now(): number {
   return Date.now();
 }
@@ -113,13 +109,6 @@ function parseCronInput(input: unknown): {
       : undefined;
   const skipMissed = typeof o.skipMissed === "boolean" ? o.skipMissed : undefined;
   return { expr: o.expr, tz, startAtMs, skipMissed };
-}
-
-function parseWaitUntilInput(input: unknown): { runAtMs: number } | null {
-  if (!input || typeof input !== "object") return null;
-  const o = input as Record<string, unknown>;
-  if (typeof o.runAtMs !== "number" || !Number.isFinite(o.runAtMs)) return null;
-  return { runAtMs: Math.trunc(o.runAtMs) };
 }
 
 function toRequestHeaders(params: {

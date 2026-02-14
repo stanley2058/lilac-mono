@@ -61,11 +61,7 @@ function deriveCwdContext(options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiv
   return { cwdUnknown, cwdForRm, originalCwd };
 }
 
-export function analyzeSegment(
-  tokens: string[],
-  depth: number,
-  options: SegmentAnalyzeOptions,
-): string | null {
+export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions): string | null {
   if (tokens.length === 0) {
     return null;
   }
@@ -132,7 +128,7 @@ export function analyzeSegment(
   }
 
   if (normalizedHead === "busybox" && stripped.length > 1) {
-    return analyzeSegment(stripped.slice(1), depth, options);
+    return analyzeSegment(stripped.slice(1), options);
   }
 
   const isGit = basename.toLowerCase() === "git";

@@ -1,3 +1,5 @@
+/* oxlint-disable eslint/no-control-regex */
+
 import {
   asSchema,
   type FinishReason,

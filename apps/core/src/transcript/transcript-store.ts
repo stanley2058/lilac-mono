@@ -40,21 +40,6 @@ export type TranscriptStore = {
   close(): void;
 };
 
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function estimateChars(value: unknown): number {
-  if (typeof value === "string") return value.length;
-  if (value instanceof Uint8Array) return value.byteLength;
-  return stringifyUnknown(value).length;
-}
-
 export class SqliteTranscriptStore implements TranscriptStore {
   private readonly db: Database;
 

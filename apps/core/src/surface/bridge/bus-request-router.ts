@@ -378,7 +378,7 @@ export async function startBusRequestRouter(params: {
       cfg,
       sessionId,
       msgRef,
-      userId,
+      userId: _userId,
       mentionsBot,
       replyToBot,
       active,

@@ -9,9 +9,6 @@ import { formatToolArgsForDisplay } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
-const ALL_TOOL_NAMES = ["read_file", "glob", "grep", "bash", "apply_patch", "edit_file"] as const;
-type AllowedToolName = (typeof ALL_TOOL_NAMES)[number];
-
 const ALLOWED_TOOL_NAMES_BY_MODE = {
   apply_patch: ["read_file", "glob", "grep", "bash", "apply_patch"],
   edit_file: ["read_file", "glob", "grep", "bash", "edit_file"],

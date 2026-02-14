@@ -1,3 +1,5 @@
+/* oxlint-disable eslint/no-control-regex */
+
 import { encode } from "@toon-format/toon";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";

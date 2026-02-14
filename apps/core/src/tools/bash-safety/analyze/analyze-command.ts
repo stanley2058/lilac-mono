@@ -50,7 +50,7 @@ export function analyzeCommandInternal(
       continue;
     }
 
-    const reason = analyzeSegment(segment, depth, {
+    const reason = analyzeSegment(segment, {
       ...options,
       cwd: originalCwd,
       effectiveCwd,

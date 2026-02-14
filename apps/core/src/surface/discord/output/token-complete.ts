@@ -1,3 +1,5 @@
+/* oxlint-disable eslint/no-control-regex */
+
 import remend from "remend";
 
 // Null character used as placeholder delimiter (won't appear in normal text)

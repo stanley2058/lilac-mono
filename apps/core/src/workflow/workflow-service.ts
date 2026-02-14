@@ -143,24 +143,6 @@ async function publishTaskLifecycle(params: {
   );
 }
 
-async function publishTaskResolved(params: {
-  bus: LilacBus;
-  headers?: Record<string, string>;
-  workflowId: string;
-  taskId: string;
-  result: unknown;
-}) {
-  await params.bus.publish(
-    lilacEventTypes.EvtWorkflowTaskResolved,
-    {
-      workflowId: params.workflowId,
-      taskId: params.taskId,
-      result: params.result,
-    },
-    { headers: params.headers },
-  );
-}
-
 async function publishWorkflowResolved(params: {
   bus: LilacBus;
   headers?: Record<string, string>;

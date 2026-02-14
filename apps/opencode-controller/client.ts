@@ -876,28 +876,6 @@ function isTodoRemaining(t: { status?: string }): boolean {
   return s !== "completed" && s !== "cancelled";
 }
 
-function findAssistantMessageForUserMessage(params: {
-  userMessageID: string;
-  messages: Array<{ info: Message; parts: Part[] }>;
-}): { info: AssistantMessage; parts: Part[] } | null {
-  let best: { info: AssistantMessage; parts: Part[] } | null = null;
-  let bestCreated = -1;
-
-  for (const m of params.messages) {
-    if (m.info.role !== "assistant") continue;
-    const parentID = m.info.parentID;
-    if (parentID !== params.userMessageID) continue;
-
-    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
-    if (!best || created >= bestCreated) {
-      best = { info: m.info, parts: m.parts };
-      bestCreated = created;
-    }
-  }
-
-  return best;
-}
-
 function findAssistantMessagesForUserMessage(params: {
   userMessageID: string;
   messages: Array<{ info: Message; parts: Part[] }>;
