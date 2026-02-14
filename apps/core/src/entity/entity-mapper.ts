@@ -32,8 +32,7 @@ function splitMarkdownCodeSegments(input: string): Segment[] {
       break;
     }
 
-    const fenceFirst =
-      nextFence !== -1 && (nextInline === -1 || nextFence < nextInline);
+    const fenceFirst = nextFence !== -1 && (nextInline === -1 || nextFence < nextInline);
 
     if (fenceFirst) {
       if (nextFence > pos) {
@@ -81,10 +80,7 @@ type DiscordEntityConfig = {
 };
 
 function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
-  const userByUsernameLc = new Map<
-    string,
-    { canonical: string; userId: string }
-  >();
+  const userByUsernameLc = new Map<string, { canonical: string; userId: string }>();
   const userById = new Map<string, { canonical: string; userId: string }>();
 
   const users = cfg.entity?.users ?? {};
@@ -95,14 +91,8 @@ function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
     userById.set(userId, { canonical, userId });
   }
 
-  const channelIdByTokenLc = new Map<
-    string,
-    { canonical: string; channelId: string }
-  >();
-  const tokenByChannelId = new Map<
-    string,
-    { canonical: string; channelId: string }
-  >();
+  const channelIdByTokenLc = new Map<string, { canonical: string; channelId: string }>();
+  const tokenByChannelId = new Map<string, { canonical: string; channelId: string }>();
 
   const tokens = cfg.entity?.sessions.discord ?? {};
 
@@ -195,10 +185,7 @@ export function createDiscordEntityMapper(deps: {
     return canonical;
   }
 
-  function mapTextSegments(
-    input: string,
-    fn: (text: string) => string,
-  ): string {
+  function mapTextSegments(input: string, fn: (text: string) => string): string {
     const segments = splitMarkdownCodeSegments(input);
     return segments
       .map((s) => {
@@ -246,9 +233,7 @@ export function createDiscordEntityMapper(deps: {
       }
 
       // Config-backed tokens: @Name (only from cfg, not DB).
-      for (const m of seg.value.matchAll(
-        /(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu,
-      )) {
+      for (const m of seg.value.matchAll(/(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu)) {
         const username = String(m[2] ?? "").trim();
         if (!username) continue;
         const id = resolveUserIdByUsernameFromConfigOnly(username);

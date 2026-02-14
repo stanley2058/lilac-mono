@@ -78,8 +78,7 @@ function getDiscordFlags(raw: unknown): {
     isDMBased: typeof o.isDMBased === "boolean" ? o.isDMBased : undefined,
     mentionsBot: typeof o.mentionsBot === "boolean" ? o.mentionsBot : undefined,
     replyToBot: typeof o.replyToBot === "boolean" ? o.replyToBot : undefined,
-    replyToMessageId:
-      typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
+    replyToMessageId: typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
   };
 }
 
@@ -234,8 +233,7 @@ export async function startBusRequestRouter(params: {
       if (env.perf.log) {
         const lagMs = Date.now() - msg.ts;
         const shouldWarn = lagMs >= env.perf.lagWarnMs;
-        const shouldSample =
-          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
         if (shouldWarn || shouldSample) {
           (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
             stage: "evt.adapter->router",
@@ -276,9 +274,7 @@ export async function startBusRequestRouter(params: {
       const flags = getDiscordFlags(msg.data.raw);
       const isDm = flags.isDMBased === true;
 
-      const mode: SessionMode = isDm
-        ? "active"
-        : getSessionMode(cfg, sessionId);
+      const mode: SessionMode = isDm ? "active" : getSessionMode(cfg, sessionId);
 
       const active = activeBySession.get(sessionId);
 
@@ -703,8 +699,7 @@ export async function startBusRequestRouter(params: {
 
     // Gate is only for active channels with no running request.
     const gateCfg = cfg.surface.router.activeGate;
-    const sessionGateOverride =
-      cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
+    const sessionGateOverride = cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
     const gateEnabled = sessionGateOverride ?? gateCfg.enabled;
     const gate = params.routerGate ?? shouldForwardActiveBatch;
 
@@ -723,10 +718,7 @@ export async function startBusRequestRouter(params: {
         });
 
     if (!decision.forward) {
-      logger.info(
-        { sessionId, reason: decision.reason ?? "skip" },
-        "router gate skipped batch",
-      );
+      logger.info({ sessionId, reason: decision.reason ?? "skip" }, "router gate skipped batch");
       return;
     }
 
@@ -780,9 +772,7 @@ export async function startBusRequestRouter(params: {
         m.text.toLowerCase().includes(input.botName.toLowerCase()),
       );
 
-      const transcript = input.messages
-        .map((m) => `[user_id=${m.userId}] ${m.text}`)
-        .join("\n");
+      const transcript = input.messages.map((m) => `[user_id=${m.userId}] ${m.text}`).join("\n");
 
       const prompt = [
         {
@@ -988,8 +978,7 @@ export async function startBusRequestRouter(params: {
     userId: string;
     sessionMode: SessionMode;
   }) {
-    const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } =
-      input;
+    const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } = input;
 
     const self = await adapter.getSelf();
 
@@ -1031,32 +1020,32 @@ export async function startBusRequestRouter(params: {
     /** When true, update router's active session state immediately. */
     markActive: boolean;
   }) {
-    const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } =
-      input;
+    const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } = input;
 
     const self = await adapter.getSelf();
 
-    const composed = triggerMsgRef && triggerType === "reply"
-      ? await composeRequestMessages(adapter, {
-          platform: "discord",
-          botUserId: self.userId,
-          botName: cfg.surface.discord.botName,
-          transcriptStore: params.transcriptStore,
-          trigger: {
-            type: "reply",
-            msgRef: triggerMsgRef,
-          },
-        })
-      : await composeRecentChannelMessages(adapter, {
-          platform: "discord",
-          sessionId,
-          botUserId: self.userId,
-          botName: cfg.surface.discord.botName,
-          limit: 8,
-          transcriptStore: params.transcriptStore,
-          triggerMsgRef,
-          triggerType,
-        });
+    const composed =
+      triggerMsgRef && triggerType === "reply"
+        ? await composeRequestMessages(adapter, {
+            platform: "discord",
+            botUserId: self.userId,
+            botName: cfg.surface.discord.botName,
+            transcriptStore: params.transcriptStore,
+            trigger: {
+              type: "reply",
+              msgRef: triggerMsgRef,
+            },
+          })
+        : await composeRecentChannelMessages(adapter, {
+            platform: "discord",
+            sessionId,
+            botUserId: self.userId,
+            botName: cfg.surface.discord.botName,
+            limit: 8,
+            transcriptStore: params.transcriptStore,
+            triggerMsgRef,
+            triggerType,
+          });
 
     await publishBusRequest({
       requestId,

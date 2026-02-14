@@ -108,7 +108,14 @@ If `bunx` needs to install `typescript`, that may require network access.
 
 ### Lint / Format
 
-There is no active lint/formatter configuration in `apps/*` or `packages/*` (no ESLint/Prettier/Biome config found outside `ref/`).
+This repo uses Oxc tooling at the root:
+
+- Lint: `bun run lint` (`oxlint`)
+- Lint fix: `bun run lint:fix` (`oxlint --fix`)
+- Format check: `bun run fmt:check` (`oxfmt --check`)
+- Format write: `bun run fmt` (`oxfmt --write`)
+
+Current formatter scope is code + JSON only (`apps/*`, `packages/*`, `__tests__/*`, and root `*.json`).
 
 - Keep changes consistent with existing code style.
 - Do not reformat unrelated code.

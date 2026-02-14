@@ -25,8 +25,7 @@ export function formatBlockedMessage(input: FormatBlockedMessageInput): string {
     message += `\n\nSegment: ${excerpt(safeSegment, maxLen)}`;
   }
 
-  message +=
-    "\n\nIf this operation is truly needed, set dangerouslyAllow=true and re-run.";
+  message += "\n\nIf this operation is truly needed, set dangerouslyAllow=true and re-run.";
 
   return message;
 }
@@ -43,19 +42,10 @@ export function redactSecrets(text: string): string {
     "$1=<redacted>",
   );
 
-  result = result.replace(
-    /(['"]?\s*authorization\s*:\s*)([^'"]+)(['"]?)/gi,
-    "$1<redacted>$3",
-  );
-  result = result.replace(
-    /(authorization\s*:\s*)([^\s"']+)(\s+[^\s"']+)?/gi,
-    "$1<redacted>",
-  );
+  result = result.replace(/(['"]?\s*authorization\s*:\s*)([^'"]+)(['"]?)/gi, "$1<redacted>$3");
+  result = result.replace(/(authorization\s*:\s*)([^\s"']+)(\s+[^\s"']+)?/gi, "$1<redacted>");
 
-  result = result.replace(
-    /(https?:\/\/)([^\s/:@]+):([^\s@]+)@/gi,
-    "$1<redacted>:<redacted>@",
-  );
+  result = result.replace(/(https?:\/\/)([^\s/:@]+):([^\s@]+)@/gi, "$1<redacted>:<redacted>@");
 
   result = result.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "<redacted>");
 

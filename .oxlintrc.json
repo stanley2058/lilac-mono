@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    "ref/**",
+    "node_modules/**",
+    "data/**",
+    "**/dist/**",
+    "apps/core/src/ssh/remote-js/remote-runner.cjs"
+  ],
+  "globals": {
+    "Bun": "readonly"
+  }
+}

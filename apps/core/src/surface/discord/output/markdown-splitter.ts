@@ -97,9 +97,7 @@ function findPreferredBoundaryInWindow(
   const safeTarget = Math.min(target, source.length);
   const start = Math.max(0, safeTarget - maxBacktrack);
 
-  const activeFence = codeFences.find(
-    (f) => safeTarget > f.contentStart && safeTarget < f.end,
-  );
+  const activeFence = codeFences.find((f) => safeTarget > f.contentStart && safeTarget < f.end);
 
   if (activeFence) {
     const minPos = Math.max(activeFence.contentStart + 1, start);

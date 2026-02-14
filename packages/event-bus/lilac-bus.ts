@@ -31,19 +31,19 @@ export type LilacEnvelopeHeaders = {
  *
  * `type` controls the `data` payload shape.
  */
-export type LilacMessage<TType extends LilacEventType> =
-  TType extends LilacEventType
-    ? Omit<Message<LilacDataForType<TType>>, "headers"> & {
-        type: TType;
-        topic: LilacTopicForType<TType>;
-        key?: LilacKeyForType<TType>;
-        headers?: Record<string, string> & Partial<LilacEnvelopeHeaders>;
-      }
-    : never;
+export type LilacMessage<TType extends LilacEventType> = TType extends LilacEventType
+  ? Omit<Message<LilacDataForType<TType>>, "headers"> & {
+      type: TType;
+      topic: LilacTopicForType<TType>;
+      key?: LilacKeyForType<TType>;
+      headers?: Record<string, string> & Partial<LilacEnvelopeHeaders>;
+    }
+  : never;
 
 /** Discriminated union of all events that may appear on `TTopic`. */
-export type LilacMessageForTopic<TTopic extends LilacTopic> =
-  LilacMessage<LilacEventTypesForTopic<TTopic>>;
+export type LilacMessageForTopic<TTopic extends LilacTopic> = LilacMessage<
+  LilacEventTypesForTopic<TTopic>
+>;
 
 type OutputEventType =
   | typeof lilacEventTypes.EvtAgentOutputDeltaReasoning
@@ -211,9 +211,7 @@ export interface LilacBus {
   subscribeType<TType extends LilacEventType>(
     type: TType,
     opts: SubscriptionOptions &
-      (TType extends OutputEventType
-        ? { topic: LilacTopicForType<TType> }
-        : { topic?: never }),
+      (TType extends OutputEventType ? { topic: LilacTopicForType<TType> } : { topic?: never }),
     handler: (
       msg: LilacMessage<TType>,
       ctx: { cursor: Cursor; commit(): Promise<void> },
@@ -285,9 +283,7 @@ export function createLilacBus(raw: RawBus): LilacBus {
     subscribeType: async <TType extends LilacEventType>(
       type: TType,
       opts: SubscriptionOptions &
-        (TType extends OutputEventType
-          ? { topic: LilacTopicForType<TType> }
-          : { topic?: never }),
+        (TType extends OutputEventType ? { topic: LilacTopicForType<TType> } : { topic?: never }),
       handler: (
         msg: LilacMessage<TType>,
         ctx: { cursor: Cursor; commit(): Promise<void> },
@@ -295,9 +291,7 @@ export function createLilacBus(raw: RawBus): LilacBus {
     ) => {
       const topic = isOutputEventType(type)
         ? (opts as unknown as { topic: LilacTopicForType<TType> }).topic
-        : getStaticTopicForType(
-            type as unknown as Exclude<LilacEventType, OutputEventType>,
-          );
+        : getStaticTopicForType(type as unknown as Exclude<LilacEventType, OutputEventType>);
 
       if (!topic) {
         throw new Error(
@@ -311,10 +305,7 @@ export function createLilacBus(raw: RawBus): LilacBus {
       });
     },
 
-    fetchTopic: async <TTopic extends LilacTopic>(
-      topic: TTopic,
-      opts: FetchOptions,
-    ) => {
+    fetchTopic: async <TTopic extends LilacTopic>(topic: TTopic, opts: FetchOptions) => {
       const res = await raw.fetch(topic, opts);
       return {
         messages: res.messages as unknown as Array<{

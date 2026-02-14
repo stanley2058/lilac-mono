@@ -38,10 +38,7 @@ function createInMemoryRawBus(): RawBus {
   }>();
 
   return {
-    publish: async <TData>(
-      msg: Omit<Message<TData>, "id" | "ts">,
-      opts: PublishOptions,
-    ) => {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const id = String(Date.now()) + "-0";
       const stored: Message<unknown> = {
         topic: opts.topic,
@@ -929,9 +926,7 @@ describe("bridgeBusToAdapter", () => {
     await bridgeB.restoreRelays([snapshot]);
 
     expect(adapterB.starts).toHaveLength(1);
-    expect(adapterB.starts[0]?.opts?.resume?.created).toEqual(
-      snapshot.createdOutputRefs,
-    );
+    expect(adapterB.starts[0]?.opts?.resume?.created).toEqual(snapshot.createdOutputRefs);
 
     await bus.publish(
       lilacEventTypes.EvtAgentOutputDeltaText,
@@ -956,11 +951,9 @@ describe("bridgeBusToAdapter", () => {
           p.update.status === "start",
       ),
     ).toBe(true);
-    expect(
-      adapterB.stream?.parts.some(
-        (p) => p.type === "text.delta" && p.delta === "b",
-      ),
-    ).toBe(true);
+    expect(adapterB.stream?.parts.some((p) => p.type === "text.delta" && p.delta === "b")).toBe(
+      true,
+    );
     expect(adapterB.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
 
     await bridgeB.stop();

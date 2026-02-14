@@ -62,13 +62,7 @@ export class RedisConnectionPool {
   private readonly autoscale: Required<
     Pick<
       RedisConnectionPoolAutoscaleOptions,
-      | "enabled"
-      | "min"
-      | "cap"
-      | "growFactor"
-      | "shrinkDivisor"
-      | "shrinkFactor"
-      | "cooldownMs"
+      "enabled" | "min" | "cap" | "growFactor" | "shrinkDivisor" | "shrinkFactor" | "cooldownMs"
     >
   >;
 

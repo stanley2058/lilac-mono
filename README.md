@@ -35,6 +35,10 @@ This monorepo uses Bun workspaces. Install dependencies in the workspace(s) you 
 - Run workspace tests: `cd apps/core && bun test`
 - Typecheck `lilac-opencode`: `cd apps/opencode-controller && bun run typecheck`
 - Typecheck (per workspace): `cd <workspace> && bunx tsc -p tsconfig.json --noEmit`
+- Lint workspaces: `bun run lint`
+- Lint and auto-fix where possible: `bun run lint:fix`
+- Format check (code + JSON): `bun run fmt:check`
+- Format write (code + JSON): `bun run fmt`
 
 ## Running
 

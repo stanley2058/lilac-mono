@@ -17,9 +17,7 @@ export function requireToolServerHeaders(
   const requestClient = ctx?.requestClient;
 
   if (!requestId || !sessionId || !requestClient) {
-    throw new Error(
-      `${label} tool requires request context (requestId/sessionId/requestClient)`,
-    );
+    throw new Error(`${label} tool requires request context (requestId/sessionId/requestClient)`);
   }
 
   if (!isAdapterPlatform(requestClient)) {

@@ -43,18 +43,13 @@ export function getModelProviders() {
         const parsed =
           requestInput instanceof URL
             ? requestInput
-            : new URL(
-                typeof requestInput === "string"
-                  ? requestInput
-                  : requestInput.url,
-              );
+            : new URL(typeof requestInput === "string" ? requestInput : requestInput.url);
 
         // We want /responses to land on /backend-api/codex/responses.
         // If upstream ever changes and we get /v1/responses or /chat/completions,
         // rewrite to the Codex endpoint explicitly.
         const url =
-          parsed.pathname.includes("/v1/responses") ||
-          parsed.pathname.includes("/chat/completions")
+          parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
             ? new URL("https://chatgpt.com/backend-api/codex/responses")
             : parsed;
 
@@ -79,9 +74,7 @@ export function getModelProviders() {
         const now = Date.now();
         let auth = await readCodexTokens();
         if (!auth) {
-          throw new Error(
-            "Codex OAuth not configured. Run tool 'codex.login' to authenticate.",
-          );
+          throw new Error("Codex OAuth not configured. Run tool 'codex.login' to authenticate.");
         }
 
         const refreshIfNeeded = async () => {
@@ -128,9 +121,7 @@ export function getModelProviders() {
           await refreshIfNeeded();
           auth = await readCodexTokens();
           if (!auth?.access) {
-            throw new Error(
-              "Codex OAuth token refresh failed. Run tool 'codex.login' again.",
-            );
+            throw new Error("Codex OAuth token refresh failed. Run tool 'codex.login' again.");
           }
         }
 
@@ -158,8 +149,7 @@ export function getModelProviders() {
           const decodeBody = (b: unknown): string | undefined => {
             if (typeof b === "string") return b;
             if (b instanceof Uint8Array) return new TextDecoder().decode(b);
-            if (b instanceof ArrayBuffer)
-              return new TextDecoder().decode(new Uint8Array(b));
+            if (b instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(b));
             return undefined;
           };
 
@@ -247,8 +237,7 @@ export function getModelProviders() {
         })
       : null,
   } satisfies Record<Providers, unknown>;
-  return providers as typeof providers &
-    Record<string, OpenAICompatibleProvider>;
+  return providers as typeof providers & Record<string, OpenAICompatibleProvider>;
 }
 
 export const providers = getModelProviders();

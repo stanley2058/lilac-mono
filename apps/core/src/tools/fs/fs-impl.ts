@@ -288,11 +288,7 @@ export type GrepOpts = {
   mode?: SearchMode;
 };
 
-export type FileSystemEventType =
-  | "readFile"
-  | "writeFile"
-  | "editFile"
-  | "deleteFile";
+export type FileSystemEventType = "readFile" | "writeFile" | "editFile" | "deleteFile";
 export type FileSystemEvent =
   | {
       type: "readFile" | "writeFile" | "deleteFile";
@@ -308,10 +304,7 @@ export type FileSystemEvent =
 export type Listener = (event: FileSystemEvent) => void;
 
 export class FileSystem {
-  private readonly fileAccessRecord = new Map<
-    string,
-    { lastAccess: number; fileHash: string }
-  >();
+  private readonly fileAccessRecord = new Map<string, { lastAccess: number; fileHash: string }>();
   private readonly listeners = new Set<Listener>();
 
   private readonly denyPaths: readonly string[];
@@ -338,10 +331,9 @@ export class FileSystem {
   private assertAllowed(resolvedPath: string, op: string): void {
     if (!this.isDeniedPath(resolvedPath)) return;
 
-    const err = Object.assign(
-      new Error(`Access denied: '${resolvedPath}' is blocked for ${op}`),
-      { code: "EACCES" },
-    );
+    const err = Object.assign(new Error(`Access denied: '${resolvedPath}' is blocked for ${op}`), {
+      code: "EACCES",
+    });
     throw err;
   }
 
@@ -374,12 +366,7 @@ export class FileSystem {
     try {
       this.assertAllowed(resolvedPath, "readFile");
 
-      const {
-        startLine = 1,
-        maxLines = 2000,
-        maxCharacters = 10000,
-        format = "raw",
-      } = opts;
+      const { startLine = 1, maxLines = 2000, maxCharacters = 10000, format = "raw" } = opts;
 
       const file = await fs.readFile(resolvedPath, "utf-8");
       const fileHash = this.hash(file);
@@ -387,10 +374,7 @@ export class FileSystem {
       const lines = file.split("\n");
       const totalLines = lines.length;
 
-      const normalizedStartLine = Math.min(
-        Math.max(1, startLine),
-        totalLines + 1,
-      );
+      const normalizedStartLine = Math.min(Math.max(1, startLine), totalLines + 1);
       const startIndex = normalizedStartLine - 1;
       const windowLines = lines.slice(startIndex, startIndex + maxLines);
       const endLine = normalizedStartLine + windowLines.length - 1;
@@ -399,15 +383,9 @@ export class FileSystem {
 
       let output: string;
       if (format === "numbered") {
-        const digits = Math.max(
-          1,
-          String(Math.max(endLine, normalizedStartLine)).length,
-        );
+        const digits = Math.max(1, String(Math.max(endLine, normalizedStartLine)).length);
         output = windowLines
-          .map(
-            (line, i) =>
-              `${String(normalizedStartLine + i).padStart(digits, " ")}| ${line}`,
-          )
+          .map((line, i) => `${String(normalizedStartLine + i).padStart(digits, " ")}| ${line}`)
           .join("\n");
       } else {
         output = windowLines.join("\n");
@@ -445,10 +423,7 @@ export class FileSystem {
       return { ...base, format: "raw", content: output };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code =
-        typeof e === "object" && e && "code" in e
-          ? String((e as any).code)
-          : undefined;
+      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
 
       const errorCode: ReadErrorCode =
         code === "ENOENT"
@@ -471,10 +446,7 @@ export class FileSystem {
    * This is intended for binary files (images, PDFs, etc.) where reading as utf-8
    * would corrupt the data.
    */
-  async readFileBytes(
-    { path }: { path: string },
-    cwd?: string,
-  ): Promise<ReadFileBytesResult> {
+  async readFileBytes({ path }: { path: string }, cwd?: string): Promise<ReadFileBytesResult> {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
@@ -503,10 +475,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code =
-        typeof e === "object" && e && "code" in e
-          ? String((e as any).code)
-          : undefined;
+      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
 
       const errorCode: ReadErrorCode =
         code === "ENOENT"
@@ -552,9 +521,7 @@ export class FileSystem {
         currentHash = this.hash(existing);
       } catch (e) {
         const code =
-          typeof e === "object" && e && "code" in e
-            ? String((e as any).code)
-            : undefined;
+          typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
 
         if (code === "ENOENT") {
           existed = false;
@@ -626,10 +593,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code =
-        typeof e === "object" && e && "code" in e
-          ? String((e as any).code)
-          : undefined;
+      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
 
       const errorCode: WriteErrorCode =
         code === "ENOENT"
@@ -815,19 +779,17 @@ export class FileSystem {
       ) => {
         if (expected === "any") {
           if (matchesFound === 0) {
-            throw Object.assign(
-              new Error(`No matches found for target: ${target}`),
-              { code: "NO_MATCHES" },
-            );
+            throw Object.assign(new Error(`No matches found for target: ${target}`), {
+              code: "NO_MATCHES",
+            });
           }
           return;
         }
 
         if (matchesFound === 0) {
-          throw Object.assign(
-            new Error(`No matches found for target: ${target}`),
-            { code: "NO_MATCHES" },
-          );
+          throw Object.assign(new Error(`No matches found for target: ${target}`), {
+            code: "NO_MATCHES",
+          });
         }
 
         if (matchesFound > expected) {
@@ -849,16 +811,10 @@ export class FileSystem {
         }
       };
 
-      const validateRange = (
-        lines: string[],
-        startLine: number,
-        endLine: number,
-      ) => {
+      const validateRange = (lines: string[], startLine: number, endLine: number) => {
         if (startLine < 1 || endLine < startLine || endLine > lines.length) {
           throw Object.assign(
-            new Error(
-              `Invalid range ${startLine}-${endLine}. File has ${lines.length} lines.`,
-            ),
+            new Error(`Invalid range ${startLine}-${endLine}. File has ${lines.length} lines.`),
             { code: "INVALID_RANGE" },
           );
         }
@@ -894,11 +850,7 @@ export class FileSystem {
                 }
               }
 
-              lines.splice(
-                startLine - 1,
-                endLine - startLine + 1,
-                ...newText.split("\n"),
-              );
+              lines.splice(startLine - 1, endLine - startLine + 1, ...newText.split("\n"));
               break;
             }
             case "insert_at": {
@@ -955,9 +907,7 @@ export class FileSystem {
 
               if (matching === "exact" && target === newText) {
                 throw Object.assign(
-                  new Error(
-                    "newText is identical to target; edit would be a no-op",
-                  ),
+                  new Error("newText is identical to target; edit would be a no-op"),
                   { code: "INVALID_EDIT" },
                 );
               }
@@ -970,10 +920,9 @@ export class FileSystem {
                     : Number.MAX_SAFE_INTEGER;
 
               if (typeof occurrence === "number" && occurrence <= 0) {
-                throw Object.assign(
-                  new Error("occurrence must be a positive number"),
-                  { code: "INVALID_EDIT" },
-                );
+                throw Object.assign(new Error("occurrence must be a positive number"), {
+                  code: "INVALID_EDIT",
+                });
               }
 
               const content = lines.join("\n");
@@ -982,12 +931,7 @@ export class FileSystem {
                 const matchesFound = countExactOccurrences(content, target);
                 enforceExpectedMatches(matchesFound, expectedMatches, target);
 
-                const replaced = replaceExactOccurrences(
-                  content,
-                  target,
-                  newText,
-                  maxReplace,
-                );
+                const replaced = replaceExactOccurrences(content, target, newText, maxReplace);
 
                 lines = replaced.result.split("\n");
                 replacementsMade += replaced.replacementsMade;
@@ -997,9 +941,7 @@ export class FileSystem {
                   re = new RegExp(target, "g");
                 } catch (e) {
                   throw Object.assign(
-                    new Error(
-                      `Invalid regex: ${e instanceof Error ? e.message : String(e)}`,
-                    ),
+                    new Error(`Invalid regex: ${e instanceof Error ? e.message : String(e)}`),
                     { code: "INVALID_REGEX" },
                   );
                 }
@@ -1007,12 +949,7 @@ export class FileSystem {
                 const matchesFound = countRegexMatches(content, re);
                 enforceExpectedMatches(matchesFound, expectedMatches, target);
 
-                const replaced = replaceRegexOccurrences(
-                  content,
-                  re,
-                  newText,
-                  maxReplace,
-                );
+                const replaced = replaceRegexOccurrences(content, re, newText, maxReplace);
 
                 lines = replaced.result.split("\n");
                 replacementsMade += replaced.replacementsMade;
@@ -1021,23 +958,18 @@ export class FileSystem {
               break;
             }
             default:
-              throw Object.assign(
-                new Error(`Unknown edit type: ${(edit as any).type}`),
-                { code: "INVALID_EDIT" },
-              );
+              throw Object.assign(new Error(`Unknown edit type: ${(edit as any).type}`), {
+                code: "INVALID_EDIT",
+              });
           }
 
           succeededOperations.push(edit.type);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          const rawCode =
-            typeof e === "object" && e && "code" in e
-              ? (e as any).code
-              : undefined;
+          const rawCode = typeof e === "object" && e && "code" in e ? (e as any).code : undefined;
 
           const code: EditErrorCode =
-            typeof rawCode === "string" &&
-            EDIT_ERROR_CODES.includes(rawCode as EditErrorCode)
+            typeof rawCode === "string" && EDIT_ERROR_CODES.includes(rawCode as EditErrorCode)
               ? (rawCode as EditErrorCode)
               : "UNKNOWN";
 
@@ -1088,10 +1020,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code =
-        typeof e === "object" && e && "code" in e
-          ? String((e as any).code)
-          : undefined;
+      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
 
       const errorCode: EditErrorCode =
         code === "ENOENT"
@@ -1220,9 +1149,7 @@ export class FileSystem {
 
       this.assertAllowed(resolvedBaseDir, "grep");
 
-      const globs = fileExtensions.map(
-        (ext) => `**/*.${ext.replace(/^\./, "")}`,
-      );
+      const globs = fileExtensions.map((ext) => `**/*.${ext.replace(/^\./, "")}`);
 
       // Ensure ripgrep doesn't traverse blocked paths when searching from broad base dirs (e.g. "/").
       for (const denyAbs of this.denyPaths) {
@@ -1276,11 +1203,7 @@ export class FileSystem {
   }
 
   private hash(input: string | Uint8Array) {
-    if (
-      typeof Bun !== "undefined" &&
-      Bun.hash &&
-      typeof Bun.hash.xxHash3 === "function"
-    ) {
+    if (typeof Bun !== "undefined" && Bun.hash && typeof Bun.hash.xxHash3 === "function") {
       return Bun.hash.xxHash3(input).toString(16);
     }
 

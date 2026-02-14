@@ -49,10 +49,7 @@ export function verifyGithubWebhookSignature(input: {
   if (!sig) return false;
   const m = /^sha256=([0-9a-f]{64})$/.exec(sig);
   if (!m) return false;
-  const expected = crypto
-    .createHmac("sha256", input.secret)
-    .update(input.rawBody)
-    .digest("hex");
+  const expected = crypto.createHmac("sha256", input.secret).update(input.rawBody).digest("hex");
   return timingSafeEqualHex(expected, m[1]!);
 }
 
@@ -68,10 +65,7 @@ async function resolveBotMentions(): Promise<string[]> {
         stderr: "pipe",
         stdin: "ignore",
       });
-      const [stdout, code] = await Promise.all([
-        new Response(p.stdout).text(),
-        p.exited,
-      ]);
+      const [stdout, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
       if (code === 0) {
         const login = stdout.trim();
         if (login) out.push(login);
@@ -379,8 +373,7 @@ async function onIssueCommentCreated(input: {
   if (typeof body !== "string" || body.trim().length === 0) return;
 
   const shouldTrigger =
-    isLilacCommand(body) ||
-    input.botLogins.some((login) => body.includes(`@${login}`));
+    isLilacCommand(body) || input.botLogins.some((login) => body.includes(`@${login}`));
   if (!shouldTrigger) return;
 
   const [owner, repo] = input.repoFullName.split("/");

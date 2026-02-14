@@ -30,9 +30,7 @@ function isDeniedRemotePatchPath(remoteCwd: string, patchPath: string): boolean 
 const inputSchema = z.object({
   patchText: z
     .string()
-    .describe(
-      "Patch text in the '*** Begin Patch' format (Add/Update/Delete File sections)",
-    ),
+    .describe("Patch text in the '*** Begin Patch' format (Add/Update/Delete File sections)"),
   cwd: z
     .string()
     .optional()
@@ -73,9 +71,7 @@ export function localApplyPatchTool(defaultCwd: string) {
         { experimental_context: context }: { experimental_context?: unknown },
       ) => {
         const ctx =
-          context && typeof context === "object"
-            ? (context as Partial<ToolContext>)
-            : undefined;
+          context && typeof context === "object" ? (context as Partial<ToolContext>) : undefined;
         try {
           const cwd = input.cwd ?? defaultCwd;
           const cwdTarget = parseSshCwdTarget(cwd);

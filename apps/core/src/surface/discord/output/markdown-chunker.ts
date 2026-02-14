@@ -62,9 +62,7 @@ function chunkRaw(
       ({ completed, overflow } = tokenCompleteAt(remaining, attemptSplitPos));
 
       const isFencedCodeChunk = /^```/m.test(completed);
-      nextRemaining = isFencedCodeChunk
-        ? overflow
-        : overflow.replace(/^[\s\n]+/u, "");
+      nextRemaining = isFencedCodeChunk ? overflow : overflow.replace(/^[\s\n]+/u, "");
 
       if (nextRemaining.length < remaining.length) {
         break;
@@ -78,9 +76,7 @@ function chunkRaw(
     }
 
     const isFencedCodeChunk = /^```/m.test(completed);
-    const trimmedCompleted = isFencedCodeChunk
-      ? completed
-      : completed.replace(/[\s\n]+$/u, "");
+    const trimmedCompleted = isFencedCodeChunk ? completed : completed.replace(/[\s\n]+$/u, "");
 
     rawChunks.push(remaining.slice(0, attemptSplitPos));
     displayChunks.push(trimmedCompleted);
@@ -98,17 +94,11 @@ export function chunkMarkdownForEmbeds(
   if (!content) return [];
 
   const safeMaxChunkLength = Math.max(1, maxChunkLength);
-  const safeMaxLastChunkLength = Math.max(
-    1,
-    Math.min(maxLastChunkLength, safeMaxChunkLength),
-  );
+  const safeMaxLastChunkLength = Math.max(1, Math.min(maxLastChunkLength, safeMaxChunkLength));
 
   const initial = chunkRaw(content, safeMaxChunkLength, useSmartSplitting);
 
-  if (
-    initial.rawChunks.length === 0 ||
-    safeMaxLastChunkLength === safeMaxChunkLength
-  ) {
+  if (initial.rawChunks.length === 0 || safeMaxLastChunkLength === safeMaxChunkLength) {
     return initial.displayChunks;
   }
 

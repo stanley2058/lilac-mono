@@ -6,10 +6,7 @@ import { expandTilde } from "./fs/fs-impl";
 
 import { getGithubEnvForBash } from "../github/github-app-token";
 
-import {
-  parseSshCwdTarget,
-  toBashSafetyCwdForRemote,
-} from "../ssh/ssh-cwd";
+import { parseSshCwdTarget, toBashSafetyCwdForRemote } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -88,10 +85,7 @@ type StreamTextResult = {
   capped: boolean;
 };
 
-async function readStreamTextCapped(
-  stream: unknown,
-  maxChars: number,
-): Promise<StreamTextResult> {
+async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<StreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, capped: false };
   }
@@ -186,9 +180,7 @@ function limitBashOutput(
 
   const stdoutPart = input.stdout.slice(0, available);
   const stderrPart =
-    available > stdoutPart.length
-      ? input.stderr.slice(0, available - stdoutPart.length)
-      : "";
+    available > stdoutPart.length ? input.stderr.slice(0, available - stdoutPart.length) : "";
 
   return {
     stdout: stdoutPart,
@@ -201,10 +193,7 @@ function withLimitedOutput(
   output: BashToolOutput,
   options?: { truncated?: boolean },
 ): BashToolOutput {
-  const limited = limitBashOutput(
-    { stdout: output.stdout, stderr: output.stderr },
-    options,
-  );
+  const limited = limitBashOutput({ stdout: output.stdout, stderr: output.stderr }, options);
   if (!limited.truncated) return output;
   return { ...output, stdout: limited.stdout, stderr: limited.stderr };
 }
@@ -245,9 +234,7 @@ export async function executeBash(
 
   if (!dangerouslyAllow) {
     const safetyCwd =
-      cwdTarget.kind === "ssh"
-        ? toBashSafetyCwdForRemote(cwdTarget.cwd)
-        : resolvedCwd;
+      cwdTarget.kind === "ssh" ? toBashSafetyCwdForRemote(cwdTarget.cwd) : resolvedCwd;
     const blocked = analyzeBashCommand(command, { cwd: safetyCwd });
     if (blocked) {
       logger.warn("bash blocked", {
@@ -369,8 +356,7 @@ export async function executeBash(
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
-        streamCapped ||
-        safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+        streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
 
       const durationMs = execResult.durationMs;
 
@@ -543,10 +529,8 @@ export async function executeBash(
       child.exited,
     ]);
 
-    const stdout =
-      stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
-    const stderr =
-      stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
+    const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
+    const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
     const safeStdout = redactSecrets(stdout);
@@ -558,8 +542,7 @@ export async function executeBash(
       (stdoutResult.status === "fulfilled" && stdoutResult.value.capped) ||
       (stderrResult.status === "fulfilled" && stderrResult.value.capped);
     const outputTruncated =
-      streamCapped ||
-      safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+      streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
 
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
@@ -576,15 +559,18 @@ export async function executeBash(
         requestClient: context?.requestClient,
       });
 
-      return withLimitedOutput({
-        stdout: safeStdout,
-        stderr: safeStderr,
-        exitCode,
-        executionError: {
-          type: "aborted",
-          signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
+      return withLimitedOutput(
+        {
+          stdout: safeStdout,
+          stderr: safeStderr,
+          exitCode,
+          executionError: {
+            type: "aborted",
+            signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
+          },
         },
-      }, { truncated: outputTruncated });
+        { truncated: outputTruncated },
+      );
     }
 
     if (timedOut && child.killed) {
@@ -633,15 +619,15 @@ export async function executeBash(
 
       return withLimitedOutput(
         {
-        stdout: safeStdout,
-        stderr: safeStderr,
-        exitCode: -1,
-        executionError: {
-          type: "exception",
-          phase: "stdout",
-          message: toErrorMessage(stdoutResult.reason),
+          stdout: safeStdout,
+          stderr: safeStderr,
+          exitCode: -1,
+          executionError: {
+            type: "exception",
+            phase: "stdout",
+            message: toErrorMessage(stdoutResult.reason),
+          },
         },
-      },
         { truncated: outputTruncated },
       );
     }
@@ -662,15 +648,15 @@ export async function executeBash(
 
       return withLimitedOutput(
         {
-        stdout: safeStdout,
-        stderr: safeStderr,
-        exitCode: -1,
-        executionError: {
-          type: "exception",
-          phase: "stderr",
-          message: toErrorMessage(stderrResult.reason),
+          stdout: safeStdout,
+          stderr: safeStderr,
+          exitCode: -1,
+          executionError: {
+            type: "exception",
+            phase: "stderr",
+            message: toErrorMessage(stderrResult.reason),
+          },
         },
-      },
         { truncated: outputTruncated },
       );
     }
@@ -691,15 +677,15 @@ export async function executeBash(
 
       return withLimitedOutput(
         {
-        stdout: safeStdout,
-        stderr: safeStderr,
-        exitCode: -1,
-        executionError: {
-          type: "exception",
-          phase: "unknown",
-          message: toErrorMessage(exitResult.reason),
+          stdout: safeStdout,
+          stderr: safeStderr,
+          exitCode: -1,
+          executionError: {
+            type: "exception",
+            phase: "unknown",
+            message: toErrorMessage(exitResult.reason),
+          },
         },
-      },
         { truncated: outputTruncated },
       );
     }
@@ -712,14 +698,10 @@ export async function executeBash(
         durationMs,
         stdoutChars: stdout.length,
         stderrChars: stderr.length,
-        stdoutTotalChars:
-          stdoutResult.status === "fulfilled" ? stdoutResult.value.totalChars : 0,
-        stderrTotalChars:
-          stderrResult.status === "fulfilled" ? stderrResult.value.totalChars : 0,
-        stdoutCapped:
-          stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
-        stderrCapped:
-          stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
+        stdoutTotalChars: stdoutResult.status === "fulfilled" ? stdoutResult.value.totalChars : 0,
+        stderrTotalChars: stderrResult.status === "fulfilled" ? stderrResult.value.totalChars : 0,
+        stdoutCapped: stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
+        stderrCapped: stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
         requestId: context?.requestId,
         sessionId: context?.sessionId,
         requestClient: context?.requestClient,

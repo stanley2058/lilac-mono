@@ -48,22 +48,19 @@ function escapeCodeBlocks(text: string): {
 
   // Then handle inline code (single backticks) - both closed and unclosed
   // Now safe because all ``` are replaced with placeholders
-  result = result.replace(
-    /`([^`\x00]+)(`|$)/g,
-    (_match, content: string, closing: string) => {
-      const idx = codeBlocks.length;
-      const isClosed = closing === "`";
-      codeBlocks.push({ type: "inline", content, lang: "", closed: isClosed });
+  result = result.replace(/`([^`\x00]+)(`|$)/g, (_match, content: string, closing: string) => {
+    const idx = codeBlocks.length;
+    const isClosed = closing === "`";
+    codeBlocks.push({ type: "inline", content, lang: "", closed: isClosed });
 
-      if (isClosed) {
-        // Closed: completely replace with placeholder
-        return `${CODE_PLACEHOLDER}INLINE${idx}${CODE_PLACEHOLDER}`;
-      }
+    if (isClosed) {
+      // Closed: completely replace with placeholder
+      return `${CODE_PLACEHOLDER}INLINE${idx}${CODE_PLACEHOLDER}`;
+    }
 
-      // Unclosed: keep ` visible so remend can close it, hide content
-      return `\`${CODE_PLACEHOLDER}INLINECONTENT${idx}${CODE_PLACEHOLDER}`;
-    },
-  );
+    // Unclosed: keep ` visible so remend can close it, hide content
+    return `\`${CODE_PLACEHOLDER}INLINECONTENT${idx}${CODE_PLACEHOLDER}`;
+  });
 
   return { escaped: result, codeBlocks };
 }

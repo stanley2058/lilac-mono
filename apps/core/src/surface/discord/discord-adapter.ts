@@ -49,15 +49,9 @@ import type {
   StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
-import {
-  createDiscordEntityMapper,
-  type EntityMapper,
-} from "../../entity/entity-mapper";
+import { createDiscordEntityMapper, type EntityMapper } from "../../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../store/discord-surface-store";
-import {
-  DiscordOutputStream,
-  sendDiscordStyledMessage,
-} from "./output/discord-output-stream";
+import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 
@@ -83,15 +77,11 @@ function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
 }
 
-function getChannelName<
-  T extends { isDMBased?: () => boolean } | { name?: string },
->(channel: T | null): string | undefined {
+function getChannelName<T extends { isDMBased?: () => boolean } | { name?: string }>(
+  channel: T | null,
+): string | undefined {
   if (!channel) return undefined;
-  if (
-    "isDMBased" in channel &&
-    typeof channel.isDMBased === "function" &&
-    channel.isDMBased()
-  ) {
+  if ("isDMBased" in channel && typeof channel.isDMBased === "function" && channel.isDMBased()) {
     return "dm";
   }
   const n = "name" in channel ? channel.name : undefined;
@@ -108,10 +98,7 @@ function getMessageEditedTs(msg: Message): number | undefined {
 }
 
 function getDisplayName(msg: Message): string {
-  const memberName =
-    msg.member && "displayName" in msg.member
-      ? msg.member.displayName
-      : undefined;
+  const memberName = msg.member && "displayName" in msg.member ? msg.member.displayName : undefined;
   return memberName ?? msg.author.globalName ?? msg.author.username;
 }
 
@@ -160,9 +147,7 @@ function shouldAllowMessage(params: {
   channelId: string;
   guildId?: string | null;
 }): boolean {
-  const allowedChannelIds = new Set(
-    params.cfg.surface.discord.allowedChannelIds,
-  );
+  const allowedChannelIds = new Set(params.cfg.surface.discord.allowedChannelIds);
   const allowedGuildIds = new Set(params.cfg.surface.discord.allowedGuildIds);
 
   if (allowedChannelIds.size === 0 && allowedGuildIds.size === 0) return false;
@@ -325,16 +310,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
 
     client.on("messageDelete", async (deleted) => {
-      const msg = deleted.partial
-        ? await deleted.fetch().catch(() => null)
-        : deleted;
+      const msg = deleted.partial ? await deleted.fetch().catch(() => null) : deleted;
       await this.onMessageDelete(msg, deleted.id, deleted.channelId);
     });
 
     client.on("messageReactionAdd", async (reaction, user) => {
-      const r = reaction.partial
-        ? await reaction.fetch().catch(() => null)
-        : reaction;
+      const r = reaction.partial ? await reaction.fetch().catch(() => null) : reaction;
       if (!r) return;
       await this.onReactionAdd(
         r.message,
@@ -345,9 +326,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
 
     client.on("messageReactionRemove", async (reaction, user) => {
-      const r = reaction.partial
-        ? await reaction.fetch().catch(() => null)
-        : reaction;
+      const r = reaction.partial ? await reaction.fetch().catch(() => null) : reaction;
       if (!r) return;
       await this.onReactionRemove(
         r.message,
@@ -442,9 +421,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (!client) return;
 
     const fromMsg =
-      input.msgRef && input.msgRef.platform === "discord"
-        ? input.msgRef.channelId
-        : null;
+      input.msgRef && input.msgRef.platform === "discord" ? input.msgRef.channelId : null;
     const fromSession =
       input.sessionRef && input.sessionRef.platform === "discord"
         ? input.sessionRef.channelId
@@ -495,8 +472,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const useSmartSplitting = true;
 
     const mentionCfg = cfg.surface.discord.mentionNotifications;
-    const mentionPingEnabled =
-      mentionCfg.enabled === true && opts?.sessionMode === "active";
+    const mentionPingEnabled = mentionCfg.enabled === true && opts?.sessionMode === "active";
 
     return new DiscordOutputStream({
       client,
@@ -512,9 +488,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
   }
 
-  async startTyping(
-    sessionRef: SessionRef,
-  ): Promise<{ stop(): Promise<void> }> {
+  async startTyping(sessionRef: SessionRef): Promise<{ stop(): Promise<void> }> {
     const client = this.mustClient();
     if (sessionRef.platform !== "discord") {
       throw new Error("Unsupported platform");
@@ -571,14 +545,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     };
   }
 
-  async sendMsg(
-    sessionRef: SessionRef,
-    content: ContentOpts,
-    opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(sessionRef: SessionRef, content: ContentOpts, opts?: SendOpts): Promise<MsgRef> {
     const client = this.mustClient();
-    if (sessionRef.platform !== "discord")
-      throw new Error("Unsupported platform");
+    if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
 
     const useSmartSplitting = true;
 
@@ -605,12 +574,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     return this.toSurfaceMessageFromDiscordMessage(msg);
   }
 
-  async listMsg(
-    sessionRef: SessionRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
-    if (sessionRef.platform !== "discord")
-      throw new Error("Unsupported platform");
+  async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
+    if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
 
     const limit = Math.min(200, Math.max(1, opts?.limit ?? 50));
 
@@ -628,9 +593,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const channel = await client.channels
-      .fetch(msgRef.channelId)
-      .catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
@@ -646,9 +609,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const channel = await client.channels
-      .fetch(msgRef.channelId)
-      .catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
@@ -657,10 +618,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     await msg.delete();
   }
 
-  async getReplyContext(
-    msgRef: MsgRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
     const limit = Math.min(100, Math.max(1, opts?.limit ?? 20));
@@ -683,9 +641,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const channel = await client.channels
-      .fetch(msgRef.channelId)
-      .catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
@@ -701,9 +657,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
 
-    const channel = await client.channels
-      .fetch(msgRef.channelId)
-      .catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
       throw new Error(`Discord channel not found: ${msgRef.channelId}`);
     }
@@ -725,11 +679,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
     if (!msg) return [];
 
-    return [
-      ...new Set(
-        [...msg.reactions.cache.values()].map((r) => r.emoji.toString()),
-      ),
-    ].sort((a, b) => a.localeCompare(b));
+    return [...new Set([...msg.reactions.cache.values()].map((r) => r.emoji.toString()))].sort(
+      (a, b) => a.localeCompare(b),
+    );
   }
 
   async listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]> {
@@ -759,10 +711,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         .map((u) => {
           const cached = store.getUserName(u.id);
           const cachedName =
-            cached?.display_name ??
-            cached?.global_name ??
-            cached?.username ??
-            undefined;
+            cached?.display_name ?? cached?.global_name ?? cached?.username ?? undefined;
           const liveName = (u.globalName ?? u.username) || undefined;
           const userName = cachedName ?? liveName;
 
@@ -818,11 +767,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (!after) break;
 
       const expected = reaction.count;
-      if (
-        typeof expected === "number" &&
-        Number.isFinite(expected) &&
-        out.size >= expected
-      ) {
+      if (typeof expected === "number" && Number.isFinite(expected) && out.size >= expected) {
         break;
       }
     }
@@ -841,8 +786,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   async getUnRead(sessionRef: SessionRef): Promise<SurfaceMessage[]> {
     const store = this.mustStore();
-    if (sessionRef.platform !== "discord")
-      throw new Error("Unsupported platform");
+    if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
 
     const rs = store.getOrInitReadState(sessionRef.channelId);
 
@@ -853,9 +797,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (m.deleted) return false;
       if (m.ts > rs.last_read_ts) return true;
       if (m.ts < rs.last_read_ts) return false;
-      return (
-        compareDiscordSnowflake(m.ref.messageId, rs.last_read_message_id) > 0
-      );
+      return compareDiscordSnowflake(m.ref.messageId, rs.last_read_message_id) > 0;
     });
 
     unread.sort((a, b) => {
@@ -868,12 +810,10 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   async markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void> {
     const store = this.mustStore();
-    if (sessionRef.platform !== "discord")
-      throw new Error("Unsupported platform");
+    if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
 
     if (upToMsgRef) {
-      if (upToMsgRef.platform !== "discord")
-        throw new Error("Unsupported platform");
+      if (upToMsgRef.platform !== "discord") throw new Error("Unsupported platform");
 
       const msg = await this.fetchDiscordMessage({
         channelId: upToMsgRef.channelId,
@@ -1208,9 +1148,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     return msg;
   }
 
-  private async fetchLatestDiscordMessage(
-    channelId: string,
-  ): Promise<Message | null> {
+  private async fetchLatestDiscordMessage(channelId: string): Promise<Message | null> {
     const list = await this.fetchDiscordMessages({ channelId, limit: 1 });
     return list[0] ?? null;
   }
@@ -1298,9 +1236,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const channelName = getChannelName(msg.channel);
 
     const parentChannelId =
-      "isThread" in msg.channel && msg.channel.isThread()
-        ? msg.channel.parentId
-        : null;
+      "isThread" in msg.channel && msg.channel.isThread() ? msg.channel.parentId : null;
 
     const sessionKind: "channel" | "thread" | "dm" =
       "isDMBased" in msg.channel &&
@@ -1353,8 +1289,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
     const sessionRef = asDiscordSessionRef({
       channelId,
@@ -1435,9 +1370,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const channelName = getChannelName(msg.channel);
 
     const parentChannelId =
-      "isThread" in msg.channel && msg.channel.isThread()
-        ? msg.channel.parentId
-        : null;
+      "isThread" in msg.channel && msg.channel.isThread() ? msg.channel.parentId : null;
 
     const sessionKind: "channel" | "thread" | "dm" =
       "isDMBased" in msg.channel &&
@@ -1527,8 +1460,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
     const sessionRef = asDiscordSessionRef({
       channelId,
@@ -1571,9 +1503,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const isMention = msg.mentions.users.has(botId);
     const isReplyToBot = await this.isReplyToBot(msg, botId);
 
-    const rawDiscord = surfaceMsg.raw as
-      | { discord?: Record<string, unknown> }
-      | undefined;
+    const rawDiscord = surfaceMsg.raw as { discord?: Record<string, unknown> } | undefined;
     if (rawDiscord?.discord) {
       rawDiscord.discord["mentionsBot"] = isMention;
       rawDiscord.discord["replyToBot"] = isReplyToBot;
@@ -1588,10 +1518,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
   }
 
-  private async isReplyToBot(
-    msg: Message,
-    botUserId: string,
-  ): Promise<boolean> {
+  private async isReplyToBot(msg: Message, botUserId: string): Promise<boolean> {
     const client = this.client;
     if (!client) return false;
 
@@ -1626,9 +1553,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const channelName = getChannelName(msg.channel);
 
     const parentChannelId =
-      "isThread" in msg.channel && msg.channel.isThread()
-        ? msg.channel.parentId
-        : null;
+      "isThread" in msg.channel && msg.channel.isThread() ? msg.channel.parentId : null;
 
     const sessionKind: "channel" | "thread" | "dm" =
       "isDMBased" in msg.channel &&
@@ -1670,8 +1595,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent =
-      this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
 
     const sess = store.getSession(channelId);
     const sessionRef = asDiscordSessionRef({
@@ -1726,11 +1650,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
   }
 
-  private async onMessageDelete(
-    msg: Message | null,
-    messageId: string,
-    channelId: string,
-  ) {
+  private async onMessageDelete(msg: Message | null, messageId: string, channelId: string) {
     const cfg = this.cfg;
     const store = this.store;
     if (!cfg || !store) return;
@@ -1741,9 +1661,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     // If we didn't get a guild id from the event, best-effort resolve from channel.
     if (!guildId) {
       const client = this.client;
-      const ch = client
-        ? await client.channels.fetch(channelId).catch(() => null)
-        : null;
+      const ch = client ? await client.channels.fetch(channelId).catch(() => null) : null;
       guildId = ch && "guildId" in ch ? ch.guildId : null;
     }
 

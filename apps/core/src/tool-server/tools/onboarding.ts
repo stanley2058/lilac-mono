@@ -45,9 +45,7 @@ const playwrightInputSchema = z.object({
     .boolean()
     .optional()
     .default(false)
-    .describe(
-      "If true, attempts to install OS deps via Playwright (requires root).",
-    ),
+    .describe("If true, attempts to install OS deps via Playwright (requires root)."),
 });
 
 const defaultsInputSchema = z.object({
@@ -74,9 +72,7 @@ const reloadConfigInputSchema = z.object({
     .enum(["cache", "restart"])
     .optional()
     .default("cache")
-    .describe(
-      "cache: force reload config cache; restart: exit process for supervisor restart",
-    ),
+    .describe("cache: force reload config cache; restart: exit process for supervisor restart"),
 });
 
 const vcsEnvInputSchema = z.object({
@@ -117,10 +113,7 @@ const gnupgInputSchema = z.object({
     ),
   userName: z.string().min(1).optional().describe("Key user name"),
   userEmail: z.string().min(1).optional().describe("Key user email"),
-  uidComment: z
-    .string()
-    .optional()
-    .describe("Optional UID comment (for display only)"),
+  uidComment: z.string().optional().describe("Optional UID comment (for display only)"),
   fingerprint: z
     .string()
     .min(1)
@@ -137,34 +130,21 @@ const githubAppInputSchema = z.object({
     .describe(
       "status: show config; configure: persist GitHub App credentials; test: mint token and call GitHub API; clear: remove stored secret",
     ),
-  appId: z.coerce
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe("GitHub App ID"),
+  appId: z.coerce.number().int().positive().optional().describe("GitHub App ID"),
   installationId: z.coerce
     .number()
     .int()
     .positive()
     .optional()
     .describe("GitHub App installation ID"),
-  host: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("GitHub host (github.com or your GHES host)"),
+  host: z.string().min(1).optional().describe("GitHub host (github.com or your GHES host)"),
   apiBaseUrl: z
     .url()
     .optional()
     .describe(
       "GitHub API base URL (default: https://api.github.com; GHES example: https://github.example.com/api/v3)",
     ),
-  privateKeyPem: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("GitHub App private key PEM contents"),
+  privateKeyPem: z.string().min(1).optional().describe("GitHub App private key PEM contents"),
   privateKeyPath: z
     .string()
     .min(1)
@@ -178,11 +158,7 @@ const allInputSchema = z.object({
   overwritePrompts: z.boolean().optional().default(false),
   overwriteSkills: z.boolean().optional().default(false),
   playwrightWithDeps: z.boolean().optional().default(false),
-  restart: z
-    .boolean()
-    .optional()
-    .default(false)
-    .describe("If true, exits the process at the end"),
+  restart: z.boolean().optional().default(false).describe("If true, exits the process at the end"),
 });
 
 async function pathExecutable(p: string): Promise<boolean> {
@@ -195,8 +171,7 @@ async function pathExecutable(p: string): Promise<boolean> {
 }
 
 async function findSystemChromiumExecutable(): Promise<string | null> {
-  const fromEnv =
-    process.env.LILAC_CHROMIUM_PATH ?? process.env.CHROMIUM_PATH ?? null;
+  const fromEnv = process.env.LILAC_CHROMIUM_PATH ?? process.env.CHROMIUM_PATH ?? null;
   if (fromEnv && (await pathExecutable(fromEnv))) return fromEnv;
 
   const fromWhich =
@@ -239,9 +214,7 @@ async function ensurePlaywrightChromiumInstalled(options: {
   }
 
   if (options.withDeps && !isRootUser()) {
-    throw new Error(
-      "Playwright --with-deps requires root. Re-run as root or omit withDeps.",
-    );
+    throw new Error("Playwright --with-deps requires root. Re-run as root or omit withDeps.");
   }
 
   if (options.withDeps) {
@@ -252,9 +225,7 @@ async function ensurePlaywrightChromiumInstalled(options: {
 
   const nowExists = await Bun.file(pwPath).exists();
   if (!nowExists) {
-    throw new Error(
-      `Playwright install completed, but chromium still missing at ${pwPath}`,
-    );
+    throw new Error(`Playwright install completed, but chromium still missing at ${pwPath}`);
   }
 
   return { installed: true, executablePath: pwPath };
@@ -272,11 +243,7 @@ function scheduleRestart(): { ok: true; scheduled: true } {
   return { ok: true as const, scheduled: true as const };
 }
 
-type DefaultInstallStatus =
-  | "already_present"
-  | "installed"
-  | "skipped"
-  | "failed";
+type DefaultInstallStatus = "already_present" | "installed" | "skipped" | "failed";
 
 type DefaultInstallStep = {
   id: string;
@@ -454,9 +421,7 @@ function parseChecksumsText(raw: string): Map<string, string> {
   return byName;
 }
 
-async function findFirstFile(params: {
-  absolutePattern: string;
-}): Promise<string | null> {
+async function findFirstFile(params: { absolutePattern: string }): Promise<string | null> {
   const glob = new Bun.Glob(params.absolutePattern);
   for await (const p of glob.scan({ onlyFiles: true, absolute: true })) {
     return p;
@@ -464,11 +429,7 @@ async function findFirstFile(params: {
   return null;
 }
 
-async function copyFileIfNeeded(params: {
-  from: string;
-  to: string;
-  overwrite: boolean;
-}) {
+async function copyFileIfNeeded(params: { from: string; to: string; overwrite: boolean }) {
   const existed = await Bun.file(params.to).exists();
   if (existed && !params.overwrite) {
     return { copied: false, overwritten: false };
@@ -492,13 +453,9 @@ const githubReleaseSchema = z.object({
 type GithubRelease = z.infer<typeof githubReleaseSchema>;
 
 async function fetchGithubLatestRelease(repo: string): Promise<GithubRelease> {
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/releases/latest`,
-  );
+  const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
   if (!res.ok) {
-    throw new Error(
-      `GitHub releases/latest failed (${res.status} ${res.statusText}) for ${repo}`,
-    );
+    throw new Error(`GitHub releases/latest failed (${res.status} ${res.statusText}) for ${repo}`);
   }
   const raw: unknown = await res.json();
   return githubReleaseSchema.parse(raw);
@@ -547,9 +504,7 @@ async function installGithubTarGzBinary(params: {
 
   const tarBin = Bun.which("tar");
   if (!tarBin) {
-    throw new Error(
-      "Missing dependency: tar (required to extract GitHub releases)",
-    );
+    throw new Error("Missing dependency: tar (required to extract GitHub releases)");
   }
 
   const release = await fetchGithubLatestRelease(params.repo);
@@ -561,9 +516,7 @@ async function installGithubTarGzBinary(params: {
 
   const tarAsset = release.assets.find((a) => a.name === tarName);
   if (!tarAsset) {
-    throw new Error(
-      `Asset not found in ${params.repo} ${release.tag_name}: ${tarName}`,
-    );
+    throw new Error(`Asset not found in ${params.repo} ${release.tag_name}: ${tarName}`);
   }
 
   const checksumAsset = release.assets.find((a) => a.name === checksumName);
@@ -575,10 +528,7 @@ async function installGithubTarGzBinary(params: {
 
   await fs.mkdir(params.tmpDir, { recursive: true });
 
-  const tarPath = path.join(
-    params.tmpDir,
-    `${params.repo.replaceAll("/", "-")}-${tarName}`,
-  );
+  const tarPath = path.join(params.tmpDir, `${params.repo.replaceAll("/", "-")}-${tarName}`);
   const checksumsPath = path.join(
     params.tmpDir,
     `${params.repo.replaceAll("/", "-")}-${checksumName}`,
@@ -596,9 +546,7 @@ async function installGithubTarGzBinary(params: {
 
   const got = await sha256Hex(tarPath);
   if (got.toLowerCase() !== expected.toLowerCase()) {
-    throw new Error(
-      `Checksum mismatch for ${tarName}: expected ${expected}, got ${got}`,
-    );
+    throw new Error(`Checksum mismatch for ${tarName}: expected ${expected}, got ${got}`);
   }
 
   const extractDir = path.join(
@@ -662,8 +610,7 @@ export class Onboarding implements ServerTool {
       {
         callableId: "onboarding.bootstrap",
         name: "Onboarding Bootstrap",
-        description:
-          "Bootstrap DATA_DIR (core-config.yaml + prompts/*). Hidden by default.",
+        description: "Bootstrap DATA_DIR (core-config.yaml + prompts/*). Hidden by default.",
         shortInput: zodObjectToCliLines(bootstrapInputSchema, {
           mode: "required",
         }),
@@ -684,8 +631,7 @@ export class Onboarding implements ServerTool {
       {
         callableId: "onboarding.defaults",
         name: "Onboarding Defaults",
-        description:
-          "Install default CLIs + skills into DATA_DIR (persisted). Hidden by default.",
+        description: "Install default CLIs + skills into DATA_DIR (persisted). Hidden by default.",
         shortInput: zodObjectToCliLines(defaultsInputSchema, {
           mode: "required",
         }),
@@ -746,8 +692,7 @@ export class Onboarding implements ServerTool {
       {
         callableId: "onboarding.reload_config",
         name: "Onboarding Reload Config",
-        description:
-          "Reload core config cache (or restart process). Hidden by default.",
+        description: "Reload core config cache (or restart process). Hidden by default.",
         shortInput: zodObjectToCliLines(reloadConfigInputSchema, {
           mode: "required",
         }),
@@ -757,8 +702,7 @@ export class Onboarding implements ServerTool {
       {
         callableId: "onboarding.restart",
         name: "Onboarding Restart",
-        description:
-          "Exit the process (docker/systemd should restart it). Hidden by default.",
+        description: "Exit the process (docker/systemd should restart it). Hidden by default.",
         shortInput: [],
         input: [],
         hidden: true,
@@ -799,9 +743,7 @@ export class Onboarding implements ServerTool {
 
       const gpgBin = Bun.which("gpg");
       if (!gpgBin) {
-        throw new Error(
-          "Missing dependency: gpg (install gnupg). Required for commit signing.",
-        );
+        throw new Error("Missing dependency: gpg (install gnupg). Required for commit signing.");
       }
 
       if (input.mode === "clear") {
@@ -814,8 +756,7 @@ export class Onboarding implements ServerTool {
         args: ["--list-secret-keys", "--with-colons"],
         env: vcsEnv,
       });
-      const existingFpr =
-        list.code === 0 ? parseFirstGpgFingerprint(list.stdout) : null;
+      const existingFpr = list.code === 0 ? parseFirstGpgFingerprint(list.stdout) : null;
 
       if (input.mode === "status") {
         return {
@@ -873,12 +814,9 @@ export class Onboarding implements ServerTool {
           args: ["--list-secret-keys", "--with-colons"],
           env: vcsEnv,
         });
-        const fingerprint =
-          after.code === 0 ? parseFirstGpgFingerprint(after.stdout) : null;
+        const fingerprint = after.code === 0 ? parseFirstGpgFingerprint(after.stdout) : null;
         if (!fingerprint) {
-          throw new Error(
-            "gpg key generation succeeded, but no secret key fingerprint was found",
-          );
+          throw new Error("gpg key generation succeeded, but no secret key fingerprint was found");
         }
 
         return {
@@ -1101,9 +1039,7 @@ export class Onboarding implements ServerTool {
         strategy: "playwright" as const,
         executablePath: pw.executablePath,
         installed: pw.installed,
-        notes: [
-          "System chromium not found; using Playwright-managed chromium.",
-        ],
+        notes: ["System chromium not found; using Playwright-managed chromium."],
       };
     }
 
@@ -1125,10 +1061,7 @@ export class Onboarding implements ServerTool {
 
       const steps: DefaultInstallStep[] = [];
 
-      const runStep = async (
-        id: string,
-        fn: () => Promise<Omit<DefaultInstallStep, "id">>,
-      ) => {
+      const runStep = async (id: string, fn: () => Promise<Omit<DefaultInstallStep, "id">>) => {
         try {
           steps.push({ id, ...(await fn()) });
         } catch (e) {
@@ -1139,10 +1072,7 @@ export class Onboarding implements ServerTool {
       };
 
       await runStep("skills.mcporter", async () => {
-        const src = path.resolve(
-          process.cwd(),
-          "packages/utils/skill-templates/mcporter/SKILL.md",
-        );
+        const src = path.resolve(process.cwd(), "packages/utils/skill-templates/mcporter/SKILL.md");
         const dst = path.join(paths.lilacSkillsDir, "mcporter", "SKILL.md");
         const { copied, overwritten } = await copyFileIfNeeded({
           from: src,
@@ -1156,10 +1086,7 @@ export class Onboarding implements ServerTool {
       });
 
       await runStep("skills.gog", async () => {
-        const src = path.resolve(
-          process.cwd(),
-          "packages/utils/skill-templates/gog/SKILL.md",
-        );
+        const src = path.resolve(process.cwd(), "packages/utils/skill-templates/gog/SKILL.md");
         const dst = path.join(paths.lilacSkillsDir, "gog", "SKILL.md");
         const { copied, overwritten } = await copyFileIfNeeded({
           from: src,
@@ -1225,11 +1152,7 @@ export class Onboarding implements ServerTool {
       });
 
       await runStep("skill.agent-browser", async () => {
-        const opencodeSkillsDir = path.join(
-          paths.xdgConfigHome,
-          "opencode",
-          "skills",
-        );
+        const opencodeSkillsDir = path.join(paths.xdgConfigHome, "opencode", "skills");
         if (await hasAnySkillMdUnder(opencodeSkillsDir)) {
           return { status: "already_present", details: { opencodeSkillsDir } };
         }
@@ -1259,9 +1182,7 @@ export class Onboarding implements ServerTool {
         return {
           status: installedNow ? "installed" : "failed",
           details: { opencodeSkillsDir },
-          error: installedNow
-            ? undefined
-            : "skill install ran but no SKILL.md found",
+          error: installedNow ? undefined : "skill install ran but no SKILL.md found",
         };
       });
 
@@ -1288,8 +1209,7 @@ export class Onboarding implements ServerTool {
         const result = await installGithubTarGzBinary({
           repo: "steipete/gogcli",
           destPath: dest,
-          tarAssetName: (version, arch) =>
-            `gogcli_${version}_linux_${arch}.tar.gz`,
+          tarAssetName: (version, arch) => `gogcli_${version}_linux_${arch}.tar.gz`,
           checksumAssetName: () => "checksums.txt",
           findExtractedPath: async (extractDir) =>
             findFirstFile({
@@ -1371,9 +1291,7 @@ export class Onboarding implements ServerTool {
             ? await Bun.file(input.privateKeyPath).text()
             : null;
         if (!privateKeyPem) {
-          throw new Error(
-            "Missing required input: privateKeyPem or privateKeyPath",
-          );
+          throw new Error("Missing required input: privateKeyPem or privateKeyPath");
         }
 
         const host = normalizeHost(input.host);
@@ -1404,16 +1322,13 @@ export class Onboarding implements ServerTool {
 
       if (input.mode === "test") {
         const t = await getGithubInstallationTokenOrThrow({ dataDir });
-        const res = await fetch(
-          `${t.apiBaseUrl}/installation/repositories?per_page=1`,
-          {
-            headers: {
-              "User-Agent": "lilac-onboarding",
-              Accept: "application/vnd.github+json",
-              Authorization: `token ${t.token}`,
-            },
+        const res = await fetch(`${t.apiBaseUrl}/installation/repositories?per_page=1`, {
+          headers: {
+            "User-Agent": "lilac-onboarding",
+            Accept: "application/vnd.github+json",
+            Authorization: `token ${t.token}`,
           },
-        );
+        });
         if (!res.ok) {
           throw new Error(
             `GitHub API test failed (${res.status} ${res.statusText}) at ${t.apiBaseUrl}`,

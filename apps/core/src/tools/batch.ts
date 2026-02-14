@@ -9,14 +9,7 @@ import { formatToolArgsForDisplay } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
-const ALL_TOOL_NAMES = [
-  "read_file",
-  "glob",
-  "grep",
-  "bash",
-  "apply_patch",
-  "edit_file",
-] as const;
+const ALL_TOOL_NAMES = ["read_file", "glob", "grep", "bash", "apply_patch", "edit_file"] as const;
 type AllowedToolName = (typeof ALL_TOOL_NAMES)[number];
 
 const ALLOWED_TOOL_NAMES_BY_MODE = {
@@ -25,9 +18,7 @@ const ALLOWED_TOOL_NAMES_BY_MODE = {
   none: ["read_file", "glob", "grep", "bash"],
 } as const;
 
-function makeToolCallSchema(
-  allowedToolNames: readonly [string, ...string[]],
-) {
+function makeToolCallSchema(allowedToolNames: readonly [string, ...string[]]) {
   return z.object({
     tool: z.enum(allowedToolNames).describe("Tool name to execute"),
     parameters: z
@@ -38,9 +29,7 @@ function makeToolCallSchema(
   });
 }
 
-function makeBatchInputSchema(
-  allowedToolNames: readonly [string, ...string[]],
-) {
+function makeBatchInputSchema(allowedToolNames: readonly [string, ...string[]]) {
   return z.object({
     tool_calls: z
       .array(makeToolCallSchema(allowedToolNames))
@@ -147,16 +136,11 @@ function resolveTouchedPathKey(cwd: string, p: string): string {
   const base = target.cwd;
   const resolvedRemote = normalizeRemotePath(base, p);
   // Use a stable key space for remote paths.
-  const suffix = resolvedRemote.startsWith("/")
-    ? resolvedRemote
-    : `/${resolvedRemote}`;
+  const suffix = resolvedRemote.startsWith("/") ? resolvedRemote : `/${resolvedRemote}`;
   return `ssh://${target.host}${suffix}`;
 }
 
-function collectApplyPatchTouchedPaths(params: {
-  patchText: string;
-  cwd: string;
-}): Set<string> {
+function collectApplyPatchTouchedPaths(params: { patchText: string; cwd: string }): Set<string> {
   const hunks = parsePatch(params.patchText);
   const out = new Set<string>();
   for (const hunk of hunks) {
@@ -181,10 +165,7 @@ function collectApplyPatchTouchedPaths(params: {
   return out;
 }
 
-function collectEditFileTouchedPaths(params: {
-  path: string;
-  cwd: string;
-}): Set<string> {
+function collectEditFileTouchedPaths(params: { path: string; cwd: string }): Set<string> {
   return new Set([resolveTouchedPathKey(params.cwd, params.path)]);
 }
 
@@ -208,13 +189,15 @@ export function batchTool(params: {
 }) {
   const { defaultCwd, getTools, reportToolStatus } = params;
   const editingMode = params.editingMode ?? "apply_patch";
-  const allowedToolNames = ALLOWED_TOOL_NAMES_BY_MODE[
-    editingMode
-  ] as unknown as [string, ...string[]];
+  const allowedToolNames = ALLOWED_TOOL_NAMES_BY_MODE[editingMode] as unknown as [
+    string,
+    ...string[],
+  ];
   const batchInputSchema = makeBatchInputSchema(allowedToolNames);
-  const editCallDescription = editingMode === "none"
-    ? "Supports independent read_file/glob/grep/bash operations."
-    : `Supports independent read_file/glob/grep/bash/${editingMode} operations.`;
+  const editCallDescription =
+    editingMode === "none"
+      ? "Supports independent read_file/glob/grep/bash operations."
+      : `Supports independent read_file/glob/grep/bash/${editingMode} operations.`;
 
   const reportSafe = (update: {
     toolCallId: string;
@@ -289,8 +272,7 @@ export function batchTool(params: {
         const calls = input.tool_calls;
         const tools = getTools();
 
-        const activeEditTool =
-          editingMode === "none" ? null : editingMode;
+        const activeEditTool = editingMode === "none" ? null : editingMode;
 
         // Preflight: reject active edit calls that overlap on touched paths.
         const seen = new Map<string, number>();
@@ -299,17 +281,13 @@ export function batchTool(params: {
           const call = calls[i]!;
           if (!activeEditTool || call.tool !== activeEditTool) continue;
           const raw = call.parameters;
-          const cwd = isRecord(raw) && typeof raw["cwd"] === "string"
-            ? raw["cwd"]
-            : defaultCwd;
+          const cwd = isRecord(raw) && typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
 
           let touched: Set<string>;
 
           if (activeEditTool === "apply_patch") {
             if (!isRecord(raw) || typeof raw["patchText"] !== "string") {
-              throw new Error(
-                "batch: apply_patch parameters must include patchText (string)",
-              );
+              throw new Error("batch: apply_patch parameters must include patchText (string)");
             }
 
             try {
@@ -324,9 +302,7 @@ export function batchTool(params: {
             }
           } else {
             if (!isRecord(raw) || typeof raw["path"] !== "string") {
-              throw new Error(
-                "batch: edit_file parameters must include path (string)",
-              );
+              throw new Error("batch: edit_file parameters must include path (string)");
             }
             touched = collectEditFileTouchedPaths({
               path: String(raw["path"]),

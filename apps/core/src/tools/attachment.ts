@@ -23,10 +23,7 @@ const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const DEFAULT_INBOUND_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_INBOUND_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
-const DISCORD_CDN_HOSTS = new Set([
-  "cdn.discordapp.com",
-  "media.discordapp.net",
-]);
+const DISCORD_CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 
 const nonEmptyStringListInputSchema = z
   .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
@@ -60,8 +57,9 @@ function asBuffer(data: unknown): Buffer {
 
 const attachmentAddFilesInputSchema = z
   .object({
-    paths: nonEmptyStringListInputSchema
-      .describe("Local file paths to attach (resolved relative to tool cwd)"),
+    paths: nonEmptyStringListInputSchema.describe(
+      "Local file paths to attach (resolved relative to tool cwd)",
+    ),
     filenames: optionalNonEmptyStringListInputSchema.describe(
       "Optional filenames for each attachment",
     ),
@@ -121,9 +119,7 @@ const attachmentDownloadOutputSchema = z.object({
 
 type AttachmentDownloadOutput = z.infer<typeof attachmentDownloadOutputSchema>;
 
-function collectUserAttachments(
-  messages: readonly ModelMessage[],
-): DetectedAttachment[] {
+function collectUserAttachments(messages: readonly ModelMessage[]): DetectedAttachment[] {
   const out: DetectedAttachment[] = [];
 
   for (const m of messages) {
@@ -190,9 +186,7 @@ async function downloadToBuffer(input: unknown): Promise<{
 
     const res = await fetch(input.toString(), { redirect: "follow" });
     if (!res.ok) {
-      throw new Error(
-        `Failed to download attachment (${res.status}): ${input}`,
-      );
+      throw new Error(`Failed to download attachment (${res.status}): ${input}`);
     }
     const ab = await res.arrayBuffer();
     return {
@@ -223,10 +217,7 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       inputSchema: attachmentAddFilesInputSchema,
       outputSchema: attachmentAddOutputSchema,
       execute: async (input, { experimental_context }) => {
-        const ctx = requireRequestContext(
-          experimental_context,
-          "attachment.add_files",
-        );
+        const ctx = requireRequestContext(experimental_context, "attachment.add_files");
 
         let totalBytes = 0;
 
@@ -260,8 +251,7 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
 
           const bytes = await fs.readFile(resolvedPath);
 
-          const filename =
-            (input.filenames && input.filenames[i]) || basename(resolvedPath);
+          const filename = (input.filenames && input.filenames[i]) || basename(resolvedPath);
 
           const typeFromBytes = await fileTypeFromBuffer(bytes);
 
@@ -299,9 +289,7 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       inputSchema: attachmentDownloadInputSchema,
       outputSchema: attachmentDownloadOutputSchema,
       execute: async (input, options) => {
-        const downloadDir = resolve(
-          expandTilde(input.downloadDir ?? "~/Downloads"),
-        );
+        const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
 
         const attachments = collectUserAttachments(options.messages);
         if (attachments.length === 0) {
@@ -337,13 +325,9 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
             detected?.mime ||
             downloaded.contentType?.split(";")[0]?.trim() ||
             att.mediaTypeHint ||
-            (att.filenameHint
-              ? inferMimeTypeFromFilename(att.filenameHint)
-              : undefined);
+            (att.filenameHint ? inferMimeTypeFromFilename(att.filenameHint) : undefined);
 
-          const sha256 = createHash("sha256")
-            .update(downloaded.bytes)
-            .digest("hex");
+          const sha256 = createHash("sha256").update(downloaded.bytes).digest("hex");
           const sha10 = sha256.slice(0, 10);
 
           if (seenSha10.has(sha10)) {
@@ -352,16 +336,10 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
           seenSha10.add(sha10);
 
           const extFromFileType = detected?.ext ? `.${detected.ext}` : "";
-          const extFromFilename = att.filenameHint
-            ? extname(att.filenameHint)
-            : "";
-          const extFromMime = mimeType
-            ? inferExtensionFromMimeType(mimeType)
-            : "";
+          const extFromFilename = att.filenameHint ? extname(att.filenameHint) : "";
+          const extFromMime = mimeType ? inferExtensionFromMimeType(mimeType) : "";
 
-          const ext = sanitizeExtension(
-            extFromFileType || extFromFilename || extFromMime,
-          );
+          const ext = sanitizeExtension(extFromFileType || extFromFilename || extFromMime);
           const target = join(downloadDir, `${sha10}${ext}`);
 
           // Only write missing.

@@ -108,10 +108,7 @@ function debugJsonStringify(value: unknown): string {
   );
 }
 
-type ToolsLike = Record<
-  string,
-  { description?: string; inputSchema?: unknown }
->;
+type ToolsLike = Record<string, { description?: string; inputSchema?: unknown }>;
 
 function safeStringify(value: unknown): string {
   if (typeof value === "string") return value;
@@ -132,9 +129,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function buildResumePrompt(partialText: string): ModelMessage {
   const base =
     "System notice: the server restarted during your previous turn. Continue from the last stable boundary. If a tool was interrupted, treat it as failed with error: server restarted, and proceed safely.";
-  const content = partialText.trim().length > 0
-    ? `${base}\n\nPartial response already shown to user:\n\n${partialText}\n\nContinue from there without duplicating already visible text.`
-    : `${base}\n\nNo visible partial response was persisted.`;
+  const content =
+    partialText.trim().length > 0
+      ? `${base}\n\nPartial response already shown to user:\n\n${partialText}\n\nContinue from there without duplicating already visible text.`
+      : `${base}\n\nNo visible partial response was persisted.`;
 
   return {
     role: "user",
@@ -162,11 +160,7 @@ const ANTHROPIC_PROMPT_CACHE_CONTROL = {
   ttl: "5m",
 } as const;
 
-const ANTHROPIC_UPSTREAM_PROVIDER_ORDER = [
-  "anthropic",
-  "vertex",
-  "bedrock",
-] as const;
+const ANTHROPIC_UPSTREAM_PROVIDER_ORDER = ["anthropic", "vertex", "bedrock"] as const;
 
 const ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS = {
   anthropic: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
@@ -183,15 +177,11 @@ function mergeProviderOptions(
   base: ModelMessage["providerOptions"],
   patch: NonNullable<ModelMessage["providerOptions"]>,
 ): NonNullable<ModelMessage["providerOptions"]> {
-  const out = (isRecord(base) ? { ...base } : {}) as NonNullable<
-    ModelMessage["providerOptions"]
-  >;
+  const out = (isRecord(base) ? { ...base } : {}) as NonNullable<ModelMessage["providerOptions"]>;
 
   for (const [k, v] of Object.entries(patch)) {
     const existing = (out as Record<string, unknown>)[k];
-    (out as Record<string, unknown>)[k] = isRecord(existing)
-      ? { ...existing, ...v }
-      : v;
+    (out as Record<string, unknown>)[k] = isRecord(existing) ? { ...existing, ...v } : v;
   }
 
   return out;
@@ -232,8 +222,9 @@ function withStableAnthropicUpstreamOrder(
 
   if (provider === "openrouter") {
     const existingOpenRouter = isRecord(base["openrouter"]) ? base["openrouter"] : {};
-    const existingProvider =
-      isRecord(existingOpenRouter["provider"]) ? existingOpenRouter["provider"] : {};
+    const existingProvider = isRecord(existingOpenRouter["provider"])
+      ? existingOpenRouter["provider"]
+      : {};
 
     return {
       ...base,
@@ -267,11 +258,7 @@ function maybeMarkOldToolOutputsCompacted(params: {
 
   // Walk backwards; skip the last turn (turn = user message).
   // This mirrors OpenCode's "turns < 2" behavior.
-  outer: for (
-    let msgIndex = params.messages.length - 1;
-    msgIndex >= 0;
-    msgIndex--
-  ) {
+  outer: for (let msgIndex = params.messages.length - 1; msgIndex >= 0; msgIndex--) {
     const msg = params.messages[msgIndex]!;
     if (msg.role === "user") turns++;
     if (turns < 2) continue;
@@ -352,9 +339,7 @@ function applyToolOutputCompactionView(params: {
   return changed ? out : [...params.messages];
 }
 
-function scrubLargeBinaryForModelView(
-  messages: readonly ModelMessage[],
-): ModelMessage[] {
+function scrubLargeBinaryForModelView(messages: readonly ModelMessage[]): ModelMessage[] {
   let totalBytes = 0;
 
   const estimateBase64Bytes = (b64: string): number => {
@@ -410,17 +395,11 @@ function scrubLargeBinaryForModelView(
         nextValue ??= value.map((v) => ({ ...v }));
 
         const mediaType =
-          "mediaType" in item && typeof item.mediaType === "string"
-            ? item.mediaType
-            : "";
+          "mediaType" in item && typeof item.mediaType === "string" ? item.mediaType : "";
         const filename =
-          "filename" in item && typeof item.filename === "string"
-            ? item.filename
-            : "";
+          "filename" in item && typeof item.filename === "string" ? item.filename : "";
         const detail =
-          filename || mediaType
-            ? ` (${[filename, mediaType].filter(Boolean).join(", ")})`
-            : "";
+          filename || mediaType ? ` (${[filename, mediaType].filter(Boolean).join(", ")})` : "";
 
         nextValue[j] = {
           type: "text",
@@ -594,9 +573,7 @@ function estimateInputCompositionChars(input: {
   tools: unknown;
 }): InputCompositionChars {
   const tools = (
-    input.tools && typeof input.tools === "object"
-      ? (input.tools as ToolsLike)
-      : null
+    input.tools && typeof input.tools === "object" ? (input.tools as ToolsLike) : null
   ) satisfies ToolsLike | null;
 
   const snapshots = buildPromptSnapshots({
@@ -670,9 +647,13 @@ function computePercentages(chars: {
     sum += diff;
   }
 
-  const map = Object.fromEntries(
-    raw.map((e) => [e.k, Math.max(0, Math.min(100, e.pct))]),
-  ) as { S: number; A: number; U: number; TD: number; TR: number };
+  const map = Object.fromEntries(raw.map((e) => [e.k, Math.max(0, Math.min(100, e.pct))])) as {
+    S: number;
+    A: number;
+    U: number;
+    TD: number;
+    TR: number;
+  };
 
   return map;
 }
@@ -743,8 +724,7 @@ function buildStatsLine(params: {
   const u = params.usage;
 
   const inputTokens = typeof u?.inputTokens === "number" ? u.inputTokens : null;
-  const outputTokens =
-    typeof u?.outputTokens === "number" ? u.outputTokens : null;
+  const outputTokens = typeof u?.outputTokens === "number" ? u.outputTokens : null;
   const noCache =
     typeof u?.inputTokenDetails?.noCacheTokens === "number"
       ? u.inputTokenDetails.noCacheTokens
@@ -822,9 +802,7 @@ class RestartDrainingAbort extends Error {
   }
 }
 
-function parseRouterSessionModeFromRaw(
-  raw: unknown,
-): "mention" | "active" | null {
+function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | null {
   if (!raw || typeof raw !== "object") return null;
   const v = (raw as Record<string, unknown>)["sessionMode"];
   if (v === "mention" || v === "active") return v;
@@ -864,8 +842,7 @@ function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
 
   const o = subagent as Record<string, unknown>;
 
-  const profile: AgentRunProfile =
-    o["profile"] === "explore" ? "explore" : "primary";
+  const profile: AgentRunProfile = o["profile"] === "explore" ? "explore" : "primary";
 
   const depthRaw = o["depth"];
   const depth =
@@ -937,16 +914,14 @@ type SessionQueue = {
   agent: AiSdkPiAgent<ToolSet> | null;
   queue: Enqueued[];
   activeRequestId: string | null;
-  activeRun:
-    | {
-        requestId: string;
-        sessionId: string;
-        requestClient: AdapterPlatform;
-        queue: RequestQueueMode;
-        raw?: unknown;
-        partialText: string;
-      }
-    | null;
+  activeRun: {
+    requestId: string;
+    sessionId: string;
+    requestClient: AdapterPlatform;
+    queue: RequestQueueMode;
+    raw?: unknown;
+    partialText: string;
+  } | null;
   /** Track toolCallIds whose outputs are compacted in the model-facing view. */
   compactedToolCallIds: Set<string>;
 };
@@ -991,16 +966,13 @@ export async function startBusAgentRunner(params: {
       const sessionId = msg.headers?.session_id;
       const requestClient = msg.headers?.request_client ?? "unknown";
       if (!requestId || !sessionId) {
-        throw new Error(
-          "cmd.request.message missing required headers.request_id/session_id",
-        );
+        throw new Error("cmd.request.message missing required headers.request_id/session_id");
       }
 
       if (env.perf.log) {
         const lagMs = Date.now() - msg.ts;
         const shouldWarn = lagMs >= env.perf.lagWarnMs;
-        const shouldSample =
-          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
         if (shouldWarn || shouldSample) {
           (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
             stage: "cmd.request->agent_runner",
@@ -1087,25 +1059,18 @@ export async function startBusAgentRunner(params: {
         })();
 
         // If the message is intended for the currently active request, apply immediately.
-        if (
-          state.activeRequestId &&
-          state.activeRequestId === requestId &&
-          state.agent
-        ) {
+        if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
           await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
         } else {
           // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
           // an unrelated active request.
           if (requiresActive) {
-            logger.info(
-              "dropping request message (requires active request id)",
-              {
-                requestId,
-                sessionId,
-                activeRequestId: state.activeRequestId,
-                queue: entry.queue,
-              },
-            );
+            logger.info("dropping request message (requires active request id)", {
+              requestId,
+              sessionId,
+              activeRequestId: state.activeRequestId,
+              queue: entry.queue,
+            });
             await ctx.commit();
             return;
           }
@@ -1332,10 +1297,9 @@ export async function startBusAgentRunner(params: {
         bus,
         headers,
         state: "running",
-        detail:
-          next.recovery
-            ? "resumed after server restart"
-            : next.queue !== "prompt"
+        detail: next.recovery
+          ? "resumed after server restart"
+          : next.queue !== "prompt"
             ? `coerced queue=${next.queue} to prompt (no active run)`
             : undefined,
       });
@@ -1374,10 +1338,7 @@ export async function startBusAgentRunner(params: {
       })();
 
       const providerOptionsForAgent = anthropicPromptCachingEnabled
-        ? withStableAnthropicUpstreamOrder(
-            resolved.provider,
-            providerOptionsWithPromptCacheKey,
-          )
+        ? withStableAnthropicUpstreamOrder(resolved.provider, providerOptionsWithPromptCacheKey)
         : providerOptionsWithPromptCacheKey;
 
       const systemPrompt = buildSystemPromptForProfile({
@@ -1385,10 +1346,7 @@ export async function startBusAgentRunner(params: {
         profile: runProfile,
         activeEditingTool: runProfile === "primary" ? editingToolMode : null,
         exploreOverlay: subagents.profiles.explore.promptOverlay,
-        skillsSection:
-          runProfile === "primary"
-            ? await maybeBuildSkillsSectionForPrimary()
-            : null,
+        skillsSection: runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
       });
 
       const agentSystem = anthropicPromptCachingEnabled
@@ -1409,8 +1367,7 @@ export async function startBusAgentRunner(params: {
         editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
         isRecoveryResume: Boolean(next.recovery),
         messageCount: next.messages.length,
-        recoveryCheckpointMessageCount:
-          next.recovery?.checkpointMessages.length ?? 0,
+        recoveryCheckpointMessageCount: next.recovery?.checkpointMessages.length ?? 0,
         queuedForSession: state.queue.length,
       });
 
@@ -1530,7 +1487,9 @@ export async function startBusAgentRunner(params: {
       const contextDumpDir = env.debug.contextDump.dir;
       let turnEndCount = 0;
 
-      const dumpContextAfterTurn = async (event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "turn_end" }>) => {
+      const dumpContextAfterTurn = async (
+        event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "turn_end" }>,
+      ) => {
         if (!contextDumpEnabled) return;
 
         const tsMs = Date.now();
@@ -1607,10 +1566,7 @@ export async function startBusAgentRunner(params: {
           void dumpContextAfterTurn(event);
         }
 
-        if (
-          event.type === "message_update" &&
-          event.assistantMessageEvent.type === "text_delta"
-        ) {
+        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           runStats.firstTextDeltaAt ??= Date.now();
 
           const delta = event.assistantMessageEvent.delta;
@@ -1620,11 +1576,7 @@ export async function startBusAgentRunner(params: {
           }
 
           bus
-            .publish(
-              lilacEventTypes.EvtAgentOutputDeltaText,
-              { delta },
-              { headers },
-            )
+            .publish(lilacEventTypes.EvtAgentOutputDeltaText, { delta }, { headers })
             .catch((e: unknown) => {
               logger.error(
                 "failed to publish output delta",
@@ -1720,11 +1672,7 @@ export async function startBusAgentRunner(params: {
           // Best-effort fallback: if deltas didn't populate finalText, take last assistant string.
           if (!finalText) {
             const last = event.messages[event.messages.length - 1];
-            if (
-              last &&
-              last.role === "assistant" &&
-              typeof last.content === "string"
-            ) {
+            if (last && last.role === "assistant" && typeof last.content === "string") {
               finalText = last.content;
             }
           }
@@ -1794,9 +1742,7 @@ export async function startBusAgentRunner(params: {
 
       // Build stats in the js-llmcord-ish one-liner format.
       const endAt = runStats.lastTurnEndAt ?? Date.now();
-      const ttftMs = runStats.firstTextDeltaAt
-        ? runStats.firstTextDeltaAt - runStartedAt
-        : null;
+      const ttftMs = runStats.firstTextDeltaAt ? runStats.firstTextDeltaAt - runStartedAt : null;
       const outputTokens = runStats.totalUsage?.outputTokens;
       const rawTps =
         typeof outputTokens === "number" &&
@@ -1826,9 +1772,7 @@ export async function startBusAgentRunner(params: {
         icLine,
       });
 
-      const statsForNerds = getStatsForNerdsOptions(
-        cfg.agent.statsForNerds,
-      );
+      const statsForNerds = getStatsForNerdsOptions(cfg.agent.statsForNerds);
       const statsForNerdsLine = statsForNerds.enabled
         ? buildStatsLine({
             modelLabel,
@@ -1960,10 +1904,7 @@ async function publishLifecycle(params: {
   );
 }
 
-function mergeQueuedForSameRequest(
-  first: Enqueued,
-  queue: Enqueued[],
-): ModelMessage[] {
+function mergeQueuedForSameRequest(first: Enqueued, queue: Enqueued[]): ModelMessage[] {
   const merged: ModelMessage[] = [...first.messages];
 
   // Pull in any already-queued items for the same request id so they become

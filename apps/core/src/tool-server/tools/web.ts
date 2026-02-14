@@ -2,12 +2,7 @@ import { z } from "zod";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
-import {
-  chromium,
-  type Browser,
-  type BrowserContext,
-  type Page,
-} from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
@@ -38,10 +33,7 @@ const getPageSchema = z.object({
       "Preprocessor to use for parsing the page; Only apply to `fetch` and `browser`; `readability` uses the Mozilla Readability library.",
     ),
   startOffset: z.coerce.number().optional(),
-  maxCharacters: z.coerce
-    .number()
-    .optional()
-    .describe("Max characters (default: 200000)"),
+  maxCharacters: z.coerce.number().optional().describe("Max characters (default: 200000)"),
   timeout: z.coerce
     .number()
     .optional()
@@ -84,8 +76,7 @@ export class Web implements ServerTool {
 
   private tavily: TavilyClient | null = null;
   private turndown = new TurndownService();
-  private browserContext: { browser: Browser; context: BrowserContext } | null =
-    null;
+  private browserContext: { browser: Browser; context: BrowserContext } | null = null;
   private browserInit: Promise<{
     browser: Browser;
     context: BrowserContext;
@@ -239,8 +230,7 @@ export class Web implements ServerTool {
   }
 
   private async findSystemChromiumExecutable(): Promise<string | null> {
-    const fromEnv =
-      process.env.LILAC_CHROMIUM_PATH ?? process.env.CHROMIUM_PATH ?? null;
+    const fromEnv = process.env.LILAC_CHROMIUM_PATH ?? process.env.CHROMIUM_PATH ?? null;
     if (fromEnv && (await this.pathExecutable(fromEnv))) return fromEnv;
 
     const fromWhich =
@@ -319,10 +309,7 @@ export class Web implements ServerTool {
       headless: true,
       executablePath: launch.executablePath,
     });
-    this.logger.logInfo(
-      `Chrome launched (${launch.strategy})`,
-      browser.version(),
-    );
+    this.logger.logInfo(`Chrome launched (${launch.strategy})`, browser.version());
     const context = await browser.newContext({
       viewport: { width: 1080, height: 1920 },
     });
@@ -425,10 +412,7 @@ export class Web implements ServerTool {
     }
   }
 
-  private async fastAutoScroll(
-    page: Page,
-    { step = 1920, maxScrolls = 5, idleMs = 100 } = {},
-  ) {
+  private async fastAutoScroll(page: Page, { step = 1920, maxScrolls = 5, idleMs = 100 } = {}) {
     await page.evaluate(
       async ({ step, maxScrolls, idleMs }) => {
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -478,10 +462,7 @@ export class Web implements ServerTool {
         return {
           isError: false,
           title: content.title,
-          content: content.markdown.slice(
-            startOffset,
-            startOffset + maxCharacters,
-          ),
+          content: content.markdown.slice(startOffset, startOffset + maxCharacters),
           length: content.markdown.length,
           rearTruncated: content.markdown.length > startOffset + maxCharacters,
         } as const;
@@ -510,9 +491,7 @@ export class Web implements ServerTool {
   private async parsePage(
     html: string,
     url: string,
-    {
-      preprocessor,
-    }: { preprocessor: z.infer<typeof getPageSchema>["preprocessor"] },
+    { preprocessor }: { preprocessor: z.infer<typeof getPageSchema>["preprocessor"] },
   ) {
     const dom = new JSDOM(html, { url });
 

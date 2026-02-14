@@ -17,8 +17,7 @@ const listInputSchema = z.object({
     .string()
     .optional()
     .describe("Search query (fuzzy-matched against name/description/source)"),
-  limit: z
-    .coerce
+  limit: z.coerce
     .number()
     .int()
     .positive()
@@ -34,8 +33,7 @@ const listInputSchema = z.object({
 
 const readInputSchema = z.object({
   name: z.string().min(1).describe("Skill name"),
-  maxChars: z
-    .coerce
+  maxChars: z.coerce
     .number()
     .int()
     .positive()
@@ -50,9 +48,7 @@ type SkillIncludeSummary = {
   files: string[];
 };
 
-async function listTopLevelEntries(
-  baseDir: string,
-): Promise<SkillIncludeSummary> {
+async function listTopLevelEntries(baseDir: string): Promise<SkillIncludeSummary> {
   const entries = await fs.readdir(baseDir, { withFileTypes: true });
 
   const dirs: string[] = [];
@@ -100,15 +96,10 @@ function scoreAndFilter(
     .map((r) => r.item);
 }
 
-function requireSkillByName(
-  skills: DiscoveredSkill[],
-  name: string,
-): DiscoveredSkill {
+function requireSkillByName(skills: DiscoveredSkill[], name: string): DiscoveredSkill {
   const found = skills.find((s) => s.name === name);
   if (!found) {
-    throw new Error(
-      `Skill not found: '${name}'. Use skills.list to see available skills.`,
-    );
+    throw new Error(`Skill not found: '${name}'. Use skills.list to see available skills.`);
   }
   return found;
 }
@@ -124,8 +115,7 @@ export class Skills implements ServerTool {
       {
         callableId: "skills.list",
         name: "Skills List",
-        description:
-          "List and search skills discovered from common directories.",
+        description: "List and search skills discovered from common directories.",
         shortInput: zodObjectToCliLines(listInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(listInputSchema),
       },
@@ -147,10 +137,7 @@ export class Skills implements ServerTool {
     ];
   }
 
-  async call(
-    callableId: string,
-    rawInput: Record<string, unknown>,
-  ): Promise<unknown> {
+  async call(callableId: string, rawInput: Record<string, unknown>): Promise<unknown> {
     const workspaceRoot = findWorkspaceRoot();
 
     const { skills, warnings } = await discoverSkills({
@@ -190,10 +177,7 @@ export class Skills implements ServerTool {
       // Keep returned frontmatter stable + minimal-ish.
       const frontmatter = parsed.frontmatter;
       const defaultCap = callableId === "skills.brief" ? 8000 : 50_000;
-      const { text, truncated } = truncateText(
-        parsed.body,
-        input.maxChars ?? defaultCap,
-      );
+      const { text, truncated } = truncateText(parsed.body, input.maxChars ?? defaultCap);
 
       const includes = await listTopLevelEntries(found.baseDir);
 

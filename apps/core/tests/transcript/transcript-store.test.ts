@@ -71,9 +71,7 @@ describe("SqliteTranscriptStore", () => {
     const toolMsg = snap!.messages.find((m) => m.role === "tool");
     expect(toolMsg).not.toBeUndefined();
 
-    const parts = Array.isArray(toolMsg!.content)
-      ? (toolMsg!.content as unknown[])
-      : [];
+    const parts = Array.isArray(toolMsg!.content) ? (toolMsg!.content as unknown[]) : [];
     const toolResult = parts.find((p) => {
       if (!p || typeof p !== "object") return false;
       return (p as Record<string, unknown>)["type"] === "tool-result";
@@ -158,9 +156,7 @@ describe("SqliteTranscriptStore", () => {
     const toolMsg = snap!.messages.find((m) => m.role === "tool");
     expect(toolMsg).not.toBeUndefined();
 
-    const parts = Array.isArray(toolMsg!.content)
-      ? (toolMsg!.content as unknown[])
-      : [];
+    const parts = Array.isArray(toolMsg!.content) ? (toolMsg!.content as unknown[]) : [];
     const toolResult = parts.find((p) => {
       if (!p || typeof p !== "object") return false;
       return (p as Record<string, unknown>)["type"] === "tool-result";
@@ -169,16 +165,11 @@ describe("SqliteTranscriptStore", () => {
     const output = toolResult?.["output"] as Record<string, unknown> | undefined;
     expect(output?.["type"]).toBe("content");
 
-    const value = Array.isArray(output?.["value"])
-      ? (output?.["value"] as unknown[])
-      : [];
+    const value = Array.isArray(output?.["value"]) ? (output?.["value"] as unknown[]) : [];
 
     // The binary data should be preserved in the persisted transcript.
     const filePart = value.find(
-      (v) =>
-        !!v &&
-        typeof v === "object" &&
-        (v as Record<string, unknown>)["type"] === "file-data",
+      (v) => !!v && typeof v === "object" && (v as Record<string, unknown>)["type"] === "file-data",
     ) as Record<string, unknown> | undefined;
 
     expect(filePart).toBeDefined();

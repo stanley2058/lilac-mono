@@ -1,7 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-  findLexicalSafeSplitPoint,
-} from "../../../../src/surface/discord/output/markdown-splitter";
+import { findLexicalSafeSplitPoint } from "../../../../src/surface/discord/output/markdown-splitter";
 import { tokenComplete } from "../../../../src/surface/discord/output/token-complete";
 
 // Intentionally copied/adapted from ref/js-llmcord.
@@ -78,10 +76,7 @@ The catch block is not pessimism. It's respect for reality.`;
           newlineBacktrack: 100,
           locale: "en-US",
         });
-        const { completed, overflow } = tokenComplete(
-          remaining.slice(0, splitPos),
-          maxLen,
-        );
+        const { completed, overflow } = tokenComplete(remaining.slice(0, splitPos), maxLen);
         chunks.push(completed);
         remaining = overflow + remaining.slice(splitPos);
 

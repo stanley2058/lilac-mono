@@ -209,9 +209,7 @@ export class DiscordSurfaceStore {
 
   getUserIdByUsername(username: string): string | null {
     const row = this.db
-      .query(
-        "SELECT user_id FROM discord_user_ids_by_username WHERE username_lc = ?",
-      )
+      .query("SELECT user_id FROM discord_user_ids_by_username WHERE username_lc = ?")
       .get(username.toLowerCase()) as { user_id: string } | null;
     return row?.user_id ?? null;
   }
@@ -222,11 +220,7 @@ export class DiscordSurfaceStore {
       .get(userId) as DbDiscordUserName | null;
   }
 
-  upsertChannelName(input: {
-    channelId: string;
-    name?: string;
-    updatedTs: number;
-  }) {
+  upsertChannelName(input: { channelId: string; name?: string; updatedTs: number }) {
     this.db.run(
       `
       INSERT INTO discord_channel_names (channel_id, name, updated_ts)
@@ -245,12 +239,7 @@ export class DiscordSurfaceStore {
       .get(channelId) as DbDiscordChannelName | null;
   }
 
-  upsertRoleName(input: {
-    guildId: string;
-    roleId: string;
-    name?: string;
-    updatedTs: number;
-  }) {
+  upsertRoleName(input: { guildId: string; roleId: string; name?: string; updatedTs: number }) {
     this.db.run(
       `
       INSERT INTO discord_role_names (guild_id, role_id, name, updated_ts)
@@ -265,9 +254,7 @@ export class DiscordSurfaceStore {
 
   getRoleName(guildId: string, roleId: string): DbDiscordRoleName | null {
     return this.db
-      .query(
-        "SELECT * FROM discord_role_names WHERE guild_id = ? AND role_id = ?",
-      )
+      .query("SELECT * FROM discord_role_names WHERE guild_id = ? AND role_id = ?")
       .get(guildId, roleId) as DbDiscordRoleName | null;
   }
 
@@ -292,11 +279,7 @@ export class DiscordSurfaceStore {
     return init;
   }
 
-  setReadState(input: {
-    channelId: string;
-    lastReadTs: number;
-    lastReadMessageId: string;
-  }) {
+  setReadState(input: { channelId: string; lastReadTs: number; lastReadMessageId: string }) {
     this.db.run(
       `
       INSERT INTO discord_read_state (channel_id, last_read_ts, last_read_message_id)

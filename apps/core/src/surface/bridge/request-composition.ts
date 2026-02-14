@@ -13,9 +13,7 @@ import {
   isDiscordSessionDividerSurfaceMessage,
   isDiscordSessionDividerText,
 } from "../discord/discord-session-divider";
-import {
-  splitByDiscordWindowOldestToNewest,
-} from "../discord/merge-window";
+import { splitByDiscordWindowOldestToNewest } from "../discord/merge-window";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -109,8 +107,7 @@ async function findLastDiscordSessionDividerBefore(params: {
   /** Optional: stop scanning once we see this message id. */
   stopAtMessageId?: string;
 }): Promise<{ ts: number; messageId: string } | null> {
-  const { adapter, channelId, botUserId, beforeMessageId, stopAtMessageId } =
-    params;
+  const { adapter, channelId, botUserId, beforeMessageId, stopAtMessageId } = params;
 
   const sessionRef = { platform: "discord", channelId } as const;
 
@@ -195,10 +192,7 @@ export type ComposeRequestOpts = {
   maxDepth?: number;
 };
 
-async function safeListReactions(
-  adapter: SurfaceAdapter,
-  msgRef: MsgRef,
-): Promise<string[]> {
+async function safeListReactions(adapter: SurfaceAdapter, msgRef: MsgRef): Promise<string[]> {
   try {
     return await adapter.listReactions(msgRef);
   } catch {
@@ -227,22 +221,23 @@ export async function composeRequestMessages(
     return { messages: [], chainMessageIds: [], mergedGroups: [] };
   }
 
-  const chain = opts.trigger.type === "mention"
-    ? await fetchMentionThreadContext(adapter, {
-        platform: opts.platform,
-        botUserId: opts.botUserId,
-        botName: opts.botName,
-        triggerMsg,
-        maxDepth: opts.maxDepth,
-      })
-    : await fetchReplyChainFrom(adapter, {
-        platform: opts.platform,
-        botUserId: opts.botUserId,
-        botName: opts.botName,
-        trigger: opts.trigger,
-        startMsgRef: opts.trigger.msgRef,
-        maxDepth: opts.maxDepth,
-      });
+  const chain =
+    opts.trigger.type === "mention"
+      ? await fetchMentionThreadContext(adapter, {
+          platform: opts.platform,
+          botUserId: opts.botUserId,
+          botName: opts.botName,
+          triggerMsg,
+          maxDepth: opts.maxDepth,
+        })
+      : await fetchReplyChainFrom(adapter, {
+          platform: opts.platform,
+          botUserId: opts.botUserId,
+          botName: opts.botName,
+          trigger: opts.trigger,
+          startMsgRef: opts.trigger.msgRef,
+          maxDepth: opts.maxDepth,
+        });
 
   const filteredChain = chain.filter((m) => {
     const isChat = getDiscordIsChatFromRaw(m.raw);
@@ -322,11 +317,7 @@ export async function composeRequestMessages(
     }
 
     const parts: UserContent = [{ type: "text", text: mainText }];
-    await appendDiscordAttachmentsToUserContent(
-      parts,
-      chunk.attachments,
-      attState,
-    );
+    await appendDiscordAttachmentsToUserContent(parts, chunk.attachments, attState);
 
     modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
   }
@@ -384,11 +375,8 @@ export async function composeRecentChannelMessages(
           : null;
 
         const anchoredAfterDivider = divider
-          ? anchored.filter((m) =>
-              compareDiscordMsgPosition(
-                { ts: m.ts, messageId: m.messageId },
-                divider,
-              ) > 0,
+          ? anchored.filter(
+              (m) => compareDiscordMsgPosition({ ts: m.ts, messageId: m.messageId }, divider) > 0,
             )
           : anchored;
 
@@ -459,11 +447,7 @@ export async function composeRecentChannelMessages(
           }
 
           const parts: UserContent = [{ type: "text", text: mainText }];
-          await appendDiscordAttachmentsToUserContent(
-            parts,
-            chunk.attachments,
-            attState,
-          );
+          await appendDiscordAttachmentsToUserContent(parts, chunk.attachments, attState);
           modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
         }
 
@@ -487,9 +471,7 @@ export async function composeRecentChannelMessages(
   // Active-burst rules are intended for "latest view" prompts, including
   // fresh @mentions that are not replies. They prevent stale context when a
   // channel has been idle.
-  const shouldApplyActiveBurstRules = Boolean(
-    opts.triggerMsgRef && opts.triggerType !== "reply",
-  );
+  const shouldApplyActiveBurstRules = Boolean(opts.triggerMsgRef && opts.triggerType !== "reply");
 
   // In active-mode gate-forwarded prompts, we may need a little more history to
   // apply time-based cutoffs (age/gap) without relying on fixed "last N".
@@ -522,13 +504,11 @@ export async function composeRecentChannelMessages(
   const contextList = list.filter(shouldIncludeInModelContext);
 
   const triggerMsg = opts.triggerMsgRef
-    ? contextList.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ??
-      null
+    ? (contextList.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ?? null)
     : null;
 
   const activeAnchor = shouldApplyActiveBurstRules
-    ? (triggerMsg ??
-        (contextList.length > 0 ? contextList[contextList.length - 1]! : null))
+    ? (triggerMsg ?? (contextList.length > 0 ? contextList[contextList.length - 1]! : null))
     : null;
 
   // Divider cutoff should apply before selection rules so we never include pre-divider
@@ -600,9 +580,7 @@ export async function composeRecentChannelMessages(
 
     selected = pickedNewestToOldest.reverse();
   } else {
-    selected = dividerCutContextList.slice(
-      Math.max(0, dividerCutContextList.length - opts.limit),
-    );
+    selected = dividerCutContextList.slice(Math.max(0, dividerCutContextList.length - opts.limit));
   }
 
   // Safety: exclude divider messages from context even if they are chat-like.
@@ -634,9 +612,7 @@ export async function composeRecentChannelMessages(
     const isBot = chunk.authorId === opts.botUserId;
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-    const anchorTsForTranscript = shouldApplyActiveBurstRules
-      ? activeAnchor?.ts ?? null
-      : null;
+    const anchorTsForTranscript = shouldApplyActiveBurstRules ? (activeAnchor?.ts ?? null) : null;
     const transcriptAgeMs =
       anchorTsForTranscript !== null ? anchorTsForTranscript - chunk.tsEnd : null;
     const allowTranscriptExpansion =
@@ -693,11 +669,7 @@ export async function composeRecentChannelMessages(
     }
 
     const parts: UserContent = [{ type: "text", text: mainText }];
-    await appendDiscordAttachmentsToUserContent(
-      parts,
-      chunk.attachments,
-      attState,
-    );
+    await appendDiscordAttachmentsToUserContent(parts, chunk.attachments, attState);
     modelMessages.push({ role: "user", content: parts } satisfies ModelMessage);
   }
 
@@ -752,11 +724,7 @@ export async function composeSingleMessage(
 
   const parts: UserContent = [{ type: "text", text: mainText }];
 
-  await appendDiscordAttachmentsToUserContent(
-    parts,
-    attachments,
-    createDiscordAttachmentState(),
-  );
+  await appendDiscordAttachmentsToUserContent(parts, attachments, createDiscordAttachmentState());
 
   return { role: "user", content: parts } satisfies ModelMessage;
 }
@@ -764,10 +732,7 @@ export async function composeSingleMessage(
 const DEFAULT_INBOUND_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_INBOUND_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
-const DISCORD_CDN_HOSTS = new Set([
-  "cdn.discordapp.com",
-  "media.discordapp.net",
-]);
+const DISCORD_CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 
 type DiscordAttachmentState = {
   downloadedTotalBytes: number;
@@ -819,10 +784,8 @@ function formatDiscordAttachmentHeader(params: {
   size?: number;
 }): string {
   const fields: string[] = [];
-  if (params.filename)
-    fields.push(`filename="${escapeMetadataValue(params.filename)}"`);
-  if (params.mimeType)
-    fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
+  if (params.filename) fields.push(`filename="${escapeMetadataValue(params.filename)}"`);
+  if (params.mimeType) fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
   if (typeof params.size === "number") fields.push(`size=${params.size}`);
   fields.push(`url="${escapeMetadataValue(params.url.toString())}"`);
   return `[discord_attachment ${fields.join(" ")}]`;
@@ -836,8 +799,7 @@ function decodeUtf8BestEffort(bytes: Uint8Array): {
   const MAX_TEXT_BYTES = 512 * 1024;
   const MAX_TEXT_CHARS = 50_000;
 
-  const view =
-    bytes.byteLength > MAX_TEXT_BYTES ? bytes.slice(0, MAX_TEXT_BYTES) : bytes;
+  const view = bytes.byteLength > MAX_TEXT_BYTES ? bytes.slice(0, MAX_TEXT_BYTES) : bytes;
   const truncatedBytes = view.byteLength !== bytes.byteLength;
 
   const text = new TextDecoder("utf-8", { fatal: false }).decode(view);
@@ -855,16 +817,12 @@ function decodeUtf8BestEffort(bytes: Uint8Array): {
     }
   }
 
-  const clamped =
-    text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
+  const clamped = text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text;
   const truncated = truncatedBytes || clamped.length !== text.length;
   return { text: clamped, truncatedBytes: truncated, reason: undefined };
 }
 
-function bestEffortInferMimeType(params: {
-  filename?: string;
-  url?: URL;
-}): string | undefined {
+function bestEffortInferMimeType(params: { filename?: string; url?: URL }): string | undefined {
   if (params.filename) {
     const inferred = inferMimeTypeFromFilename(params.filename);
     if (inferred !== "application/octet-stream") return inferred;
@@ -893,17 +851,13 @@ async function downloadDiscordAttachment(url: URL): Promise<{
 
   const res = await fetch(url.toString(), { redirect: "follow" });
   if (!res.ok) {
-    throw new Error(
-      `Failed to download attachment (${res.status}): ${url.toString()}`,
-    );
+    throw new Error(`Failed to download attachment (${res.status}): ${url.toString()}`);
   }
 
   const ab = await res.arrayBuffer();
   return {
     bytes: new Uint8Array(ab),
-    contentType: normalizeMimeType(
-      res.headers.get("content-type") ?? undefined,
-    ),
+    contentType: normalizeMimeType(res.headers.get("content-type") ?? undefined),
   };
 }
 
@@ -1185,8 +1139,7 @@ async function appendDiscordAttachmentsToUserContent(
       // Size pre-check if available.
       if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
         const fallback =
-          bestEffortInferMimeType({ filename: att.filename, url }) ??
-          "application/octet-stream";
+          bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
         if (isImageMimeType(fallback)) {
           parts.push({ type: "image", image: url, mediaType: fallback });
           continue;
@@ -1220,8 +1173,7 @@ async function appendDiscordAttachmentsToUserContent(
 
         if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
           const fallback =
-            bestEffortInferMimeType({ filename: att.filename, url }) ??
-            "application/octet-stream";
+            bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
           if (isImageMimeType(fallback)) {
             parts.push({ type: "image", image: url, mediaType: fallback });
             continue;
@@ -1253,8 +1205,7 @@ async function appendDiscordAttachmentsToUserContent(
         state.downloadedTotalBytes += bytes.byteLength;
         if (state.downloadedTotalBytes > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
           const fallback =
-            bestEffortInferMimeType({ filename: att.filename, url }) ??
-            "application/octet-stream";
+            bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
           if (isImageMimeType(fallback)) {
             parts.push({ type: "image", image: url, mediaType: fallback });
             continue;
@@ -1414,16 +1365,9 @@ function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function stripLeadingBotMention(
-  text: string,
-  botUserId: string,
-  botName: string,
-): string {
+function stripLeadingBotMention(text: string, botUserId: string, botName: string): string {
   const sanitizedBot = sanitizeUserToken(botName);
-  const re = new RegExp(
-    `^(?:<@!?${botUserId}>|@${escapeRegExp(sanitizedBot)})(?:\\s+)?`,
-    "iu",
-  );
+  const re = new RegExp(`^(?:<@!?${botUserId}>|@${escapeRegExp(sanitizedBot)})(?:\\s+)?`, "iu");
   return text.replace(re, "");
 }
 
@@ -1437,9 +1381,7 @@ function formatDiscordAttributionHeader(params: {
   messageId: string;
   reactions?: readonly string[];
 }): string {
-  const userName = sanitizeUserToken(
-    params.authorName || `user_${params.authorId}`,
-  );
+  const userName = sanitizeUserToken(params.authorName || `user_${params.authorId}`);
 
   const reactions = formatReactionSet(params.reactions);
   const reactionsPart = reactions ? ` reactions=${reactions}` : "";
@@ -1485,9 +1427,7 @@ type DiscordAttachmentMeta = {
   size?: number;
 };
 
-function extractDiscordAttachmentsFromRaw(
-  raw: unknown,
-): DiscordAttachmentMeta[] {
+function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {
   if (!raw || typeof raw !== "object") return [];
 
   // We store attachments in two places depending on origin:
@@ -1543,8 +1483,7 @@ function getReferenceFromRaw(raw: unknown): {
     const ref = o.reference;
     if (ref && typeof ref === "object") {
       const r = ref as Record<string, unknown>;
-      const messageId =
-        typeof r.messageId === "string" ? r.messageId : undefined;
+      const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
       const channelId = typeof r.channelId === "string" ? r.channelId : undefined;
       if (messageId) return { messageId, channelId };
     }
@@ -1556,9 +1495,7 @@ function getReferenceFromRaw(raw: unknown): {
       ? (o.discord as Record<string, unknown>)
       : null;
   const replyToMessageId =
-    discord && typeof discord.replyToMessageId === "string"
-      ? discord.replyToMessageId
-      : undefined;
+    discord && typeof discord.replyToMessageId === "string" ? discord.replyToMessageId : undefined;
   if (replyToMessageId) return { messageId: replyToMessageId };
 
   return {};
@@ -1574,8 +1511,7 @@ function toReplyChainMessage(
   return {
     messageId: msg.ref.messageId,
     authorId: msg.userId,
-    authorName:
-      msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
+    authorName: msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
     ts: msg.ts,
     text: opts?.overrideText ?? msg.text,
     attachments: extractDiscordAttachmentsFromRaw(msg.raw),
@@ -1583,9 +1519,7 @@ function toReplyChainMessage(
   };
 }
 
-function dedupeByMessageId(
-  list: readonly ReplyChainMessage[],
-): ReplyChainMessage[] {
+function dedupeByMessageId(list: readonly ReplyChainMessage[]): ReplyChainMessage[] {
   const out: ReplyChainMessage[] = [];
   const seen = new Set<string>();
   for (const m of list) {
@@ -1615,9 +1549,7 @@ async function resolveMergeBlockEndingAt(
 
   list.sort((a, b) => a.ts - b.ts);
 
-  const triggerIndex = list.findIndex(
-    (m) => m.ref.messageId === triggerMsg.ref.messageId,
-  );
+  const triggerIndex = list.findIndex((m) => m.ref.messageId === triggerMsg.ref.messageId);
   if (triggerIndex < 0) return [triggerMsg];
 
   const authorId = triggerMsg.userId;
@@ -1641,9 +1573,7 @@ async function resolveMergeBlockEndingAt(
   return groupEndingAtTrigger.map((m) => m.message);
 }
 
-function findEarliestReplyAnchor(
-  block: readonly SurfaceMessage[],
-): SurfaceMessage | null {
+function findEarliestReplyAnchor(block: readonly SurfaceMessage[]): SurfaceMessage | null {
   for (const m of block) {
     const ref = getReferenceFromRaw(m.raw);
     if (ref.messageId) return m;

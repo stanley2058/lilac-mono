@@ -1,9 +1,6 @@
 import { Logger } from "@stanley2058/simple-module-logger";
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import {
-  createDefaultToolServerTools,
-  createToolServer,
-} from "@stanley2058/lilac-core";
+import { createDefaultToolServerTools, createToolServer } from "@stanley2058/lilac-core";
 
 const logger = new Logger({
   logLevel: resolveLogLevel(),

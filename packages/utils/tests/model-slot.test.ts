@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import {
-  coreConfigSchema,
-  resolveModelSlot,
-  type CoreConfig,
-} from "../index";
+import { coreConfigSchema, resolveModelSlot, type CoreConfig } from "../index";
 
 function baseConfig(): CoreConfig {
   const parsed = coreConfigSchema.parse({});

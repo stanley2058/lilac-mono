@@ -44,8 +44,7 @@ export const lilacEventTypes = {
 } as const;
 
 /** Union of all supported Lilac event types. */
-export type LilacEventType =
-  (typeof lilacEventTypes)[keyof typeof lilacEventTypes];
+export type LilacEventType = (typeof lilacEventTypes)[keyof typeof lilacEventTypes];
 
 /** Output stream topic for a single request (agent output deltas/responses). */
 export type OutReqTopic = `out.req.${string}`;
@@ -55,12 +54,7 @@ export function outReqTopic(requestId: string): OutReqTopic {
   return `out.req.${requestId}`;
 }
 
-export type RequestLifecycleState =
-  | "queued"
-  | "running"
-  | "resolved"
-  | "failed"
-  | "cancelled";
+export type RequestLifecycleState = "queued" | "running" | "resolved" | "failed" | "cancelled";
 
 export type WorkflowLifecycleState =
   | "queued"
@@ -420,19 +414,18 @@ export type LilacTopic = LilacEventSpec[LilacEventType]["topic"];
 
 /** Event types that may appear on a given topic. */
 export type LilacEventTypesForTopic<TTopic extends LilacTopic> = {
-  [TType in LilacEventType]: LilacEventSpec[TType]["topic"] extends TTopic
-    ? TType
-    : never;
+  [TType in LilacEventType]: LilacEventSpec[TType]["topic"] extends TTopic ? TType : never;
 }[LilacEventType];
 
 /** Payload type for a given event type. */
-export type LilacDataForType<TType extends LilacEventType> =
-  LilacEventSpec[TType]["data"];
+export type LilacDataForType<TType extends LilacEventType> = LilacEventSpec[TType]["data"];
 
 /** Topic used to route a given event type. */
-export type LilacTopicForType<TType extends LilacEventType> =
-  LilacEventSpec[TType]["topic"];
+export type LilacTopicForType<TType extends LilacEventType> = LilacEventSpec[TType]["topic"];
 
 /** Correlation/partition key type for a given event type. */
-export type LilacKeyForType<TType extends LilacEventType> =
-  LilacEventSpec[TType] extends { key: infer K } ? K : never;
+export type LilacKeyForType<TType extends LilacEventType> = LilacEventSpec[TType] extends {
+  key: infer K;
+}
+  ? K
+  : never;

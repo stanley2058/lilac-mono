@@ -61,9 +61,7 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-async function readTextFileBestEffort(
-  filePath: string,
-): Promise<string | null> {
+async function readTextFileBestEffort(filePath: string): Promise<string | null> {
   try {
     const raw = await fsp.readFile(filePath, "utf8");
     const trimmed = raw.trim();
@@ -96,9 +94,7 @@ function parseInstructionPathsFromText(text: string): string[] {
   return out;
 }
 
-function collectPreviouslyLoadedInstructionPaths(
-  messages: readonly unknown[],
-): Set<string> {
+function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): Set<string> {
   const out = new Set<string>();
 
   for (const msg of messages) {
@@ -167,10 +163,7 @@ export const readFileInputZod = z.object({
     .number()
     .optional()
     .describe("1-based line number to start reading from. Defaults to 1."),
-  maxLines: z
-    .number()
-    .optional()
-    .describe("Maximum number of lines to return. Defaults to 2000."),
+  maxLines: z.number().optional().describe("Maximum number of lines to return. Defaults to 2000."),
   maxCharacters: z
     .number()
     .optional()
@@ -178,9 +171,7 @@ export const readFileInputZod = z.object({
   format: z
     .enum(["raw", "numbered"])
     .optional()
-    .describe(
-      "Output format. Default is raw (no line numbers). 'numbered' is for display only.",
-    ),
+    .describe("Output format. Default is raw (no line numbers). 'numbered' is for display only."),
 });
 
 type ReadFileInput = z.infer<typeof readFileInputZod>;
@@ -246,10 +237,7 @@ const globOutputZod = z.discriminatedUnion("mode", [
 type GlobOutput = z.infer<typeof globOutputZod>;
 
 export const grepInputZod = z.object({
-  pattern: z
-    .string()
-    .min(1)
-    .describe("Search pattern. Literal by default unless regex=true."),
+  pattern: z.string().min(1).describe("Search pattern. Literal by default unless regex=true."),
   cwd: z
     .string()
     .optional()
@@ -269,7 +257,7 @@ export const grepInputZod = z.object({
   fileExtensions: z
     .array(z.string().min(1))
     .optional()
-    .describe("Optional file extension filters (e.g. [\"ts\", \"tsx\"])."),
+    .describe('Optional file extension filters (e.g. ["ts", "tsx"]).'),
   includeContextLines: z
     .number()
     .int()
@@ -324,10 +312,7 @@ const grepOutputZod = z.discriminatedUnion("mode", [
 
 type GrepOutput = z.infer<typeof grepOutputZod>;
 
-const expectedMatchesSchema = z.union([
-  z.literal("any"),
-  z.number().int().positive(),
-]);
+const expectedMatchesSchema = z.union([z.literal("any"), z.number().int().positive()]);
 
 export const editFileInputZod = z.object({
   path: pathSchema,
@@ -342,19 +327,14 @@ export const editFileInputZod = z.object({
     .min(1)
     .describe("Exact text to find and replace. Must uniquely match by default."),
   newText: z.string().describe("Replacement text."),
-  matching: z
-    .enum(["exact", "regex"])
-    .optional()
-    .describe("Matching mode. Default: exact."),
+  matching: z.enum(["exact", "regex"]).optional().describe("Matching mode. Default: exact."),
   replaceAll: z
     .boolean()
     .optional()
     .describe("Replace all matches when true. Default: false (single replacement)."),
   expectedMatches: expectedMatchesSchema
     .optional()
-    .describe(
-      "Expected number of matches. Default: 1 when replaceAll=false, otherwise 'any'.",
-    ),
+    .describe("Expected number of matches. Default: 1 when replaceAll=false, otherwise 'any'."),
   expectedHash: z
     .string()
     .optional()
@@ -402,9 +382,7 @@ const instructionFieldsZod = z.object({
   instructionsText: z
     .string()
     .optional()
-    .describe(
-      "Instruction text auto-loaded from AGENTS.md files. Intended for model context.",
-    ),
+    .describe("Instruction text auto-loaded from AGENTS.md files. Intended for model context."),
 });
 
 const readFileSuccessBaseZod = z
@@ -501,29 +479,12 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
   const toolRootAbs = path.resolve(expandTilde(cwd));
 
   const fileSystem = new FileSystem(cwd, {
-    denyPaths: [
-      path.join(env.dataDir, "secret"),
-      "~/.ssh",
-      "~/.aws",
-      "~/.gnupg",
-    ],
+    denyPaths: [path.join(env.dataDir, "secret"), "~/.ssh", "~/.aws", "~/.gnupg"],
   });
 
-  const attachmentExts = new Set([
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".pdf",
-  ]);
+  const attachmentExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
 
-  const imageMimeTypes = new Set([
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-  ]);
+  const imageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
   const binaryCacheByToolCallId = new Map<
     string,
@@ -588,9 +549,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
     if (!output || typeof output !== "object") return false;
     const o = output as unknown as Record<string, unknown>;
     return (
-      o["success"] === true &&
-      o["kind"] === "attachment" &&
-      typeof o["resolvedPath"] === "string"
+      o["success"] === true && o["kind"] === "attachment" && typeof o["resolvedPath"] === "string"
     );
   }
 
@@ -606,9 +565,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
       return null;
     }
 
-    const opCwdAbs = params.opCwd
-      ? path.resolve(expandTilde(params.opCwd))
-      : toolRootAbs;
+    const opCwdAbs = params.opCwd ? path.resolve(expandTilde(params.opCwd)) : toolRootAbs;
 
     const boundaryCwd = isPathWithin(targetAbs, opCwdAbs) ? opCwdAbs : null;
     const gitRoot = boundaryCwd ? null : await findGitRoot(opCwdAbs);
@@ -649,11 +606,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
 
     return {
       loaded,
-      text: [
-        "<system-reminder>",
-        snippets.join("\n\n"),
-        "</system-reminder>",
-      ].join("\n"),
+      text: ["<system-reminder>", snippets.join("\n\n"), "</system-reminder>"].join("\n"),
     };
   }
 
@@ -697,10 +650,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                 }
 
                 const bytes = Buffer.from(bytesRes.base64, "base64");
-                const remoteResolvedPath = toRemoteDebugPath(
-                  cwdTarget.host,
-                  bytesRes.resolvedPath,
-                );
+                const remoteResolvedPath = toRemoteDebugPath(cwdTarget.host, bytesRes.resolvedPath);
                 recordRemoteFileAccess({
                   host: cwdTarget.host,
                   remoteCwd: cwdTarget.cwd,
@@ -711,8 +661,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                 const filename = path.basename(bytesRes.resolvedPath);
 
                 const detected = await fileTypeFromBuffer(bytes);
-                const mimeType =
-                  detected?.mime || inferMimeTypeFromFilename(filename);
+                const mimeType = detected?.mime || inferMimeTypeFromFilename(filename);
 
                 binaryCacheByToolCallId.set(options.toolCallId, {
                   resolvedPath: remoteResolvedPath,
@@ -733,10 +682,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                 };
               }
 
-              const bytesRes = await fileSystem.readFileBytes(
-                { path: input.path },
-                opCwd,
-              );
+              const bytesRes = await fileSystem.readFileBytes({ path: input.path }, opCwd);
               if (!bytesRes.success) {
                 return bytesRes;
               }
@@ -745,8 +691,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
               const filename = path.basename(resolvedPath);
 
               const detected = await fileTypeFromBuffer(bytesRes.bytes);
-              const mimeType =
-                detected?.mime || inferMimeTypeFromFilename(filename);
+              const mimeType = detected?.mime || inferMimeTypeFromFilename(filename);
 
               binaryCacheByToolCallId.set(options.toolCallId, {
                 resolvedPath,
@@ -1043,9 +988,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           matching: input.matching,
         });
 
-        const occurrence: "all" | "first" = input.replaceAll
-          ? "all"
-          : "first";
+        const occurrence: "all" | "first" = input.replaceAll ? "all" : "first";
         const editPayload: {
           path: string;
           edits: FileEdit[];
@@ -1066,66 +1009,64 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
         };
 
         const cwdTarget = parseSshCwdTarget(opCwd);
-        const res = cwdTarget.kind === "ssh"
-          ? await (async () => {
-              let expectedHash = input.expectedHash;
-              let resolvedPathHint: string | undefined;
+        const res =
+          cwdTarget.kind === "ssh"
+            ? await (async () => {
+                let expectedHash = input.expectedHash;
+                let resolvedPathHint: string | undefined;
 
-              if (!expectedHash) {
-                const prior = lookupRemoteReadHash({
-                  host: cwdTarget.host,
-                  remoteCwd: cwdTarget.cwd,
-                  inputPath: input.path,
-                });
-                if (!prior) {
-                  return {
-                    success: false as const,
-                    resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
-                    error: {
-                      code: "NOT_READ" as const,
-                      message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, input.path)}`,
-                    },
-                  };
+                if (!expectedHash) {
+                  const prior = lookupRemoteReadHash({
+                    host: cwdTarget.host,
+                    remoteCwd: cwdTarget.cwd,
+                    inputPath: input.path,
+                  });
+                  if (!prior) {
+                    return {
+                      success: false as const,
+                      resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                      error: {
+                        code: "NOT_READ" as const,
+                        message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, input.path)}`,
+                      },
+                    };
+                  }
+                  expectedHash = prior.hash;
+                  resolvedPathHint = prior.resolvedPath;
                 }
-                expectedHash = prior.hash;
-                resolvedPathHint = prior.resolvedPath;
-              }
 
-              const remoteRes = await remoteEditFile({
-                host: cwdTarget.host,
-                cwd: cwdTarget.cwd,
-                input: {
-                  path: editPayload.path,
-                  edits: editPayload.edits,
-                  expectedHash,
-                },
-                denyPaths: REMOTE_DENY_PATHS,
-              });
-
-              if (remoteRes.success) {
-                recordRemoteFileAccess({
+                const remoteRes = await remoteEditFile({
                   host: cwdTarget.host,
-                  remoteCwd: cwdTarget.cwd,
-                  inputPath: input.path,
-                  resolvedPath: remoteRes.resolvedPath,
-                  fileHash: remoteRes.newHash,
+                  cwd: cwdTarget.cwd,
+                  input: {
+                    path: editPayload.path,
+                    edits: editPayload.edits,
+                    expectedHash,
+                  },
+                  denyPaths: REMOTE_DENY_PATHS,
                 });
-              } else if (resolvedPathHint) {
-                remoteResolvedPathByLookup.set(
-                  remoteLookupKey(cwdTarget.host, cwdTarget.cwd, input.path),
-                  resolvedPathHint,
-                );
-              }
 
-              return normalizeEditOutput({
-                ...remoteRes,
-                resolvedPath: toRemoteDebugPath(
-                  cwdTarget.host,
-                  remoteRes.resolvedPath,
-                ),
-              });
-            })()
-          : normalizeEditOutput(await fileSystem.editFile(editPayload, opCwd));
+                if (remoteRes.success) {
+                  recordRemoteFileAccess({
+                    host: cwdTarget.host,
+                    remoteCwd: cwdTarget.cwd,
+                    inputPath: input.path,
+                    resolvedPath: remoteRes.resolvedPath,
+                    fileHash: remoteRes.newHash,
+                  });
+                } else if (resolvedPathHint) {
+                  remoteResolvedPathByLookup.set(
+                    remoteLookupKey(cwdTarget.host, cwdTarget.cwd, input.path),
+                    resolvedPathHint,
+                  );
+                }
+
+                return normalizeEditOutput({
+                  ...remoteRes,
+                  resolvedPath: toRemoteDebugPath(cwdTarget.host, remoteRes.resolvedPath),
+                });
+              })()
+            : normalizeEditOutput(await fileSystem.editFile(editPayload, opCwd));
 
         logger.info("fs.editFile done", {
           path: res.resolvedPath,

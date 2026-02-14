@@ -230,11 +230,7 @@ export class RedisStreamsBus implements RawBus {
     const limit = opts.limit ?? DEFAULT_MAX_MESSAGES;
 
     const startId =
-      opts.offset.type === "begin"
-        ? "0-0"
-        : opts.offset.type === "now"
-          ? "$"
-          : opts.offset.cursor;
+      opts.offset.type === "begin" ? "0-0" : opts.offset.type === "now" ? "$" : opts.offset.cursor;
 
     const res = (await this.redis.xread(
       "COUNT",
@@ -262,8 +258,7 @@ export class RedisStreamsBus implements RawBus {
       }
     }
 
-    const next =
-      messages.length > 0 ? messages[messages.length - 1]!.cursor : undefined;
+    const next = messages.length > 0 ? messages[messages.length - 1]!.cursor : undefined;
     return { messages, next };
   }
 
@@ -293,10 +288,7 @@ export class RedisStreamsBus implements RawBus {
     let consumerId: string | null = null;
 
     const maxMessages = opts.batch?.maxMessages ?? DEFAULT_MAX_MESSAGES;
-    const blockMs = Math.min(
-      Math.max(1, opts.batch?.maxWaitMs ?? DEFAULT_BLOCK_MS),
-      30_000,
-    );
+    const blockMs = Math.min(Math.max(1, opts.batch?.maxWaitMs ?? DEFAULT_BLOCK_MS), 30_000);
 
     try {
       if (opts.mode === "work" || opts.mode === "fanout") {
@@ -446,11 +438,7 @@ export class RedisStreamsBus implements RawBus {
           return;
         }
         releaseUnhealthy = true;
-        this.logger.error(
-          "event-bus subscription loop crashed",
-          { topic, mode: opts.mode },
-          e,
-        );
+        this.logger.error("event-bus subscription loop crashed", { topic, mode: opts.mode }, e);
         throw e;
       } finally {
         if (!lease.shared) {
@@ -490,8 +478,6 @@ export class RedisStreamsBus implements RawBus {
 }
 
 /** Convenience factory for `RedisStreamsBus`. */
-export function createRedisStreamsBus(
-  options: RedisStreamsBusOptions,
-): RedisStreamsBus {
+export function createRedisStreamsBus(options: RedisStreamsBusOptions): RedisStreamsBus {
   return new RedisStreamsBus(options);
 }

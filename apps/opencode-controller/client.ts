@@ -16,13 +16,7 @@ declare const PACKAGE_VERSION: string;
 
 type PermissionAutoResponse = "once" | "always";
 
-type RunStatus =
-  | "submitted"
-  | "running"
-  | "completed"
-  | "failed"
-  | "aborted"
-  | "timeout";
+type RunStatus = "submitted" | "running" | "completed" | "failed" | "aborted" | "timeout";
 
 type AssistantSummary = {
   messageID: string;
@@ -247,10 +241,7 @@ function parseFlags(args: readonly string[]): {
   return { flags, positionals };
 }
 
-function getStringFlag(
-  flags: Record<string, string | boolean>,
-  key: string,
-): string | undefined {
+function getStringFlag(flags: Record<string, string | boolean>, key: string): string | undefined {
   const v = flags[key];
   return typeof v === "string" ? v : undefined;
 }
@@ -402,10 +393,7 @@ async function loadRunRecord(runID: string): Promise<PromptRunRecord> {
 
   const assistant = isRecord(parsed.assistant)
     ? {
-        messageID:
-          typeof parsed.assistant.messageID === "string"
-            ? parsed.assistant.messageID
-            : "",
+        messageID: typeof parsed.assistant.messageID === "string" ? parsed.assistant.messageID : "",
         created: toInt(parsed.assistant.created) ?? 0,
         text: typeof parsed.assistant.text === "string" ? parsed.assistant.text : "",
         ...("error" in parsed.assistant ? { error: parsed.assistant.error } : {}),
@@ -415,16 +403,10 @@ async function loadRunRecord(runID: string): Promise<PromptRunRecord> {
         ...(typeof parsed.assistant.providerID === "string"
           ? { providerID: parsed.assistant.providerID }
           : {}),
-        ...(typeof parsed.assistant.agent === "string"
-          ? { agent: parsed.assistant.agent }
-          : {}),
+        ...(typeof parsed.assistant.agent === "string" ? { agent: parsed.assistant.agent } : {}),
         ...("tokens" in parsed.assistant ? { tokens: parsed.assistant.tokens } : {}),
-        ...(typeof parsed.assistant.cost === "number"
-          ? { cost: parsed.assistant.cost }
-          : {}),
-        ...(typeof parsed.assistant.finish === "string"
-          ? { finish: parsed.assistant.finish }
-          : {}),
+        ...(typeof parsed.assistant.cost === "number" ? { cost: parsed.assistant.cost } : {}),
+        ...(typeof parsed.assistant.finish === "string" ? { finish: parsed.assistant.finish } : {}),
       }
     : undefined;
 
@@ -436,9 +418,7 @@ async function loadRunRecord(runID: string): Promise<PromptRunRecord> {
     directory,
     baseUrl,
     sessionID,
-    ...(typeof parsed.userMessageID === "string"
-      ? { userMessageID: parsed.userMessageID }
-      : {}),
+    ...(typeof parsed.userMessageID === "string" ? { userMessageID: parsed.userMessageID } : {}),
     textHash,
     textNormalized,
     textPreview: textPreviewValue,
@@ -547,9 +527,7 @@ async function ensureServer(params: {
   const startedAt = Date.now();
   while (Date.now() - startedAt < params.serverStartTimeoutMs) {
     if (spawnError !== null) {
-      throw new Error(
-        `Failed to spawn '${params.opencodeBin} serve': ${spawnError}`,
-      );
+      throw new Error(`Failed to spawn '${params.opencodeBin} serve': ${spawnError}`);
     }
     try {
       const res = await client.global.health();
@@ -578,9 +556,7 @@ async function selectSession(params: {
   if (params.sessionID) {
     const res = await client.session.get({ sessionID: params.sessionID });
     if (res.error || !res.data) {
-      throw new Error(
-        `Failed to load session '${params.sessionID}': ${JSON.stringify(res.error)}`,
-      );
+      throw new Error(`Failed to load session '${params.sessionID}': ${JSON.stringify(res.error)}`);
     }
     return { session: res.data, created: false };
   }
@@ -594,9 +570,7 @@ async function selectSession(params: {
     });
 
     if (list.error) {
-      throw new Error(
-        `Failed to list sessions for title lookup: ${JSON.stringify(list.error)}`,
-      );
+      throw new Error(`Failed to list sessions for title lookup: ${JSON.stringify(list.error)}`);
     }
 
     const sessions = Array.isArray(list.data) ? list.data : [];
@@ -605,9 +579,7 @@ async function selectSession(params: {
 
     const createRes = await client.session.create({
       title: params.title,
-      ...(params.denyQuestionsOnCreate
-        ? { permission: denyQuestionsRuleset() }
-        : {}),
+      ...(params.denyQuestionsOnCreate ? { permission: denyQuestionsRuleset() } : {}),
     });
     if (createRes.error || !createRes.data) {
       throw new Error(
@@ -624,23 +596,17 @@ async function selectSession(params: {
       limit: 1,
     });
     if (list.error) {
-      throw new Error(
-        `Failed to list sessions for --continue: ${JSON.stringify(list.error)}`,
-      );
+      throw new Error(`Failed to list sessions for --continue: ${JSON.stringify(list.error)}`);
     }
     const s = Array.isArray(list.data) ? list.data[0] : undefined;
     if (s) return { session: s, created: false };
   }
 
-  const createRes = await client.session.create({
-    ...(params.denyQuestionsOnCreate
-      ? { permission: denyQuestionsRuleset() }
-      : {}),
-  });
+  const createRes = await client.session.create(
+    params.denyQuestionsOnCreate ? { permission: denyQuestionsRuleset() } : {},
+  );
   if (createRes.error || !createRes.data) {
-    throw new Error(
-      `Failed to create session: ${JSON.stringify(createRes.error)}`,
-    );
+    throw new Error(`Failed to create session: ${JSON.stringify(createRes.error)}`);
   }
   return { session: createRes.data, created: true };
 }
@@ -657,9 +623,7 @@ async function resolveExistingSession(params: {
   if (params.sessionID) {
     const res = await client.session.get({ sessionID: params.sessionID });
     if (res.error || !res.data) {
-      throw new Error(
-        `Failed to load session '${params.sessionID}': ${JSON.stringify(res.error)}`,
-      );
+      throw new Error(`Failed to load session '${params.sessionID}': ${JSON.stringify(res.error)}`);
     }
     return res.data;
   }
@@ -672,9 +636,7 @@ async function resolveExistingSession(params: {
     });
 
     if (list.error) {
-      throw new Error(
-        `Failed to list sessions for title lookup: ${JSON.stringify(list.error)}`,
-      );
+      throw new Error(`Failed to list sessions for title lookup: ${JSON.stringify(list.error)}`);
     }
 
     const sessions = Array.isArray(list.data) ? list.data : [];
@@ -690,16 +652,14 @@ async function resolveExistingSession(params: {
       limit: 1,
     });
     if (list.error) {
-      throw new Error(
-        `Failed to list sessions for --continue: ${JSON.stringify(list.error)}`,
-      );
+      throw new Error(`Failed to list sessions for --continue: ${JSON.stringify(list.error)}`);
     }
     const s = Array.isArray(list.data) ? list.data[0] : undefined;
     if (s) return s;
     throw new Error(`No sessions found in directory '${params.directory}'.`);
   }
 
-  throw new Error("Missing session selector (session-id/title/--continue)." );
+  throw new Error("Missing session selector (session-id/title/--continue).");
 }
 
 function buildRecentRuns(params: {
@@ -711,21 +671,16 @@ function buildRecentRuns(params: {
   const maxChars = Math.max(0, Math.trunc(params.maxCharsPerMessage));
   let truncated = false;
 
-  const assistantByParent = new Map<
-    string,
-    { info: AssistantMessage; parts: Part[] }
-  >();
+  const assistantByParent = new Map<string, { info: AssistantMessage; parts: Part[] }>();
 
   for (const m of params.messages) {
     if (m.info.role !== "assistant") continue;
     const parentID = m.info.parentID;
     if (!parentID) continue;
 
-    const created =
-      typeof m.info.time?.created === "number" ? m.info.time.created : 0;
+    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
     const prev = assistantByParent.get(parentID);
-    const prevCreated =
-      typeof prev?.info.time?.created === "number" ? prev.info.time.created : -1;
+    const prevCreated = typeof prev?.info.time?.created === "number" ? prev.info.time.created : -1;
     if (!prev || created >= prevCreated) {
       assistantByParent.set(parentID, { info: m.info, parts: m.parts });
     }
@@ -735,8 +690,7 @@ function buildRecentRuns(params: {
   for (const m of params.messages) {
     if (m.info.role !== "user") continue;
 
-    const created =
-      typeof m.info.time?.created === "number" ? m.info.time.created : 0;
+    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
     const userText = pickUserText(m.parts);
     const tUser = truncateText(userText, maxChars);
     truncated = truncated || tUser.truncated;
@@ -744,8 +698,7 @@ function buildRecentRuns(params: {
     const a = assistantByParent.get(m.info.id);
     const assistant = a
       ? (() => {
-          const aCreated =
-            typeof a.info.time?.created === "number" ? a.info.time.created : 0;
+          const aCreated = typeof a.info.time?.created === "number" ? a.info.time.created : 0;
           const aText = pickAssistantText(a.parts);
           const tAsst = truncateText(aText, maxChars);
           truncated = truncated || tAsst.truncated;
@@ -839,9 +792,7 @@ async function runSnapshot(params: {
 
     const todosRes = await client.session.todo({ sessionID: session.id });
     if (todosRes.error) {
-      throw new Error(
-        `Failed to fetch session todos: ${JSON.stringify(todosRes.error)}`,
-      );
+      throw new Error(`Failed to fetch session todos: ${JSON.stringify(todosRes.error)}`);
     }
     const todosAll = Array.isArray(todosRes.data) ? todosRes.data : [];
     const remaining = todosAll.filter(isTodoRemaining);
@@ -873,9 +824,7 @@ async function runSnapshot(params: {
       limit,
     });
     if (msgs.error || !msgs.data) {
-      throw new Error(
-        `Failed to fetch session messages: ${JSON.stringify(msgs.error)}`,
-      );
+      throw new Error(`Failed to fetch session messages: ${JSON.stringify(msgs.error)}`);
     }
 
     const recent = buildRecentRuns({
@@ -916,10 +865,7 @@ function pickUserText(parts: readonly Part[]): string {
     .join("");
 }
 
-function truncateText(
-  text: string,
-  maxChars: number,
-): { text: string; truncated: boolean } {
+function truncateText(text: string, maxChars: number): { text: string; truncated: boolean } {
   if (maxChars <= 0) return { text: "", truncated: text.length > 0 };
   if (text.length <= maxChars) return { text, truncated: false };
   return { text: text.slice(0, maxChars), truncated: true };
@@ -942,8 +888,7 @@ function findAssistantMessageForUserMessage(params: {
     const parentID = m.info.parentID;
     if (parentID !== params.userMessageID) continue;
 
-    const created =
-      typeof m.info.time?.created === "number" ? m.info.time.created : 0;
+    const created = typeof m.info.time?.created === "number" ? m.info.time.created : 0;
     if (!best || created >= bestCreated) {
       best = { info: m.info, parts: m.parts };
       bestCreated = created;
@@ -976,19 +921,14 @@ function isTerminalAssistantMessage(info: AssistantMessage): boolean {
   return info.finish !== undefined && info.finish !== "tool-calls" && info.finish !== "unknown";
 }
 
-function toAssistantSummary(input: {
-  info: AssistantMessage;
-  parts: Part[];
-}): AssistantSummary {
+function toAssistantSummary(input: { info: AssistantMessage; parts: Part[] }): AssistantSummary {
   return {
     messageID: input.info.id,
     created: typeof input.info.time?.created === "number" ? input.info.time.created : 0,
     text: pickAssistantText(input.parts),
     ...(input.info.error !== undefined ? { error: input.info.error } : {}),
     ...(typeof input.info.modelID === "string" ? { modelID: input.info.modelID } : {}),
-    ...(typeof input.info.providerID === "string"
-      ? { providerID: input.info.providerID }
-      : {}),
+    ...(typeof input.info.providerID === "string" ? { providerID: input.info.providerID } : {}),
     ...(typeof input.info.agent === "string" ? { agent: input.info.agent } : {}),
     ...(input.info.tokens ? { tokens: input.info.tokens } : {}),
     ...(typeof input.info.cost === "number" ? { cost: input.info.cost } : {}),
@@ -1014,8 +954,7 @@ async function fetchSessionMessages(params: {
 function findLatestUserPrompt(params: {
   messages: Array<{ info: Message; parts: Part[] }>;
 }): { messageID: string; created: number; text: string; normalized: string } | null {
-  let best: { messageID: string; created: number; text: string; normalized: string } | null =
-    null;
+  let best: { messageID: string; created: number; text: string; normalized: string } | null = null;
 
   for (const m of params.messages) {
     if (m.info.role !== "user") continue;
@@ -1075,7 +1014,9 @@ function detectDuplicatePrompt(params: {
   return undefined;
 }
 
-function collectKnownUserMessageIDs(messages: Array<{ info: Message; parts: Part[] }>): Set<string> {
+function collectKnownUserMessageIDs(
+  messages: Array<{ info: Message; parts: Part[] }>,
+): Set<string> {
   const ids = new Set<string>();
   for (const m of messages) {
     if (m.info.role !== "user") continue;
@@ -1573,9 +1514,7 @@ async function runPromptSubmit(params: {
       parts: [{ type: "text", text: params.text }],
     });
     if (accepted.error) {
-      throw new Error(
-        `OpenCode prompt_async rejected: ${JSON.stringify(accepted.error)}`,
-      );
+      throw new Error(`OpenCode prompt_async rejected: ${JSON.stringify(accepted.error)}`);
     }
 
     const runID = `run_${randomUUID()}`;
@@ -1741,8 +1680,7 @@ async function runPromptResult(params: {
       ...inspected,
       ok: false,
       error:
-        inspected.run.error ??
-        `Run '${params.runID}' ended with status '${inspected.status}'.`,
+        inspected.run.error ?? `Run '${params.runID}' ended with status '${inspected.status}'.`,
     };
   }
   return {
@@ -1831,11 +1769,7 @@ async function main() {
       if (sub === "snapshot") {
         const sessionID = getStringFlag(flags, "session-id");
         const title = getStringFlag(flags, "title");
-        const cont = getBoolFlag(
-          flags,
-          "latest",
-          getBoolFlag(flags, "continue", false),
-        );
+        const cont = getBoolFlag(flags, "latest", getBoolFlag(flags, "continue", false));
 
         if (!sessionID && !title && !cont) {
           printJson({
@@ -1924,19 +1858,10 @@ async function main() {
     const ensure = getBoolFlag(flags, "ensure-server", true);
     const opencodeBin = getStringFlag(flags, "opencode-bin") ?? "opencode";
     const permRespRaw = getStringFlag(flags, "permission-response") ?? "always";
-    const permissionResponse: PermissionAutoResponse =
-      permRespRaw === "once" ? "once" : "always";
+    const permissionResponse: PermissionAutoResponse = permRespRaw === "once" ? "once" : "always";
 
-    const autoRejectQuestions = getBoolFlag(
-      flags,
-      "auto-reject-questions",
-      true,
-    );
-    const denyQuestionsOnCreate = getBoolFlag(
-      flags,
-      "deny-questions-on-create",
-      true,
-    );
+    const autoRejectQuestions = getBoolFlag(flags, "auto-reject-questions", true);
+    const denyQuestionsOnCreate = getBoolFlag(flags, "deny-questions-on-create", true);
 
     const timeoutMs = getIntFlag(flags, "timeout-ms", 20 * 60 * 1000);
     const pollMs = getIntFlag(flags, "poll-ms", 1_000);
@@ -2008,11 +1933,7 @@ async function main() {
     const cont = getBoolFlag(
       flags,
       "latest",
-      getBoolFlag(
-        flags,
-        "continue",
-        sessionID === undefined && title === undefined,
-      ),
+      getBoolFlag(flags, "continue", sessionID === undefined && title === undefined),
     );
 
     const agent = getStringFlag(flags, "agent") ?? "build";
@@ -2020,16 +1941,8 @@ async function main() {
     const variant = getStringFlag(flags, "variant");
     const wait = getBoolFlag(flags, "wait", false);
     const force = getBoolFlag(flags, "force", false);
-    const dedupeExactWindowMs = getIntFlag(
-      flags,
-      "dedupe-exact-window-ms",
-      30 * 60 * 1000,
-    );
-    const dedupeSimilarWindowMs = getIntFlag(
-      flags,
-      "dedupe-similar-window-ms",
-      10 * 60 * 1000,
-    );
+    const dedupeExactWindowMs = getIntFlag(flags, "dedupe-exact-window-ms", 30 * 60 * 1000);
+    const dedupeSimilarWindowMs = getIntFlag(flags, "dedupe-similar-window-ms", 10 * 60 * 1000);
     const dedupeSimilarity = Math.max(
       0,
       Math.min(1, getNumberFlag(flags, "dedupe-similarity", 0.92)),

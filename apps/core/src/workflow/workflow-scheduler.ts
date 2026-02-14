@@ -179,11 +179,7 @@ export async function startWorkflowScheduler(params: {
         const fresh = params.store.getTask(candidate.workflowId, candidate.taskId);
         if (!fresh) continue;
         if (!fresh.timeoutAt || fresh.timeoutAt > nowMs) continue;
-        if (
-          fresh.state === "resolved" ||
-          fresh.state === "failed" ||
-          fresh.state === "cancelled"
-        ) {
+        if (fresh.state === "resolved" || fresh.state === "failed" || fresh.state === "cancelled") {
           continue;
         }
 
@@ -201,11 +197,7 @@ export async function startWorkflowScheduler(params: {
           continue;
         }
 
-        if (
-          w.state === "resolved" ||
-          w.state === "failed" ||
-          w.state === "cancelled"
-        ) {
+        if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") {
           // If the workflow is terminal, ensure the trigger task can't fire again.
           const terminalState = w.state;
           const nextState: WorkflowTaskState =
@@ -216,8 +208,7 @@ export async function startWorkflowScheduler(params: {
             updatedAt: nowMs,
             resolvedAt: claimedTask.resolvedAt ?? nowMs,
             result:
-              claimedTask.result ??
-              ({ kind: "terminal", workflowState: terminalState } as const),
+              claimedTask.result ?? ({ kind: "terminal", workflowState: terminalState } as const),
           });
           await publishTaskLifecycle({
             bus: params.bus,

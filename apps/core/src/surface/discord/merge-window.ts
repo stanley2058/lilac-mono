@@ -44,9 +44,10 @@ export type MergeCandidate = {
   content: string;
 };
 
-export function mergeByDiscordWindow(
-  candidatesDesc: readonly MergeCandidate[],
-): { mergedText: string; mergedMessageIds: string[] } {
+export function mergeByDiscordWindow(candidatesDesc: readonly MergeCandidate[]): {
+  mergedText: string;
+  mergedMessageIds: string[];
+} {
   if (candidatesDesc.length === 0) return { mergedText: "", mergedMessageIds: [] };
 
   // candidates are newest -> oldest; flip so split logic can follow

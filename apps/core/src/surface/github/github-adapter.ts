@@ -23,17 +23,12 @@ import {
   getIssue,
   listIssueComments,
 } from "../../github/github-api";
-import {
-  isGithubIssueTriggerId,
-  parseGithubSessionId,
-} from "../../github/github-ids";
+import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
 import { GithubOutputStream } from "./output/github-output-stream";
 
 function assertGithubSessionRef(sessionRef: SessionRef) {
   if (sessionRef.platform !== "github") {
-    throw new Error(
-      `Expected github sessionRef (got '${sessionRef.platform}')`,
-    );
+    throw new Error(`Expected github sessionRef (got '${sessionRef.platform}')`);
   }
 }
 
@@ -75,23 +70,13 @@ export class GithubAdapter implements SurfaceAdapter {
     return [];
   }
 
-  async startOutput(
-    sessionRef: SessionRef,
-    opts?: StartOutputOpts,
-  ): Promise<SurfaceOutputStream> {
+  async startOutput(sessionRef: SessionRef, opts?: StartOutputOpts): Promise<SurfaceOutputStream> {
     assertGithubSessionRef(sessionRef);
     const replyTo = opts?.replyTo;
-    return new GithubOutputStream(
-      sessionRef,
-      replyTo ? { replyTo } : undefined,
-    );
+    return new GithubOutputStream(sessionRef, replyTo ? { replyTo } : undefined);
   }
 
-  async sendMsg(
-    sessionRef: SessionRef,
-    content: ContentOpts,
-    _opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(sessionRef: SessionRef, content: ContentOpts, _opts?: SendOpts): Promise<MsgRef> {
     assertGithubSessionRef(sessionRef);
     const thread = parseGithubSessionId(sessionRef.channelId);
     const text = content.text ?? "";
@@ -151,20 +136,15 @@ export class GithubAdapter implements SurfaceAdapter {
     return {
       ref: msgRef,
       session: { platform: "github", channelId: msgRef.channelId },
-      userId:
-        typeof match.user?.login === "string" ? match.user.login : "unknown",
-      userName:
-        typeof match.user?.login === "string" ? match.user.login : undefined,
+      userId: typeof match.user?.login === "string" ? match.user.login : "unknown",
+      userName: typeof match.user?.login === "string" ? match.user.login : undefined,
       text: typeof match.body === "string" ? match.body : "",
       ts: match.created_at ? Date.parse(match.created_at) : Date.now(),
       raw: match,
     };
   }
 
-  async listMsg(
-    sessionRef: SessionRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     assertGithubSessionRef(sessionRef);
     const thread = parseGithubSessionId(sessionRef.channelId);
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
@@ -198,9 +178,7 @@ export class GithubAdapter implements SurfaceAdapter {
     }
     const commentId = Number(msgRef.messageId);
     if (!Number.isFinite(commentId) || commentId <= 0) {
-      throw new Error(
-        `github adapter: invalid comment id '${msgRef.messageId}'`,
-      );
+      throw new Error(`github adapter: invalid comment id '${msgRef.messageId}'`);
     }
     await editIssueComment({
       owner: thread.owner,
@@ -214,10 +192,7 @@ export class GithubAdapter implements SurfaceAdapter {
     throw new Error("github adapter: deleteMsg not supported");
   }
 
-  async getReplyContext(
-    sessionMsgRef: MsgRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(sessionMsgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     assertGithubMsgRef(sessionMsgRef);
     const sessionRef: SessionRef = {
       platform: "github",

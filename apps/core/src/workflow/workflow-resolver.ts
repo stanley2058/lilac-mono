@@ -51,7 +51,10 @@ export async function resolveDiscordWaitForReplyFromAdapterEvent(params: {
   queries: WorkflowStoreQueries;
   evt: EvtAdapterMessageCreatedData;
   evtHeaders?: Record<string, string>;
-  onTaskResolved: (workflowId: string, trigger: { evt: EvtAdapterMessageCreatedData; text: string }) => Promise<void>;
+  onTaskResolved: (
+    workflowId: string,
+    trigger: { evt: EvtAdapterMessageCreatedData; text: string },
+  ) => Promise<void>;
 }) {
   const { bus, store, queries, evt } = params;
   if (evt.platform !== "discord") return;
@@ -122,7 +125,10 @@ export async function pollTimeouts(params: {
   bus: LilacBus;
   store: WorkflowStore;
   queries: WorkflowStoreQueries;
-  onTaskResolved: (workflowId: string, trigger: { evt: EvtAdapterMessageCreatedData; text: string }) => Promise<void>;
+  onTaskResolved: (
+    workflowId: string,
+    trigger: { evt: EvtAdapterMessageCreatedData; text: string },
+  ) => Promise<void>;
 }) {
   const nowMs = Date.now();
   const candidates = params.queries.listActiveTimeoutTasks(nowMs);

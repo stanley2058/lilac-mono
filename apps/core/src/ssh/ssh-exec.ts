@@ -28,10 +28,7 @@ type StreamTextResult = {
   capped: boolean;
 };
 
-async function readStreamTextCapped(
-  stream: unknown,
-  maxChars: number,
-): Promise<StreamTextResult> {
+async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<StreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, capped: false };
   }
@@ -93,9 +90,9 @@ async function readStreamTextCapped(
   };
 }
 
-function inferTransportError(stderr: string):
-  | { type: "hostkey" | "auth" | "connect" | "unknown"; message: string }
-  | undefined {
+function inferTransportError(
+  stderr: string,
+): { type: "hostkey" | "auth" | "connect" | "unknown"; message: string } | undefined {
   const s = stderr.toLowerCase();
   if (s.includes("host key verification failed")) {
     return { type: "hostkey", message: "Host key verification failed" };
@@ -261,10 +258,8 @@ export async function sshExecBash(params: {
       child.exited,
     ]);
 
-    const stdout =
-      stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
-    const stderr =
-      stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
+    const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
+    const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
     const transportError = exitCode === 255 ? inferTransportError(stderr) : undefined;
@@ -277,10 +272,8 @@ export async function sshExecBash(params: {
       timedOut,
       aborted,
       capped: {
-        stdout:
-          stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
-        stderr:
-          stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
+        stdout: stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
+        stderr: stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
       },
       transportError,
     };

@@ -17,12 +17,7 @@ import type {
   SurfaceOutputStream,
   SurfaceToolStatusUpdate,
 } from "../../adapter";
-import type {
-  ContentOpts,
-  MsgRef,
-  SessionRef,
-  SurfaceAttachment,
-} from "../../types";
+import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../types";
 
 // NOTE: We currently only guarantee "images on same message" when the attachments are
 // known before the first outbound send. Attaching files to an existing Discord message
@@ -35,9 +30,7 @@ function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
 }
 
-function isDiscordSessionRef(
-  sessionRef: SessionRef,
-): sessionRef is SessionRef & {
+function isDiscordSessionRef(sessionRef: SessionRef): sessionRef is SessionRef & {
   platform: "discord";
   channelId: string;
 } {
@@ -57,7 +50,7 @@ function normalizeContent(content: ContentOpts): {
 export function escapeDiscordMarkdown(text: string): string {
   // Escape markdown-significant characters so tool status lines render literally.
   // This avoids cases like "**/*" being interpreted as emphasis.
-  return text.replace(/([\\*_`~|>\[\]()])/g, "\\$1");
+  return text.replace(/([\\*_`~|>[\]()])/g, "\\$1");
 }
 
 function isBatchToolDisplay(display: string): boolean {
@@ -100,17 +93,10 @@ function clampLast<T>(arr: readonly T[], n: number): T[] {
   return arr.slice(arr.length - n);
 }
 
-async function fetchTextChannel(
-  client: Client,
-  channelId: string,
-): Promise<TextBasedChannel> {
-  const ch = (await client.channels
-    .fetch(channelId)
-    .catch(() => null)) as TextBasedChannel | null;
+async function fetchTextChannel(client: Client, channelId: string): Promise<TextBasedChannel> {
+  const ch = (await client.channels.fetch(channelId).catch(() => null)) as TextBasedChannel | null;
   if (!ch || !("send" in ch)) {
-    throw new Error(
-      `Discord channel not found or not text-based: ${channelId}`,
-    );
+    throw new Error(`Discord channel not found or not text-based: ${channelId}`);
   }
   return ch;
 }
@@ -123,9 +109,11 @@ async function fetchExistingMessagesForResume(params: {
   const { channel, channelId, refs } = params;
   if (refs.length === 0) return [];
 
-  const messagesApi = (channel as unknown as {
-    messages?: { fetch: (messageId: string) => Promise<Message> };
-  }).messages;
+  const messagesApi = (
+    channel as unknown as {
+      messages?: { fetch: (messageId: string) => Promise<Message> };
+    }
+  ).messages;
 
   if (!messagesApi || typeof messagesApi.fetch !== "function") {
     return [];
@@ -149,9 +137,7 @@ async function fetchExistingMessagesForResume(params: {
   return out;
 }
 
-function toDiscordFiles(
-  attachments: readonly SurfaceAttachment[],
-): MessageCreateOptions["files"] {
+function toDiscordFiles(attachments: readonly SurfaceAttachment[]): MessageCreateOptions["files"] {
   if (attachments.length === 0) return undefined;
 
   // discord.js `AttachmentPayload` supports `attachment` + `name`. Discord infers the
@@ -162,10 +148,7 @@ function toDiscordFiles(
   }));
 }
 
-async function safeEdit(
-  msg: Message,
-  options: Parameters<Message["edit"]>[0],
-): Promise<boolean> {
+async function safeEdit(msg: Message, options: Parameters<Message["edit"]>[0]): Promise<boolean> {
   try {
     await msg.edit(options);
     return true;
@@ -231,8 +214,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (this.running) return;
 
     const { client, sessionRef } = this.deps;
-    if (!isDiscordSessionRef(sessionRef))
-      throw new Error("Unsupported platform");
+    if (!isDiscordSessionRef(sessionRef)) throw new Error("Unsupported platform");
 
     const channel = await fetchTextChannel(client, sessionRef.channelId);
     if (!("send" in channel)) throw new Error("Discord channel not found");
@@ -247,9 +229,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     this.cancelCustomId = (() => {
       const requestId = this.deps.opts?.requestId;
-      return requestId
-        ? buildCancelCustomId({ sessionId: sessionRef.channelId, requestId })
-        : null;
+      return requestId ? buildCancelCustomId({ sessionId: sessionRef.channelId, requestId }) : null;
     })();
 
     const buildCancelComponents = (
@@ -272,14 +252,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     });
     const resumed = resumedMessages.length > 0;
 
-    const initialAttachments = resumed
-      ? []
-      : this.pendingAttachments.slice(0, MAX_FILES);
+    const initialAttachments = resumed ? [] : this.pendingAttachments.slice(0, MAX_FILES);
     const remainingAttachments = resumed
       ? this.pendingAttachments.slice()
       : this.pendingAttachments.slice(MAX_FILES);
 
-    const first = resumedMessages[0] ??
+    const first =
+      resumedMessages[0] ??
       (await channel.send({
         // content must be non-empty to avoid Discord errors when sending only embeds.
         content: "*Replying...*",
@@ -322,8 +301,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       return;
     }
 
-    const { STREAMING_INDICATOR, CLOSING_TAG_BUFFER } =
-      getEmbedPusherConstants();
+    const { STREAMING_INDICATOR, CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
 
     const getMaxLength = (isStreaming: boolean) => {
       const max = 4096;
@@ -331,9 +309,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         return max - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
       }
       return (
-        max -
-        STREAMING_INDICATOR.length -
-        (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0)
+        max - STREAMING_INDICATOR.length - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0)
       );
     };
 
@@ -427,9 +403,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         return;
       case "tool.status": {
         const line = buildToolLine(part.update);
-        const idx = this.toolLines.findIndex(
-          (t) => t.toolCallId === part.update.toolCallId,
-        );
+        const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
         if (idx >= 0) {
           this.toolLines[idx] = { toolCallId: part.update.toolCallId, line };
         } else {

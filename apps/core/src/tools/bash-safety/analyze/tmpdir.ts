@@ -1,8 +1,6 @@
 import { tmpdir } from "node:os";
 
-export function isTmpdirOverriddenToNonTemp(
-  envAssignments: Map<string, string>,
-): boolean {
+export function isTmpdirOverriddenToNonTemp(envAssignments: Map<string, string>): boolean {
   if (!envAssignments.has("TMPDIR")) {
     return false;
   }

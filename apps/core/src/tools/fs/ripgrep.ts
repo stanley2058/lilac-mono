@@ -66,9 +66,7 @@ function parseMatchEvent(event: unknown): GrepMatch | null {
 
   const linesValue = data["lines"];
   const text =
-    isRecord(linesValue) && typeof linesValue["text"] === "string"
-      ? linesValue["text"]
-      : "";
+    isRecord(linesValue) && typeof linesValue["text"] === "string" ? linesValue["text"] : "";
 
   const rawSubmatches = data["submatches"];
   const submatches = Array.isArray(rawSubmatches)
@@ -93,9 +91,7 @@ function parseMatchEvent(event: unknown): GrepMatch | null {
             end,
           };
         })
-        .filter((item): item is { match: string; start: number; end: number } =>
-          item !== null,
-        )
+        .filter((item): item is { match: string; start: number; end: number } => item !== null)
     : [];
 
   return {
@@ -108,23 +104,11 @@ function parseMatchEvent(event: unknown): GrepMatch | null {
 }
 
 export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
-  const {
-    cwd,
-    pattern,
-    globs = [],
-    extraArgs = [],
-    regex = false,
-    maxMatches = 200,
-  } = options;
+  const { cwd, pattern, globs = [], extraArgs = [], regex = false, maxMatches = 200 } = options;
   const limit = Math.max(1, maxMatches);
 
   return new Promise<RipgrepResult>((resolve, reject) => {
-    const args: string[] = [
-      "--json",
-      "--color",
-      "never",
-      ...extraArgs,
-    ];
+    const args: string[] = ["--json", "--color", "never", ...extraArgs];
 
     // Per-file cap as a best-effort optimization. Global cap is still enforced below.
     args.push("--max-count", String(limit + 1));

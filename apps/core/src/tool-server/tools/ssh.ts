@@ -5,10 +5,7 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 
 export { parseSshHostsFromConfigText } from "../../ssh/ssh-config";
-import {
-  readConfiguredSshHosts,
-  requireConfiguredSshHost,
-} from "../../ssh/ssh-config";
+import { readConfiguredSshHosts, requireConfiguredSshHost } from "../../ssh/ssh-config";
 
 const DEFAULT_SSH_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
@@ -20,9 +17,7 @@ const runInputSchema = z.object({
   host: z
     .string()
     .min(1)
-    .describe(
-      "SSH host alias from ~/.ssh/config (or a valid ssh destination like user@host).",
-    ),
+    .describe("SSH host alias from ~/.ssh/config (or a valid ssh destination like user@host)."),
   cmd: z.string().min(1).describe("Command to execute on the remote host."),
   cwd: z
     .string()
@@ -30,8 +25,7 @@ const runInputSchema = z.object({
     .describe(
       "Optional working directory on the remote host. If provided, the command runs after `cd`.",
     ),
-  timeoutMs: z
-    .coerce
+  timeoutMs: z.coerce
     .number()
     .int()
     .positive()
@@ -46,17 +40,14 @@ const probeInputSchema = z.object({
   host: z
     .string()
     .min(1)
-    .describe(
-      "SSH host alias from ~/.ssh/config. Use ssh.hosts to list configured aliases.",
-    ),
+    .describe("SSH host alias from ~/.ssh/config. Use ssh.hosts to list configured aliases."),
   cwd: z
     .string()
     .optional()
     .describe(
       "Optional working directory to probe (used for git context). Defaults to the remote default directory.",
     ),
-  timeoutMs: z
-    .coerce
+  timeoutMs: z.coerce
     .number()
     .int()
     .positive()
@@ -75,7 +66,6 @@ async function loadProbeScript(): Promise<string> {
   return cachedProbeScript;
 }
 
-
 function truncateText(text: string, maxChars: number) {
   if (text.length <= maxChars) return { text, truncated: false as const };
   return { text: text.slice(0, maxChars), truncated: true as const };
@@ -86,9 +76,9 @@ async function readStreamText(stream: unknown): Promise<string> {
   return await new Response(stream as any).text();
 }
 
-function inferTransportError(stderr: string):
-  | { type: "hostkey" | "auth" | "connect" | "unknown"; message: string }
-  | undefined {
+function inferTransportError(
+  stderr: string,
+): { type: "hostkey" | "auth" | "connect" | "unknown"; message: string } | undefined {
   const s = stderr.toLowerCase();
   if (s.includes("host key verification failed")) {
     return { type: "hostkey", message: "Host key verification failed" };
@@ -96,7 +86,11 @@ function inferTransportError(stderr: string):
   if (s.includes("permission denied")) {
     return { type: "auth", message: "Permission denied" };
   }
-  if (s.includes("connection refused") || s.includes("timed out") || s.includes("could not resolve hostname")) {
+  if (
+    s.includes("connection refused") ||
+    s.includes("timed out") ||
+    s.includes("could not resolve hostname")
+  ) {
     return { type: "connect", message: "Failed to connect" };
   }
   return undefined;
@@ -140,7 +134,6 @@ async function buildProbeScript(input: ProbeInput): Promise<string> {
   const cwd = input.cwd ?? "";
   return base.replace("__LILAC_CWD_VALUE__", cwd);
 }
-
 
 export class SSH implements ServerTool {
   id = "ssh";
@@ -188,8 +181,7 @@ export class SSH implements ServerTool {
     opts?: { signal?: AbortSignal },
   ): Promise<unknown> {
     if (callableId === "ssh.hosts") {
-      const { configPath, hosts, exists, readError } =
-        await readConfiguredSshHosts();
+      const { configPath, hosts, exists, readError } = await readConfiguredSshHosts();
       return {
         configPath,
         exists,
@@ -265,10 +257,8 @@ export class SSH implements ServerTool {
           child.exited,
         ]);
 
-        const stdout =
-          stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
-        const stderr =
-          stderrResult.status === "fulfilled" ? stderrResult.value : "";
+        const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
+        const stderr = stderrResult.status === "fulfilled" ? stderrResult.value : "";
         const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
         const durationMs = Date.now() - startedAt;
@@ -276,8 +266,7 @@ export class SSH implements ServerTool {
         const outTrunc = truncateText(stdout, MAX_OUTPUT_CHARS);
         const errTrunc = truncateText(stderr, MAX_OUTPUT_CHARS);
 
-        const transportError =
-          exitCode === 255 ? inferTransportError(stderr) : undefined;
+        const transportError = exitCode === 255 ? inferTransportError(stderr) : undefined;
 
         return {
           ok: exitCode === 0 && !timedOut,
@@ -299,15 +288,10 @@ export class SSH implements ServerTool {
           transportError,
           errors: {
             stdoutRead:
-              stdoutResult.status === "rejected"
-                ? String(stdoutResult.reason)
-                : undefined,
+              stdoutResult.status === "rejected" ? String(stdoutResult.reason) : undefined,
             stderrRead:
-              stderrResult.status === "rejected"
-                ? String(stderrResult.reason)
-                : undefined,
-            exitRead:
-              exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
+              stderrResult.status === "rejected" ? String(stderrResult.reason) : undefined,
+            exitRead: exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
             stdinWrite: undefined,
           },
         };
@@ -379,10 +363,8 @@ export class SSH implements ServerTool {
           child.exited,
         ]);
 
-        const stdout =
-          stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
-        const stderr =
-          stderrResult.status === "fulfilled" ? stderrResult.value : "";
+        const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
+        const stderr = stderrResult.status === "fulfilled" ? stderrResult.value : "";
         const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
         const durationMs = Date.now() - startedAt;
@@ -390,8 +372,7 @@ export class SSH implements ServerTool {
         const outTrunc = truncateText(stdout, MAX_OUTPUT_CHARS);
         const errTrunc = truncateText(stderr, MAX_OUTPUT_CHARS);
 
-        const transportError =
-          exitCode === 255 ? inferTransportError(stderr) : undefined;
+        const transportError = exitCode === 255 ? inferTransportError(stderr) : undefined;
 
         let probe: unknown | undefined;
         let parseError: string | undefined;
@@ -426,15 +407,10 @@ export class SSH implements ServerTool {
           transportError,
           errors: {
             stdoutRead:
-              stdoutResult.status === "rejected"
-                ? String(stdoutResult.reason)
-                : undefined,
+              stdoutResult.status === "rejected" ? String(stdoutResult.reason) : undefined,
             stderrRead:
-              stderrResult.status === "rejected"
-                ? String(stderrResult.reason)
-                : undefined,
-            exitRead:
-              exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
+              stderrResult.status === "rejected" ? String(stderrResult.reason) : undefined,
+            exitRead: exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
             stdinWrite: undefined,
           },
         };

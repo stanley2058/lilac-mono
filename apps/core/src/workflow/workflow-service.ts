@@ -13,10 +13,7 @@ import { Logger } from "@stanley2058/simple-module-logger";
 import { createWorkflowStoreQueries } from "./workflow-store-queries";
 import type { WorkflowStoreQueries } from "./workflow-store-queries";
 
-import {
-  pollTimeouts,
-  resolveDiscordWaitForReplyFromAdapterEvent,
-} from "./workflow-resolver";
+import { pollTimeouts, resolveDiscordWaitForReplyFromAdapterEvent } from "./workflow-resolver";
 
 import type {
   WorkflowDefinitionV2,
@@ -41,10 +38,7 @@ function now(): number {
 const cronExpr5Schema = z
   .string()
   .min(1)
-  .refine(
-    (s) => s.trim().split(/\s+/g).filter(Boolean).length === 5,
-    "cron expr must be 5 fields",
-  );
+  .refine((s) => s.trim().split(/\s+/g).filter(Boolean).length === 5, "cron expr must be 5 fields");
 
 const v2OriginSchema = z.object({
   request_id: z.string().min(1),
@@ -97,14 +91,9 @@ const workflowDefinitionV3Schema: z.ZodType<WorkflowDefinitionV3> = z.object({
   }),
 });
 
-const workflowDefinitionSchema = z.union([
-  workflowDefinitionV2Schema,
-  workflowDefinitionV3Schema,
-]);
+const workflowDefinitionSchema = z.union([workflowDefinitionV2Schema, workflowDefinitionV3Schema]);
 
-function parseWorkflowDefinition(
-  raw: unknown,
-): WorkflowDefinitionV2 | WorkflowDefinitionV3 {
+function parseWorkflowDefinition(raw: unknown): WorkflowDefinitionV2 | WorkflowDefinitionV3 {
   const parsed = workflowDefinitionSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error(
@@ -185,10 +174,7 @@ async function publishWorkflowResolved(params: {
   );
 }
 
-function canResolveWorkflow(
-  def: WorkflowDefinitionV2,
-  tasks: WorkflowTaskRecord[],
-): boolean {
+function canResolveWorkflow(def: WorkflowDefinitionV2, tasks: WorkflowTaskRecord[]): boolean {
   const active = tasks.filter((t) => t.state !== "cancelled");
   if (active.length === 0) return false;
 
@@ -203,9 +189,7 @@ function canResolveWorkflow(
 
 function ensureNonDiscordRequestId(requestId: string) {
   if (requestId.startsWith("discord:")) {
-    throw new Error(
-      `resume request_id must not use discord: prefix (got '${requestId}')`,
-    );
+    throw new Error(`resume request_id must not use discord: prefix (got '${requestId}')`);
   }
 }
 
@@ -381,11 +365,7 @@ export async function startWorkflowService(params: {
           return;
         }
 
-        if (
-          w.state === "resolved" ||
-          w.state === "failed" ||
-          w.state === "cancelled"
-        ) {
+        if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") {
           await ctx.commit();
           return;
         }
@@ -409,12 +389,7 @@ export async function startWorkflowService(params: {
 
         const tasks = store.listTasks(workflowId);
         for (const t of tasks) {
-          if (
-            t.state === "resolved" ||
-            t.state === "failed" ||
-            t.state === "cancelled"
-          )
-            continue;
+          if (t.state === "resolved" || t.state === "failed" || t.state === "cancelled") continue;
           const tu: WorkflowTaskRecord = {
             ...t,
             state: "cancelled",
@@ -454,36 +429,33 @@ export async function startWorkflowService(params: {
         return;
       }
 
-        await resolveDiscordWaitForReplyFromAdapterEvent({
-          bus,
-          store,
-          queries,
-          evt: msg.data,
-          evtHeaders: msg.headers,
-          onTaskResolved: async (workflowId, trigger) => {
-            logger.info("workflow task resolved (reply)", {
-              workflowId,
-              channelId: trigger.evt.channelId,
-              messageId: trigger.evt.messageId,
-              userId: trigger.evt.userId,
-            });
+      await resolveDiscordWaitForReplyFromAdapterEvent({
+        bus,
+        store,
+        queries,
+        evt: msg.data,
+        evtHeaders: msg.headers,
+        onTaskResolved: async (workflowId, trigger) => {
+          logger.info("workflow task resolved (reply)", {
+            workflowId,
+            channelId: trigger.evt.channelId,
+            messageId: trigger.evt.messageId,
+            userId: trigger.evt.userId,
+          });
 
-            logger.debug("workflow task resolved text", {
-              workflowId,
-              text:
-                trigger.text.length > 200
-                  ? `${trigger.text.slice(0, 200)}...`
-                  : trigger.text,
-            });
-            await tryResolveWorkflow({
-              bus,
-              store,
-              logger,
-              workflowId,
-              triggerEvt: trigger.evt,
-              triggerUserText: trigger.text,
-            });
-          },
+          logger.debug("workflow task resolved text", {
+            workflowId,
+            text: trigger.text.length > 200 ? `${trigger.text.slice(0, 200)}...` : trigger.text,
+          });
+          await tryResolveWorkflow({
+            bus,
+            store,
+            logger,
+            workflowId,
+            triggerEvt: trigger.evt,
+            triggerUserText: trigger.text,
+          });
+        },
       });
 
       await ctx.commit();
@@ -550,8 +522,7 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled")
-    return;
+  if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") return;
 
   const tasks = store.listTasks(workflowId);
 

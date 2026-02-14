@@ -7,22 +7,13 @@ export function workflowTool(params: { bus: LilacBus }) {
   const { bus } = params;
 
   const workflowCreateInputSchema = z.object({
-    summary: z
-      .string()
-      .min(1)
-      .describe("Compact snapshot of what we were doing"),
+    summary: z.string().min(1).describe("Compact snapshot of what we were doing"),
     tasks: z
       .array(
         z.object({
           description: z.string().min(1),
-          sessionId: z
-            .string()
-            .min(1)
-            .describe("Session/channel id where the message was sent"),
-          messageId: z
-            .string()
-            .min(1)
-            .describe("Message id to wait for replies to"),
+          sessionId: z.string().min(1).describe("Session/channel id where the message was sent"),
+          messageId: z.string().min(1).describe("Message id to wait for replies to"),
         }),
       )
       .min(1)

@@ -39,9 +39,7 @@ function parseExpiresAtMs(expiresAt: unknown): number {
   return ms;
 }
 
-export async function getGithubInstallationTokenOrThrow(params: {
-  dataDir: string;
-}): Promise<{
+export async function getGithubInstallationTokenOrThrow(params: { dataDir: string }): Promise<{
   token: string;
   expiresAtMs: number;
   host?: string;
@@ -49,9 +47,7 @@ export async function getGithubInstallationTokenOrThrow(params: {
 }> {
   const secret = await readGithubAppSecret(params.dataDir);
   if (!secret) {
-    throw new Error(
-      "GitHub App not configured (run onboarding.github_app mode=configure)",
-    );
+    throw new Error("GitHub App not configured (run onboarding.github_app mode=configure)");
   }
 
   const apiBaseUrl = deriveApiBaseUrl({
@@ -124,9 +120,7 @@ export async function getGithubInstallationTokenOrThrow(params: {
   }
 }
 
-export async function getGithubEnvForBash(params: {
-  dataDir: string;
-}): Promise<
+export async function getGithubEnvForBash(params: { dataDir: string }): Promise<
   | {
       GH_TOKEN: string;
       GITHUB_TOKEN: string;

@@ -68,13 +68,7 @@ export type WorkflowDefinitionV3 = {
   };
 };
 
-export type WorkflowState =
-  | "queued"
-  | "running"
-  | "blocked"
-  | "resolved"
-  | "failed"
-  | "cancelled";
+export type WorkflowState = "queued" | "running" | "blocked" | "resolved" | "failed" | "cancelled";
 
 export type WorkflowTaskState =
   | "queued"

@@ -15,11 +15,7 @@ describe("discord merge window", () => {
       { authorId: "v", ts: 56 * minuteMs, id: "d" },
     ]);
 
-    expect(groups.map((g) => g.map((m) => m.id))).toEqual([
-      ["a", "b"],
-      ["c"],
-      ["d"],
-    ]);
+    expect(groups.map((g) => g.map((m) => m.id))).toEqual([["a", "b"], ["c"], ["d"]]);
   });
 
   it("merges only the newest discord-style group for descending input", () => {

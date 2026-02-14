@@ -310,10 +310,7 @@ function cloneMessage(message: ModelMessage): ModelMessage {
   return { ...message };
 }
 
-function sumOptionalNumber(
-  a: number | undefined,
-  b: number | undefined,
-): number | undefined {
+function sumOptionalNumber(a: number | undefined, b: number | undefined): number | undefined {
   if (a === undefined && b === undefined) return undefined;
   return (a ?? 0) + (b ?? 0);
 }
@@ -354,18 +351,12 @@ function sumLanguageModelUsage(
     },
     totalTokens: sumOptionalNumber(a.totalTokens, b.totalTokens),
     reasoningTokens: sumOptionalNumber(a.reasoningTokens, b.reasoningTokens),
-    cachedInputTokens: sumOptionalNumber(
-      a.cachedInputTokens,
-      b.cachedInputTokens,
-    ),
+    cachedInputTokens: sumOptionalNumber(a.cachedInputTokens, b.cachedInputTokens),
     raw: undefined,
   };
 }
 
-function takeQueued(
-  mode: "one-at-a-time" | "all",
-  queue: ModelMessage[],
-): ModelMessage[] {
+function takeQueued(mode: "one-at-a-time" | "all", queue: ModelMessage[]): ModelMessage[] {
   if (queue.length === 0) return [];
   if (mode === "one-at-a-time") {
     return [queue.shift()!];
@@ -420,11 +411,7 @@ function stripToolExecuteForModel<TOOLS extends ToolSet>(tools: TOOLS): TOOLS {
   // but remove execution so we can run tools ourselves (enables steering).
   return Object.fromEntries(
     Object.entries(tools).map(([name, tool]) => {
-      const {
-        execute: _execute,
-        needsApproval: _needsApproval,
-        ...rest
-      } = tool;
+      const { execute: _execute, needsApproval: _needsApproval, ...rest } = tool;
       return [name, rest];
     }),
   ) as TOOLS;
@@ -448,11 +435,7 @@ class TurnAbortedError extends Error {
   readonly phase: TurnAbortPhase;
   readonly detail?: string;
 
-  constructor(options: {
-    reason: TurnAbortReason;
-    phase: TurnAbortPhase;
-    detail?: string;
-  }) {
+  constructor(options: { reason: TurnAbortReason; phase: TurnAbortPhase; detail?: string }) {
     super(`Turn aborted (${options.reason}, ${options.phase})`);
     this.name = "TurnAbortedError";
     this.reason = options.reason;
@@ -471,10 +454,7 @@ function getAssistantToolCallIds(message: ModelMessage): string[] {
       type?: unknown;
       toolCallId?: unknown;
     };
-    if (
-      candidate.type === "tool-call" &&
-      typeof candidate.toolCallId === "string"
-    ) {
+    if (candidate.type === "tool-call" && typeof candidate.toolCallId === "string") {
       ids.push(candidate.toolCallId);
     }
   }
@@ -490,10 +470,7 @@ function getToolResultToolCallIds(message: ModelMessage): string[] {
       type?: unknown;
       toolCallId?: unknown;
     };
-    if (
-      candidate.type === "tool-result" &&
-      typeof candidate.toolCallId === "string"
-    ) {
+    if (candidate.type === "tool-result" && typeof candidate.toolCallId === "string") {
       ids.push(candidate.toolCallId);
     }
   }
@@ -583,8 +560,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     this.transformMessages = options.transformMessages;
 
-    this.captureModelViewMessages =
-      options.debug?.captureModelViewMessages === true;
+    this.captureModelViewMessages = options.debug?.captureModelViewMessages === true;
 
     this.state = {
       system: options.system,
@@ -616,10 +592,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   /** Replace the model used for subsequent turns. */
-  setModel(
-    model: LanguageModel,
-    providerOptions?: { [x: string]: JSONObject },
-  ) {
+  setModel(model: LanguageModel, providerOptions?: { [x: string]: JSONObject }) {
     this.state.model = model;
 
     // (When not provided) Reset provider options in case incompatible.
@@ -642,10 +615,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   /** Replace the entire transcript. Use with care. */
-  replaceMessages(
-    messages: ModelMessage[],
-    options?: { reason?: "replace" | "compaction" },
-  ) {
+  replaceMessages(messages: ModelMessage[], options?: { reason?: "replace" | "compaction" }) {
     if (this.state.streamMessage || this.state.pendingToolCalls.size > 0) {
       throw new Error(
         "Cannot replace messages during a turn. Wait for the current model/tool step to finish.",
@@ -752,9 +722,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
    */
   async prompt(input: string | ModelMessage | ModelMessage[]) {
     if (this.state.isStreaming) {
-      throw new Error(
-        "Agent is already processing. Use steer() or followUp(), or waitForIdle().",
-      );
+      throw new Error("Agent is already processing. Use steer() or followUp(), or waitForIdle().");
     }
 
     const newMessages = Array.isArray(input)
@@ -773,16 +741,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
    */
   async continue() {
     if (this.state.isStreaming) {
-      throw new Error(
-        "Agent is already processing. Wait for completion before continuing.",
-      );
+      throw new Error("Agent is already processing. Wait for completion before continuing.");
     }
 
     const messages = this.state.messages;
     if (messages.length === 0) throw new Error("No messages to continue from");
     const last = messages[messages.length - 1]!;
-    if (last.role === "assistant")
-      throw new Error("Cannot continue from assistant message");
+    if (last.role === "assistant") throw new Error("Cannot continue from assistant message");
 
     await this.runLoop({ newMessages: undefined });
   }
@@ -848,8 +813,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             this.abortRequestedReason = null;
           } else if (this.abortController?.signal.aborted) {
             // Manual abort between turns.
-            const reason: TurnAbortReason =
-              this.abortRequestedReason ?? "manual";
+            const reason: TurnAbortReason = this.abortRequestedReason ?? "manual";
             this.emit({ type: "turn_abort", reason, phase: "tools" });
             break;
           }
@@ -860,10 +824,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               this.state.messages.push(added);
             }
 
-            runTotalUsage = sumLanguageModelUsage(
-              runTotalUsage,
-              turn.totalUsage,
-            );
+            runTotalUsage = sumLanguageModelUsage(runTotalUsage, turn.totalUsage);
 
             this.emit({
               type: "turn_end",
@@ -873,13 +834,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               totalUsage: turn.totalUsage,
             });
 
-            if (
-              turn.finishReason === "tool-calls" &&
-              turn.toolCalls.length > 0
-            ) {
-              const steeringInjected = await this.executeToolCallsAndMaybeSteer(
-                turn.toolCalls,
-              );
+            if (turn.finishReason === "tool-calls" && turn.toolCalls.length > 0) {
+              const steeringInjected = await this.executeToolCallsAndMaybeSteer(turn.toolCalls);
               if (steeringInjected) {
                 // continue immediately to respond to steering message(s)
                 continue;
@@ -989,8 +945,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     const turnIndex = ++this.turnCounter;
 
     const getAbortReason = (): TurnAbortReason =>
-      this.abortRequestedReason ??
-      (this.pendingInterrupt ? "interrupt" : "manual");
+      this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
     const abortSignal = this.abortController?.signal;
 
@@ -1025,9 +980,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     }
 
     const lastMessage =
-      messagesForModel.length > 0
-        ? messagesForModel[messagesForModel.length - 1]
-        : undefined;
+      messagesForModel.length > 0 ? messagesForModel[messagesForModel.length - 1] : undefined;
     if (lastMessage?.role === "assistant") {
       throw new Error(
         "transformMessages produced an invalid outbound context: last message is assistant.",
@@ -1232,8 +1185,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       this.state.streamMessage = null;
 
       const reason: TurnAbortReason =
-        this.abortRequestedReason ??
-        (this.pendingInterrupt ? "interrupt" : "manual");
+        this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
       throw new TurnAbortedError({ reason, phase: "model" });
     }
@@ -1258,8 +1210,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         this.state.streamMessage = null;
 
         const reason: TurnAbortReason =
-          this.abortRequestedReason ??
-          (this.pendingInterrupt ? "interrupt" : "manual");
+          this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
         throw new TurnAbortedError({ reason, phase: "model" });
       }
@@ -1323,16 +1274,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       call: ToolCall;
     };
 
-    const PARALLEL_SAFE_TOOL_NAMES = new Set<string>([
-      "read_file",
-      "glob",
-      "grep",
-    ]);
+    const PARALLEL_SAFE_TOOL_NAMES = new Set<string>(["read_file", "glob", "grep"]);
     const MAX_PARALLEL_TOOLS = 4;
 
     const getAbortReason = (): TurnAbortReason =>
-      this.abortRequestedReason ??
-      (this.pendingInterrupt ? "interrupt" : "manual");
+      this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
     const isAborted = (): boolean => this.abortController?.signal.aborted === true;
 
@@ -1455,9 +1401,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       };
     };
 
-    const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(
-      toolCalls.length,
-    );
+    const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(toolCalls.length);
     let nextAppendIndex = 0;
 
     const appendReadyOutcomes = () => {
@@ -1495,23 +1439,21 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       parallelBucket = [];
 
       let next = 0;
-      const workers = Array.from(
-        { length: Math.min(MAX_PARALLEL_TOOLS, pending.length) },
-        () =>
-          (async () => {
-            while (true) {
-              if (isAborted()) return;
-              const current = next;
-              if (current >= pending.length) return;
-              next += 1;
+      const workers = Array.from({ length: Math.min(MAX_PARALLEL_TOOLS, pending.length) }, () =>
+        (async () => {
+          while (true) {
+            if (isAborted()) return;
+            const current = next;
+            if (current >= pending.length) return;
+            next += 1;
 
-              const { index, call } = pending[current]!;
-              if (isAborted()) return;
+            const { index, call } = pending[current]!;
+            if (isAborted()) return;
 
-              outcomes[index] = await executeOne(call);
-              appendReadyOutcomes();
-            }
-          })(),
+            outcomes[index] = await executeOne(call);
+            appendReadyOutcomes();
+          }
+        })(),
       );
 
       await Promise.all(workers);
@@ -1551,9 +1493,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
     if (!stoppedDueToAbort && nextAppendIndex !== toolCalls.length) {
       const missing = toolCalls[nextAppendIndex]!;
-      throw new Error(
-        `Missing tool execution outcome for toolCallId=${missing.toolCallId}`,
-      );
+      throw new Error(`Missing tool execution outcome for toolCallId=${missing.toolCallId}`);
     }
 
     if (isAborted()) {
@@ -1583,9 +1523,7 @@ function hasOwnKey<T extends object, K extends PropertyKey>(
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
-function extractToolCallsFromMessages(
-  messages: readonly ModelMessage[],
-): Array<{
+function extractToolCallsFromMessages(messages: readonly ModelMessage[]): Array<{
   toolCallId: string;
   toolName: string;
   input: unknown;

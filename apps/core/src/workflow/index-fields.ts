@@ -6,10 +6,7 @@ import { computeNextCronAtMs } from "./cron";
 const cronExpr5Schema = z
   .string()
   .min(1)
-  .refine(
-    (s) => s.trim().split(/\s+/g).filter(Boolean).length === 5,
-    "cron expr must be 5 fields",
-  );
+  .refine((s) => s.trim().split(/\s+/g).filter(Boolean).length === 5, "cron expr must be 5 fields");
 
 const discordWaitForReplyInputSchema = z
   .object({
@@ -55,9 +52,7 @@ export function indexFieldsForTask(params: {
       discordMessageId: input.messageId,
       discordFromUserId: input.fromUserId,
       timeoutAt:
-        typeof timeoutMs === "number" && timeoutMs > 0
-          ? Date.now() + timeoutMs
-          : undefined,
+        typeof timeoutMs === "number" && timeoutMs > 0 ? Date.now() + timeoutMs : undefined,
     };
   }
 

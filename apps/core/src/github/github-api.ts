@@ -2,11 +2,7 @@ import { createAppAuth } from "@octokit/auth-app";
 
 import { env } from "@stanley2058/lilac-utils";
 
-import {
-  deriveApiBaseUrl,
-  readGithubAppPrivateKeyPem,
-  readGithubAppSecret,
-} from "./github-app";
+import { deriveApiBaseUrl, readGithubAppPrivateKeyPem, readGithubAppSecret } from "./github-app";
 import { getGithubInstallationTokenOrThrow } from "./github-app-token";
 
 type GithubApiCtx = {
@@ -17,8 +13,7 @@ type GithubApiCtx = {
 function headers(token: string, extra?: Record<string, string>): HeadersInit {
   return {
     "User-Agent": "lilac",
-    Accept:
-      "application/vnd.github+json, application/vnd.github.squirrel-girl-preview+json",
+    Accept: "application/vnd.github+json, application/vnd.github.squirrel-girl-preview+json",
     "X-GitHub-Api-Version": "2022-11-28",
     Authorization: `token ${token}`,
     ...extra,
@@ -191,11 +186,7 @@ export async function deleteIssueComment(input: {
   });
 }
 
-export async function getIssue(input: {
-  owner: string;
-  repo: string;
-  number: number;
-}): Promise<{
+export async function getIssue(input: { owner: string; repo: string; number: number }): Promise<{
   title: string;
   body: string | null;
   html_url?: string;
@@ -244,15 +235,7 @@ export async function createIssueReaction(input: {
   owner: string;
   repo: string;
   issueNumber: number;
-  content:
-    | "+1"
-    | "-1"
-    | "laugh"
-    | "confused"
-    | "heart"
-    | "hooray"
-    | "rocket"
-    | "eyes";
+  content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
 }): Promise<{ id: number }> {
   const c = await ctx();
   return await githubFetchJson<{ id: number }>({
@@ -267,15 +250,7 @@ export async function createIssueCommentReaction(input: {
   owner: string;
   repo: string;
   commentId: number;
-  content:
-    | "+1"
-    | "-1"
-    | "laugh"
-    | "confused"
-    | "heart"
-    | "hooray"
-    | "rocket"
-    | "eyes";
+  content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
 }): Promise<{ id: number }> {
   const c = await ctx();
   return await githubFetchJson<{ id: number }>({
@@ -318,7 +293,13 @@ export async function getPullRequest(input: {
   owner: string;
   repo: string;
   number: number;
-}): Promise<{ title: string; body: string | null; html_url?: string; head: { sha: string; ref: string }; base: { ref: string } }> {
+}): Promise<{
+  title: string;
+  body: string | null;
+  html_url?: string;
+  head: { sha: string; ref: string };
+  base: { ref: string };
+}> {
   const c = await ctx();
   return await githubFetchJson({
     ...c,

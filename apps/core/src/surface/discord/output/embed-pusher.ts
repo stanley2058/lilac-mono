@@ -3,10 +3,7 @@ import { setTimeout } from "node:timers/promises";
 
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
 
-export type SafeEdit = (
-  msg: Message,
-  options: Parameters<Message["edit"]>[0],
-) => Promise<boolean>;
+export type SafeEdit = (msg: Message, options: Parameters<Message["edit"]>[0]) => Promise<boolean>;
 
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
@@ -22,9 +19,7 @@ function buildActionsValue(lines: readonly string[]): string {
 }
 
 function buildStatsValue(line: string): string {
-  const wrapped = line.startsWith("*") && line.endsWith("*")
-    ? line
-    : `*${line}*`;
+  const wrapped = line.startsWith("*") && line.endsWith("*") ? line : `*${line}*`;
   const maxLength = 1024;
   const overflow = "...*";
   if (wrapped.length <= maxLength) return wrapped;
@@ -90,9 +85,7 @@ export async function startEmbedPusher(params: {
    * Optional additional edit options for the FIRST message in the chain.
    * Used for surface controls (e.g. Cancel buttons) that must persist across edits.
    */
-  getFirstMessageEditExtras?: (
-    isStreaming: boolean,
-  ) => Partial<MessageEditOptions>;
+  getFirstMessageEditExtras?: (isStreaming: boolean) => Partial<MessageEditOptions>;
 }): Promise<{
   lastMsg: Message;
   responseQueue: string[];
@@ -127,10 +120,7 @@ export async function startEmbedPusher(params: {
     const statsLine = params.getStatsLine?.() ?? null;
 
     // Allow tool progress (Actions) / stats to render before any text is produced.
-    if (
-      displayChunks.length === 0 &&
-      (actionsLines.length > 0 || !!statsLine)
-    ) {
+    if (displayChunks.length === 0 && (actionsLines.length > 0 || !!statsLine)) {
       displayChunks = [""];
     }
 
@@ -147,21 +137,13 @@ export async function startEmbedPusher(params: {
       const isLast = i === displayChunks.length - 1;
       const showStreamIndicator = streaming && isLast;
 
-      const description = showStreamIndicator
-        ? addStreamingIndicator(chunk)
-        : chunk;
-      const color = showStreamIndicator
-        ? EMBED_COLOR_INCOMPLETE
-        : EMBED_COLOR_COMPLETE;
-      const statsLineForChunk = !showStreamIndicator && isLast
-        ? statsLine
-        : null;
+      const description = showStreamIndicator ? addStreamingIndicator(chunk) : chunk;
+      const color = showStreamIndicator ? EMBED_COLOR_INCOMPLETE : EMBED_COLOR_COMPLETE;
+      const statsLineForChunk = !showStreamIndicator && isLast ? statsLine : null;
 
       // Only show actions while streaming. Once done, actions disappear.
       const actionsValue =
-        showStreamIndicator && actionsLines.length > 0
-          ? buildActionsValue(actionsLines)
-          : "";
+        showStreamIndicator && actionsLines.length > 0 ? buildActionsValue(actionsLines) : "";
 
       const emb = buildEmbed({
         description,
@@ -200,7 +182,7 @@ export async function startEmbedPusher(params: {
       ) {
         await params.safeEdit(chunkMessages[i]!, {
           embeds: [emb],
-          ...(firstExtras ?? {}),
+          ...firstExtras,
         });
         sentDescriptions[i] = description;
         sentColors[i] = color;

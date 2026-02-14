@@ -17,9 +17,7 @@ describe("read_file attachments", () => {
     );
   }
 
-  async function resolveExecuteResult<T>(
-    value: T | PromiseLike<T> | AsyncIterable<T>,
-  ): Promise<T> {
+  async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
     if (isAsyncIterable(value)) {
       let last: T | undefined;
       for await (const chunk of value) last = chunk;
@@ -31,9 +29,7 @@ describe("read_file attachments", () => {
     return await value;
   }
 
-  function isAttachmentResult(
-    output: unknown,
-  ): output is { success: true; kind: "attachment" } {
+  function isAttachmentResult(output: unknown): output is { success: true; kind: "attachment" } {
     return (
       !!output &&
       typeof output === "object" &&

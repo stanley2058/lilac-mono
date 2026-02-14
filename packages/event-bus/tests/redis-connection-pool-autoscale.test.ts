@@ -87,9 +87,7 @@ describe("RedisConnectionPool autoscale", () => {
       },
     });
 
-    const leases = await Promise.all(
-      Array.from({ length: 16 }, async () => await pool.acquire()),
-    );
+    const leases = await Promise.all(Array.from({ length: 16 }, async () => await pool.acquire()));
 
     expect(pool.stats().created).toBe(16);
     expect(pool.stats().inUse).toBe(16);

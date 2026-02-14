@@ -103,9 +103,7 @@ export function decodeDataUrl(s: string): {
   const mimeType = metaParts[0] ? metaParts[0] : undefined;
   const isBase64 = metaParts.includes("base64");
 
-  const bytes = isBase64
-    ? Buffer.from(data, "base64")
-    : Buffer.from(data, "utf8");
+  const bytes = isBase64 ? Buffer.from(data, "base64") : Buffer.from(data, "utf8");
   return { bytes, mimeType };
 }
 

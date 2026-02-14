@@ -55,10 +55,7 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-async function readTextPrefix(
-  filePath: string,
-  maxBytes: number,
-): Promise<string> {
+async function readTextPrefix(filePath: string, maxBytes: number): Promise<string> {
   const handle = await fs.open(filePath, "r");
   try {
     const buf = Buffer.allocUnsafe(maxBytes);
@@ -137,8 +134,7 @@ export function parseSkillMarkdown(raw: string): ParsedSkillFile {
   const description = trimNonEmptyString(parsedFrontmatter.description);
 
   if (!name) throw new Error("Frontmatter field 'name' is required");
-  if (!description)
-    throw new Error("Frontmatter field 'description' is required");
+  if (!description) throw new Error("Frontmatter field 'description' is required");
 
   return {
     frontmatter: parsedFrontmatter,
@@ -290,9 +286,7 @@ function validateSkillName(name: string): string[] {
 function validateSkillDescription(description: string): string[] {
   const errors: string[] = [];
   if (description.length > MAX_DESCRIPTION_LENGTH) {
-    errors.push(
-      `description exceeds ${MAX_DESCRIPTION_LENGTH} characters (${description.length})`,
-    );
+    errors.push(`description exceeds ${MAX_DESCRIPTION_LENGTH} characters (${description.length})`);
   }
   return errors;
 }
@@ -322,10 +316,8 @@ export function formatAvailableSkillsSection(
 ): string | null {
   if (skills.length === 0) return null;
 
-  const maxDescriptionChars =
-    options?.maxDescriptionChars ?? DEFAULT_SKILL_DESCRIPTION_MAX_CHARS;
-  const maxSectionChars =
-    options?.maxSectionChars ?? DEFAULT_SKILLS_SECTION_MAX_CHARS;
+  const maxDescriptionChars = options?.maxDescriptionChars ?? DEFAULT_SKILL_DESCRIPTION_MAX_CHARS;
+  const maxSectionChars = options?.maxSectionChars ?? DEFAULT_SKILLS_SECTION_MAX_CHARS;
 
   const header = "## Available Skills";
   const lines: string[] = [header];
@@ -462,7 +454,7 @@ export async function discoverSkills(params: {
       if (parentDirName !== parsed.name) {
         warnings.push({
           location: skillPath,
-          message: `name \"${parsed.name}\" does not match parent directory \"${parentDirName}\"`,
+          message: `name "${parsed.name}" does not match parent directory "${parentDirName}"`,
         });
       }
 
@@ -479,9 +471,7 @@ export async function discoverSkills(params: {
     }
   }
 
-  const skills = Array.from(byName.values()).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  const skills = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
 
   return { skills, warnings };
 }

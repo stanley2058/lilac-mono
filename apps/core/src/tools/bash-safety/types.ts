@@ -20,25 +20,9 @@ export const MAX_STRIP_ITERATIONS = 20;
 
 export const SHELL_OPERATORS = new Set(["&&", "||", "|&", "|", "&", ";", "\n"]);
 
-export const SHELL_WRAPPERS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "ksh",
-  "dash",
-  "fish",
-  "csh",
-  "tcsh",
-]);
+export const SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "ksh", "dash", "fish", "csh", "tcsh"]);
 
-export const INTERPRETERS = new Set([
-  "python",
-  "python3",
-  "python2",
-  "node",
-  "ruby",
-  "perl",
-]);
+export const INTERPRETERS = new Set(["python", "python3", "python2", "node", "ruby", "perl"]);
 
 export const DANGEROUS_PATTERNS = [
   /\brm\s+.*-[rR].*-f\b/,

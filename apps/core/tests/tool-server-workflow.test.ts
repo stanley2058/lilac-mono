@@ -41,10 +41,7 @@ function createInMemoryRawBus(): RawBus {
   }>();
 
   return {
-    publish: async <TData>(
-      msg: Omit<Message<TData>, "id" | "ts">,
-      opts: PublishOptions,
-    ) => {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const id = `${Date.now()}-0`;
       const stored: Message<unknown> = {
         topic: opts.topic,
@@ -76,10 +73,7 @@ function createInMemoryRawBus(): RawBus {
       const entry = {
         topic,
         opts,
-        handler: handler as unknown as (
-          msg: Message<unknown>,
-          ctx: HandleContext,
-        ) => Promise<void>,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
       };
       subs.add(entry);
 
@@ -155,11 +149,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async sendMsg(
-    sessionRef: SessionRef,
-    content: ContentOpts,
-    opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(sessionRef: SessionRef, content: ContentOpts, opts?: SendOpts): Promise<MsgRef> {
     this.sendCalls.push({ sessionRef, content, opts });
     return { platform: "discord", channelId: sessionRef.channelId, messageId: "m1" };
   }
@@ -180,10 +170,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async getReplyContext(
-    _msgRef: MsgRef,
-    _opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
   }
 
@@ -259,9 +246,7 @@ describe("tool-server workflow", () => {
       expect(res).toMatchObject({ ok: true });
       expect(adapter.sendCalls.length).toBe(1);
       expect(adapter.sendCalls[0]?.content.attachments?.length).toBe(1);
-      expect(adapter.sendCalls[0]?.content.attachments?.[0]?.filename).toBe(
-        "renamed.txt",
-      );
+      expect(adapter.sendCalls[0]?.content.attachments?.[0]?.filename).toBe("renamed.txt");
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

@@ -29,11 +29,8 @@ export class Summarize implements ServerTool {
       {
         callableId: "summarize",
         name: "Summarize Content",
-        description:
-          "Summarize the input using Gemini AI. Use --help to see all options.",
-        shortInput: [
-          "--text=<string> OR --url=<string> OR --path=<string> OR --base64=<base64>",
-        ],
+        description: "Summarize the input using Gemini AI. Use --help to see all options.",
+        shortInput: ["--text=<string> OR --url=<string> OR --path=<string> OR --base64=<base64>"],
         input: zodObjectToCliLines(agentSummarizeInputSchema),
       },
     ];
@@ -96,28 +93,17 @@ export const agentSummarizeInputSchema = z
     type: z
       .enum(["text", "binary"])
       .optional()
-      .describe(
-        "Input type. Optional; inferred from provided fields when omitted.",
-      ),
+      .describe("Input type. Optional; inferred from provided fields when omitted."),
 
-    text: z
-      .string()
-      .optional()
-      .describe("Plain text to summarize (can also be a website URL)."),
+    text: z.string().optional().describe("Plain text to summarize (can also be a website URL)."),
 
     url: z
       .string()
       .min(1)
       .optional()
-      .describe(
-        "Remote URL for binary content (files/images) or a YouTube URL for video.",
-      ),
+      .describe("Remote URL for binary content (files/images) or a YouTube URL for video."),
 
-    path: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Local file path for binary content."),
+    path: z.string().min(1).optional().describe("Local file path for binary content."),
 
     base64: z.base64().optional().describe("Base64-encoded binary content."),
 
@@ -126,21 +112,17 @@ export const agentSummarizeInputSchema = z
       .optional()
       .describe("Additional instructions you want to give to the model."),
 
-    maxOutputTokens: z
-      .coerce
+    maxOutputTokens: z.coerce
       .number()
       .optional()
-      .describe(
-        `Max output token, defaults to ${DEFAULT_MAX_OUTPUT_TOKENS}, max is 64k.`,
-      ),
+      .describe(`Max output token, defaults to ${DEFAULT_MAX_OUTPUT_TOKENS}, max is 64k.`),
   })
   .superRefine((input, ctx) => {
     const type = inferSummarizeType(input);
     if (!type) {
       ctx.addIssue({
         code: "custom",
-        message:
-          "Missing input. Provide `text` or one of `url`, `path`, or `base64`.",
+        message: "Missing input. Provide `text` or one of `url`, `path`, or `base64`.",
       });
       return;
     }
@@ -175,9 +157,7 @@ export const agentSummarizeInputSchema = z
       });
     }
 
-    const sources = [input.url, input.path, input.base64].filter(
-      (v) => typeof v === "string",
-    );
+    const sources = [input.url, input.path, input.base64].filter((v) => typeof v === "string");
     if (sources.length !== 1) {
       ctx.addIssue({
         code: "custom",

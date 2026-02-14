@@ -23,17 +23,16 @@ function parseJwtClaims(token: string): Record<string, unknown> | undefined {
   const parts = token.split(".");
   if (parts.length !== 3) return undefined;
   try {
-    return JSON.parse(
-      Buffer.from(parts[1]!, "base64url").toString("utf8"),
-    ) as Record<string, unknown>;
+    return JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
     return undefined;
   }
 }
 
-function extractAccountIdFromClaims(
-  claims: Record<string, unknown>,
-): string | undefined {
+function extractAccountIdFromClaims(claims: Record<string, unknown>): string | undefined {
   const direct = claims["chatgpt_account_id"];
   if (typeof direct === "string" && direct.length > 0) return direct;
 
@@ -106,9 +105,7 @@ export async function readCodexTokens(): Promise<CodexOAuthTokens | null> {
   };
 }
 
-export async function writeCodexTokens(
-  tokens: CodexOAuthTokens,
-): Promise<void> {
+export async function writeCodexTokens(tokens: CodexOAuthTokens): Promise<void> {
   await ensureSecretDir();
   const json = JSON.stringify(tokens, null, 2);
   await Bun.write(STORAGE_PATH, json);
@@ -141,8 +138,7 @@ export async function generatePKCE(): Promise<PkceCodes> {
 }
 
 function generateRandomString(length: number): string {
-  const chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   return Array.from(bytes)
     .map((b) => chars[b % chars.length]!)
@@ -209,9 +205,7 @@ export async function exchangeCodeForTokens(options: {
   return (await response.json()) as TokenResponse;
 }
 
-export async function refreshAccessToken(
-  refreshToken: string,
-): Promise<TokenResponse> {
+export async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
   const response = await fetch(`${CODEX_OAUTH_ISSUER}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

@@ -4,18 +4,9 @@ import { z } from "zod";
 
 import { env } from "./env";
 import { findWorkspaceRoot } from "./find-root";
-import {
-  buildAgentSystemPrompt,
-  promptWorkspaceSignature,
-} from "./agent-prompts";
+import { buildAgentSystemPrompt, promptWorkspaceSignature } from "./agent-prompts";
 
-export type JSONValue =
-  | null
-  | string
-  | number
-  | boolean
-  | JSONObject
-  | JSONArray;
+export type JSONValue = null | string | number | boolean | JSONObject | JSONArray;
 export type JSONArray = JSONValue[];
 export type JSONObject = {
   [key: string]: JSONValue | undefined;
@@ -32,10 +23,7 @@ const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
   ]),
 );
 
-const jsonObjectSchema: z.ZodType<JSONObject> = z.record(
-  z.string(),
-  jsonValueSchema,
-);
+const jsonObjectSchema: z.ZodType<JSONObject> = z.record(z.string(), jsonValueSchema);
 
 type AgentConfig = {
   systemPrompt: string;
@@ -271,9 +259,7 @@ export const coreConfigSchema = z.object({
 
   entity: z
     .object({
-      users: z
-        .record(z.string().min(1), z.object({ discord: z.string().min(1) }))
-        .default({}),
+      users: z.record(z.string().min(1), z.object({ discord: z.string().min(1) })).default({}),
 
       sessions: z
         .object({
@@ -302,21 +288,14 @@ export function resolveCoreConfigPath(options?: { dataDir?: string }): string {
 
 async function resolveCoreConfigTemplatePath(): Promise<string> {
   // Prefer an internal template so docker volume mounts can't hide it.
-  const internal = path.join(
-    import.meta.dir,
-    "config-templates",
-    "core-config.example.yaml",
-  );
+  const internal = path.join(import.meta.dir, "config-templates", "core-config.example.yaml");
   if (await Bun.file(internal).exists()) return internal;
 
   // Back-compat for older layouts.
   return path.resolve(findWorkspaceRoot(), "data", "core-config.example.yaml");
 }
 
-export async function seedCoreConfig(options?: {
-  dataDir?: string;
-  overwrite?: boolean;
-}): Promise<{
+export async function seedCoreConfig(options?: { dataDir?: string; overwrite?: boolean }): Promise<{
   dataDir: string;
   configPath: string;
   created: boolean;
@@ -421,9 +400,7 @@ export async function getCoreConfig(options?: {
 }
 
 export function resolveDiscordDbPath(cfg: CoreConfig): string {
-  return (
-    cfg.surface.discord.dbPath ?? path.join(env.dataDir, "discord-surface.db")
-  );
+  return cfg.surface.discord.dbPath ?? path.join(env.dataDir, "discord-surface.db");
 }
 
 export function resolveTranscriptDbPath(): string {

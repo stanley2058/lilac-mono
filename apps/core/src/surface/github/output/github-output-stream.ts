@@ -1,13 +1,5 @@
-import type {
-  MsgRef,
-  SessionRef,
-  SurfaceAttachment,
-} from "../../types";
-import type {
-  SurfaceOutputPart,
-  SurfaceOutputResult,
-  SurfaceOutputStream,
-} from "../../adapter";
+import type { MsgRef, SessionRef, SurfaceAttachment } from "../../types";
+import type { SurfaceOutputPart, SurfaceOutputResult, SurfaceOutputStream } from "../../adapter";
 
 import { createIssueComment } from "../../../github/github-api";
 import { parseGithubSessionId } from "../../../github/github-ids";

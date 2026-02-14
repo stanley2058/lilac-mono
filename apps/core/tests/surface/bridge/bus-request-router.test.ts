@@ -12,10 +12,7 @@ import {
 
 import { startBusRequestRouter } from "../../../src/surface/bridge/bus-request-router";
 
-import type {
-  SurfaceAdapter,
-  SurfaceOutputStream,
-} from "../../../src/surface/adapter";
+import type { SurfaceAdapter, SurfaceOutputStream } from "../../../src/surface/adapter";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -40,10 +37,7 @@ function createInMemoryRawBus(): RawBus {
   }>();
 
   return {
-    publish: async <TData>(
-      msg: Omit<Message<TData>, "id" | "ts">,
-      opts: PublishOptions,
-    ) => {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const id = String(Date.now()) + "-0";
       const stored: Message<unknown> = {
         topic: opts.topic,
@@ -75,10 +69,7 @@ function createInMemoryRawBus(): RawBus {
       const entry = {
         topic,
         opts,
-        handler: handler as unknown as (
-          msg: Message<unknown>,
-          ctx: HandleContext,
-        ) => Promise<void>,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
       };
       subs.add(entry);
 
@@ -106,8 +97,7 @@ function createInMemoryRawBus(): RawBus {
           msg: m as unknown as Message<TData>,
           cursor: m.id,
         })),
-        next:
-          existing.length > 0 ? existing[existing.length - 1]!.id : undefined,
+        next: existing.length > 0 ? existing[existing.length - 1]!.id : undefined,
       };
     },
 
@@ -140,11 +130,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async sendMsg(
-    _sessionRef: SessionRef,
-    _content: ContentOpts,
-    _opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(_sessionRef: SessionRef, _content: ContentOpts, _opts?: SendOpts): Promise<MsgRef> {
     throw new Error("not implemented");
   }
 
@@ -153,10 +139,7 @@ class FakeAdapter implements SurfaceAdapter {
     return this.messages[key] ?? null;
   }
 
-  async listMsg(
-    sessionRef: SessionRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     const limit = opts?.limit ?? 50;
 
     const list = Object.values(this.messages)
@@ -175,10 +158,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async getReplyContext(
-    msgRef: MsgRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     const key = `${msgRef.channelId}:${msgRef.messageId}`;
     const base = this.messages[key];
     if (!base) return [];
@@ -874,9 +854,7 @@ describe("startBusRequestRouter", () => {
 
     expect(received.length).toBe(1);
     expect(received[0].data.queue).toBe("prompt");
-    expect(String(received[0].headers?.request_id).startsWith("discord:")).toBe(
-      false,
-    );
+    expect(String(received[0].headers?.request_id).startsWith("discord:")).toBe(false);
 
     await sub.stop();
     await router.stop();
@@ -908,9 +886,7 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       routerGate: async () => {
-        throw new Error(
-          "routerGate should not be called when gate is disabled per session",
-        );
+        throw new Error("routerGate should not be called when gate is disabled per session");
       },
       config: {
         surface: {
@@ -1159,9 +1135,7 @@ describe("startBusRequestRouter", () => {
 
     expect(received.length).toBe(1);
     expect(received[0].data.queue).toBe("prompt");
-    expect(String(received[0].headers?.request_id).startsWith("discord:")).toBe(
-      false,
-    );
+    expect(String(received[0].headers?.request_id).startsWith("discord:")).toBe(false);
 
     await sub.stop();
     await router.stop();

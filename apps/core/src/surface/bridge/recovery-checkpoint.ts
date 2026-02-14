@@ -40,10 +40,7 @@ function getToolResultToolCallIds(message: ModelMessage): string[] {
       type?: unknown;
       toolCallId?: unknown;
     };
-    if (
-      candidate.type === "tool-result" &&
-      typeof candidate.toolCallId === "string"
-    ) {
+    if (candidate.type === "tool-result" && typeof candidate.toolCallId === "string") {
       ids.push(candidate.toolCallId);
     }
   }

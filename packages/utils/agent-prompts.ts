@@ -38,9 +38,7 @@ function templatePath(name: CorePromptFileName): string {
 
 export function resolvePromptDir(options?: { dataDir?: string }): string {
   const dataDir =
-    options?.dataDir ??
-    process.env.DATA_DIR ??
-    path.resolve(findWorkspaceRoot(), "data");
+    options?.dataDir ?? process.env.DATA_DIR ?? path.resolve(findWorkspaceRoot(), "data");
   return path.join(dataDir, DEFAULT_PROMPT_DIRNAME);
 }
 
@@ -104,9 +102,7 @@ function stripFrontmatter(raw: string): string {
   return after.replace(/^\s+/, "");
 }
 
-export async function loadPromptFiles(options?: {
-  dataDir?: string;
-}): Promise<PromptFile[]> {
+export async function loadPromptFiles(options?: { dataDir?: string }): Promise<PromptFile[]> {
   const { promptDir } = await ensurePromptWorkspace({
     dataDir: options?.dataDir,
   });
@@ -128,12 +124,8 @@ export function compileSystemPromptFromFiles(
 ): string {
   const lines: string[] = basePrompt ? [basePrompt] : [];
 
-  lines.push(
-    "Your system behavior is defined by a set of workspace prompt files.",
-  );
-  lines.push(
-    "These files are loaded from the local data directory and are authoritative.",
-  );
+  lines.push("Your system behavior is defined by a set of workspace prompt files.");
+  lines.push("These files are loaded from the local data directory and are authoritative.");
   lines.push("");
 
   for (const f of files) {
@@ -160,9 +152,7 @@ export async function buildAgentSystemPrompt(options?: {
   };
 }
 
-export async function promptWorkspaceSignature(options?: {
-  dataDir?: string;
-}): Promise<{
+export async function promptWorkspaceSignature(options?: { dataDir?: string }): Promise<{
   promptDir: string;
   maxMtimeMs: number | null;
 }> {

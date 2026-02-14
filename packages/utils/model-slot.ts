@@ -69,10 +69,7 @@ function deepMergeJson(base: JSONValue, override: JSONValue): JSONValue {
   return cloneJson(override);
 }
 
-function deepMergeObjects(
-  base?: JSONObject,
-  override?: JSONObject,
-): JSONObject | undefined {
+function deepMergeObjects(base?: JSONObject, override?: JSONObject): JSONObject | undefined {
   if (!base && !override) return undefined;
   if (!base) return cloneJson(override ?? {}) as JSONObject;
   if (!override) return cloneJson(base) as JSONObject;
@@ -142,8 +139,7 @@ function buildProviderOptions(params: {
       ? existing.instructions
       : undefined;
 
-  const resolvedInstructions =
-    existingInstructions ?? codexInstructions ?? CODEX_BASE_INSTRUCTIONS;
+  const resolvedInstructions = existingInstructions ?? codexInstructions ?? CODEX_BASE_INSTRUCTIONS;
 
   const nextOpenAI = {
     ...existing,
@@ -153,12 +149,15 @@ function buildProviderOptions(params: {
   } satisfies JSONObject;
 
   return {
-    ...(providerOptions ?? {}),
+    ...providerOptions,
     [openaiKey]: nextOpenAI,
   };
 }
 
-function resolveSlotSpec(cfg: CoreConfig, slot: ModelSlot): {
+function resolveSlotSpec(
+  cfg: CoreConfig,
+  slot: ModelSlot,
+): {
   spec: string;
   alias?: string;
   presetOptions?: JSONObject;
@@ -182,9 +181,7 @@ function resolveSlotSpec(cfg: CoreConfig, slot: ModelSlot): {
       available.length > 0
         ? ` Available aliases (sample): ${available.join(", ")}`
         : " No aliases are configured under models.def.";
-    throw new Error(
-      `Unknown model alias '${alias}' (models.${slot}.model).${hint}`,
-    );
+    throw new Error(`Unknown model alias '${alias}' (models.${slot}.model).${hint}`);
   }
 
   if (!preset.model.includes("/")) {
@@ -213,9 +210,7 @@ export function resolveModelSlot(cfg: CoreConfig, slot: ModelSlot): ResolvedMode
 
   const p = providers[provider as Providers];
   if (!p) {
-    throw new Error(
-      `Unknown provider '${provider}' (models.${slot}.model='${alias ?? spec}')`,
-    );
+    throw new Error(`Unknown provider '${provider}' (models.${slot}.model='${alias ?? spec}')`);
   }
   if (typeof p !== "function") {
     throw new Error(

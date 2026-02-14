@@ -55,10 +55,7 @@ export function replaceChannelMentions(params: {
   });
 }
 
-export function stripLeadingBotMention(params: {
-  text: string;
-  botUserId: string;
-}): string {
+export function stripLeadingBotMention(params: { text: string; botUserId: string }): string {
   const { botUserId } = params;
   // Only strip if it appears at the very start, matching Discord mention forms.
   const re = new RegExp(`^(?:<@!?${botUserId}>)(?:\\s+)?`, "u");

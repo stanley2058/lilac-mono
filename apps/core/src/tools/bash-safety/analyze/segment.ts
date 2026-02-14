@@ -17,20 +17,15 @@ import {
 
 import { DISPLAY_COMMANDS } from "./constants";
 import { analyzeFind } from "./find";
-import {
-  containsDangerousCode,
-  extractInterpreterCodeArg,
-} from "./interpreters";
+import { containsDangerousCode, extractInterpreterCodeArg } from "./interpreters";
 import { analyzeParallel } from "./parallel";
 import { hasRecursiveForceFlags } from "./rm-flags";
 import { extractDashCArg } from "./shell-wrappers";
 import { isTmpdirOverriddenToNonTemp } from "./tmpdir";
 import { analyzeXargs } from "./xargs";
 
-const REASON_INTERPRETER_DANGEROUS =
-  "Detected potentially dangerous command in interpreter code.";
-const REASON_INTERPRETER_BLOCKED =
-  "Interpreter one-liners are blocked in paranoid mode.";
+const REASON_INTERPRETER_DANGEROUS = "Detected potentially dangerous command in interpreter code.";
+const REASON_INTERPRETER_BLOCKED = "Interpreter one-liners are blocked in paranoid mode.";
 const REASON_RM_HOME_CWD =
   "rm -rf in home directory is dangerous. Change to a project directory first.";
 
@@ -55,17 +50,13 @@ export type SegmentAnalyzeOptions = AnalyzeOptions & {
   analyzeNested: (command: string) => string | null;
 };
 
-function deriveCwdContext(
-  options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiveCwd">,
-): {
+function deriveCwdContext(options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiveCwd">): {
   cwdUnknown: boolean;
   cwdForRm: string | undefined;
   originalCwd: string | undefined;
 } {
   const cwdUnknown = options.effectiveCwd === null;
-  const cwdForRm = cwdUnknown
-    ? undefined
-    : (options.effectiveCwd ?? options.cwd);
+  const cwdForRm = cwdUnknown ? undefined : (options.effectiveCwd ?? options.cwd);
   const originalCwd = cwdUnknown ? undefined : options.cwd;
   return { cwdUnknown, cwdForRm, originalCwd };
 }
@@ -113,8 +104,7 @@ export function analyzeSegment(
   const { cwdForRm, originalCwd } = deriveCwdContext(options);
 
   const allowTmpdirVar =
-    (options.allowTmpdirVar ?? true) &&
-    !isTmpdirOverriddenToNonTemp(envAssignments);
+    (options.allowTmpdirVar ?? true) && !isTmpdirOverriddenToNonTemp(envAssignments);
 
   if (SHELL_WRAPPERS.has(normalizedHead)) {
     const dashCArg = extractDashCArg(stripped);

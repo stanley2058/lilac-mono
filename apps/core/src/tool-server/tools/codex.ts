@@ -30,21 +30,12 @@ const loginInputSchema = z
         "Callback URL from the browser (e.g. http://localhost:1455/auth/callback?code=...&state=...).",
       ),
 
-    code: z
-      .string()
-      .optional()
-      .describe("Authorization code (if you extracted it manually)."),
+    code: z.string().optional().describe("Authorization code (if you extracted it manually)."),
 
-    state: z
-      .string()
-      .optional()
-      .describe("State value (if you extracted it manually)."),
+    state: z.string().optional().describe("State value (if you extracted it manually)."),
 
     // These are required if the user is doing a full manual exchange.
-    pkceVerifier: z
-      .string()
-      .optional()
-      .describe("PKCE code verifier (from the start step)."),
+    pkceVerifier: z.string().optional().describe("PKCE code verifier (from the start step)."),
   })
   .superRefine((input, ctx) => {
     if (input.mode === "start") return;
@@ -84,11 +75,7 @@ type PendingOAuth = {
 let pending: PendingOAuth | null = null;
 let oauthServer: ReturnType<typeof Bun.serve> | null = null;
 
-function parseCallbackPayload(input: {
-  callbackUrl?: string;
-  code?: string;
-  state?: string;
-}): {
+function parseCallbackPayload(input: { callbackUrl?: string; code?: string; state?: string }): {
   code?: string;
   state?: string;
   error?: string;
@@ -101,8 +88,7 @@ function parseCallbackPayload(input: {
         code: url.searchParams.get("code") ?? undefined,
         state: url.searchParams.get("state") ?? undefined,
         error: url.searchParams.get("error") ?? undefined,
-        errorDescription:
-          url.searchParams.get("error_description") ?? undefined,
+        errorDescription: url.searchParams.get("error_description") ?? undefined,
       };
     } catch {
       // fall through
@@ -127,7 +113,7 @@ const HTML_SUCCESS = `<!doctype html>
     <div class="container">
       <h1>Authorization Successful</h1>
       <p>You can close this tab and return to Lilac.</p>
-      <p class="dim">If the CLI didn\'t pick this up automatically, copy the URL from the address bar and run codex.login with mode=exchange.</p>
+      <p class="dim">If the CLI didn't pick this up automatically, copy the URL from the address bar and run codex.login with mode=exchange.</p>
     </div>
     <script>setTimeout(() => window.close(), 2000)</script>
   </body>
@@ -282,10 +268,7 @@ export class Codex implements ServerTool {
     ];
   }
 
-  async call(
-    callableId: string,
-    input: Record<string, unknown>,
-  ): Promise<unknown> {
+  async call(callableId: string, input: Record<string, unknown>): Promise<unknown> {
     if (callableId === "codex.login") {
       const payload = loginInputSchema.parse(input);
 
@@ -346,9 +329,7 @@ export class Codex implements ServerTool {
 
       const state = parsed.state;
       if (pending && state && state !== pending.state) {
-        throw new Error(
-          "Invalid state - potential CSRF or mismatched start step",
-        );
+        throw new Error("Invalid state - potential CSRF or mismatched start step");
       }
 
       const pkceVerifier = payload.pkceVerifier ?? pending?.pkceVerifier;
@@ -422,8 +403,7 @@ export class Codex implements ServerTool {
         configured: obj.type === "oauth" && typeof obj.refresh === "string",
         storagePath: getCodexAuthStoragePath(),
         expires: typeof obj.expires === "number" ? obj.expires : undefined,
-        accountId:
-          typeof obj.accountId === "string" ? obj.accountId : undefined,
+        accountId: typeof obj.accountId === "string" ? obj.accountId : undefined,
       };
     }
 

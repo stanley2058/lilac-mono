@@ -24,12 +24,7 @@ const subagentDelegateInputSchema = z.object({
     .describe("Optional timeout in ms. Hard-capped at 8 minutes."),
 });
 
-const subagentStatusSchema = z.enum([
-  "resolved",
-  "failed",
-  "cancelled",
-  "timeout",
-]);
+const subagentStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
 
 const subagentDelegateOutputSchema = z.object({
   ok: z.boolean(),
@@ -94,10 +89,13 @@ function toAdapterPlatform(value: string): AdapterPlatform {
   }
 }
 
-function clampTimeoutMs(input: number | undefined, defaults: {
-  defaultTimeoutMs: number;
-  maxTimeoutMs: number;
-}): number {
+function clampTimeoutMs(
+  input: number | undefined,
+  defaults: {
+    defaultTimeoutMs: number;
+    maxTimeoutMs: number;
+  },
+): number {
   const requested = input ?? defaults.defaultTimeoutMs;
   const normalized = Math.max(1_000, Math.trunc(requested));
   return Math.min(normalized, defaults.maxTimeoutMs);
@@ -186,8 +184,7 @@ export function subagentTools(params: {
 
   return {
     subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
-      description:
-        "Delegate to a read-only explore subagent and return its final response.",
+      description: "Delegate to a read-only explore subagent and return its final response.",
       inputSchema: subagentDelegateInputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input, { abortSignal, experimental_context, toolCallId }) => {
@@ -198,9 +195,7 @@ export function subagentTools(params: {
 
         const depth = parseDepth(experimental_context);
         if (depth >= params.maxDepth) {
-          throw new Error(
-            "subagent_delegate is disabled in subagent runs (depth limit reached)",
-          );
+          throw new Error("subagent_delegate is disabled in subagent runs (depth limit reached)");
         }
 
         const timeoutMs = clampTimeoutMs(input.timeoutMs, {
@@ -263,10 +258,7 @@ export function subagentTools(params: {
           );
         };
 
-        let settleFn: ((value: {
-          status: SubagentStatus;
-          detail?: string;
-        }) => void) | null = null;
+        let settleFn: ((value: { status: SubagentStatus; detail?: string }) => void) | null = null;
 
         const settled = new Promise<{
           status: SubagentStatus;
@@ -305,14 +297,8 @@ export function subagentTools(params: {
               const existing = childTools.get(msg.data.toolCallId);
               const next: ChildToolState = {
                 toolCallId: msg.data.toolCallId,
-                status:
-                  msg.data.status === "end"
-                    ? "done"
-                    : "running",
-                ok:
-                  msg.data.status === "end"
-                    ? msg.data.ok === true
-                    : (existing?.ok ?? null),
+                status: msg.data.status === "end" ? "done" : "running",
+                ok: msg.data.status === "end" ? msg.data.ok === true : (existing?.ok ?? null),
                 display: msg.data.display,
                 updatedSeq: ++childUpdateSeq,
               };

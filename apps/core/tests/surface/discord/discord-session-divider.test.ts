@@ -17,15 +17,13 @@ describe("discord session divider", () => {
   });
 
   it("detects compact divider text", () => {
-    expect(isDiscordSessionDividerText("[LILAC_SESSION_DIVIDER] (by user)")).toBe(
-      true,
-    );
+    expect(isDiscordSessionDividerText("[LILAC_SESSION_DIVIDER] (by user)")).toBe(true);
   });
 
   it("does not detect marker prefix in normal chat text", () => {
-    expect(
-      isDiscordSessionDividerText("[LILAC_SESSION_DIVIDER] please summarize this text"),
-    ).toBe(false);
+    expect(isDiscordSessionDividerText("[LILAC_SESSION_DIVIDER] please summarize this text")).toBe(
+      false,
+    );
   });
 
   it("normalizes label whitespace in compact format", () => {
@@ -39,8 +37,8 @@ describe("discord session divider", () => {
   });
 
   it("still detects legacy divider text", () => {
-    expect(
-      isDiscordSessionDividerText("--- Session Divider ---\n[LILAC_SESSION_DIVIDER]"),
-    ).toBe(true);
+    expect(isDiscordSessionDividerText("--- Session Divider ---\n[LILAC_SESSION_DIVIDER]")).toBe(
+      true,
+    );
   });
 });

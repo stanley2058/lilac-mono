@@ -123,9 +123,7 @@ describe("analyzeBashCommand", () => {
   });
 
   it("blocks interpreter one-liners that contain dangerous commands", () => {
-    const result = analyzeBashCommand(
-      "python -c 'import os; os.system(\"rm -rf /\")'",
-    );
+    const result = analyzeBashCommand("python -c 'import os; os.system(\"rm -rf /\")'");
     expect(result).not.toBeNull();
     expect(result?.reason).toContain("interpreter");
   });

@@ -8,10 +8,7 @@ export function buildDiscordSessionDividerText(params?: {
   createdByUserName?: string | null;
   now?: Date;
 }): string {
-  const label =
-    typeof params?.label === "string"
-      ? params.label.replace(/\s+/gu, " ").trim()
-      : "";
+  const label = typeof params?.label === "string" ? params.label.replace(/\s+/gu, " ").trim() : "";
   const labelPart = label ? `: ${label}` : "";
 
   const who = (() => {
@@ -60,13 +57,9 @@ export function isDiscordSessionDividerText(text: string): boolean {
   // Backward compatibility with the old multi-line divider format.
   if (!text.startsWith("--- Session Divider")) return false;
 
-  const escapeRegExp = (input: string) =>
-    input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  const markerRe = new RegExp(
-    `(^|\\n)${escapeRegExp(DISCORD_SESSION_DIVIDER_MARKER)}(\\n|$)`,
-    "u",
-  );
+  const markerRe = new RegExp(`(^|\\n)${escapeRegExp(DISCORD_SESSION_DIVIDER_MARKER)}(\\n|$)`, "u");
   return markerRe.test(text);
 }
 
@@ -79,9 +72,7 @@ export function isDiscordSessionDividerSurfaceMessage(
   return isDiscordSessionDividerText(msg.text);
 }
 
-export function isDiscordSessionDividerSurfaceMessageAnyAuthor(
-  msg: SurfaceMessage,
-): boolean {
+export function isDiscordSessionDividerSurfaceMessageAnyAuthor(msg: SurfaceMessage): boolean {
   if (msg.session.platform !== "discord") return false;
   return isDiscordSessionDividerText(msg.text);
 }

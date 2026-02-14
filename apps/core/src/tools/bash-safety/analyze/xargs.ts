@@ -9,8 +9,7 @@ import { hasRecursiveForceFlags } from "./rm-flags";
 
 const REASON_XARGS_RM =
   "xargs rm -rf with dynamic input is dangerous. Use explicit file list instead.";
-const REASON_XARGS_SHELL =
-  "xargs with shell -c can execute arbitrary commands from dynamic input.";
+const REASON_XARGS_SHELL = "xargs with shell -c can execute arbitrary commands from dynamic input.";
 
 export interface XargsAnalyzeContext {
   cwd: string | undefined;
@@ -23,8 +22,7 @@ export function analyzeXargs(
   tokens: readonly string[],
   context: XargsAnalyzeContext,
 ): string | null {
-  const { childTokens: rawChildTokens } =
-    extractXargsChildCommandWithInfo(tokens);
+  const { childTokens: rawChildTokens } = extractXargsChildCommandWithInfo(tokens);
 
   let childTokens = stripWrappers(rawChildTokens);
 
@@ -80,9 +78,7 @@ interface XargsParseResult {
   replacementToken: string | null;
 }
 
-export function extractXargsChildCommandWithInfo(
-  tokens: readonly string[],
-): XargsParseResult {
+export function extractXargsChildCommandWithInfo(tokens: readonly string[]): XargsParseResult {
   const xargsOptsWithValue = new Set([
     "-L",
     "-n",
@@ -110,7 +106,7 @@ export function extractXargsChildCommandWithInfo(
     if (!token) break;
 
     if (token === "--") {
-      return { childTokens: [...tokens.slice(i + 1)], replacementToken };
+      return { childTokens: tokens.slice(i + 1), replacementToken };
     }
 
     if (token.startsWith("-")) {
@@ -159,7 +155,7 @@ export function extractXargsChildCommandWithInfo(
         i++;
       }
     } else {
-      return { childTokens: [...tokens.slice(i)], replacementToken };
+      return { childTokens: tokens.slice(i), replacementToken };
     }
   }
 

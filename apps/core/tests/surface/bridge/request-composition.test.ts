@@ -57,11 +57,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async sendMsg(
-    _sessionRef: SessionRef,
-    _content: ContentOpts,
-    _opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(_sessionRef: SessionRef, _content: ContentOpts, _opts?: SendOpts): Promise<MsgRef> {
     throw new Error("not implemented");
   }
 
@@ -69,10 +65,7 @@ class FakeAdapter implements SurfaceAdapter {
     return this.message;
   }
 
-  async listMsg(
-    _sessionRef: SessionRef,
-    _opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
   }
 
@@ -84,10 +77,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async getReplyContext(
-    _msgRef: MsgRef,
-    _opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
   }
 
@@ -407,10 +397,7 @@ describe("request-composition mention thread context", () => {
       return this.messages[key] ?? null;
     }
 
-    async listMsg(
-      _sessionRef: SessionRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       throw new Error("not implemented");
     }
 
@@ -422,10 +409,7 @@ describe("request-composition mention thread context", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      msgRef: MsgRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const key = `${msgRef.channelId}:${msgRef.messageId}`;
       const base = this.messages[key];
       if (!base) return [];
@@ -465,10 +449,7 @@ describe("request-composition mention thread context", () => {
       throw new Error("not implemented");
     }
 
-    async markRead(
-      _sessionRef: SessionRef,
-      _upToMsgRef?: MsgRef,
-    ): Promise<void> {
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
   }
@@ -593,9 +574,7 @@ describe("request-composition mention thread context", () => {
     });
 
     expect(out.chainMessageIds).toEqual(["m3"]);
-    expect(out.mergedGroups).toEqual([
-      { authorId: "u1", messageIds: ["m3"] },
-    ]);
+    expect(out.mergedGroups).toEqual([{ authorId: "u1", messageIds: ["m3"] }]);
 
     expect(out.messages.length).toBe(1);
     expect(typeof out.messages[0]?.content).toBe("string");
@@ -663,9 +642,7 @@ describe("request-composition mention thread context", () => {
     });
 
     expect(out.chainMessageIds).toEqual(["m3"]);
-    expect(out.mergedGroups).toEqual([
-      { authorId: "u1", messageIds: ["m3"] },
-    ]);
+    expect(out.mergedGroups).toEqual([{ authorId: "u1", messageIds: ["m3"] }]);
 
     expect(out.messages.length).toBe(1);
     const merged = out.messages[0]?.content;
@@ -720,14 +697,9 @@ describe("request-composition active channel burst rules", () => {
       return m ?? null;
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const limit = Math.max(1, opts?.limit ?? 50);
-      const inChannel = this.messages.filter(
-        (m) => m.session.channelId === sessionRef.channelId,
-      );
+      const inChannel = this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
       // Return a recent-ish slice (ordering doesn't matter; composeRecentChannelMessages sorts).
       return inChannel.slice(Math.max(0, inChannel.length - limit));
     }
@@ -740,10 +712,7 @@ describe("request-composition active channel burst rules", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
 
@@ -767,10 +736,7 @@ describe("request-composition active channel burst rules", () => {
       throw new Error("not implemented");
     }
 
-    async markRead(
-      _sessionRef: SessionRef,
-      _upToMsgRef?: MsgRef,
-    ): Promise<void> {
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
   }
@@ -952,9 +918,7 @@ describe("request-composition active channel burst rules", () => {
       linkSurfaceMessagesToRequest() {},
       close() {},
       getTranscriptBySurfaceMessage(input) {
-        const expanded = (content: string): ModelMessage[] => [
-          { role: "assistant", content },
-        ];
+        const expanded = (content: string): ModelMessage[] => [{ role: "assistant", content }];
         if (input.messageId === "8") {
           return {
             requestId: "r8",
@@ -1036,9 +1000,7 @@ describe("request-composition active channel burst rules", () => {
       linkSurfaceMessagesToRequest() {},
       close() {},
       getTranscriptBySurfaceMessage(input) {
-        const expanded = (content: string): ModelMessage[] => [
-          { role: "assistant", content },
-        ];
+        const expanded = (content: string): ModelMessage[] => [{ role: "assistant", content }];
         if (input.messageId === "8") {
           return {
             requestId: "r8",
@@ -1150,10 +1112,7 @@ describe("request-composition active channel burst rules", () => {
         return this.messages[key] ?? null;
       }
 
-      async listMsg(
-        _sessionRef: SessionRef,
-        _opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
         throw new Error("listMsg should not be called");
       }
 
@@ -1165,10 +1124,7 @@ describe("request-composition active channel burst rules", () => {
         throw new Error("not implemented");
       }
 
-      async getReplyContext(
-        _msgRef: MsgRef,
-        _opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
         return [];
       }
 
@@ -1192,10 +1148,7 @@ describe("request-composition active channel burst rules", () => {
         throw new Error("not implemented");
       }
 
-      async markRead(
-        _sessionRef: SessionRef,
-        _upToMsgRef?: MsgRef,
-      ): Promise<void> {
+      async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
         throw new Error("not implemented");
       }
     }
@@ -1283,10 +1236,7 @@ describe("request-composition system message filtering", () => {
       return m ?? null;
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
     }
 
@@ -1296,10 +1246,7 @@ describe("request-composition system message filtering", () => {
     async deleteMsg(_msgRef: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
     async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
@@ -1428,17 +1375,12 @@ describe("request-composition session divider", () => {
     async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
       return (
         this.messages.find(
-          (m) =>
-            m.session.channelId === msgRef.channelId &&
-            m.ref.messageId === msgRef.messageId,
+          (m) => m.session.channelId === msgRef.channelId && m.ref.messageId === msgRef.messageId,
         ) ?? null
       );
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const inChannel = this.messages
         .filter((m) => m.session.channelId === sessionRef.channelId)
         .slice()
@@ -1470,10 +1412,7 @@ describe("request-composition session divider", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
 
@@ -1792,10 +1731,7 @@ describe("request-composition session divider", () => {
     };
 
     class MentionDividerAdapter extends DividerAdapter {
-      override async getReplyContext(
-        msgRef: MsgRef,
-        opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      override async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
         const base = await this.readMsg(msgRef);
         if (!base) return [];
 

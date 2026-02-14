@@ -17,15 +17,11 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     !!value &&
     typeof value === "object" &&
     Symbol.asyncIterator in value &&
-    typeof (value as { [Symbol.asyncIterator]?: unknown })[
-      Symbol.asyncIterator
-    ] === "function"
+    typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function"
   );
 }
 
-async function resolveExecuteResult<T>(
-  value: T | PromiseLike<T> | AsyncIterable<T>,
-): Promise<T> {
+async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
   if (isAsyncIterable(value)) {
     let last: T | undefined;
     for await (const chunk of value) {
@@ -49,10 +45,7 @@ function createInMemoryRawBus(): RawBus {
   }>();
 
   return {
-    publish: async <TData>(
-      msg: Omit<Message<TData>, "id" | "ts">,
-      opts: PublishOptions,
-    ) => {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const stored: Message<unknown> = {
         topic: opts.topic,
@@ -84,10 +77,7 @@ function createInMemoryRawBus(): RawBus {
       const entry = {
         topic,
         opts,
-        handler: handler as unknown as (
-          msg: Message<unknown>,
-          ctx: HandleContext,
-        ) => Promise<void>,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
       };
       subs.add(entry);
 
@@ -115,8 +105,7 @@ function createInMemoryRawBus(): RawBus {
           msg: m as unknown as Message<TData>,
           cursor: m.id,
         })),
-        next:
-          existing.length > 0 ? existing[existing.length - 1]?.id : undefined,
+        next: existing.length > 0 ? existing[existing.length - 1]?.id : undefined,
       };
     },
 
@@ -163,45 +152,61 @@ describe("subagent_delegate tool", () => {
           return;
         }
 
-        await bus.publish(lilacEventTypes.EvtRequestLifecycleChanged, {
-          state: "running",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "running",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
-        await bus.publish(lilacEventTypes.EvtAgentOutputDeltaText, {
-          delta: "hello ",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputDeltaText,
+          {
+            delta: "hello ",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
-        await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, {
-          finalText: "hello world",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: "hello world",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
-        await bus.publish(lilacEventTypes.EvtRequestLifecycleChanged, {
-          state: "resolved",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
         await ctx.commit();
       },
@@ -296,25 +301,33 @@ describe("subagent_delegate tool", () => {
           return;
         }
 
-        await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, {
-          finalText: "done",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: "done",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
-        await bus.publish(lilacEventTypes.EvtRequestLifecycleChanged, {
-          state: "resolved",
-        }, {
-          headers: {
-            request_id: requestId,
-            session_id: sessionId,
-            request_client: requestClient,
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
           },
-        });
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
 
         await ctx.commit();
       },

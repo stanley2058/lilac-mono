@@ -23,11 +23,5 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["apps/**/*", "packages/**/*", "__tests__/**/*"],
-  "exclude": [
-    "ref/**/*",
-    "node_modules/**/*",
-    "**/dist/**/*",
-    "coverage/**/*",
-    "data/**/*"
-  ]
+  "exclude": ["ref/**/*", "node_modules/**/*", "**/dist/**/*", "coverage/**/*", "data/**/*"]
 }

@@ -115,8 +115,7 @@ function formatAggregatedFieldLine(
   // Only label "Optional" when it's not a conditional-required field.
   const isConditionalRequired = requiredWhen.size > 0;
   const isOptionalOverall =
-    !requiredInAllVariants &&
-    (occurrences.some((o) => o.meta.isOptional) || !appearsInAllVariants);
+    !requiredInAllVariants && (occurrences.some((o) => o.meta.isOptional) || !appearsInAllVariants);
 
   if (isOptionalOverall && !isConditionalRequired) {
     modifiers.push("Optional");
@@ -175,9 +174,7 @@ function collectVariants(schema: z.ZodTypeAny): Variant[] {
         const variants: Variant[] = [];
         for (const option of options) {
           const optionUnwrapped = unwrapStructural(option);
-          const optionDef = (optionUnwrapped as any).def as
-            | { type?: string }
-            | undefined;
+          const optionDef = (optionUnwrapped as any).def as { type?: string } | undefined;
 
           if (optionDef?.type !== "object") {
             variants.push(...collectVariants(option));
@@ -186,13 +183,9 @@ function collectVariants(schema: z.ZodTypeAny): Variant[] {
 
           const shape = getObjectShape(optionUnwrapped);
           const discriminatorSchema = shape[discriminator];
-          const values = discriminatorSchema
-            ? extractLiteralValues(discriminatorSchema)
-            : [];
+          const values = discriminatorSchema ? extractLiteralValues(discriminatorSchema) : [];
 
-          const condition: Condition | null = values.length
-            ? { discriminator, values }
-            : null;
+          const condition: Condition | null = values.length ? { discriminator, values } : null;
 
           for (const variant of collectVariants(option)) {
             variants.push({
@@ -354,9 +347,7 @@ function unwrapModifiers(
       }
 
       case "nullable": {
-        throw new Error(
-          `Field "${ctx.key}" uses nullable(); prefer optional() for CLI flags.`,
-        );
+        throw new Error(`Field "${ctx.key}" uses nullable(); prefer optional() for CLI flags.`);
       }
 
       case "pipe": {
