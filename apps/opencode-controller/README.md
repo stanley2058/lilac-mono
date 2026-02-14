@@ -38,24 +38,42 @@ Fetch a small session snapshot (for agents):
 ```bash
 bun dist/index.js sessions snapshot \
   --directory /path/to/repo \
-  --continue \
+  --latest \
   --runs 6 \
   --max-chars 1200
 ```
 
-Send a prompt, continuing the newest root session in that directory:
+Submit a prompt (non-blocking), continuing the newest root session in that directory:
 
 ```bash
-bun dist/index.js prompt \
+bun dist/index.js prompt submit \
   --directory /path/to/repo \
   --text "Fix the failing tests" \
   --agent build
 ```
 
-Send a prompt, creating/continuing a session by exact title:
+Submit and wait for completion in one command:
 
 ```bash
-bun dist/index.js prompt \
+bun dist/index.js prompt submit \
+  --directory /path/to/repo \
+  --title "lilac:discord:123" \
+  --text "Continue where we left off" \
+  --wait
+```
+
+Inspect run progress/result later:
+
+```bash
+bun dist/index.js prompt status --run-id run_xxx
+bun dist/index.js prompt result --run-id run_xxx
+bun dist/index.js prompt wait --run-id run_xxx
+```
+
+Submit by exact session title (continue-or-create):
+
+```bash
+bun dist/index.js prompt submit \
   --directory /path/to/repo \
   --title "lilac:discord:123" \
   --text "Continue where we left off"
@@ -64,5 +82,6 @@ bun dist/index.js prompt \
 Notes:
 
 - Output is always JSON.
-- Permission prompts are auto-approved (default: `always`).
-- Question prompts are denied on new sessions by default (prevents non-interactive hangs).
+- `prompt submit` protects against accidental double-submit by default.
+- If prompt text is an exact/similar recent duplicate, submit is blocked unless `--force` is set.
+- Permission prompts are auto-approved and questions auto-rejected while `prompt wait` is running.
