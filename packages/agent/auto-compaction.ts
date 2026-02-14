@@ -51,9 +51,6 @@ export type AutoCompactionOptions = {
   /** Determines the model context window. */
   modelCapability: ModelCapability;
 
-  /** Fraction of context window that triggers compaction (default: 0.5). */
-  thresholdFraction?: number;
-
   /** How many trailing messages to always keep (default: 30). */
   keepLastMessages?: number;
 
@@ -82,6 +79,11 @@ export type AutoCompactionOptions = {
   /** Enable/disable (default: true). */
   enabled?: boolean;
 };
+
+const DEFAULT_THRESHOLD_FRACTION = 0.8;
+
+const AUTO_CONTINUE_AFTER_COMPACTION_TEXT =
+  "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
 
 function getAssistantToolCallIds(message: ModelMessage): string[] {
   if (message.role !== "assistant") return [];
@@ -258,7 +260,7 @@ export async function attachAutoCompaction(
 ): Promise<() => void> {
   if (options.enabled === false) return () => {};
 
-  const thresholdFraction = options.thresholdFraction ?? 0.5;
+  const thresholdFraction = DEFAULT_THRESHOLD_FRACTION;
   const keepLastMessages = options.keepLastMessages ?? 30;
 
   const modelInfo = await options.modelCapability.resolve(options.model);
@@ -266,6 +268,7 @@ export async function attachAutoCompaction(
 
   let shouldCompact = false;
   let inCompaction = false;
+  let queuedAutoContinue = false;
 
   const unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
     if (event.type !== "turn_end") return;
@@ -274,24 +277,59 @@ export async function attachAutoCompaction(
     if (typeof inputTokens !== "number" || inputTokens <= 0) return;
 
     const fraction = inputTokens / contextLimit;
-    if (fraction >= thresholdFraction) {
-      shouldCompact = true;
-    }
+    if (fraction < thresholdFraction) return;
+
+    const wasCompactionPending = shouldCompact;
+    shouldCompact = true;
+
+    // If tools are in-flight, the next turn naturally continues and compaction
+    // can happen at that boundary without adding synthetic user input.
+    if (event.finishReason === "tool-calls") return;
+
+    // Ensure compaction + continuation happen without extra user intervention.
+    // Queue only once per pending compaction cycle.
+    if (wasCompactionPending || queuedAutoContinue) return;
+    agent.followUp(AUTO_CONTINUE_AFTER_COMPACTION_TEXT);
+    queuedAutoContinue = true;
   });
 
   const summarySystem =
     options.summarySystem ??
-    "You are an expert assistant. Summarize the prior conversation context so another assistant can continue the task. Output only the summary text.";
+    "You are preparing a handoff summary for another coding agent. Output only the requested summary in markdown.";
 
   const buildSummaryPrompt =
     options.buildSummaryPrompt ??
     ((prefix: string) =>
       [
-        "Summarize the following transcript for continuation.",
-        "- Preserve key decisions, requirements, and constraints.",
-        "- Preserve important tool outputs and file paths.",
-        "- Keep it concise but complete.",
-        "\nTRANSCRIPT:\n",
+        "Provide a detailed prompt for continuing our conversation.",
+        "Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next.",
+        "The summary that you construct will be used so that another agent can read it and continue the work.",
+        "",
+        "When constructing the summary, try to stick to this template:",
+        "---",
+        "## Goal",
+        "",
+        "[What goal(s) is the user trying to accomplish?]",
+        "",
+        "## Instructions",
+        "",
+        "- [What important instructions did the user give you that are relevant]",
+        "- [If there is a plan or spec, include information about it so next agent can continue using it]",
+        "",
+        "## Discoveries",
+        "",
+        "[What notable things were learned during this conversation that would be useful for the next agent to know when continuing the work]",
+        "",
+        "## Accomplished",
+        "",
+        "[What work has been completed, what work is still in progress, and what work is left?]",
+        "",
+        "## Relevant files / directories",
+        "",
+        "[Construct a structured list of relevant files that have been read, edited, or created that pertain to the task at hand. If all the files in a directory are relevant, include the path to the directory.]",
+        "---",
+        "",
+        "TRANSCRIPT:",
         prefix,
       ].join("\n"));
 
@@ -324,6 +362,10 @@ export async function attachAutoCompaction(
 
     inCompaction = true;
     try {
+      // The synthetic follow-up (if any) is only to keep the loop moving until
+      // compaction runs. Once we start compaction, allow future cycles to queue.
+      queuedAutoContinue = false;
+
       const prefixText = renderMessagesForSummary(prefixMessages);
       const prompt = buildSummaryPrompt(prefixText);
 
