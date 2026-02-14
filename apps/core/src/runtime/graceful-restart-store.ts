@@ -12,6 +12,23 @@ export type GracefulRestartSnapshot = {
   relays: BusToAdapterRelaySnapshot[];
 };
 
+export type GracefulRestartLoadResult =
+  | {
+      snapshot: GracefulRestartSnapshot;
+      reason: "loaded";
+    }
+  | {
+      snapshot: null;
+      reason: "empty" | "invalid_status" | "invalid_payload" | "version_mismatch";
+    }
+  | {
+      snapshot: null;
+      reason: "stale";
+      createdAt: number;
+      deadlineMs: number;
+      ageMs: number;
+    };
+
 function isFreshSnapshot(snapshot: GracefulRestartSnapshot, nowMs: number): boolean {
   if (!Number.isFinite(snapshot.createdAt) || snapshot.createdAt < 0) return false;
   if (!Number.isFinite(snapshot.deadlineMs) || snapshot.deadlineMs <= 0) return false;
@@ -52,7 +69,7 @@ export class SqliteGracefulRestartStore {
     );
   }
 
-  loadAndConsumeCompletedSnapshot(): GracefulRestartSnapshot | null {
+  loadAndConsumeCompletedSnapshotDetailed(): GracefulRestartLoadResult {
     this.db.run("BEGIN");
 
     try {
@@ -67,21 +84,51 @@ export class SqliteGracefulRestartStore {
 
       this.db.run("COMMIT");
 
-      if (!row) return null;
-      if (row.status !== "completed") return null;
+      if (!row) return { snapshot: null, reason: "empty" };
+      if (row.status !== "completed") return { snapshot: null, reason: "invalid_status" };
 
       try {
         const parsed = JSON.parse<GracefulRestartSnapshot>(row.payload_json);
-        if (!parsed || parsed.version !== 1) return null;
-        if (!isFreshSnapshot(parsed, Date.now())) return null;
-        return parsed;
+        if (!parsed || parsed.version !== 1) {
+          return { snapshot: null, reason: "version_mismatch" };
+        }
+
+        if (
+          !Number.isFinite(parsed.createdAt) ||
+          parsed.createdAt < 0 ||
+          !Number.isFinite(parsed.deadlineMs) ||
+          parsed.deadlineMs <= 0
+        ) {
+          return { snapshot: null, reason: "invalid_payload" };
+        }
+
+        const nowMs = Date.now();
+        if (!isFreshSnapshot(parsed, nowMs)) {
+          return {
+            snapshot: null,
+            reason: "stale",
+            createdAt: parsed.createdAt,
+            deadlineMs: parsed.deadlineMs,
+            ageMs: Math.max(0, nowMs - parsed.createdAt),
+          };
+        }
+
+        return {
+          snapshot: parsed,
+          reason: "loaded",
+        };
       } catch {
-        return null;
+        return { snapshot: null, reason: "invalid_payload" };
       }
     } catch (e) {
       this.db.run("ROLLBACK");
       throw e;
     }
+  }
+
+  loadAndConsumeCompletedSnapshot(): GracefulRestartSnapshot | null {
+    const result = this.loadAndConsumeCompletedSnapshotDetailed();
+    return result.snapshot;
   }
 
   private migrate() {

@@ -171,4 +171,28 @@ describe("SqliteGracefulRestartStore", () => {
 
     store.close();
   });
+
+  it("returns stale metadata for expired snapshots", async () => {
+    const store = await makeStore();
+    const deadlineMs = 1_000;
+    const createdAt = Date.now() - 10_000;
+
+    store.saveCompletedSnapshot(
+      buildSnapshot({
+        createdAt,
+        deadlineMs,
+      }),
+    );
+
+    const loaded = store.loadAndConsumeCompletedSnapshotDetailed();
+    expect(loaded.snapshot).toBeNull();
+    expect(loaded.reason).toBe("stale");
+    if (loaded.reason === "stale") {
+      expect(loaded.createdAt).toBe(createdAt);
+      expect(loaded.deadlineMs).toBe(deadlineMs);
+      expect(loaded.ageMs).toBeGreaterThanOrEqual(9_000);
+    }
+
+    store.close();
+  });
 });
