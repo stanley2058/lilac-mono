@@ -13,6 +13,9 @@ import {
   isDiscordSessionDividerSurfaceMessage,
   isDiscordSessionDividerText,
 } from "../discord/discord-session-divider";
+import {
+  splitByDiscordWindowOldestToNewest,
+} from "../discord/merge-window";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -1405,7 +1408,6 @@ type MergedChunk = {
   }>;
 };
 
-const DISCORD_MERGE_WINDOW_MS = 7 * 60 * 1000;
 const DEFAULT_MENTION_BLOCK_LIMIT = 50;
 
 function escapeRegExp(input: string): string {
@@ -1620,21 +1622,23 @@ async function resolveMergeBlockEndingAt(
 
   const authorId = triggerMsg.userId;
 
-  let start = triggerIndex;
-  for (let i = triggerIndex; i > 0; i--) {
-    const prev = list[i - 1]!;
-    const cur = list[i]!;
-
+  let runStart = triggerIndex;
+  for (let i = triggerIndex - 1; i >= 0; i--) {
+    const prev = list[i]!;
     if (prev.userId !== authorId) break;
-    if (cur.userId !== authorId) break;
-
-    const gap = cur.ts - prev.ts;
-    if (gap > DISCORD_MERGE_WINDOW_MS) break;
-
-    start = i - 1;
+    runStart = i;
   }
 
-  return list.slice(start, triggerIndex + 1);
+  const run = list.slice(runStart, triggerIndex + 1);
+  const groups = splitByDiscordWindowOldestToNewest(
+    run.map((m) => ({
+      message: m,
+      authorId: m.userId,
+      ts: m.ts,
+    })),
+  );
+  const groupEndingAtTrigger = groups[groups.length - 1] ?? [];
+  return groupEndingAtTrigger.map((m) => m.message);
 }
 
 function findEarliestReplyAnchor(
@@ -1737,44 +1741,20 @@ function mergeChainByDiscordWindow(
 ): MergedChunk[] {
   if (chainOldestToNewest.length === 0) return [];
 
-  const out: MergedChunk[] = [];
+  const groups = splitByDiscordWindowOldestToNewest(chainOldestToNewest);
 
-  let cur: MergedChunk = {
-    messageIds: [chainOldestToNewest[0]!.messageId],
-    authorId: chainOldestToNewest[0]!.authorId,
-    authorName: chainOldestToNewest[0]!.authorName,
-    tsStart: chainOldestToNewest[0]!.ts,
-    tsEnd: chainOldestToNewest[0]!.ts,
-    text: chainOldestToNewest[0]!.text,
-    attachments: [...chainOldestToNewest[0]!.attachments],
-  };
+  return groups.map((group) => {
+    const first = group[0]!;
+    const last = group[group.length - 1]!;
 
-  for (let i = 1; i < chainOldestToNewest.length; i++) {
-    const next = chainOldestToNewest[i]!;
-    const gap = next.ts - cur.tsEnd;
-
-    const shouldMerge =
-      next.authorId === cur.authorId && gap <= DISCORD_MERGE_WINDOW_MS;
-    if (!shouldMerge) {
-      out.push(cur);
-      cur = {
-        messageIds: [next.messageId],
-        authorId: next.authorId,
-        authorName: next.authorName,
-        tsStart: next.ts,
-        tsEnd: next.ts,
-        text: next.text,
-        attachments: [...next.attachments],
-      };
-      continue;
-    }
-
-    cur.messageIds.push(next.messageId);
-    cur.tsEnd = next.ts;
-    cur.text = `${cur.text}\n\n${next.text}`;
-    cur.attachments.push(...next.attachments);
-  }
-
-  out.push(cur);
-  return out;
+    return {
+      messageIds: group.map((m) => m.messageId),
+      authorId: first.authorId,
+      authorName: first.authorName,
+      tsStart: first.ts,
+      tsEnd: last.ts,
+      text: group.map((m) => m.text).join("\n\n"),
+      attachments: group.flatMap((m) => m.attachments),
+    };
+  });
 }

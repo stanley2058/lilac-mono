@@ -544,6 +544,136 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("user msg 3");
     expect(merged as string).not.toContain("<@bot>");
   });
+
+  it("uses only the trigger group for mention-time context", async () => {
+    const sessionId = "c";
+    const minuteMs = 60_000;
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "A",
+      ts: 47 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "B",
+      ts: 50 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m3: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> C",
+      ts: 55 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:m1`]: m1,
+      [`${sessionId}:m2`]: m2,
+      [`${sessionId}:m3`]: m3,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: m3.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["m3"]);
+    expect(out.mergedGroups).toEqual([
+      { authorId: "u1", messageIds: ["m3"] },
+    ]);
+
+    expect(out.messages.length).toBe(1);
+    expect(typeof out.messages[0]?.content).toBe("string");
+    expect(out.messages[0]!.content as string).toContain("C");
+    expect(out.messages[0]!.content as string).not.toContain("A");
+    expect(out.messages[0]!.content as string).not.toContain("B");
+  });
+
+  it("does not anchor mention context to an older reply outside trigger group", async () => {
+    const sessionId = "c";
+    const minuteMs = 60_000;
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 0,
+      raw: { reference: {} },
+    };
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "old reply",
+      ts: 47 * minuteMs,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "follow-up",
+      ts: 50 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m3: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> new ask",
+      ts: 55 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:root`]: root,
+      [`${sessionId}:m1`]: m1,
+      [`${sessionId}:m2`]: m2,
+      [`${sessionId}:m3`]: m3,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: m3.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["m3"]);
+    expect(out.mergedGroups).toEqual([
+      { authorId: "u1", messageIds: ["m3"] },
+    ]);
+
+    expect(out.messages.length).toBe(1);
+    const merged = out.messages[0]?.content;
+    expect(typeof merged).toBe("string");
+    expect(merged as string).toContain("new ask");
+    expect(merged as string).not.toContain("old reply");
+    expect(merged as string).not.toContain("Root");
+  });
 });
 
 describe("request-composition active channel burst rules", () => {
