@@ -34,8 +34,7 @@ export function dangerousInText(text: string): string | null {
       reason: "access to GitHub App private key",
     },
     {
-      regex:
-        /\brm\s+(-[^\s]*r[^\s]*\s+-[^\s]*f|-\S*f\S*\s+-\S*r|-\S*rf|-\S*fr)\b/,
+      regex: /\brm\s+(-[^\s]*r[^\s]*\s+-[^\s]*f|-\S*f\S*\s+-\S*r|-\S*rf|-\S*fr)\b/,
       reason: "rm -rf",
     },
     {

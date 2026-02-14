@@ -108,9 +108,7 @@ export function parseModelSpecifier(spec: string): {
 } {
   const slashIndex = spec.indexOf("/");
   if (slashIndex <= 0 || slashIndex === spec.length - 1) {
-    throw new Error(
-      `Invalid model specifier '${spec}'. Expected format provider/modelstring.`,
-    );
+    throw new Error(`Invalid model specifier '${spec}'. Expected format provider/modelstring.`);
   }
 
   return {
@@ -140,7 +138,7 @@ export class ModelCapability {
     this.overrides = options?.overrides ?? {};
     this.providerAliases = {
       ...DEFAULT_PROVIDER_ALIASES,
-      ...(options?.providerAliases ?? {}),
+      ...options?.providerAliases,
     };
     this.apiUrl = options?.apiUrl ?? "https://models.dev/api.json";
     this.fetchFn = options?.fetch ?? fetch;
@@ -155,9 +153,7 @@ export class ModelCapability {
       this.registryPromise = (async () => {
         const res = await this.fetchFn(this.apiUrl, { signal });
         if (!res.ok) {
-          throw new Error(
-            `Failed to fetch models.dev registry (${res.status} ${res.statusText})`,
-          );
+          throw new Error(`Failed to fetch models.dev registry (${res.status} ${res.statusText})`);
         }
 
         const json = (await res.json()) as unknown;

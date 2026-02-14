@@ -2,11 +2,7 @@ import Elysia, { NotFoundError } from "elysia";
 import { resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 
-import {
-  BridgeFnRequest,
-  BridgeFnResponse,
-  BridgeListResponse,
-} from "./schema";
+import { BridgeFnRequest, BridgeFnResponse, BridgeListResponse } from "./schema";
 import type { RequestContext, ServerTool } from "./types";
 
 function safeJsonPreview(value: unknown, maxChars = 2000): string {
@@ -105,9 +101,7 @@ export function createToolServer(options: ToolServerOptions) {
     "/list",
     async () => {
       const toolDescs = await Promise.allSettled(tools.map((t) => t.list()));
-      const succeeded = toolDescs
-        .filter((t) => t.status === "fulfilled")
-        .map((t) => t.value);
+      const succeeded = toolDescs.filter((t) => t.status === "fulfilled").map((t) => t.value);
 
       return {
         tools: succeeded.flatMap((s) =>
@@ -231,9 +225,7 @@ export function createToolServer(options: ToolServerOptions) {
 
       // Elysia listen is sync-ish, but server becomes available shortly after.
       app.listen(port);
-      logger.info(
-        `Tool server listening on port ${app.server?.hostname}:${app.server?.port}`,
-      );
+      logger.info(`Tool server listening on port ${app.server?.hostname}:${app.server?.port}`);
     },
     stop: async () => {
       await Promise.allSettled(tools.map((t) => t.destroy()));

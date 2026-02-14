@@ -1,11 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import Redis from "ioredis";
-import {
-  createLilacBus,
-  createRedisStreamsBus,
-  lilacEventTypes,
-  outReqTopic,
-} from "../index";
+import { createLilacBus, createRedisStreamsBus, lilacEventTypes, outReqTopic } from "../index";
 import { env } from "@stanley2058/lilac-utils";
 import type { ModelMessage } from "ai";
 

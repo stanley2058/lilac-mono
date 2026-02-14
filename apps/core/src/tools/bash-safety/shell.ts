@@ -55,10 +55,7 @@ export function splitShellCommands(command: string): string[][] {
         current = [];
       }
 
-      const { innerSegments, endIndex } = extractCommandSubstitution(
-        tokens,
-        i + 2,
-      );
+      const { innerSegments, endIndex } = extractCommandSubstitution(tokens, i + 2);
       for (const seg of innerSegments) {
         segments.push(seg);
       }
@@ -201,9 +198,7 @@ function hasUnclosedQuotes(command: string): boolean {
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-function parseEnvAssignment(
-  token: string,
-): { name: string; value: string } | null {
+function parseEnvAssignment(token: string): { name: string; value: string } | null {
   if (!ENV_ASSIGNMENT_RE.test(token)) {
     return null;
   }
@@ -219,9 +214,7 @@ export interface EnvStrippingResult {
   envAssignments: Map<string, string>;
 }
 
-export function stripEnvAssignmentsWithInfo(
-  tokens: string[],
-): EnvStrippingResult {
+export function stripEnvAssignmentsWithInfo(tokens: string[]): EnvStrippingResult {
   const envAssignments = new Map<string, string>();
   let i = 0;
   while (i < tokens.length) {
@@ -251,17 +244,14 @@ export function stripWrappers(tokens: string[]): string[] {
   return stripWrappersWithInfo(tokens).tokens;
 }
 
-export function stripWrappersWithInfo(
-  tokens: string[],
-): WrapperStrippingResult {
+export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult {
   let result = [...tokens];
   const allEnvAssignments = new Map<string, string>();
 
   for (let iteration = 0; iteration < MAX_STRIP_ITERATIONS; iteration++) {
     const before = result.join(" ");
 
-    const { tokens: strippedTokens, envAssignments } =
-      stripEnvAssignmentsWithInfo(result);
+    const { tokens: strippedTokens, envAssignments } = stripEnvAssignmentsWithInfo(result);
     for (const [k, v] of envAssignments) {
       allEnvAssignments.set(k, v);
     }
@@ -317,18 +307,7 @@ export function stripWrappersWithInfo(
   return { tokens: finalTokens, envAssignments: allEnvAssignments };
 }
 
-const SUDO_OPTS_WITH_VALUE = new Set([
-  "-u",
-  "-g",
-  "-C",
-  "-D",
-  "-h",
-  "-p",
-  "-r",
-  "-t",
-  "-T",
-  "-U",
-]);
+const SUDO_OPTS_WITH_VALUE = new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U"]);
 
 function stripSudo(tokens: string[]): string[] {
   let i = 1;

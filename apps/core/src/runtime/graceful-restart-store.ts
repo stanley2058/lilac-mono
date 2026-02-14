@@ -12,6 +12,12 @@ export type GracefulRestartSnapshot = {
   relays: BusToAdapterRelaySnapshot[];
 };
 
+function isFreshSnapshot(snapshot: GracefulRestartSnapshot, nowMs: number): boolean {
+  if (!Number.isFinite(snapshot.createdAt) || snapshot.createdAt < 0) return false;
+  if (!Number.isFinite(snapshot.deadlineMs) || snapshot.deadlineMs <= 0) return false;
+  return nowMs - snapshot.createdAt <= snapshot.deadlineMs;
+}
+
 export class SqliteGracefulRestartStore {
   private readonly db: Database;
 
@@ -42,12 +48,7 @@ export class SqliteGracefulRestartStore {
         updated_ts=excluded.updated_ts,
         payload_json=excluded.payload_json
       `,
-      [
-        1,
-        "completed",
-        Date.now(),
-        JSON.stringify(snapshot),
-      ],
+      [1, "completed", Date.now(), JSON.stringify(snapshot)],
     );
   }
 
@@ -56,15 +57,11 @@ export class SqliteGracefulRestartStore {
 
     try {
       const row = this.db
-        .query(
-          "SELECT status, payload_json FROM graceful_restart_state WHERE singleton_id = ?",
-        )
-        .get(1) as
-        | {
-            status: string;
-            payload_json: string;
-          }
-        | null;
+        .query("SELECT status, payload_json FROM graceful_restart_state WHERE singleton_id = ?")
+        .get(1) as {
+        status: string;
+        payload_json: string;
+      } | null;
 
       this.db.run("DELETE FROM graceful_restart_state WHERE singleton_id = ?", [1]);
 
@@ -76,6 +73,7 @@ export class SqliteGracefulRestartStore {
       try {
         const parsed = JSON.parse<GracefulRestartSnapshot>(row.payload_json);
         if (!parsed || parsed.version !== 1) return null;
+        if (!isFreshSnapshot(parsed, Date.now())) return null;
         return parsed;
       } catch {
         return null;

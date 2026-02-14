@@ -10,15 +10,11 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     !!value &&
     typeof value === "object" &&
     Symbol.asyncIterator in value &&
-    typeof (value as { [Symbol.asyncIterator]?: unknown })[
-      Symbol.asyncIterator
-    ] === "function"
+    typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function"
   );
 }
 
-async function resolveExecuteResult<T>(
-  value: T | PromiseLike<T> | AsyncIterable<T>,
-): Promise<T> {
+async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
   if (isAsyncIterable(value)) {
     let last: T | undefined;
     for await (const chunk of value) {
@@ -154,7 +150,10 @@ describe("fs tool search wrappers", () => {
       throw new Error("expected default grep output");
     }
     const lines = out.results
-      .map((r: { file: string; line: number; text: string }) => `${r.file.replace(/^\.\//, "")}:${r.line}: ${r.text}`)
+      .map(
+        (r: { file: string; line: number; text: string }) =>
+          `${r.file.replace(/^\.\//, "")}:${r.line}: ${r.text}`,
+      )
       .sort();
     expect(lines.length).toBe(2);
     expect(lines[0]?.startsWith("src/a.ts:1:")).toBe(true);

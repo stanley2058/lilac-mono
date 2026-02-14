@@ -168,9 +168,7 @@ describe("fs tool", () => {
     if (denied.success) return;
 
     expect(denied.error.code).toBe("RANGE_MISMATCH");
-    expect(await readFile(join(baseDir, "d.txt"), "utf-8")).toBe(
-      "line1\nline2\nline3",
-    );
+    expect(await readFile(join(baseDir, "d.txt"), "utf-8")).toBe("line1\nline2\nline3");
 
     const ok = await fsTool.editFile({
       path: "d.txt",
@@ -186,9 +184,7 @@ describe("fs tool", () => {
     });
 
     expect(ok.success).toBe(true);
-    expect(await readFile(join(baseDir, "d.txt"), "utf-8")).toBe(
-      "line1\nline2-modified\nline3",
-    );
+    expect(await readFile(join(baseDir, "d.txt"), "utf-8")).toBe("line1\nline2-modified\nline3");
   });
 
   it("replace_snippet defaults to expectedMatches=1", async () => {

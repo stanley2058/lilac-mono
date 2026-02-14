@@ -7,10 +7,7 @@ export type RequiredRequestContext = {
   requestClient: AdapterPlatform;
 };
 
-export function requireRequestContext(
-  ctx: unknown,
-  label: string,
-): RequiredRequestContext {
+export function requireRequestContext(ctx: unknown, label: string): RequiredRequestContext {
   if (!ctx || typeof ctx !== "object") {
     throw new Error(
       `${label} requires experimental_context { requestId, sessionId, requestClient }`,

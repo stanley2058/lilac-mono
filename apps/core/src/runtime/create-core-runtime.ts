@@ -9,11 +9,7 @@ import {
 } from "@stanley2058/lilac-utils";
 import path from "node:path";
 import fs from "node:fs/promises";
-import {
-  createLilacBus,
-  createRedisStreamsBus,
-  type LilacBus,
-} from "@stanley2058/lilac-event-bus";
+import { createLilacBus, createRedisStreamsBus, type LilacBus } from "@stanley2058/lilac-event-bus";
 
 import { DiscordAdapter } from "../surface/discord/discord-adapter";
 import { GithubAdapter } from "../surface/github/github-adapter";
@@ -22,10 +18,7 @@ import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
-import {
-  DiscordSearchService,
-  DiscordSearchStore,
-} from "../surface/store/discord-search-store";
+import { DiscordSearchService, DiscordSearchStore } from "../surface/store/discord-search-store";
 
 import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
@@ -44,10 +37,7 @@ import {
   createRequestMessageCache,
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
-import {
-  SqliteGracefulRestartStore,
-  type GracefulRestartSnapshot,
-} from "./graceful-restart-store";
+import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
 export type CoreRuntime = {
   start(): Promise<void>;
@@ -68,9 +58,7 @@ function subId(prefix: string, name: string): string {
   return `${prefix}:${name}`;
 }
 
-export async function createCoreRuntime(
-  opts: CoreRuntimeOptions = {},
-): Promise<CoreRuntime> {
+export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<CoreRuntime> {
   const logger = new Logger({
     logLevel: resolveLogLevel(opts.logLevel),
     module: "core-runtime",
@@ -81,8 +69,7 @@ export async function createCoreRuntime(
     opts.cwd ??
     process.env.LILAC_WORKSPACE_DIR ??
     path.resolve(process.cwd(), env.dataDir, "workspace");
-  const toolServerPort =
-    opts.toolServerPort ?? Number(env.toolServer.port ?? 8080);
+  const toolServerPort = opts.toolServerPort ?? Number(env.toolServer.port ?? 8080);
 
   logger.info("Core runtime init", {
     cwd,
@@ -146,8 +133,7 @@ export async function createCoreRuntime(
   let stopWorkflow: { stop(): Promise<void> } | null = null;
   let stopWorkflowScheduler: { stop(): Promise<void> } | null = null;
   let stopBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
-  let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null =
-    null;
+  let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopAgentRunner: Awaited<ReturnType<typeof startBusAgentRunner>> | null = null;
 
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
@@ -172,9 +158,7 @@ export async function createCoreRuntime(
     });
 
     if (stopBusToAdapter) {
-      await stopBusToAdapter.restoreRelays(
-        snapshot.relays.filter((r) => r.platform === "discord"),
-      );
+      await stopBusToAdapter.restoreRelays(snapshot.relays.filter((r) => r.platform === "discord"));
     }
 
     if (stopGithubBusToAdapter) {
@@ -361,8 +345,7 @@ export async function createCoreRuntime(
         cwd,
       });
 
-      const snapshot =
-        gracefulRestartStore?.loadAndConsumeCompletedSnapshot() ?? null;
+      const snapshot = gracefulRestartStore?.loadAndConsumeCompletedSnapshot() ?? null;
       if (snapshot) {
         await restoreGracefulSnapshot(snapshot).catch((e: unknown) => {
           logger.error("Failed to restore graceful restart snapshot", e);
@@ -427,14 +410,18 @@ export async function createCoreRuntime(
         agentRunner.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }),
       );
 
-      await safe("graceful.discordBridge.beginDrain", () =>
-        stopBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
-        Promise.resolve(),
+      await safe(
+        "graceful.discordBridge.beginDrain",
+        () =>
+          stopBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+          Promise.resolve(),
       );
 
-      await safe("graceful.githubBridge.beginDrain", () =>
-        stopGithubBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
-        Promise.resolve(),
+      await safe(
+        "graceful.githubBridge.beginDrain",
+        () =>
+          stopGithubBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+          Promise.resolve(),
       );
 
       const agentRecoverables = agentRunner.snapshotRecoverables();
@@ -467,49 +454,25 @@ export async function createCoreRuntime(
     }
 
     // Stop in reverse order (best-effort).
-    await safe(
-      "agentRunner.stop",
-      () => stopAgentRunner?.stop() ?? Promise.resolve(),
-    );
+    await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
     await safe(
       "discordSearchIndexer.stop",
       () => stopDiscordSearchIndexer?.stop() ?? Promise.resolve(),
     );
-    await safe(
-      "bridgeBusToAdapter.stop",
-      () => stopBusToAdapter?.stop() ?? Promise.resolve(),
-    );
+    await safe("bridgeBusToAdapter.stop", () => stopBusToAdapter?.stop() ?? Promise.resolve());
     await safe(
       "bridgeGithubBusToAdapter.stop",
       () => stopGithubBusToAdapter?.stop() ?? Promise.resolve(),
     );
-    await safe(
-      "githubWebhook.stop",
-      () => stopGithubWebhook?.stop() ?? Promise.resolve(),
-    );
+    await safe("githubWebhook.stop", () => stopGithubWebhook?.stop() ?? Promise.resolve());
 
-    await safe(
-      "toolServer.stop",
-      () => toolServer?.stop() ?? Promise.resolve(),
-    );
-    await safe(
-      "requestMessageCache.stop",
-      () => requestMessageCache?.stop() ?? Promise.resolve(),
-    );
+    await safe("toolServer.stop", () => toolServer?.stop() ?? Promise.resolve());
+    await safe("requestMessageCache.stop", () => requestMessageCache?.stop() ?? Promise.resolve());
 
     await safe("router.stop", () => stopRouter?.stop() ?? Promise.resolve());
-    await safe(
-      "workflow.stop",
-      () => stopWorkflow?.stop() ?? Promise.resolve(),
-    );
-    await safe(
-      "workflowScheduler.stop",
-      () => stopWorkflowScheduler?.stop() ?? Promise.resolve(),
-    );
-    await safe(
-      "bridgeAdapterToBus.stop",
-      () => stopAdapterToBus?.stop() ?? Promise.resolve(),
-    );
+    await safe("workflow.stop", () => stopWorkflow?.stop() ?? Promise.resolve());
+    await safe("workflowScheduler.stop", () => stopWorkflowScheduler?.stop() ?? Promise.resolve());
+    await safe("bridgeAdapterToBus.stop", () => stopAdapterToBus?.stop() ?? Promise.resolve());
 
     await safe("adapter.disconnect", () => adapter.disconnect());
     await safe("githubAdapter.disconnect", () => githubAdapter.disconnect());

@@ -10,14 +10,9 @@ import {
 class FakeSearchAdapter {
   public listCalls: Array<{ sessionRef: SessionRef; opts?: LimitOpts }> = [];
 
-  constructor(
-    private readonly messagesByChannelId: Record<string, SurfaceMessage[]>,
-  ) {}
+  constructor(private readonly messagesByChannelId: Record<string, SurfaceMessage[]>) {}
 
-  async listMsg(
-    sessionRef: SessionRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     this.listCalls.push({ sessionRef, opts });
     const messages = this.messagesByChannelId[sessionRef.channelId] ?? [];
     return messages.slice(0, opts?.limit ?? 50);
@@ -85,9 +80,7 @@ describe("discord search store", () => {
     });
 
     expect(adapter.listCalls.length).toBe(1);
-    expect(adapter.listCalls[0]?.opts?.limit).toBe(
-      DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT,
-    );
+    expect(adapter.listCalls[0]?.opts?.limit).toBe(DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT);
 
     store.close();
   });

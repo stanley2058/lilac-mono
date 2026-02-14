@@ -1,6 +1,6 @@
 {
   "name": "@stanley2058/lilac-opencode-controller",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "module": "client.ts",
   "type": "module",
   "license": "MIT",
@@ -19,9 +19,9 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.1.49"
+    "@opencode-ai/sdk": "^1.2.1"
   }
 }

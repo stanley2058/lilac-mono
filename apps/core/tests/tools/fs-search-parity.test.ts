@@ -10,10 +10,7 @@ import {
   type GrepResult,
 } from "../../src/tools/fs/fs-impl";
 
-const runnerPath = path.resolve(
-  import.meta.dir,
-  "../../src/ssh/remote-js/remote-runner.cjs",
-);
+const runnerPath = path.resolve(import.meta.dir, "../../src/ssh/remote-js/remote-runner.cjs");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -48,9 +45,7 @@ async function runRemoteOp<T>(params: {
   const exitCode = await proc.exited;
 
   if (exitCode !== 0) {
-    throw new Error(
-      `remote runner exited with code ${exitCode}: ${stderrText || stdoutText}`,
-    );
+    throw new Error(`remote runner exited with code ${exitCode}: ${stderrText || stdoutText}`);
   }
 
   const parsed = JSON.parse(stdoutText) as unknown;
@@ -61,9 +56,7 @@ async function runRemoteOp<T>(params: {
   const ok = parsed["ok"];
   if (ok !== true) {
     const error = parsed["error"];
-    throw new Error(
-      `remote runner op failed: ${typeof error === "string" ? error : "unknown"}`,
-    );
+    throw new Error(`remote runner op failed: ${typeof error === "string" ? error : "unknown"}`);
   }
 
   return parsed["value"] as T;
@@ -121,14 +114,8 @@ describe("fs search parity (local vs remote runner)", () => {
 
     await mkdir(path.join(baseDir, "src"), { recursive: true });
     await writeFile(path.join(baseDir, "src", "a.ts"), "export const alpha = 1;\n");
-    await writeFile(
-      path.join(baseDir, "src", "b.ts"),
-      "export const beta = alpha;\n",
-    );
-    await writeFile(
-      path.join(baseDir, "src", "c.ts"),
-      "export const gamma = alpha + alpha;\n",
-    );
+    await writeFile(path.join(baseDir, "src", "b.ts"), "export const beta = alpha;\n");
+    await writeFile(path.join(baseDir, "src", "c.ts"), "export const gamma = alpha + alpha;\n");
   });
 
   afterEach(async () => {

@@ -11,10 +11,7 @@ export const bashInputSchema = z.object({
       "Working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
     ),
   timeoutMs: z.number().optional().describe("Timeout in ms (default: 1h)"),
-  dangerouslyAllow: z
-    .boolean()
-    .optional()
-    .describe("Bypass safety guardrails for this call"),
+  dangerouslyAllow: z.boolean().optional().describe("Bypass safety guardrails for this call"),
 });
 
 const bashExecutionErrorSchema = z.discriminatedUnion("type", [
@@ -77,20 +74,17 @@ export function bashToolWithCwd(defaultCwd: string) {
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
       execute: (input, { experimental_context: context, abortSignal }) =>
-        executeBash(
-          { ...input, cwd: input.cwd ?? defaultCwd },
-          {
-            context,
-            abortSignal,
-          } as {
-            context?: {
-              requestId: string;
-              sessionId: string;
-              requestClient: string;
-            };
-            abortSignal?: AbortSignal;
-          },
-        ),
+        executeBash({ ...input, cwd: input.cwd ?? defaultCwd }, {
+          context,
+          abortSignal,
+        } as {
+          context?: {
+            requestId: string;
+            sessionId: string;
+            requestClient: string;
+          };
+          abortSignal?: AbortSignal;
+        }),
     }),
   };
 }

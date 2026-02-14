@@ -11,9 +11,7 @@ export function parseGithubSessionId(sessionId: string): GithubThreadRef {
   // Expected: OWNER/REPO#<number>
   const m = /^([^/\s#]+)\/([^/\s#]+)#(\d+)$/.exec(sessionId.trim());
   if (!m) {
-    throw new Error(
-      `Invalid GitHub sessionId '${sessionId}'. Expected 'OWNER/REPO#<number>'.`,
-    );
+    throw new Error(`Invalid GitHub sessionId '${sessionId}'. Expected 'OWNER/REPO#<number>'.`);
   }
   const number = Number(m[3]);
   if (!Number.isFinite(number) || number <= 0) {
@@ -22,9 +20,7 @@ export function parseGithubSessionId(sessionId: string): GithubThreadRef {
   return { owner: m[1]!, repo: m[2]!, number };
 }
 
-export function parseGithubRequestId(input: {
-  requestId: string;
-}): {
+export function parseGithubRequestId(input: { requestId: string }): {
   platform: "github";
   sessionId: string;
   triggerId: string;
@@ -44,10 +40,7 @@ export function parseGithubRequestId(input: {
   };
 }
 
-export function isGithubIssueTriggerId(input: {
-  sessionId: string;
-  triggerId: string;
-}): boolean {
+export function isGithubIssueTriggerId(input: { sessionId: string; triggerId: string }): boolean {
   // Convention: if triggerId equals the issue/PR number in sessionId, treat it
   // as a reaction target on the issue itself (PR description).
   const thread = parseGithubSessionId(input.sessionId);

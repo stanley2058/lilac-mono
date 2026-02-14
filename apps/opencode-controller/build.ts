@@ -15,11 +15,4 @@ await Bun.build({
 
 // Keep a stable executable entrypoint (committed, not generated).
 // This mirrors apps/tool-bridge/dist/index.js.
-await Bun.write(
-  "./dist/index.js",
-  [
-    "#!/usr/bin/env bun",
-    "import \"./client.js\";",
-    "",
-  ].join("\n"),
-);
+await Bun.write("./dist/index.js", ["#!/usr/bin/env bun", 'import "./client.js";', ""].join("\n"));

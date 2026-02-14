@@ -41,9 +41,7 @@ function toDisplayPath(resolved: string, baseDir: string): string {
 }
 
 function stripHeredoc(input: string): string {
-  const heredocMatch = input.match(
-    /^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/,
-  );
+  const heredocMatch = input.match(/^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/);
   if (heredocMatch) return heredocMatch[2]!;
   return input;
 }
@@ -67,9 +65,7 @@ function parsePatchHeader(
 
   if (line.startsWith("*** Delete File:")) {
     const filePath = line.split(":", 2)[1]?.trim();
-    return filePath
-      ? { kind: "delete", filePath, nextIdx: startIdx + 1 }
-      : null;
+    return filePath ? { kind: "delete", filePath, nextIdx: startIdx + 1 } : null;
   }
 
   if (line.startsWith("*** Update File:")) {
@@ -131,11 +127,7 @@ function parseUpdateFileChunks(
     const newLines: string[] = [];
     let isEndOfFile = false;
 
-    while (
-      i < lines.length &&
-      !lines[i]!.startsWith("@@") &&
-      !lines[i]!.startsWith("***")
-    ) {
+    while (i < lines.length && !lines[i]!.startsWith("@@") && !lines[i]!.startsWith("***")) {
       const changeLine = lines[i]!;
       if (changeLine === "*** End of File") {
         isEndOfFile = true;
@@ -269,33 +261,16 @@ function tryMatch(
   return -1;
 }
 
-function seekSequence(
-  lines: string[],
-  pattern: string[],
-  startIndex: number,
-  eof = false,
-): number {
+function seekSequence(lines: string[], pattern: string[], startIndex: number, eof = false): number {
   if (pattern.length === 0) return -1;
 
   const exact = tryMatch(lines, pattern, startIndex, (a, b) => a === b, eof);
   if (exact !== -1) return exact;
 
-  const rstrip = tryMatch(
-    lines,
-    pattern,
-    startIndex,
-    (a, b) => a.trimEnd() === b.trimEnd(),
-    eof,
-  );
+  const rstrip = tryMatch(lines, pattern, startIndex, (a, b) => a.trimEnd() === b.trimEnd(), eof);
   if (rstrip !== -1) return rstrip;
 
-  const trim = tryMatch(
-    lines,
-    pattern,
-    startIndex,
-    (a, b) => a.trim() === b.trim(),
-    eof,
-  );
+  const trim = tryMatch(lines, pattern, startIndex, (a, b) => a.trim() === b.trim(), eof);
   if (trim !== -1) return trim;
 
   return tryMatch(
@@ -317,23 +292,16 @@ function computeReplacements(
 
   for (const chunk of chunks) {
     if (chunk.changeContext) {
-      const contextIdx = seekSequence(
-        originalLines,
-        [chunk.changeContext],
-        lineIndex,
-      );
+      const contextIdx = seekSequence(originalLines, [chunk.changeContext], lineIndex);
       if (contextIdx === -1) {
-        throw new Error(
-          `Failed to find context '${chunk.changeContext}' in ${filePath}`,
-        );
+        throw new Error(`Failed to find context '${chunk.changeContext}' in ${filePath}`);
       }
       lineIndex = contextIdx + 1;
     }
 
     if (chunk.oldLines.length === 0) {
       const insertionIdx =
-        originalLines.length > 0 &&
-        originalLines[originalLines.length - 1] === ""
+        originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
           ? originalLines.length - 1
           : originalLines.length;
       replacements.push([insertionIdx, 0, chunk.newLines]);
@@ -342,28 +310,14 @@ function computeReplacements(
 
     let pattern = chunk.oldLines;
     let newSlice = chunk.newLines;
-    let found = seekSequence(
-      originalLines,
-      pattern,
-      lineIndex,
-      chunk.isEndOfFile,
-    );
+    let found = seekSequence(originalLines, pattern, lineIndex, chunk.isEndOfFile);
 
-    if (
-      found === -1 &&
-      pattern.length > 0 &&
-      pattern[pattern.length - 1] === ""
-    ) {
+    if (found === -1 && pattern.length > 0 && pattern[pattern.length - 1] === "") {
       pattern = pattern.slice(0, -1);
       if (newSlice.length > 0 && newSlice[newSlice.length - 1] === "") {
         newSlice = newSlice.slice(0, -1);
       }
-      found = seekSequence(
-        originalLines,
-        pattern,
-        lineIndex,
-        chunk.isEndOfFile,
-      );
+      found = seekSequence(originalLines, pattern, lineIndex, chunk.isEndOfFile);
     }
 
     if (found === -1) {
@@ -404,10 +358,7 @@ async function applyUpdateHunk(params: {
 
   const originalContent = await readFile(resolvedPath, "utf-8");
   let originalLines = originalContent.split("\n");
-  if (
-    originalLines.length > 0 &&
-    originalLines[originalLines.length - 1] === ""
-  ) {
+  if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
     originalLines.pop();
   }
 
@@ -438,11 +389,7 @@ function isDeniedPath(resolvedPath: string, denyAbs: readonly string[]): boolean
   return false;
 }
 
-function assertAllowed(
-  resolvedPath: string,
-  denyAbs: readonly string[],
-  operation: string,
-): void {
+function assertAllowed(resolvedPath: string, denyAbs: readonly string[], operation: string): void {
   if (denyAbs.length === 0) return;
   if (!isDeniedPath(resolvedPath, denyAbs)) return;
   throw new Error(`Access denied: '${resolvedPath}' is blocked for ${operation}`);
@@ -454,9 +401,7 @@ export async function applyHunks(
   options?: { denyPaths?: readonly string[] },
 ): Promise<string> {
   const baseResolved = path.resolve(expandTilde(baseDir));
-  const denyAbs = (options?.denyPaths ?? []).map((p) =>
-    path.resolve(expandTilde(p)),
-  );
+  const denyAbs = (options?.denyPaths ?? []).map((p) => path.resolve(expandTilde(p)));
   const touched: string[] = [];
 
   for (const hunk of hunks) {
@@ -483,9 +428,7 @@ export async function applyHunks(
 
     if (hunk.type === "update") {
       const src = resolvePath(baseResolved, hunk.path);
-      const moveTo = hunk.movePath
-        ? resolvePath(baseResolved, hunk.movePath)
-        : undefined;
+      const moveTo = hunk.movePath ? resolvePath(baseResolved, hunk.movePath) : undefined;
       assertAllowed(src, denyAbs, "apply_patch");
       if (moveTo) {
         assertAllowed(moveTo, denyAbs, "apply_patch");

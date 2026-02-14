@@ -1,5 +1,3 @@
-import type { ModelMessage } from "ai";
-
 import type { SurfaceMessage, SurfacePlatform } from "./types";
 
 export type AdapterEventBase = {

@@ -39,19 +39,14 @@ async function chmod0600(p: string): Promise<void> {
   }
 }
 
-export function deriveApiBaseUrl(input: {
-  host?: string;
-  apiBaseUrl?: string;
-}): string {
+export function deriveApiBaseUrl(input: { host?: string; apiBaseUrl?: string }): string {
   if (input.apiBaseUrl) return input.apiBaseUrl;
   const host = input.host;
   if (!host || host === "github.com") return "https://api.github.com";
   return `https://${host.replace(/^https?:\/\//, "")}/api/v3`;
 }
 
-export async function readGithubAppSecret(
-  dataDir: string,
-): Promise<GithubAppSecret | null> {
+export async function readGithubAppSecret(dataDir: string): Promise<GithubAppSecret | null> {
   const { jsonPath } = resolveGithubAppSecretPaths(dataDir);
   const file = Bun.file(jsonPath);
   if (!(await file.exists())) return null;
@@ -99,14 +94,10 @@ export async function clearGithubAppSecret(dataDir: string): Promise<void> {
   await fs.rm(pemPath, { force: true }).catch(() => undefined);
 }
 
-export async function readGithubAppPrivateKeyPem(
-  secret: GithubAppSecret,
-): Promise<string> {
+export async function readGithubAppPrivateKeyPem(secret: GithubAppSecret): Promise<string> {
   const raw = await Bun.file(secret.privateKeyPath).text();
   if (!raw.trim()) {
-    throw new Error(
-      `GitHub App private key is empty: ${secret.privateKeyPath}`,
-    );
+    throw new Error(`GitHub App private key is empty: ${secret.privateKeyPath}`);
   }
   return raw;
 }

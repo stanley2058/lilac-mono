@@ -5,10 +5,7 @@ import fs from "node:fs/promises";
 import { dirname, extname } from "node:path";
 import type { RequestContext, ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
-import {
-  inferExtensionFromMimeType,
-  resolveToolPath,
-} from "../../shared/attachment-utils";
+import { inferExtensionFromMimeType, resolveToolPath } from "../../shared/attachment-utils";
 
 type SupportedImageModels =
   /**
@@ -40,25 +37,19 @@ export function getSupportedModels() {
     },
     nanobanana: {
       vercel: undefined, // providers.vercel?.imageModel("google/gemini-2.5-flash-image"),
-      openrouter: providers.openrouter?.imageModel(
-        "google/gemini-2.5-flash-image",
-      ),
+      openrouter: providers.openrouter?.imageModel("google/gemini-2.5-flash-image"),
     },
     "nanobanana-pro": {
       vercel: undefined, // providers.vercel?.imageModel("google/gemini-3-pro-image"),
-      openrouter: providers.openrouter?.imageModel(
-        "google/gemini-3-pro-image-preview",
-      ),
+      openrouter: providers.openrouter?.imageModel("google/gemini-3-pro-image-preview"),
     },
   } satisfies Record<SupportedImageModels, Partial<Record<string, ImageModel>>>;
 
   const available = Object.fromEntries(
     Object.entries({
-      "gpt-5-image":
-        models["gpt-5-image"].openai ?? models["gpt-5-image"].openrouter,
+      "gpt-5-image": models["gpt-5-image"].openai ?? models["gpt-5-image"].openrouter,
       nanobanana: models.nanobanana.vercel ?? models.nanobanana.openrouter,
-      "nanobanana-pro":
-        models["nanobanana-pro"].vercel ?? models["nanobanana-pro"].openrouter,
+      "nanobanana-pro": models["nanobanana-pro"].vercel ?? models["nanobanana-pro"].openrouter,
     }).filter(([_, v]) => !!v),
   ) as Partial<Record<SupportedImageModels, ImageModel>>;
 
@@ -66,11 +57,7 @@ export function getSupportedModels() {
 }
 
 const GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS = ["1:1", "3:2", "2:3"] as const;
-const GPT_5_IMAGE_ALLOWED_SIZES = [
-  "1024x1024",
-  "1536x1024",
-  "1024x1536",
-] as const;
+const GPT_5_IMAGE_ALLOWED_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
 
 const NANOBANANA_ALLOWED_ASPECT_RATIOS = [
   "21:9",
@@ -91,28 +78,20 @@ const DEFAULT_MODEL_FALLBACK_ORDER: SupportedImageModels[] = [
   "nanobanana",
 ];
 
-function isOneOf<const T extends readonly string[]>(
-  allowed: T,
-  value: string,
-): value is T[number] {
+function isOneOf<const T extends readonly string[]>(allowed: T, value: string): value is T[number] {
   return (allowed as readonly string[]).includes(value);
 }
 
 const imageGenerateInputSchema = z
   .object({
-    path: z
-      .string()
-      .min(1)
-      .describe("Output file path to write the generated image"),
+    path: z.string().min(1).describe("Output file path to write the generated image"),
 
     prompt: z.string().min(1).describe("Text prompt for image generation"),
 
     model: z
       .enum(["gpt-5-image", "nanobanana", "nanobanana-pro"])
       .optional()
-      .describe(
-        "Image model to use. If omitted, defaults to `nanobanana-pro`.",
-      ),
+      .describe("Image model to use. If omitted, defaults to `nanobanana-pro`."),
 
     size: z
       .string()
@@ -176,10 +155,7 @@ function pickModel(
   );
 }
 
-function validateSettingsForModel(
-  input: ImageGenerateInput,
-  modelId: SupportedImageModels,
-) {
+function validateSettingsForModel(input: ImageGenerateInput, modelId: SupportedImageModels) {
   if (input.aspectRatio) {
     if (modelId === "gpt-5-image") {
       if (!isOneOf(GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
@@ -269,8 +245,7 @@ export class ImageGeneration implements ServerTool {
       {
         callableId: "image.generate",
         name: "Image Generate",
-        description:
-          "Generate an image with a configured provider and write it to a local file.",
+        description: "Generate an image with a configured provider and write it to a local file.",
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
         }),
@@ -295,10 +270,7 @@ export class ImageGeneration implements ServerTool {
     const payload = imageGenerateInputSchema.parse(input);
     const available = getSupportedModels();
 
-    const picked = pickModel(
-      available,
-      payload.model as SupportedImageModels | undefined,
-    );
+    const picked = pickModel(available, payload.model as SupportedImageModels | undefined);
 
     validateSettingsForModel(payload, picked.id);
 
@@ -331,9 +303,7 @@ export class ImageGeneration implements ServerTool {
     const originalExt = extname(resolvedTarget);
     const inferredExt = inferExtensionFromMimeType(img.mediaType) || ".png";
     const targetWithExt =
-      originalExt.length > 0
-        ? resolvedTarget
-        : `${resolvedTarget}${inferredExt}`;
+      originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
 
     const outPath = await pickAvailableFilename(targetWithExt);
     await fs.mkdir(dirname(outPath), { recursive: true });

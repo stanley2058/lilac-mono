@@ -1,8 +1,4 @@
-import {
-  lilacEventTypes,
-  outReqTopic,
-  type LilacBus,
-} from "@stanley2058/lilac-event-bus";
+import { lilacEventTypes, outReqTopic, type LilacBus } from "@stanley2058/lilac-event-bus";
 
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
@@ -17,24 +13,15 @@ import type {
 } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
-import {
-  deleteIssueCommentReactionById,
-  deleteIssueReactionById,
-} from "../../github/github-api";
-import {
-  parseGithubRequestId,
-  parseGithubSessionId,
-} from "../../github/github-ids";
+import { deleteIssueCommentReactionById, deleteIssueReactionById } from "../../github/github-api";
+import { parseGithubRequestId, parseGithubSessionId } from "../../github/github-ids";
 import {
   clearGithubAck,
   getGithubAck,
   getGithubLatestRequestForSession,
   getGithubRequestMeta,
 } from "../../github/github-state";
-import {
-  isPossibleNoReplyPrefix,
-  resolveReplyDeliveryFromFinalText,
-} from "./reply-directive";
+import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 
@@ -48,10 +35,7 @@ function isTypingIndicatorProvider(
   return "startTyping" in adapter && typeof adapter.startTyping === "function";
 }
 
-function parseDiscordReplyTo(params: {
-  requestId: string;
-  sessionId: string;
-}): MsgRef | null {
+function parseDiscordReplyTo(params: { requestId: string; sessionId: string }): MsgRef | null {
   const parts = params.requestId.split(":");
   if (parts.length !== 3) return null;
   const [surface, sessionId] = parts;
@@ -67,10 +51,7 @@ function parseDiscordReplyTo(params: {
   };
 }
 
-function parseGithubReplyTo(params: {
-  requestId: string;
-  sessionId: string;
-}): MsgRef | null {
+function parseGithubReplyTo(params: { requestId: string; sessionId: string }): MsgRef | null {
   const parsed = parseGithubRequestId({ requestId: params.requestId });
   if (!parsed) return null;
   if (parsed.sessionId !== params.sessionId) return null;
@@ -81,9 +62,7 @@ function parseGithubReplyTo(params: {
   };
 }
 
-function parseRouterSessionMode(
-  raw: string | undefined,
-): "mention" | "active" | undefined {
+function parseRouterSessionMode(raw: string | undefined): "mention" | "active" | undefined {
   if (raw === "mention" || raw === "active") return raw;
   return undefined;
 }
@@ -99,9 +78,7 @@ function toAttachment(params: {
   dataBase64: string;
   filename?: string;
 }): SurfaceAttachment {
-  const kind: SurfaceAttachment["kind"] = params.mimeType.startsWith("image/")
-    ? "image"
-    : "file";
+  const kind: SurfaceAttachment["kind"] = params.mimeType.startsWith("image/") ? "image" : "file";
 
   const filename = params.filename ?? (kind === "image" ? "image" : "file");
 
@@ -113,11 +90,7 @@ function toAttachment(params: {
   };
 }
 
-async function cleanupGithubAck(input: {
-  logger: Logger;
-  requestId: string;
-  sessionId: string;
-}) {
+async function cleanupGithubAck(input: { logger: Logger; requestId: string; sessionId: string }) {
   const ack = getGithubAck(input.requestId);
   if (!ack) return;
 
@@ -157,11 +130,7 @@ async function cleanupGithubAck(input: {
     const msg = e instanceof Error ? e.message : String(e);
     // Best-effort: ignore if already removed.
     if (!msg.includes("404")) {
-      input.logger.warn(
-        "failed to delete github ack reaction",
-        { requestId: input.requestId },
-        e,
-      );
+      input.logger.warn("failed to delete github ack reaction", { requestId: input.requestId }, e);
     }
   } finally {
     clearGithubAck(input.requestId);
@@ -201,8 +170,7 @@ function toMsgRefFromSurfaceMsgRef(raw: unknown): MsgRef | null {
   const channelId = o["channelId"];
   const messageId = o["messageId"];
   if (platform !== "discord" && platform !== "github") return null;
-  if (typeof channelId !== "string" || typeof messageId !== "string")
-    return null;
+  if (typeof channelId !== "string" || typeof messageId !== "string") return null;
   return {
     platform,
     channelId,
@@ -223,13 +191,7 @@ export async function bridgeBusToAdapter(params: {
     module: "bridge:bus-to-adapter",
   });
 
-  const {
-    adapter,
-    bus,
-    platform,
-    subscriptionId,
-    idleTimeoutMs = 60 * 60 * 1000,
-  } = params;
+  const { adapter, bus, platform, subscriptionId, idleTimeoutMs = 60 * 60 * 1000 } = params;
 
   const activeRelays = new Map<string, ActiveRelay>();
   const terminalLifecycleByRequestId = new Map<string, number>();
@@ -248,11 +210,7 @@ export async function bridgeBusToAdapter(params: {
   const stopIngress = async () => {
     if (ingressStopped) return;
     ingressStopped = true;
-    await Promise.all([
-      sub.stop(),
-      cmdSurfaceSub.stop(),
-      cmdRequestSub.stop(),
-    ]);
+    await Promise.all([sub.stop(), cmdSurfaceSub.stop(), cmdRequestSub.stop()]);
   };
 
   const cmdRequestSub = await bus.subscribeTopic(
@@ -339,9 +297,7 @@ export async function bridgeBusToAdapter(params: {
         return;
       }
 
-      const replyTo = msg.data.replyTo
-        ? toMsgRefFromSurfaceMsgRef(msg.data.replyTo)
-        : null;
+      const replyTo = msg.data.replyTo ? toMsgRefFromSurfaceMsgRef(msg.data.replyTo) : null;
 
       await relay
         .reanchor({
@@ -377,15 +333,11 @@ export async function bridgeBusToAdapter(params: {
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
       const requestClient = msg.headers?.request_client;
-      const routerSessionMode = parseRouterSessionMode(
-        msg.headers?.router_session_mode,
-      );
+      const routerSessionMode = parseRouterSessionMode(msg.headers?.router_session_mode);
 
       if (!requestId || !sessionId) {
         // Do not ack malformed messages: they need investigation.
-        throw new Error(
-          "evt.request.reply missing required headers.request_id/session_id",
-        );
+        throw new Error("evt.request.reply missing required headers.request_id/session_id");
       }
 
       if (requestClient && requestClient !== platform) {
@@ -432,8 +384,7 @@ export async function bridgeBusToAdapter(params: {
       if (env.perf.log) {
         const lagMs = Date.now() - msg.ts;
         const shouldWarn = lagMs >= env.perf.lagWarnMs;
-        const shouldSample =
-          env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+        const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
         if (shouldWarn || shouldSample) {
           (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
             stage: "evt.request.reply->bus_to_adapter",
@@ -572,11 +523,7 @@ export async function bridgeBusToAdapter(params: {
           },
         )
         .catch((e: unknown) => {
-          logger.debug(
-            "failed to publish output message created",
-            { requestId },
-            e,
-          );
+          logger.debug("failed to publish output message created", { requestId }, e);
         });
     };
 
@@ -605,10 +552,7 @@ export async function bridgeBusToAdapter(params: {
     };
 
     streamToken += 1;
-    let out = await adapter.startOutput(
-      sessionRef,
-      buildStartOpts(baseReplyTo, streamToken),
-    );
+    let out = await adapter.startOutput(sessionRef, buildStartOpts(baseReplyTo, streamToken));
     useResumeOpts = false;
 
     if (input.restore) {
@@ -731,9 +675,7 @@ export async function bridgeBusToAdapter(params: {
       outReqTopic(requestId),
       {
         mode: "tail",
-        offset: lastOutCursor
-          ? { type: "cursor", cursor: lastOutCursor }
-          : { type: "begin" },
+        offset: lastOutCursor ? { type: "cursor", cursor: lastOutCursor } : { type: "begin" },
         batch: { maxWaitMs: 250 },
       },
       async (outMsg, outCtx) => {
@@ -743,21 +685,16 @@ export async function bridgeBusToAdapter(params: {
           const sinceRelayStartMs = now - relayStartedAt;
           const outBusLagMs = now - outMsg.ts;
           const shouldWarn =
-            sinceRelayStartMs >= env.perf.lagWarnMs ||
-            outBusLagMs >= env.perf.lagWarnMs;
-          const shouldSample =
-            env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+            sinceRelayStartMs >= env.perf.lagWarnMs || outBusLagMs >= env.perf.lagWarnMs;
+          const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
           if (shouldWarn || shouldSample) {
-            (shouldWarn ? logger.warn : logger.info)(
-              "perf.output_first_event",
-              {
-                requestId,
-                sessionId,
-                sinceRelayStartMs,
-                outBusLagMs,
-                outType: outMsg.type,
-              },
-            );
+            (shouldWarn ? logger.warn : logger.info)("perf.output_first_event", {
+              requestId,
+              sessionId,
+              sinceRelayStartMs,
+              outBusLagMs,
+              outType: outMsg.type,
+            });
           }
         }
 
@@ -826,8 +763,7 @@ export async function bridgeBusToAdapter(params: {
 
             case lilacEventTypes.EvtAgentOutputResponseText: {
               const delivery =
-                outMsg.data.delivery ??
-                resolveReplyDeliveryFromFinalText(outMsg.data.finalText);
+                outMsg.data.delivery ?? resolveReplyDeliveryFromFinalText(outMsg.data.finalText);
 
               if (delivery === "skip") {
                 await out.abort("skip").catch(() => undefined);
@@ -835,15 +771,9 @@ export async function bridgeBusToAdapter(params: {
                 await relayStop();
 
                 if (platform === "github") {
-                  await cleanupGithubAck({ logger, requestId, sessionId }).catch(
-                    (e: unknown) => {
-                      logger.warn(
-                        "github ack cleanup failed",
-                        { requestId, sessionId },
-                        e,
-                      );
-                    },
-                  );
+                  await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
+                    logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                  });
                 }
 
                 logger.info("reply relay skipped final surface reply", {
@@ -870,8 +800,7 @@ export async function bridgeBusToAdapter(params: {
               }
 
               const statsLineRaw = outMsg.data.statsForNerdsLine;
-              const statsLine =
-                typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
+              const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
               if (statsLine.length > 0) {
                 await out.push({ type: "meta.stats", line: statsLine });
               }
@@ -901,15 +830,9 @@ export async function bridgeBusToAdapter(params: {
               await relayStop();
 
               if (platform === "github") {
-                await cleanupGithubAck({ logger, requestId, sessionId }).catch(
-                  (e: unknown) => {
-                    logger.warn(
-                      "github ack cleanup failed",
-                      { requestId, sessionId },
-                      e,
-                    );
-                  },
-                );
+                await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
+                  logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                });
               }
 
               logger.info("reply relay finished", {
@@ -941,8 +864,7 @@ export async function bridgeBusToAdapter(params: {
     if (env.perf.log) {
       const setupMs = Date.now() - subStart;
       const shouldWarn = setupMs >= env.perf.lagWarnMs;
-      const shouldSample =
-        env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
+      const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
       if (shouldWarn || shouldSample) {
         (shouldWarn ? logger.warn : logger.info)("perf.subscription_setup", {
           stage: "bus_to_adapter.output_subscribe",
@@ -971,9 +893,7 @@ export async function bridgeBusToAdapter(params: {
       firstOutLogged,
       reanchor: async (reanchorInput) => {
         await enqueue(async () => {
-          const nextReplyTo = reanchorInput.inheritReplyTo
-            ? currentReplyTo
-            : reanchorInput.replyTo;
+          const nextReplyTo = reanchorInput.inheritReplyTo ? currentReplyTo : reanchorInput.replyTo;
 
           // Make the new stream active immediately so any messages created during abort
           // do not get published as "active output".
@@ -985,10 +905,7 @@ export async function bridgeBusToAdapter(params: {
           currentReplyTo = nextReplyTo;
 
           // Start a new output stream and prime it with current state.
-          out = await adapter.startOutput(
-            sessionRef,
-            buildStartOpts(nextReplyTo, streamToken),
-          );
+          out = await adapter.startOutput(sessionRef, buildStartOpts(nextReplyTo, streamToken));
 
           if (visibleTextAcc.trim().length > 0) {
             await out.push({ type: "text.set", text: visibleTextAcc });

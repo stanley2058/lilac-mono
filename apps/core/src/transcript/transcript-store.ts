@@ -40,21 +40,6 @@ export type TranscriptStore = {
   close(): void;
 };
 
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function estimateChars(value: unknown): number {
-  if (typeof value === "string") return value.length;
-  if (value instanceof Uint8Array) return value.byteLength;
-  return stringifyUnknown(value).length;
-}
-
 export class SqliteTranscriptStore implements TranscriptStore {
   private readonly db: Database;
 
@@ -240,33 +225,24 @@ export class SqliteTranscriptStore implements TranscriptStore {
     const MAX_REQUESTS = 10_000;
 
     const cutoff = Date.now() - TTL_MS;
-    this.db.run("DELETE FROM request_transcripts WHERE updated_ts < ?", [
-      cutoff,
-    ]);
+    this.db.run("DELETE FROM request_transcripts WHERE updated_ts < ?", [cutoff]);
 
     // Clamp max rows by deleting oldest.
-    const countRow = this.db
-      .query("SELECT COUNT(1) as c FROM request_transcripts")
-      .get() as { c: number };
+    const countRow = this.db.query("SELECT COUNT(1) as c FROM request_transcripts").get() as {
+      c: number;
+    };
     const count = typeof countRow?.c === "number" ? countRow.c : 0;
     if (count <= MAX_REQUESTS) return;
 
     const toDelete = count - MAX_REQUESTS;
     const victims = this.db
-      .query(
-        "SELECT request_id FROM request_transcripts ORDER BY updated_ts ASC LIMIT ?",
-      )
+      .query("SELECT request_id FROM request_transcripts ORDER BY updated_ts ASC LIMIT ?")
       .all(toDelete) as Array<{ request_id: string }>;
     if (victims.length === 0) return;
 
     for (const v of victims) {
-      this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [
-        v.request_id,
-      ]);
-      this.db.run(
-        "DELETE FROM surface_message_to_request WHERE request_id = ?",
-        [v.request_id],
-      );
+      this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [v.request_id]);
+      this.db.run("DELETE FROM surface_message_to_request WHERE request_id = ?", [v.request_id]);
     }
   }
 }

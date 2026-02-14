@@ -6,9 +6,7 @@ function normalizeDataDir(dataDir: string): string {
   return path.resolve(process.cwd(), dataDir);
 }
 
-export function resolveVcsPaths(params: {
-  dataDir: string;
-}): {
+export function resolveVcsPaths(params: { dataDir: string }): {
   dataDir: string;
   gitConfigGlobal: string;
   secretDir: string;
@@ -28,9 +26,7 @@ export function resolveVcsPaths(params: {
   };
 }
 
-export function resolveVcsEnv(params: {
-  dataDir: string;
-}): {
+export function resolveVcsEnv(params: { dataDir: string }): {
   GIT_CONFIG_GLOBAL: string;
   GNUPGHOME: string;
   XDG_CONFIG_HOME: string;

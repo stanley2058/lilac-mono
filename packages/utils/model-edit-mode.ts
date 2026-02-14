@@ -13,10 +13,7 @@ function normalizeLower(value: string): string {
  * - openrouter/openai/*
  * - vercel/openai/*
  */
-export function isOpenAiLikeModel(params: {
-  provider: string;
-  modelId: string;
-}): boolean {
+export function isOpenAiLikeModel(params: { provider: string; modelId: string }): boolean {
   const provider = normalizeLower(params.provider);
   const modelId = normalizeLower(params.modelId);
 

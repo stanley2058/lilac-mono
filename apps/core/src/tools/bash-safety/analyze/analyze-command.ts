@@ -1,8 +1,4 @@
-import {
-  type AnalyzeOptions,
-  type AnalyzeResult,
-  MAX_RECURSION_DEPTH,
-} from "../types";
+import { type AnalyzeOptions, type AnalyzeResult, MAX_RECURSION_DEPTH } from "../types";
 
 import { splitShellCommands } from "../shell";
 
@@ -54,15 +50,12 @@ export function analyzeCommandInternal(
       continue;
     }
 
-    const reason = analyzeSegment(segment, depth, {
+    const reason = analyzeSegment(segment, {
       ...options,
       cwd: originalCwd,
       effectiveCwd,
       analyzeNested: (nestedCommand: string): string | null => {
-        return (
-          analyzeCommandInternal(nestedCommand, depth + 1, options)?.reason ??
-          null
-        );
+        return analyzeCommandInternal(nestedCommand, depth + 1, options)?.reason ?? null;
       },
     });
 

@@ -1,3 +1,5 @@
+/* oxlint-disable eslint/no-control-regex */
+
 import { encode } from "@toon-format/toon";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
@@ -12,8 +14,7 @@ declare global {
 
 globalThis.PACKAGE_VERSION = "dev";
 
-const BACKEND_URL =
-  process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
+const BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
 
 async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Response> {
   // Bun (and Node's undici fetch) can enforce a default request timeout (~5m)
@@ -144,8 +145,7 @@ function levenshteinDistance(a: string, b: string): number {
       const deletion = (prev[j] ?? Number.MAX_SAFE_INTEGER) + 1;
       const insertion = (curr[j - 1] ?? Number.MAX_SAFE_INTEGER) + 1;
       const substitution =
-        (prev[j - 1] ?? Number.MAX_SAFE_INTEGER) +
-        (leftChar === rightChar ? 0 : 1);
+        (prev[j - 1] ?? Number.MAX_SAFE_INTEGER) + (leftChar === rightChar ? 0 : 1);
       curr[j] = Math.min(deletion, insertion, substitution);
     }
 
@@ -185,21 +185,14 @@ function pickCallableSuggestion(
       continue;
     }
 
-    if (
-      score === bestScore &&
-      bestCandidate &&
-      candidate.length < bestCandidate.length
-    ) {
+    if (score === bestScore && bestCandidate && candidate.length < bestCandidate.length) {
       bestCandidate = candidate;
     }
   }
 
   if (!bestCandidate) return undefined;
 
-  const threshold = Math.max(
-    2,
-    Math.ceil(Math.max(query.length, bestCandidate.length) * 0.25),
-  );
+  const threshold = Math.max(2, Math.ceil(Math.max(query.length, bestCandidate.length) * 0.25));
   if (bestScore > threshold) return undefined;
 
   return bestCandidate;
@@ -248,9 +241,7 @@ async function listTools() {
 }
 
 async function toolHelp(callableId: string) {
-  const res = await fetchNoTimeout(
-    `${BACKEND_URL}/help/${encodeURIComponent(callableId)}`,
-  );
+  const res = await fetchNoTimeout(`${BACKEND_URL}/help/${encodeURIComponent(callableId)}`);
   if (!res.ok) {
     const detail = await readHttpErrorMessage(res);
     throw new Error(
@@ -584,13 +575,8 @@ async function main() {
       }
       case "list": {
         const { tools } = await listTools();
-        const visibleTools = parsed.showHidden
-          ? tools
-          : tools.filter((t) => t.hidden !== true);
-        const idWidth = Math.min(
-          28,
-          Math.max(10, ...visibleTools.map((t) => t.callableId.length)),
-        );
+        const visibleTools = parsed.showHidden ? tools : tools.filter((t) => t.hidden !== true);
+        const idWidth = Math.min(28, Math.max(10, ...visibleTools.map((t) => t.callableId.length)));
 
         const output: string[] = [
           banner(),
@@ -601,13 +587,9 @@ async function main() {
             "cat payload.json | tools <tool> --stdin",
           ]),
           "",
-          styles.bold(
-            "Available tools (quick reference; use --help on a tool for details):",
-          ),
+          styles.bold("Available tools (quick reference; use --help on a tool for details):"),
           "",
-          ...visibleTools.map((t) =>
-            formatToolBlock(t, { idWidth, showArgs: true }),
-          ),
+          ...visibleTools.map((t) => formatToolBlock(t, { idWidth, showArgs: true })),
           "",
           section("Options", formatBullets(commonOptions)),
         ];
@@ -621,11 +603,7 @@ async function main() {
           parsed.fieldInputs.length > 0 ||
           parsed.jsonFieldInputs.length > 0;
 
-        if (
-          !parsed.usesStdin &&
-          !hasAnyInputFlags &&
-          process.stdin.isTTY === false
-        ) {
+        if (!parsed.usesStdin && !hasAnyInputFlags && process.stdin.isTTY === false) {
           throw new Error(
             "Stdin is piped, but this invocation does not read stdin. Use --stdin/--input=@- for a JSON payload, or --<field>:json=@- for a JSON field.",
           );
@@ -743,9 +721,7 @@ function parseArgs(): ParsedArgs {
         continue;
       }
       if (!a || !a.startsWith("--")) {
-        throw new Error(
-          `Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`,
-        );
+        throw new Error(`Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`);
       }
 
       const eq = a.indexOf("=");
@@ -755,11 +731,7 @@ function parseArgs(): ParsedArgs {
 
       if (!hasValue) {
         const next = restArgs[i + 1];
-        if (
-          typeof next === "string" &&
-          next.length > 0 &&
-          !next.startsWith("--")
-        ) {
+        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
           v = next;
           hasValue = true;
           i++;
@@ -779,9 +751,7 @@ function parseArgs(): ParsedArgs {
           );
         }
         if (v !== "compact" && v !== "json") {
-          throw new Error(
-            `Invalid --output value '${v}' (expected compact|json)`,
-          );
+          throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
         }
         outputMode = v;
         continue;
@@ -863,9 +833,7 @@ function parseArgs(): ParsedArgs {
     for (let i = 0; i < restArgs.length; i++) {
       const a = restArgs[i];
       if (!a || !a.startsWith("--")) {
-        throw new Error(
-          `Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`,
-        );
+        throw new Error(`Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`);
       }
 
       const eq = a.indexOf("=");
@@ -875,11 +843,7 @@ function parseArgs(): ParsedArgs {
 
       if (!hasValue) {
         const next = restArgs[i + 1];
-        if (
-          typeof next === "string" &&
-          next.length > 0 &&
-          !next.startsWith("--")
-        ) {
+        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
           v = next;
           hasValue = true;
           i++;
@@ -901,9 +865,7 @@ function parseArgs(): ParsedArgs {
           );
         }
         if (v !== "compact" && v !== "json") {
-          throw new Error(
-            `Invalid --output value '${v}' (expected compact|json)`,
-          );
+          throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
         }
         outputMode = v;
         continue;
@@ -1031,17 +993,13 @@ async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
   return input;
 }
 
-async function runOnboardingWizard(
-  parsed: Extract<ParsedArgs, { type: "onboard" }>,
-) {
+async function runOnboardingWizard(parsed: Extract<ParsedArgs, { type: "onboard" }>) {
   const defaultName = "lilac-agent[bot]";
   const defaultEmail = "lilac-agent[bot]@users.noreply.github.com";
 
   const needsTty =
     !parsed.yes &&
-    (parsed.userName === undefined ||
-      parsed.userEmail === undefined ||
-      parsed.sign === undefined);
+    (parsed.userName === undefined || parsed.userEmail === undefined || parsed.sign === undefined);
   if (needsTty && process.stdin.isTTY === false) {
     throw new Error(
       "tools onboard requires a TTY for prompts. Use --yes with optional --name/--email/--sign flags for non-interactive use.",
@@ -1077,17 +1035,12 @@ async function runOnboardingWizard(
   };
 
   try {
-    const userName =
-      parsed.userName ?? (await askText("Git user.name", defaultName));
-    const userEmail =
-      parsed.userEmail ?? (await askText("Git user.email", defaultEmail));
+    const userName = parsed.userName ?? (await askText("Git user.name", defaultName));
+    const userEmail = parsed.userEmail ?? (await askText("Git user.email", defaultEmail));
     const sign =
-      parsed.sign ??
-      (await askYesNo("Enable GPG commit signing (no-passphrase key)", true));
+      parsed.sign ?? (await askYesNo("Enable GPG commit signing (no-passphrase key)", true));
 
-    const baseInput: Record<string, unknown> = parsed.dataDir
-      ? { dataDir: parsed.dataDir }
-      : {};
+    const baseInput: Record<string, unknown> = parsed.dataDir ? { dataDir: parsed.dataDir } : {};
 
     const bootstrap = await callTool("onboarding.bootstrap", baseInput);
     if (bootstrap.isError) throw new Error(bootstrap.output);
@@ -1146,9 +1099,7 @@ async function runOnboardingWizard(
             enabled: true as const,
             fingerprint,
             publicKeyArmored,
-            notes: [
-              "Add this public key to GitHub (Settings -> SSH and GPG keys -> New GPG key).",
-            ],
+            notes: ["Add this public key to GitHub (Settings -> SSH and GPG keys -> New GPG key)."],
           }
         : { enabled: false as const },
       vcsEnv: vcsEnv.output,
@@ -1177,9 +1128,7 @@ function parseJsonSource(value: string): JsonSource {
   }
 
   if (value.length === 0) {
-    throw new Error(
-      "Empty JSON source (expected @file.json, @-, or inline JSON)",
-    );
+    throw new Error("Empty JSON source (expected @file.json, @-, or inline JSON)");
   }
 
   return { kind: "inline", text: value };
@@ -1193,10 +1142,7 @@ async function readJsonObjectSource(source: JsonSource, label: string) {
   return value;
 }
 
-async function readJsonSource(
-  source: JsonSource,
-  label: string,
-): Promise<unknown> {
+async function readJsonSource(source: JsonSource, label: string): Promise<unknown> {
   let raw: string;
 
   if (source.kind === "stdin") {
@@ -1270,8 +1216,7 @@ function normalizeMaybePath(field: string, value: string) {
 
   // For unknown flags, only normalize *very* path-like values.
   // This keeps the CLI generic while avoiding false positives.
-  const shouldNormalize =
-    isPathField || (looksLikePath(value) && value.length <= 512);
+  const shouldNormalize = isPathField || (looksLikePath(value) && value.length <= 512);
 
   if (!shouldNormalize) return value;
   return resolve(expandTilde(value));

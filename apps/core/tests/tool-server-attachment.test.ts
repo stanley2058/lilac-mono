@@ -23,10 +23,7 @@ function createInMemoryRawBus(): RawBus {
   }>();
 
   return {
-    publish: async <TData>(
-      msg: Omit<Message<TData>, "id" | "ts">,
-      opts: PublishOptions,
-    ) => {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const id = `${Date.now()}-0`;
       const stored: Message<unknown> = {
         topic: opts.topic,
@@ -58,10 +55,7 @@ function createInMemoryRawBus(): RawBus {
       const entry = {
         topic,
         opts,
-        handler: handler as unknown as (
-          msg: Message<unknown>,
-          ctx: HandleContext,
-        ) => Promise<void>,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
       };
       subs.add(entry);
 

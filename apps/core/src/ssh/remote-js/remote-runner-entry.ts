@@ -67,10 +67,7 @@ function normalizeEditOutput(result: EditFileResult): EditFileResult {
   };
 }
 
-async function opReadText(
-  input: Record<string, unknown>,
-  fsTool: FileSystem,
-): Promise<unknown> {
+async function opReadText(input: Record<string, unknown>, fsTool: FileSystem): Promise<unknown> {
   const readRes = await fsTool.readFile({
     path: String(input["path"] ?? ""),
     startLine: numberOrUndefined(input["startLine"]),
@@ -120,13 +117,8 @@ async function opReadBytes(
   }
 }
 
-async function opGlob(
-  input: Record<string, unknown>,
-  fsTool: FileSystem,
-): Promise<unknown> {
-  const patterns = Array.isArray(input["patterns"])
-    ? input["patterns"].map((p) => String(p))
-    : [];
+async function opGlob(input: Record<string, unknown>, fsTool: FileSystem): Promise<unknown> {
+  const patterns = Array.isArray(input["patterns"]) ? input["patterns"].map((p) => String(p)) : [];
   const maxEntries = numberOrUndefined(input["maxEntries"]);
   const mode = input["mode"] === "detailed" ? "detailed" : "default";
   return await fsTool.glob({
@@ -136,10 +128,7 @@ async function opGlob(
   });
 }
 
-async function opGrep(
-  input: Record<string, unknown>,
-  fsTool: FileSystem,
-): Promise<unknown> {
+async function opGrep(input: Record<string, unknown>, fsTool: FileSystem): Promise<unknown> {
   const fileExtensions = Array.isArray(input["fileExtensions"])
     ? input["fileExtensions"].map((e) => String(e).replace(/^\./, ""))
     : [];
@@ -173,14 +162,10 @@ async function opEdit(
     };
   }
 
-  const edits = Array.isArray(input["edits"])
-    ? (input["edits"] as FileEdit[])
-    : [];
+  const edits = Array.isArray(input["edits"]) ? (input["edits"] as FileEdit[]) : [];
   const expectedHashRaw = input["expectedHash"];
   const expectedHash =
-    typeof expectedHashRaw === "string" && expectedHashRaw.length > 0
-      ? expectedHashRaw
-      : undefined;
+    typeof expectedHashRaw === "string" && expectedHashRaw.length > 0 ? expectedHashRaw : undefined;
 
   if (expectedHash) {
     const editRes = await fsTool.editFile({ path: pathInput, edits, expectedHash });

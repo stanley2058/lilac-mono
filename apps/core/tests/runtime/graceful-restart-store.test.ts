@@ -25,11 +25,13 @@ async function makeStore() {
   return new SqliteGracefulRestartStore(dbPath);
 }
 
-function buildSnapshot(): GracefulRestartSnapshot {
+function buildSnapshot(
+  overrides?: Partial<Pick<GracefulRestartSnapshot, "createdAt" | "deadlineMs">>,
+): GracefulRestartSnapshot {
   return {
     version: 1,
-    createdAt: Date.now(),
-    deadlineMs: 3_000,
+    createdAt: overrides?.createdAt ?? Date.now(),
+    deadlineMs: overrides?.deadlineMs ?? 3_000,
     agent: [
       {
         kind: "active",
@@ -148,6 +150,24 @@ describe("SqliteGracefulRestartStore", () => {
 
     const loaded = store.loadAndConsumeCompletedSnapshot();
     expect(loaded).toBeNull();
+
+    store.close();
+  });
+
+  it("does not restore stale snapshots past deadline", async () => {
+    const store = await makeStore();
+    store.saveCompletedSnapshot(
+      buildSnapshot({
+        createdAt: Date.now() - 10_000,
+        deadlineMs: 3_000,
+      }),
+    );
+
+    const loaded = store.loadAndConsumeCompletedSnapshot();
+    expect(loaded).toBeNull();
+
+    const secondLoad = store.loadAndConsumeCompletedSnapshot();
+    expect(secondLoad).toBeNull();
 
     store.close();
   });

@@ -9,10 +9,7 @@ export type Topic = string;
 export type Cursor = string;
 
 /** Where to start reading from when consuming a topic. */
-export type Offset =
-  | { type: "begin" }
-  | { type: "now" }
-  | { type: "cursor"; cursor: Cursor };
+export type Offset = { type: "begin" } | { type: "now" } | { type: "cursor"; cursor: Cursor };
 
 /** Delivery model for subscriptions. */
 export type Mode = "work" | "fanout" | "tail";
@@ -77,9 +74,7 @@ export type TailSubscriptionOptions = {
 };
 
 /** Options shared by `subscribe()` variants. */
-export type SubscriptionOptions =
-  | WorkOrFanoutSubscriptionOptions
-  | TailSubscriptionOptions;
+export type SubscriptionOptions = WorkOrFanoutSubscriptionOptions | TailSubscriptionOptions;
 
 /** Manual pull API options for `fetch()`. */
 export type FetchOptions = {

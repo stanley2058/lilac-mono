@@ -19,9 +19,7 @@ function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "workflow");
 }
 
-function tryHeaders(
-  ctx: RequestContext | undefined,
-): RequestHeaders | undefined {
+function tryHeaders(ctx: RequestContext | undefined): RequestHeaders | undefined {
   const requestId = ctx?.requestId;
   const sessionId = ctx?.sessionId;
   const requestClient = ctx?.requestClient;
@@ -129,16 +127,12 @@ export class Workflow implements ServerTool {
         name: "Workflow Cancel",
         description: "Cancel a workflow and its pending tasks.",
         shortInput: ["--workflow-id=<string>"],
-        input: [
-          "--workflow-id=<string>",
-          "--reason=<string> | Optional cancellation reason",
-        ],
+        input: ["--workflow-id=<string>", "--reason=<string> | Optional cancellation reason"],
       },
       {
         callableId: "workflow.list",
         name: "Workflow List",
-        description:
-          "List workflows from the local workflow store (scheduled only).",
+        description: "List workflows from the local workflow store (scheduled only).",
         shortInput: ["--state=<string>", "--limit=<number>"],
         input: [
           "--state=<queued|running|blocked|resolved|failed|cancelled> | Optional state filter",
@@ -383,12 +377,9 @@ export class Workflow implements ServerTool {
 
       if (payload.mode === "wait_until") {
         const runAtMs =
-          payload.runAtMs ??
-          (payload.runAtIso ? new Date(payload.runAtIso).getTime() : NaN);
+          payload.runAtMs ?? (payload.runAtIso ? new Date(payload.runAtIso).getTime() : NaN);
         if (!Number.isFinite(runAtMs)) {
-          throw new Error(
-            "workflow.schedule wait_until requires a valid runAtMs or runAtIso",
-          );
+          throw new Error("workflow.schedule wait_until requires a valid runAtMs or runAtIso");
         }
         const runAt = Math.trunc(runAtMs);
         schedule = { mode: "wait_until", runAtMs: runAt };
@@ -414,8 +405,7 @@ export class Workflow implements ServerTool {
         const tz = payload.tz ?? "UTC";
         const skipMissed = payload.skipMissed ?? true;
         const startAtMs =
-          typeof payload.startAtMs === "number" &&
-          Number.isFinite(payload.startAtMs)
+          typeof payload.startAtMs === "number" && Number.isFinite(payload.startAtMs)
             ? Math.trunc(payload.startAtMs)
             : undefined;
 
@@ -508,16 +498,12 @@ export class Workflow implements ServerTool {
             updatedAt: w.updatedAt,
             resolvedAt: w.resolvedAt,
             summary: w.definition.summary,
-            ...(payload.includeTasks
-              ? { tasks: store.listTasks(w.workflowId) }
-              : {}),
+            ...(payload.includeTasks ? { tasks: store.listTasks(w.workflowId) } : {}),
           };
         }
 
         const tasks = store.listTasks(w.workflowId);
-        const trigger = tasks.find(
-          (t) => t.kind === "time.wait_until" || t.kind === "time.cron",
-        );
+        const trigger = tasks.find((t) => t.kind === "time.wait_until" || t.kind === "time.cron");
         return {
           workflowId: w.workflowId,
           kind: "scheduled" as const,
@@ -558,14 +544,8 @@ const workflowCreateInputSchema = z.object({
     .array(
       z.object({
         description: z.string().min(1),
-        sessionId: z
-          .string()
-          .min(1)
-          .describe("Session/channel id where the message was sent"),
-        messageId: z
-          .string()
-          .min(1)
-          .describe("Message id to wait for replies to"),
+        sessionId: z.string().min(1).describe("Session/channel id where the message was sent"),
+        messageId: z.string().min(1).describe("Message id to wait for replies to"),
       }),
     )
     .min(1)
@@ -618,9 +598,7 @@ const workflowCancelInputSchema = z.object({
 });
 
 const workflowListInputSchema = z.object({
-  state: z
-    .enum(["queued", "running", "blocked", "resolved", "failed", "cancelled"])
-    .optional(),
+  state: z.enum(["queued", "running", "blocked", "resolved", "failed", "cancelled"]).optional(),
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
   includeTasks: z.boolean().optional().default(false),

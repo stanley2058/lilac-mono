@@ -32,10 +32,7 @@ type TargetClassification =
   | { kind: "within_anchored_cwd" }
   | { kind: "outside_anchored_cwd" };
 
-export function analyzeRm(
-  tokens: string[],
-  options: AnalyzeRmOptions = {},
-): string | null {
+export function analyzeRm(tokens: string[], options: AnalyzeRmOptions = {}): string | null {
   const {
     cwd,
     originalCwd,
@@ -120,9 +117,7 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
       return { kind: "root_or_home_target" };
     }
 
-    if (
-      isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd ?? anchoredCwd)
-    ) {
+    if (isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd ?? anchoredCwd)) {
       return { kind: "within_anchored_cwd" };
     }
   }
@@ -158,29 +153,17 @@ function isDangerousRootOrHomeTarget(path: string): boolean {
     return true;
   }
 
-  if (
-    normalized === "~" ||
-    normalized === "~/" ||
-    normalized.startsWith("~/")
-  ) {
+  if (normalized === "~" || normalized === "~/" || normalized.startsWith("~/")) {
     if (normalized === "~" || normalized === "~/" || normalized === "~/*") {
       return true;
     }
   }
 
-  if (
-    normalized === "$HOME" ||
-    normalized === "$HOME/" ||
-    normalized === "$HOME/*"
-  ) {
+  if (normalized === "$HOME" || normalized === "$HOME/" || normalized === "$HOME/*") {
     return true;
   }
 
-  if (
-    normalized === "${HOME}" ||
-    normalized === "${HOME}/" ||
-    normalized === "${HOME}/*"
-  ) {
+  if (normalized === "${HOME}" || normalized === "${HOME}/" || normalized === "${HOME}/*") {
     return true;
   }
 
@@ -203,10 +186,7 @@ function isTempTarget(path: string, allowTmpdirVar: boolean): boolean {
   }
 
   const systemTmpdir = tmpdir();
-  if (
-    normalized.startsWith(`${systemTmpdir}/`) ||
-    normalized === systemTmpdir
-  ) {
+  if (normalized.startsWith(`${systemTmpdir}/`) || normalized === systemTmpdir) {
     return true;
   }
 
@@ -260,18 +240,10 @@ function isCwdSelfTarget(target: string, cwd: string): boolean {
   }
 }
 
-function isTargetWithinCwd(
-  target: string,
-  originalCwd: string,
-  effectiveCwd?: string,
-): boolean {
+function isTargetWithinCwd(target: string, originalCwd: string, effectiveCwd?: string): boolean {
   const resolveCwd = effectiveCwd ?? originalCwd;
 
-  if (
-    target.startsWith("~") ||
-    target.startsWith("$HOME") ||
-    target.startsWith("${HOME}")
-  ) {
+  if (target.startsWith("~") || target.startsWith("$HOME") || target.startsWith("${HOME}")) {
     return false;
   }
 
@@ -293,10 +265,7 @@ function isTargetWithinCwd(
     try {
       const resolved = resolve(resolveCwd, target);
       const normalizedOriginalCwd = normalize(originalCwd);
-      return (
-        resolved.startsWith(`${normalizedOriginalCwd}/`) ||
-        resolved === normalizedOriginalCwd
-      );
+      return resolved.startsWith(`${normalizedOriginalCwd}/`) || resolved === normalizedOriginalCwd;
     } catch {
       return false;
     }
@@ -309,9 +278,7 @@ function isTargetWithinCwd(
   try {
     const resolved = resolve(resolveCwd, target);
     const normalizedCwd = normalize(originalCwd);
-    return (
-      resolved.startsWith(`${normalizedCwd}/`) || resolved === normalizedCwd
-    );
+    return resolved.startsWith(`${normalizedCwd}/`) || resolved === normalizedCwd;
   } catch {
     return false;
   }

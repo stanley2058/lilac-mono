@@ -27,14 +27,10 @@ export function buildScheduledJobMessages(params: {
   lines.push(`FiredAt: ${formatTs(params.firedAtMs)}`);
   lines.push("");
   lines.push("Output policy:");
+  lines.push("- Do not write normal assistant text intended for a user; it will be ignored.");
+  lines.push("- To produce user-visible output, use the bash tool to run the `tools` CLI.");
   lines.push(
-    "- Do not write normal assistant text intended for a user; it will be ignored.",
-  );
-  lines.push(
-    "- To produce user-visible output, use the bash tool to run the `tools` CLI.",
-  );
-  lines.push(
-    "- Default (reply in the active session/channel): tools surface.messages.send --text=\"...\"",
+    '- Default (reply in the active session/channel): tools surface.messages.send --text="..."',
   );
   lines.push(
     "- If you need to post to a different session/channel, pass: --client=discord --session-id=<channelId>",
@@ -44,9 +40,7 @@ export function buildScheduledJobMessages(params: {
   );
   if (requireDone) {
     lines.push("");
-    lines.push(
-      `When you are finished, respond with exactly '${doneToken}' and nothing else.`,
-    );
+    lines.push(`When you are finished, respond with exactly '${doneToken}' and nothing else.`);
   }
 
   if (def.job.systemPrompt && def.job.systemPrompt.trim().length > 0) {

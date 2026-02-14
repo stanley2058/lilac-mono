@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "semi": true,
+  "singleQuote": false,
+  "experimentalSortPackageJson": false,
+  "ignorePatterns": [
+    "ref/**",
+    "node_modules/**",
+    "data/**",
+    "**/dist/**",
+    "apps/core/src/ssh/remote-js/remote-runner.cjs"
+  ]
+}

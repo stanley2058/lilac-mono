@@ -2,12 +2,7 @@ import { Database } from "bun:sqlite";
 import { env } from "@stanley2058/lilac-utils";
 import path from "node:path";
 
-import type {
-  WorkflowRecord,
-  WorkflowState,
-  WorkflowTaskRecord,
-  WorkflowTaskState,
-} from "./types";
+import type { WorkflowRecord, WorkflowState, WorkflowTaskRecord, WorkflowTaskState } from "./types";
 
 export type WorkflowStore = {
   ensureSchema(): void;
@@ -259,18 +254,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
       .query(
         "SELECT workflow_id, state, created_at, updated_at, resolved_at, resume_published_at, definition_json, resume_seq FROM workflows WHERE workflow_id = ?",
       )
-      .get(workflowId) as
-      | {
-          workflow_id: string;
-          state: string;
-          created_at: number;
-          updated_at: number;
-          resolved_at: number | null;
-          resume_published_at: number | null;
-          definition_json: string;
-          resume_seq: number;
-        }
-      | null;
+      .get(workflowId) as {
+      workflow_id: string;
+      state: string;
+      created_at: number;
+      updated_at: number;
+      resolved_at: number | null;
+      resume_published_at: number | null;
+      definition_json: string;
+      resume_seq: number;
+    } | null;
 
     if (!row) return null;
 
@@ -299,19 +292,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const offset = Math.max(0, opts?.offset ?? 0);
     const order = opts?.order ?? "updated_desc";
 
-    const orderSql =
-      order === "created_desc" ? "created_at DESC" : "updated_at DESC";
+    const orderSql = order === "created_desc" ? "created_at DESC" : "updated_at DESC";
 
     const where = opts?.state ? "WHERE state = ?" : "";
     const sql =
       `SELECT workflow_id, state, created_at, updated_at, resolved_at, resume_published_at, definition_json, resume_seq ` +
       `FROM workflows ${where} ORDER BY ${orderSql} LIMIT ? OFFSET ?`;
 
-    const rows = this.db.query(sql).all(
-      ...(opts?.state ? [opts.state] : []),
-      limit,
-      offset,
-    ) as Array<{
+    const rows = this.db
+      .query(sql)
+      .all(...(opts?.state ? [opts.state] : []), limit, offset) as Array<{
       workflow_id: string;
       state: string;
       created_at: number;
@@ -370,28 +360,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   getTask(workflowId: string, taskId: string): WorkflowTaskRecord | null {
     const row = this.db
-      .query(
-        "SELECT * FROM workflow_tasks WHERE workflow_id = ? AND task_id = ?",
-      )
-      .get(workflowId, taskId) as
-      | {
-          workflow_id: string;
-          task_id: string;
-          kind: string;
-          description: string;
-          state: string;
-          input_json: string | null;
-          result_json: string | null;
-          created_at: number;
-          updated_at: number;
-          resolved_at: number | null;
-          resolved_by: string | null;
-          discord_channel_id: string | null;
-          discord_message_id: string | null;
-          discord_from_user_id: string | null;
-          timeout_at: number | null;
-        }
-      | null;
+      .query("SELECT * FROM workflow_tasks WHERE workflow_id = ? AND task_id = ?")
+      .get(workflowId, taskId) as {
+      workflow_id: string;
+      task_id: string;
+      kind: string;
+      description: string;
+      state: string;
+      input_json: string | null;
+      result_json: string | null;
+      created_at: number;
+      updated_at: number;
+      resolved_at: number | null;
+      resolved_by: string | null;
+      discord_channel_id: string | null;
+      discord_message_id: string | null;
+      discord_from_user_id: string | null;
+      timeout_at: number | null;
+    } | null;
 
     if (!row) return null;
 
@@ -460,9 +446,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   listTasks(workflowId: string): WorkflowTaskRecord[] {
     const rows = this.db
-      .query(
-        "SELECT * FROM workflow_tasks WHERE workflow_id = ? ORDER BY created_at ASC",
-      )
+      .query("SELECT * FROM workflow_tasks WHERE workflow_id = ? ORDER BY created_at ASC")
       .all(workflowId) as Array<{
       workflow_id: string;
       task_id: string;

@@ -163,9 +163,7 @@ interface ParallelParseResult {
   hasPlaceholder: boolean;
 }
 
-function parseParallelCommand(
-  tokens: readonly string[],
-): ParallelParseResult | null {
+function parseParallelCommand(tokens: readonly string[]): ParallelParseResult | null {
   const parallelOptsWithValue = new Set([
     "-S",
     "--sshlogin",
@@ -210,11 +208,7 @@ function parseParallelCommand(
     }
 
     if (token.startsWith("-")) {
-      if (
-        token.startsWith("-j") &&
-        token.length > 2 &&
-        /^\d+$/.test(token.slice(2))
-      ) {
+      if (token.startsWith("-j") && token.length > 2 && /^\d+$/.test(token.slice(2))) {
         i++;
         continue;
       }

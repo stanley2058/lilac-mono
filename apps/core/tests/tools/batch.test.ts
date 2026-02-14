@@ -35,11 +35,7 @@ function makeTools(
   const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
 
   const tools: ToolSet = {} as ToolSet;
-  Object.assign(
-    tools,
-    bashToolWithCwd(cwd),
-    fsTool(cwd, { includeEditFile }),
-  );
+  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd, { includeEditFile }));
   if (includeApplyPatch) {
     Object.assign(tools, applyPatchTool({ cwd }));
   }
@@ -68,11 +64,7 @@ function makeToolsWithBatchReporter(
   const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
 
   const tools: ToolSet = {} as ToolSet;
-  Object.assign(
-    tools,
-    bashToolWithCwd(cwd),
-    fsTool(cwd, { includeEditFile }),
-  );
+  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd, { includeEditFile }));
   if (includeApplyPatch) {
     Object.assign(tools, applyPatchTool({ cwd }));
   }
@@ -379,8 +371,7 @@ describe("batch tool", () => {
       };
     };
 
-    const enumValues =
-      schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
+    const enumValues = schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
     expect(enumValues).toContain("edit_file");
     expect(enumValues).not.toContain("apply_patch");
   });

@@ -8,10 +8,7 @@ function normalizeToken(raw: string): string {
   return raw.trim().replace(/^#+/u, "");
 }
 
-export function resolveDiscordSessionId(input: {
-  sessionId: string;
-  cfg: CoreConfig;
-}): string {
+export function resolveDiscordSessionId(input: { sessionId: string; cfg: CoreConfig }): string {
   const raw = input.sessionId.trim();
   if (raw.length === 0) {
     throw new Error("sessionId is required");

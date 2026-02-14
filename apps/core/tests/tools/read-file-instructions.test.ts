@@ -16,9 +16,7 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   );
 }
 
-async function resolveExecuteResult<T>(
-  value: T | PromiseLike<T> | AsyncIterable<T>,
-): Promise<T> {
+async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
   if (isAsyncIterable(value)) {
     let last: T | undefined;
     for await (const chunk of value) last = chunk;
@@ -45,14 +43,8 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
   it("loads AGENTS.md from file directory up to cwd when file is a child", async () => {
     await mkdir(path.join(baseDir, "sub", "nested"), { recursive: true });
     await writeFile(path.join(baseDir, "AGENTS.md"), "# Root\n\nRoot rules.");
-    await writeFile(
-      path.join(baseDir, "sub", "AGENTS.md"),
-      "# Sub\n\nSub rules.",
-    );
-    await writeFile(
-      path.join(baseDir, "sub", "nested", "file.txt"),
-      "hello\n",
-    );
+    await writeFile(path.join(baseDir, "sub", "AGENTS.md"), "# Sub\n\nSub rules.");
+    await writeFile(path.join(baseDir, "sub", "nested", "file.txt"), "hello\n");
 
     const tools = fsTool(baseDir);
     const readFile = tools.read_file;
@@ -104,14 +96,8 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
   it("does not reload AGENTS.md that were already loaded in prior read_file tool results", async () => {
     await mkdir(path.join(baseDir, "sub", "nested"), { recursive: true });
     await writeFile(path.join(baseDir, "AGENTS.md"), "# Root\n\nRoot rules.");
-    await writeFile(
-      path.join(baseDir, "sub", "AGENTS.md"),
-      "# Sub\n\nSub rules.",
-    );
-    await writeFile(
-      path.join(baseDir, "sub", "nested", "file.txt"),
-      "hello\n",
-    );
+    await writeFile(path.join(baseDir, "sub", "AGENTS.md"), "# Sub\n\nSub rules.");
+    await writeFile(path.join(baseDir, "sub", "nested", "file.txt"), "hello\n");
 
     const tools = fsTool(baseDir);
     const readFile = tools.read_file;

@@ -2,20 +2,11 @@ import { asSchema } from "ai";
 import { z } from "zod";
 
 import { bashInputSchema } from "./bash";
-import {
-  editFileInputZod,
-  globInputZod,
-  grepInputZod,
-  readFileInputZod,
-} from "./fs/fs";
+import { editFileInputZod, globInputZod, grepInputZod, readFileInputZod } from "./fs/fs";
 
-type ValidationResult<T> =
-  | { success: true; value: T }
-  | { success: false; error: Error };
+type ValidationResult<T> = { success: true; value: T } | { success: false; error: Error };
 
-type ZodSafeParseResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: unknown };
+type ZodSafeParseResult<T> = { success: true; data: T } | { success: false; error: unknown };
 
 function isZodSchema(value: unknown): value is {
   safeParse: (input: unknown) => ZodSafeParseResult<unknown>;
@@ -65,12 +56,7 @@ function truncateEnd(input: string, maxLen: number): string {
   return s.slice(0, maxLen - 3) + "...";
 }
 
-function truncateMiddle(
-  input: string,
-  headLen: number,
-  tailLen: number,
-  maxLen: number,
-): string {
+function truncateMiddle(input: string, headLen: number, tailLen: number, maxLen: number): string {
   const s = input;
   if (s.length <= maxLen) return s;
   const ellipsis = "...";
@@ -147,13 +133,13 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   readFile: readFileToolArgsFormatter,
 
   glob: (args) => {
-    const parsed = safeValidateSync<{ patterns: string[]; cwd?: string }>(
-      globInputZod,
-      args,
-    );
+    const parsed = safeValidateSync<{ patterns: string[]; cwd?: string }>(globInputZod, args);
     if (!parsed) return "";
 
-    const joinedPatterns = parsed.patterns.map((p) => p.trim()).filter(Boolean).join(",");
+    const joinedPatterns = parsed.patterns
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .join(",");
     if (!joinedPatterns) return "";
 
     const cwd = (parsed.cwd ?? "").trim();
@@ -163,10 +149,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   },
 
   grep: (args) => {
-    const parsed = safeValidateSync<{ pattern: string; cwd?: string }>(
-      grepInputZod,
-      args,
-    );
+    const parsed = safeValidateSync<{ pattern: string; cwd?: string }>(grepInputZod, args);
     if (!parsed) return "";
 
     const pattern = parsed.pattern.replace(/\s+/g, " ").trim();
@@ -178,10 +161,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   },
 
   subagent_delegate: (args) => {
-    const parsed = safeValidateSync<{ task: string }>(
-      subagentDelegateArgsSchema,
-      args,
-    );
+    const parsed = safeValidateSync<{ task: string }>(subagentDelegateArgsSchema, args);
     if (!parsed) return "";
     const task = parsed.task.replace(/\s+/g, " ").trim();
     if (!task) return "";
@@ -189,10 +169,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   },
 
   apply_patch: (args) => {
-    const localParsed = safeValidateSync<{ patchText: string }>(
-      localApplyPatchArgsSchema,
-      args,
-    );
+    const localParsed = safeValidateSync<{ patchText: string }>(localApplyPatchArgsSchema, args);
     if (!localParsed) return "";
 
     const paths = parseApplyPatchPathsFromPatchText(localParsed.patchText);
@@ -201,11 +178,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
 
     const remaining = Math.max(0, paths.length - 1);
     const suffix = remaining > 0 ? ` (+${remaining})` : "";
-    return (
-      " " +
-      truncateMiddle(first, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN) +
-      suffix
-    );
+    return " " + truncateMiddle(first, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN) + suffix;
   },
 
   edit_file: (args) => {
@@ -227,10 +200,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   },
 };
 
-export function formatToolArgsForDisplay(
-  toolName: string,
-  args: unknown,
-): string {
+export function formatToolArgsForDisplay(toolName: string, args: unknown): string {
   const f = TOOL_ARGS_FORMATTERS[toolName];
   if (!f) return "";
   try {

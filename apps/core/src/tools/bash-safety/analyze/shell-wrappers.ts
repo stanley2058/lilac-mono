@@ -7,11 +7,7 @@ export function extractDashCArg(tokens: readonly string[]): string | null {
       return tokens[i + 1] ?? null;
     }
 
-    if (
-      token.startsWith("-") &&
-      token.includes("c") &&
-      !token.startsWith("--")
-    ) {
+    if (token.startsWith("-") && token.includes("c") && !token.startsWith("--")) {
       const nextToken = tokens[i + 1];
       if (nextToken && !nextToken.startsWith("-")) {
         return nextToken;

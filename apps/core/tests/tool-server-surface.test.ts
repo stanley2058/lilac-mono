@@ -81,11 +81,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async sendMsg(
-    sessionRef: SessionRef,
-    content: ContentOpts,
-    opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(sessionRef: SessionRef, content: ContentOpts, opts?: SendOpts): Promise<MsgRef> {
     this.sendCalls.push({ sessionRef, content, opts });
     return {
       platform: "discord",
@@ -99,10 +95,7 @@ class FakeAdapter implements SurfaceAdapter {
     return msgs.find((m) => m.ref.messageId === msgRef.messageId) ?? null;
   }
 
-  async listMsg(
-    sessionRef: SessionRef,
-    opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
     this.listCalls.push({ sessionRef, opts });
 
     const msgs = this.messagesByChannelId[sessionRef.channelId] ?? [];
@@ -277,11 +270,7 @@ describe("tool-server surface", () => {
       requestClient: "discord",
     };
 
-    const res = (await tool.call(
-      "surface.messages.list",
-      {},
-      { context: ctx },
-    )) as {
+    const res = (await tool.call("surface.messages.list", {}, { context: ctx })) as {
       meta: { order: string };
       messages: Array<{ messageId: string }>;
     };
@@ -422,11 +411,9 @@ describe("tool-server surface", () => {
       requestClient: "discord",
     };
 
-    const msg = (await tool.call(
-      "surface.messages.read",
-      {},
-      { context: ctx },
-    )) as { message: { messageId: string } | null };
+    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
+      message: { messageId: string } | null;
+    };
 
     expect(msg.message?.messageId).toBe("m1");
   });
@@ -756,9 +743,9 @@ describe("tool-server surface", () => {
       sessionId: channelId,
     };
 
-    await expect(
-      tool.call("surface.reactions.list", {}, { context: ctx }),
-    ).rejects.toThrow("requires --message-id");
+    await expect(tool.call("surface.reactions.list", {}, { context: ctx })).rejects.toThrow(
+      "requires --message-id",
+    );
   });
 
   it("resolves sessionId alias for send", async () => {
@@ -877,9 +864,7 @@ describe("tool-server surface", () => {
     const adapter = new FakeAdapter([], {});
     const tool = new Surface({ adapter, config: cfg });
 
-    await expect(
-      tool.call("surface.sessions.list", { client: "github" }),
-    ).rejects.toThrow("gh");
+    await expect(tool.call("surface.sessions.list", { client: "github" })).rejects.toThrow("gh");
   });
 
   it("defaults github sessionId/messageId from requestId", async () => {

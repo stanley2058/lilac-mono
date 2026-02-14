@@ -3,11 +3,7 @@ import { MessageType, type Message } from "discord.js";
 
 import { isRoutableDiscordUserMessage } from "../../../src/surface/discord/discord-adapter";
 
-function makeMessage(input: {
-  bot: boolean;
-  system: boolean;
-  type: MessageType;
-}): Message {
+function makeMessage(input: { bot: boolean; system: boolean; type: MessageType }): Message {
   return {
     author: { bot: input.bot },
     system: input.system,

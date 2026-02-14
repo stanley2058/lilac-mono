@@ -2,9 +2,7 @@ import type { WorkflowTaskRecord } from "./types";
 import { SqliteWorkflowStore, type WorkflowStore } from "./workflow-store";
 
 export type WorkflowStoreQueries = {
-  listActiveDiscordWaitForReplyTasksByChannelId(
-    channelId: string,
-  ): WorkflowTaskRecord[];
+  listActiveDiscordWaitForReplyTasksByChannelId(channelId: string): WorkflowTaskRecord[];
 
   /**
    * Find wait_for_reply tasks that match a specific reply-to anchor.
@@ -18,9 +16,7 @@ export type WorkflowStoreQueries = {
   listActiveTimeoutTasks(nowMs: number): WorkflowTaskRecord[];
 };
 
-export function createWorkflowStoreQueries(
-  store: WorkflowStore,
-): WorkflowStoreQueries {
+export function createWorkflowStoreQueries(store: WorkflowStore): WorkflowStoreQueries {
   // Default implementation uses listTasks per workflow; can be overridden.
   // Our concrete sqlite store implements a faster path via a cast.
   if (store instanceof SqliteWorkflowStore) {
@@ -29,12 +25,8 @@ export function createWorkflowStoreQueries(
       listActiveDiscordWaitForReplyTasksByChannelId: (channelId) =>
         sqlite.unsafeListActiveDiscordWaitForReplyTasksByChannelId(channelId),
       listDiscordWaitForReplyTasksByChannelIdAndMessageId: (channelId, messageId) =>
-        sqlite.unsafeListDiscordWaitForReplyTasksByChannelIdAndMessageId(
-          channelId,
-          messageId,
-        ),
-      listActiveTimeoutTasks: (nowMs) =>
-        sqlite.unsafeListActiveTimeoutTasks(nowMs),
+        sqlite.unsafeListDiscordWaitForReplyTasksByChannelIdAndMessageId(channelId, messageId),
+      listActiveTimeoutTasks: (nowMs) => sqlite.unsafeListActiveTimeoutTasks(nowMs),
     };
   }
 
@@ -42,10 +34,7 @@ export function createWorkflowStoreQueries(
     listActiveDiscordWaitForReplyTasksByChannelId: (_channelId) => {
       return [];
     },
-    listDiscordWaitForReplyTasksByChannelIdAndMessageId: (
-      _channelId,
-      _messageId,
-    ) => {
+    listDiscordWaitForReplyTasksByChannelIdAndMessageId: (_channelId, _messageId) => {
       return [];
     },
     listActiveTimeoutTasks: (_nowMs) => {

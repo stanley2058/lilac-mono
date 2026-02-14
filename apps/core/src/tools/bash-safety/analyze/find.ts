@@ -2,8 +2,7 @@ import { getBasename, stripWrappers } from "../shell";
 
 import { hasRecursiveForceFlags } from "./rm-flags";
 
-const REASON_FIND_DELETE =
-  "find -delete permanently removes files. Use -print first to preview.";
+const REASON_FIND_DELETE = "find -delete permanently removes files. Use -print first to preview.";
 
 export function analyzeFind(tokens: readonly string[]): string | null {
   if (findHasDelete(tokens.slice(1))) {

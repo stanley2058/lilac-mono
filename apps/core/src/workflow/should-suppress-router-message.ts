@@ -21,11 +21,10 @@ export async function shouldSuppressRouterForWorkflowReply(params: {
   const replyToMessageId = getReplyToMessageId(evt.raw);
   if (!replyToMessageId) return { suppress: false };
 
-  const candidates =
-    queries.listDiscordWaitForReplyTasksByChannelIdAndMessageId(
-      evt.channelId,
-      replyToMessageId,
-    );
+  const candidates = queries.listDiscordWaitForReplyTasksByChannelIdAndMessageId(
+    evt.channelId,
+    replyToMessageId,
+  );
 
   for (const task of candidates) {
     if (task.kind !== "discord.wait_for_reply") continue;

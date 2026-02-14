@@ -1,7 +1,15 @@
 {
   "name": "lilac-mono",
   "private": true,
+  "scripts": {
+    "lint": "oxlint --tsconfig tsconfig.json apps packages __tests__",
+    "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages __tests__",
+    "fmt": "oxfmt --write \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
+    "fmt:check": "oxfmt --check \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\""
+  },
   "devDependencies": {
+    "oxfmt": "^0.32.0",
+    "oxlint": "^1.47.0",
     "typescript": "^5.9.3"
   },
   "workspaces": [

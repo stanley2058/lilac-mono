@@ -1,9 +1,4 @@
-import {
-  streamText,
-  type LanguageModel,
-  type ModelMessage,
-  type ToolSet,
-} from "ai";
+import { streamText, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 
 import type {
   AiSdkPiAgentEvent,
@@ -98,10 +93,7 @@ function getAssistantToolCallIds(message: ModelMessage): string[] {
       type?: unknown;
       toolCallId?: unknown;
     };
-    if (
-      candidate.type === "tool-call" &&
-      typeof candidate.toolCallId === "string"
-    ) {
+    if (candidate.type === "tool-call" && typeof candidate.toolCallId === "string") {
       ids.push(candidate.toolCallId);
     }
   }
@@ -117,10 +109,7 @@ function getToolResultToolCallIds(message: ModelMessage): string[] {
       type?: unknown;
       toolCallId?: unknown;
     };
-    if (
-      candidate.type === "tool-result" &&
-      typeof candidate.toolCallId === "string"
-    ) {
+    if (candidate.type === "tool-result" && typeof candidate.toolCallId === "string") {
       ids.push(candidate.toolCallId);
     }
   }
@@ -149,10 +138,7 @@ function isValidSuffix(messages: ModelMessage[], startIndex: number): boolean {
   return true;
 }
 
-function chooseSuffixStart(
-  messages: ModelMessage[],
-  keepLastMessages: number,
-): number {
+function chooseSuffixStart(messages: ModelMessage[], keepLastMessages: number): number {
   const candidate = Math.max(0, messages.length - keepLastMessages);
 
   for (let start = candidate; start >= 0; start--) {
@@ -174,9 +160,7 @@ function stringifyUnknown(value: unknown): string {
 function renderMessageForSummary(message: ModelMessage): string {
   if (message.role === "user") {
     const content =
-      typeof message.content === "string"
-        ? message.content
-        : stringifyUnknown(message.content);
+      typeof message.content === "string" ? message.content : stringifyUnknown(message.content);
     return `USER:\n${content}`;
   }
 
@@ -243,8 +227,7 @@ function renderMessageForSummary(message: ModelMessage): string {
     role?: unknown;
     content?: unknown;
   };
-  const role =
-    typeof unknownMessage.role === "string" ? unknownMessage.role : "unknown";
+  const role = typeof unknownMessage.role === "string" ? unknownMessage.role : "unknown";
   return `${role.toUpperCase()}:\n${stringifyUnknown(unknownMessage.content)}`;
 }
 
@@ -325,17 +308,12 @@ export async function attachAutoCompaction(
     if (!shouldCompact || inCompaction) return maybeTransformed;
 
     const lastMessage =
-      maybeTransformed.length > 0
-        ? maybeTransformed[maybeTransformed.length - 1]
-        : undefined;
+      maybeTransformed.length > 0 ? maybeTransformed[maybeTransformed.length - 1] : undefined;
 
     // Be conservative: only compact when the context ends with user/tool.
     if (lastMessage?.role === "assistant") return maybeTransformed;
 
-    const suffixStart = chooseSuffixStart(
-      [...maybeTransformed],
-      keepLastMessages,
-    );
+    const suffixStart = chooseSuffixStart([...maybeTransformed], keepLastMessages);
     if (suffixStart <= 0) return maybeTransformed;
 
     const prefixMessages = maybeTransformed.slice(0, suffixStart);
@@ -349,8 +327,7 @@ export async function attachAutoCompaction(
       const prefixText = renderMessagesForSummary(prefixMessages);
       const prompt = buildSummaryPrompt(prefixText);
 
-      const modelToUse =
-        summaryModel === "current" ? agent.state.model : summaryModel;
+      const modelToUse = summaryModel === "current" ? agent.state.model : summaryModel;
 
       const summaryText = await summarizePrefix({
         model: modelToUse,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
-import { buildCancelCustomId, parseCancelCustomId } from "../../../src/surface/discord/discord-cancel";
+import {
+  buildCancelCustomId,
+  parseCancelCustomId,
+} from "../../../src/surface/discord/discord-cancel";
 
 describe("discord cancel customId", () => {
   it("roundtrips sessionId + requestId", () => {

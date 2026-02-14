@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { discoverSkills } from "../skills";
-import {
-  formatAvailableSkillsSection,
-  type DiscoveredSkill,
-} from "../skills";
+import { formatAvailableSkillsSection, type DiscoveredSkill } from "../skills";
 
 async function mkdirp(p: string) {
   await fs.mkdir(p, { recursive: true });

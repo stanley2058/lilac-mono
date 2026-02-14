@@ -27,10 +27,7 @@ const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 const DEFAULT_INBOUND_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_INBOUND_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
-const DISCORD_CDN_HOSTS = new Set([
-  "cdn.discordapp.com",
-  "media.discordapp.net",
-]);
+const DISCORD_CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 
 type RequestHeaders = RequiredToolServerHeaders;
 
@@ -81,9 +78,7 @@ async function downloadToBuffer(input: unknown): Promise<{
 
     const res = await fetch(input.toString(), { redirect: "follow" });
     if (!res.ok) {
-      throw new Error(
-        `Failed to download attachment (${res.status}): ${input}`,
-      );
+      throw new Error(`Failed to download attachment (${res.status}): ${input}`);
     }
     const ab = await res.arrayBuffer();
     return {
@@ -107,10 +102,9 @@ async function downloadToBuffer(input: unknown): Promise<{
 
 const attachmentAddFilesInputSchema = z
   .object({
-    paths: nonEmptyStringListInputSchema
-      .describe(
-        "Local file paths to attach (resolved relative to request cwd)",
-      ),
+    paths: nonEmptyStringListInputSchema.describe(
+      "Local file paths to attach (resolved relative to request cwd)",
+    ),
     filenames: optionalNonEmptyStringListInputSchema.describe(
       "Optional filenames for each attachment",
     ),
@@ -143,9 +137,7 @@ type DetectedAttachment =
       data: unknown;
     };
 
-function collectUserAttachments(
-  messages: readonly ModelMessage[],
-): DetectedAttachment[] {
+function collectUserAttachments(messages: readonly ModelMessage[]): DetectedAttachment[] {
   const out: DetectedAttachment[] = [];
 
   for (const m of messages) {
@@ -208,8 +200,7 @@ export class Attachment implements ServerTool {
       {
         callableId: "attachment.add_files",
         name: "Attachment Add Files",
-        description:
-          "Reads local files and attaches them to the current reply.",
+        description: "Reads local files and attaches them to the current reply.",
         shortInput: ["--paths=<string | string[]>"],
         input: [
           "--paths=<string | string[]> | Local file paths",
@@ -254,10 +245,7 @@ export class Attachment implements ServerTool {
     throw new Error(`Invalid callable ID '${callableId}'`);
   }
 
-  private async callAddFiles(
-    rawInput: Record<string, unknown>,
-    ctx: RequestContext | undefined,
-  ) {
+  private async callAddFiles(rawInput: Record<string, unknown>, ctx: RequestContext | undefined) {
     const input = attachmentAddFilesInputSchema.parse(rawInput);
     const headers = toHeaders(ctx);
 
@@ -265,8 +253,7 @@ export class Attachment implements ServerTool {
 
     let totalBytes = 0;
 
-    const out: Array<{ filename: string; mimeType: string; bytes: number }> =
-      [];
+    const out: Array<{ filename: string; mimeType: string; bytes: number }> = [];
 
     for (let i = 0; i < input.paths.length; i++) {
       const p = input.paths[i]!;
@@ -292,8 +279,7 @@ export class Attachment implements ServerTool {
 
       const bytes = await fs.readFile(resolvedPath);
 
-      const filename =
-        (input.filenames && input.filenames[i]) || basename(resolvedPath);
+      const filename = (input.filenames && input.filenames[i]) || basename(resolvedPath);
 
       const typeFromBytes = await fileTypeFromBuffer(bytes);
 
@@ -316,15 +302,10 @@ export class Attachment implements ServerTool {
     return { ok: true as const, attachments: out };
   }
 
-  private async callDownload(
-    rawInput: Record<string, unknown>,
-    messages: readonly ModelMessage[],
-  ) {
+  private async callDownload(rawInput: Record<string, unknown>, messages: readonly ModelMessage[]) {
     const input = attachmentDownloadInputSchema.parse(rawInput);
 
-    const downloadDir = resolve(
-      expandTilde(input.downloadDir ?? "~/Downloads"),
-    );
+    const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
 
     const attachments = collectUserAttachments(messages);
     if (attachments.length === 0) {
@@ -367,13 +348,9 @@ export class Attachment implements ServerTool {
         detected?.mime ||
         downloaded.contentType?.split(";")[0]?.trim() ||
         att.mediaTypeHint ||
-        (att.filenameHint
-          ? inferMimeTypeFromFilename(att.filenameHint)
-          : undefined);
+        (att.filenameHint ? inferMimeTypeFromFilename(att.filenameHint) : undefined);
 
-      const sha256 = createHash("sha256")
-        .update(downloaded.bytes)
-        .digest("hex");
+      const sha256 = createHash("sha256").update(downloaded.bytes).digest("hex");
       const sha10 = sha256.slice(0, 10);
 
       if (seenSha10.has(sha10)) {
@@ -385,9 +362,7 @@ export class Attachment implements ServerTool {
       const extFromFilename = att.filenameHint ? extname(att.filenameHint) : "";
       const extFromMime = mimeType ? inferExtensionFromMimeType(mimeType) : "";
 
-      const ext = sanitizeExtension(
-        extFromFileType || extFromFilename || extFromMime,
-      );
+      const ext = sanitizeExtension(extFromFileType || extFromFilename || extFromMime);
       const target = join(downloadDir, `${sha10}${ext}`);
 
       const exists = await fs

@@ -4,10 +4,7 @@ import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type/core";
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
-import {
-  hasCacheBurstProvider,
-  type SurfaceAdapter,
-} from "../../surface/adapter";
+import { hasCacheBurstProvider, type SurfaceAdapter } from "../../surface/adapter";
 import type {
   MsgRef,
   SessionRef,
@@ -25,10 +22,7 @@ import {
   resolveDiscordSessionId,
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
-import {
-  inferMimeTypeFromFilename,
-  resolveToolPath,
-} from "../../shared/attachment-utils";
+import { inferMimeTypeFromFilename, resolveToolPath } from "../../shared/attachment-utils";
 
 import {
   isGithubIssueTriggerId,
@@ -54,9 +48,7 @@ import {
 
 const surfaceClientSchema = z
   .enum(["discord", "github", "whatsapp", "slack", "telegram", "web"])
-  .describe(
-    "Surface client/platform (required if request client is unknown / not provided)",
-  );
+  .describe("Surface client/platform (required if request client is unknown / not provided)");
 
 type SurfaceClient = z.infer<typeof surfaceClientSchema>;
 
@@ -95,7 +87,9 @@ function resolveClient(params: {
 }): SurfaceClient {
   const ctxClientRaw = params.ctx?.requestClient;
   const ctxClient =
-    typeof ctxClientRaw === "string" && isAdapterPlatform(ctxClientRaw) && isSurfaceClient(ctxClientRaw)
+    typeof ctxClientRaw === "string" &&
+    isAdapterPlatform(ctxClientRaw) &&
+    isSurfaceClient(ctxClientRaw)
       ? ctxClientRaw
       : "unknown";
 
@@ -264,11 +258,7 @@ function githubReactionContentFromInput(reaction: string): GithubReactionContent
   if (normalized === "laugh" || normalized === "smile" || normalized === "grin") {
     return "laugh";
   }
-  if (
-    normalized === "confused" ||
-    normalized === "confusion" ||
-    normalized === "thinking"
-  ) {
+  if (normalized === "confused" || normalized === "confusion" || normalized === "thinking") {
     return "confused";
   }
   if (normalized === "heart" || normalized === "love") {
@@ -330,8 +320,7 @@ export async function loadLocalAttachments(params: {
 
     const bytes = await fs.readFile(resolvedPath);
 
-    const filename =
-      (params.filenames && params.filenames[i]) ?? basename(resolvedPath);
+    const filename = (params.filenames && params.filenames[i]) ?? basename(resolvedPath);
 
     const typeFromBytes = await fileTypeFromBuffer(bytes);
 
@@ -359,12 +348,10 @@ type ReactionDetailsProvider = {
   listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]>;
 };
 
-function hasGuildIdResolver(
-  adapter: SurfaceAdapter,
-): adapter is SurfaceAdapter & GuildIdResolver {
+function hasGuildIdResolver(adapter: SurfaceAdapter): adapter is SurfaceAdapter & GuildIdResolver {
   return (
-    typeof (adapter as unknown as { fetchGuildIdForChannel?: unknown })
-      .fetchGuildIdForChannel === "function"
+    typeof (adapter as unknown as { fetchGuildIdForChannel?: unknown }).fetchGuildIdForChannel ===
+    "function"
   );
 }
 
@@ -372,8 +359,8 @@ function hasReactionDetailsProvider(
   adapter: SurfaceAdapter,
 ): adapter is SurfaceAdapter & ReactionDetailsProvider {
   return (
-    typeof (adapter as unknown as { listReactionDetails?: unknown })
-      .listReactionDetails === "function"
+    typeof (adapter as unknown as { listReactionDetails?: unknown }).listReactionDetails ===
+    "function"
   );
 }
 
@@ -442,8 +429,8 @@ function withDefaultSessionId(
   const ctxSessionId =
     typeof ctx?.sessionId === "string" && ctx.sessionId.length > 0
       ? ctx.sessionId
-      : inferDiscordOriginFromRequestId(ctx?.requestId)?.sessionId ??
-        inferGithubOriginFromRequestId(ctx?.requestId)?.sessionId;
+      : (inferDiscordOriginFromRequestId(ctx?.requestId)?.sessionId ??
+        inferGithubOriginFromRequestId(ctx?.requestId)?.sessionId);
 
   if (ctxSessionId) {
     return { ...rawInput, sessionId: ctxSessionId };
@@ -501,10 +488,17 @@ function getDiscordMessageTypeMetaFromRaw(raw: unknown): {
   const typeId = typeof discord["type"] === "number" ? (discord["type"] as number) : undefined;
   const typeName =
     typeof discord["typeName"] === "string" ? (discord["typeName"] as string) : undefined;
-  const isSystem = typeof discord["system"] === "boolean" ? (discord["system"] as boolean) : undefined;
-  const isChat = typeof discord["isChat"] === "boolean" ? (discord["isChat"] as boolean) : undefined;
+  const isSystem =
+    typeof discord["system"] === "boolean" ? (discord["system"] as boolean) : undefined;
+  const isChat =
+    typeof discord["isChat"] === "boolean" ? (discord["isChat"] as boolean) : undefined;
 
-  if (typeId === undefined && typeName === undefined && isSystem === undefined && isChat === undefined) {
+  if (
+    typeId === undefined &&
+    typeName === undefined &&
+    isSystem === undefined &&
+    isChat === undefined
+  ) {
     return null;
   }
 
@@ -623,9 +617,7 @@ function buildMessagesListOutput(params: {
       order: params.order,
       count: sorted.length,
     },
-    messages: sorted.map((msg) =>
-      toCompactMessage(msg, { includeRaw: params.includeRaw }),
-    ),
+    messages: sorted.map((msg) => toCompactMessage(msg, { includeRaw: params.includeRaw })),
   };
 }
 
@@ -720,10 +712,7 @@ const messagesSearchInputSchema = baseInputSchema.extend({
     .describe(
       "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
     ),
-  query: z
-    .string()
-    .min(1)
-    .describe("Search query (full-text, session-scoped)."),
+  query: z.string().min(1).describe("Search query (full-text, session-scoped)."),
   limit: z.coerce
     .number()
     .int()
@@ -754,12 +743,15 @@ const messagesSendInputSchema = baseInputSchema.extend({
     ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
-  paths: optionalNonEmptyStringListInputSchema
-    .describe("Local file paths to attach (resolved relative to request cwd)"),
-  filenames: optionalNonEmptyStringListInputSchema
-    .describe("Optional filenames for each attachment"),
-  mimeTypes: optionalNonEmptyStringListInputSchema
-    .describe("Optional mime types for each attachment"),
+  paths: optionalNonEmptyStringListInputSchema.describe(
+    "Local file paths to attach (resolved relative to request cwd)",
+  ),
+  filenames: optionalNonEmptyStringListInputSchema.describe(
+    "Optional filenames for each attachment",
+  ),
+  mimeTypes: optionalNonEmptyStringListInputSchema.describe(
+    "Optional mime types for each attachment",
+  ),
 });
 
 const messagesEditInputSchema = baseInputSchema.extend({
@@ -819,10 +811,7 @@ const reactionsAddInputSchema = baseInputSchema.extend({
     .describe(
       "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
-  reaction: z
-    .string()
-    .min(1)
-    .describe("Reaction emoji (e.g. 👍, ✅, :custom_emoji:)"),
+  reaction: z.string().min(1).describe("Reaction emoji (e.g. 👍, ✅, :custom_emoji:)"),
 });
 
 const reactionsRemoveInputSchema = baseInputSchema.extend({
@@ -840,10 +829,7 @@ const reactionsRemoveInputSchema = baseInputSchema.extend({
     .describe(
       "Target message id. If omitted, may default to the origin message when requestId encodes it (e.g. 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>').",
     ),
-  reaction: z
-    .string()
-    .min(1)
-    .describe("Reaction emoji (e.g. 👍, ✅, :custom_emoji:)"),
+  reaction: z.string().min(1).describe("Reaction emoji (e.g. 👍, ✅, :custom_emoji:)"),
 });
 
 const defaultGithubApi = {
@@ -895,8 +881,7 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.sessions.list",
         name: "Surface Sessions List",
-        description:
-          "List cached sessions. Provide --client if request client is unknown.",
+        description: "List cached sessions. Provide --client if request client is unknown.",
         shortInput: zodObjectToCliLines(sessionsListInputSchema, {
           mode: "required",
         }),
@@ -968,8 +953,7 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.reactions.listDetailed",
         name: "Surface Reactions List Detailed",
-        description:
-          "List reactions for a message with per-user details.",
+        description: "List reactions for a message with per-user details.",
         shortInput: zodObjectToCliLines(reactionsListDetailedInputSchema, {
           mode: "required",
         }),
@@ -1045,18 +1029,12 @@ export class Surface implements ServerTool {
     throw new Error(`Invalid callable ID '${callableId}'`);
   }
 
-  private async callHelp(
-    rawInput: Record<string, unknown>,
-    ctx: RequestContext | undefined,
-  ) {
+  private async callHelp(rawInput: Record<string, unknown>, ctx: RequestContext | undefined) {
     const input = helpInputSchema.parse(rawInput);
 
     const ctxClientRaw = ctx?.requestClient;
-    const ctxClient = isAdapterPlatform(ctxClientRaw)
-      ? ctxClientRaw
-      : "unknown";
-    const effectiveClient =
-      input.client ?? (ctxClient !== "unknown" ? ctxClient : undefined);
+    const ctxClient = isAdapterPlatform(ctxClientRaw) ? ctxClientRaw : "unknown";
+    const effectiveClient = input.client ?? (ctxClient !== "unknown" ? ctxClient : undefined);
 
     return {
       tool: "surface" as const,
@@ -1074,8 +1052,7 @@ export class Surface implements ServerTool {
           "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
         messageId:
           "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>'.",
-        replyToMessageId:
-          "When sending a message, optionally reply to an existing messageId.",
+        replyToMessageId: "When sending a message, optionally reply to an existing messageId.",
         attachments:
           "Local files attached to an outbound message (paths resolved relative to request cwd).",
       },
@@ -1103,26 +1080,24 @@ export class Surface implements ServerTool {
               ],
             }
           : effectiveClient === "github"
-          ? {
-              client: "github" as const,
-              accepted: [
-                {
-                  format: "OWNER/REPO#123",
-                  meaning: "GitHub issue/PR thread",
-                },
-              ],
-              notes: [
-                "surface.sessions.list is not implemented for GitHub; use gh to discover issues/PRs.",
-                "For GitHub triggers, surface tools can default sessionId/messageId from requestId when it is 'github:<OWNER/REPO#N>:<triggerId>'.",
-              ],
-            }
-          : {
-              client: effectiveClient,
-              accepted: [],
-              notes: [
-                "Only Discord and GitHub are implemented today.",
-              ],
-            },
+            ? {
+                client: "github" as const,
+                accepted: [
+                  {
+                    format: "OWNER/REPO#123",
+                    meaning: "GitHub issue/PR thread",
+                  },
+                ],
+                notes: [
+                  "surface.sessions.list is not implemented for GitHub; use gh to discover issues/PRs.",
+                  "For GitHub triggers, surface tools can default sessionId/messageId from requestId when it is 'github:<OWNER/REPO#N>:<triggerId>'.",
+                ],
+              }
+            : {
+                client: effectiveClient,
+                accepted: [],
+                notes: ["Only Discord and GitHub are implemented today."],
+              },
       relatedConfigKeys: {
         requestClientEnv: "LILAC_REQUEST_CLIENT",
         sessionIdEnv: "LILAC_SESSION_ID",
@@ -1136,9 +1111,7 @@ export class Surface implements ServerTool {
   private async getCfg(): Promise<CoreConfig> {
     if (this.params.config) return this.params.config;
     if (this.params.getConfig) return this.params.getConfig();
-    throw new Error(
-      "surface tool requires core config (tool server must be started with config)",
-    );
+    throw new Error("surface tool requires core config (tool server must be started with config)");
   }
 
   private gh(): GithubSurfaceApi {
@@ -1150,10 +1123,12 @@ export class Surface implements ServerTool {
     sessionId: string;
     messageId: string;
   }): Promise<GithubReaction[]> {
-    if (isGithubIssueTriggerId({
-      sessionId: params.sessionId,
-      triggerId: params.messageId,
-    })) {
+    if (
+      isGithubIssueTriggerId({
+        sessionId: params.sessionId,
+        triggerId: params.messageId,
+      })
+    ) {
       return await this.gh().listIssueReactions({
         owner: params.thread.owner,
         repo: params.thread.repo,
@@ -1237,9 +1212,7 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesListInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
-    );
+    const input = messagesListInputSchema.parse(withDefaultSessionId(rawInput, ctx));
     const client = resolveClient({ inputClient: input.client, ctx });
     const order: MessageListOrder = input.order ?? "ts_desc";
     const includeRaw = input.includeRaw ?? false;
@@ -1263,14 +1236,13 @@ export class Surface implements ServerTool {
 
       const sessionRef = asGithubSessionRef(sessionId);
       const messages: SurfaceMessage[] = comments.map((c) => {
-        const login =
-          c.user && typeof c.user.login === "string" ? c.user.login : undefined;
+        const login = c.user && typeof c.user.login === "string" ? c.user.login : undefined;
         const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
 
         return {
           ref: asGithubMsgRef(sessionId, String(c.id)),
           session: sessionRef,
-          userId: id !== null ? String(id) : login ?? "unknown",
+          userId: id !== null ? String(id) : (login ?? "unknown"),
           userName: login,
           text: typeof c.body === "string" ? c.body : "",
           ts: parseIsoMs(c.created_at),
@@ -1329,15 +1301,14 @@ export class Surface implements ServerTool {
     });
 
     // Adapter store should only contain allowed messages, but keep tool-side filtering anyway.
-    const filtered = messages
-      .filter((m) => {
-        if (m.session.platform !== "discord") return false;
-        return shouldAllowDiscordChannel({
-          cfg,
-          channelId: m.session.channelId,
-          guildId: m.session.guildId,
-        });
+    const filtered = messages.filter((m) => {
+      if (m.session.platform !== "discord") return false;
+      return shouldAllowDiscordChannel({
+        cfg,
+        channelId: m.session.channelId,
+        guildId: m.session.guildId,
       });
+    });
 
     return buildMessagesListOutput({
       session: sessionRef,
@@ -1371,16 +1342,13 @@ export class Surface implements ServerTool {
         });
 
         const login =
-          issue.user && typeof issue.user.login === "string"
-            ? issue.user.login
-            : undefined;
-        const id =
-          issue.user && typeof issue.user.id === "number" ? issue.user.id : null;
+          issue.user && typeof issue.user.login === "string" ? issue.user.login : undefined;
+        const id = issue.user && typeof issue.user.id === "number" ? issue.user.id : null;
 
         const message: SurfaceMessage = {
           ref: asGithubMsgRef(sessionId, String(thread.number)),
           session: sessionRef,
-          userId: id !== null ? String(id) : login ?? "unknown",
+          userId: id !== null ? String(id) : (login ?? "unknown"),
           userName: login,
           text: `Title: ${issue.title}\n\n${issue.body ?? ""}`.trim(),
           ts: parseIsoMs(issue.created_at),
@@ -1409,14 +1377,13 @@ export class Surface implements ServerTool {
         commentId,
       });
 
-      const login =
-        c.user && typeof c.user.login === "string" ? c.user.login : undefined;
+      const login = c.user && typeof c.user.login === "string" ? c.user.login : undefined;
       const id = c.user && typeof c.user.id === "number" ? c.user.id : null;
 
       const message: SurfaceMessage = {
         ref: asGithubMsgRef(sessionId, String(c.id)),
         session: sessionRef,
-        userId: id !== null ? String(id) : login ?? "unknown",
+        userId: id !== null ? String(id) : (login ?? "unknown"),
         userName: login,
         text: typeof c.body === "string" ? c.body : "",
         ts: parseIsoMs(c.created_at),
@@ -1456,10 +1423,7 @@ export class Surface implements ServerTool {
       throw new Error(`Not allowed: channelId '${channelId}'`);
     }
 
-    const msgRef = asDiscordMsgRef(
-      channelId,
-      mustPresentString(input.messageId, "messageId"),
-    );
+    const msgRef = asDiscordMsgRef(channelId, mustPresentString(input.messageId, "messageId"));
     const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
 
     if (hasCacheBurstProvider(this.params.adapter)) {
@@ -1506,15 +1470,11 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesSearchInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
-    );
+    const input = messagesSearchInputSchema.parse(withDefaultSessionId(rawInput, ctx));
     const client = resolveClient({ inputClient: input.client, ctx });
 
     if (client === "github") {
-      throw new Error(
-        "surface.messages.search for GitHub is not supported yet.",
-      );
+      throw new Error("surface.messages.search for GitHub is not supported yet.");
     }
 
     ensureDiscordClient(client);
@@ -1568,9 +1528,7 @@ export class Surface implements ServerTool {
     const hits =
       order === "relevance"
         ? baseHits
-        : [...baseHits]
-            .sort((a, b) => compareSurfaceMessageChronological(a, b))
-            .map((hit) => hit);
+        : [...baseHits].sort((a, b) => compareSurfaceMessageChronological(a, b)).map((hit) => hit);
 
     if (order === "ts_desc") {
       hits.reverse();
@@ -1601,9 +1559,7 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesSendInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
-    );
+    const input = messagesSendInputSchema.parse(withDefaultSessionId(rawInput, ctx));
     const client = resolveClient({ inputClient: input.client, ctx });
 
     if (client === "github") {
@@ -1667,9 +1623,7 @@ export class Surface implements ServerTool {
     const paths = input.paths ?? [];
     if (paths.length > 0) {
       if (paths.length > 10) {
-        throw new Error(
-          `Too many attachments (${paths.length}). Max is 10 per message.`,
-        );
+        throw new Error(`Too many attachments (${paths.length}). Max is 10 per message.`);
       }
     }
 
@@ -1699,9 +1653,7 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesEditInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
-    );
+    const input = messagesEditInputSchema.parse(withDefaultSessionId(rawInput, ctx));
     const client = resolveClient({ inputClient: input.client, ctx });
 
     if (client === "github") {
@@ -1752,12 +1704,9 @@ export class Surface implements ServerTool {
       throw new Error(`Not allowed: channelId '${channelId}'`);
     }
 
-    await this.params.adapter.editMsg(
-      asDiscordMsgRef(channelId, input.messageId),
-      {
-        text: input.text,
-      },
-    );
+    await this.params.adapter.editMsg(asDiscordMsgRef(channelId, input.messageId), {
+      text: input.text,
+    });
 
     return { ok: true as const };
   }
@@ -1766,9 +1715,7 @@ export class Surface implements ServerTool {
     rawInput: Record<string, unknown>,
     ctx: RequestContext | undefined,
   ) {
-    const input = messagesDeleteInputSchema.parse(
-      withDefaultSessionId(rawInput, ctx),
-    );
+    const input = messagesDeleteInputSchema.parse(withDefaultSessionId(rawInput, ctx));
     const client = resolveClient({ inputClient: input.client, ctx });
 
     if (client === "github") {
@@ -1818,9 +1765,7 @@ export class Surface implements ServerTool {
       throw new Error(`Not allowed: channelId '${channelId}'`);
     }
 
-    await this.params.adapter.deleteMsg(
-      asDiscordMsgRef(channelId, input.messageId),
-    );
+    await this.params.adapter.deleteMsg(asDiscordMsgRef(channelId, input.messageId));
     return { ok: true as const };
   }
 
@@ -1879,15 +1824,10 @@ export class Surface implements ServerTool {
     }
 
     if (!hasReactionDetailsProvider(this.params.adapter)) {
-      throw new Error(
-        "surface.reactions.list requires an adapter that supports reaction details",
-      );
+      throw new Error("surface.reactions.list requires an adapter that supports reaction details");
     }
 
-    const msgRef = asDiscordMsgRef(
-      channelId,
-      mustPresentString(input.messageId, "messageId"),
-    );
+    const msgRef = asDiscordMsgRef(channelId, mustPresentString(input.messageId, "messageId"));
 
     if (hasCacheBurstProvider(this.params.adapter)) {
       await this.params.adapter.burstCache({
@@ -1936,8 +1876,7 @@ export class Surface implements ServerTool {
         const entry = byContent.get(r.content) ?? { count: 0, users: [] };
         entry.count += 1;
 
-        const login =
-          r.user && typeof r.user.login === "string" ? r.user.login : undefined;
+        const login = r.user && typeof r.user.login === "string" ? r.user.login : undefined;
         const id = r.user && typeof r.user.id === "number" ? r.user.id : null;
 
         if (login || id !== null) {
@@ -1950,13 +1889,11 @@ export class Surface implements ServerTool {
         byContent.set(r.content, entry);
       }
 
-      const out: SurfaceReactionDetail[] = Array.from(byContent.entries()).map(
-        ([content, v]) => ({
-          emoji: githubReactionEmojiFromContent(content),
-          count: v.count,
-          users: v.users,
-        }),
-      );
+      const out: SurfaceReactionDetail[] = Array.from(byContent.entries()).map(([content, v]) => ({
+        emoji: githubReactionEmojiFromContent(content),
+        count: v.count,
+        users: v.users,
+      }));
 
       return out;
     }
@@ -1985,15 +1922,10 @@ export class Surface implements ServerTool {
     }
 
     if (!hasReactionDetailsProvider(this.params.adapter)) {
-      throw new Error(
-        "surface.reactions.listDetailed is not supported by the current adapter",
-      );
+      throw new Error("surface.reactions.listDetailed is not supported by the current adapter");
     }
 
-    const msgRef = asDiscordMsgRef(
-      channelId,
-      mustPresentString(input.messageId, "messageId"),
-    );
+    const msgRef = asDiscordMsgRef(channelId, mustPresentString(input.messageId, "messageId"));
 
     if (hasCacheBurstProvider(this.params.adapter)) {
       await this.params.adapter.burstCache({
@@ -2068,10 +2000,7 @@ export class Surface implements ServerTool {
     }
 
     await this.params.adapter.addReaction(
-      asDiscordMsgRef(
-        channelId,
-        mustPresentString(input.messageId, "messageId"),
-      ),
+      asDiscordMsgRef(channelId, mustPresentString(input.messageId, "messageId")),
       input.reaction,
     );
 
@@ -2107,9 +2036,7 @@ export class Surface implements ServerTool {
         messageId,
       });
 
-      const mine = reactions.filter(
-        (r) => r.content === content && r.user?.login === botLogin,
-      );
+      const mine = reactions.filter((r) => r.content === content && r.user?.login === botLogin);
 
       if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
         for (const r of mine) {
@@ -2162,10 +2089,7 @@ export class Surface implements ServerTool {
     }
 
     await this.params.adapter.removeReaction(
-      asDiscordMsgRef(
-        channelId,
-        mustPresentString(input.messageId, "messageId"),
-      ),
+      asDiscordMsgRef(channelId, mustPresentString(input.messageId, "messageId")),
       input.reaction,
     );
 

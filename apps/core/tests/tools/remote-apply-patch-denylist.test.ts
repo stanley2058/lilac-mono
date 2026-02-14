@@ -7,15 +7,11 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     !!value &&
     typeof value === "object" &&
     Symbol.asyncIterator in value &&
-    typeof (value as { [Symbol.asyncIterator]?: unknown })[
-      Symbol.asyncIterator
-    ] === "function"
+    typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function"
   );
 }
 
-async function resolveExecuteResult<T>(
-  value: T | PromiseLike<T> | AsyncIterable<T>,
-): Promise<T> {
+async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
   if (isAsyncIterable(value)) {
     let last: T | undefined;
     for await (const chunk of value) {

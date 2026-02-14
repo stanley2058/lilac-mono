@@ -57,11 +57,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async sendMsg(
-    _sessionRef: SessionRef,
-    _content: ContentOpts,
-    _opts?: SendOpts,
-  ): Promise<MsgRef> {
+  async sendMsg(_sessionRef: SessionRef, _content: ContentOpts, _opts?: SendOpts): Promise<MsgRef> {
     throw new Error("not implemented");
   }
 
@@ -69,10 +65,7 @@ class FakeAdapter implements SurfaceAdapter {
     return this.message;
   }
 
-  async listMsg(
-    _sessionRef: SessionRef,
-    _opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
   }
 
@@ -84,10 +77,7 @@ class FakeAdapter implements SurfaceAdapter {
     throw new Error("not implemented");
   }
 
-  async getReplyContext(
-    _msgRef: MsgRef,
-    _opts?: LimitOpts,
-  ): Promise<SurfaceMessage[]> {
+  async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
     throw new Error("not implemented");
   }
 
@@ -407,10 +397,7 @@ describe("request-composition mention thread context", () => {
       return this.messages[key] ?? null;
     }
 
-    async listMsg(
-      _sessionRef: SessionRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       throw new Error("not implemented");
     }
 
@@ -422,10 +409,7 @@ describe("request-composition mention thread context", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      msgRef: MsgRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const key = `${msgRef.channelId}:${msgRef.messageId}`;
       const base = this.messages[key];
       if (!base) return [];
@@ -465,10 +449,7 @@ describe("request-composition mention thread context", () => {
       throw new Error("not implemented");
     }
 
-    async markRead(
-      _sessionRef: SessionRef,
-      _upToMsgRef?: MsgRef,
-    ): Promise<void> {
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
   }
@@ -544,6 +525,132 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("user msg 3");
     expect(merged as string).not.toContain("<@bot>");
   });
+
+  it("uses only the trigger group for mention-time context", async () => {
+    const sessionId = "c";
+    const minuteMs = 60_000;
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "A",
+      ts: 47 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "B",
+      ts: 50 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m3: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> C",
+      ts: 55 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:m1`]: m1,
+      [`${sessionId}:m2`]: m2,
+      [`${sessionId}:m3`]: m3,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: m3.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["m3"]);
+    expect(out.mergedGroups).toEqual([{ authorId: "u1", messageIds: ["m3"] }]);
+
+    expect(out.messages.length).toBe(1);
+    expect(typeof out.messages[0]?.content).toBe("string");
+    expect(out.messages[0]!.content as string).toContain("C");
+    expect(out.messages[0]!.content as string).not.toContain("A");
+    expect(out.messages[0]!.content as string).not.toContain("B");
+  });
+
+  it("does not anchor mention context to an older reply outside trigger group", async () => {
+    const sessionId = "c";
+    const minuteMs = 60_000;
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 0,
+      raw: { reference: {} },
+    };
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "old reply",
+      ts: 47 * minuteMs,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    };
+
+    const m2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "follow-up",
+      ts: 50 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const m3: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m3" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> new ask",
+      ts: 55 * minuteMs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:root`]: root,
+      [`${sessionId}:m1`]: m1,
+      [`${sessionId}:m2`]: m2,
+      [`${sessionId}:m3`]: m3,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: m3.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["m3"]);
+    expect(out.mergedGroups).toEqual([{ authorId: "u1", messageIds: ["m3"] }]);
+
+    expect(out.messages.length).toBe(1);
+    const merged = out.messages[0]?.content;
+    expect(typeof merged).toBe("string");
+    expect(merged as string).toContain("new ask");
+    expect(merged as string).not.toContain("old reply");
+    expect(merged as string).not.toContain("Root");
+  });
 });
 
 describe("request-composition active channel burst rules", () => {
@@ -590,14 +697,9 @@ describe("request-composition active channel burst rules", () => {
       return m ?? null;
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const limit = Math.max(1, opts?.limit ?? 50);
-      const inChannel = this.messages.filter(
-        (m) => m.session.channelId === sessionRef.channelId,
-      );
+      const inChannel = this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
       // Return a recent-ish slice (ordering doesn't matter; composeRecentChannelMessages sorts).
       return inChannel.slice(Math.max(0, inChannel.length - limit));
     }
@@ -610,10 +712,7 @@ describe("request-composition active channel burst rules", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
 
@@ -637,10 +736,7 @@ describe("request-composition active channel burst rules", () => {
       throw new Error("not implemented");
     }
 
-    async markRead(
-      _sessionRef: SessionRef,
-      _upToMsgRef?: MsgRef,
-    ): Promise<void> {
+    async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
   }
@@ -822,9 +918,7 @@ describe("request-composition active channel burst rules", () => {
       linkSurfaceMessagesToRequest() {},
       close() {},
       getTranscriptBySurfaceMessage(input) {
-        const expanded = (content: string): ModelMessage[] => [
-          { role: "assistant", content },
-        ];
+        const expanded = (content: string): ModelMessage[] => [{ role: "assistant", content }];
         if (input.messageId === "8") {
           return {
             requestId: "r8",
@@ -906,9 +1000,7 @@ describe("request-composition active channel burst rules", () => {
       linkSurfaceMessagesToRequest() {},
       close() {},
       getTranscriptBySurfaceMessage(input) {
-        const expanded = (content: string): ModelMessage[] => [
-          { role: "assistant", content },
-        ];
+        const expanded = (content: string): ModelMessage[] => [{ role: "assistant", content }];
         if (input.messageId === "8") {
           return {
             requestId: "r8",
@@ -1020,10 +1112,7 @@ describe("request-composition active channel burst rules", () => {
         return this.messages[key] ?? null;
       }
 
-      async listMsg(
-        _sessionRef: SessionRef,
-        _opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      async listMsg(_sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
         throw new Error("listMsg should not be called");
       }
 
@@ -1035,10 +1124,7 @@ describe("request-composition active channel burst rules", () => {
         throw new Error("not implemented");
       }
 
-      async getReplyContext(
-        _msgRef: MsgRef,
-        _opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
         return [];
       }
 
@@ -1062,10 +1148,7 @@ describe("request-composition active channel burst rules", () => {
         throw new Error("not implemented");
       }
 
-      async markRead(
-        _sessionRef: SessionRef,
-        _upToMsgRef?: MsgRef,
-      ): Promise<void> {
+      async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
         throw new Error("not implemented");
       }
     }
@@ -1153,10 +1236,7 @@ describe("request-composition system message filtering", () => {
       return m ?? null;
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
     }
 
@@ -1166,10 +1246,7 @@ describe("request-composition system message filtering", () => {
     async deleteMsg(_msgRef: MsgRef): Promise<void> {
       throw new Error("not implemented");
     }
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
     async addReaction(_msgRef: MsgRef, _reaction: string): Promise<void> {
@@ -1298,17 +1375,12 @@ describe("request-composition session divider", () => {
     async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
       return (
         this.messages.find(
-          (m) =>
-            m.session.channelId === msgRef.channelId &&
-            m.ref.messageId === msgRef.messageId,
+          (m) => m.session.channelId === msgRef.channelId && m.ref.messageId === msgRef.messageId,
         ) ?? null
       );
     }
 
-    async listMsg(
-      sessionRef: SessionRef,
-      opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const inChannel = this.messages
         .filter((m) => m.session.channelId === sessionRef.channelId)
         .slice()
@@ -1340,10 +1412,7 @@ describe("request-composition session divider", () => {
       throw new Error("not implemented");
     }
 
-    async getReplyContext(
-      _msgRef: MsgRef,
-      _opts?: LimitOpts,
-    ): Promise<SurfaceMessage[]> {
+    async getReplyContext(_msgRef: MsgRef, _opts?: LimitOpts): Promise<SurfaceMessage[]> {
       return [];
     }
 
@@ -1389,7 +1458,7 @@ describe("request-composition session divider", () => {
         session: { platform: "discord", channelId: sessionId },
         userId: "bot",
         userName: "lilac",
-        text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
         ts: 2,
         raw: { discord: { isChat: true } },
       },
@@ -1432,6 +1501,118 @@ describe("request-composition session divider", () => {
     expect(combined).not.toContain("before");
   });
 
+  it("does not cut off context at divider from a different bot id", async () => {
+    const sessionId = "c";
+
+    const msgs: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "before",
+        ts: 1,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "d_other" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot_other",
+        userName: "lilac-other",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
+        ts: 2,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_1",
+        ts: 3,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "3" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_2",
+        ts: 4,
+        raw: { discord: { isChat: true } },
+      },
+    ];
+
+    const adapter = new DividerAdapter(msgs);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+    });
+
+    expect(out.chainMessageIds).toEqual(["1", "2", "3"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("before");
+    expect(combined).toContain("after_1");
+    expect(combined).toContain("after_2");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+
+  it("still recognizes legacy divider format for cutoff", async () => {
+    const sessionId = "c";
+
+    const msgs: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "before",
+        ts: 1,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "d" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+        ts: 2,
+        raw: { discord: { isChat: true } },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "after_1",
+        ts: 3,
+        raw: { discord: { isChat: true } },
+      },
+    ];
+
+    const adapter = new DividerAdapter(msgs);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 50,
+    });
+
+    expect(out.chainMessageIds).toEqual(["2"]);
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("after_1");
+    expect(combined).not.toContain("before");
+    expect(combined).not.toContain("LILAC_SESSION_DIVIDER");
+  });
+
   it("cuts off reply-chain context at the most recent divider", async () => {
     const sessionId = "c";
 
@@ -1450,7 +1631,7 @@ describe("request-composition session divider", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      text: "[LILAC_SESSION_DIVIDER] (by user)",
       ts: 50,
       raw: { reference: {} },
     };
@@ -1514,7 +1695,7 @@ describe("request-composition session divider", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "--- Session Divider ---\n[LILAC_SESSION_DIVIDER]",
+      text: "[LILAC_SESSION_DIVIDER] (by user)",
       ts: 50,
       raw: { reference: {} },
     };
@@ -1550,10 +1731,7 @@ describe("request-composition session divider", () => {
     };
 
     class MentionDividerAdapter extends DividerAdapter {
-      override async getReplyContext(
-        msgRef: MsgRef,
-        opts?: LimitOpts,
-      ): Promise<SurfaceMessage[]> {
+      override async getReplyContext(msgRef: MsgRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
         const base = await this.readMsg(msgRef);
         if (!base) return [];
 

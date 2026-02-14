@@ -68,9 +68,7 @@ function formatContextForSystemMessage(ctx: ResumeContext): string {
   const mentionUserId = ctx.workflow.resumeTarget.mention_user_id;
   if (mentionUserId) {
     const mention = formatMention(ctx.workflow.resumeTarget.request_client, mentionUserId);
-    lines.push(
-      `When you respond, post to the resume target session and mention ${mention}.`,
-    );
+    lines.push(`When you respond, post to the resume target session and mention ${mention}.`);
   } else {
     lines.push("When you respond, post to the resume target session.");
   }

@@ -24,8 +24,7 @@ describe("github webhook signature", () => {
     expect(
       verifyGithubWebhookSignature({
         secret,
-        signature256:
-          "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+        signature256: "sha256=0000000000000000000000000000000000000000000000000000000000000000",
         rawBody: raw,
       }),
     ).toBe(false);

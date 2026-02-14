@@ -14,8 +14,7 @@ const REASON_RESTORE_WORKTREE =
   "git restore --worktree explicitly discards working tree changes. Use 'git stash' first.";
 const REASON_RESET_HARD =
   "git reset --hard destroys all uncommitted changes permanently. Use 'git stash' first.";
-const REASON_RESET_MERGE =
-  "git reset --merge can lose uncommitted changes. Use 'git stash' first.";
+const REASON_RESET_MERGE = "git reset --merge can lose uncommitted changes. Use 'git stash' first.";
 const REASON_CLEAN =
   "git clean -f removes untracked files permanently. Use 'git clean -n' to preview first.";
 const REASON_PUSH_FORCE =
@@ -24,8 +23,7 @@ const REASON_BRANCH_DELETE =
   "git branch -D force-deletes without merge check. Use -d for safe delete.";
 const REASON_STASH_DROP =
   "git stash drop permanently deletes stashed changes. Consider 'git stash list' first.";
-const REASON_STASH_CLEAR =
-  "git stash clear deletes ALL stashed changes permanently.";
+const REASON_STASH_CLEAR = "git stash clear deletes ALL stashed changes permanently.";
 const REASON_WORKTREE_REMOVE_FORCE =
   "git worktree remove --force can delete uncommitted changes. Remove --force flag.";
 
@@ -48,11 +46,7 @@ const CHECKOUT_OPTS_WITH_VALUE = new Set([
   "--unified",
 ]);
 
-const CHECKOUT_OPTS_WITH_OPTIONAL_VALUE = new Set([
-  "--recurse-submodules",
-  "--track",
-  "-t",
-]);
+const CHECKOUT_OPTS_WITH_OPTIONAL_VALUE = new Set(["--recurse-submodules", "--track", "-t"]);
 
 const CHECKOUT_KNOWN_OPTS_NO_VALUE = new Set([
   "-q",
@@ -169,8 +163,7 @@ function extractGitSubcommandAndRest(tokens: readonly string[]): {
 }
 
 function analyzeGitCheckout(tokens: readonly string[]): string | null {
-  const { index: doubleDashIdx, before: beforeDash } =
-    splitAtDoubleDash(tokens);
+  const { index: doubleDashIdx, before: beforeDash } = splitAtDoubleDash(tokens);
 
   for (const token of tokens) {
     if (token === "-b" || token === "-B" || token === "--orphan") {
@@ -226,14 +219,10 @@ function getCheckoutPositionalArgs(tokens: readonly string[]): string[] {
         if (
           nextToken &&
           !nextToken.startsWith("-") &&
-          (token === "--recurse-submodules" ||
-            token === "--track" ||
-            token === "-t")
+          (token === "--recurse-submodules" || token === "--track" || token === "-t")
         ) {
           const validModes =
-            token === "--recurse-submodules"
-              ? ["checkout", "on-demand"]
-              : ["direct", "inherit"];
+            token === "--recurse-submodules" ? ["checkout", "on-demand"] : ["direct", "inherit"];
 
           if (validModes.includes(nextToken)) {
             i += 2;
@@ -323,10 +312,7 @@ function analyzeGitPush(tokens: readonly string[]): string | null {
   const hasForce = tokens.includes("--force") || shortOpts.has("-f");
 
   for (const token of tokens) {
-    if (
-      token === "--force-with-lease" ||
-      token.startsWith("--force-with-lease=")
-    ) {
+    if (token === "--force-with-lease" || token.startsWith("--force-with-lease=")) {
       hasForceWithLease = true;
     }
   }

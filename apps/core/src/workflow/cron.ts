@@ -12,9 +12,7 @@ function ensureFiveFieldCron(expr: string): string {
   const trimmed = expr.trim();
   const parts = trimmed.split(/\s+/g).filter(Boolean);
   if (parts.length !== 5) {
-    throw new Error(
-      `Invalid cron expression '${expr}'. Expected 5 fields (minute precision).`,
-    );
+    throw new Error(`Invalid cron expression '${expr}'. Expected 5 fields (minute precision).`);
   }
   return trimmed;
 }
@@ -37,10 +35,7 @@ function toDate(value: unknown): Date {
 }
 
 /** Compute the next cron run timestamp (ms since epoch). */
-export function computeNextCronAtMs(
-  input: CronScheduleInput,
-  nowMs: number,
-): number {
+export function computeNextCronAtMs(input: CronScheduleInput, nowMs: number): number {
   const expr = ensureFiveFieldCron(input.expr);
   const tz = input.tz ?? "UTC";
 

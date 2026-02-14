@@ -6,12 +6,7 @@ import {
   type SurfaceAdapter,
   type SurfaceBurstCacheInput,
 } from "../adapter";
-import type {
-  DiscordMsgRef,
-  DiscordSessionRef,
-  SurfaceMessage,
-  SurfacePlatform,
-} from "../types";
+import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
 
 const SEARCH_LIMIT_MAX = 100;
 
@@ -46,7 +41,7 @@ function normalizeFtsQuery(input: string): string | null {
     .split(/\s+/u)
     .map((t) => t.trim())
     .filter((t) => t.length > 0)
-    .map((t) => `"${t.replaceAll("\"", "\"\"")}"`);
+    .map((t) => `"${t.replaceAll('"', '""')}"`);
 
   if (tokens.length === 0) return null;
   return tokens.join(" ");
@@ -241,25 +236,16 @@ export class DiscordSearchStore {
 
   countMessagesByChannel(channelId: string): number {
     const row = this.db
-      .query(
-        "SELECT COUNT(1) AS c FROM discord_search_messages WHERE channel_id = ?",
-      )
+      .query("SELECT COUNT(1) AS c FROM discord_search_messages WHERE channel_id = ?")
       .get(channelId) as { c: number };
     return typeof row?.c === "number" ? row.c : 0;
   }
 
-  searchChannel(input: {
-    channelId: string;
-    query: string;
-    limit?: number;
-  }): DiscordSearchHit[] {
+  searchChannel(input: { channelId: string; query: string; limit?: number }): DiscordSearchHit[] {
     const ftsQuery = normalizeFtsQuery(input.query);
     if (!ftsQuery) return [];
 
-    const limit = Math.min(
-      SEARCH_LIMIT_MAX,
-      Math.max(1, Math.floor(input.limit ?? 20)),
-    );
+    const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(input.limit ?? 20)));
 
     const rows = this.db
       .query(
@@ -301,8 +287,7 @@ export class DiscordSearchStore {
   }
 }
 
-type DiscordSearchAdapter = Pick<SurfaceAdapter, "listMsg"> &
-  Partial<SurfaceCacheBurstProvider>;
+type DiscordSearchAdapter = Pick<SurfaceAdapter, "listMsg"> & Partial<SurfaceCacheBurstProvider>;
 
 function hasBurstCache(
   adapter: DiscordSearchAdapter,
@@ -358,9 +343,7 @@ export class DiscordSearchService {
     query: string;
     limit?: number;
   }): Promise<{ hits: DiscordSearchHit[]; heal: DiscordSearchHealResult | null }> {
-    const indexed = this.params.store.countMessagesByChannel(
-      input.sessionRef.channelId,
-    );
+    const indexed = this.params.store.countMessagesByChannel(input.sessionRef.channelId);
 
     let heal: DiscordSearchHealResult | null = null;
     if (indexed < DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT) {
@@ -388,10 +371,7 @@ export class DiscordSearchService {
 
     const now = Date.now();
     const lastHealTs = this.healTimestampsByChannel.get(input.sessionRef.channelId);
-    if (
-      typeof lastHealTs === "number" &&
-      now - lastHealTs < DISCORD_SEARCH_HEAL_COOLDOWN_MS
-    ) {
+    if (typeof lastHealTs === "number" && now - lastHealTs < DISCORD_SEARCH_HEAL_COOLDOWN_MS) {
       return {
         attempted: false,
         skipped: true,
@@ -430,11 +410,7 @@ export class DiscordSearchService {
         indexed,
       };
     } catch (e) {
-      this.logger.error(
-        "search heal failed",
-        { channelId: input.sessionRef.channelId, limit },
-        e,
-      );
+      this.logger.error("search heal failed", { channelId: input.sessionRef.channelId, limit }, e);
       return {
         attempted: true,
         skipped: false,
