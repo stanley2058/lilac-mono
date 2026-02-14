@@ -36,10 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # Non-root user (needed for bun/npm global installs)
-RUN useradd -m -u 3000 -s /bin/bash lilac
-ENV HOME=/home/lilac
+RUN useradd -m -u 3000 -s /bin/bash Catalinna
+ENV HOME=/home/Catalinna
 ENV DATA_DIR=/data
-ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
+ENV CATALINNA_WORKSPACE_DIR=${DATA_DIR}/workspace
 ENV GIT_CONFIG_GLOBAL=${DATA_DIR}/.gitconfig
 ENV GNUPGHOME=${DATA_DIR}/secret/gnupg
 ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
@@ -50,9 +50,9 @@ ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
 ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN mkdir -p $DATA_DIR $DATA_DIR/secret
-RUN chown -R lilac:lilac $DATA_DIR
+RUN chown -R Catalinna:Catalinna $DATA_DIR
 
-USER lilac
+USER Catalinna
 
 # uv (user-level)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -74,8 +74,8 @@ COPY apps/opencode-controller/package.json apps/opencode-controller/package.json
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/utils/package.json packages/utils/package.json
-RUN chown -R lilac:lilac /app
-USER lilac
+RUN chown -R Catalinna:Catalinna /app
+USER Catalinna
 
 # Bun workspace install (single install at repo root)
 RUN bun install --frozen-lockfile
@@ -88,8 +88,8 @@ USER root
 FROM deps AS build
 WORKDIR /app
 COPY . .
-RUN chown -R lilac:lilac /app
-USER lilac
+RUN chown -R Catalinna:Catalinna /app
+USER Catalinna
 
 # Build client bundles
 RUN (cd apps/tool-bridge && bun run build)
@@ -98,6 +98,6 @@ RUN (cd apps/core && bun run build:remote-runner)
 USER root
 # Make `tools` available globally
 RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
-USER lilac
+USER Catalinna
 # Entrypoint: core runtime
 CMD ["bun", "apps/core/src/runtime/main.ts"]
