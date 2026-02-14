@@ -1,11 +1,13 @@
 import {
   ActivityType,
+  ApplicationCommandType,
   ApplicationCommandOptionType,
   Client,
   type CacheType,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
   MessageFlags,
+  type MessageContextMenuCommandInteraction,
   MessageType,
   Partials,
   type Interaction,
@@ -191,6 +193,8 @@ function compareDiscordSnowflake(a: string, b: string): number {
     return a.localeCompare(b);
   }
 }
+
+const CONTEXT_MENU_CANCEL_REQUEST_NAME = "Cancel Request";
 
 export class DiscordAdapter implements SurfaceAdapter {
   private client: Client | null = null;
@@ -867,6 +871,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       return;
     }
 
+    if (interaction.isMessageContextMenuCommand()) {
+      await this.onMessageContextMenuCommand(interaction);
+      return;
+    }
+
     if (!interaction.isButton()) return;
 
     const parsed = parseCancelCustomId(interaction.customId);
@@ -898,6 +907,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       ts: Date.now(),
       requestId: parsed.requestId,
       sessionId: parsed.sessionId,
+      cancelScope: "active_only",
+      source: "button",
       userId: interaction.user?.id ?? undefined,
       messageId: interaction.message?.id ?? undefined,
     });
@@ -920,6 +931,85 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private async onMessageContextMenuCommand(
+    interaction: MessageContextMenuCommandInteraction<CacheType>,
+  ): Promise<void> {
+    if (interaction.commandName !== CONTEXT_MENU_CANCEL_REQUEST_NAME) return;
+
+    const cfg = this.cfg;
+    if (!cfg) {
+      try {
+        await interaction.reply({
+          content: "Bot is not ready yet.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const channelId = interaction.channelId;
+    const guildId = interaction.guildId;
+    if (!channelId) {
+      try {
+        await interaction.reply({
+          content: "This command must be used in a channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) {
+      try {
+        await interaction.reply({
+          content: "Not allowed in this channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const targetMessageId = interaction.targetMessage?.id;
+    if (!targetMessageId) {
+      try {
+        await interaction.reply({
+          content: "Could not resolve target message.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    this.emit({
+      type: "adapter.request.cancel",
+      platform: "discord",
+      ts: Date.now(),
+      requestId: `discord:${channelId}:${targetMessageId}`,
+      sessionId: channelId,
+      cancelScope: "active_or_queued",
+      source: "context_menu",
+      userId: interaction.user?.id ?? undefined,
+      messageId: targetMessageId,
+    });
+
+    try {
+      await interaction.reply({
+        content: "Cancel requested.",
+        flags: MessageFlags.Ephemeral,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   private async registerSlashCommands(): Promise<void> {
     const client = this.client;
     const cfg = this.cfg;
@@ -931,7 +1021,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     // Ensure the application is fetched (discord.js sometimes lazily loads it).
     await app.fetch().catch(() => null);
 
-    const definition = {
+    const slashDefinition = {
       name: "lilac",
       description: "Lilac bot commands",
       options: [
@@ -951,10 +1041,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       ],
     } as const;
 
+    const cancelContextMenuDefinition = {
+      name: CONTEXT_MENU_CANCEL_REQUEST_NAME,
+      type: ApplicationCommandType.Message,
+    } as const;
+
     // Force-sync (bulk overwrite) so stale commands are removed.
     // This is intentional: we treat the current code's command list as the
     // source of truth for this application.
-    const desired = [definition];
+    const desired = [slashDefinition, cancelContextMenuDefinition];
     await app.commands.set(desired).catch((e: unknown) => {
       this.logger.error("slash command sync failed", e);
       return null;

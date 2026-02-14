@@ -812,6 +812,41 @@ function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | nul
   return null;
 }
 
+function parseRequestControlFromRaw(raw: unknown): {
+  requiresActive: boolean;
+  cancel: boolean;
+  cancelQueued: boolean;
+  targetMessageId: string | null;
+} {
+  if (!raw || typeof raw !== "object") {
+    return {
+      requiresActive: false,
+      cancel: false,
+      cancelQueued: false,
+      targetMessageId: null,
+    };
+  }
+
+  const record = raw as Record<string, unknown>;
+  return {
+    requiresActive: record["requiresActive"] === true,
+    cancel: record["cancel"] === true,
+    cancelQueued: record["cancelQueued"] === true,
+    targetMessageId: typeof record["messageId"] === "string" ? record["messageId"] : null,
+  };
+}
+
+function getChainMessageIdsFromRaw(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const value = (raw as Record<string, unknown>)["chainMessageIds"];
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === "string");
+}
+
+function requestRawReferencesMessage(raw: unknown, messageId: string): boolean {
+  return getChainMessageIdsFromRaw(raw).includes(messageId);
+}
+
 type AgentRunProfile = "primary" | "explore";
 
 type ParsedSubagentMeta = {
@@ -1008,6 +1043,8 @@ export async function startBusAgentRunner(params: {
         raw: msg.data.raw,
       };
 
+      const requestControl = parseRequestControlFromRaw(entry.raw);
+
       if (draining) {
         logger.info("dropping request message while draining", {
           requestId,
@@ -1030,16 +1067,102 @@ export async function startBusAgentRunner(params: {
         } satisfies SessionQueue);
       bySession.set(sessionId, state);
 
+      const dropCancelNoTarget = async (reason: string) => {
+        logger.info("dropping cancel request with no target", {
+          requestId,
+          sessionId,
+          queue: entry.queue,
+          activeRequestId: state.activeRequestId,
+          reason,
+        });
+        await ctx.commit();
+      };
+
+      if (requestControl.cancel && requestControl.cancelQueued) {
+        const removed = new Map<string, AdapterPlatform>();
+
+        const removedByRequestId = removeQueuedEntries(
+          state.queue,
+          (queued) => queued.requestId === requestId,
+        );
+        for (const queued of removedByRequestId) {
+          removed.set(queued.requestId, queued.requestClient);
+        }
+
+        const targetMessageId = requestControl.targetMessageId;
+        if (targetMessageId) {
+          const removedByMessage = removeQueuedEntries(state.queue, (queued) =>
+            requestRawReferencesMessage(queued.raw, targetMessageId),
+          );
+          for (const queued of removedByMessage) {
+            removed.set(queued.requestId, queued.requestClient);
+          }
+        }
+
+        if (removed.size > 0) {
+          for (const [cancelledRequestId, cancelledRequestClient] of removed) {
+            await publishLifecycle({
+              bus,
+              headers: {
+                request_id: cancelledRequestId,
+                session_id: sessionId,
+                request_client: cancelledRequestClient,
+              },
+              state: "cancelled",
+              detail: "cancelled while queued",
+            });
+          }
+
+          logger.info("queued request cancelled", {
+            requestId,
+            sessionId,
+            cancelledRequestIds: [...removed.keys()],
+            queueDepth: state.queue.length,
+          });
+
+          if (!state.running) {
+            drainSessionQueue(sessionId, state).catch((e: unknown) => {
+              logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
+            });
+          }
+
+          await ctx.commit();
+          return;
+        }
+
+        const targetMessageIdForActive = requestControl.targetMessageId;
+        const targetMatchesActive =
+          typeof targetMessageIdForActive === "string" &&
+          requestRawReferencesMessage(state.activeRun?.raw, targetMessageIdForActive);
+
+        if (!state.running || !state.activeRequestId || !state.agent) {
+          await dropCancelNoTarget("request not queued or active");
+          return;
+        }
+
+        if (state.activeRequestId === requestId || targetMatchesActive) {
+          const activeCancelEntry: Enqueued = {
+            ...entry,
+            requestId: state.activeRequestId,
+            requestClient: state.activeRun?.requestClient ?? entry.requestClient,
+          };
+          await applyToRunningAgent(state.agent, activeCancelEntry, cancelledByRequestId);
+          await ctx.commit();
+          return;
+        }
+
+        await dropCancelNoTarget("request not queued or active");
+        return;
+      }
+
       if (!state.running) {
-        // Some messages (e.g. GitHub PR synchronize cancellation) only make sense
-        // when a run is already active.
-        const requiresActive = (() => {
-          const raw = entry.raw;
-          if (!raw || typeof raw !== "object") return false;
-          const v = (raw as Record<string, unknown>)["requiresActive"];
-          return v === true;
-        })();
-        if (requiresActive && entry.queue !== "prompt") {
+        if (requestControl.cancel) {
+          await dropCancelNoTarget("request not active");
+          return;
+        }
+
+        // Some messages only make sense when a run is already active.
+        if (requestControl.requiresActive && entry.queue !== "prompt") {
           logger.info("dropping request message (requires active run)", {
             requestId,
             sessionId,
@@ -1054,20 +1177,13 @@ export async function startBusAgentRunner(params: {
           logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
         });
       } else {
-        const requiresActive = (() => {
-          const raw = entry.raw;
-          if (!raw || typeof raw !== "object") return false;
-          const v = (raw as Record<string, unknown>)["requiresActive"];
-          return v === true;
-        })();
-
         // If the message is intended for the currently active request, apply immediately.
         if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
           await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
         } else {
           // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
           // an unrelated active request.
-          if (requiresActive) {
+          if (requestControl.requiresActive || requestControl.cancel) {
             logger.info("dropping request message (requires active request id)", {
               requestId,
               sessionId,
@@ -1934,6 +2050,26 @@ function mergeQueuedForSameRequest(first: Enqueued, queue: Enqueued[]): ModelMes
   }
 
   return merged;
+}
+
+function removeQueuedEntries(
+  queue: Enqueued[],
+  shouldRemove: (entry: Enqueued) => boolean,
+): Enqueued[] {
+  const removed: Enqueued[] = [];
+
+  for (let i = 0; i < queue.length; ) {
+    const next = queue[i]!;
+    if (!shouldRemove(next)) {
+      i += 1;
+      continue;
+    }
+
+    removed.push(next);
+    queue.splice(i, 1);
+  }
+
+  return removed;
 }
 
 async function applyToRunningAgent(

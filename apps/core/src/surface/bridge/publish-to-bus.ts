@@ -91,6 +91,9 @@ export async function bridgeAdapterToBus(params: {
       }
 
       case "adapter.request.cancel": {
+        const cancelScope = evt.cancelScope ?? "active_only";
+        const cancelQueued = cancelScope === "active_or_queued";
+
         await bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
@@ -98,8 +101,11 @@ export async function bridgeAdapterToBus(params: {
             messages: [],
             raw: {
               cancel: true,
-              requiresActive: true,
-              source: "discord_cancel_button",
+              cancelQueued,
+              requiresActive: !cancelQueued,
+              source:
+                evt.source ??
+                (cancelQueued ? "discord_cancel_context_menu" : "discord_cancel_button"),
               ...(evt.userId ? { userId: evt.userId } : {}),
               ...(evt.messageId ? { messageId: evt.messageId } : {}),
             },

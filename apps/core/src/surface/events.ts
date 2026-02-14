@@ -53,6 +53,10 @@ export type AdapterRequestCancelEvent = AdapterEventBase & {
   requestId: string;
   /** Target session id (discord channel/thread id). */
   sessionId: string;
+  /** Whether cancellation may target queued requests, not only active runs. */
+  cancelScope?: "active_only" | "active_or_queued";
+  /** Surface control source. */
+  source?: "button" | "context_menu";
   /** Optional user who clicked the control. */
   userId?: string;
   /** Optional surface message containing the control. */
