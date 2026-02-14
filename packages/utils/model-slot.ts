@@ -107,12 +107,33 @@ function providerOptionsNamespace(provider: string): string {
   return provider;
 }
 
+function withOpenAIParallelToolCallsDefault(
+  provider: string,
+  providerOptions?: { [x: string]: JSONObject },
+): { [x: string]: JSONObject } | undefined {
+  if (provider !== "openai" && provider !== "codex") return providerOptions;
+
+  const openaiOptions = providerOptions?.openai;
+  if (isRecord(openaiOptions) && "parallelToolCalls" in openaiOptions) {
+    return providerOptions;
+  }
+
+  const base = providerOptions ?? {};
+
+  return {
+    ...base,
+    openai: {
+      ...(isRecord(openaiOptions) ? (openaiOptions as JSONObject) : {}),
+      parallelToolCalls: true,
+    },
+  };
+}
+
 function buildProviderOptions(params: {
   provider: string;
   options?: JSONObject;
 }): { [x: string]: JSONObject } | undefined {
-  const options = params.options;
-  if (!options) return undefined;
+  const options = params.options ?? {};
 
   const { codex_instructions, ...rest } = options as JSONObject & {
     codex_instructions?: JSONValue;
@@ -137,7 +158,7 @@ function buildProviderOptions(params: {
 
   if (provider !== "codex") {
     // Non-codex: codex_instructions is ignored; also not forwarded.
-    return providerOptions;
+    return withOpenAIParallelToolCallsDefault(provider, providerOptions);
   }
 
   // Codex: ensure OpenAI namespace exists + has instructions.
@@ -157,10 +178,10 @@ function buildProviderOptions(params: {
     store: false,
   } satisfies JSONObject;
 
-  return {
+  return withOpenAIParallelToolCallsDefault(provider, {
     ...providerOptions,
     [openaiKey]: nextOpenAI,
-  };
+  });
 }
 
 function resolveModelSpecFromRaw(

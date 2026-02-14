@@ -1,11 +1,13 @@
 import {
   ActivityType,
+  ApplicationCommandType,
   ApplicationCommandOptionType,
   Client,
   type CacheType,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
   MessageFlags,
+  type MessageContextMenuCommandInteraction,
   MessageType,
   Partials,
   type Interaction,
@@ -191,6 +193,8 @@ function compareDiscordSnowflake(a: string, b: string): number {
     return a.localeCompare(b);
   }
 }
+
+const CONTEXT_MENU_CANCEL_REQUEST_NAME = "Cancel Request";
 
 export class DiscordAdapter implements SurfaceAdapter {
   private client: Client | null = null;
@@ -867,6 +871,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       return;
     }
 
+    if (interaction.isMessageContextMenuCommand()) {
+      await this.onMessageContextMenuCommand(interaction);
+      return;
+    }
+
     if (!interaction.isButton()) return;
 
     const parsed = parseCancelCustomId(interaction.customId);
@@ -898,6 +907,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       ts: Date.now(),
       requestId: parsed.requestId,
       sessionId: parsed.sessionId,
+      cancelScope: "active_only",
+      source: "button",
       userId: interaction.user?.id ?? undefined,
       messageId: interaction.message?.id ?? undefined,
     });
@@ -920,10 +931,88 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private async onMessageContextMenuCommand(
+    interaction: MessageContextMenuCommandInteraction<CacheType>,
+  ): Promise<void> {
+    if (interaction.commandName !== CONTEXT_MENU_CANCEL_REQUEST_NAME) return;
+
+    const cfg = this.cfg;
+    if (!cfg) {
+      try {
+        await interaction.reply({
+          content: "Bot is not ready yet.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const channelId = interaction.channelId;
+    const guildId = interaction.guildId;
+    if (!channelId) {
+      try {
+        await interaction.reply({
+          content: "This command must be used in a channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) {
+      try {
+        await interaction.reply({
+          content: "Not allowed in this channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const targetMessageId = interaction.targetMessage?.id;
+    if (!targetMessageId) {
+      try {
+        await interaction.reply({
+          content: "Could not resolve target message.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    this.emit({
+      type: "adapter.request.cancel",
+      platform: "discord",
+      ts: Date.now(),
+      requestId: `discord:${channelId}:${targetMessageId}`,
+      sessionId: channelId,
+      cancelScope: "active_or_queued",
+      source: "context_menu",
+      userId: interaction.user?.id ?? undefined,
+      messageId: targetMessageId,
+    });
+
+    try {
+      await interaction.reply({
+        content: "Cancel requested.",
+        flags: MessageFlags.Ephemeral,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   private async registerSlashCommands(): Promise<void> {
     const client = this.client;
-    const cfg = this.cfg;
-    if (!client || !cfg) return;
+    if (!client) return;
 
     const app = client.application;
     if (!app) return;
@@ -931,7 +1020,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     // Ensure the application is fetched (discord.js sometimes lazily loads it).
     await app.fetch().catch(() => null);
 
-    const definition = {
+    const slashDefinition = {
       name: "lilac",
       description: "Lilac bot commands",
       options: [
@@ -951,10 +1040,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       ],
     } as const;
 
+    const cancelContextMenuDefinition = {
+      name: CONTEXT_MENU_CANCEL_REQUEST_NAME,
+      type: ApplicationCommandType.Message,
+    } as const;
+
     // Force-sync (bulk overwrite) so stale commands are removed.
     // This is intentional: we treat the current code's command list as the
     // source of truth for this application.
-    const desired = [definition];
+    const desired = [slashDefinition, cancelContextMenuDefinition];
     await app.commands.set(desired).catch((e: unknown) => {
       this.logger.error("slash command sync failed", e);
       return null;
@@ -964,26 +1058,22 @@ export class DiscordAdapter implements SurfaceAdapter {
       count: desired.length,
     });
 
-    // Force-sync guild overrides so stale per-guild commands are removed.
-    // For allowed guilds, we install the desired command set to get fast
-    // propagation. For all other guilds we clear guild commands so only the
-    // global set applies.
-    const allowedGuildIds = new Set(cfg.surface.discord.allowedGuildIds);
+    // Global-only strategy: clear guild-scoped commands to avoid duplicate
+    // entries in Discord command pickers.
     const guilds = await client.guilds.fetch().catch(() => null);
-    const guildIds = guilds ? [...guilds.keys()] : [...allowedGuildIds];
+    const guildIds = guilds ? [...guilds.keys()] : [];
     for (const guildId of guildIds) {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) continue;
 
-      const desiredForGuild = allowedGuildIds.has(guildId) ? desired : [];
-      await guild.commands.set(desiredForGuild).catch((e: unknown) => {
+      await guild.commands.set([]).catch((e: unknown) => {
         this.logger.error("guild slash command sync failed", { guildId }, e);
         return null;
       });
       this.logger.info("slash commands synced", {
         scope: "guild",
         guildId,
-        count: desiredForGuild.length,
+        count: 0,
       });
     }
   }

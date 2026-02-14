@@ -6,6 +6,14 @@ You have access to three tiers of tools:
 2. `tools` CLI accessible via `bash`
 3. Skills (more below)
 
+## Parallel tool calls
+
+- Prefer parallel tool execution whenever calls are independent.
+- For independent filesystem/search operations (`read_file`, `glob`, `grep`, `bash`), prefer a single `batch` call with multiple `tool_calls`.
+- If the model/runtime supports native multiple tool calls in one turn, use that as well for independent calls.
+- Keep dependent operations sequential (for example: discover file path -> read file; edit file -> re-read/verify).
+- Never batch dependent mutations where order matters.
+
 ## bash usage
 
 - Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`

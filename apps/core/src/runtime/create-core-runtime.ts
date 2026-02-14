@@ -148,7 +148,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     stop(): Promise<void>;
   } | null = null;
 
-  const GRACEFUL_RESTART_DEADLINE_MS = 3_000;
+  const GRACEFUL_RESTART_DEADLINE_MS = 120_000;
 
   async function restoreGracefulSnapshot(snapshot: GracefulRestartSnapshot) {
     logger.info("Restoring graceful restart snapshot", {
@@ -345,10 +345,24 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         cwd,
       });
 
-      const snapshot = gracefulRestartStore?.loadAndConsumeCompletedSnapshot() ?? null;
-      if (snapshot) {
-        await restoreGracefulSnapshot(snapshot).catch((e: unknown) => {
+      const restartLoad = gracefulRestartStore?.loadAndConsumeCompletedSnapshotDetailed() ?? {
+        snapshot: null,
+        reason: "empty" as const,
+      };
+
+      if (restartLoad.snapshot) {
+        await restoreGracefulSnapshot(restartLoad.snapshot).catch((e: unknown) => {
           logger.error("Failed to restore graceful restart snapshot", e);
+        });
+      } else if (restartLoad.reason === "stale") {
+        logger.warn("Graceful restart snapshot discarded (stale)", {
+          createdAt: restartLoad.createdAt,
+          ageMs: restartLoad.ageMs,
+          deadlineMs: restartLoad.deadlineMs,
+        });
+      } else if (restartLoad.reason !== "empty") {
+        logger.warn("Graceful restart snapshot discarded", {
+          reason: restartLoad.reason,
         });
       }
 

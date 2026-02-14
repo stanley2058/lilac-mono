@@ -80,13 +80,11 @@ const subagentsSchema = z
       .number()
       .int()
       .positive()
-      .max(8 * 60 * 1000)
       .default(3 * 60 * 1000),
     maxTimeoutMs: z
       .number()
       .int()
       .positive()
-      .max(8 * 60 * 1000)
       .default(8 * 60 * 1000),
     profiles: z
       .object({
