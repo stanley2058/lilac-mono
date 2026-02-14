@@ -19,6 +19,7 @@ import {
   resolveEditingToolMode,
   type JSONObject,
   resolveLogLevel,
+  resolveModelRef,
   resolveModelSlot,
 } from "@stanley2058/lilac-utils";
 import {
@@ -1307,10 +1308,20 @@ export async function startBusAgentRunner(params: {
       });
       await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
-      const resolved = resolveModelSlot(
-        cfg,
-        runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
-      );
+      const resolved =
+        runProfile === "explore" && subagents.profiles.explore.model
+          ? resolveModelRef(
+              cfg,
+              {
+                model: subagents.profiles.explore.model,
+                options: subagents.profiles.explore.options,
+              },
+              "agent.subagents.profiles.explore.model",
+            )
+          : resolveModelSlot(
+              cfg,
+              runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
+            );
       resolvedModelLabel = resolved.modelId;
       const editingToolMode = resolveEditingToolMode({
         provider: resolved.provider,

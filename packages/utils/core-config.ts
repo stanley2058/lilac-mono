@@ -36,6 +36,8 @@ type AgentConfig = {
     profiles: {
       explore: {
         modelSlot: "main" | "fast";
+        model?: string;
+        options?: JSONObject;
         promptOverlay?: string;
       };
     };
@@ -51,10 +53,24 @@ const statsForNerdsSchema = z
   ])
   .default(false);
 
-const subagentProfileSchema = z.object({
-  modelSlot: z.enum(["main", "fast"]).default("main"),
-  promptOverlay: z.string().min(1).optional(),
-});
+const subagentProfileSchema = z
+  .object({
+    modelSlot: z.enum(["main", "fast"]).default("main"),
+    /** Optional direct model ref (provider/model or alias from models.def). */
+    model: z.string().min(1).optional(),
+    /** Optional providerOptions override merged onto models.def.<alias>.options. */
+    options: jsonObjectSchema.optional(),
+    promptOverlay: z.string().min(1).optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.options && !input.model) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["options"],
+        message: "options requires model to be set",
+      });
+    }
+  });
 
 const subagentsSchema = z
   .object({

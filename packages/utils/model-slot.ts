@@ -7,6 +7,13 @@ import { parseModelSpecifier } from "./model-capability";
 
 export type ModelSlot = "main" | "fast";
 
+export type ConfiguredModelRef = {
+  /** Model ref in provider/model format or alias from models.def. */
+  model: string;
+  /** Optional providerOptions override. */
+  options?: JSONObject;
+};
+
 export type ResolvedModelSlot = {
   slot: ModelSlot;
   /** If models.<slot>.model was an alias, this is set. */
@@ -20,6 +27,8 @@ export type ResolvedModelSlot = {
   /** AI SDK providerOptions; may include multiple provider namespaces. */
   providerOptions?: { [x: string]: JSONObject };
 };
+
+export type ResolvedModelRef = Omit<ResolvedModelSlot, "slot">;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
@@ -154,23 +163,17 @@ function buildProviderOptions(params: {
   };
 }
 
-function resolveSlotSpec(
+function resolveModelSpecFromRaw(
   cfg: CoreConfig,
-  slot: ModelSlot,
+  raw: string,
+  source: string,
 ): {
   spec: string;
   alias?: string;
   presetOptions?: JSONObject;
-  slotOptions?: JSONObject;
 } {
-  const slotCfg = cfg.models[slot];
-
-  const raw = slotCfg.model;
   if (raw.includes("/")) {
-    return {
-      spec: raw,
-      slotOptions: slotCfg.options,
-    };
+    return { spec: raw };
   }
 
   const alias = raw;
@@ -181,7 +184,7 @@ function resolveSlotSpec(
       available.length > 0
         ? ` Available aliases (sample): ${available.join(", ")}`
         : " No aliases are configured under models.def.";
-    throw new Error(`Unknown model alias '${alias}' (models.${slot}.model).${hint}`);
+    throw new Error(`Unknown model alias '${alias}' (${source}).${hint}`);
   }
 
   if (!preset.model.includes("/")) {
@@ -194,37 +197,89 @@ function resolveSlotSpec(
     spec: preset.model,
     alias,
     presetOptions: preset.options,
+  };
+}
+
+function resolveSlotSpec(
+  cfg: CoreConfig,
+  slot: ModelSlot,
+): {
+  spec: string;
+  alias?: string;
+  presetOptions?: JSONObject;
+  slotOptions?: JSONObject;
+} {
+  const slotCfg = cfg.models[slot];
+  const base = resolveModelSpecFromRaw(cfg, slotCfg.model, `models.${slot}.model`);
+
+  return {
+    spec: base.spec,
+    alias: base.alias,
+    presetOptions: base.presetOptions,
     slotOptions: slotCfg.options,
   };
 }
 
-export function resolveModelSlot(cfg: CoreConfig, slot: ModelSlot): ResolvedModelSlot {
-  const { spec, alias, presetOptions, slotOptions } = resolveSlotSpec(cfg, slot);
-
-  const parsed = parseModelSpecifier(spec);
+function resolveModel(params: {
+  source: string;
+  spec: string;
+  alias?: string;
+  options?: JSONObject;
+}): ResolvedModelRef {
+  const parsed = parseModelSpecifier(params.spec);
   const provider = parsed.provider;
   const modelId = parsed.model;
-
-  const mergedOptions = deepMergeObjects(presetOptions, slotOptions);
-  const providerOptions = buildProviderOptions({ provider, options: mergedOptions });
+  const providerOptions = buildProviderOptions({ provider, options: params.options });
 
   const p = providers[provider as Providers];
   if (!p) {
-    throw new Error(`Unknown provider '${provider}' (models.${slot}.model='${alias ?? spec}')`);
+    throw new Error(
+      `Unknown provider '${provider}' (${params.source}='${params.alias ?? params.spec}')`,
+    );
   }
   if (typeof p !== "function") {
     throw new Error(
-      `Provider '${provider}' is not configured (models.${slot}.model='${alias ?? spec}')`,
+      `Provider '${provider}' is not configured (${params.source}='${params.alias ?? params.spec}')`,
     );
   }
 
   return {
-    slot,
-    alias,
-    spec,
+    alias: params.alias,
+    spec: params.spec,
     provider,
     modelId,
     model: p(modelId),
     providerOptions,
+  };
+}
+
+export function resolveModelRef(
+  cfg: CoreConfig,
+  ref: ConfiguredModelRef,
+  source: string,
+): ResolvedModelRef {
+  const base = resolveModelSpecFromRaw(cfg, ref.model, source);
+  const mergedOptions = deepMergeObjects(base.presetOptions, ref.options);
+  return resolveModel({
+    source,
+    spec: base.spec,
+    alias: base.alias,
+    options: mergedOptions,
+  });
+}
+
+export function resolveModelSlot(cfg: CoreConfig, slot: ModelSlot): ResolvedModelSlot {
+  const { spec, alias, presetOptions, slotOptions } = resolveSlotSpec(cfg, slot);
+  const mergedOptions = deepMergeObjects(presetOptions, slotOptions);
+  const resolved = resolveModel({
+    source: `models.${slot}.model`,
+    spec,
+    alias,
+    options: mergedOptions,
+  });
+
+  return {
+    slot,
+    ...resolved,
   };
 }

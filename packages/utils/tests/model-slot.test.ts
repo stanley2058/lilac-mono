@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema, resolveModelSlot, type CoreConfig } from "../index";
+import { coreConfigSchema, resolveModelRef, resolveModelSlot, type CoreConfig } from "../index";
 
 function baseConfig(): CoreConfig {
   const parsed = coreConfigSchema.parse({});
@@ -80,5 +80,40 @@ describe("resolveModelSlot", () => {
 
     // Ensure the meta key is not forwarded.
     expect(resolved.providerOptions?.codex_instructions).toBeUndefined();
+  });
+
+  it("resolves alias refs and merges preset options with override options", () => {
+    const cfg = baseConfig();
+    cfg.models.def = {
+      sonnet: {
+        model: "openrouter/anthropic/claude-sonnet-4.5",
+        options: {
+          anthropic: {
+            thinking: { type: "enabled" },
+          },
+          gateway: {
+            order: ["anthropic", "vertex", "bedrock"],
+          },
+        },
+      },
+    };
+
+    const resolved = resolveModelRef(
+      cfg,
+      {
+        model: "sonnet",
+        options: {
+          gateway: {
+            order: ["anthropic", "bedrock"],
+          },
+        },
+      },
+      "agent.subagents.profiles.explore.model",
+    );
+
+    expect(resolved.alias).toBe("sonnet");
+    expect(resolved.spec).toBe("openrouter/anthropic/claude-sonnet-4.5");
+    expect(resolved.providerOptions?.anthropic?.thinking).toEqual({ type: "enabled" });
+    expect(resolved.providerOptions?.gateway?.order).toEqual(["anthropic", "bedrock"]);
   });
 });

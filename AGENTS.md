@@ -115,6 +115,11 @@ This repo uses Oxc tooling at the root:
 - Format check: `bun run fmt:check` (`oxfmt --check`)
 - Format write: `bun run fmt` (`oxfmt --write`)
 
+Before wrapping up any task that changes code/config/docs, run lint + format checks from repo root at least once as the final validation step:
+
+- `bun run lint`
+- `bun run fmt:check`
+
 Current formatter scope is code + JSON only (`apps/*`, `packages/*`, `__tests__/*`, and root `*.json`).
 
 - Keep changes consistent with existing code style.

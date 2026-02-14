@@ -73,9 +73,11 @@ agent:
     maxTimeoutMs: 480000
     profiles:
       explore:
-        # Which model slot to run explore subagents on.
-        # Options: main | fast
-        modelSlot: "main"
+        # Which model to run explore subagents on.
+        # Can be provider/model or an alias from models.def.
+        model: "openrouter/openai/gpt-4o"
+        # options:
+        #   temperature: 0.0
         # Optional extra prompt fragment appended in explore mode.
         # promptOverlay: |
         #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
