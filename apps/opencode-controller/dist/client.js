@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js
 var createSseClient = ({ onRequest, onSseError, onSseEvent, responseTransformer, responseValidator, sseDefaultRetryDelay, sseMaxRetryAttempts, sseMaxRetryDelay, sseSleepFn, url, ...options }) => {
   let lastEventId;
   const sleep = sseSleepFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -128,7 +128,7 @@ var createSseClient = ({ onRequest, onSseError, onSseEvent, responseTransformer,
   return { stream };
 };
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/pathSerializer.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/pathSerializer.gen.js
 var separatorArrayExplode = (style) => {
   switch (style) {
     case "label":
@@ -231,7 +231,7 @@ var serializeObjectParam = ({ allowReserved, explode, name, style, value, valueO
   return style === "label" || style === "matrix" ? separator + joinedValues : joinedValues;
 };
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/utils.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/utils.gen.js
 var PATH_PARAM_RE = /\{[^{}]+\}/g;
 var defaultPathSerializer = ({ path, url: _url }) => {
   let url = _url;
@@ -314,7 +314,7 @@ function getValidRequestBody(options) {
   return;
 }
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/auth.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/auth.gen.js
 var getAuthToken = async (auth, callback) => {
   const token = typeof callback === "function" ? await callback(auth) : callback;
   if (!token) {
@@ -329,12 +329,12 @@ var getAuthToken = async (auth, callback) => {
   return token;
 };
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/bodySerializer.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/bodySerializer.gen.js
 var jsonBodySerializer = {
   bodySerializer: (body) => JSON.stringify(body, (_key, value) => typeof value === "bigint" ? value.toString() : value)
 };
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/client/utils.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/client/utils.gen.js
 var createQuerySerializer = ({ parameters = {}, ...args } = {}) => {
   const querySerializer = (queryParams) => {
     const search = [];
@@ -545,7 +545,7 @@ var createConfig = (override = {}) => ({
   ...override
 });
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/client/client.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/client/client.gen.js
 var createClient = (config = {}) => {
   let _config = mergeConfigs(createConfig(), config);
   const getConfig = () => ({ ..._config });
@@ -751,7 +751,7 @@ var createClient = (config = {}) => {
     trace: makeMethodFn("TRACE")
   };
 };
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/core/params.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/core/params.gen.js
 var extraPrefixesMap = {
   $body_: "body",
   $headers_: "headers",
@@ -844,10 +844,10 @@ var buildClientParams = (args, fields) => {
   stripEmptySlots(params);
   return params;
 };
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/client.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/client.gen.js
 var client = createClient(createConfig({ baseUrl: "http://localhost:4096" }));
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/gen/sdk.gen.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/gen/sdk.gen.js
 class HeyApiClient {
   client;
   constructor(args) {
@@ -1533,6 +1533,7 @@ class Session extends HeyApiClient {
           { in: "body", key: "agent" },
           { in: "body", key: "noReply" },
           { in: "body", key: "tools" },
+          { in: "body", key: "format" },
           { in: "body", key: "system" },
           { in: "body", key: "variant" },
           { in: "body", key: "parts" }
@@ -1577,6 +1578,7 @@ class Session extends HeyApiClient {
           { in: "body", key: "agent" },
           { in: "body", key: "noReply" },
           { in: "body", key: "tools" },
+          { in: "body", key: "format" },
           { in: "body", key: "system" },
           { in: "body", key: "variant" },
           { in: "body", key: "parts" }
@@ -2540,7 +2542,7 @@ class OpencodeClient extends HeyApiClient {
   }
 }
 
-// ../../node_modules/.bun/@opencode-ai+sdk@1.1.49/node_modules/@opencode-ai/sdk/dist/v2/client.js
+// ../../node_modules/.bun/@opencode-ai+sdk@1.2.1/node_modules/@opencode-ai/sdk/dist/v2/client.js
 function createOpencodeClient(config) {
   if (!config?.fetch) {
     const customFetch = (req) => {
@@ -2894,9 +2896,7 @@ async function selectSession(params) {
     if (s)
       return { session: s, created: false };
   }
-  const createRes = await client3.session.create({
-    ...params.denyQuestionsOnCreate ? { permission: denyQuestionsRuleset() } : {}
-  });
+  const createRes = await client3.session.create(params.denyQuestionsOnCreate ? { permission: denyQuestionsRuleset() } : {});
   if (createRes.error || !createRes.data) {
     throw new Error(`Failed to create session: ${JSON.stringify(createRes.error)}`);
   }
