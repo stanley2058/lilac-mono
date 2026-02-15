@@ -62,6 +62,19 @@ function getSessionMode(cfg: CoreConfig, sessionId: string): SessionMode {
   return entry?.mode ?? cfg.surface.router.defaultMode;
 }
 
+function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
+  const out = new Map<string, string>();
+  const users = cfg.entity?.users ?? {};
+
+  for (const [alias, rec] of Object.entries(users)) {
+    if (!out.has(rec.discord)) {
+      out.set(rec.discord, alias);
+    }
+  }
+
+  return out;
+}
+
 function getDiscordFlags(raw: unknown): {
   isDMBased?: boolean;
   mentionsBot?: boolean;
@@ -981,12 +994,14 @@ export async function startBusRequestRouter(params: {
     const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } = input;
 
     const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
 
     const composed = await composeRequestMessages(adapter, {
       platform: "discord",
       botUserId: self.userId,
       botName: cfg.surface.discord.botName,
       transcriptStore: params.transcriptStore,
+      discordUserAliasById,
       trigger: {
         type: triggerType === "mention" ? "mention" : "reply",
         msgRef,
@@ -1023,6 +1038,7 @@ export async function startBusRequestRouter(params: {
     const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } = input;
 
     const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
 
     const composed =
       triggerMsgRef && triggerType === "reply"
@@ -1031,6 +1047,7 @@ export async function startBusRequestRouter(params: {
             botUserId: self.userId,
             botName: cfg.surface.discord.botName,
             transcriptStore: params.transcriptStore,
+            discordUserAliasById,
             trigger: {
               type: "reply",
               msgRef: triggerMsgRef,
@@ -1043,6 +1060,7 @@ export async function startBusRequestRouter(params: {
             botName: cfg.surface.discord.botName,
             limit: 8,
             transcriptStore: params.transcriptStore,
+            discordUserAliasById,
             triggerMsgRef,
             triggerType,
           });
@@ -1084,12 +1102,14 @@ export async function startBusRequestRouter(params: {
     const { adapter, cfg, requestId, sessionId, queue, msgRef } = input;
 
     const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
 
     const msg = await composeSingleMessage(adapter, {
       platform: "discord",
       botUserId: self.userId,
       botName: cfg.surface.discord.botName,
       msgRef,
+      discordUserAliasById,
     });
 
     if (!msg) return;

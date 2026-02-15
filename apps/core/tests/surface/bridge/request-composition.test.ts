@@ -136,6 +136,30 @@ describe("request-composition attachments", () => {
     expect(out!.content as string).toContain("reactions=👍,👀");
   });
 
+  it("includes user alias in attribution header when configured", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "discord-user",
+      text: "hi",
+      ts: 0,
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+      discordUserAliasById: new Map([["u", "Stanley"]]),
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("user_alias=Stanley");
+  });
+
   it("downloads discord attachment when mimeType is missing", async () => {
     let calls = 0;
     // @ts-expect-error stub fetch
@@ -651,6 +675,36 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).not.toContain("old reply");
     expect(merged as string).not.toContain("Root");
   });
+
+  it("includes user alias in mention-thread attribution header when configured", async () => {
+    const sessionId = "c";
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "discord-user",
+      text: "<@bot> hi",
+      ts: 1000,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:m1`]: m1,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      discordUserAliasById: new Map([["u1", "Stanley"]]),
+      trigger: { type: "mention", msgRef: m1.ref },
+    });
+
+    expect(out.messages.length).toBe(1);
+    expect(typeof out.messages[0]?.content).toBe("string");
+    expect(out.messages[0]!.content as string).toContain("user_alias=Stanley");
+  });
 });
 
 describe("request-composition active channel burst rules", () => {
@@ -775,6 +829,34 @@ describe("request-composition active channel burst rules", () => {
     });
 
     expect(out.chainMessageIds).toEqual(["8", "9", "10"]);
+  });
+
+  it("includes user alias in recent-channel attribution header when configured", async () => {
+    const sessionId = "c";
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "discord-user",
+      text: "hello",
+      ts: 1000,
+      raw: { reference: {} },
+    };
+
+    const adapter = new ListFakeAdapter([msg]);
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      discordUserAliasById: new Map([["u1", "Stanley"]]),
+    });
+
+    expect(out.messages.length).toBe(1);
+    expect(typeof out.messages[0]?.content).toBe("string");
+    expect(out.messages[0]!.content as string).toContain("user_alias=Stanley");
   });
 
   it("stops at >3h age cutoff (active mode, mention trigger)", async () => {

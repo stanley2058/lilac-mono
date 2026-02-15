@@ -168,6 +168,7 @@ export type ComposeRecentChannelMessagesOpts = {
   botName: string;
   limit: number;
   transcriptStore?: TranscriptStore;
+  discordUserAliasById?: ReadonlyMap<string, string>;
   /** Optional trigger message to force-include (mention/reply). */
   triggerMsgRef?: MsgRef;
   triggerType?: "mention" | "reply";
@@ -178,6 +179,7 @@ export type ComposeSingleMessageOpts = {
   botUserId: string;
   botName: string;
   msgRef: MsgRef;
+  discordUserAliasById?: ReadonlyMap<string, string>;
 };
 
 export type ComposeRequestOpts = {
@@ -185,6 +187,7 @@ export type ComposeRequestOpts = {
   botUserId: string;
   botName: string;
   transcriptStore?: TranscriptStore;
+  discordUserAliasById?: ReadonlyMap<string, string>;
   trigger: {
     type: "mention" | "reply";
     msgRef: MsgRef;
@@ -294,6 +297,7 @@ export async function composeRequestMessages(
     const header = formatDiscordAttributionHeader({
       authorId: chunk.authorId,
       authorName: chunk.authorName,
+      userAlias: opts.discordUserAliasById?.get(chunk.authorId),
       messageId,
       reactions,
     });
@@ -424,6 +428,7 @@ export async function composeRecentChannelMessages(
           const header = formatDiscordAttributionHeader({
             authorId: chunk.authorId,
             authorName: chunk.authorName,
+            userAlias: opts.discordUserAliasById?.get(chunk.authorId),
             messageId,
             reactions,
           });
@@ -646,6 +651,7 @@ export async function composeRecentChannelMessages(
     const header = formatDiscordAttributionHeader({
       authorId: chunk.authorId,
       authorName: chunk.authorName,
+      userAlias: opts.discordUserAliasById?.get(chunk.authorId),
       messageId,
       reactions,
     });
@@ -707,6 +713,7 @@ export async function composeSingleMessage(
   const header = formatDiscordAttributionHeader({
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
+    userAlias: opts.discordUserAliasById?.get(m.userId),
     messageId: m.ref.messageId,
     reactions: await safeListReactions(adapter, m.ref),
   });
@@ -1378,15 +1385,18 @@ function normalizeText(text: string, _ctx: {}): string {
 function formatDiscordAttributionHeader(params: {
   authorId: string;
   authorName: string;
+  userAlias?: string;
   messageId: string;
   reactions?: readonly string[];
 }): string {
   const userName = sanitizeUserToken(params.authorName || `user_${params.authorId}`);
+  const userAlias = params.userAlias ? sanitizeUserToken(params.userAlias) : "";
 
   const reactions = formatReactionSet(params.reactions);
+  const aliasPart = userAlias ? ` user_alias=${userAlias}` : "";
   const reactionsPart = reactions ? ` reactions=${reactions}` : "";
 
-  return `[discord user_id=${params.authorId} user_name=${userName} message_id=${params.messageId}${reactionsPart}]`;
+  return `[discord user_id=${params.authorId} user_name=${userName}${aliasPart} message_id=${params.messageId}${reactionsPart}]`;
 }
 
 function sanitizeUserToken(name: string): string {
