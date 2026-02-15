@@ -8,6 +8,7 @@ export type SafeEdit = (msg: Message, options: Parameters<Message["edit"]>[0]) =
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
 const CLOSING_TAG_BUFFER = 10;
+const THINKING_HEARTBEAT_MS = 1_000;
 
 const EMBED_COLOR_COMPLETE = Colors.Blue;
 const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
@@ -85,6 +86,7 @@ export async function startEmbedPusher(params: {
   createReply: (parent: Message, emb: EmbedBuilder) => Promise<Message>;
   getContent: () => string;
   getThinkingValue?: () => string | null;
+  shouldHeartbeatThinking?: () => boolean;
   getActionsLines: () => readonly string[];
   getStatsLine?: () => string | null;
   getMaxLength: (isStreaming: boolean) => number;
@@ -116,6 +118,7 @@ export async function startEmbedPusher(params: {
   const sentStats: string[] = [];
 
   let responseQueue: string[] = [];
+  let lastThinkingHeartbeatAt = 0;
 
   const syncToDiscord = async (content: string): Promise<boolean> => {
     const maxChunkLength = params.getMaxLength(false);
@@ -128,6 +131,11 @@ export async function startEmbedPusher(params: {
     });
 
     const thinkingValue = params.getThinkingValue?.() ?? null;
+    const shouldHeartbeatThinking = params.shouldHeartbeatThinking?.() ?? false;
+    const heartbeatDue =
+      streaming &&
+      shouldHeartbeatThinking &&
+      Date.now() - lastThinkingHeartbeatAt >= THINKING_HEARTBEAT_MS;
     const actionsLines = params.getActionsLines();
     const statsLine = params.getStatsLine?.() ?? null;
 
@@ -153,6 +161,8 @@ export async function startEmbedPusher(params: {
       const color = showStreamIndicator ? EMBED_COLOR_INCOMPLETE : EMBED_COLOR_COMPLETE;
       const statsLineForChunk = !showStreamIndicator && isLast ? statsLine : null;
       const thinkingValueForChunk = showStreamIndicator ? thinkingValue : null;
+      const shouldForceThinkingHeartbeat =
+        heartbeatDue && showStreamIndicator && Boolean(thinkingValueForChunk);
 
       // Only show actions while streaming. Once done, actions disappear.
       const actionsValue =
@@ -185,6 +195,9 @@ export async function startEmbedPusher(params: {
         sentThinking[i] = thinkingValueForChunk ?? "";
         sentActions[i] = actionsValue;
         sentStats[i] = statsLineForChunk ?? "";
+        if (showStreamIndicator && thinkingValueForChunk) {
+          lastThinkingHeartbeatAt = Date.now();
+        }
         didUpdate = true;
         continue;
       }
@@ -194,7 +207,8 @@ export async function startEmbedPusher(params: {
         sentColors[i] !== color ||
         sentThinking[i] !== (thinkingValueForChunk ?? "") ||
         sentActions[i] !== actionsValue ||
-        sentStats[i] !== (statsLineForChunk ?? "")
+        sentStats[i] !== (statsLineForChunk ?? "") ||
+        shouldForceThinkingHeartbeat
       ) {
         await params.safeEdit(chunkMessages[i]!, {
           embeds: [emb],
@@ -205,6 +219,9 @@ export async function startEmbedPusher(params: {
         sentThinking[i] = thinkingValueForChunk ?? "";
         sentActions[i] = actionsValue;
         sentStats[i] = statsLineForChunk ?? "";
+        if (showStreamIndicator && thinkingValueForChunk) {
+          lastThinkingHeartbeatAt = Date.now();
+        }
         didUpdate = true;
       }
     }

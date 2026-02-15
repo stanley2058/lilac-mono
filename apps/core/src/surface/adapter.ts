@@ -22,6 +22,8 @@ export type SurfaceToolStatusUpdate = {
 
 export type SurfaceReasoningStatusUpdate = {
   startedAtMs: number;
+  /** Freeze timer at this timestamp once text starts streaming. */
+  frozenAtMs?: number;
   /** Collapsed provider reasoning text (optional). */
   detailText?: string;
 };

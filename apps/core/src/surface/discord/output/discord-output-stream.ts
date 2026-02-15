@@ -55,22 +55,24 @@ export function escapeDiscordMarkdown(text: string): string {
 
 const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
 const THINKING_SPINNER_TICK_MS = 250;
-const THINKING_DETAIL_TAIL_MAX_CHARS = 120;
+const THINKING_DETAIL_MAX_CHARS = 512;
+const DISCORD_EMBED_FIELD_MAX_CHARS = 1024;
 
-export function normalizeReasoningDetail(text: string): string {
-  return text
-    .replace(/\s*\n+\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+export function clampReasoningDetail(text: string, maxChars = THINKING_DETAIL_MAX_CHARS): string {
+  if (maxChars <= 0) return "";
+
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  if (normalized.length <= maxChars) return normalized;
+  if (maxChars === 1) return "…";
+  return `${normalized.slice(0, maxChars - 1)}…`;
 }
 
-export function tailReasoningDetail(
-  text: string,
-  maxChars = THINKING_DETAIL_TAIL_MAX_CHARS,
-): string {
-  if (maxChars <= 0) return "";
-  if (text.length <= maxChars) return text;
-  return text.slice(text.length - maxChars);
+export function formatReasoningAsBlockquote(text: string): string {
+  if (!text) return "";
+  return text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
 }
 
 export function buildThinkingDisplay(input: {
@@ -94,12 +96,23 @@ export function buildThinkingDisplay(input: {
     return head;
   }
 
-  const normalized = normalizeReasoningDetail(input.detailText ?? "");
-  if (!normalized) {
+  const clamped = clampReasoningDetail(input.detailText ?? "");
+  if (!clamped) {
     return head;
   }
 
-  return `${head}\n${tailReasoningDetail(normalized)}`;
+  const maxDetailChars = Math.max(0, DISCORD_EMBED_FIELD_MAX_CHARS - head.length - 1);
+  if (maxDetailChars === 0) return head;
+
+  const blockquoted = formatReasoningAsBlockquote(clamped);
+  const safeDetail =
+    blockquoted.length <= maxDetailChars
+      ? blockquoted
+      : maxDetailChars === 1
+        ? "…"
+        : `${blockquoted.slice(0, maxDetailChars - 1)}…`;
+
+  return `${head}\n${safeDetail}`;
 }
 
 function isBatchToolDisplay(display: string): boolean {
@@ -212,6 +225,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private statsForNerdsLine: string | null = null;
   private reasoningStartedAtMs: number | null = null;
   private reasoningDetailText = "";
+  private reasoningFrozenAtMs: number | null = null;
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -266,12 +280,24 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (this.reasoningStartedAtMs === null) return null;
     if (this.deps.reasoningDisplayMode === "none") return null;
 
+    const nowMs = this.reasoningFrozenAtMs ?? Date.now();
+
     return buildThinkingDisplay({
-      nowMs: Date.now(),
+      nowMs,
       startedAtMs: this.reasoningStartedAtMs,
       mode: this.deps.reasoningDisplayMode,
       detailText: this.reasoningDetailText,
     });
+  }
+
+  private freezeReasoningTimerIfNeeded(): void {
+    if (this.reasoningStartedAtMs === null) return;
+    if (this.reasoningFrozenAtMs !== null) return;
+    this.reasoningFrozenAtMs = Date.now();
+  }
+
+  private isReasoningTimerLive(): boolean {
+    return this.reasoningStartedAtMs !== null && this.reasoningFrozenAtMs === null;
   }
 
   private async ensureStarted(): Promise<void> {
@@ -409,6 +435,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           return rewrite ? rewrite(this.textAcc) : this.textAcc;
         },
         getThinkingValue: () => this.getThinkingValue(),
+        shouldHeartbeatThinking: () => this.isReasoningTimerLive(),
         getActionsLines: () =>
           clampLast(
             this.toolLines.map((t) => t.line),
@@ -457,10 +484,12 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     switch (part.type) {
       case "text.delta":
         this.textAcc += part.delta;
+        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "text.set":
         this.textAcc = part.text;
+        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "meta.stats":
@@ -471,8 +500,14 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         if (this.deps.reasoningDisplayMode === "none") {
           return;
         }
-        this.reasoningStartedAtMs = Math.max(0, part.update.startedAtMs);
+        this.reasoningStartedAtMs ??= Math.max(0, part.update.startedAtMs);
+        if (typeof part.update.frozenAtMs === "number" && Number.isFinite(part.update.frozenAtMs)) {
+          this.reasoningFrozenAtMs = Math.max(0, part.update.frozenAtMs);
+        }
         this.reasoningDetailText = part.update.detailText ?? "";
+        if (this.textAcc.length > 0 && this.reasoningFrozenAtMs === null) {
+          this.freezeReasoningTimerIfNeeded();
+        }
         await this.ensureStarted();
         return;
       }

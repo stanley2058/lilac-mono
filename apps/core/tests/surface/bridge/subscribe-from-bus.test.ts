@@ -490,6 +490,70 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("replaces reasoning detail when sequenced chunk updates arrive", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reasoning_seq";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    // Start signal: starts timer with empty body.
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "**Chunk A**\nalpha", seq: 1 },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "**Chunk B**\nbeta", seq: 2 },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "done" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const reasoningUpdates =
+      adapter.stream?.parts.filter((p) => p.type === "reasoning.status").map((p) => p.update) ?? [];
+
+    expect(reasoningUpdates.length).toBeGreaterThanOrEqual(3);
+    expect(reasoningUpdates[0]?.detailText).toBe("");
+    expect(reasoningUpdates[reasoningUpdates.length - 1]?.detailText).toBe("**Chunk B**\nbeta");
+
+    await bridge.stop();
+  });
+
   it("does not start a relay twice for duplicate reply events", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -975,6 +1039,101 @@ describe("bridgeBusToAdapter", () => {
       },
     ]);
     expect(typeof snapshot.outCursor).toBe("string");
+
+    await bridge.stop();
+  });
+
+  it("snapshots reasoning frozen timestamp after text starts", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_snapshot_reasoning_frozen";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "", seq: 1 },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "hello" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const snapshot = bridge.snapshotRelays()[0]!;
+    expect(snapshot.reasoning?.startedAtMs).toBeTypeOf("number");
+    expect(snapshot.reasoning?.frozenAtMs).toBeTypeOf("number");
+    expect((snapshot.reasoning?.frozenAtMs ?? 0) >= (snapshot.reasoning?.startedAtMs ?? 0)).toBe(
+      true,
+    );
+
+    await bridge.stop();
+  });
+
+  it("restores frozen reasoning timestamp from snapshot", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore_reasoning_frozen";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [],
+        visibleText: "already visible",
+        reasoning: {
+          startedAtMs: 10_000,
+          frozenAtMs: 10_250,
+          detailText: "**Summary**\nitem",
+        },
+        toolStatus: [],
+      },
+    ]);
+
+    const reasoningUpdates =
+      adapter.stream?.parts.filter((p) => p.type === "reasoning.status").map((p) => p.update) ?? [];
+    expect(reasoningUpdates).toHaveLength(1);
+    expect(reasoningUpdates[0]).toEqual({
+      startedAtMs: 10_000,
+      frozenAtMs: 10_250,
+      detailText: "**Summary**\nitem",
+    });
 
     await bridge.stop();
   });

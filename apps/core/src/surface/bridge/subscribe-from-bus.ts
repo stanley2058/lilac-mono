@@ -92,18 +92,19 @@ function toAttachment(params: {
 
 const MAX_REASONING_DETAIL_CHARS = 4_000;
 
+function clampReasoningDetail(text: string): string {
+  const normalized = text.trim();
+  if (normalized.length <= MAX_REASONING_DETAIL_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_REASONING_DETAIL_CHARS - 1)}…`;
+}
+
 function appendReasoningDetail(base: string, delta: string): string {
+  const baseTrimmedEnd = base.replace(/\s+$/u, "");
+  const deltaTrimmedStart = delta.replace(/^\s+/u, "");
   const needsSpacer =
-    /[\p{L}\p{N}.!?]$/u.test(base) && /^\s*[\p{L}\p{N}]/u.test(delta);
-  const merged = needsSpacer ? `${base} ${delta}` : `${base}${delta}`;
-  const collapsed = merged
-    .replace(/\s*\n+\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (collapsed.length <= MAX_REASONING_DETAIL_CHARS) {
-    return collapsed;
-  }
-  return collapsed.slice(collapsed.length - MAX_REASONING_DETAIL_CHARS);
+    /[\p{L}\p{N}.!?]$/u.test(baseTrimmedEnd) && /^[\p{L}\p{N}]/u.test(deltaTrimmedStart);
+  const merged = needsSpacer ? `${baseTrimmedEnd} ${deltaTrimmedStart}` : `${base}${delta}`;
+  return clampReasoningDetail(merged);
 }
 
 async function cleanupGithubAck(input: { logger: Logger; requestId: string; sessionId: string }) {
@@ -177,6 +178,7 @@ export type BusToAdapterRelaySnapshot = {
   visibleText: string;
   reasoning?: {
     startedAtMs: number;
+    frozenAtMs?: number;
     detailText: string;
   };
   toolStatus: SurfaceToolStatusUpdate[];
@@ -481,6 +483,7 @@ export async function bridgeBusToAdapter(params: {
     let outTextAcc = input.restore?.visibleText ?? "";
     let visibleTextAcc = input.restore?.visibleText ?? "";
     let reasoningStartedAtMs = input.restore?.reasoning?.startedAtMs;
+    let reasoningFrozenAtMs = input.restore?.reasoning?.frozenAtMs;
     let reasoningDetailText = input.restore?.reasoning?.detailText ?? "";
     let pendingNoReplyPrefix = "";
     let bufferNoReplyPrefix = true;
@@ -615,6 +618,7 @@ export async function bridgeBusToAdapter(params: {
           type: "reasoning.status",
           update: {
             startedAtMs: reasoningStartedAtMs,
+            frozenAtMs: reasoningFrozenAtMs,
             detailText: reasoningDetailText,
           },
         });
@@ -736,14 +740,28 @@ export async function bridgeBusToAdapter(params: {
 
           switch (outMsg.type) {
             case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-              reasoningDetailText = appendReasoningDetail(reasoningDetailText, outMsg.data.delta);
               if (platform === "discord") {
                 const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
                 reasoningStartedAtMs = startedAtMs;
+
+                const seq = outMsg.data.seq;
+                if (typeof seq === "number" && Number.isFinite(seq)) {
+                  // New behavior: each sequenced event carries one fully completed
+                  // reasoning chunk and should replace the previous visible chunk.
+                  reasoningDetailText = clampReasoningDetail(outMsg.data.delta);
+                } else {
+                  // Back-compat for legacy publishers that stream incremental deltas.
+                  reasoningDetailText = appendReasoningDetail(
+                    reasoningDetailText,
+                    outMsg.data.delta,
+                  );
+                }
+
                 part = {
                   type: "reasoning.status",
                   update: {
                     startedAtMs,
+                    frozenAtMs: reasoningFrozenAtMs,
                     detailText: reasoningDetailText,
                   },
                 };
@@ -754,6 +772,14 @@ export async function bridgeBusToAdapter(params: {
 
             case lilacEventTypes.EvtAgentOutputDeltaText: {
               outTextAcc += outMsg.data.delta;
+
+              if (
+                platform === "discord" &&
+                typeof reasoningStartedAtMs === "number" &&
+                typeof reasoningFrozenAtMs !== "number"
+              ) {
+                reasoningFrozenAtMs = outMsg.ts;
+              }
 
               if (!bufferNoReplyPrefix) {
                 part = { type: "text.delta", delta: outMsg.data.delta };
@@ -851,6 +877,13 @@ export async function bridgeBusToAdapter(params: {
               visibleTextAcc = outTextAcc;
               pendingNoReplyPrefix = "";
               bufferNoReplyPrefix = false;
+              if (
+                platform === "discord" &&
+                typeof reasoningStartedAtMs === "number" &&
+                typeof reasoningFrozenAtMs !== "number"
+              ) {
+                reasoningFrozenAtMs = outMsg.ts;
+              }
               await out.push({ type: "text.set", text: outTextAcc });
               const res = await out.finish();
 
@@ -958,6 +991,7 @@ export async function bridgeBusToAdapter(params: {
               type: "reasoning.status",
               update: {
                 startedAtMs: reasoningStartedAtMs,
+                frozenAtMs: reasoningFrozenAtMs,
                 detailText: reasoningDetailText,
               },
             });
@@ -982,6 +1016,7 @@ export async function bridgeBusToAdapter(params: {
           typeof reasoningStartedAtMs === "number"
             ? {
                 startedAtMs: reasoningStartedAtMs,
+                frozenAtMs: reasoningFrozenAtMs,
                 detailText: reasoningDetailText,
               }
             : undefined,

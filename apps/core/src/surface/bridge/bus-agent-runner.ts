@@ -1648,6 +1648,8 @@ export async function startBusAgentRunner(params: {
       state.agent = agent;
 
       let finalText = "";
+      const reasoningChunkById = new Map<string, string>();
+      let reasoningChunkSeq = 0;
 
       const toolStartMs = new Map<string, number>();
 
@@ -1756,16 +1758,73 @@ export async function startBusAgentRunner(params: {
 
         if (
           event.type === "message_update" &&
-          event.assistantMessageEvent.type === "thinking_delta"
+          event.assistantMessageEvent.type === "thinking_start"
         ) {
-          const delta = event.assistantMessageEvent.delta;
+          const chunkId = event.assistantMessageEvent.id;
+          if (!reasoningChunkById.has(chunkId)) {
+            reasoningChunkById.set(chunkId, "");
+          }
 
           bus
-            .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta }, { headers })
+            .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta: "" }, { headers })
             .catch((e: unknown) => {
               logger.error(
-                "failed to publish reasoning delta",
-                { requestId: headers.request_id, sessionId: headers.session_id },
+                "failed to publish reasoning start",
+                { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
+                e,
+              );
+            });
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_delta"
+        ) {
+          const chunkId = event.assistantMessageEvent.id;
+          const delta = event.assistantMessageEvent.delta;
+
+          if (!reasoningChunkById.has(chunkId)) {
+            reasoningChunkById.set(chunkId, "");
+
+            bus
+              .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta: "" }, { headers })
+              .catch((e: unknown) => {
+                logger.error(
+                  "failed to publish implicit reasoning start",
+                  { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
+                  e,
+                );
+              });
+          }
+
+          const prev = reasoningChunkById.get(chunkId) ?? "";
+          reasoningChunkById.set(chunkId, `${prev}${delta}`);
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_end"
+        ) {
+          const chunkId = event.assistantMessageEvent.id;
+          const chunk = reasoningChunkById.get(chunkId) ?? "";
+          reasoningChunkById.delete(chunkId);
+
+          if (chunk.trim().length === 0) {
+            return;
+          }
+
+          reasoningChunkSeq += 1;
+
+          bus
+            .publish(
+              lilacEventTypes.EvtAgentOutputDeltaReasoning,
+              { delta: chunk, seq: reasoningChunkSeq },
+              { headers },
+            )
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish reasoning chunk",
+                { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
                 e,
               );
             });
