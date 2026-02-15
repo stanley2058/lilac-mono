@@ -53,6 +53,55 @@ export function escapeDiscordMarkdown(text: string): string {
   return text.replace(/([\\*_`~|>[\]()])/g, "\\$1");
 }
 
+const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
+const THINKING_SPINNER_TICK_MS = 250;
+const THINKING_DETAIL_TAIL_MAX_CHARS = 120;
+
+export function normalizeReasoningDetail(text: string): string {
+  return text
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function tailReasoningDetail(
+  text: string,
+  maxChars = THINKING_DETAIL_TAIL_MAX_CHARS,
+): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  return text.slice(text.length - maxChars);
+}
+
+export function buildThinkingDisplay(input: {
+  nowMs: number;
+  startedAtMs: number;
+  mode: "simple" | "detailed" | "none";
+  detailText?: string;
+}): string {
+  const elapsedMs = Math.max(0, input.nowMs - input.startedAtMs);
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+  const frameIdx =
+    Math.floor(elapsedMs / THINKING_SPINNER_TICK_MS) % THINKING_SPINNER_FRAMES.length;
+  const spinner = THINKING_SPINNER_FRAMES[frameIdx] ?? THINKING_SPINNER_FRAMES[0];
+  const head = `${spinner} Thinking... ${elapsedSec}s`;
+
+  if (input.mode === "none") {
+    return "";
+  }
+
+  if (input.mode === "simple") {
+    return head;
+  }
+
+  const normalized = normalizeReasoningDetail(input.detailText ?? "");
+  if (!normalized) {
+    return head;
+  }
+
+  return `${head}\n${tailReasoningDetail(normalized)}`;
+}
+
 function isBatchToolDisplay(display: string): boolean {
   const trimmed = display.trimStart();
   // Back-compat: older displays used "[batch]".
@@ -161,6 +210,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly created: MsgRef[] = [];
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
   private statsForNerdsLine: string | null = null;
+  private reasoningStartedAtMs: number | null = null;
+  private reasoningDetailText = "";
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -188,6 +239,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         maxUsers: number;
         extractUserIds?: (text: string) => string[];
       };
+      reasoningDisplayMode: "none" | "simple" | "detailed";
     },
   ) {
     let resolveFn: (() => void) | null = null;
@@ -208,6 +260,18 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     } catch {
       // ignore
     }
+  }
+
+  private getThinkingValue(): string | null {
+    if (this.reasoningStartedAtMs === null) return null;
+    if (this.deps.reasoningDisplayMode === "none") return null;
+
+    return buildThinkingDisplay({
+      nowMs: Date.now(),
+      startedAtMs: this.reasoningStartedAtMs,
+      mode: this.deps.reasoningDisplayMode,
+      detailText: this.reasoningDetailText,
+    });
   }
 
   private async ensureStarted(): Promise<void> {
@@ -294,6 +358,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (
       this.textAcc.length === 0 &&
       this.toolLines.length === 0 &&
+      this.reasoningStartedAtMs === null &&
       this.statsForNerdsLine === null
     ) {
       this.lastMsg = first;
@@ -343,6 +408,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           const rewrite = this.deps.rewriteText;
           return rewrite ? rewrite(this.textAcc) : this.textAcc;
         },
+        getThinkingValue: () => this.getThinkingValue(),
         getActionsLines: () =>
           clampLast(
             this.toolLines.map((t) => t.line),
@@ -401,6 +467,15 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         this.statsForNerdsLine = part.line.trim().length > 0 ? part.line : null;
         await this.ensureStarted();
         return;
+      case "reasoning.status": {
+        if (this.deps.reasoningDisplayMode === "none") {
+          return;
+        }
+        this.reasoningStartedAtMs = Math.max(0, part.update.startedAtMs);
+        this.reasoningDetailText = part.update.detailText ?? "";
+        await this.ensureStarted();
+        return;
+      }
       case "tool.status": {
         const line = buildToolLine(part.update);
         const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
@@ -596,6 +671,7 @@ export async function sendDiscordStyledMessage(params: {
     opts: params.opts,
     useSmartSplitting: params.useSmartSplitting,
     rewriteText: params.rewriteText,
+    reasoningDisplayMode: "none",
   });
 
   for (const a of attachments) {

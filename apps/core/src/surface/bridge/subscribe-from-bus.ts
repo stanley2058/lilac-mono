@@ -90,6 +90,22 @@ function toAttachment(params: {
   };
 }
 
+const MAX_REASONING_DETAIL_CHARS = 4_000;
+
+function appendReasoningDetail(base: string, delta: string): string {
+  const needsSpacer =
+    /[\p{L}\p{N}.!?]$/u.test(base) && /^\s*[\p{L}\p{N}]/u.test(delta);
+  const merged = needsSpacer ? `${base} ${delta}` : `${base}${delta}`;
+  const collapsed = merged
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (collapsed.length <= MAX_REASONING_DETAIL_CHARS) {
+    return collapsed;
+  }
+  return collapsed.slice(collapsed.length - MAX_REASONING_DETAIL_CHARS);
+}
+
 async function cleanupGithubAck(input: { logger: Logger; requestId: string; sessionId: string }) {
   const ack = getGithubAck(input.requestId);
   if (!ack) return;
@@ -159,6 +175,10 @@ export type BusToAdapterRelaySnapshot = {
   replyTo?: MsgRef;
   createdOutputRefs: MsgRef[];
   visibleText: string;
+  reasoning?: {
+    startedAtMs: number;
+    detailText: string;
+  };
   toolStatus: SurfaceToolStatusUpdate[];
   outCursor?: string;
 };
@@ -460,6 +480,8 @@ export async function bridgeBusToAdapter(params: {
 
     let outTextAcc = input.restore?.visibleText ?? "";
     let visibleTextAcc = input.restore?.visibleText ?? "";
+    let reasoningStartedAtMs = input.restore?.reasoning?.startedAtMs;
+    let reasoningDetailText = input.restore?.reasoning?.detailText ?? "";
     let pendingNoReplyPrefix = "";
     let bufferNoReplyPrefix = true;
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
@@ -588,6 +610,15 @@ export async function bridgeBusToAdapter(params: {
       if (visibleTextAcc.trim().length > 0) {
         await out.push({ type: "text.set", text: visibleTextAcc });
       }
+      if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
+        await out.push({
+          type: "reasoning.status",
+          update: {
+            startedAtMs: reasoningStartedAtMs,
+            detailText: reasoningDetailText,
+          },
+        });
+      }
       for (const update of toolStatusById.values()) {
         await out.push({ type: "tool.status", update });
       }
@@ -705,7 +736,18 @@ export async function bridgeBusToAdapter(params: {
 
           switch (outMsg.type) {
             case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-              // ignored for now
+              reasoningDetailText = appendReasoningDetail(reasoningDetailText, outMsg.data.delta);
+              if (platform === "discord") {
+                const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
+                reasoningStartedAtMs = startedAtMs;
+                part = {
+                  type: "reasoning.status",
+                  update: {
+                    startedAtMs,
+                    detailText: reasoningDetailText,
+                  },
+                };
+              }
               lastOutCursor = outCtx.cursor;
               break;
             }
@@ -911,6 +953,16 @@ export async function bridgeBusToAdapter(params: {
             await out.push({ type: "text.set", text: visibleTextAcc });
           }
 
+          if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
+            await out.push({
+              type: "reasoning.status",
+              update: {
+                startedAtMs: reasoningStartedAtMs,
+                detailText: reasoningDetailText,
+              },
+            });
+          }
+
           // Replay tool status lines so the new stream shows current Actions.
           for (const u of toolStatusById.values()) {
             await out.push({ type: "tool.status", update: u });
@@ -926,6 +978,13 @@ export async function bridgeBusToAdapter(params: {
         replyTo: currentReplyTo,
         createdOutputRefs: createdOutputRefs.slice(),
         visibleText: visibleTextAcc,
+        reasoning:
+          typeof reasoningStartedAtMs === "number"
+            ? {
+                startedAtMs: reasoningStartedAtMs,
+                detailText: reasoningDetailText,
+              }
+            : undefined,
         toolStatus: [...toolStatusById.values()],
         outCursor: lastOutCursor,
       }),

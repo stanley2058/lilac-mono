@@ -34,6 +34,10 @@ export class GithubOutputStream implements SurfaceOutputStream {
         this.attachments.push(part.attachment);
         return;
       }
+      case "reasoning.status": {
+        // Ignore (no streaming UI for GitHub).
+        return;
+      }
       case "tool.status": {
         // Ignore (no streaming UI for GitHub).
         return;

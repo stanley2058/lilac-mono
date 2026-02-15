@@ -378,6 +378,118 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("forwards reasoning deltas into reasoning status updates", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reasoning";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "step 1\n" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "step 2" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "done" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const reasoningUpdates =
+      adapter.stream?.parts.filter((p) => p.type === "reasoning.status").map((p) => p.update) ?? [];
+
+    expect(reasoningUpdates.length).toBeGreaterThanOrEqual(1);
+    expect(reasoningUpdates[0]?.detailText).toBe("step 1");
+    expect(reasoningUpdates[reasoningUpdates.length - 1]?.detailText).toBe("step 1 step 2");
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "done" });
+
+    await bridge.stop();
+  });
+
+  it("preserves readability when reasoning delta splits after punctuation", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reasoning_punctuation";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "Done.\n" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "Next" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ok" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const reasoningUpdates =
+      adapter.stream?.parts.filter((p) => p.type === "reasoning.status").map((p) => p.update) ?? [];
+    expect(reasoningUpdates[reasoningUpdates.length - 1]?.detailText).toBe("Done. Next");
+
+    await bridge.stop();
+  });
+
   it("does not start a relay twice for duplicate reply events", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -845,6 +957,7 @@ describe("bridgeBusToAdapter", () => {
     const snapshot = snapshots[0]!;
     expect(snapshot.requestId).toBe(requestId);
     expect(snapshot.visibleText).toBe("hello");
+    expect(snapshot.reasoning).toBeUndefined();
     expect(snapshot.createdOutputRefs).toEqual([
       {
         platform: "discord",

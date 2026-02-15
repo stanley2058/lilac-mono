@@ -1715,6 +1715,23 @@ export async function startBusAgentRunner(params: {
             });
         }
 
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_delta"
+        ) {
+          const delta = event.assistantMessageEvent.delta;
+
+          bus
+            .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta }, { headers })
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish reasoning delta",
+                { requestId: headers.request_id, sessionId: headers.session_id },
+                e,
+              );
+            });
+        }
+
         if (event.type === "tool_execution_start") {
           toolStartMs.set(event.toolCallId, Date.now());
 

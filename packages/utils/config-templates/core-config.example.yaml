@@ -62,6 +62,12 @@ agent:
   # - { verbose: true }: also include input composition ([IC] ...)
   statsForNerds: false
 
+  # Discord-only streaming thinking display lane.
+  # - none: disable thinking lane
+  # - simple: spinner + elapsed time only
+  # - detailed: spinner + elapsed + collapsed reasoning tail (120 chars)
+  reasoningDisplay: simple
+
   subagents:
     # Master switch for delegate-style subagents.
     enabled: true
