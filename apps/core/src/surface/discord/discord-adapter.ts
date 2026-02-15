@@ -484,6 +484,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       opts,
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
+      reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       mentionPing: {
         enabled: mentionPingEnabled,
         maxUsers: mentionCfg.maxUsers,

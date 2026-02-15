@@ -20,9 +20,18 @@ export type SurfaceToolStatusUpdate = {
   error?: string;
 };
 
+export type SurfaceReasoningStatusUpdate = {
+  startedAtMs: number;
+  /** Freeze timer at this timestamp once text starts streaming. */
+  frozenAtMs?: number;
+  /** Collapsed provider reasoning text (optional). */
+  detailText?: string;
+};
+
 export type SurfaceOutputPart =
   | { type: "text.delta"; delta: string }
   | { type: "text.set"; text: string }
+  | { type: "reasoning.status"; update: SurfaceReasoningStatusUpdate }
   | { type: "meta.stats"; line: string }
   | { type: "tool.status"; update: SurfaceToolStatusUpdate }
   | { type: "attachment.add"; attachment: SurfaceAttachment };

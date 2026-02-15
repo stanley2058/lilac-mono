@@ -244,6 +244,36 @@ function withStableAnthropicUpstreamOrder(
   return providerOptions;
 }
 
+function isOpenAIBackedModel(provider: string, modelId: string): boolean {
+  if (provider === "openai" || provider === "codex") return true;
+  return modelId.startsWith("openai/");
+}
+
+export function withReasoningSummaryDefaultForOpenAIModels(params: {
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
+  provider: string;
+  modelId: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+}): { [x: string]: JSONObject } | undefined {
+  if (params.reasoningDisplay === "none") return params.providerOptions;
+  if (!isOpenAIBackedModel(params.provider, params.modelId)) return params.providerOptions;
+
+  const base = params.providerOptions ?? {};
+  const existingOpenAI = isRecord(base["openai"]) ? base["openai"] : {};
+
+  if ("reasoningSummary" in existingOpenAI) {
+    return params.providerOptions;
+  }
+
+  return {
+    ...base,
+    openai: {
+      ...existingOpenAI,
+      reasoningSummary: "detailed",
+    },
+  };
+}
+
 function estimateTokensFromValue(value: unknown): number {
   // Best-effort token estimate (OpenCode uses chars/4).
   const chars = safeStringify(value).length;
@@ -1448,13 +1478,22 @@ export async function startBusAgentRunner(params: {
 
       // Improve prompt caching stability by providing a session-scoped cache key.
       // This helps when many requests share a large common prefix (e.g. a long system prompt).
-      // Only apply for OpenAI-backed providers.
+      // Also, when reasoning display is enabled, request detailed reasoning summaries
+      // for OpenAI-backed models (including gateway/openrouter openai/* model IDs).
+      const providerOptionsWithReasoningSummary = withReasoningSummaryDefaultForOpenAIModels({
+        reasoningDisplay: cfg.agent.reasoningDisplay,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        providerOptions: resolved.providerOptions,
+      });
+
+      // Prompt cache key only applies for direct OpenAI/Codex providers.
       const providerOptionsWithPromptCacheKey = (() => {
         const provider = resolved.provider;
         const supports = provider === "openai" || provider === "codex";
-        if (!supports) return resolved.providerOptions;
+        if (!supports) return providerOptionsWithReasoningSummary;
 
-        const base = resolved.providerOptions ?? {};
+        const base = providerOptionsWithReasoningSummary ?? {};
         const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
 
         return {
@@ -1609,6 +1648,8 @@ export async function startBusAgentRunner(params: {
       state.agent = agent;
 
       let finalText = "";
+      const reasoningChunkById = new Map<string, string>();
+      let reasoningChunkSeq = 0;
 
       const toolStartMs = new Map<string, number>();
 
@@ -1710,6 +1751,80 @@ export async function startBusAgentRunner(params: {
               logger.error(
                 "failed to publish output delta",
                 { requestId: headers.request_id, sessionId: headers.session_id },
+                e,
+              );
+            });
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_start"
+        ) {
+          const chunkId = event.assistantMessageEvent.id;
+          if (!reasoningChunkById.has(chunkId)) {
+            reasoningChunkById.set(chunkId, "");
+          }
+
+          bus
+            .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta: "" }, { headers })
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish reasoning start",
+                { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
+                e,
+              );
+            });
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_delta"
+        ) {
+          const chunkId = event.assistantMessageEvent.id;
+          const delta = event.assistantMessageEvent.delta;
+
+          if (!reasoningChunkById.has(chunkId)) {
+            reasoningChunkById.set(chunkId, "");
+
+            bus
+              .publish(lilacEventTypes.EvtAgentOutputDeltaReasoning, { delta: "" }, { headers })
+              .catch((e: unknown) => {
+                logger.error(
+                  "failed to publish implicit reasoning start",
+                  { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
+                  e,
+                );
+              });
+          }
+
+          const prev = reasoningChunkById.get(chunkId) ?? "";
+          reasoningChunkById.set(chunkId, `${prev}${delta}`);
+        }
+
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "thinking_end"
+        ) {
+          const chunkId = event.assistantMessageEvent.id;
+          const chunk = reasoningChunkById.get(chunkId) ?? "";
+          reasoningChunkById.delete(chunkId);
+
+          if (chunk.trim().length === 0) {
+            return;
+          }
+
+          reasoningChunkSeq += 1;
+
+          bus
+            .publish(
+              lilacEventTypes.EvtAgentOutputDeltaReasoning,
+              { delta: chunk, seq: reasoningChunkSeq },
+              { headers },
+            )
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish reasoning chunk",
+                { requestId: headers.request_id, sessionId: headers.session_id, chunkId },
                 e,
               );
             });

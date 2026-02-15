@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import { normalizeRemoteCwd, parseSshCwdTarget } from "../../src/ssh/ssh-cwd";
+import {
+  abbreviateSshHostForDisplay,
+  formatRemoteDisplayPath,
+  normalizeRemoteCwd,
+  parseSshCwdTarget,
+} from "../../src/ssh/ssh-cwd";
 
 describe("ssh cwd parsing", () => {
   it("treats local paths with ':' as local when host contains '/'", () => {
@@ -29,5 +34,18 @@ describe("ssh cwd parsing", () => {
 
   it("normalizes absolute remote cwd", () => {
     expect(normalizeRemoteCwd("/a/../b")).toBe("/b");
+  });
+
+  it("abbreviates remote hosts to display initials", () => {
+    expect(abbreviateSshHostForDisplay("stanley-desktop")).toBe("SD");
+    expect(abbreviateSshHostForDisplay("stanley-server")).toBe("SS");
+    expect(abbreviateSshHostForDisplay("user@stanley-server")).toBe("SS");
+  });
+
+  it("formats remote display path as @XX:<path>", () => {
+    expect(formatRemoteDisplayPath("stanley-server", "/repo/apps/core")).toBe(
+      "@SS:/repo/apps/core",
+    );
+    expect(formatRemoteDisplayPath("stanley-desktop", "repo")).toBe("@SD:~/repo");
   });
 });

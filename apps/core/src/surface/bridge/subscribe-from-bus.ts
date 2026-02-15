@@ -90,6 +90,23 @@ function toAttachment(params: {
   };
 }
 
+const MAX_REASONING_DETAIL_CHARS = 4_000;
+
+function clampReasoningDetail(text: string): string {
+  const normalized = text.trim();
+  if (normalized.length <= MAX_REASONING_DETAIL_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_REASONING_DETAIL_CHARS - 1)}…`;
+}
+
+function appendReasoningDetail(base: string, delta: string): string {
+  const baseTrimmedEnd = base.replace(/\s+$/u, "");
+  const deltaTrimmedStart = delta.replace(/^\s+/u, "");
+  const needsSpacer =
+    /[\p{L}\p{N}.!?]$/u.test(baseTrimmedEnd) && /^[\p{L}\p{N}]/u.test(deltaTrimmedStart);
+  const merged = needsSpacer ? `${baseTrimmedEnd} ${deltaTrimmedStart}` : `${base}${delta}`;
+  return clampReasoningDetail(merged);
+}
+
 async function cleanupGithubAck(input: { logger: Logger; requestId: string; sessionId: string }) {
   const ack = getGithubAck(input.requestId);
   if (!ack) return;
@@ -159,6 +176,11 @@ export type BusToAdapterRelaySnapshot = {
   replyTo?: MsgRef;
   createdOutputRefs: MsgRef[];
   visibleText: string;
+  reasoning?: {
+    startedAtMs: number;
+    frozenAtMs?: number;
+    detailText: string;
+  };
   toolStatus: SurfaceToolStatusUpdate[];
   outCursor?: string;
 };
@@ -460,6 +482,9 @@ export async function bridgeBusToAdapter(params: {
 
     let outTextAcc = input.restore?.visibleText ?? "";
     let visibleTextAcc = input.restore?.visibleText ?? "";
+    let reasoningStartedAtMs = input.restore?.reasoning?.startedAtMs;
+    let reasoningFrozenAtMs = input.restore?.reasoning?.frozenAtMs;
+    let reasoningDetailText = input.restore?.reasoning?.detailText ?? "";
     let pendingNoReplyPrefix = "";
     let bufferNoReplyPrefix = true;
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
@@ -588,6 +613,16 @@ export async function bridgeBusToAdapter(params: {
       if (visibleTextAcc.trim().length > 0) {
         await out.push({ type: "text.set", text: visibleTextAcc });
       }
+      if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
+        await out.push({
+          type: "reasoning.status",
+          update: {
+            startedAtMs: reasoningStartedAtMs,
+            frozenAtMs: reasoningFrozenAtMs,
+            detailText: reasoningDetailText,
+          },
+        });
+      }
       for (const update of toolStatusById.values()) {
         await out.push({ type: "tool.status", update });
       }
@@ -705,13 +740,46 @@ export async function bridgeBusToAdapter(params: {
 
           switch (outMsg.type) {
             case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-              // ignored for now
+              if (platform === "discord") {
+                const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
+                reasoningStartedAtMs = startedAtMs;
+
+                const seq = outMsg.data.seq;
+                if (typeof seq === "number" && Number.isFinite(seq)) {
+                  // New behavior: each sequenced event carries one fully completed
+                  // reasoning chunk and should replace the previous visible chunk.
+                  reasoningDetailText = clampReasoningDetail(outMsg.data.delta);
+                } else {
+                  // Back-compat for legacy publishers that stream incremental deltas.
+                  reasoningDetailText = appendReasoningDetail(
+                    reasoningDetailText,
+                    outMsg.data.delta,
+                  );
+                }
+
+                part = {
+                  type: "reasoning.status",
+                  update: {
+                    startedAtMs,
+                    frozenAtMs: reasoningFrozenAtMs,
+                    detailText: reasoningDetailText,
+                  },
+                };
+              }
               lastOutCursor = outCtx.cursor;
               break;
             }
 
             case lilacEventTypes.EvtAgentOutputDeltaText: {
               outTextAcc += outMsg.data.delta;
+
+              if (
+                platform === "discord" &&
+                typeof reasoningStartedAtMs === "number" &&
+                typeof reasoningFrozenAtMs !== "number"
+              ) {
+                reasoningFrozenAtMs = outMsg.ts;
+              }
 
               if (!bufferNoReplyPrefix) {
                 part = { type: "text.delta", delta: outMsg.data.delta };
@@ -809,6 +877,13 @@ export async function bridgeBusToAdapter(params: {
               visibleTextAcc = outTextAcc;
               pendingNoReplyPrefix = "";
               bufferNoReplyPrefix = false;
+              if (
+                platform === "discord" &&
+                typeof reasoningStartedAtMs === "number" &&
+                typeof reasoningFrozenAtMs !== "number"
+              ) {
+                reasoningFrozenAtMs = outMsg.ts;
+              }
               await out.push({ type: "text.set", text: outTextAcc });
               const res = await out.finish();
 
@@ -911,6 +986,17 @@ export async function bridgeBusToAdapter(params: {
             await out.push({ type: "text.set", text: visibleTextAcc });
           }
 
+          if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
+            await out.push({
+              type: "reasoning.status",
+              update: {
+                startedAtMs: reasoningStartedAtMs,
+                frozenAtMs: reasoningFrozenAtMs,
+                detailText: reasoningDetailText,
+              },
+            });
+          }
+
           // Replay tool status lines so the new stream shows current Actions.
           for (const u of toolStatusById.values()) {
             await out.push({ type: "tool.status", update: u });
@@ -926,6 +1012,14 @@ export async function bridgeBusToAdapter(params: {
         replyTo: currentReplyTo,
         createdOutputRefs: createdOutputRefs.slice(),
         visibleText: visibleTextAcc,
+        reasoning:
+          typeof reasoningStartedAtMs === "number"
+            ? {
+                startedAtMs: reasoningStartedAtMs,
+                frozenAtMs: reasoningFrozenAtMs,
+                detailText: reasoningDetailText,
+              }
+            : undefined,
         toolStatus: [...toolStatusById.values()],
         outCursor: lastOutCursor,
       }),

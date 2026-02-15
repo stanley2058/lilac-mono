@@ -28,6 +28,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   chromium \
   sqlite3 \
   openssh-client \
+  iputils-ping \
+  dnsutils \
+  iproute2 \
+  ffmpeg \
+  imagemagick \
   fonts-liberation \
   fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*

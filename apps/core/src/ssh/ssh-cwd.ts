@@ -107,3 +107,34 @@ export function toBashSafetyCwdForRemote(remoteCwd: string): string {
   if (c.startsWith("~/")) return `/__remote_home__/${c.slice(2)}`;
   return `/__remote_home__/${c.replace(/^~\/?/, "")}`;
 }
+
+export function abbreviateSshHostForDisplay(host: string): string {
+  const trimmed = host.trim();
+  if (trimmed.length === 0) return "R";
+
+  const at = trimmed.lastIndexOf("@");
+  const hostOnly = at >= 0 ? trimmed.slice(at + 1) : trimmed;
+
+  const slug = hostOnly
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  if (slug.length === 0) return "R";
+
+  const parts = slug.split("-").filter((p) => p.length > 0);
+  if (parts.length >= 2) {
+    return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+  }
+
+  const first = parts[0] ?? "";
+  if (first.length >= 2) return first.slice(0, 2).toUpperCase();
+  if (first.length === 1) return first.toUpperCase();
+  return "R";
+}
+
+export function formatRemoteDisplayPath(host: string, remotePath: string): string {
+  const initials = abbreviateSshHostForDisplay(host);
+  const normalizedPath = normalizeRemoteCwd(remotePath);
+  return `@${initials}:${normalizedPath}`;
+}

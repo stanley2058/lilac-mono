@@ -53,6 +53,68 @@ export function escapeDiscordMarkdown(text: string): string {
   return text.replace(/([\\*_`~|>[\]()])/g, "\\$1");
 }
 
+const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
+const THINKING_SPINNER_TICK_MS = 250;
+const THINKING_DETAIL_MAX_CHARS = 512;
+const DISCORD_EMBED_FIELD_MAX_CHARS = 1024;
+
+export function clampReasoningDetail(text: string, maxChars = THINKING_DETAIL_MAX_CHARS): string {
+  if (maxChars <= 0) return "";
+
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  if (normalized.length <= maxChars) return normalized;
+  if (maxChars === 1) return "…";
+  return `${normalized.slice(0, maxChars - 1)}…`;
+}
+
+export function formatReasoningAsBlockquote(text: string): string {
+  if (!text) return "";
+  return text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+export function buildThinkingDisplay(input: {
+  nowMs: number;
+  startedAtMs: number;
+  mode: "simple" | "detailed" | "none";
+  detailText?: string;
+}): string {
+  const elapsedMs = Math.max(0, input.nowMs - input.startedAtMs);
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+  const frameIdx =
+    Math.floor(elapsedMs / THINKING_SPINNER_TICK_MS) % THINKING_SPINNER_FRAMES.length;
+  const spinner = THINKING_SPINNER_FRAMES[frameIdx] ?? THINKING_SPINNER_FRAMES[0];
+  const head = `${spinner} Thinking... ${elapsedSec}s`;
+
+  if (input.mode === "none") {
+    return "";
+  }
+
+  if (input.mode === "simple") {
+    return head;
+  }
+
+  const clamped = clampReasoningDetail(input.detailText ?? "");
+  if (!clamped) {
+    return head;
+  }
+
+  const maxDetailChars = Math.max(0, DISCORD_EMBED_FIELD_MAX_CHARS - head.length - 1);
+  if (maxDetailChars === 0) return head;
+
+  const blockquoted = formatReasoningAsBlockquote(clamped);
+  const safeDetail =
+    blockquoted.length <= maxDetailChars
+      ? blockquoted
+      : maxDetailChars === 1
+        ? "…"
+        : `${blockquoted.slice(0, maxDetailChars - 1)}…`;
+
+  return `${head}\n${safeDetail}`;
+}
+
 function isBatchToolDisplay(display: string): boolean {
   const trimmed = display.trimStart();
   // Back-compat: older displays used "[batch]".
@@ -161,6 +223,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly created: MsgRef[] = [];
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
   private statsForNerdsLine: string | null = null;
+  private reasoningStartedAtMs: number | null = null;
+  private reasoningDetailText = "";
+  private reasoningFrozenAtMs: number | null = null;
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -188,6 +253,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         maxUsers: number;
         extractUserIds?: (text: string) => string[];
       };
+      reasoningDisplayMode: "none" | "simple" | "detailed";
     },
   ) {
     let resolveFn: (() => void) | null = null;
@@ -208,6 +274,30 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     } catch {
       // ignore
     }
+  }
+
+  private getThinkingValue(): string | null {
+    if (this.reasoningStartedAtMs === null) return null;
+    if (this.deps.reasoningDisplayMode === "none") return null;
+
+    const nowMs = this.reasoningFrozenAtMs ?? Date.now();
+
+    return buildThinkingDisplay({
+      nowMs,
+      startedAtMs: this.reasoningStartedAtMs,
+      mode: this.deps.reasoningDisplayMode,
+      detailText: this.reasoningDetailText,
+    });
+  }
+
+  private freezeReasoningTimerIfNeeded(): void {
+    if (this.reasoningStartedAtMs === null) return;
+    if (this.reasoningFrozenAtMs !== null) return;
+    this.reasoningFrozenAtMs = Date.now();
+  }
+
+  private isReasoningTimerLive(): boolean {
+    return this.reasoningStartedAtMs !== null && this.reasoningFrozenAtMs === null;
   }
 
   private async ensureStarted(): Promise<void> {
@@ -294,6 +384,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (
       this.textAcc.length === 0 &&
       this.toolLines.length === 0 &&
+      this.reasoningStartedAtMs === null &&
       this.statsForNerdsLine === null
     ) {
       this.lastMsg = first;
@@ -343,6 +434,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           const rewrite = this.deps.rewriteText;
           return rewrite ? rewrite(this.textAcc) : this.textAcc;
         },
+        getThinkingValue: () => this.getThinkingValue(),
+        shouldHeartbeatThinking: () => this.isReasoningTimerLive(),
         getActionsLines: () =>
           clampLast(
             this.toolLines.map((t) => t.line),
@@ -391,16 +484,33 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     switch (part.type) {
       case "text.delta":
         this.textAcc += part.delta;
+        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "text.set":
         this.textAcc = part.text;
+        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "meta.stats":
         this.statsForNerdsLine = part.line.trim().length > 0 ? part.line : null;
         await this.ensureStarted();
         return;
+      case "reasoning.status": {
+        if (this.deps.reasoningDisplayMode === "none") {
+          return;
+        }
+        this.reasoningStartedAtMs ??= Math.max(0, part.update.startedAtMs);
+        if (typeof part.update.frozenAtMs === "number" && Number.isFinite(part.update.frozenAtMs)) {
+          this.reasoningFrozenAtMs = Math.max(0, part.update.frozenAtMs);
+        }
+        this.reasoningDetailText = part.update.detailText ?? "";
+        if (this.textAcc.length > 0 && this.reasoningFrozenAtMs === null) {
+          this.freezeReasoningTimerIfNeeded();
+        }
+        await this.ensureStarted();
+        return;
+      }
       case "tool.status": {
         const line = buildToolLine(part.update);
         const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
@@ -596,6 +706,7 @@ export async function sendDiscordStyledMessage(params: {
     opts: params.opts,
     useSmartSplitting: params.useSmartSplitting,
     rewriteText: params.rewriteText,
+    reasoningDisplayMode: "none",
   });
 
   for (const a of attachments) {
