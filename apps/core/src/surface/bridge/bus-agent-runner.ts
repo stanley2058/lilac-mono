@@ -244,6 +244,36 @@ function withStableAnthropicUpstreamOrder(
   return providerOptions;
 }
 
+function isOpenAIBackedModel(provider: string, modelId: string): boolean {
+  if (provider === "openai" || provider === "codex") return true;
+  return modelId.startsWith("openai/");
+}
+
+export function withReasoningSummaryDefaultForOpenAIModels(params: {
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
+  provider: string;
+  modelId: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+}): { [x: string]: JSONObject } | undefined {
+  if (params.reasoningDisplay === "none") return params.providerOptions;
+  if (!isOpenAIBackedModel(params.provider, params.modelId)) return params.providerOptions;
+
+  const base = params.providerOptions ?? {};
+  const existingOpenAI = isRecord(base["openai"]) ? base["openai"] : {};
+
+  if ("reasoningSummary" in existingOpenAI) {
+    return params.providerOptions;
+  }
+
+  return {
+    ...base,
+    openai: {
+      ...existingOpenAI,
+      reasoningSummary: "detailed",
+    },
+  };
+}
+
 function estimateTokensFromValue(value: unknown): number {
   // Best-effort token estimate (OpenCode uses chars/4).
   const chars = safeStringify(value).length;
@@ -1448,13 +1478,22 @@ export async function startBusAgentRunner(params: {
 
       // Improve prompt caching stability by providing a session-scoped cache key.
       // This helps when many requests share a large common prefix (e.g. a long system prompt).
-      // Only apply for OpenAI-backed providers.
+      // Also, when reasoning display is enabled, request detailed reasoning summaries
+      // for OpenAI-backed models (including gateway/openrouter openai/* model IDs).
+      const providerOptionsWithReasoningSummary = withReasoningSummaryDefaultForOpenAIModels({
+        reasoningDisplay: cfg.agent.reasoningDisplay,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        providerOptions: resolved.providerOptions,
+      });
+
+      // Prompt cache key only applies for direct OpenAI/Codex providers.
       const providerOptionsWithPromptCacheKey = (() => {
         const provider = resolved.provider;
         const supports = provider === "openai" || provider === "codex";
-        if (!supports) return resolved.providerOptions;
+        if (!supports) return providerOptionsWithReasoningSummary;
 
-        const base = resolved.providerOptions ?? {};
+        const base = providerOptionsWithReasoningSummary ?? {};
         const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
 
         return {
