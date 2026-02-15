@@ -28,6 +28,48 @@ describe("executeBash", () => {
     }
   });
 
+  it("forces color off for bash child env", async () => {
+    const originalForceColor = process.env.FORCE_COLOR;
+    const originalNoColor = process.env.NO_COLOR;
+
+    process.env.FORCE_COLOR = "1";
+    delete process.env.NO_COLOR;
+
+    try {
+      const res = await executeBash({
+        command:
+          'if [ -n "${FORCE_COLOR+x}" ]; then echo "$FORCE_COLOR"; else echo "__unset__"; fi; echo "${NO_COLOR-}"',
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.executionError).toBeUndefined();
+
+      const lines = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      expect(lines[0]).toBe("__unset__");
+      expect(lines[1]).toBe("1");
+    } finally {
+      process.env.FORCE_COLOR = originalForceColor;
+      process.env.NO_COLOR = originalNoColor;
+    }
+  });
+
+  it("strips ansi escape sequences from output", async () => {
+    const res = await executeBash({
+      command: "printf '\\033[31mred\\033[0m\\n' && printf '\\033[33mwarn\\033[0m\\n' 1>&2",
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.executionError).toBeUndefined();
+    expect(res.stdout).toContain("red");
+    expect(res.stderr).toContain("warn");
+    expect(res.stdout).not.toContain("\u001b[");
+    expect(res.stderr).not.toContain("\u001b[");
+  });
+
   it("injects git + gnupg env for persistence", async () => {
     const res = await executeBash({
       command: "echo $GIT_CONFIG_GLOBAL && echo $GNUPGHOME",

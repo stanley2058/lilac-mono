@@ -79,6 +79,10 @@ function toErrorMessage(error: unknown) {
   return String(error);
 }
 
+function stripAnsiEscapeSequences(input: string): string {
+  return Bun.stripANSI(input);
+}
+
 type StreamTextResult = {
   text: string;
   totalChars: number;
@@ -196,6 +200,32 @@ function withLimitedOutput(
   const limited = limitBashOutput({ stdout: output.stdout, stderr: output.stderr }, options);
   if (!limited.truncated) return output;
   return { ...output, stdout: limited.stdout, stderr: limited.stderr };
+}
+
+function buildBashChildEnv(params: {
+  githubEnv: Record<string, string>;
+  vcsEnv: Record<string, string>;
+  context?: {
+    requestId: string;
+    sessionId: string;
+    requestClient: string;
+  };
+  resolvedCwd: string;
+}): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...params.githubEnv,
+    ...params.vcsEnv,
+    LILAC_REQUEST_ID: params.context?.requestId,
+    LILAC_SESSION_ID: params.context?.sessionId,
+    LILAC_REQUEST_CLIENT: params.context?.requestClient,
+    LILAC_CWD: params.resolvedCwd,
+  };
+
+  delete childEnv.FORCE_COLOR;
+  childEnv.NO_COLOR = "1";
+
+  return childEnv;
 }
 
 export async function executeBash(
@@ -353,8 +383,8 @@ export async function executeBash(
       const stderr = execResult.stderr;
       const exitCode = execResult.exitCode;
 
-      const safeStdout = redactSecrets(stdout);
-      const safeStderr = redactSecrets(stderr);
+      const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
+      const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
@@ -514,15 +544,12 @@ export async function executeBash(
       signal: controller.signal,
       killSignal: DEFAULT_KILL_SIGNAL,
       detached: true,
-      env: {
-        ...process.env,
-        ...githubEnv,
-        ...vcsEnv,
-        LILAC_REQUEST_ID: context?.requestId,
-        LILAC_SESSION_ID: context?.sessionId,
-        LILAC_REQUEST_CLIENT: context?.requestClient,
-        LILAC_CWD: resolvedCwd,
-      },
+      env: buildBashChildEnv({
+        githubEnv,
+        vcsEnv,
+        context,
+        resolvedCwd,
+      }),
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
@@ -535,8 +562,8 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = redactSecrets(stdout);
-    const safeStderr = redactSecrets(stderr);
+    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
+    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
 
     const durationMs = Date.now() - startedAt;
 
