@@ -198,6 +198,32 @@ function withLimitedOutput(
   return { ...output, stdout: limited.stdout, stderr: limited.stderr };
 }
 
+function buildBashChildEnv(params: {
+  githubEnv: Record<string, string>;
+  vcsEnv: Record<string, string>;
+  context?: {
+    requestId: string;
+    sessionId: string;
+    requestClient: string;
+  };
+  resolvedCwd: string;
+}): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...params.githubEnv,
+    ...params.vcsEnv,
+    LILAC_REQUEST_ID: params.context?.requestId,
+    LILAC_SESSION_ID: params.context?.sessionId,
+    LILAC_REQUEST_CLIENT: params.context?.requestClient,
+    LILAC_CWD: params.resolvedCwd,
+  };
+
+  delete childEnv.FORCE_COLOR;
+  childEnv.NO_COLOR = "1";
+
+  return childEnv;
+}
+
 export async function executeBash(
   { command, cwd, timeoutMs, dangerouslyAllow }: BashToolInput,
   {
@@ -514,15 +540,12 @@ export async function executeBash(
       signal: controller.signal,
       killSignal: DEFAULT_KILL_SIGNAL,
       detached: true,
-      env: {
-        ...process.env,
-        ...githubEnv,
-        ...vcsEnv,
-        LILAC_REQUEST_ID: context?.requestId,
-        LILAC_SESSION_ID: context?.sessionId,
-        LILAC_REQUEST_CLIENT: context?.requestClient,
-        LILAC_CWD: resolvedCwd,
-      },
+      env: buildBashChildEnv({
+        githubEnv,
+        vcsEnv,
+        context,
+        resolvedCwd,
+      }),
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([

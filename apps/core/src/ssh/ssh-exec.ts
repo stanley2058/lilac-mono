@@ -141,6 +141,17 @@ exit 0
 `;
 }
 
+function buildSshChildEnv(): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+  };
+
+  delete childEnv.FORCE_COLOR;
+  childEnv.NO_COLOR = "1";
+
+  return childEnv;
+}
+
 export async function sshExecBash(params: {
   host: string;
   cmd: string;
@@ -247,9 +258,7 @@ export async function sshExecBash(params: {
       signal: controller.signal,
       killSignal: "SIGTERM",
       detached: true,
-      env: {
-        ...process.env,
-      },
+      env: buildSshChildEnv(),
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
