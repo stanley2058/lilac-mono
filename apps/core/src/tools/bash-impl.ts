@@ -79,6 +79,10 @@ function toErrorMessage(error: unknown) {
   return String(error);
 }
 
+function stripAnsiEscapeSequences(input: string): string {
+  return Bun.stripANSI(input);
+}
+
 type StreamTextResult = {
   text: string;
   totalChars: number;
@@ -379,8 +383,8 @@ export async function executeBash(
       const stderr = execResult.stderr;
       const exitCode = execResult.exitCode;
 
-      const safeStdout = redactSecrets(stdout);
-      const safeStderr = redactSecrets(stderr);
+      const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
+      const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
@@ -558,8 +562,8 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = redactSecrets(stdout);
-    const safeStderr = redactSecrets(stderr);
+    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
+    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
 
     const durationMs = Date.now() - startedAt;
 
