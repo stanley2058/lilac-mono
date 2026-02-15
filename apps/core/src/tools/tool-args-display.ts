@@ -1,6 +1,7 @@
 import { asSchema } from "ai";
 import { z } from "zod";
 
+import { formatRemoteDisplayPath, parseSshCwdTarget } from "../ssh/ssh-cwd";
 import { bashInputSchema } from "./bash";
 import { editFileInputZod, globInputZod, grepInputZod, readFileInputZod } from "./fs/fs";
 
@@ -108,23 +109,57 @@ const DISPLAY_MAX_LEN = 30;
 const PATH_HEAD_LEN = 14;
 const PATH_TAIL_LEN = 13;
 
+function normalizeRemoteDisplay(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+
+  const sshUrlMatch = /^ssh:\/\/([^/]+)(\/.*)?$/i.exec(trimmed);
+  if (sshUrlMatch) {
+    const host = sshUrlMatch[1] ?? "";
+    const remotePath = sshUrlMatch[2] ?? "~";
+    return formatRemoteDisplayPath(host, remotePath);
+  }
+
+  return trimmed;
+}
+
+function normalizeRemoteCwdDisplay(input: string): string {
+  const normalized = normalizeRemoteDisplay(input);
+  if (!normalized) return "";
+
+  const cwdTarget = parseSshCwdTarget(normalized);
+  if (cwdTarget.kind === "ssh") {
+    return formatRemoteDisplayPath(cwdTarget.host, cwdTarget.cwd);
+  }
+
+  return normalized;
+}
+
 const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
   if (!parsed) return "";
 
-  const p = parsed.path.trim();
+  const p = normalizeRemoteDisplay(parsed.path);
   if (!p) return "";
   return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
 };
 
 const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   bash: (args) => {
-    const parsed = safeValidateSync<{ command: string }>(bashInputSchema, args);
+    const parsed = safeValidateSync<{ command: string; cwd?: string }>(bashInputSchema, args);
     if (!parsed) return "";
 
     const cmd = parsed.command.replace(/\s+/g, " ").trim();
     if (!cmd) return "";
-    return " " + truncateEnd(cmd, DISPLAY_MAX_LEN);
+
+    const cwd = (parsed.cwd ?? "").trim();
+    const cwdTarget = parseSshCwdTarget(cwd);
+    const display =
+      cwdTarget.kind === "ssh"
+        ? `${formatRemoteDisplayPath(cwdTarget.host, cwdTarget.cwd)} ${cmd}`
+        : cmd;
+
+    return " " + truncateEnd(display, DISPLAY_MAX_LEN);
   },
 
   read_file: readFileToolArgsFormatter,
@@ -142,7 +177,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
       .join(",");
     if (!joinedPatterns) return "";
 
-    const cwd = (parsed.cwd ?? "").trim();
+    const cwd = normalizeRemoteCwdDisplay(parsed.cwd ?? "");
     const raw = cwd ? `${joinedPatterns} ${cwd}` : joinedPatterns;
     const display = raw.replace(/\s+/g, " ").trim();
     return " " + truncateEnd(display, DISPLAY_MAX_LEN);
@@ -155,7 +190,9 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     const pattern = parsed.pattern.replace(/\s+/g, " ").trim();
     if (!pattern) return "";
 
-    const cwd = (parsed.cwd ?? "").replace(/\s+/g, " ").trim();
+    const cwd = normalizeRemoteCwdDisplay(parsed.cwd ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
     const raw = cwd ? `${pattern} ${cwd}` : pattern;
     return " " + truncateEnd(raw, DISPLAY_MAX_LEN);
   },
@@ -185,7 +222,7 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
     const parsed = safeValidateSync<{ path: string }>(editFileInputZod, args);
     if (!parsed) return "";
 
-    const p = parsed.path.trim();
+    const p = normalizeRemoteDisplay(parsed.path);
     if (!p) return "";
     return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
   },

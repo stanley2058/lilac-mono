@@ -6,7 +6,11 @@ import { expandTilde } from "./fs/fs-impl";
 
 import { getGithubEnvForBash } from "../github/github-app-token";
 
-import { parseSshCwdTarget, toBashSafetyCwdForRemote } from "../ssh/ssh-cwd";
+import {
+  formatRemoteDisplayPath,
+  parseSshCwdTarget,
+  toBashSafetyCwdForRemote,
+} from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -249,14 +253,19 @@ export async function executeBash(
         ? expandTilde(cwdTarget.cwd)
         : process.cwd()
       : cwdTarget.cwd;
+  const displayCwd =
+    cwdTarget.kind === "ssh" ? formatRemoteDisplayPath(cwdTarget.host, cwdTarget.cwd) : resolvedCwd;
+  const remoteLogMeta =
+    cwdTarget.kind === "ssh" ? { sshHost: cwdTarget.host, remoteCwd: cwdTarget.cwd } : {};
 
   const redactedCommand = redactSecrets(command);
   const startedAt = Date.now();
 
   logger.info("bash exec", {
     command: redactedCommand,
-    cwd: resolvedCwd,
+    cwd: displayCwd,
     target: cwdTarget.kind,
+    ...remoteLogMeta,
     timeoutMs: timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
     dangerouslyAllow: dangerouslyAllow === true,
     requestId: context?.requestId,
@@ -271,7 +280,8 @@ export async function executeBash(
     if (blocked) {
       logger.warn("bash blocked", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         reason: blocked.reason,
         segment: blocked.segment,
         requestId: context?.requestId,
@@ -395,7 +405,8 @@ export async function executeBash(
       if (execResult.aborted && timedOut) {
         logger.warn("bash timeout", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           timeoutMs: effectiveTimeoutMs,
           signal: DEFAULT_KILL_SIGNAL,
           exitCode,
@@ -425,7 +436,8 @@ export async function executeBash(
       if (execResult.aborted || aborted) {
         logger.warn("bash aborted", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           timeoutMs: effectiveTimeoutMs,
           signal: DEFAULT_KILL_SIGNAL,
           exitCode,
@@ -454,7 +466,8 @@ export async function executeBash(
       if (execResult.timedOut || timedOut) {
         logger.warn("bash timeout", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           timeoutMs: effectiveTimeoutMs,
           signal: DEFAULT_KILL_SIGNAL,
           exitCode,
@@ -484,7 +497,8 @@ export async function executeBash(
       if (outputTruncated) {
         logger.warn("bash output truncated", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           exitCode,
           durationMs,
           stdoutChars: stdout.length,
@@ -503,7 +517,8 @@ export async function executeBash(
       if (ok) {
         logger.info("bash done", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           exitCode,
           durationMs,
           stdoutBytes: stdout.length,
@@ -515,7 +530,8 @@ export async function executeBash(
       } else {
         logger.warn("bash done (non-zero exit)", {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           exitCode,
           durationMs,
           stdoutBytes: stdout.length,
@@ -576,7 +592,8 @@ export async function executeBash(
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         timeoutMs: effectiveTimeoutMs,
         signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
         exitCode,
@@ -605,7 +622,8 @@ export async function executeBash(
     if (timedOut && child.killed) {
       logger.warn("bash timeout", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         timeoutMs: effectiveTimeoutMs,
         signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
         exitCode,
@@ -637,7 +655,8 @@ export async function executeBash(
         "bash stdout read failed",
         {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           durationMs,
           requestId: context?.requestId,
           sessionId: context?.sessionId,
@@ -666,7 +685,8 @@ export async function executeBash(
         "bash stderr read failed",
         {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           durationMs,
           requestId: context?.requestId,
           sessionId: context?.sessionId,
@@ -695,7 +715,8 @@ export async function executeBash(
         "bash exit status read failed",
         {
           command: redactedCommand,
-          cwd: resolvedCwd,
+          cwd: displayCwd,
+          ...remoteLogMeta,
           durationMs,
           requestId: context?.requestId,
           sessionId: context?.sessionId,
@@ -722,7 +743,8 @@ export async function executeBash(
     if (outputTruncated) {
       logger.warn("bash output truncated", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         exitCode,
         durationMs,
         stdoutChars: stdout.length,
@@ -742,7 +764,8 @@ export async function executeBash(
     if (ok) {
       logger.info("bash done", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         exitCode,
         durationMs,
         stdoutBytes: stdout.length,
@@ -754,7 +777,8 @@ export async function executeBash(
     } else {
       logger.warn("bash done (non-zero exit)", {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         exitCode,
         durationMs,
         stdoutBytes: stdout.length,
@@ -775,7 +799,8 @@ export async function executeBash(
       "bash spawn failed",
       {
         command: redactedCommand,
-        cwd: resolvedCwd,
+        cwd: displayCwd,
+        ...remoteLogMeta,
         durationMs,
         requestId: context?.requestId,
         sessionId: context?.sessionId,
