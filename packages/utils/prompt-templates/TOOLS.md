@@ -16,7 +16,7 @@ You have access to three tiers of tools:
 
 ## bash usage
 
-- Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`
+- Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`, `ffmpeg`, `magick`
 - Prefer `bun` over `node` and `npm`; `bunx` over `npx`
 
 ## Remote Workdirs (SSH-style cwd)
