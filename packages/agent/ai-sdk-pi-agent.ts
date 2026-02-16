@@ -199,6 +199,8 @@ export interface AiSdkPiAgentState<TOOLS extends ToolSet> {
   system: SystemPrompt;
   /** AI SDK model instance used for `streamText()`. */
   model: LanguageModel;
+  /** Optional canonical model spec (`provider/model`). */
+  modelSpecifier?: string;
   /** Toolset available to the model. */
   tools: TOOLS;
   /** Canonical transcript (system is kept separately in `system`). */
@@ -249,11 +251,22 @@ export type TransformMessagesFn = (
   context: TransformMessagesContext,
 ) => ModelMessage[] | Promise<ModelMessage[]>;
 
+export type TurnErrorHandlerDecision = "retry" | "fail";
+
+export type TurnErrorHandler = (
+  error: unknown,
+  context: {
+    abortSignal?: AbortSignal;
+  },
+) => TurnErrorHandlerDecision | Promise<TurnErrorHandlerDecision>;
+
 export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   /** System prompt for the model. */
   system: SystemPrompt;
   /** AI SDK model instance used for `streamText()`. */
   model: LanguageModel;
+  /** Optional canonical model spec (`provider/model`). */
+  modelSpecifier?: string;
   /** Optional toolset (defaults to empty). */
   tools?: TOOLS;
   /** Optional initial transcript (defaults to empty). */
@@ -265,6 +278,8 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
    * including any messages injected by `steer()`/`followUp()` and tool results.
    */
   transformMessages?: TransformMessagesFn;
+  /** Optional hook to recover from turn errors (e.g. context overflow). */
+  turnErrorHandler?: TurnErrorHandler;
   /** Optional provider-specific options. */
   providerOptions?: {
     [x: string]: JSONObject;
@@ -550,6 +565,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private abortRequestedReason: TurnAbortReason | null = null;
 
   private transformMessages: TransformMessagesFn | undefined;
+  private turnErrorHandler: TurnErrorHandler | undefined;
 
   private context?: unknown;
 
@@ -559,12 +575,14 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /** Create a new agent instance. */
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     this.transformMessages = options.transformMessages;
+    this.turnErrorHandler = options.turnErrorHandler;
 
     this.captureModelViewMessages = options.debug?.captureModelViewMessages === true;
 
     this.state = {
       system: options.system,
       model: options.model,
+      modelSpecifier: options.modelSpecifier,
       tools: (options.tools ?? ({} as TOOLS)) as TOOLS,
       messages: options.messages ?? [],
       providerOptions: options.providerOptions,
@@ -592,8 +610,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   /** Replace the model used for subsequent turns. */
-  setModel(model: LanguageModel, providerOptions?: { [x: string]: JSONObject }) {
+  setModel(
+    model: LanguageModel,
+    providerOptions?: { [x: string]: JSONObject },
+    modelSpecifier?: string,
+  ) {
     this.state.model = model;
+    this.state.modelSpecifier = modelSpecifier;
 
     // (When not provided) Reset provider options in case incompatible.
     this.state.providerOptions = providerOptions;
@@ -612,6 +635,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /** Replace the outbound message transform hook. */
   setTransformMessages(transformMessages: TransformMessagesFn | undefined) {
     this.transformMessages = transformMessages;
+  }
+
+  /** Replace the turn-error recovery hook. */
+  setTurnErrorHandler(turnErrorHandler: TurnErrorHandler | undefined) {
+    this.turnErrorHandler = turnErrorHandler;
   }
 
   /** Replace the entire transcript. Use with care. */
@@ -895,6 +923,15 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
               // Manual abort: stop agent loop cleanly.
               break;
+            }
+
+            if (this.turnErrorHandler) {
+              const decision = await this.turnErrorHandler(err, {
+                abortSignal: this.abortController?.signal,
+              });
+              if (decision === "retry") {
+                continue;
+              }
             }
 
             throw err;
