@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CONTAINER_USER: ${CONTAINER_USER:-lilac}
+        CONTAINER_UID: ${CONTAINER_UID:-1000}
     image: lilac:dev
     depends_on:
       redis:
