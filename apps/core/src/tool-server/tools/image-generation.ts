@@ -1,11 +1,16 @@
 import { getModelProviders } from "@stanley2058/lilac-utils";
-import { generateImage, type ImageModel } from "ai";
+import { generateImage, type DataContent, type ImageModel } from "ai";
 import { z } from "zod";
+import { fileTypeFromBuffer } from "file-type/core";
 import fs from "node:fs/promises";
 import { dirname, extname } from "node:path";
 import type { RequestContext, ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
-import { inferExtensionFromMimeType, resolveToolPath } from "../../shared/attachment-utils";
+import {
+  inferExtensionFromMimeType,
+  inferMimeTypeFromFilename,
+  resolveToolPath,
+} from "../../shared/attachment-utils";
 
 type SupportedImageModels =
   /**
@@ -78,15 +83,33 @@ const DEFAULT_MODEL_FALLBACK_ORDER: SupportedImageModels[] = [
   "nanobanana",
 ];
 
+const optionalNonEmptyStringListInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
+
 function isOneOf<const T extends readonly string[]>(allowed: T, value: string): value is T[number] {
   return (allowed as readonly string[]).includes(value);
 }
 
-const imageGenerateInputSchema = z
+export const imageGenerateInputSchema = z
   .object({
     path: z.string().min(1).describe("Output file path to write the generated image"),
 
-    prompt: z.string().min(1).describe("Text prompt for image generation"),
+    prompt: z.string().min(1).describe("Text prompt for image generation/editing"),
+
+    inputImages: optionalNonEmptyStringListInputSchema.describe(
+      "Optional local input image path(s) for image editing/variations.",
+    ),
+
+    maskImage: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional local mask image path for inpainting (applies to first input image)."),
 
     model: z
       .enum(["gpt-5-image", "nanobanana", "nanobanana-pro"])
@@ -127,9 +150,24 @@ const imageGenerateInputSchema = z
         message: "Provide only one of size or aspectRatio (not both).",
       });
     }
+
+    if (input.maskImage && (!input.inputImages || input.inputImages.length === 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maskImage"],
+        message: "maskImage requires inputImages.",
+      });
+    }
   });
 
 type ImageGenerateInput = z.infer<typeof imageGenerateInputSchema>;
+type ImageGenerationPrompt =
+  | string
+  | {
+      text: string;
+      images: DataContent[];
+      mask?: DataContent;
+    };
 
 function pickModel(
   available: Partial<Record<SupportedImageModels, ImageModel>>,
@@ -195,6 +233,84 @@ function gptAspectRatioToSize(
   }
 }
 
+function looksLikeSvg(bytes: Buffer): boolean {
+  const prefix = bytes.subarray(0, 1024).toString("utf8").trimStart().toLowerCase();
+  return prefix.startsWith("<svg") || prefix.startsWith("<?xml");
+}
+
+async function readImageDataFromPath(path: string): Promise<Buffer> {
+  const bytes = await fs.readFile(path);
+  const typeFromBytes = await fileTypeFromBuffer(bytes);
+
+  if (typeFromBytes?.mime?.startsWith("image/")) {
+    return bytes;
+  }
+
+  const mimeFromExtension = inferMimeTypeFromFilename(path);
+  if (mimeFromExtension === "image/svg+xml" && looksLikeSvg(bytes)) {
+    return bytes;
+  }
+
+  throw new Error(`Input file '${path}' is not a valid image file.`);
+}
+
+export async function resolveImageEditInputs(
+  cwd: string,
+  input: {
+    inputImages?: readonly string[];
+    maskImage?: string;
+  },
+): Promise<
+  | {
+      images: DataContent[];
+      mask?: DataContent;
+    }
+  | undefined
+> {
+  if (!input.inputImages || input.inputImages.length === 0) {
+    return undefined;
+  }
+
+  const images: DataContent[] = [];
+
+  for (const imagePath of input.inputImages) {
+    const resolved = resolveToolPath(cwd, imagePath);
+    images.push(await readImageDataFromPath(resolved));
+  }
+
+  if (!input.maskImage) {
+    return { images };
+  }
+
+  const resolvedMask = resolveToolPath(cwd, input.maskImage);
+  const mask = await readImageDataFromPath(resolvedMask);
+  return { images, mask };
+}
+
+export async function buildImageGenerationPrompt(
+  cwd: string,
+  input: {
+    prompt: string;
+    inputImages?: readonly string[];
+    maskImage?: string;
+  },
+): Promise<ImageGenerationPrompt> {
+  const editInputs = await resolveImageEditInputs(cwd, {
+    inputImages: input.inputImages,
+    maskImage: input.maskImage,
+  });
+
+  if (!editInputs) {
+    return input.prompt;
+  }
+
+  return {
+    text: input.prompt,
+    images: editInputs.images,
+    mask: editInputs.mask,
+  };
+}
+
 async function pathExists(p: string) {
   return await fs
     .access(p)
@@ -218,7 +334,7 @@ async function pickAvailableFilename(targetPath: string): Promise<string> {
 
 export function generateImageWithModel(
   model: ImageModel,
-  prompt: string,
+  prompt: ImageGenerationPrompt,
   opts?: {
     abortSignal?: AbortSignal;
     size?: `${number}x${number}`;
@@ -245,7 +361,8 @@ export class ImageGeneration implements ServerTool {
       {
         callableId: "image.generate",
         name: "Image Generate",
-        description: "Generate an image with a configured provider and write it to a local file.",
+        description:
+          "Generate or edit an image with a configured provider and write it to a local file.",
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
         }),
@@ -292,7 +409,9 @@ export class ImageGeneration implements ServerTool {
         ? (payload.aspectRatio as `${number}:${number}`)
         : undefined;
 
-    const res = await generateImageWithModel(picked.model, payload.prompt, {
+    const prompt = await buildImageGenerationPrompt(cwd, payload);
+
+    const res = await generateImageWithModel(picked.model, prompt, {
       abortSignal: opts?.signal,
       size,
       aspectRatio,
