@@ -277,6 +277,12 @@ The agent system prompt is built from local prompt files.
 - Source templates: `packages/utils/prompt-templates/*`
 - Runtime workspace: `DATA_DIR/prompts/*` (see `packages/utils/agent-prompts.ts`)
 
+Prompt sync behavior is template-aware and stateful:
+
+- Prompt sync state: `DATA_DIR/prompts/.prompt-template-state.json`
+- If a prompt file still matches the last managed version, template updates are auto-applied in place.
+- If a prompt file has local edits and the template changes, a sibling `*.new` file is written (for example `AGENTS.md.new`) and the local file is left untouched.
+
 At run time, the core agent runner appends a compact `## Available Skills` index to the end of the primary agent's system prompt. The index is discovered using the same rules as the `tools skills.list` command.
 
 This makes prompt iteration a file-edit operation rather than a code change.

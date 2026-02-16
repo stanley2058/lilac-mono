@@ -4,7 +4,11 @@ import { z } from "zod";
 
 import { env } from "./env";
 import { findWorkspaceRoot } from "./find-root";
-import { buildAgentSystemPrompt, promptWorkspaceSignature } from "./agent-prompts";
+import {
+  buildAgentSystemPrompt,
+  CORE_PROMPT_FILES,
+  promptWorkspaceSignature,
+} from "./agent-prompts";
 
 export type JSONValue = null | string | number | boolean | JSONObject | JSONArray;
 export type JSONArray = JSONValue[];
@@ -299,6 +303,7 @@ export type CoreConfig = Omit<z.infer<typeof coreConfigSchema>, "agent"> & {
 let cached: CoreConfig | null = null;
 let cachedMtimeMs: number | null = null;
 let cachedPromptMaxMtimeMs: number | null = null;
+let warnedPromptNewFilesKey: string | null = null;
 
 export function resolveCoreConfigPath(options?: { dataDir?: string }): string {
   const dataDir = options?.dataDir ?? env.dataDir;
@@ -357,6 +362,35 @@ function safeParseYaml(raw: string): unknown {
   }
 }
 
+async function listPromptTemplateNewFiles(promptDir: string): Promise<string[]> {
+  const pending: string[] = [];
+  for (const name of CORE_PROMPT_FILES) {
+    const p = path.join(promptDir, `${name}.new`);
+    if (await Bun.file(p).exists()) {
+      pending.push(p);
+    }
+  }
+  return pending;
+}
+
+function warnPendingPromptTemplateMerges(pending: readonly string[]): void {
+  if (pending.length === 0) {
+    warnedPromptNewFilesKey = null;
+    return;
+  }
+
+  const key = pending.join("\n");
+  if (warnedPromptNewFilesKey === key) {
+    return;
+  }
+  warnedPromptNewFilesKey = key;
+
+  const names = pending.map((p) => path.basename(p)).join(", ");
+  console.warn(
+    `[lilac-utils] Prompt template updates are waiting in *.new files (${names}). Merge them into prompts/* and delete the .new files when finished.`,
+  );
+}
+
 export async function getCoreConfig(options?: {
   /** Bypass cache and re-read from disk. */
   forceReload?: boolean;
@@ -392,6 +426,9 @@ export async function getCoreConfig(options?: {
   // Always use file-based system prompt (data/prompts/*).
   // This also ensures missing files are created from templates.
   const built = await buildAgentSystemPrompt({ basePrompt: cfg.basePrompt });
+  const pendingPromptNewFiles = await listPromptTemplateNewFiles(built.promptDir);
+  warnPendingPromptTemplateMerges(pendingPromptNewFiles);
+
   const nextCfg: CoreConfig = {
     ...cfg,
     agent: {
