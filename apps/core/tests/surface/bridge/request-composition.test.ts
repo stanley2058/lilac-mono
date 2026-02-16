@@ -160,6 +160,30 @@ describe("request-composition attachments", () => {
     expect(out!.content as string).toContain("user_alias=Stanley");
   });
 
+  it("returns pure assistant text without discord attribution header", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "bot",
+      userName: "lilac",
+      text: "[discord user_id=bot user_name=lilac message_id=m]\nassistant_output",
+      ts: 0,
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("assistant");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toBe("assistant_output");
+    expect(out!.content as string).not.toContain("[discord user_id=");
+  });
+
   it("downloads discord attachment when mimeType is missing", async () => {
     let calls = 0;
     // @ts-expect-error stub fetch
@@ -859,6 +883,103 @@ describe("request-composition active channel burst rules", () => {
     expect(out.messages[0]!.content as string).toContain("user_alias=Stanley");
   });
 
+  it("uses pure assistant surface text without discord attribution header", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const bot: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text: "[discord user_id=bot user_name=lilac message_id=b1]\nassistant_surface",
+      ts: anchorTs - 1_000,
+      raw: { reference: {} },
+    };
+
+    const user: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "u1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: "latest",
+      ts: anchorTs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new ListFakeAdapter([bot, user]);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      triggerMsgRef: user.ref,
+      triggerType: undefined,
+    });
+
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(assistant).toBeDefined();
+    expect(typeof assistant!.content).toBe("string");
+    expect(assistant!.content as string).toBe("assistant_surface");
+    expect(assistant!.content as string).not.toContain("[discord user_id=");
+  });
+
+  it("strips echoed discord attribution headers from merged assistant chunks", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const bot1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text: "[discord user_id=bot user_name=lilac message_id=b1]\nassistant_one",
+      ts: anchorTs - 2_000,
+      raw: { reference: {} },
+    };
+
+    const bot2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "bot",
+      userName: "lilac",
+      text: "[discord user_id=bot user_name=lilac message_id=b2]\nassistant_two",
+      ts: anchorTs - 1_000,
+      raw: { reference: {} },
+    };
+
+    const user: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "u1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: "latest",
+      ts: anchorTs,
+      raw: { reference: {} },
+    };
+
+    const adapter = new ListFakeAdapter([bot1, bot2, user]);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      triggerMsgRef: user.ref,
+      triggerType: undefined,
+    });
+
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(assistant).toBeDefined();
+    expect(typeof assistant!.content).toBe("string");
+    expect(assistant!.content as string).toContain("assistant_one");
+    expect(assistant!.content as string).toContain("assistant_two");
+    expect(assistant!.content as string).not.toContain("[discord user_id=");
+  });
+
   it("stops at >3h age cutoff (active mode, mention trigger)", async () => {
     const sessionId = "c";
     const anchorTs = 10_000_000;
@@ -965,7 +1086,7 @@ describe("request-composition active channel burst rules", () => {
     expect(out.chainMessageIds).toEqual(["9", "10"]);
   });
 
-  it("does not expand transcripts for bot messages older than 1h", async () => {
+  it("uses assistant-only transcript fallback for bot messages older than 1h", async () => {
     const sessionId = "c";
     const anchorTs = 10_000_000;
 
@@ -1008,7 +1129,34 @@ describe("request-composition active channel burst rules", () => {
             requestClient: "discord",
             createdTs: 0,
             updatedTs: 0,
-            messages: expanded("EXPANDED_OLD"),
+            messages: [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: "call-old",
+                    toolName: "bash",
+                    input: { command: "pwd" },
+                  },
+                  {
+                    type: "text",
+                    text: "[discord user_id=bot user_name=lilac message_id=old]\nFALLBACK_OLD",
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "call-old",
+                    toolName: "bash",
+                    output: { type: "text", value: "/tmp" },
+                  },
+                ],
+              },
+            ],
           };
         }
         if (input.messageId === "9") {
@@ -1041,13 +1189,19 @@ describe("request-composition active channel burst rules", () => {
     const text = out.messages
       .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
       .join("\n");
+    const assistantText = out.messages
+      .filter((m) => m.role === "assistant" && typeof m.content === "string")
+      .map((m) => m.content as string)
+      .join("\n");
 
     expect(text).toContain("EXPANDED_RECENT");
-    expect(text).not.toContain("EXPANDED_OLD");
-    expect(text).toContain("old bot text");
+    expect(text).toContain("FALLBACK_OLD");
+    expect(text).not.toContain("old bot text");
+    expect(assistantText).not.toContain("tool-call");
+    expect(assistantText).not.toContain("[discord user_id=");
   });
 
-  it("does not expand transcripts for bot messages older than 1h (mention trigger)", async () => {
+  it("uses assistant-only transcript fallback for bot messages older than 1h (mention trigger)", async () => {
     const sessionId = "c";
     const anchorTs = 10_000_000;
 
@@ -1090,7 +1244,34 @@ describe("request-composition active channel burst rules", () => {
             requestClient: "discord",
             createdTs: 0,
             updatedTs: 0,
-            messages: expanded("EXPANDED_OLD"),
+            messages: [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: "call-old",
+                    toolName: "bash",
+                    input: { command: "pwd" },
+                  },
+                  {
+                    type: "text",
+                    text: "[discord user_id=bot user_name=lilac message_id=old]\nFALLBACK_OLD",
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "call-old",
+                    toolName: "bash",
+                    output: { type: "text", value: "/tmp" },
+                  },
+                ],
+              },
+            ],
           };
         }
         if (input.messageId === "9") {
@@ -1123,10 +1304,16 @@ describe("request-composition active channel burst rules", () => {
     const text = out.messages
       .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
       .join("\n");
+    const assistantText = out.messages
+      .filter((m) => m.role === "assistant" && typeof m.content === "string")
+      .map((m) => m.content as string)
+      .join("\n");
 
     expect(text).toContain("EXPANDED_RECENT");
-    expect(text).not.toContain("EXPANDED_OLD");
-    expect(text).toContain("old bot text");
+    expect(text).toContain("FALLBACK_OLD");
+    expect(text).not.toContain("old bot text");
+    expect(assistantText).not.toContain("tool-call");
+    expect(assistantText).not.toContain("[discord user_id=");
   });
 
   it("treats mention that is a reply as an explicit reply chain", async () => {

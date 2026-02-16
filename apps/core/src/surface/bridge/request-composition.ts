@@ -15,7 +15,7 @@ import {
 } from "../discord/discord-session-divider";
 import { splitByDiscordWindowOldestToNewest } from "../discord/merge-window";
 
-import type { TranscriptStore } from "../../transcript/transcript-store";
+import type { TranscriptSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 
 export type RequestCompositionResult = {
   messages: ModelMessage[];
@@ -267,12 +267,6 @@ export async function composeRequestMessages(
 
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-    const reactions = await safeListReactions(adapter, {
-      platform: opts.platform,
-      channelId: opts.trigger.msgRef.channelId,
-      messageId,
-    });
-
     if (isBot && opts.transcriptStore) {
       const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
         platform: opts.platform,
@@ -294,6 +288,20 @@ export async function composeRequestMessages(
       // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
     });
 
+    if (isBot) {
+      modelMessages.push({
+        role: "assistant",
+        content: normalizeAssistantContextText(normalized),
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    const reactions = await safeListReactions(adapter, {
+      platform: opts.platform,
+      channelId: opts.trigger.msgRef.channelId,
+      messageId,
+    });
+
     const header = formatDiscordAttributionHeader({
       authorId: chunk.authorId,
       authorName: chunk.authorName,
@@ -303,14 +311,6 @@ export async function composeRequestMessages(
     });
 
     const mainText = `${header}\n${normalized}`.trimEnd();
-
-    if (isBot) {
-      modelMessages.push({
-        role: "assistant",
-        content: mainText,
-      } satisfies ModelMessage);
-      continue;
-    }
 
     if (chunk.attachments.length === 0) {
       modelMessages.push({
@@ -403,12 +403,6 @@ export async function composeRecentChannelMessages(
           const isBot = chunk.authorId === opts.botUserId;
           const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
-          const reactions = await safeListReactions(adapter, {
-            platform: opts.platform,
-            channelId: opts.sessionId,
-            messageId,
-          });
-
           if (isBot && opts.transcriptStore) {
             const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
               platform: opts.platform,
@@ -425,6 +419,21 @@ export async function composeRecentChannelMessages(
           }
 
           const normalized = normalizeText(chunk.text, {});
+
+          if (isBot) {
+            modelMessages.push({
+              role: "assistant",
+              content: normalizeAssistantContextText(normalized),
+            } satisfies ModelMessage);
+            continue;
+          }
+
+          const reactions = await safeListReactions(adapter, {
+            platform: opts.platform,
+            channelId: opts.sessionId,
+            messageId,
+          });
+
           const header = formatDiscordAttributionHeader({
             authorId: chunk.authorId,
             authorName: chunk.authorName,
@@ -434,14 +443,6 @@ export async function composeRecentChannelMessages(
           });
 
           const mainText = `${header}\n${normalized}`.trimEnd();
-
-          if (isBot) {
-            modelMessages.push({
-              role: "assistant",
-              content: mainText,
-            } satisfies ModelMessage);
-            continue;
-          }
 
           if (chunk.attachments.length === 0) {
             modelMessages.push({
@@ -625,28 +626,45 @@ export async function composeRecentChannelMessages(
       transcriptAgeMs === null ||
       transcriptAgeMs <= ACTIVE_TRANSCRIPT_MAX_AGE_MS;
 
-    const reactions = await safeListReactions(adapter, {
-      platform: opts.platform,
-      channelId: opts.sessionId,
-      messageId,
-    });
-
-    if (isBot && opts.transcriptStore && allowTranscriptExpansion) {
-      const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+    let botTranscriptSnap: TranscriptSnapshot | null = null;
+    if (isBot && opts.transcriptStore) {
+      botTranscriptSnap = opts.transcriptStore.getTranscriptBySurfaceMessage({
         platform: opts.platform,
         channelId: opts.sessionId,
         messageId,
       });
-      if (snap) {
-        if (!seenTranscriptRequestIds.has(snap.requestId)) {
-          modelMessages.push(...snap.messages);
-          seenTranscriptRequestIds.add(snap.requestId);
-        }
+    }
+
+    if (botTranscriptSnap && !seenTranscriptRequestIds.has(botTranscriptSnap.requestId)) {
+      if (allowTranscriptExpansion) {
+        modelMessages.push(...botTranscriptSnap.messages);
+        seenTranscriptRequestIds.add(botTranscriptSnap.requestId);
+        continue;
+      }
+
+      const assistantOnly = buildAssistantOnlyMessageFromTranscript(botTranscriptSnap);
+      if (assistantOnly) {
+        modelMessages.push(assistantOnly);
+        seenTranscriptRequestIds.add(botTranscriptSnap.requestId);
         continue;
       }
     }
 
     const normalized = normalizeText(chunk.text, {});
+
+    if (isBot) {
+      modelMessages.push({
+        role: "assistant",
+        content: normalizeAssistantContextText(normalized),
+      } satisfies ModelMessage);
+      continue;
+    }
+
+    const reactions = await safeListReactions(adapter, {
+      platform: opts.platform,
+      channelId: opts.sessionId,
+      messageId,
+    });
 
     const header = formatDiscordAttributionHeader({
       authorId: chunk.authorId,
@@ -657,14 +675,6 @@ export async function composeRecentChannelMessages(
     });
 
     const mainText = `${header}\n${normalized}`.trimEnd();
-
-    if (isBot) {
-      modelMessages.push({
-        role: "assistant",
-        content: mainText,
-      } satisfies ModelMessage);
-      continue;
-    }
 
     if (chunk.attachments.length === 0) {
       modelMessages.push({
@@ -710,6 +720,13 @@ export async function composeSingleMessage(
       ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
       : m.text;
 
+  if (m.userId === opts.botUserId) {
+    return {
+      role: "assistant",
+      content: normalizeAssistantContextText(normalizeText(text, {})),
+    } satisfies ModelMessage;
+  }
+
   const header = formatDiscordAttributionHeader({
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
@@ -719,10 +736,6 @@ export async function composeSingleMessage(
   });
 
   const mainText = `${header}\n${normalizeText(text, {})}`.trimEnd();
-
-  if (m.userId === opts.botUserId) {
-    return { role: "assistant", content: mainText } satisfies ModelMessage;
-  }
 
   const attachments = extractDiscordAttachmentsFromRaw(m.raw);
   if (attachments.length === 0) {
@@ -1380,6 +1393,72 @@ function stripLeadingBotMention(text: string, botUserId: string, botName: string
 
 function normalizeText(text: string, _ctx: {}): string {
   return text;
+}
+
+function stripLeadingDiscordAttributionHeader(text: string): string {
+  // Defensive: remove historical attribution headers that may have been echoed
+  // into assistant outputs and can poison later generations.
+  // This strips header lines at the start of the text and after merged separators.
+  return text.replace(/(^|\n)\[discord\s+[^\n\]]*message_id=[^\n\]]*\]\n?/gu, "$1");
+}
+
+function normalizeAssistantContextText(text: string): string {
+  return stripLeadingDiscordAttributionHeader(text).trimEnd();
+}
+
+function extractAssistantTextFromContent(content: ModelMessage["content"]): string | null {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const out: string[] = [];
+
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+
+    const candidate = part as Record<string, unknown>;
+    const type = typeof candidate.type === "string" ? candidate.type : "";
+    if (type === "tool-call" || type === "tool-result") continue;
+
+    if (typeof candidate.text === "string") {
+      out.push(candidate.text);
+      continue;
+    }
+
+    if (type === "text" && typeof candidate.value === "string") {
+      out.push(candidate.value);
+    }
+  }
+
+  return out.length > 0 ? out.join("") : null;
+}
+
+function buildAssistantOnlyMessageFromTranscript(snap: TranscriptSnapshot): ModelMessage | null {
+  if (typeof snap.finalText === "string") {
+    return {
+      role: "assistant",
+      content: normalizeAssistantContextText(snap.finalText),
+    } satisfies ModelMessage;
+  }
+
+  for (let i = snap.messages.length - 1; i >= 0; i--) {
+    const msg = snap.messages[i]!;
+    if (msg.role !== "assistant") continue;
+
+    const text = extractAssistantTextFromContent(msg.content);
+    if (text === null) continue;
+
+    return {
+      role: "assistant",
+      content: normalizeAssistantContextText(text),
+    } satisfies ModelMessage;
+  }
+
+  return null;
 }
 
 function formatDiscordAttributionHeader(params: {
