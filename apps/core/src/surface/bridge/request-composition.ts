@@ -600,10 +600,7 @@ export async function composeRecentChannelMessages(
     authorId: m.userId,
     authorName: m.userName ?? `user_${m.userId}`,
     ts: m.ts,
-    text:
-      m.userId !== opts.botUserId
-        ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
-        : m.text,
+    text: m.text,
     attachments: extractDiscordAttachmentsFromRaw(m.raw),
     raw: m.raw,
   }));
@@ -716,10 +713,7 @@ export async function composeSingleMessage(
   // Never include session divider markers in model context.
   if (isDiscordSessionDividerSurfaceMessageAnyAuthor(m)) return null;
 
-  let text =
-    m.userId !== opts.botUserId
-      ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
-      : m.text;
+  let text = m.text;
 
   if (m.userId !== opts.botUserId && opts.transformUserText) {
     text = opts.transformUserText(text);
@@ -1386,16 +1380,6 @@ type MergedChunk = {
 
 const DEFAULT_MENTION_BLOCK_LIMIT = 50;
 
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function stripLeadingBotMention(text: string, botUserId: string, botName: string): string {
-  const sanitizedBot = sanitizeUserToken(botName);
-  const re = new RegExp(`^(?:<@!?${botUserId}>|@${escapeRegExp(sanitizedBot)})(?:\\s+)?`, "iu");
-  return text.replace(re, "");
-}
-
 function normalizeText(text: string, _ctx: {}): string {
   return text;
 }
@@ -1694,12 +1678,7 @@ async function fetchReplyChainFrom(
   if (!cur) return [];
 
   for (let depth = 0; depth < maxDepth && cur; depth++) {
-    const overrideText =
-      cur.userId !== opts.botUserId
-        ? stripLeadingBotMention(cur.text, opts.botUserId, opts.botName)
-        : undefined;
-
-    chainNewestToOldest.push(toReplyChainMessage(cur, { overrideText }));
+    chainNewestToOldest.push(toReplyChainMessage(cur));
 
     const ref = getReferenceFromRaw(cur.raw);
     if (!ref.messageId) break;
@@ -1742,11 +1721,7 @@ async function fetchMentionThreadContext(
   });
 
   const blockMessages = block.map((m) => {
-    const overrideText =
-      m.userId !== params.botUserId
-        ? stripLeadingBotMention(m.text, params.botUserId, params.botName)
-        : undefined;
-    return toReplyChainMessage(m, { overrideText });
+    return toReplyChainMessage(m);
   });
 
   const combined = dedupeByMessageId([...chain, ...blockMessages]);

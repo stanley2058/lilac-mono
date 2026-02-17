@@ -46,6 +46,7 @@ function stripLeadingBotMentionPrefix(
   botName: string,
 ): {
   hadLeadingMention: boolean;
+  mentionPrefix: string;
   text: string;
 } {
   const sanitizedBotName = sanitizeUserToken(botName);
@@ -54,9 +55,10 @@ function stripLeadingBotMentionPrefix(
     "iu",
   );
   const m = text.match(mentionRe);
-  if (!m) return { hadLeadingMention: false, text };
+  if (!m) return { hadLeadingMention: false, mentionPrefix: "", text };
   return {
     hadLeadingMention: true,
+    mentionPrefix: m[0],
     text: text.slice(m[0].length),
   };
 }
@@ -69,8 +71,20 @@ function parseSteerDirectiveMode(input: { text: string; botName: string }): "ste
   return LEADING_INTERRUPT_COMMAND_RE.test(stripped.text) ? "interrupt" : "steer";
 }
 
-function stripLeadingInterruptDirective(text: string): string {
-  return text.replace(LEADING_INTERRUPT_COMMAND_RE, "").replace(/^\s+/u, "");
+function stripLeadingInterruptDirective(input: { text: string; botName: string }): string {
+  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botName);
+  if (!strippedMention.hadLeadingMention) {
+    return input.text.replace(LEADING_INTERRUPT_COMMAND_RE, "").replace(/^\s+/u, "");
+  }
+
+  if (!LEADING_INTERRUPT_COMMAND_RE.test(strippedMention.text)) {
+    return input.text;
+  }
+
+  const remainder = strippedMention.text
+    .replace(LEADING_INTERRUPT_COMMAND_RE, "")
+    .replace(/^\s+/u, "");
+  return `${strippedMention.mentionPrefix}${remainder}`;
 }
 
 function consumerId(prefix: string): string {
@@ -481,7 +495,13 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             transformUserText:
-              steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
+              steerMode === "interrupt"
+                ? (text) =>
+                    stripLeadingInterruptDirective({
+                      text,
+                      botName: cfg.surface.discord.botName,
+                    })
+                : undefined,
           });
           return;
         }
@@ -621,7 +641,13 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             transformUserText:
-              steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
+              steerMode === "interrupt"
+                ? (text) =>
+                    stripLeadingInterruptDirective({
+                      text,
+                      botName: cfg.surface.discord.botName,
+                    })
+                : undefined,
           });
           return;
         }
@@ -665,7 +691,14 @@ export async function startBusRequestRouter(params: {
           queue: steerMode,
           msgRef,
           sessionMode,
-          transformUserText: steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
+          transformUserText:
+            steerMode === "interrupt"
+              ? (text) =>
+                  stripLeadingInterruptDirective({
+                    text,
+                    botName: cfg.surface.discord.botName,
+                  })
+              : undefined,
         });
         return;
       }
@@ -968,7 +1001,14 @@ export async function startBusRequestRouter(params: {
           queue: steerMode,
           msgRef,
           sessionMode: input.sessionMode,
-          transformUserText: steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
+          transformUserText:
+            steerMode === "interrupt"
+              ? (text) =>
+                  stripLeadingInterruptDirective({
+                    text,
+                    botName: cfg.surface.discord.botName,
+                  })
+              : undefined,
         });
       } else {
         await publishSingleMessageToActiveRequest({

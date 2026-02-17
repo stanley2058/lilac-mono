@@ -571,7 +571,7 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("user msg 1");
     expect(merged as string).toContain("user msg 2");
     expect(merged as string).toContain("user msg 3");
-    expect(merged as string).not.toContain("<@bot>");
+    expect(merged as string).toContain("<@bot>");
   });
 
   it("uses only the trigger group for mention-time context", async () => {

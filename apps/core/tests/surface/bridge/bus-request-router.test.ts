@@ -353,7 +353,7 @@ describe("startBusRequestRouter", () => {
     expect(mergedText).toContain("user msg 1");
     expect(mergedText).toContain("user msg 2");
     expect(mergedText).toContain("user msg 3");
-    expect(mergedText).not.toContain("<@bot>");
+    expect(mergedText).toContain("<@bot>");
 
     expect(evt.data.raw?.chainMessageIds).toContain("root");
     expect(evt.data.raw?.chainMessageIds).toContain("m1");
@@ -1687,15 +1687,14 @@ describe("startBusRequestRouter", () => {
     expect(received[1].data.queue).toBe("steer");
     expect(received[1].headers?.request_id).toBe(requestId);
 
-    // Leading bot mentions should be stripped consistently for followUp/steer.
+    // Mention text should be preserved in model-facing context.
     const followUpText = received[0].data.messages?.[0]?.content;
     const steerText = received[1].data.messages?.[0]?.content;
     expect(typeof followUpText).toBe("string");
     expect(typeof steerText).toBe("string");
     expect(followUpText as string).toContain("replying (no mention)");
-    expect(followUpText as string).not.toContain("@lilac");
     expect(steerText as string).toContain("replying (mention)");
-    expect(steerText as string).not.toContain("<@bot>");
+    expect(steerText as string).toContain("<@bot>");
 
     expect(surfaceCmd.length).toBe(1);
     expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
@@ -1824,9 +1823,9 @@ describe("startBusRequestRouter", () => {
 
     const interruptText = received[0].data.messages?.[0]?.content;
     expect(typeof interruptText).toBe("string");
+    expect(interruptText as string).toContain("<@bot>");
     expect(interruptText as string).toContain("switch to concise answer");
     expect(interruptText as string).not.toContain("!interrupt");
-    expect(interruptText as string).not.toContain("<@bot>");
 
     expect(surfaceCmd.length).toBe(1);
     expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
@@ -1980,9 +1979,9 @@ describe("startBusRequestRouter", () => {
 
     const interruptText = received[0].data.messages?.[0]?.content;
     expect(typeof interruptText).toBe("string");
+    expect(interruptText as string).toContain("<@bot>");
     expect(interruptText as string).toContain("focus on failing test first");
     expect(interruptText as string).not.toContain("!int");
-    expect(interruptText as string).not.toContain("<@bot>");
 
     expect(surfaceCmd.length).toBe(1);
     expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
