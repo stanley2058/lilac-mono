@@ -163,7 +163,11 @@ type ActiveRelay = {
   cancel(): Promise<void>;
   startedAt: number;
   firstOutLogged: boolean;
-  reanchor(input: { inheritReplyTo: boolean; replyTo?: MsgRef }): Promise<void>;
+  reanchor(input: {
+    inheritReplyTo: boolean;
+    mode?: "steer" | "interrupt";
+    replyTo?: MsgRef;
+  }): Promise<void>;
   snapshot(): BusToAdapterRelaySnapshot;
 };
 
@@ -324,6 +328,7 @@ export async function bridgeBusToAdapter(params: {
       await relay
         .reanchor({
           inheritReplyTo: msg.data.inheritReplyTo,
+          mode: msg.data.mode,
           replyTo: replyTo ?? undefined,
         })
         .catch((e: unknown) => {
@@ -969,13 +974,15 @@ export async function bridgeBusToAdapter(params: {
       reanchor: async (reanchorInput) => {
         await enqueue(async () => {
           const nextReplyTo = reanchorInput.inheritReplyTo ? currentReplyTo : reanchorInput.replyTo;
+          const reanchorAbortReason =
+            reanchorInput.mode === "interrupt" ? "reanchor_interrupt" : "reanchor";
 
           // Make the new stream active immediately so any messages created during abort
           // do not get published as "active output".
           streamToken += 1;
 
           // Freeze the current output chain in-place.
-          await out.abort("reanchor").catch(() => undefined);
+          await out.abort(reanchorAbortReason).catch(() => undefined);
 
           currentReplyTo = nextReplyTo;
 

@@ -631,7 +631,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
   async abort(_reason?: string): Promise<void> {
     const reason = _reason;
-    const isReanchor = reason === "reanchor";
+    const isReanchor = reason === "reanchor" || reason === "reanchor_interrupt";
+    const isInterruptReanchor = reason === "reanchor_interrupt";
     const isCancel = reason === "cancel";
 
     if (isCancel && this.textAcc.trim().length === 0) {
@@ -642,7 +643,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       // Freeze the current message chain in a coherent state.
       // If we have not produced any text yet, replace emptiness with a placeholder.
       if (this.textAcc.trim().length === 0) {
-        this.textAcc = "*Steering...*";
+        this.textAcc = isInterruptReanchor ? "*Interrupted...*" : "*Steering...*";
       }
 
       // Ensure the placeholder message exists so we can "freeze" it.

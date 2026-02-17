@@ -33,6 +33,46 @@ function previewText(text: string, max = 200): string {
   return `${trimmed.slice(0, max)}...`;
 }
 
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function sanitizeUserToken(name: string): string {
+  return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
+}
+
+function stripLeadingBotMentionPrefix(
+  text: string,
+  botName: string,
+): {
+  hadLeadingMention: boolean;
+  text: string;
+} {
+  const sanitizedBotName = sanitizeUserToken(botName);
+  const mentionRe = new RegExp(
+    `^\\s*(?:<@!?[^>]+>|@${escapeRegExp(sanitizedBotName)})(?:[,:]\\s*|\\s+)`,
+    "iu",
+  );
+  const m = text.match(mentionRe);
+  if (!m) return { hadLeadingMention: false, text };
+  return {
+    hadLeadingMention: true,
+    text: text.slice(m[0].length),
+  };
+}
+
+const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
+
+function parseSteerDirectiveMode(input: { text: string; botName: string }): "steer" | "interrupt" {
+  const stripped = stripLeadingBotMentionPrefix(input.text, input.botName);
+  if (!stripped.hadLeadingMention) return "steer";
+  return LEADING_INTERRUPT_COMMAND_RE.test(stripped.text) ? "interrupt" : "steer";
+}
+
+function stripLeadingInterruptDirective(text: string): string {
+  return text.replace(LEADING_INTERRUPT_COMMAND_RE, "").replace(/^\s+/u, "");
+}
+
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -315,6 +355,7 @@ export async function startBusRequestRouter(params: {
             sessionId,
             msgRef,
             userId: msg.data.userId,
+            userText: msg.data.text,
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
             replyToMessageId: flags.replyToMessageId,
@@ -351,6 +392,7 @@ export async function startBusRequestRouter(params: {
         sessionId,
         msgRef,
         userId: msg.data.userId,
+        userText: msg.data.text,
         mentionsBot: flags.mentionsBot,
         replyToBot: flags.replyToBot,
         replyToMessageId: flags.replyToMessageId,
@@ -379,6 +421,7 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     msgRef: MsgRef;
     userId: string;
+    userText: string;
     mentionsBot: boolean;
     replyToBot: boolean;
     replyToMessageId?: string;
@@ -391,6 +434,7 @@ export async function startBusRequestRouter(params: {
       cfg,
       sessionId,
       msgRef,
+      userText,
       userId: _userId,
       mentionsBot,
       replyToBot,
@@ -412,12 +456,18 @@ export async function startBusRequestRouter(params: {
 
       if (isReplyToActiveOutput) {
         if (mentionsBot) {
+          const steerMode = parseSteerDirectiveMode({
+            text: userText,
+            botName: cfg.surface.discord.botName,
+          });
+
           await publishSurfaceOutputReanchor({
             bus,
             requestId: active.requestId,
             sessionId,
             inheritReplyTo: false,
             replyTo: msgRef,
+            mode: steerMode,
           });
           active.activeOutputMessageIds.clear();
 
@@ -427,9 +477,11 @@ export async function startBusRequestRouter(params: {
             cfg,
             requestId: active.requestId,
             sessionId,
-            queue: "steer",
+            queue: steerMode,
             msgRef,
             sessionMode,
+            transformUserText:
+              steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
           });
           return;
         }
@@ -544,12 +596,18 @@ export async function startBusRequestRouter(params: {
 
       if (isReplyToActiveOutput) {
         if (mentionsBot) {
+          const steerMode = parseSteerDirectiveMode({
+            text: userText,
+            botName: cfg.surface.discord.botName,
+          });
+
           await publishSurfaceOutputReanchor({
             bus,
             requestId: active.requestId,
             sessionId,
             inheritReplyTo: false,
             replyTo: msgRef,
+            mode: steerMode,
           });
           active.activeOutputMessageIds.clear();
 
@@ -559,9 +617,11 @@ export async function startBusRequestRouter(params: {
             cfg,
             requestId: active.requestId,
             sessionId,
-            queue: "steer",
+            queue: steerMode,
             msgRef,
             sessionMode,
+            transformUserText:
+              steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
           });
           return;
         }
@@ -582,11 +642,17 @@ export async function startBusRequestRouter(params: {
       // Active channel @mention (not a reply) can steer the running request.
       // IMPORTANT: replies to non-active bot messages must still fork into a queued prompt.
       if (!replyToBot && mentionsBot) {
+        const steerMode = parseSteerDirectiveMode({
+          text: userText,
+          botName: cfg.surface.discord.botName,
+        });
+
         await publishSurfaceOutputReanchor({
           bus,
           requestId: active.requestId,
           sessionId,
           inheritReplyTo: true,
+          mode: steerMode,
         });
         active.activeOutputMessageIds.clear();
 
@@ -596,9 +662,10 @@ export async function startBusRequestRouter(params: {
           cfg,
           requestId: active.requestId,
           sessionId,
-          queue: "steer",
+          queue: steerMode,
           msgRef,
           sessionMode,
+          transformUserText: steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
         });
         return;
       }
@@ -838,6 +905,7 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     msgRef: MsgRef;
     userId: string;
+    userText: string;
     mentionsBot?: boolean;
     replyToBot?: boolean;
     replyToMessageId?: string;
@@ -852,6 +920,7 @@ export async function startBusRequestRouter(params: {
       sessionId,
       msgRef,
       userId,
+      userText,
       mentionsBot,
       replyToBot,
       active,
@@ -875,12 +944,18 @@ export async function startBusRequestRouter(params: {
       active.activeOutputMessageIds.has(input.replyToMessageId)
     ) {
       if (mentionsBot) {
+        const steerMode = parseSteerDirectiveMode({
+          text: userText,
+          botName: cfg.surface.discord.botName,
+        });
+
         await publishSurfaceOutputReanchor({
           bus,
           requestId: active.requestId,
           sessionId,
           inheritReplyTo: false,
           replyTo: msgRef,
+          mode: steerMode,
         });
         active.activeOutputMessageIds.clear();
 
@@ -890,9 +965,10 @@ export async function startBusRequestRouter(params: {
           cfg,
           requestId: active.requestId,
           sessionId,
-          queue: "steer",
+          queue: steerMode,
           msgRef,
           sessionMode: input.sessionMode,
+          transformUserText: steerMode === "interrupt" ? stripLeadingInterruptDirective : undefined,
         });
       } else {
         await publishSingleMessageToActiveRequest({
@@ -1095,9 +1171,10 @@ export async function startBusRequestRouter(params: {
     cfg: CoreConfig;
     requestId: string;
     sessionId: string;
-    queue: "followUp" | "steer";
+    queue: "followUp" | "steer" | "interrupt";
     msgRef: MsgRef;
     sessionMode: SessionMode;
+    transformUserText?: (text: string) => string;
   }) {
     const { adapter, cfg, requestId, sessionId, queue, msgRef } = input;
 
@@ -1110,6 +1187,7 @@ export async function startBusRequestRouter(params: {
       botName: cfg.surface.discord.botName,
       msgRef,
       discordUserAliasById,
+      transformUserText: input.transformUserText,
     });
 
     if (!msg) return;
@@ -1133,13 +1211,15 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     inheritReplyTo: boolean;
     replyTo?: MsgRef;
+    mode?: "steer" | "interrupt";
   }) {
-    const { bus, requestId, sessionId, inheritReplyTo, replyTo } = input;
+    const { bus, requestId, sessionId, inheritReplyTo, replyTo, mode } = input;
 
     await bus.publish(
       lilacEventTypes.CmdSurfaceOutputReanchor,
       {
         inheritReplyTo,
+        mode,
         replyTo: replyTo
           ? {
               platform: replyTo.platform,

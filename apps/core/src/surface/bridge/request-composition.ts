@@ -180,6 +180,7 @@ export type ComposeSingleMessageOpts = {
   botName: string;
   msgRef: MsgRef;
   discordUserAliasById?: ReadonlyMap<string, string>;
+  transformUserText?: (text: string) => string;
 };
 
 export type ComposeRequestOpts = {
@@ -715,10 +716,14 @@ export async function composeSingleMessage(
   // Never include session divider markers in model context.
   if (isDiscordSessionDividerSurfaceMessageAnyAuthor(m)) return null;
 
-  const text =
+  let text =
     m.userId !== opts.botUserId
       ? stripLeadingBotMention(m.text, opts.botUserId, opts.botName)
       : m.text;
+
+  if (m.userId !== opts.botUserId && opts.transformUserText) {
+    text = opts.transformUserText(text);
+  }
 
   if (m.userId === opts.botUserId) {
     return {
