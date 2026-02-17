@@ -1596,6 +1596,7 @@ export async function startBusAgentRunner(params: {
       const agent = new AiSdkPiAgent<ToolSet>({
         system: agentSystem,
         model: resolved.model,
+        modelSpecifier: resolved.spec,
         messages: next.recovery?.checkpointMessages ?? [],
         tools,
         providerOptions: providerOptionsForAgent,
@@ -1642,6 +1643,7 @@ export async function startBusAgentRunner(params: {
       unsubscribeCompaction = await attachAutoCompaction(agent, {
         model: resolved.spec,
         modelCapability: new ModelCapability(),
+        resolveCurrentModelSpecifier: () => agent.state.modelSpecifier ?? resolved.spec,
         baseTransformMessages: toolPruneTransform,
       });
 

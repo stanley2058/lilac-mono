@@ -72,7 +72,7 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
 
 - `compose.yaml` and `Dockerfile`
   - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
-  - The docker build installs Bun, system tools (git, rg, chromium, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+  - The docker build installs Bun, system tools (git, rg, browser dependencies, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
   - Docker compose persists extra home directories for agent ergonomics:
     - `./home/agents:/home/lilac/.agents`
     - `./home/.ssh:/home/lilac/.ssh`
@@ -276,6 +276,12 @@ The agent system prompt is built from local prompt files.
 
 - Source templates: `packages/utils/prompt-templates/*`
 - Runtime workspace: `DATA_DIR/prompts/*` (see `packages/utils/agent-prompts.ts`)
+
+Prompt sync behavior is template-aware and stateful:
+
+- Prompt sync state: `DATA_DIR/prompts/.prompt-template-state.json`
+- If a prompt file still matches the last managed version, template updates are auto-applied in place.
+- If a prompt file has local edits and the template changes, a sibling `*.new` file is written (for example `AGENTS.md.new`) and the local file is left untouched.
 
 At run time, the core agent runner appends a compact `## Available Skills` index to the end of the primary agent's system prompt. The index is discovered using the same rules as the `tools skills.list` command.
 
