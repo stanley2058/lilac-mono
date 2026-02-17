@@ -17,7 +17,7 @@ import {
 import { Logger } from "@stanley2058/simple-module-logger";
 
 import type { SurfaceAdapter } from "../adapter";
-import type { MsgRef } from "../types";
+import type { MsgRef, SurfaceMessage } from "../types";
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import {
   composeRecentChannelMessages,
@@ -39,6 +39,37 @@ function escapeRegExp(input: string): string {
 
 function sanitizeUserToken(name: string): string {
   return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
+}
+
+const USER_MENTION_TOKEN_RE = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu;
+
+function hasNonSelfMentionToken(input: { text: string; botName: string }): boolean {
+  const selfLc = sanitizeUserToken(input.botName).toLowerCase();
+
+  for (const m of input.text.matchAll(USER_MENTION_TOKEN_RE)) {
+    const token = String(m[2] ?? "").trim();
+    if (!token) continue;
+    if (sanitizeUserToken(token).toLowerCase() === selfLc) continue;
+    return true;
+  }
+
+  return false;
+}
+
+function compareMessagePosition(
+  a: { ts: number; messageId: string },
+  b: { ts: number; messageId: string },
+): number {
+  if (a.ts !== b.ts) return a.ts - b.ts;
+  return a.messageId.localeCompare(b.messageId);
+}
+
+function normalizeGateText(text: string | undefined, max = 280): string | undefined {
+  if (!text) return undefined;
+  const normalized = text.trim().replace(/\s+/gu, " ");
+  if (!normalized) return undefined;
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}...`;
 }
 
 function stripLeadingBotMentionPrefix(
@@ -116,6 +147,11 @@ function getSessionMode(cfg: CoreConfig, sessionId: string): SessionMode {
   return entry?.mode ?? cfg.surface.router.defaultMode;
 }
 
+function resolveSessionGateEnabled(cfg: CoreConfig, sessionId: string): boolean {
+  const sessionGateOverride = cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
+  return sessionGateOverride ?? cfg.surface.router.activeGate.enabled;
+}
+
 function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
   const out = new Map<string, string>();
   const users = cfg.entity?.users ?? {};
@@ -159,8 +195,28 @@ type BufferedMessage = {
   msgRef: MsgRef;
   userId: string;
   text: string;
+  ts: number;
   mentionsBot: boolean;
   replyToBot: boolean;
+};
+
+type RouterGateContextMode = "active-batch" | "direct-reply-mention-disambiguation";
+
+type RouterGateInput = {
+  sessionId: string;
+  botName: string;
+  messages: BufferedMessage[];
+  context?: {
+    mode: RouterGateContextMode;
+    triggerMessageText?: string;
+    previousMessageText?: string;
+    repliedToMessageText?: string;
+  };
+};
+
+type RouterGateDecision = {
+  forward: boolean;
+  reason?: string;
 };
 
 type DebounceBuffer = {
@@ -184,11 +240,7 @@ export async function startBusRequestRouter(params: {
     evt: EvtAdapterMessageCreatedData;
   }) => Promise<{ suppress: boolean; reason?: string }>;
   /** Optional injection for unit tests (bypasses real model call). */
-  routerGate?: (input: {
-    sessionId: string;
-    botName: string;
-    messages: BufferedMessage[];
-  }) => Promise<{ forward: boolean; reason?: string }>;
+  routerGate?: (input: RouterGateInput) => Promise<RouterGateDecision>;
 }) {
   const { adapter, bus, subscriptionId } = params;
 
@@ -201,6 +253,82 @@ export async function startBusRequestRouter(params: {
 
   const activeBySession = new Map<string, ActiveSessionState>();
   const buffers = new Map<string, DebounceBuffer>();
+
+  async function resolvePreviousMessageText(input: {
+    msgRef: MsgRef;
+    triggerTs: number;
+  }): Promise<string | undefined> {
+    const around = await adapter.getReplyContext(input.msgRef, { limit: 8 }).catch(() => []);
+    if (around.length === 0) return undefined;
+
+    let prev: SurfaceMessage | null = null;
+    for (const candidate of around) {
+      const cmp = compareMessagePosition(
+        { ts: candidate.ts, messageId: candidate.ref.messageId },
+        { ts: input.triggerTs, messageId: input.msgRef.messageId },
+      );
+      if (cmp >= 0) continue;
+      if (
+        !prev ||
+        compareMessagePosition(
+          { ts: prev.ts, messageId: prev.ref.messageId },
+          { ts: candidate.ts, messageId: candidate.ref.messageId },
+        ) < 0
+      ) {
+        prev = candidate;
+      }
+    }
+
+    return normalizeGateText(prev?.text);
+  }
+
+  async function resolveRepliedToMessageText(input: {
+    sessionId: string;
+    replyToMessageId?: string;
+  }): Promise<string | undefined> {
+    if (!input.replyToMessageId) return undefined;
+
+    const repliedTo = await adapter
+      .readMsg({
+        platform: "discord",
+        channelId: input.sessionId,
+        messageId: input.replyToMessageId,
+      })
+      .catch(() => null);
+
+    return normalizeGateText(repliedTo?.text ?? undefined);
+  }
+
+  async function resolvePreviousBatchMessageText(
+    messages: readonly BufferedMessage[],
+  ): Promise<string | undefined> {
+    if (messages.length === 0) return undefined;
+
+    const oldest = messages.reduce((best, cur) => {
+      return compareMessagePosition(
+        { ts: cur.ts, messageId: cur.msgRef.messageId },
+        { ts: best.ts, messageId: best.msgRef.messageId },
+      ) < 0
+        ? cur
+        : best;
+    });
+
+    return resolvePreviousMessageText({
+      msgRef: oldest.msgRef,
+      triggerTs: oldest.ts,
+    });
+  }
+
+  function shouldRunDirectReplyMentionGate(input: {
+    replyToBot: boolean;
+    mentionsBot: boolean;
+    text: string;
+    botName: string;
+  }): boolean {
+    if (!input.replyToBot) return false;
+    if (input.mentionsBot) return false;
+    return hasNonSelfMentionToken({ text: input.text, botName: input.botName });
+  }
 
   const lifecycleSub = await bus.subscribeTopic(
     "evt.request",
@@ -342,6 +470,7 @@ export async function startBusRequestRouter(params: {
       const isDm = flags.isDMBased === true;
 
       const mode: SessionMode = isDm ? "active" : getSessionMode(cfg, sessionId);
+      const gateEnabled = resolveSessionGateEnabled(cfg, sessionId);
 
       const active = activeBySession.get(sessionId);
 
@@ -359,6 +488,67 @@ export async function startBusRequestRouter(params: {
             ? previewText(msg.data.text)
             : undefined,
       });
+
+      if (
+        !isDm &&
+        gateEnabled &&
+        shouldRunDirectReplyMentionGate({
+          replyToBot: flags.replyToBot === true,
+          mentionsBot: flags.mentionsBot === true,
+          text: msg.data.text,
+          botName: cfg.surface.discord.botName,
+        })
+      ) {
+        const gate = params.routerGate ?? shouldForwardByGate;
+        const [previousMessageText, repliedToMessageText] = await Promise.all([
+          resolvePreviousMessageText({ msgRef, triggerTs: msg.data.ts }),
+          resolveRepliedToMessageText({
+            sessionId,
+            replyToMessageId: flags.replyToMessageId,
+          }),
+        ]);
+
+        const decision = await gate({
+          sessionId,
+          botName: cfg.surface.discord.botName,
+          messages: [
+            {
+              msgRef,
+              userId: msg.data.userId,
+              text: msg.data.text,
+              ts: msg.data.ts,
+              mentionsBot: flags.mentionsBot === true,
+              replyToBot: flags.replyToBot === true,
+            },
+          ],
+          context: {
+            mode: "direct-reply-mention-disambiguation",
+            triggerMessageText: normalizeGateText(msg.data.text),
+            previousMessageText,
+            repliedToMessageText,
+          },
+        }).catch((e: unknown) => {
+          logger.error("router direct-reply gate failed; forwarding", { sessionId }, e);
+          return {
+            forward: true,
+            reason: "error-fail-open",
+          } satisfies RouterGateDecision;
+        });
+
+        if (!decision.forward) {
+          logger.info(
+            { sessionId, reason: decision.reason ?? "skip" },
+            "router gate skipped direct reply",
+          );
+          await ctx.commit();
+          return;
+        }
+
+        logger.info(
+          { sessionId, reason: decision.reason ?? "forward" },
+          "router gate forwarded direct reply",
+        );
+      }
 
       if (mode === "active") {
         if (isDm) {
@@ -386,6 +576,7 @@ export async function startBusRequestRouter(params: {
             msgRef,
             userId: msg.data.userId,
             userText: msg.data.text,
+            messageTs: msg.data.ts,
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
             replyToMessageId: flags.replyToMessageId,
@@ -580,6 +771,7 @@ export async function startBusRequestRouter(params: {
     msgRef: MsgRef;
     userId: string;
     userText: string;
+    messageTs: number;
     mentionsBot: boolean;
     replyToBot: boolean;
     replyToMessageId?: string;
@@ -595,6 +787,7 @@ export async function startBusRequestRouter(params: {
       msgRef,
       userId,
       userText,
+      messageTs,
       mentionsBot,
       replyToBot,
       active,
@@ -765,6 +958,7 @@ export async function startBusRequestRouter(params: {
         msgRef,
         userId,
         text: userText,
+        ts: messageTs,
         mentionsBot,
         replyToBot,
       },
@@ -811,16 +1005,21 @@ export async function startBusRequestRouter(params: {
     clearDebounceBuffer(sessionId);
 
     // Gate is only for active channels with no running request.
-    const gateCfg = cfg.surface.router.activeGate;
-    const sessionGateOverride = cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
-    const gateEnabled = sessionGateOverride ?? gateCfg.enabled;
-    const gate = params.routerGate ?? shouldForwardActiveBatch;
+    const gateEnabled = resolveSessionGateEnabled(cfg, sessionId);
+    const gate = params.routerGate ?? shouldForwardByGate;
+    const previousMessageText = gateEnabled
+      ? await resolvePreviousBatchMessageText(b.messages)
+      : undefined;
 
     const decision = gateEnabled
       ? await gate({
           sessionId,
           botName: cfg.surface.discord.botName,
           messages: b.messages,
+          context: {
+            mode: "active-batch",
+            previousMessageText,
+          },
         }).catch((e: unknown) => {
           logger.error("router gate failed; skipping", { sessionId }, e);
           return { forward: false, reason: "error" };
@@ -866,11 +1065,7 @@ export async function startBusRequestRouter(params: {
     reason: z.string().optional(),
   });
 
-  async function shouldForwardActiveBatch(input: {
-    sessionId: string;
-    botName: string;
-    messages: BufferedMessage[];
-  }): Promise<{ forward: boolean; reason?: string }> {
+  async function shouldForwardByGate(input: RouterGateInput): Promise<RouterGateDecision> {
     const gateCfg = cfg.surface.router.activeGate;
 
     const timeoutMs = gateCfg.timeoutMs;
@@ -881,36 +1076,73 @@ export async function startBusRequestRouter(params: {
     try {
       const resolved = resolveModelSlot(cfg, "fast");
 
-      const indirectMention = input.messages.some((m) =>
-        m.text.toLowerCase().includes(input.botName.toLowerCase()),
-      );
+      const prompt = (() => {
+        if (input.context?.mode === "direct-reply-mention-disambiguation") {
+          const triggerMessageText = input.context.triggerMessageText ?? "";
+          const previousMessageText = input.context.previousMessageText ?? "";
+          const repliedToMessageText = input.context.repliedToMessageText ?? "";
 
-      const transcript = input.messages.map((m) => `[user_id=${m.userId}] ${m.text}`).join("\n");
+          return [
+            {
+              role: "system",
+              content: [
+                "You are a router gate for a chat bot.",
+                "Decide whether THIS bot should reply to this direct-reply message.",
+                "The user replied to this bot, did not mention this bot explicitly, and included another @mention.",
+                'Return strict JSON only: {"forward": true|false, "reason"?: string}',
+                "Use context to distinguish address vs reference mentions.",
+                "If uncertain, return forward=true.",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                `sessionId=${input.sessionId}`,
+                `botName=${input.botName}`,
+                "",
+                `triggerMessage=${triggerMessageText || "(none)"}`,
+                `repliedToMessage=${repliedToMessageText || "(none)"}`,
+                `previousMessage=${previousMessageText || "(none)"}`,
+                "",
+                "forward=true when the message still seeks this bot's input (even if another bot is referenced).",
+                "forward=false only when it is clearly addressed to someone else.",
+              ].join("\n"),
+            },
+          ] satisfies ModelMessage[];
+        }
 
-      const prompt = [
-        {
-          role: "system",
-          content: [
-            "You are a router gate for a chat bot.",
-            "Decide whether the bot should start a new request and reply.",
-            'Return strict JSON only: {"forward": true|false, "reason"?: string}',
-            "If uncertain, return forward=false.",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: [
-            `sessionId=${input.sessionId}`,
-            `botName=${input.botName}`,
-            `indirectMention=${String(indirectMention)}`,
-            "",
-            "Batch:",
-            transcript,
-            "",
-            "Special case: if this looks like a heartbeat poll that expects a reply (e.g. mentions HEARTBEAT.md/HEARTBEAT_OK), forward=true.",
-          ].join("\n"),
-        },
-      ] as ModelMessage[];
+        const indirectMention = input.messages.some((m) =>
+          m.text.toLowerCase().includes(input.botName.toLowerCase()),
+        );
+
+        const transcript = input.messages.map((m) => `[user_id=${m.userId}] ${m.text}`).join("\n");
+
+        return [
+          {
+            role: "system",
+            content: [
+              "You are a router gate for a chat bot.",
+              "Decide whether the bot should start a new request and reply.",
+              'Return strict JSON only: {"forward": true|false, "reason"?: string}',
+              "If uncertain, return forward=false.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: [
+              `sessionId=${input.sessionId}`,
+              `botName=${input.botName}`,
+              `indirectMention=${String(indirectMention)}`,
+              `previousMessage=${input.context?.previousMessageText ?? "(none)"}`,
+              "",
+              "Batch:",
+              transcript,
+              "",
+              "Special case: if this looks like a heartbeat poll that expects a reply (e.g. mentions HEARTBEAT.md/HEARTBEAT_OK), forward=true.",
+            ].join("\n"),
+          },
+        ] satisfies ModelMessage[];
+      })();
 
       const res = await generateText({
         model: resolved.model,
@@ -923,8 +1155,20 @@ export async function startBusRequestRouter(params: {
 
       return res.output;
     } catch (e) {
-      logger.error("router gate error", { sessionId: input.sessionId }, e);
-      return { forward: false, reason: "error" };
+      const failOpen = input.context?.mode === "direct-reply-mention-disambiguation";
+      logger.error(
+        "router gate error",
+        {
+          sessionId: input.sessionId,
+          mode: input.context?.mode ?? "active-batch",
+          failOpen,
+        },
+        e,
+      );
+      return {
+        forward: failOpen,
+        reason: failOpen ? "error-fail-open" : "error",
+      };
     } finally {
       clearTimeout(timeout);
     }

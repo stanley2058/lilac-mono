@@ -138,6 +138,36 @@ Active-mode details:
 - It can debounce multiple messages into a single initial prompt.
 - It can optionally run a “gate” (small/fast model) to decide whether the bot should reply.
 
+Router gate behavior (Discord):
+
+- Gate enablement uses per-session override first, then global default:
+  - `surface.router.sessionModes.<sessionId>.gate` (if set)
+  - otherwise `surface.router.activeGate.enabled`
+- DMs are ungated.
+- Mention-mode channels:
+  - non-triggers are ignored
+  - mention/reply triggers bypass the active-batch gate
+- Active-mode channels with **no running request**:
+  - direct mention or direct reply-to-bot bypasses active-batch gating and starts a request immediately
+  - non-trigger messages are debounced and may go through the active-batch gate
+- Active-mode channels with a **running request** are not active-batch gated:
+  - messages are routed as follow-up/steer/queued prompt according to in-flight rules
+
+Direct-reply mention disambiguation gate (additional path):
+
+- Runs for **non-DM** messages when all are true:
+  - `replyToBot=true`
+  - `mentionsBot=false`
+  - message contains a non-self `@token`
+- This gate is used to disambiguate “addressing another bot” vs “referencing another bot”.
+- Context passed to this gate includes:
+  - trigger text
+  - replied-to message text
+  - immediate previous message text
+- Failure policy differs by gate mode:
+  - direct-reply disambiguation: fail-open (forward on gate errors/timeouts)
+  - active-batch gate: fail-closed (skip on gate errors/timeouts)
+
 When the router forwards, it publishes `cmd.request.message` (topic: `cmd.request`) containing `ModelMessage[]`.
 
 GitHub webhook ingress can also publish `cmd.request.message` directly (without passing through routing on `evt.adapter`).
