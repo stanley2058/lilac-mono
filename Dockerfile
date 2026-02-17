@@ -64,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   tar \
   unzip \
   vulkan-tools \
+  rysnc \ 
   && ARCH="$(dpkg --print-architecture)" \
   && if [ "$ARCH" = "amd64" ]; then \
   apt-get install -y --no-install-recommends google-chrome-stable; \
