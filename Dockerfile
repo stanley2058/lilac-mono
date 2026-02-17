@@ -1,4 +1,5 @@
-ARG BASE_IMAGE=node:22-bookworm-slim
+ARG BASE_IMAGE=ubuntu:24.04
+ARG NODE_MAJOR=22
 ARG CONTAINER_USER=lilac
 ARG CONTAINER_UID=1000
 
@@ -6,6 +7,7 @@ ARG CONTAINER_UID=1000
 # Stage 1: sandbox tools
 ############################
 FROM ${BASE_IMAGE} AS tools
+ARG NODE_MAJOR
 ARG CONTAINER_USER
 ARG CONTAINER_UID
 ENV LILAC_USER=${CONTAINER_USER}
@@ -13,35 +15,62 @@ ENV LILAC_UID=${CONTAINER_UID}
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  bash \
   ca-certificates \
   curl \
-  git \
   gnupg \
-  pinentry-curses \
-  jq \
-  ripgrep \
-  fd-find \
-  tar \
-  gzip \
-  unzip \
-  python3 \
-  python3-venv \
-  python3-pip \
-  python-is-python3 \
-  chromium \
-  sqlite3 \
-  openssh-client \
-  iputils-ping \
-  dnsutils \
-  iproute2 \
-  ffmpeg \
-  imagemagick \
-  fonts-liberation \
-  fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
 
-# Debian calls it "fdfind"
+RUN install -d -m 0755 /etc/apt/keyrings \
+  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+  && chmod a+r /etc/apt/keyrings/nodesource.gpg \
+  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list \
+  && ARCH="$(dpkg --print-architecture)" \
+  && if [ "$ARCH" = "amd64" ]; then \
+       curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+         | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg; \
+       chmod a+r /etc/apt/keyrings/google-chrome.gpg; \
+       echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+         > /etc/apt/sources.list.d/google-chrome.list; \
+     fi
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash \
+  build-essential \
+  cmake \
+  dnsutils \
+  fd-find \
+  ffmpeg \
+  fonts-liberation \
+  fonts-noto-color-emoji \
+  git \
+  gzip \
+  imagemagick \
+  iproute2 \
+  iputils-ping \
+  jq \
+  libvulkan1 \
+  mesa-vulkan-drivers \
+  nodejs \
+  openssh-client \
+  pinentry-curses \
+  python-is-python3 \
+  python3 \
+  python3-pip \
+  python3-venv \
+  ripgrep \
+  sqlite3 \
+  tar \
+  unzip \
+  vulkan-tools \
+  && ARCH="$(dpkg --print-architecture)" \
+  && if [ "$ARCH" = "amd64" ]; then \
+       apt-get install -y --no-install-recommends google-chrome-stable; \
+     fi \
+  && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu/Debian call it "fdfind"
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # Non-root user (needed for bun/npm global installs)

@@ -4,6 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:24.04}
+        NODE_MAJOR: ${NODE_MAJOR:-22}
         CONTAINER_USER: ${CONTAINER_USER:-lilac}
         CONTAINER_UID: ${CONTAINER_UID:-1000}
     image: lilac:dev

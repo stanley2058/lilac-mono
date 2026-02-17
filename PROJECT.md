@@ -72,7 +72,7 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
 
 - `compose.yaml` and `Dockerfile`
   - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
-  - The docker build installs Bun, system tools (git, rg, chromium, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+  - The docker build installs Bun, system tools (git, rg, browser dependencies, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
   - Docker compose persists extra home directories for agent ergonomics:
     - `./home/agents:/home/lilac/.agents`
     - `./home/.ssh:/home/lilac/.ssh`
