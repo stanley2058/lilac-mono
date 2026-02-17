@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=ubuntu:24.04
 ARG NODE_MAJOR=22
-ARG CONTAINER_USER=lilac
-ARG CONTAINER_UID=1000
+ARG CONTAINER_USER=Catalinna
+ARG CONTAINER_UID=3000
 
 ############################
 # Stage 1: sandbox tools
