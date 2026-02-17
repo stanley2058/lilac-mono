@@ -101,6 +101,8 @@ export type CmdRequestMessageData = {
 export type CmdSurfaceOutputReanchorData = {
   /** When true, keep the relay's current reply mode (reply vs top-level). */
   inheritReplyTo: boolean;
+  /** Optional reanchor mode for UI placeholders. */
+  mode?: "steer" | "interrupt";
   /** Override reply target when inheritReplyTo=false; omit for top-level. */
   replyTo?: SurfaceMsgRef;
 };

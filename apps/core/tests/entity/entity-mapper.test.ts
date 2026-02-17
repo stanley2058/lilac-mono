@@ -57,3 +57,48 @@ describe("createDiscordEntityMapper.extractOutgoingMentionUserIds", () => {
     expect(mapper.extractOutgoingMentionUserIds("```\n<@456>\n```")).toEqual([]);
   });
 });
+
+describe("createDiscordEntityMapper.normalizeIncomingText", () => {
+  it("maps bot mention ids to a friendly configured bot name from store", () => {
+    const cfg = buildCfg();
+    const store = new DiscordSurfaceStore(":memory:");
+    store.upsertUserName({
+      userId: "999",
+      username: "lilac",
+      globalName: "lilac",
+      displayName: "lilac",
+      updatedTs: Date.now(),
+    });
+
+    const mapper = createDiscordEntityMapper({ cfg, store });
+
+    expect(mapper.normalizeIncomingText("hi <@999>")).toBe("hi @lilac");
+  });
+
+  it("prefers configured aliases over store display names", () => {
+    const base = buildCfg();
+    const existingUsers = base.entity?.users ?? {};
+    const cfg: CoreConfig = {
+      ...base,
+      entity: {
+        users: {
+          ...existingUsers,
+          BotAlias: { discord: "999" },
+        },
+        sessions: { discord: {} },
+      },
+    };
+    const store = new DiscordSurfaceStore(":memory:");
+    store.upsertUserName({
+      userId: "999",
+      username: "some_other_name",
+      globalName: "some_other_name",
+      displayName: "some_other_name",
+      updatedTs: Date.now(),
+    });
+
+    const mapper = createDiscordEntityMapper({ cfg, store });
+
+    expect(mapper.normalizeIncomingText("hi <@999>")).toBe("hi @BotAlias");
+  });
+});

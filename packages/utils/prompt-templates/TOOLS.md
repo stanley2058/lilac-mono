@@ -18,6 +18,9 @@ You have access to three tiers of tools:
 
 - Preinstalled handy tools: `node`, `npm`, `bun`, `python`, `uv`, `curl`, `rg`, `fd`, `jq`, `curl`, `git`, `ffmpeg`, `imagemagick (6)`
 - Prefer `bun` over `node` and `npm`; `bunx` over `npx`
+- Bash command logs and returned stdout/stderr may redact secrets as `<redacted>`; this is a display transform, not the runtime value actually used.
+  - Use pipes when possible; Reading `.env`/credential files is allowed when the task legitimately requires it.
+  - Never surface a secret, give the user the path or command to read it themself.
 
 ## Remote Workdirs (SSH-style cwd)
 

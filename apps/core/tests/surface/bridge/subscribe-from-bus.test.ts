@@ -691,6 +691,53 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("uses interrupt reanchor abort reason for interrupt-mode reanchors", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_interrupt_reanchor";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true, mode: "interrupt" },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams.length).toBe(2);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor_interrupt");
+
+    await bridge.stop();
+  });
+
   it("cancels an active relay on cmd.request cancel and clears typing", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

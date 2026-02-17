@@ -256,6 +256,14 @@ export class DiscordAdapter implements SurfaceAdapter {
         userName: botName,
       };
 
+      this.store?.upsertUserName({
+        userId: user.id,
+        username: botName,
+        globalName: botName,
+        displayName: botName,
+        updatedTs: Date.now(),
+      });
+
       this.logger.info("ready", {
         userId: user.id,
         botName,
