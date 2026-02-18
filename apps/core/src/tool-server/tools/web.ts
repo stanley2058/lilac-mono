@@ -8,6 +8,7 @@ import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
+import path from "node:path";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 
@@ -55,6 +56,9 @@ export class Web implements ServerTool {
   private tavily: TavilyClient | null = null;
   private webSearchProvider: WebSearchProvider | null = null;
   private webSearchProviderError: string | null = null;
+  private webSearchProviderKey: string | null = null;
+  private webSearchCoreConfigMtimeMs: number | null = null;
+  private webSearchProviderFromCoreConfig: string | undefined;
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null = null;
   private browserInit: Promise<{
@@ -70,6 +74,102 @@ export class Web implements ServerTool {
     });
   }
 
+  private async loadWebSearchProviderFromCoreConfig(): Promise<string | undefined> {
+    const configPath = path.join(env.dataDir, "core-config.yaml");
+
+    const stat = await fs.stat(configPath).catch(() => null);
+    if (!stat) {
+      this.webSearchCoreConfigMtimeMs = null;
+      this.webSearchProviderFromCoreConfig = undefined;
+      return undefined;
+    }
+
+    if (this.webSearchCoreConfigMtimeMs === stat.mtimeMs) {
+      return this.webSearchProviderFromCoreConfig;
+    }
+    this.webSearchCoreConfigMtimeMs = stat.mtimeMs;
+
+    const raw = await Bun.file(configPath).text();
+    const parsed = Bun.YAML.parse(raw) as unknown;
+
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+
+    let provider: unknown = undefined;
+    if (isRecord(parsed)) {
+      const tools = parsed["tools"];
+      if (isRecord(tools)) {
+        const web = tools["web"];
+        if (isRecord(web)) {
+          const search = web["search"];
+          if (isRecord(search)) {
+            provider = search["provider"];
+          }
+        }
+      }
+    }
+
+    this.webSearchProviderFromCoreConfig = typeof provider === "string" ? provider : undefined;
+    return this.webSearchProviderFromCoreConfig;
+  }
+
+  private async refreshWebSearchProvider(): Promise<void> {
+    let providerFromConfig: string | undefined;
+    try {
+      providerFromConfig = await this.loadWebSearchProviderFromCoreConfig();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.logError(`Failed to read core-config.yaml for web.search provider: ${msg}`);
+      providerFromConfig = undefined;
+    }
+
+    const normalizedRequested = providerFromConfig?.trim().toLowerCase() ?? "";
+    const effectiveRequested = normalizedRequested === "exa" ? "exa" : "tavily";
+
+    const exaBaseUrl = env.tools.web.exa.baseUrl;
+    const exaApiKey = env.tools.web.exa.apiKey;
+    const tavilyApiKey = env.tools.web.tavilyApiKey;
+
+    const nextKey = JSON.stringify({
+      requested: normalizedRequested || null,
+      exaBaseUrl: exaBaseUrl ?? null,
+      hasExaApiKey: Boolean(exaApiKey),
+      hasTavilyApiKey: Boolean(tavilyApiKey),
+    });
+    if (nextKey === this.webSearchProviderKey) return;
+    this.webSearchProviderKey = nextKey;
+
+    if (normalizedRequested && normalizedRequested !== "tavily" && normalizedRequested !== "exa") {
+      this.logger.logInfo(
+        `Unknown tools.web.search.provider '${providerFromConfig}' in core-config.yaml; defaulting to 'tavily'.`,
+      );
+    }
+
+    const prevId = this.webSearchProvider?.id ?? null;
+
+    const resolved = resolveWebSearchProvider({
+      requested: effectiveRequested,
+      providers: createDefaultWebSearchProviders({
+        exa: {
+          baseUrl: exaBaseUrl,
+          apiKey: exaApiKey,
+        },
+        tavilyApiKey,
+      }),
+    });
+
+    this.webSearchProvider = resolved.provider;
+    this.webSearchProviderError = resolved.error;
+
+    const nextId = this.webSearchProvider?.id ?? null;
+    if (nextId && nextId !== prevId) {
+      this.logger.logInfo(`web.search provider: ${nextId}`);
+    }
+    if (!nextId && this.webSearchProviderError) {
+      this.logger.logError(this.webSearchProviderError);
+    }
+  }
+
   async init() {
     if (!env.tools.web.tavilyApiKey) {
       this.logger.logError(
@@ -79,31 +179,7 @@ export class Web implements ServerTool {
       this.tavily = tavily({ apiKey: env.tools.web.tavilyApiKey });
     }
 
-    const requested = env.tools.web.searchProvider;
-    const normalizedRequested = typeof requested === "string" ? requested.trim().toLowerCase() : "";
-    if (normalizedRequested && normalizedRequested !== "tavily" && normalizedRequested !== "exa") {
-      this.logger.logInfo(`Unknown WEB_SEARCH_PROVIDER '${requested}'; defaulting to 'tavily'.`);
-    }
-
-    const resolved = resolveWebSearchProvider({
-      requested,
-      providers: createDefaultWebSearchProviders({
-        exa: {
-          baseUrl: env.tools.web.exa.baseUrl,
-          apiKey: env.tools.web.exa.apiKey,
-        },
-        tavilyApiKey: env.tools.web.tavilyApiKey,
-      }),
-    });
-
-    this.webSearchProvider = resolved.provider;
-    this.webSearchProviderError = resolved.error;
-
-    if (this.webSearchProvider) {
-      this.logger.logInfo(`web.search provider: ${this.webSearchProvider.id}`);
-    } else if (this.webSearchProviderError) {
-      this.logger.logError(this.webSearchProviderError);
-    }
+    await this.refreshWebSearchProvider();
 
     this.logger.logInfo("Web extension initialized");
   }
@@ -207,6 +283,8 @@ export class Web implements ServerTool {
     },
   ) {
     const input = webSearchInputSchema.parse(rawInput);
+
+    await this.refreshWebSearchProvider();
 
     if (!this.webSearchProvider) {
       return {

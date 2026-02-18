@@ -37,13 +37,17 @@ There are two config surfaces:
 
 This fork keeps the upstream `tools search` input/output contract but allows swapping the search backend.
 
-### Configure provider (env)
+### Configure provider (core-config.yaml)
 
-```bash
-# Optional. Default: tavily.
-# Supported: tavily | exa
-# Any other value falls back to tavily.
-WEB_SEARCH_PROVIDER=tavily
+Add this to `data/core-config.yaml`:
+
+```yaml
+tools:
+  web:
+    search:
+      # tavily (default) or exa
+      # any other value falls back to tavily
+      provider: tavily
 ```
 
 ### Configure credentials + endpoints (env)
@@ -64,7 +68,7 @@ EXA_API_BASE_URL=https://api.exa.ai
 ### Provider selection policy
 
 - Default provider is Tavily.
-- Only `WEB_SEARCH_PROVIDER=exa` switches to Exa.
+- Only `tools.web.search.provider: exa` switches to Exa.
 - Missing/unknown provider values fall back to Tavily and log an info line.
 - No automatic failover between providers.
 
@@ -78,7 +82,7 @@ EXA_API_BASE_URL=https://api.exa.ai
 
 ### Tool server modes
 
-- Core runtime and tool-bridge both use the same env-driven provider selection.
+- Core runtime and tool-bridge both read `data/core-config.yaml` (via `DATA_DIR`) and apply the same provider selection.
 
 ## Author Murmur
 
