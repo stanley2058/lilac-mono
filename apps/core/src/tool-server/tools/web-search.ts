@@ -95,7 +95,7 @@ export function resolveWebSearchProvider(params: {
       provider: null,
       error: `web.search is unavailable: provider '${requested}' is not registered. Registered: ${ids.join(", ") || "none"}.`,
     };
-  }z
+  }
 
   if (!p.isConfigured()) {
     return {
