@@ -110,4 +110,72 @@ describe("ModelCapability", () => {
     expect(info.npm).toBe("@ai-sdk/openai");
     expect(info.env).toEqual(["OPENAI_API_KEY"]);
   });
+
+  it("best-effort matches version delimiters when wrapper uses dots and models.dev uses dashes", async () => {
+    const registry = {
+      vercel: {
+        id: "vercel",
+        env: ["AI_GATEWAY_API_KEY"],
+        npm: "@ai-sdk/gateway",
+        name: "AI Gateway",
+        models: {},
+      },
+      anthropic: {
+        id: "anthropic",
+        env: ["ANTHROPIC_API_KEY"],
+        npm: "@ai-sdk/anthropic",
+        name: "Anthropic",
+        models: {
+          "claude-sonnet-4-6": {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            family: "claude-sonnet-4",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 200_000, output: 64_000 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+    });
+
+    const info = await mc.resolve("vercel/anthropic/claude-sonnet-4.6");
+    expect(info.provider).toBe("vercel");
+    expect(info.model).toBe("anthropic/claude-sonnet-4.6");
+    expect(info.limit.context).toBe(200_000);
+    expect(info.npm).toBe("@ai-sdk/gateway");
+    expect(info.env).toEqual(["AI_GATEWAY_API_KEY"]);
+  });
+
+  it("best-effort matches version delimiters for direct provider lookups", async () => {
+    const registry = {
+      anthropic: {
+        id: "anthropic",
+        npm: "@ai-sdk/anthropic",
+        name: "Anthropic",
+        models: {
+          "claude-sonnet-4-6": {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            family: "claude-sonnet-4",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 200_000, output: 64_000 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+    });
+
+    const info = await mc.resolve("anthropic/claude-sonnet-4.6");
+    expect(info.provider).toBe("anthropic");
+    expect(info.model).toBe("claude-sonnet-4.6");
+    expect(info.limit.context).toBe(200_000);
+  });
 });

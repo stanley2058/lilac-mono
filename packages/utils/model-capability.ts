@@ -161,13 +161,44 @@ export class ModelCapability {
     }
   }
 
+  private modelLookupCandidates(model: string): string[] {
+    const candidates = [model];
+
+    // Some providers encode version separators differently (e.g. 4.6 vs 4-6).
+    const dotToDash = model.replace(/(\d)\.(\d)/g, "$1-$2");
+    if (dotToDash !== model) {
+      candidates.push(dotToDash);
+    }
+
+    const dashToDot = model.replace(/(\d)-(\d)/g, "$1.$2");
+    if (dashToDot !== model && dashToDot !== dotToDash) {
+      candidates.push(dashToDot);
+    }
+
+    return candidates;
+  }
+
+  private lookupModelEntry(
+    providerEntry: ModelsDevProvider | undefined,
+    model: string,
+  ): ModelsDevModel | null {
+    if (!providerEntry) return null;
+
+    for (const candidate of this.modelLookupCandidates(model)) {
+      const modelEntry = providerEntry.models[candidate];
+      if (modelEntry) return modelEntry;
+    }
+
+    return null;
+  }
+
   private lookupWithFallback(params: {
     registry: ModelsDevRegistry;
     provider: string;
     model: string;
   }): RegistryLookupResult | null {
     const providerEntry = params.registry[params.provider];
-    const directModelEntry = providerEntry?.models[params.model];
+    const directModelEntry = this.lookupModelEntry(providerEntry, params.model);
     if (providerEntry && directModelEntry) {
       return {
         providerEntry,
@@ -184,7 +215,7 @@ export class ModelCapability {
 
     const fallbackProvider = this.normalizeProvider(nested.provider);
     const fallbackProviderEntry = params.registry[fallbackProvider];
-    const fallbackModelEntry = fallbackProviderEntry?.models[nested.model];
+    const fallbackModelEntry = this.lookupModelEntry(fallbackProviderEntry, nested.model);
     if (!fallbackProviderEntry || !fallbackModelEntry) {
       return null;
     }
