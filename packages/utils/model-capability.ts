@@ -102,6 +102,11 @@ type ModelsDevModel = {
   limit: ModelLimits;
 };
 
+type RegistryLookupResult = {
+  providerEntry: ModelsDevProvider;
+  modelEntry: ModelsDevModel;
+};
+
 export function parseModelSpecifier(spec: string): {
   provider: string;
   model: string;
@@ -148,6 +153,48 @@ export class ModelCapability {
     return this.providerAliases[provider] ?? provider;
   }
 
+  private parseNestedModelSpecifier(model: string): { provider: string; model: string } | null {
+    try {
+      return parseModelSpecifier(model);
+    } catch {
+      return null;
+    }
+  }
+
+  private lookupWithFallback(params: {
+    registry: ModelsDevRegistry;
+    provider: string;
+    model: string;
+  }): RegistryLookupResult | null {
+    const providerEntry = params.registry[params.provider];
+    const directModelEntry = providerEntry?.models[params.model];
+    if (providerEntry && directModelEntry) {
+      return {
+        providerEntry,
+        modelEntry: directModelEntry,
+      };
+    }
+
+    if (params.provider !== "openrouter" && params.provider !== "vercel") {
+      return null;
+    }
+
+    const nested = this.parseNestedModelSpecifier(params.model);
+    if (!nested) return null;
+
+    const fallbackProvider = this.normalizeProvider(nested.provider);
+    const fallbackProviderEntry = params.registry[fallbackProvider];
+    const fallbackModelEntry = fallbackProviderEntry?.models[nested.model];
+    if (!fallbackProviderEntry || !fallbackModelEntry) {
+      return null;
+    }
+
+    return {
+      providerEntry: providerEntry ?? fallbackProviderEntry,
+      modelEntry: fallbackModelEntry,
+    };
+  }
+
   private async loadRegistry(signal?: AbortSignal): Promise<ModelsDevRegistry> {
     if (!this.registryPromise) {
       this.registryPromise = (async () => {
@@ -192,21 +239,28 @@ export class ModelCapability {
     const provider = this.normalizeProvider(parsed.provider);
 
     const registry = await this.loadRegistry(options?.signal);
-    const providerEntry = registry[provider];
-    if (!providerEntry) {
-      const available = listSomeKeys(registry, 10);
-      throw new Error(
-        `Unknown provider '${provider}' for spec '${spec}'. Add an override, or ensure models.dev contains it. Available providers (sample): ${available.join(", ")}`,
-      );
-    }
+    const lookedUp = this.lookupWithFallback({
+      registry,
+      provider,
+      model: parsed.model,
+    });
 
-    const modelEntry = providerEntry.models[parsed.model];
-    if (!modelEntry) {
+    if (!lookedUp) {
+      const providerEntry = registry[provider];
+      if (!providerEntry) {
+        const available = listSomeKeys(registry, 10);
+        throw new Error(
+          `Unknown provider '${provider}' for spec '${spec}'. Add an override, or ensure models.dev contains it. Available providers (sample): ${available.join(", ")}`,
+        );
+      }
+
       const available = listSomeKeys(providerEntry.models, 10);
       throw new Error(
         `Unknown model '${parsed.model}' for provider '${provider}' (spec '${spec}'). Add an override, or ensure models.dev contains it. Available models (sample): ${available.join(", ")}`,
       );
     }
+
+    const { providerEntry, modelEntry } = lookedUp;
 
     return {
       provider: parsed.provider,
