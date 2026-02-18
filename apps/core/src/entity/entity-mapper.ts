@@ -5,16 +5,6 @@ import type { DiscordSurfaceStore } from "../surface/store/discord-surface-store
 export type EntityMapper = {
   normalizeIncomingText(text: string): string;
   rewriteOutgoingText(text: string): string;
-
-  /**
-   * Extract explicit Discord user ids the agent tried to tag.
-   *
-   * Rules:
-   * - ignores markdown code segments (inline + fenced)
-   * - supports config-backed "@Name" (cfg.entity.users)
-   * - supports explicit "<@id>" / "<@!id>"
-   */
-  extractOutgoingMentionUserIds(text: string): string[];
 };
 
 type Segment = { kind: "text" | "code"; value: string };
@@ -140,13 +130,6 @@ export function createDiscordEntityMapper(deps: {
     return fromDb;
   }
 
-  function resolveUserIdByUsernameFromConfigOnly(usernameRaw: string): string | null {
-    const username = sanitizeToken(usernameRaw);
-    const lc = username.toLowerCase();
-    const fromCfg = cfgIndex.userByUsernameLc.get(lc);
-    return fromCfg ? fromCfg.userId : null;
-  }
-
   function resolveCanonicalUsernameByUserId(userId: string): string | null {
     const cfgUser = cfgIndex.userById.get(userId);
     if (cfgUser) return cfgUser.canonical;
@@ -219,31 +202,6 @@ export function createDiscordEntityMapper(deps: {
     });
   }
 
-  function extractOutgoingMentionUserIds(text: string): string[] {
-    const ids = new Set<string>();
-
-    const segments = splitMarkdownCodeSegments(text);
-    for (const seg of segments) {
-      if (seg.kind !== "text") continue;
-
-      // Explicit Discord mentions: <@id> / <@!id>
-      for (const m of seg.value.matchAll(/<@!?([0-9]+)>/gu)) {
-        const id = String(m[1] ?? "").trim();
-        if (id) ids.add(id);
-      }
-
-      // Config-backed tokens: @Name (only from cfg, not DB).
-      for (const m of seg.value.matchAll(/(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu)) {
-        const username = String(m[2] ?? "").trim();
-        if (!username) continue;
-        const id = resolveUserIdByUsernameFromConfigOnly(username);
-        if (id) ids.add(id);
-      }
-    }
-
-    return [...ids];
-  }
-
   function normalizeIncomingText(text: string): string {
     return mapTextSegments(text, (seg) => {
       // Users: <@id> / <@!id>
@@ -273,5 +231,5 @@ export function createDiscordEntityMapper(deps: {
     cachedTokenByChannelId.set(channelId, v.canonical);
   }
 
-  return { normalizeIncomingText, rewriteOutgoingText, extractOutgoingMentionUserIds };
+  return { normalizeIncomingText, rewriteOutgoingText };
 }

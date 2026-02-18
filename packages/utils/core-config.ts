@@ -157,22 +157,18 @@ const discordSurfaceSchema = z
       .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
     statusMessage: z.string().optional(),
 
-    /** Optional mention notification behavior for bot-authored messages. */
-    mentionNotifications: z
-      .object({
-        /** If true, send a dedicated mention-only ping message in active-mode sessions. */
-        enabled: z.boolean().default(false),
-        /** Max distinct users to ping per response. */
-        maxUsers: z.number().int().positive().max(25).default(5),
-      })
-      .default({ enabled: false, maxUsers: 5 }),
+    /** Output rendering mode for Discord reply streams. */
+    outputMode: z.enum(["inline", "preview"]).default("inline"),
+
+    /** Optional: allow Discord reply + @mention notifications for output messages. */
+    outputNotification: z.boolean().optional(),
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",
     allowedChannelIds: [],
     allowedGuildIds: [],
     botName: "lilac",
-    mentionNotifications: { enabled: false, maxUsers: 5 },
+    outputMode: "inline",
   });
 
 export const coreConfigSchema = z.object({
@@ -193,7 +189,7 @@ export const coreConfigSchema = z.object({
         allowedChannelIds: [],
         allowedGuildIds: [],
         botName: "lilac",
-        mentionNotifications: { enabled: false, maxUsers: 5 },
+        outputMode: "inline",
       },
     }),
 

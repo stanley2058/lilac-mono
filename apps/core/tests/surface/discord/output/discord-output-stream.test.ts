@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  buildOutputAllowedMentions,
   buildThinkingDisplay,
   clampReasoningDetail,
   escapeDiscordMarkdown,
   formatReasoningAsBlockquote,
+  toPreviewTail,
 } from "../../../../src/surface/discord/output/discord-output-stream";
 
 describe("escapeDiscordMarkdown", () => {
@@ -74,5 +76,52 @@ describe("reasoning display helpers", () => {
         detailText: "line 1\nline 2",
       }),
     ).toBe("");
+  });
+});
+
+describe("preview tail helper", () => {
+  it("returns input unchanged when already within limit", () => {
+    expect(toPreviewTail("hello", 10)).toBe("hello");
+  });
+
+  it("tails to exact max length with ellipsis prefix", () => {
+    const out = toPreviewTail("0123456789", 6);
+    expect(out).toBe("...789");
+    expect(out.length).toBe(6);
+  });
+});
+
+describe("output mention policy", () => {
+  it("disables reply and mentions when notifications are off", () => {
+    expect(
+      buildOutputAllowedMentions({
+        notificationsEnabled: false,
+        previewMode: false,
+        isReply: true,
+        isFinalLane: true,
+      }),
+    ).toEqual({ parse: [], repliedUser: false });
+  });
+
+  it("suppresses notifications on preview transient lane", () => {
+    expect(
+      buildOutputAllowedMentions({
+        notificationsEnabled: true,
+        previewMode: true,
+        isReply: true,
+        isFinalLane: false,
+      }),
+    ).toEqual({ parse: [], repliedUser: false });
+  });
+
+  it("enables user mentions and reply ping on preview final lane", () => {
+    expect(
+      buildOutputAllowedMentions({
+        notificationsEnabled: true,
+        previewMode: true,
+        isReply: true,
+        isFinalLane: true,
+      }),
+    ).toEqual({ parse: ["users"], repliedUser: true });
   });
 });

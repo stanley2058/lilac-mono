@@ -21,40 +21,30 @@ function buildCfg(): CoreConfig {
   };
 }
 
-describe("createDiscordEntityMapper.extractOutgoingMentionUserIds", () => {
-  it("extracts config-backed @Name", () => {
+describe("createDiscordEntityMapper.rewriteOutgoingText", () => {
+  it("rewrites config-backed @Name to explicit discord mention", () => {
     const cfg = buildCfg();
     const store = new DiscordSurfaceStore(":memory:");
     const mapper = createDiscordEntityMapper({ cfg, store });
 
-    expect(mapper.extractOutgoingMentionUserIds("hi @Stanley")).toEqual(["123"]);
+    expect(mapper.rewriteOutgoingText("hi @Stanley")).toBe("hi <@123>");
   });
 
-  it("extracts explicit <@id> and <@!id>", () => {
+  it("keeps unknown @Name tokens unchanged", () => {
     const cfg = buildCfg();
     const store = new DiscordSurfaceStore(":memory:");
     const mapper = createDiscordEntityMapper({ cfg, store });
 
-    expect(mapper.extractOutgoingMentionUserIds("ping <@456>")).toEqual(["456"]);
-    expect(mapper.extractOutgoingMentionUserIds("ping <@!456>")).toEqual(["456"]);
+    expect(mapper.rewriteOutgoingText("hi @NotAUser")).toBe("hi @NotAUser");
   });
 
-  it("ignores unknown @Name", () => {
+  it("does not rewrite mentions inside inline and fenced code", () => {
     const cfg = buildCfg();
     const store = new DiscordSurfaceStore(":memory:");
     const mapper = createDiscordEntityMapper({ cfg, store });
 
-    expect(mapper.extractOutgoingMentionUserIds("hi @NotAUser")).toEqual([]);
-  });
-
-  it("ignores mentions inside inline and fenced code", () => {
-    const cfg = buildCfg();
-    const store = new DiscordSurfaceStore(":memory:");
-    const mapper = createDiscordEntityMapper({ cfg, store });
-
-    expect(mapper.extractOutgoingMentionUserIds("`@Stanley`")).toEqual([]);
-    expect(mapper.extractOutgoingMentionUserIds("```\n@Stanley\n```")).toEqual([]);
-    expect(mapper.extractOutgoingMentionUserIds("```\n<@456>\n```")).toEqual([]);
+    expect(mapper.rewriteOutgoingText("`@Stanley`")).toBe("`@Stanley`");
+    expect(mapper.rewriteOutgoingText("```\n@Stanley\n```")).toBe("```\n@Stanley\n```");
   });
 });
 
