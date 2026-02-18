@@ -57,6 +57,9 @@ export function parseEnv() {
     tools: {
       web: {
         tavilyApiKey: env.TAVILY_API_KEY,
+        exa: {
+          apiKey: env.EXA_API_KEY,
+        },
       },
     },
     github: {

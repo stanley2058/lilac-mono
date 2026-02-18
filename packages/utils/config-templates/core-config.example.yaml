@@ -1,5 +1,12 @@
 basePrompt: "You are Lilac."
 
+tools:
+  web:
+    search:
+      provider: tavily
+    exa:
+      baseUrl: "https://api.exa.ai"
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:

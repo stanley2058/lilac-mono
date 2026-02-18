@@ -1,52 +1,71 @@
-# Lilac Monorepo
+# Lilac Monorepo (Fork)
 
-Lilac is an event-driven agent runtime: a typed Redis Streams event bus + surface adapters (Discord, with optional GitHub webhook integration) + an agent runner (AI SDK) + an HTTP tool server and `tools` CLI.
+This repository is a fork of the upstream project.
 
-- Architecture/terminology: `PROJECT.md`
-- Repo conventions for coding agents: `AGENTS.md`
+| Upstream | https://github.com/stanley2058/lilac-mono |
+| --- | --- |
+| Upstream README | https://github.com/stanley2058/lilac-mono/blob/main/README.md |
 
-## Layout
+This README intentionally documents only what differs in this fork. For full documentation and usage, follow the upstream README link above.
 
-- `apps/core/`: core runtime (Discord + optional GitHub surfaces, bus wiring, router, agent runner, workflow, tool server)
-- `apps/tool-bridge/`: dev-mode tool server entry + `tools` CLI bundle (builds to `dist/`)
-- `apps/opencode-controller/`: OpenCode SDK wrapper CLI (`lilac-opencode`), builds to `dist/`
-- `packages/event-bus/`: typed event spec + Redis Streams transport
-- `packages/agent/`: AI SDK streaming agent wrapper
-- `packages/utils/`: env/config parsing, model providers, prompt + skills utilities
-- `data/`: local runtime state (config, prompts, sqlite dbs, default workspace)
-- `ref/`: vendored upstream references (treat as read-only unless a task says otherwise)
+## Fork-only changes (vs upstream)
 
-## Install
+| Area | What changed in this fork | Where |
+| --- | --- | --- |
+| CI | Scheduled upstream sync (auto-merge `upstream/main` into `main`) and triggers image build on updates | `.github/workflows/sync-upstream.yml` |
+| CI | Build & push Docker image to GHCR on `main` pushes | `.github/workflows/build-image.yml` |
+| Docker | Container default user/uid and workspace env var name differ from upstream | `Dockerfile` |
+| Tools | `tools search` supports Exa backend (via `exa-js`) while preserving Tavily-default behavior | `apps/core/src/tool-server/tools/web.ts`, `apps/core/src/tool-server/tools/web-search.ts` |
 
-This monorepo uses Bun workspaces. Install dependencies in the workspace(s) you work on:
+## Web Search Provider (Notes / Workarounds)
 
-- `cd apps/core && bun install`
-- `cd apps/tool-bridge && bun install`
-- `cd apps/opencode-controller && bun install`
-- `cd packages/event-bus && bun install`
-- `cd packages/utils && bun install`
-- `cd packages/agent && bun install`
+This fork keeps the upstream `tools search` contract but makes the backend configurable.
 
-## Build / Test / Typecheck
+### Configuration
 
-- Build the `tools` CLI: `cd apps/tool-bridge && bun run build`
-- Build the `lilac-opencode` CLI: `cd apps/opencode-controller && bun run build`
-- Run all tests (workspace harness): `bun test`
-- Run workspace tests: `cd apps/core && bun test`
-- Typecheck `lilac-opencode`: `cd apps/opencode-controller && bun run typecheck`
-- Typecheck (per workspace): `cd <workspace> && bunx tsc -p tsconfig.json --noEmit`
-- Lint workspaces: `bun run lint`
-- Lint and auto-fix where possible: `bun run lint:fix`
-- Format check (code + JSON): `bun run fmt:check`
-- Format write (code + JSON): `bun run fmt`
+Runtime behavior lives in `core-config.yaml` (default path: `data/core-config.yaml`). Secrets stay in environment variables.
 
-## Running
+`core-config.yaml`:
 
-Most commands below are long-running.
+```yaml
+tools:
+  web:
+    search:
+      provider: tavily # or "exa"; any other value falls back to tavily
+    exa:
+      # Optional. If omitted, exa-js uses its default (https://api.exa.ai).
+      # You can set this to an Exa-compatible proxy such as exa-pool.
+      baseUrl: "https://api.exa.ai"
+```
 
-- Docker dev (includes Redis): `docker compose up --build`
-- Core runtime (needs `REDIS_URL` + Discord config): `bun apps/core/src/runtime/main.ts`
-  - Important: with default `core-config.yaml`, both Discord allowlists are empty, so the bot ignores all Discord traffic until you set at least one of `surface.discord.allowedChannelIds` or `surface.discord.allowedGuildIds`.
-- Tool server only (dev mode): `bun apps/tool-bridge/index.ts`
-- `tools` CLI (after building): `./apps/tool-bridge/dist/index.js --list`
-  - Target a different server with `TOOL_SERVER_BACKEND_URL=http://host:port`
+Environment variables:
+
+```bash
+# Required when provider=tavily
+TAVILY_API_KEY=...
+
+# Required when provider=exa
+EXA_API_KEY=...
+```
+
+### Provider Selection Policy
+
+The selection rule is intentionally conservative to preserve original lilac-mono behavior:
+
+- Default provider is Tavily.
+- Only `provider: exa` switches to Exa.
+- Missing/unknown provider values fall back to Tavily and log an info line.
+- No automatic failover between providers (avoids silently sending queries to a different vendor).
+
+### Result Shape Compatibility
+
+`tools search` still returns a list of `{ url, title, content, score }`.
+
+- Tavily provider uses Tavily's search `content` as-is.
+- Exa provider normalizes `content` as a snippet (not full-page text): `highlights` -> `summary` -> `text`.
+  This keeps `content` closer to Tavily's “snippet” semantics.
+
+### Tool Server Modes
+
+- Core runtime loads `core-config.yaml` and applies the provider policy.
+- `apps/tool-bridge/index.ts` also loads `core-config.yaml` so local `tools` calls behave the same as core runtime.
