@@ -137,6 +137,8 @@ export interface ReadFileOptions {
   maxCharacters?: number;
   /** Output format, defaults to "raw" */
   format?: "raw" | "numbered";
+  /** Bypass denylist guardrails for this call. */
+  dangerouslyAllow?: boolean;
 }
 
 export type FileEdit =
@@ -271,6 +273,8 @@ export type GlobOpts = {
    * Output verbosity mode. Default is default.
    */
   mode?: SearchMode;
+  /** Bypass denylist guardrails for this call. */
+  dangerouslyAllow?: boolean;
 };
 
 export type GrepOpts = {
@@ -286,6 +290,8 @@ export type GrepOpts = {
    * Output verbosity mode. Default is default.
    */
   mode?: SearchMode;
+  /** Bypass denylist guardrails for this call. */
+  dangerouslyAllow?: boolean;
 };
 
 export type FileSystemEventType = "readFile" | "writeFile" | "editFile" | "deleteFile";
@@ -328,7 +334,8 @@ export class FileSystem {
     return false;
   }
 
-  private assertAllowed(resolvedPath: string, op: string): void {
+  private assertAllowed(resolvedPath: string, op: string, dangerouslyAllow = false): void {
+    if (dangerouslyAllow) return;
     if (!this.isDeniedPath(resolvedPath)) return;
 
     const err = Object.assign(new Error(`Access denied: '${resolvedPath}' is blocked for ${op}`), {
@@ -364,9 +371,15 @@ export class FileSystem {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
-      this.assertAllowed(resolvedPath, "readFile");
+      const {
+        startLine = 1,
+        maxLines = 2000,
+        maxCharacters = 10000,
+        format = "raw",
+        dangerouslyAllow = false,
+      } = opts;
 
-      const { startLine = 1, maxLines = 2000, maxCharacters = 10000, format = "raw" } = opts;
+      this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
 
       const file = await fs.readFile(resolvedPath, "utf-8");
       const fileHash = this.hash(file);
@@ -446,11 +459,20 @@ export class FileSystem {
    * This is intended for binary files (images, PDFs, etc.) where reading as utf-8
    * would corrupt the data.
    */
-  async readFileBytes({ path }: { path: string }, cwd?: string): Promise<ReadFileBytesResult> {
+  async readFileBytes(
+    {
+      path,
+      dangerouslyAllow = false,
+    }: {
+      path: string;
+      dangerouslyAllow?: boolean;
+    },
+    cwd?: string,
+  ): Promise<ReadFileBytesResult> {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
-      this.assertAllowed(resolvedPath, "readFile");
+      this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
 
       const bytes = await fs.readFile(resolvedPath);
       const fileHash = this.hash(bytes);
@@ -642,17 +664,19 @@ export class FileSystem {
       path,
       edits,
       expectedHash,
+      dangerouslyAllow = false,
     }: {
       path: string;
       edits: FileEdit[];
       expectedHash?: string;
+      dangerouslyAllow?: boolean;
     },
     cwd?: string,
   ): Promise<EditFileResult> {
     const resolvedPath = this.resolvePath(path, cwd);
 
     try {
-      this.assertAllowed(resolvedPath, "editFile");
+      this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow);
 
       const lastAccess = this.fileAccessRecord.get(resolvedPath);
       const file = await fs.readFile(resolvedPath, "utf-8");
@@ -1044,10 +1068,15 @@ export class FileSystem {
    */
   async glob({ patterns, ...opts }: GlobOpts & { patterns: string[] }): Promise<GlobResult> {
     try {
-      const { baseDir = this.root, maxEntries = 100, mode = "default" } = opts;
+      const {
+        baseDir = this.root,
+        maxEntries = 100,
+        mode = "default",
+        dangerouslyAllow = false,
+      } = opts;
       const resolvedBaseDir = this.resolvePath(baseDir);
 
-      this.assertAllowed(resolvedBaseDir, "glob");
+      this.assertAllowed(resolvedBaseDir, "glob", dangerouslyAllow);
 
       const includes: string[] = [];
       const excludes: string[] = [];
@@ -1090,7 +1119,7 @@ export class FileSystem {
         seen.add(entry);
 
         const abs = resolve(join(resolvedBaseDir, entry));
-        if (this.isDeniedPath(abs)) continue;
+        if (!dangerouslyAllow && this.isDeniedPath(abs)) continue;
 
         const count = mode === "default" ? paths.length : entries.length;
         if (count >= maxEntries) {
@@ -1143,21 +1172,24 @@ export class FileSystem {
         fileExtensions = [],
         includeContextLines = 0,
         mode = "default",
+        dangerouslyAllow = false,
       } = opts;
 
       const resolvedBaseDir = this.resolvePath(baseDir);
 
-      this.assertAllowed(resolvedBaseDir, "grep");
+      this.assertAllowed(resolvedBaseDir, "grep", dangerouslyAllow);
 
       const globs = fileExtensions.map((ext) => `**/*.${ext.replace(/^\./, "")}`);
 
-      // Ensure ripgrep doesn't traverse blocked paths when searching from broad base dirs (e.g. "/").
-      for (const denyAbs of this.denyPaths) {
-        const rel = relative(resolvedBaseDir, denyAbs);
-        if (rel.length === 0) continue;
-        if (rel.startsWith("..") || rel.startsWith(sep)) continue;
-        globs.push(`!${rel}`);
-        globs.push(`!${rel}/**`);
+      if (!dangerouslyAllow) {
+        // Ensure ripgrep doesn't traverse blocked paths when searching from broad base dirs (e.g. "/").
+        for (const denyAbs of this.denyPaths) {
+          const rel = relative(resolvedBaseDir, denyAbs);
+          if (rel.length === 0) continue;
+          if (rel.startsWith("..") || rel.startsWith(sep)) continue;
+          globs.push(`!${rel}`);
+          globs.push(`!${rel}/**`);
+        }
       }
 
       const extraArgs: string[] = [];

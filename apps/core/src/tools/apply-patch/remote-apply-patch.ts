@@ -3,6 +3,7 @@ import { getRemoteRunnerJsText } from "../../ssh/remote-js";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
+const REMOTE_ALLOW_ALL_PATHS: readonly string[] = [];
 
 export async function remoteApplyPatch(params: {
   host: string;
@@ -10,6 +11,7 @@ export async function remoteApplyPatch(params: {
   patchText: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  dangerouslyAllow?: boolean;
 }): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
   const js = await getRemoteRunnerJsText();
   const res = await sshExecScriptJson<string>({
@@ -18,7 +20,7 @@ export async function remoteApplyPatch(params: {
     js,
     input: {
       op: "apply_patch",
-      denyPaths: REMOTE_DENY_PATHS,
+      denyPaths: params.dangerouslyAllow === true ? REMOTE_ALLOW_ALL_PATHS : REMOTE_DENY_PATHS,
       input: { patchText: params.patchText },
     },
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,

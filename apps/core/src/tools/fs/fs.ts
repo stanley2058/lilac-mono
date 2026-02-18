@@ -40,6 +40,10 @@ const MAX_INSTRUCTION_CHARS = 20_000;
 const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
 const REMOTE_MAX_ATTACHMENT_BYTES = 10_000_000;
 
+function resolveRemoteDenyPaths(dangerouslyAllow?: boolean): readonly string[] {
+  return dangerouslyAllow === true ? [] : REMOTE_DENY_PATHS;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -172,6 +176,10 @@ export const readFileInputZod = z.object({
     .enum(["raw", "numbered"])
     .optional()
     .describe("Output format. Default is raw (no line numbers). 'numbered' is for display only."),
+  dangerouslyAllow: z
+    .boolean()
+    .optional()
+    .describe("Bypass filesystem denylist guardrails for this call."),
 });
 
 type ReadFileInput = z.infer<typeof readFileInputZod>;
@@ -209,6 +217,10 @@ export const globInputZod = z.object({
     .describe(
       "Output mode. Recommended: 'default'. Use 'detailed' only when you need file type/size metadata.",
     ),
+  dangerouslyAllow: z
+    .boolean()
+    .optional()
+    .describe("Bypass filesystem denylist guardrails for this call."),
 });
 
 type GlobInput = z.infer<typeof globInputZod>;
@@ -269,6 +281,10 @@ export const grepInputZod = z.object({
     .describe(
       "Output mode. Recommended: 'default'. Use 'detailed' only when you need column/submatches metadata.",
     ),
+  dangerouslyAllow: z
+    .boolean()
+    .optional()
+    .describe("Bypass filesystem denylist guardrails for this call."),
 });
 
 type GrepInput = z.infer<typeof grepInputZod>;
@@ -339,6 +355,10 @@ export const editFileInputZod = z.object({
     .string()
     .optional()
     .describe("Optional optimistic concurrency hash from read_file."),
+  dangerouslyAllow: z
+    .boolean()
+    .optional()
+    .describe("Bypass filesystem denylist guardrails for this call."),
 });
 
 type EditFileInput = z.infer<typeof editFileInputZod>;
@@ -625,11 +645,12 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
   const baseTools = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description:
-        "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider.",
+        "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: readFileInputZod,
       outputSchema: readFileOutputZod,
-      execute: async ({ cwd: opCwd, ...input }, options) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }, options) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
+        const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
 
         logger.info("fs.readFile", {
           path: input.path,
@@ -639,6 +660,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           maxLines: input.maxLines,
           maxCharacters: input.maxCharacters,
           format: input.format ?? "raw",
+          dangerouslyAllow: dangerouslyAllow === true,
         });
 
         const ext = path.extname(input.path).toLowerCase();
@@ -651,7 +673,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                   host: cwdTarget.host,
                   cwd: cwdTarget.cwd,
                   filePath: input.path,
-                  denyPaths: REMOTE_DENY_PATHS,
+                  denyPaths: remoteDenyPaths,
                   maxBytes: REMOTE_MAX_ATTACHMENT_BYTES,
                 });
 
@@ -699,7 +721,10 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                 };
               }
 
-              const bytesRes = await fileSystem.readFileBytes({ path: input.path }, opCwd);
+              const bytesRes = await fileSystem.readFileBytes(
+                { path: input.path, dangerouslyAllow },
+                opCwd,
+              );
               if (!bytesRes.success) {
                 return bytesRes;
               }
@@ -746,7 +771,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                   host: cwdTarget.host,
                   cwd: cwdTarget.cwd,
                   input,
-                  denyPaths: REMOTE_DENY_PATHS,
+                  denyPaths: remoteDenyPaths,
                 });
                 if (remoteRes.success) {
                   recordRemoteFileAccess({
@@ -759,7 +784,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                 }
                 return remoteRes;
               })()
-            : await fileSystem.readFile(input, opCwd);
+            : await fileSystem.readFile({ ...input, dangerouslyAllow }, opCwd);
 
         const resQualified = (() => {
           if (cwdTarget.kind !== "ssh") return res;
@@ -902,12 +927,13 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
 
     glob: tool<GlobInput, GlobOutput>({
       description:
-        "Match filesystem paths using glob patterns. Recommended mode='default' for paths only; use mode='detailed' only when you need type/size.",
+        "Match filesystem paths using glob patterns. Recommended mode='default' for paths only; use mode='detailed' only when you need type/size. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
+        const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
 
         logger.info("fs.glob", {
           patterns: input.patterns,
@@ -915,6 +941,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           target: cwdTarget.kind,
           maxEntries: input.maxEntries,
           mode,
+          dangerouslyAllow: dangerouslyAllow === true,
         });
 
         if (cwdTarget.kind === "ssh") {
@@ -924,7 +951,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
             patterns: input.patterns,
             maxEntries: input.maxEntries,
             mode,
-            denyPaths: REMOTE_DENY_PATHS,
+            denyPaths: remoteDenyPaths,
           });
 
           logger.info("fs.glob done", {
@@ -942,6 +969,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           maxEntries: input.maxEntries,
           baseDir: opCwd,
           mode,
+          dangerouslyAllow,
         });
 
         logger.info("fs.glob done", {
@@ -957,12 +985,13 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
 
     grep: tool<GrepInput, GrepOutput>({
       description:
-        "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata.",
+        "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: grepInputZod,
       outputSchema: grepOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
+        const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
 
         logger.info("fs.grep", {
           pattern: input.pattern,
@@ -973,6 +1002,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           includeContextLines: input.includeContextLines,
           maxResults: input.maxResults,
           mode,
+          dangerouslyAllow: dangerouslyAllow === true,
         });
 
         if (cwdTarget.kind === "ssh") {
@@ -987,7 +1017,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
               includeContextLines: input.includeContextLines,
               mode,
             },
-            denyPaths: REMOTE_DENY_PATHS,
+            denyPaths: remoteDenyPaths,
           });
 
           logger.info("fs.grep done", {
@@ -1008,6 +1038,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           includeContextLines: input.includeContextLines,
           baseDir: opCwd,
           mode,
+          dangerouslyAllow,
         });
 
         logger.info("fs.grep done", {
@@ -1030,11 +1061,12 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
     ...baseTools,
     edit_file: tool<EditFileInput, EditFileOutput>({
       description:
-        "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches.",
+        "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: editFileInputZod,
       outputSchema: editFileOutputZod,
-      execute: async ({ cwd: opCwd, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
+        const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
 
         logger.info("fs.editFile", {
           path: input.path,
@@ -1045,6 +1077,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
           expectedMatches: resolveExpectedMatches(input),
           expectedHashProvided:
             typeof input.expectedHash === "string" && input.expectedHash.length > 0,
+          dangerouslyAllow: dangerouslyAllow === true,
         });
 
         const occurrence: "all" | "first" = input.replaceAll ? "all" : "first";
@@ -1101,7 +1134,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                     edits: editPayload.edits,
                     expectedHash,
                   },
-                  denyPaths: REMOTE_DENY_PATHS,
+                  denyPaths: remoteDenyPaths,
                 });
 
                 if (remoteRes.success) {
@@ -1124,7 +1157,9 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                   resolvedPath: toRemoteDebugPath(cwdTarget.host, remoteRes.resolvedPath),
                 });
               })()
-            : normalizeEditOutput(await fileSystem.editFile(editPayload, opCwd));
+            : normalizeEditOutput(
+                await fileSystem.editFile({ ...editPayload, dangerouslyAllow }, opCwd),
+              );
 
         logger.info("fs.editFile done", {
           path: res.resolvedPath,

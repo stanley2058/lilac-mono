@@ -37,6 +37,10 @@ const inputSchema = z.object({
     .describe(
       "Optional base directory for relative patch paths. Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
     ),
+  dangerouslyAllow: z
+    .boolean()
+    .optional()
+    .describe("Bypass filesystem denylist guardrails for this call."),
 });
 
 const outputSchema = z.object({
@@ -63,7 +67,7 @@ export function localApplyPatchTool(defaultCwd: string) {
   return {
     apply_patch: tool({
       description:
-        "Apply a patch in '*** Begin Patch' format (*** Add/Update/Delete File, optional *** Move to:, @@ context blocks).",
+        "Apply a patch in '*** Begin Patch' format (*** Add/Update/Delete File, optional *** Move to:, @@ context blocks). Remote denylisted paths require dangerouslyAllow=true.",
       inputSchema,
       outputSchema,
       execute: async (
@@ -82,6 +86,7 @@ export function localApplyPatchTool(defaultCwd: string) {
             sessionId: ctx?.sessionId,
             requestClient: ctx?.requestClient,
             cwd,
+            dangerouslyAllow: input.dangerouslyAllow === true,
             hunkCount: hunks.length,
             added: hunks.filter((h) => h.type === "add").length,
             deleted: hunks.filter((h) => h.type === "delete").length,
@@ -91,17 +96,19 @@ export function localApplyPatchTool(defaultCwd: string) {
           });
 
           if (cwdTarget.kind === "ssh") {
-            for (const h of hunks) {
-              if (isDeniedRemotePatchPath(cwdTarget.cwd, h.path)) {
-                throw new Error(
-                  `Access denied: '${h.path}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
-                );
-              }
-              if (h.type === "update" && h.movePath) {
-                if (isDeniedRemotePatchPath(cwdTarget.cwd, h.movePath)) {
+            if (!input.dangerouslyAllow) {
+              for (const h of hunks) {
+                if (isDeniedRemotePatchPath(cwdTarget.cwd, h.path)) {
                   throw new Error(
-                    `Access denied: '${h.movePath}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
+                    `Access denied: '${h.path}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
                   );
+                }
+                if (h.type === "update" && h.movePath) {
+                  if (isDeniedRemotePatchPath(cwdTarget.cwd, h.movePath)) {
+                    throw new Error(
+                      `Access denied: '${h.movePath}' is blocked for apply_patch when cwd=${cwdTarget.cwd}`,
+                    );
+                  }
                 }
               }
             }
@@ -110,6 +117,7 @@ export function localApplyPatchTool(defaultCwd: string) {
               host: cwdTarget.host,
               cwd: cwdTarget.cwd,
               patchText: input.patchText,
+              dangerouslyAllow: input.dangerouslyAllow,
             });
             if (!remoteRes.ok) {
               throw new Error(remoteRes.error);
