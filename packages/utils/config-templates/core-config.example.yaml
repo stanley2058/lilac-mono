@@ -1,14 +1,5 @@
 basePrompt: "You are Lilac."
 
-tools:
-  web:
-    search:
-      provider: tavily # tavily or "exa"; any other value falls back to tavily
-    exa:
-      # Optional. If omitted, exa-js uses its default (https://api.exa.ai).
-      # You can set this to an Exa-compatible proxy such as exa-pool.
-      baseUrl: "https://api.exa.ai"
-
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:

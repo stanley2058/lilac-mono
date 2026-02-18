@@ -72,11 +72,6 @@ export function resolveWebSearchProvider(params: {
   provider: WebSearchProvider | null;
   error: string | null;
 } {
-  // Provider selection rules (intentional back-compat with original lilac-mono):
-  // - Default is Tavily.
-  // - Only "exa" explicitly selects Exa.
-  // - Any missing/unexpected value falls back to Tavily.
-  // - No automatic failover to other providers.
   const byId = new Map<WebSearchProviderId, WebSearchProvider>();
   const ids: WebSearchProviderId[] = [];
 
@@ -144,8 +139,6 @@ function startDateFromTimeRange(range: WebSearchInput["timeRange"]): string | un
   }
 }
 
-// map args to EXA's search type. different to tavily.
-
 function mapSearchDepthToExaType(depth: WebSearchInput["searchDepth"]): "auto" | "deep" {
   return depth === "advanced" ? "deep" : "auto";
 }
@@ -163,11 +156,7 @@ function mapTopicToExaCategory(topic: WebSearchInput["topic"]): ExaCategory | un
   }
 }
 
-// tavily | EXA
-// context | highlights > summary
-// rawContxt | text
-
-function pickContent(input: {
+function toSearchContentSnippet(input: {
   highlights?: readonly string[];
   summary?: string;
   text?: string;
@@ -259,7 +248,7 @@ export class ExaWebSearchProvider implements WebSearchProvider {
       return {
         url: r.url,
         title,
-        content: pickContent(r),
+        content: toSearchContentSnippet(r),
         score,
       } satisfies WebSearchResult;
     });

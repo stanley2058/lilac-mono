@@ -177,36 +177,6 @@ const discordSurfaceSchema = z
     outputMode: "inline",
   });
 
-const toolsSchema = z
-  .object({
-    web: z
-      .object({
-        search: z
-          .object({
-            provider: z.preprocess(
-              (value) => (typeof value === "string" ? value : undefined),
-              z.string().default("tavily"),
-            ),
-          })
-          .default({ provider: "tavily" }),
-        exa: z
-          .object({
-            baseUrl: z.string().min(1).optional(),
-          })
-          .default({}),
-      })
-      .default({
-        search: { provider: "tavily" },
-        exa: {},
-      }),
-  })
-  .default({
-    web: {
-      search: { provider: "tavily" },
-      exa: {},
-    },
-  });
-
 export const coreConfigSchema = z.object({
   surface: z
     .object({
@@ -228,8 +198,6 @@ export const coreConfigSchema = z.object({
         outputMode: "inline",
       },
     }),
-
-  tools: toolsSchema,
 
   agent: z
     .object({
