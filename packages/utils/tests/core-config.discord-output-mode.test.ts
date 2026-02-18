@@ -20,4 +20,22 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
 
     expect(parsed.surface.discord.outputMode).toBe("preview");
   });
+
+  it("keeps outputNotification optional by default", () => {
+    const parsed = coreConfigSchema.parse({});
+    expect(parsed.surface.discord.outputNotification).toBeUndefined();
+  });
+
+  it("accepts outputNotification=true", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        discord: {
+          botName: "lilac",
+          outputNotification: true,
+        },
+      },
+    });
+
+    expect(parsed.surface.discord.outputNotification).toBe(true);
+  });
 });

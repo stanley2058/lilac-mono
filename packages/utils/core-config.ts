@@ -159,6 +159,9 @@ const discordSurfaceSchema = z
 
     /** Output rendering mode for Discord reply streams. */
     outputMode: z.enum(["inline", "preview"]).default("inline"),
+
+    /** Optional: allow Discord reply + @mention notifications for output messages. */
+    outputNotification: z.boolean().optional(),
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",

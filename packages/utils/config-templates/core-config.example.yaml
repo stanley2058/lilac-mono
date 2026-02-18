@@ -48,6 +48,9 @@ surface:
     #   delete the preview window
     outputMode: inline
 
+    # Optional: enable Discord reply notifications and user-mention notifications
+    # for final output messages. Default is disabled.
+    # outputNotification: true
 
 agent:
   # Optional: include token/model timing stats in final response metadata.

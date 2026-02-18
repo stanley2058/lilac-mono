@@ -201,6 +201,8 @@ export class DiscordAdapter implements SurfaceAdapter {
   private store: DiscordSurfaceStore | null = null;
   private cfg: CoreConfig | null = null;
   private entityMapper: EntityMapper | null = null;
+  private coreConfigReloadHadError = false;
+  private lastCoreConfigReloadError: string | null = null;
   private handlers = new Set<AdapterEventHandler>();
 
   private readonly logger = new Logger({
@@ -422,6 +424,35 @@ export class DiscordAdapter implements SurfaceAdapter {
     }));
   }
 
+  private async reloadCoreConfigIfNeeded(): Promise<void> {
+    if (this.opts?.config) return;
+
+    try {
+      const cfg = await getCoreConfig();
+      this.cfg = cfg;
+
+      if (this.coreConfigReloadHadError) {
+        this.logger.info("core-config reload recovered", {
+          path: "core-config.yaml",
+        });
+      }
+
+      this.coreConfigReloadHadError = false;
+      this.lastCoreConfigReloadError = null;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!this.coreConfigReloadHadError || this.lastCoreConfigReloadError !== msg) {
+        this.logger.warn("core-config reload failed; using last known config", {
+          path: "core-config.yaml",
+          error: msg,
+        });
+      }
+
+      this.coreConfigReloadHadError = true;
+      this.lastCoreConfigReloadError = msg;
+    }
+  }
+
   async burstCache(input: {
     msgRef?: MsgRef;
     sessionRef?: SessionRef;
@@ -476,6 +507,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     sessionRef: SessionRef,
     opts?: StartOutputOpts,
   ): Promise<import("../adapter").SurfaceOutputStream> {
+    await this.reloadCoreConfigIfNeeded();
+
     const cfg = this.cfg;
     const client = this.mustClient();
     if (!cfg) throw new Error("DiscordAdapter not connected");
@@ -491,6 +524,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       rewriteText: this.entityMapper?.rewriteOutgoingText,
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       outputMode: cfg.surface.discord.outputMode ?? "inline",
+      outputNotification: cfg.surface.discord.outputNotification === true,
     });
   }
 
@@ -552,6 +586,9 @@ export class DiscordAdapter implements SurfaceAdapter {
   }
 
   async sendMsg(sessionRef: SessionRef, content: ContentOpts, opts?: SendOpts): Promise<MsgRef> {
+    await this.reloadCoreConfigIfNeeded();
+
+    const cfg = this.cfg;
     const client = this.mustClient();
     if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
 
@@ -564,6 +601,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       opts: opts?.replyTo ? { replyTo: opts.replyTo } : undefined,
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
+      outputNotification: cfg?.surface.discord.outputNotification === true,
     });
   }
 

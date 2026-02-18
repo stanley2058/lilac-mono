@@ -60,6 +60,7 @@ const DISCORD_EMBED_FIELD_MAX_CHARS = 1024;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
 
 type DiscordOutputMode = "inline" | "preview";
+const NOTIFY_PARSE_USERS = ["users"] as const;
 
 export function clampReasoningDetail(text: string, maxChars = THINKING_DETAIL_MAX_CHARS): string {
   if (maxChars <= 0) return "";
@@ -165,6 +166,27 @@ export function toPreviewTail(text: string, maxChars = PREVIEW_TEXT_TAIL_CHARS):
   return `...${text.slice(text.length - (maxChars - 3))}`;
 }
 
+export function buildOutputAllowedMentions(input: {
+  notificationsEnabled: boolean;
+  previewMode: boolean;
+  isReply: boolean;
+  isFinalLane: boolean;
+}): MessageCreateOptions["allowedMentions"] {
+  if (!input.notificationsEnabled) {
+    return { parse: [], repliedUser: false };
+  }
+
+  // In preview mode, transient messages are deleted; avoid notifying from them.
+  if (input.previewMode && !input.isFinalLane) {
+    return { parse: [], repliedUser: false };
+  }
+
+  return {
+    parse: [...NOTIFY_PARSE_USERS],
+    repliedUser: input.isReply,
+  };
+}
+
 function msgRefKey(ref: MsgRef): string {
   return `${ref.platform}:${ref.channelId}:${ref.messageId}`;
 }
@@ -263,6 +285,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       useSmartSplitting: boolean;
       rewriteText?: (text: string) => string;
       outputMode: DiscordOutputMode;
+      outputNotification?: boolean;
       reasoningDisplayMode: "none" | "simple" | "detailed";
     },
   ) {
@@ -308,6 +331,18 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     const rendered = this.getRenderedText();
     if (!this.isPreviewMode()) return rendered;
     return toPreviewTail(rendered);
+  }
+
+  private getAllowedMentions(input: {
+    isReply: boolean;
+    isFinalLane: boolean;
+  }): MessageCreateOptions["allowedMentions"] {
+    return buildOutputAllowedMentions({
+      notificationsEnabled: this.deps.outputNotification === true,
+      previewMode: this.isPreviewMode(),
+      isReply: input.isReply,
+      isFinalLane: input.isFinalLane,
+    });
   }
 
   private async deleteTransientPreviewMessages(): Promise<void> {
@@ -424,7 +459,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             : undefined,
         files: toDiscordFiles(initialAttachments),
         components: buildCancelComponents(true),
-        allowedMentions: { parse: [], repliedUser: false },
+        allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: false }),
       }));
 
     this.firstMsg = first;
@@ -490,7 +525,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         createReply: async (parent, emb) => {
           const msg = await parent.reply({
             embeds: [emb],
-            allowedMentions: { parse: [], repliedUser: false },
+            allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: false }),
           });
 
           // Notify immediately so the router can treat replies-to-this message as "active".
@@ -672,13 +707,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
               ? { messageReference: this.deps.opts.replyTo.messageId }
               : undefined,
-          allowedMentions: { parse: [], repliedUser: false },
+          allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: true }),
         });
       },
       createReply: async (parent, emb) => {
         return await parent.reply({
           embeds: [emb],
-          allowedMentions: { parse: [], repliedUser: false },
+          allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
         });
       },
       getContent: renderFullText,
@@ -827,6 +862,7 @@ export async function sendDiscordStyledMessage(params: {
   opts?: StartOutputOpts;
   useSmartSplitting: boolean;
   rewriteText?: (text: string) => string;
+  outputNotification?: boolean;
 }): Promise<MsgRef> {
   const { text, attachments } = normalizeContent(params.content);
   const out = new DiscordOutputStream({
@@ -836,6 +872,7 @@ export async function sendDiscordStyledMessage(params: {
     useSmartSplitting: params.useSmartSplitting,
     rewriteText: params.rewriteText,
     outputMode: "inline",
+    outputNotification: params.outputNotification,
     reasoningDisplayMode: "none",
   });
 
