@@ -4,7 +4,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Colors,
   type Client,
+  EmbedBuilder,
   type Message,
   type MessageCreateOptions,
   type TextBasedChannel,
@@ -24,6 +26,7 @@ import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../t
 // via edit is not consistently supported across environments.
 
 import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
+import { chunkMarkdownForEmbeds } from "./markdown-chunker";
 import { buildCancelCustomId } from "../discord-cancel";
 
 function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
@@ -189,6 +192,14 @@ export function buildOutputAllowedMentions(input: {
 
 function msgRefKey(ref: MsgRef): string {
   return `${ref.platform}:${ref.channelId}:${ref.messageId}`;
+}
+
+function buildFinalStatsFieldValue(line: string): string {
+  const wrapped = line.startsWith("*") && line.endsWith("*") ? line : `*${line}*`;
+  const maxLength = 1024;
+  const overflow = "...*";
+  if (wrapped.length <= maxLength) return wrapped;
+  return wrapped.slice(0, maxLength - overflow.length) + overflow;
 }
 
 async function fetchTextChannel(client: Client, channelId: string): Promise<TextBasedChannel> {
@@ -687,56 +698,72 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       send: (options: MessageCreateOptions) => Promise<Message>;
     };
     const { CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
+    const fullText = this.getRenderedText();
+    const content = fullText.length > 0 ? fullText : "*<empty_string>*";
 
-    const getMaxLength = () => {
-      const max = 4096;
-      return max - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
-    };
-
-    const renderFullText = () => {
-      const rendered = this.getRenderedText();
-      return rendered.length > 0 ? rendered : "*<empty_string>*";
-    };
-
-    const streamDone = Promise.resolve();
-    const res = await startEmbedPusher({
-      createFirst: async (emb) => {
-        return await sendChannel.send({
-          embeds: [emb],
-          reply:
-            this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
-              ? { messageReference: this.deps.opts.replyTo.messageId }
-              : undefined,
-          allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: true }),
-        });
-      },
-      createReply: async (parent, emb) => {
-        return await parent.reply({
-          embeds: [emb],
-          allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
-        });
-      },
-      getContent: renderFullText,
-      getActionsLines: () => [],
-      getStatsLine: () => this.statsForNerdsLine,
-      getMaxLength,
-      streamDone,
+    const maxChunkLength = 4096 - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
+    const chunks = chunkMarkdownForEmbeds(content, {
+      maxChunkLength,
+      maxLastChunkLength: maxChunkLength,
       useSmartSplitting: this.deps.useSmartSplitting,
-      safeEdit,
     });
 
+    const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
+    const createdMsgs: Message[] = [];
+    let parent: Message | null = null;
+
+    for (let i = 0; i < displayChunks.length; i++) {
+      const chunk = displayChunks[i] ?? "";
+      const isLast = i === displayChunks.length - 1;
+
+      const emb = new EmbedBuilder()
+        .setDescription(chunk || "*<empty_string>*")
+        .setColor(Colors.Blue);
+
+      if (isLast && this.statsForNerdsLine) {
+        emb.addFields({
+          name: " ",
+          value: buildFinalStatsFieldValue(this.statsForNerdsLine),
+          inline: false,
+        });
+      }
+
+      const msg: Message =
+        parent === null
+          ? await sendChannel.send({
+              embeds: [emb],
+              reply:
+                this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
+                  ? { messageReference: this.deps.opts.replyTo.messageId }
+                  : undefined,
+              allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: true }),
+            })
+          : await parent.reply({
+              embeds: [emb],
+              allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
+            });
+
+      createdMsgs.push(msg);
+      parent = msg;
+    }
+
     const created: MsgRef[] = [];
-    for (const messageId of res.discordMessageCreated) {
-      const ref = asDiscordMsgRef(sessionRef.channelId, messageId);
+    for (const msg of createdMsgs) {
+      const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
       created.push(ref);
       this.created.push(ref);
       this.notifyCreated(ref);
     }
 
-    this.lastMsg = res.lastMsg;
+    const lastMsg = createdMsgs[createdMsgs.length - 1];
+    if (!lastMsg) {
+      throw new Error("DiscordOutputStream produced no final messages");
+    }
+
+    this.lastMsg = lastMsg;
     return {
       created,
-      lastMsg: res.lastMsg,
+      lastMsg,
     };
   }
 
