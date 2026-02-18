@@ -28,15 +28,6 @@ import type {
 import type { TranscriptStore } from "../../../src/transcript/transcript-store";
 import type { ModelMessage } from "ai";
 
-const DEFAULT_TOOLS_CONFIG = {
-  tools: {
-    web: {
-      search: { provider: "tavily" },
-      exa: {},
-    },
-  },
-} as const;
-
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
   const subs = new Set<{
@@ -289,7 +280,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -436,7 +426,6 @@ describe("startBusRequestRouter", () => {
       subscriptionId: "router-test",
       transcriptStore,
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -532,7 +521,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -626,7 +614,6 @@ describe("startBusRequestRouter", () => {
         reason: "test",
       }),
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -718,7 +705,6 @@ describe("startBusRequestRouter", () => {
       subscriptionId: "router-test",
       routerGate: async () => ({ forward: false, reason: "no" }),
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -810,7 +796,6 @@ describe("startBusRequestRouter", () => {
         throw new Error("routerGate should not be called when gate is disabled");
       },
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -904,7 +889,6 @@ describe("startBusRequestRouter", () => {
         throw new Error("routerGate should not be called when gate is disabled per session");
       },
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1001,7 +985,6 @@ describe("startBusRequestRouter", () => {
         return { forward: false, reason: "no" };
       },
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1094,7 +1077,6 @@ describe("startBusRequestRouter", () => {
       subscriptionId: "router-test",
       routerGate: async () => ({ forward: true, reason: "yes" }),
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1199,7 +1181,6 @@ describe("startBusRequestRouter", () => {
         return { forward: false, reason: "no" };
       },
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1317,7 +1298,6 @@ describe("startBusRequestRouter", () => {
         return { forward: false, reason: "addressed-to-peer" };
       },
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1420,7 +1400,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1526,7 +1505,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1648,7 +1626,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1804,7 +1781,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -1987,7 +1963,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -2120,7 +2095,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
@@ -2288,7 +2262,6 @@ describe("startBusRequestRouter", () => {
       bus,
       subscriptionId: "router-test",
       config: {
-        ...DEFAULT_TOOLS_CONFIG,
         surface: {
           discord: {
             tokenEnv: "DISCORD_TOKEN",
