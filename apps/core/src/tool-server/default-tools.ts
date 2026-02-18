@@ -4,7 +4,6 @@ import type { SurfaceAdapter } from "../surface/adapter";
 import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { WorkflowStore } from "../workflow/workflow-store";
 import type { ServerTool } from "./types";
-import type { WebSearchProvider } from "./tools";
 import {
   Attachment,
   Codex,
@@ -25,12 +24,11 @@ export function createDefaultToolServerTools(params?: {
   getConfig?: () => Promise<CoreConfig>;
   workflowStore?: WorkflowStore;
   discordSearch?: DiscordSearchService;
-  webSearchProviders?: readonly WebSearchProvider[];
 }): ServerTool[] {
   const tools: ServerTool[] = [
     new Onboarding(),
     new SSH(),
-    new Web({ searchProviders: params?.webSearchProviders, getConfig: params?.getConfig }),
+    new Web(),
     new Summarize(),
     new Skills(),
     new Codex(),
