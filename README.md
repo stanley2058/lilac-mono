@@ -2,20 +2,20 @@
 
 This repository is a fork of the upstream project.
 
-| Upstream | https://github.com/stanley2058/lilac-mono |
-| --- | --- |
+| Upstream        | https://github.com/stanley2058/lilac-mono                     |
+| --------------- | ------------------------------------------------------------- |
 | Upstream README | https://github.com/stanley2058/lilac-mono/blob/main/README.md |
 
 This README intentionally documents only what differs in this fork. For full documentation and usage, follow the upstream README link above.
 
 ## Fork-only changes (vs upstream)
 
-| Area | What changed in this fork | Where |
-| --- | --- | --- |
-| CI | Scheduled upstream sync (auto-merge `upstream/main` into `main`) and triggers image build on updates | `.github/workflows/sync-upstream.yml` |
-| CI | Build & push Docker image to GHCR on `main` pushes | `.github/workflows/build-image.yml` |
-| Docker | Container default user/uid and workspace env var name differ from upstream | `Dockerfile` |
-| Tools | `tools search` supports Exa backend (via `exa-js`) while preserving Tavily-default behavior | `apps/core/src/tool-server/tools/web.ts`, `apps/core/src/tool-server/tools/web-search.ts` |
+| Area   | What changed in this fork                                                                            | Where                                                                                     |
+| ------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| CI     | Scheduled upstream sync (auto-merge `upstream/main` into `main`) and triggers image build on updates | `.github/workflows/sync-upstream.yml`                                                     |
+| CI     | Build & push Docker image to GHCR on `main` pushes                                                   | `.github/workflows/build-image.yml`                                                       |
+| Docker | Container default user/uid and workspace env var name differ from upstream                           | `Dockerfile`                                                                              |
+| Tools  | `tools search` supports Exa backend (via `exa-js`) while preserving Tavily-default behavior          | `apps/core/src/tool-server/tools/web.ts`, `apps/core/src/tool-server/tools/web-search.ts` |
 
 ## Web Search Provider (Notes / Workarounds)
 
@@ -69,3 +69,11 @@ The selection rule is intentionally conservative to preserve original lilac-mono
 
 - Core runtime loads `core-config.yaml` and applies the provider policy.
 - `apps/tool-bridge/index.ts` also loads `core-config.yaml` so local `tools` calls behave the same as core runtime.
+
+
+
+## Author Murmur
+
+The patch is most from AIGC. Use at your own risk.
+I read all the patches even I don't understand Typescript. I tried, all day, I am still confused at the whole system cause I am really not smart enough. I want to use web search but there is no money I can waste to purchase API credit. Fork and modify it is the only way to effectily manage the poor resources I have.
+
