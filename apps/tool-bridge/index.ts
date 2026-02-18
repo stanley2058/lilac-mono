@@ -1,5 +1,5 @@
 import { Logger } from "@stanley2058/simple-module-logger";
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
+import { env, getCoreConfig, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { createDefaultToolServerTools, createToolServer } from "@stanley2058/lilac-core";
 
 const logger = new Logger({
@@ -11,7 +11,9 @@ const server = createToolServer({
   // In dev mode, run without a bus by default.
   // Bus-backed tools (workflow/attachment) are enabled when the caller injects a bus.
   // Surface-backed tools require a live adapter + config, which tool-bridge does not create.
-  tools: createDefaultToolServerTools(),
+  tools: createDefaultToolServerTools({
+    getConfig: () => getCoreConfig(),
+  }),
   logger,
 });
 
