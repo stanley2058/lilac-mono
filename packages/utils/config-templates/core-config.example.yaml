@@ -1,5 +1,10 @@
 basePrompt: "You are Lilac."
 
+tools:
+  web:
+    search:
+      provider: tavily
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:
