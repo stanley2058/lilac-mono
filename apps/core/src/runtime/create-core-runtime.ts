@@ -156,12 +156,6 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
   const GRACEFUL_RESTART_DEADLINE_MS = 120_000;
 
-  function watchFilenameToString(name: string | Buffer | null): string | null {
-    if (typeof name === "string") return name;
-    if (name instanceof Buffer) return name.toString("utf8");
-    return null;
-  }
-
   async function validateCoreConfigOnChange(reason: "watch"): Promise<void> {
     const configPath = resolveCoreConfigPath();
 
@@ -170,6 +164,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       if (coreConfigValidationHadError) {
         logger.info("core-config hot-reload validation recovered", {
+          reason,
+          path: configPath,
+        });
+      } else {
+        logger.info("core-config hot-reload validation succeeded", {
           reason,
           path: configPath,
         });
@@ -209,13 +208,15 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     const configFileName = path.basename(configPath);
 
     try {
-      coreConfigWatcher = watch(configDir, (eventType, filename) => {
-        const changed = watchFilenameToString(filename);
-        if (changed && changed !== configFileName) return;
+      let cfgContent = await fs.readFile(configPath, "utf8");
+      coreConfigWatcher = watch(configDir, async (eventType, filename) => {
+        const current = await fs.readFile(configPath, "utf8");
+        if (current === cfgContent) return;
+        cfgContent = current;
 
         logger.debug("core-config file change detected", {
           eventType,
-          changed: changed ?? configFileName,
+          changed: filename ?? configFileName,
           path: configPath,
         });
 
