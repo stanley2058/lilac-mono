@@ -483,9 +483,6 @@ export class DiscordAdapter implements SurfaceAdapter {
     // TODO: plumb config for smart splitting.
     const useSmartSplitting = true;
 
-    const mentionCfg = cfg.surface.discord.mentionNotifications;
-    const mentionPingEnabled = mentionCfg.enabled === true && opts?.sessionMode === "active";
-
     return new DiscordOutputStream({
       client,
       sessionRef,
@@ -493,11 +490,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
-      mentionPing: {
-        enabled: mentionPingEnabled,
-        maxUsers: mentionCfg.maxUsers,
-        extractUserIds: this.entityMapper?.extractOutgoingMentionUserIds,
-      },
+      outputMode: cfg.surface.discord.outputMode ?? "inline",
     });
   }
 

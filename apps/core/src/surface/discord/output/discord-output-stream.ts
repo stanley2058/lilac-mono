@@ -57,6 +57,9 @@ const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽"
 const THINKING_SPINNER_TICK_MS = 250;
 const THINKING_DETAIL_MAX_CHARS = 512;
 const DISCORD_EMBED_FIELD_MAX_CHARS = 1024;
+const PREVIEW_TEXT_TAIL_CHARS = 2000;
+
+type DiscordOutputMode = "inline" | "preview";
 
 export function clampReasoningDetail(text: string, maxChars = THINKING_DETAIL_MAX_CHARS): string {
   if (maxChars <= 0) return "";
@@ -155,6 +158,17 @@ function clampLast<T>(arr: readonly T[], n: number): T[] {
   return arr.slice(arr.length - n);
 }
 
+export function toPreviewTail(text: string, maxChars = PREVIEW_TEXT_TAIL_CHARS): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 3) return "...".slice(0, maxChars);
+  return `...${text.slice(text.length - (maxChars - 3))}`;
+}
+
+function msgRefKey(ref: MsgRef): string {
+  return `${ref.platform}:${ref.channelId}:${ref.messageId}`;
+}
+
 async function fetchTextChannel(client: Client, channelId: string): Promise<TextBasedChannel> {
   const ch = (await client.channels.fetch(channelId).catch(() => null)) as TextBasedChannel | null;
   if (!ch || !("send" in ch)) {
@@ -221,6 +235,8 @@ async function safeEdit(msg: Message, options: Parameters<Message["edit"]>[0]): 
 
 export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly created: MsgRef[] = [];
+  private readonly transientPreviewRefs: MsgRef[] = [];
+  private readonly transientPreviewRefKeys = new Set<string>();
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
   private statsForNerdsLine: string | null = null;
   private reasoningStartedAtMs: number | null = null;
@@ -246,13 +262,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       opts?: StartOutputOpts;
       useSmartSplitting: boolean;
       rewriteText?: (text: string) => string;
-
-      /** Optional: send a mention-only ping message at end of stream. */
-      mentionPing?: {
-        enabled: boolean;
-        maxUsers: number;
-        extractUserIds?: (text: string) => string[];
-      };
+      outputMode: DiscordOutputMode;
       reasoningDisplayMode: "none" | "simple" | "detailed";
     },
   ) {
@@ -274,6 +284,59 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     } catch {
       // ignore
     }
+  }
+
+  private isPreviewMode(): boolean {
+    return this.deps.outputMode === "preview";
+  }
+
+  private trackTransientPreviewRef(ref: MsgRef): void {
+    if (!this.isPreviewMode()) return;
+
+    const key = msgRefKey(ref);
+    if (this.transientPreviewRefKeys.has(key)) return;
+    this.transientPreviewRefKeys.add(key);
+    this.transientPreviewRefs.push(ref);
+  }
+
+  private getRenderedText(): string {
+    const rewrite = this.deps.rewriteText;
+    return rewrite ? rewrite(this.textAcc) : this.textAcc;
+  }
+
+  private getStreamingDisplayText(): string {
+    const rendered = this.getRenderedText();
+    if (!this.isPreviewMode()) return rendered;
+    return toPreviewTail(rendered);
+  }
+
+  private async deleteTransientPreviewMessages(): Promise<void> {
+    if (!this.isPreviewMode()) return;
+    if (this.transientPreviewRefs.length === 0) return;
+
+    const refs = [...this.transientPreviewRefs];
+    this.transientPreviewRefs.length = 0;
+    this.transientPreviewRefKeys.clear();
+
+    for (let i = refs.length - 1; i >= 0; i--) {
+      const ref = refs[i];
+      if (!ref) continue;
+      await this.deleteMessageRef(ref).catch(() => undefined);
+    }
+  }
+
+  private async deleteMessageRef(ref: MsgRef): Promise<void> {
+    const { client } = this.deps;
+    if (ref.platform !== "discord") return;
+
+    const channel = await client.channels.fetch(ref.channelId).catch(() => null);
+    if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
+      return;
+    }
+
+    const msg = await channel.messages.fetch(ref.messageId).catch(() => null);
+    if (!msg) return;
+    await msg.delete().catch(() => undefined);
   }
 
   private getThinkingValue(): string | null {
@@ -309,12 +372,12 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     const channel = await fetchTextChannel(client, sessionRef.channelId);
     if (!("send" in channel)) throw new Error("Discord channel not found");
 
-    // We want to attach images to the same message whenever possible.
-    // So we delay creating the first message until either:
-    // - we have something to display (text or action), or
+    // Delay creating the first message until either:
+    // - we have something to display (text/action), or
     // - finish() is called.
-
-    // Discord supports up to 10 attachments per message.
+    //
+    // In preview mode, attachments are intentionally sent *after* the final reply.
+    // In inline mode, we keep the old behavior of attaching files to the first message.
     const MAX_FILES = 10;
 
     this.cancelCustomId = (() => {
@@ -342,10 +405,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     });
     const resumed = resumedMessages.length > 0;
 
-    const initialAttachments = resumed ? [] : this.pendingAttachments.slice(0, MAX_FILES);
-    const remainingAttachments = resumed
-      ? this.pendingAttachments.slice()
-      : this.pendingAttachments.slice(MAX_FILES);
+    const includeInitialAttachments = !this.isPreviewMode();
+    const initialAttachments =
+      resumed || !includeInitialAttachments ? [] : this.pendingAttachments.slice(0, MAX_FILES);
+    const remainingAttachments =
+      resumed || !includeInitialAttachments
+        ? this.pendingAttachments.slice()
+        : this.pendingAttachments.slice(MAX_FILES);
 
     const first =
       resumedMessages[0] ??
@@ -367,12 +433,15 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       for (const m of resumedMessages) {
         if (seen.has(m.id)) continue;
         seen.add(m.id);
-        this.created.push(asDiscordMsgRef(sessionRef.channelId, m.id));
+        const ref = asDiscordMsgRef(sessionRef.channelId, m.id);
+        this.created.push(ref);
+        this.trackTransientPreviewRef(ref);
       }
       this.lastMsg = resumedMessages[resumedMessages.length - 1] ?? first;
     } else {
       const ref = asDiscordMsgRef(sessionRef.channelId, first.id);
       this.created.push(ref);
+      this.trackTransientPreviewRef(ref);
       this.notifyCreated(ref);
     }
 
@@ -427,13 +496,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           // Notify immediately so the router can treat replies-to-this message as "active".
           const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
           this.created.push(ref);
+          this.trackTransientPreviewRef(ref);
           this.notifyCreated(ref);
           return msg;
         },
-        getContent: () => {
-          const rewrite = this.deps.rewriteText;
-          return rewrite ? rewrite(this.textAcc) : this.textAcc;
-        },
+        getContent: () => this.getStreamingDisplayText(),
         getThinkingValue: () => this.getThinkingValue(),
         shouldHeartbeatThinking: () => this.isReasoningTimerLive(),
         getActionsLines: () =>
@@ -455,7 +522,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       const seen = new Set(this.created.map((m) => m.messageId));
       for (const messageId of res.discordMessageCreated) {
         if (seen.has(messageId)) continue;
-        this.created.push(asDiscordMsgRef(sessionRef.channelId, messageId));
+        const ref = asDiscordMsgRef(sessionRef.channelId, messageId);
+        this.created.push(ref);
+        this.trackTransientPreviewRef(ref);
         seen.add(messageId);
       }
 
@@ -465,8 +534,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       // We keep `first` as the stable anchor and rely on embed replies for the visible response.
       // If no embeds were created, turn `first` into the final plain message.
       if (res.discordMessageCreated.length === 0) {
-        const rewrite = this.deps.rewriteText;
-        const content = rewrite ? rewrite(this.textAcc) : this.textAcc;
+        const content = this.getStreamingDisplayText();
         await safeEdit(first, {
           content: content || "*<empty_string>*",
           components: [],
@@ -544,78 +612,138 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     }
   }
 
+  private async flushPendingAttachments(replyTo: Message): Promise<MsgRef[]> {
+    const { sessionRef } = this.deps;
+    if (!isDiscordSessionRef(sessionRef)) return [];
+    if (this.pendingAttachments.length === 0) return [];
+
+    const MAX_FILES = 10;
+    const created: MsgRef[] = [];
+
+    for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
+      const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
+      const msg = await replyTo.reply({
+        files: toDiscordFiles(chunk),
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+
+      const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+      created.push(ref);
+      this.created.push(ref);
+      this.notifyCreated(ref);
+      this.lastMsg = msg;
+    }
+
+    this.pendingAttachments = [];
+    return created;
+  }
+
+  private async postFinalReplyEmbeds(): Promise<{ created: MsgRef[]; lastMsg: Message }> {
+    const { client, sessionRef } = this.deps;
+    if (!isDiscordSessionRef(sessionRef)) {
+      throw new Error("Unsupported platform");
+    }
+
+    const channel = await fetchTextChannel(client, sessionRef.channelId);
+    if (!("send" in channel)) {
+      throw new Error("Discord channel not found");
+    }
+    const sendChannel = channel as TextBasedChannel & {
+      send: (options: MessageCreateOptions) => Promise<Message>;
+    };
+    const { CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
+
+    const getMaxLength = () => {
+      const max = 4096;
+      return max - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
+    };
+
+    const renderFullText = () => {
+      const rendered = this.getRenderedText();
+      return rendered.length > 0 ? rendered : "*<empty_string>*";
+    };
+
+    const streamDone = Promise.resolve();
+    const res = await startEmbedPusher({
+      createFirst: async (emb) => {
+        return await sendChannel.send({
+          embeds: [emb],
+          reply:
+            this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
+              ? { messageReference: this.deps.opts.replyTo.messageId }
+              : undefined,
+          allowedMentions: { parse: [], repliedUser: false },
+        });
+      },
+      createReply: async (parent, emb) => {
+        return await parent.reply({
+          embeds: [emb],
+          allowedMentions: { parse: [], repliedUser: false },
+        });
+      },
+      getContent: renderFullText,
+      getActionsLines: () => [],
+      getStatsLine: () => this.statsForNerdsLine,
+      getMaxLength,
+      streamDone,
+      useSmartSplitting: this.deps.useSmartSplitting,
+      safeEdit,
+    });
+
+    const created: MsgRef[] = [];
+    for (const messageId of res.discordMessageCreated) {
+      const ref = asDiscordMsgRef(sessionRef.channelId, messageId);
+      created.push(ref);
+      this.created.push(ref);
+      this.notifyCreated(ref);
+    }
+
+    this.lastMsg = res.lastMsg;
+    return {
+      created,
+      lastMsg: res.lastMsg,
+    };
+  }
+
   async finish(): Promise<SurfaceOutputResult> {
     await this.ensureStarted();
 
     this.done.resolve();
     await this.running;
 
+    if (this.isPreviewMode()) {
+      const finalReplyPromise = this.postFinalReplyEmbeds();
+      const deletePreviewPromise = this.deleteTransientPreviewMessages().catch(() => undefined);
+
+      const finalReply = await finalReplyPromise;
+      await deletePreviewPromise;
+
+      const attachmentCreated = await this.flushPendingAttachments(finalReply.lastMsg);
+      const created = [...finalReply.created, ...attachmentCreated];
+      const last = created.at(-1);
+
+      if (!last) {
+        throw new Error("DiscordOutputStream produced no final messages");
+      }
+
+      return {
+        created,
+        last,
+      };
+    }
+
     // If we never started the embed pusher (attachments-only), remove the cancel control.
     if (this.firstMsg && this.cancelCustomId) {
       await safeEdit(this.firstMsg, { components: [] });
     }
 
-    // If we received attachments after first send, emit them as follow-up messages.
-    // Discord supports up to 10 attachments per message.
     const { sessionRef } = this.deps;
     if (isDiscordSessionRef(sessionRef) && this.pendingAttachments.length > 0) {
       const replyTo = this.lastMsg ?? this.firstMsg;
       if (!replyTo) {
         throw new Error("DiscordOutputStream missing reply anchor");
       }
-
-      const MAX_FILES = 10;
-
-      for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
-        const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
-        const msg = await replyTo.reply({
-          files: toDiscordFiles(chunk),
-          allowedMentions: { parse: [], repliedUser: false },
-        });
-        {
-          const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
-          this.created.push(ref);
-          this.notifyCreated(ref);
-        }
-        this.lastMsg = msg;
-      }
-
-      this.pendingAttachments = [];
-    }
-
-    // Optional: after the full response is visible, send a dedicated mention-only message.
-    // This is primarily for active-mode channels where the main response is streamed via edits.
-    const mentionPing = this.deps.mentionPing;
-    if (mentionPing?.enabled) {
-      const extractor = mentionPing.extractUserIds;
-      const ids = extractor ? extractor(this.textAcc) : [];
-      const deduped = [...new Set(ids)].slice(0, mentionPing.maxUsers);
-
-      if (deduped.length > 0) {
-        const { sessionRef } = this.deps;
-        const anchor = this.lastMsg ?? this.firstMsg;
-        if (!anchor) {
-          throw new Error("DiscordOutputStream missing reply anchor");
-        }
-
-        const content = deduped.map((id) => `<@${id}>`).join(" ");
-
-        const pingMsg = await anchor.reply({
-          content,
-          allowedMentions: {
-            users: deduped,
-            parse: [],
-            repliedUser: false,
-          },
-        });
-
-        if (isDiscordSessionRef(sessionRef)) {
-          const ref = asDiscordMsgRef(sessionRef.channelId, pingMsg.id);
-          this.created.push(ref);
-          this.notifyCreated(ref);
-        }
-        this.lastMsg = pingMsg;
-      }
+      await this.flushPendingAttachments(replyTo);
     }
 
     const last = this.created.at(-1);
@@ -707,6 +835,7 @@ export async function sendDiscordStyledMessage(params: {
     opts: params.opts,
     useSmartSplitting: params.useSmartSplitting,
     rewriteText: params.rewriteText,
+    outputMode: "inline",
     reasoningDisplayMode: "none",
   });
 

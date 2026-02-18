@@ -5,6 +5,7 @@ import {
   clampReasoningDetail,
   escapeDiscordMarkdown,
   formatReasoningAsBlockquote,
+  toPreviewTail,
 } from "../../../../src/surface/discord/output/discord-output-stream";
 
 describe("escapeDiscordMarkdown", () => {
@@ -74,5 +75,17 @@ describe("reasoning display helpers", () => {
         detailText: "line 1\nline 2",
       }),
     ).toBe("");
+  });
+});
+
+describe("preview tail helper", () => {
+  it("returns input unchanged when already within limit", () => {
+    expect(toPreviewTail("hello", 10)).toBe("hello");
+  });
+
+  it("tails to exact max length with ellipsis prefix", () => {
+    const out = toPreviewTail("0123456789", 6);
+    expect(out).toBe("...789");
+    expect(out.length).toBe(6);
   });
 });
