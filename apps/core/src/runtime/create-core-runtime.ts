@@ -3,11 +3,13 @@ import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
 import {
   env,
   getCoreConfig,
+  resolveCoreConfigPath,
   resolveDiscordSearchDbPath,
   resolveLogLevel,
   resolveTranscriptDbPath,
 } from "@stanley2058/lilac-utils";
 import path from "node:path";
+import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import { createLilacBus, createRedisStreamsBus, type LilacBus } from "@stanley2058/lilac-event-bus";
 
@@ -141,6 +143,10 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let requestMessageCache: RequestMessageCache | null = null;
   let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
   let runtimeFullyStarted = false;
+  let coreConfigWatcher: FSWatcher | null = null;
+  let coreConfigValidationTimer: ReturnType<typeof setTimeout> | null = null;
+  let coreConfigValidationHadError = false;
+  let lastCoreConfigValidationError: string | null = null;
 
   let toolServer: {
     init(): Promise<void>;
@@ -149,6 +155,94 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   } | null = null;
 
   const GRACEFUL_RESTART_DEADLINE_MS = 120_000;
+
+  function watchFilenameToString(name: string | Buffer | null): string | null {
+    if (typeof name === "string") return name;
+    if (name instanceof Buffer) return name.toString("utf8");
+    return null;
+  }
+
+  async function validateCoreConfigOnChange(reason: "watch"): Promise<void> {
+    const configPath = resolveCoreConfigPath();
+
+    try {
+      await getCoreConfig({ forceReload: true });
+
+      if (coreConfigValidationHadError) {
+        logger.info("core-config hot-reload validation recovered", {
+          reason,
+          path: configPath,
+        });
+      }
+
+      coreConfigValidationHadError = false;
+      lastCoreConfigValidationError = null;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!coreConfigValidationHadError || lastCoreConfigValidationError !== msg) {
+        logger.warn("core-config hot-reload validation failed", {
+          reason,
+          path: configPath,
+          error: msg,
+        });
+      }
+
+      coreConfigValidationHadError = true;
+      lastCoreConfigValidationError = msg;
+    }
+  }
+
+  function scheduleCoreConfigValidation(reason: "watch"): void {
+    if (coreConfigValidationTimer) {
+      clearTimeout(coreConfigValidationTimer);
+    }
+
+    coreConfigValidationTimer = setTimeout(() => {
+      coreConfigValidationTimer = null;
+      void validateCoreConfigOnChange(reason);
+    }, 200);
+  }
+
+  async function startCoreConfigWatcher(): Promise<void> {
+    const configPath = resolveCoreConfigPath();
+    const configDir = path.dirname(configPath);
+    const configFileName = path.basename(configPath);
+
+    try {
+      coreConfigWatcher = watch(configDir, (eventType, filename) => {
+        const changed = watchFilenameToString(filename);
+        if (changed && changed !== configFileName) return;
+
+        logger.debug("core-config file change detected", {
+          eventType,
+          changed: changed ?? configFileName,
+          path: configPath,
+        });
+
+        scheduleCoreConfigValidation("watch");
+      });
+
+      coreConfigWatcher.on("error", (e: unknown) => {
+        logger.warn("core-config watcher error", { path: configPath }, e);
+      });
+
+      logger.info("Core config hot-reload validator started", {
+        path: configPath,
+      });
+    } catch (e) {
+      logger.warn("Core config hot-reload validator disabled", { path: configPath }, e);
+      coreConfigWatcher = null;
+    }
+  }
+
+  function stopCoreConfigWatcher(): void {
+    if (coreConfigValidationTimer) {
+      clearTimeout(coreConfigValidationTimer);
+      coreConfigValidationTimer = null;
+    }
+    coreConfigWatcher?.close();
+    coreConfigWatcher = null;
+  }
 
   async function restoreGracefulSnapshot(snapshot: GracefulRestartSnapshot) {
     logger.info("Restoring graceful restart snapshot", {
@@ -184,6 +278,8 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       // Ensure data dir exists before creating sqlite-backed stores.
       await fs.mkdir(env.dataDir, { recursive: true });
+
+      await startCoreConfigWatcher();
 
       gracefulRestartStore = new SqliteGracefulRestartStore(
         path.join(env.dataDir, "graceful-restart.db"),
@@ -502,6 +598,9 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     await safe("gracefulRestartStore.close", async () => {
       gracefulRestartStore?.close();
       gracefulRestartStore = null;
+    });
+    await safe("coreConfigWatcher.stop", async () => {
+      stopCoreConfigWatcher();
     });
     await safe("bus.close", () => bus.close());
 

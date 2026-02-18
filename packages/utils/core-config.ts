@@ -120,7 +120,8 @@ const routerSchema = z
       .record(
         z.string().min(1),
         z.object({
-          mode: z.enum(["mention", "active"]),
+          /** Optional per-session mode override (falls back to surface.router.defaultMode). */
+          mode: z.enum(["mention", "active"]).optional(),
           /** Override activeGate.enabled for this session/channel (active mode only). */
           gate: z.boolean().optional(),
         }),

@@ -12,7 +12,8 @@ surface:
     sessionModes: {}
     # sessionModes:
     #   "123456789012345678":
-    #     mode: active
+    #     # Optional: when omitted, this session inherits defaultMode.
+    #     # mode: active
     #     # Optional: override the global activeGate.enabled for this channel.
     #     # gate: false
 
