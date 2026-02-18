@@ -340,8 +340,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
 - `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
-- `EXA_API_KEY` (enables Exa-backed `tools search`; see `core-config.yaml` `tools.web` for provider/baseUrl)
-- `TAVILY_API_KEY` (enables Tavily-backed `tools search` and `tools fetch --mode=tavily`)
+- `TAVILY_API_KEY` (enables `tools search` and `tools fetch --mode=tavily`)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 
 ---
