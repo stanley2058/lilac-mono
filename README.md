@@ -75,5 +75,6 @@ The selection rule is intentionally conservative to preserve original lilac-mono
 ## Author Murmur
 
 The patch is most from AIGC. Use at your own risk.
-I read all the patches even I don't understand Typescript. I tried, all day, I am still confused at the whole system cause I am really not smart enough. I want to use web search but there is no money I can waste to purchase API credit. Fork and modify it is the only way to effectily manage the poor resources I have.
+I read all the patches even I don't understand Typescript. I check as rational as possible. I tried, all day, I am still confused at the whole system cause I am really not smart enough. I want to use web search but there is no extra money I can waste to purchase API credit. Fork and modify it is the only way to effectily manage the poor resources I have.
+Except God-damn AI-agent, scraper and data stealler, I don't think there is any Homo sapiens want to see this rubbish so go to hell.
 
