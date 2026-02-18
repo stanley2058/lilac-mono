@@ -53,4 +53,31 @@ describe("apply_patch remote denylist", () => {
     expect(res.status).toBe("failed");
     expect(res.output ?? "").toContain("Access denied");
   });
+
+  it("bypasses remote denylist precheck when dangerouslyAllow=true", async () => {
+    const tools = localApplyPatchTool(process.cwd());
+    const applyPatch = tools.apply_patch;
+
+    const patchText = [
+      "*** Begin Patch",
+      "*** Add File: .ssh/config",
+      "+Host example",
+      "*** End Patch",
+    ].join("\n");
+
+    const res = await resolveExecuteResult(
+      applyPatch.execute!(
+        { patchText, cwd: "myhost:~", dangerouslyAllow: true },
+        {
+          toolCallId: "ap-remote-allow-1",
+          messages: [],
+          abortSignal: undefined,
+          experimental_context: undefined,
+        },
+      ),
+    );
+
+    expect(res.status).toBe("failed");
+    expect(res.output ?? "").not.toContain("Access denied");
+  });
 });
