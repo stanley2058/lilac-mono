@@ -250,6 +250,36 @@ export async function startBusRequestRouter(params: {
   });
 
   let cfg = params.config ?? (await getCoreConfig());
+  let coreConfigReloadHadError = false;
+  let lastCoreConfigReloadError: string | null = null;
+
+  async function reloadCoreConfigIfNeeded(): Promise<void> {
+    if (params.config) return;
+
+    try {
+      cfg = await getCoreConfig();
+
+      if (coreConfigReloadHadError) {
+        logger.info("core-config reload recovered", {
+          path: "core-config.yaml",
+        });
+      }
+
+      coreConfigReloadHadError = false;
+      lastCoreConfigReloadError = null;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!coreConfigReloadHadError || lastCoreConfigReloadError !== msg) {
+        logger.warn("core-config reload failed; using last known config", {
+          path: "core-config.yaml",
+          error: msg,
+        });
+      }
+
+      coreConfigReloadHadError = true;
+      lastCoreConfigReloadError = msg;
+    }
+  }
 
   const activeBySession = new Map<string, ActiveSessionState>();
   const buffers = new Map<string, DebounceBuffer>();
@@ -461,7 +491,8 @@ export async function startBusRequestRouter(params: {
       }
 
       // reload config opportunistically (mtime cached in getCoreConfig).
-      cfg = params.config ?? (await getCoreConfig());
+      // If reload fails, keep using the last known good config.
+      await reloadCoreConfigIfNeeded();
 
       const sessionId = msg.data.channelId;
       const msgRef = parseDiscordMsgRefFromAdapterEvent(msg.data);
