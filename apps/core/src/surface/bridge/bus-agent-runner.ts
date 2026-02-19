@@ -843,6 +843,14 @@ function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | nul
   return null;
 }
 
+function parseSessionConfigIdFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["sessionConfigId"];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function parseRequestControlFromRaw(raw: unknown): {
   requiresActive: boolean;
   cancel: boolean;
@@ -1623,12 +1631,15 @@ export async function startBusAgentRunner(params: {
         skillsSection: runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
       });
 
+      const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
+
       const additionalSessionPrompts = await resolveSessionAdditionalPrompts({
-        entries: cfg.surface.router.sessionModes[sessionId]?.additionalPrompts,
+        entries: cfg.surface.router.sessionModes[sessionConfigId]?.additionalPrompts,
         onWarn: (warning) => {
           logger.warn("skipping invalid session additionalPrompts entry", {
             requestId: next.requestId,
             sessionId,
+            sessionConfigId,
             reason: warning.reason,
             value: warning.value,
             filePath: warning.filePath,
@@ -1656,6 +1667,7 @@ export async function startBusAgentRunner(params: {
         requestClient: next.requestClient,
         runProfile,
         subagentDepth: subagentMeta.depth,
+        sessionConfigId,
         model: resolved.spec,
         editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
         isRecoveryResume: Boolean(next.recovery),

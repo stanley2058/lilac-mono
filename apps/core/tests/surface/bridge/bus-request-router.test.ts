@@ -1050,6 +1050,408 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("inherits parent channel session mode for Discord threads when thread has no override", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent-chan";
+    const threadId = "thread-1";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId },
+        userId: "u1",
+        userName: "user1",
+        text: "thread hello",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      routerGate: async () => {
+        throw new Error("routerGate should not be called when inherited gate is disabled");
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: { mode: "active", gate: false },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "thread hello",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].data.raw?.sessionMode).toBe("active");
+    expect(received[0].data.raw?.sessionConfigId).toBe(threadId);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("uses parent sessionConfigId when parent defines additionalPrompts and thread does not", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent-chan";
+    const threadId = "thread-1";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId },
+        userId: "u1",
+        userName: "user1",
+        text: "thread hello",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      routerGate: async () => {
+        throw new Error("routerGate should not be called when inherited gate is disabled");
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: {
+                mode: "active",
+                gate: false,
+                additionalPrompts: ["parent memo"],
+              },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "thread hello",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].data.raw?.sessionMode).toBe("active");
+    expect(received[0].data.raw?.sessionConfigId).toBe(parentChannelId);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("uses thread override instead of parent channel session mode", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent-chan";
+    const threadId = "thread-1";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId },
+        userId: "u1",
+        userName: "user1",
+        text: "thread hello",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: { mode: "active", gate: false },
+              [threadId]: { mode: "mention", gate: false },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: false, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "thread hello",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(received.length).toBe(0);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("keeps inheriting parent mode when thread only overrides gate", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent-chan";
+    const threadId = "thread-1";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId },
+        userId: "u1",
+        userName: "user1",
+        text: "thread hello",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      routerGate: async () => {
+        throw new Error("routerGate should not be called when thread gate override disables it");
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: { mode: "active", gate: true },
+              [threadId]: { gate: false },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "thread hello",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.raw?.sessionMode).toBe("active");
+
+    await sub.stop();
+    await router.stop();
+  });
+
   it("forwards active channel batch when gate returns forward=true (prompt only)", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
