@@ -21,4 +21,26 @@ describe("coreConfigSchema surface.router.sessionModes", () => {
     expect(parsed.surface.router.sessionModes["123"]?.mode).toBeUndefined();
     expect(parsed.surface.router.sessionModes["123"]?.gate).toBe(true);
   });
+
+  it("accepts additionalPrompts session overrides", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        router: {
+          sessionModes: {
+            chan: {
+              additionalPrompts: [
+                "Keep this session focused on release readiness.",
+                "file:///tmp/session-memo.md",
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.surface.router.sessionModes.chan?.additionalPrompts).toEqual([
+      "Keep this session focused on release readiness.",
+      "file:///tmp/session-memo.md",
+    ]);
+  });
 });

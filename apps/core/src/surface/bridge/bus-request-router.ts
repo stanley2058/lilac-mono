@@ -142,14 +142,53 @@ function parseDiscordMsgRefFromAdapterEvent(data: {
   };
 }
 
-function getSessionMode(cfg: CoreConfig, sessionId: string): SessionMode {
-  const entry = cfg.surface.router.sessionModes[sessionId];
-  return entry?.mode ?? cfg.surface.router.defaultMode;
+function resolveSessionConfigId(input: {
+  cfg: CoreConfig;
+  sessionId: string;
+  parentChannelId?: string;
+}): string {
+  const entry = input.cfg.surface.router.sessionModes[input.sessionId];
+  if (entry && Object.prototype.hasOwnProperty.call(entry, "additionalPrompts")) {
+    return input.sessionId;
+  }
+
+  const parentChannelId = input.parentChannelId?.trim();
+  if (!parentChannelId) return input.sessionId;
+
+  const parentEntry = input.cfg.surface.router.sessionModes[parentChannelId];
+  if (parentEntry && Object.prototype.hasOwnProperty.call(parentEntry, "additionalPrompts")) {
+    return parentChannelId;
+  }
+
+  return input.sessionId;
 }
 
-function resolveSessionGateEnabled(cfg: CoreConfig, sessionId: string): boolean {
-  const sessionGateOverride = cfg.surface.router.sessionModes[sessionId]?.gate ?? null;
-  return sessionGateOverride ?? cfg.surface.router.activeGate.enabled;
+function getSessionMode(cfg: CoreConfig, sessionId: string, parentChannelId?: string): SessionMode {
+  const threadMode = cfg.surface.router.sessionModes[sessionId]?.mode;
+  if (threadMode) return threadMode;
+
+  const parentId = parentChannelId?.trim();
+  if (parentId) {
+    const parentMode = cfg.surface.router.sessionModes[parentId]?.mode;
+    if (parentMode) return parentMode;
+  }
+
+  return cfg.surface.router.defaultMode;
+}
+
+function resolveSessionGateEnabled(
+  cfg: CoreConfig,
+  sessionId: string,
+  parentChannelId?: string,
+): boolean {
+  const threadGate = cfg.surface.router.sessionModes[sessionId]?.gate;
+  if (typeof threadGate === "boolean") return threadGate;
+
+  const parentId = parentChannelId?.trim();
+  const parentGate = parentId ? cfg.surface.router.sessionModes[parentId]?.gate : undefined;
+  if (typeof parentGate === "boolean") return parentGate;
+
+  return cfg.surface.router.activeGate.enabled;
 }
 
 function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
@@ -170,6 +209,7 @@ function getDiscordFlags(raw: unknown): {
   mentionsBot?: boolean;
   replyToBot?: boolean;
   replyToMessageId?: string;
+  parentChannelId?: string;
 } {
   if (!raw || typeof raw !== "object") return {};
   const discord = (raw as { discord?: unknown }).discord;
@@ -182,6 +222,7 @@ function getDiscordFlags(raw: unknown): {
     mentionsBot: typeof o.mentionsBot === "boolean" ? o.mentionsBot : undefined,
     replyToBot: typeof o.replyToBot === "boolean" ? o.replyToBot : undefined,
     replyToMessageId: typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
+    parentChannelId: typeof o.parentChannelId === "string" ? o.parentChannelId : undefined,
   };
 }
 
@@ -221,6 +262,8 @@ type RouterGateDecision = {
 
 type DebounceBuffer = {
   sessionId: string;
+  sessionConfigId: string;
+  parentChannelId?: string;
   messages: BufferedMessage[];
   timer: ReturnType<typeof setTimeout> | null;
 };
@@ -499,9 +542,17 @@ export async function startBusRequestRouter(params: {
 
       const flags = getDiscordFlags(msg.data.raw);
       const isDm = flags.isDMBased === true;
+      const parentChannelId = flags.parentChannelId;
+      const sessionConfigId = isDm
+        ? sessionId
+        : resolveSessionConfigId({
+            cfg,
+            sessionId,
+            parentChannelId,
+          });
 
-      const mode: SessionMode = isDm ? "active" : getSessionMode(cfg, sessionId);
-      const gateEnabled = resolveSessionGateEnabled(cfg, sessionId);
+      const mode: SessionMode = isDm ? "active" : getSessionMode(cfg, sessionId, parentChannelId);
+      const gateEnabled = resolveSessionGateEnabled(cfg, sessionId, parentChannelId);
 
       const active = activeBySession.get(sessionId);
 
@@ -514,6 +565,7 @@ export async function startBusRequestRouter(params: {
         mentionsBot: flags.mentionsBot === true,
         replyToBot: flags.replyToBot === true,
         activeRequestId: active?.requestId,
+        sessionConfigId,
         textPreview:
           typeof msg.data.text === "string" && msg.data.text.trim().length > 0
             ? previewText(msg.data.text)
@@ -596,6 +648,7 @@ export async function startBusRequestRouter(params: {
             replyToMessageId: flags.replyToMessageId,
             active,
             sessionMode: mode,
+            sessionConfigId,
           });
         } else {
           await handleActiveChannelMode({
@@ -611,8 +664,10 @@ export async function startBusRequestRouter(params: {
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
             replyToMessageId: flags.replyToMessageId,
+            parentChannelId,
             active,
             sessionMode: mode,
+            sessionConfigId,
           });
         }
 
@@ -634,6 +689,7 @@ export async function startBusRequestRouter(params: {
         replyToMessageId: flags.replyToMessageId,
         active,
         sessionMode: mode,
+        sessionConfigId,
       });
 
       await ctx.commit();
@@ -663,6 +719,7 @@ export async function startBusRequestRouter(params: {
     replyToMessageId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
+    sessionConfigId: string;
   }) {
     const {
       adapter,
@@ -676,6 +733,7 @@ export async function startBusRequestRouter(params: {
       replyToBot,
       active,
       sessionMode,
+      sessionConfigId,
     } = input;
 
     if (active) {
@@ -716,6 +774,7 @@ export async function startBusRequestRouter(params: {
             queue: steerMode,
             msgRef,
             sessionMode,
+            sessionConfigId,
             transformUserText:
               steerMode === "interrupt"
                 ? (text) =>
@@ -737,6 +796,7 @@ export async function startBusRequestRouter(params: {
           queue: "followUp",
           msgRef,
           sessionMode,
+          sessionConfigId,
         });
         return;
       }
@@ -753,6 +813,7 @@ export async function startBusRequestRouter(params: {
           triggerMsgRef: msgRef,
           triggerType: "reply",
           sessionMode,
+          sessionConfigId,
           markActive: false,
         });
         return;
@@ -767,6 +828,7 @@ export async function startBusRequestRouter(params: {
         queue: "followUp",
         msgRef,
         sessionMode,
+        sessionConfigId,
       });
       return;
     }
@@ -789,6 +851,7 @@ export async function startBusRequestRouter(params: {
       triggerMsgRef: msgRef,
       triggerType,
       sessionMode,
+      sessionConfigId,
       markActive: true,
     });
   }
@@ -806,8 +869,10 @@ export async function startBusRequestRouter(params: {
     mentionsBot: boolean;
     replyToBot: boolean;
     replyToMessageId?: string;
+    parentChannelId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
+    sessionConfigId: string;
   }) {
     const {
       adapter,
@@ -821,8 +886,10 @@ export async function startBusRequestRouter(params: {
       messageTs,
       mentionsBot,
       replyToBot,
+      parentChannelId,
       active,
       sessionMode,
+      sessionConfigId,
     } = input;
 
     if (active) {
@@ -864,6 +931,7 @@ export async function startBusRequestRouter(params: {
             queue: steerMode,
             msgRef,
             sessionMode,
+            sessionConfigId,
             transformUserText:
               steerMode === "interrupt"
                 ? (text) =>
@@ -885,6 +953,7 @@ export async function startBusRequestRouter(params: {
           queue: "followUp",
           msgRef,
           sessionMode,
+          sessionConfigId,
         });
         return;
       }
@@ -915,6 +984,7 @@ export async function startBusRequestRouter(params: {
           queue: steerMode,
           msgRef,
           sessionMode,
+          sessionConfigId,
           transformUserText:
             steerMode === "interrupt"
               ? (text) =>
@@ -939,6 +1009,7 @@ export async function startBusRequestRouter(params: {
           triggerMsgRef: msgRef,
           triggerType: "reply",
           sessionMode,
+          sessionConfigId,
           markActive: false,
         });
         return;
@@ -953,6 +1024,7 @@ export async function startBusRequestRouter(params: {
         queue: "followUp",
         msgRef,
         sessionMode,
+        sessionConfigId,
       });
       return;
     }
@@ -976,6 +1048,7 @@ export async function startBusRequestRouter(params: {
         triggerMsgRef: msgRef,
         triggerType,
         sessionMode,
+        sessionConfigId,
         markActive: true,
       });
       return;
@@ -985,6 +1058,8 @@ export async function startBusRequestRouter(params: {
       buffers,
       cfg,
       sessionId,
+      sessionConfigId,
+      parentChannelId,
       message: {
         msgRef,
         userId,
@@ -1000,9 +1075,11 @@ export async function startBusRequestRouter(params: {
     buffers: Map<string, DebounceBuffer>;
     cfg: CoreConfig;
     sessionId: string;
+    sessionConfigId: string;
+    parentChannelId?: string;
     message: BufferedMessage;
   }) {
-    const { buffers, cfg, sessionId, message } = input;
+    const { buffers, cfg, sessionId, sessionConfigId, parentChannelId, message } = input;
 
     const existing = buffers.get(sessionId);
     if (!existing) {
@@ -1013,6 +1090,8 @@ export async function startBusRequestRouter(params: {
 
       const buffer: DebounceBuffer = {
         sessionId,
+        sessionConfigId,
+        parentChannelId,
         messages: [message],
         timer: null,
       };
@@ -1036,7 +1115,7 @@ export async function startBusRequestRouter(params: {
     clearDebounceBuffer(sessionId);
 
     // Gate is only for active channels with no running request.
-    const gateEnabled = resolveSessionGateEnabled(cfg, sessionId);
+    const gateEnabled = resolveSessionGateEnabled(cfg, b.sessionId, b.parentChannelId);
     const gate = params.routerGate ?? shouldForwardByGate;
     const previousMessageText = gateEnabled
       ? await resolvePreviousBatchMessageText(b.messages)
@@ -1083,6 +1162,7 @@ export async function startBusRequestRouter(params: {
       cfg,
       requestId: randomRequestId(),
       sessionId,
+      sessionConfigId: b.sessionConfigId,
       // Use newest message as the context anchor (not a reply trigger).
       triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,
@@ -1219,6 +1299,7 @@ export async function startBusRequestRouter(params: {
     replyToMessageId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
+    sessionConfigId: string;
   }) {
     const {
       adapter,
@@ -1276,6 +1357,7 @@ export async function startBusRequestRouter(params: {
           queue: steerMode,
           msgRef,
           sessionMode: input.sessionMode,
+          sessionConfigId: input.sessionConfigId,
           transformUserText:
             steerMode === "interrupt"
               ? (text) =>
@@ -1295,6 +1377,7 @@ export async function startBusRequestRouter(params: {
           queue: "followUp",
           msgRef,
           sessionMode: input.sessionMode,
+          sessionConfigId: input.sessionConfigId,
         });
       }
       return;
@@ -1320,12 +1403,14 @@ export async function startBusRequestRouter(params: {
       msgRef,
       userId,
       sessionMode: input.sessionMode,
+      sessionConfigId: input.sessionConfigId,
     });
   }
 
   async function publishBusRequest(input: {
     requestId: string;
     sessionId: string;
+    sessionConfigId: string;
     queue: RequestQueueMode;
     triggerType: "mention" | "reply" | "active";
     sessionMode: SessionMode;
@@ -1358,6 +1443,7 @@ export async function startBusRequestRouter(params: {
             ? (input.raw as Record<string, unknown>)
             : {}),
           sessionMode: input.sessionMode,
+          sessionConfigId: input.sessionConfigId,
         },
       },
       {
@@ -1376,6 +1462,7 @@ export async function startBusRequestRouter(params: {
     cfg: CoreConfig;
     requestId: string;
     sessionId: string;
+    sessionConfigId: string;
     queue: RequestQueueMode;
     triggerType: "mention" | "reply" | "active";
     msgRef: MsgRef;
@@ -1402,6 +1489,7 @@ export async function startBusRequestRouter(params: {
     await publishBusRequest({
       requestId,
       sessionId,
+      sessionConfigId: input.sessionConfigId,
       queue,
       triggerType,
       sessionMode: input.sessionMode,
@@ -1420,6 +1508,7 @@ export async function startBusRequestRouter(params: {
     cfg: CoreConfig;
     requestId: string;
     sessionId: string;
+    sessionConfigId: string;
     triggerMsgRef: MsgRef | undefined;
     triggerType: "mention" | "reply" | undefined;
     sessionMode: SessionMode;
@@ -1459,6 +1548,7 @@ export async function startBusRequestRouter(params: {
     await publishBusRequest({
       requestId,
       sessionId,
+      sessionConfigId: input.sessionConfigId,
       queue: "prompt",
       triggerType: triggerType ?? "active",
       sessionMode: input.sessionMode,
@@ -1486,6 +1576,7 @@ export async function startBusRequestRouter(params: {
     cfg: CoreConfig;
     requestId: string;
     sessionId: string;
+    sessionConfigId: string;
     queue: "followUp" | "steer" | "interrupt";
     msgRef: MsgRef;
     sessionMode: SessionMode;
@@ -1510,6 +1601,7 @@ export async function startBusRequestRouter(params: {
     await publishBusRequest({
       requestId,
       sessionId,
+      sessionConfigId: input.sessionConfigId,
       queue,
       triggerType: "active",
       sessionMode: input.sessionMode,

@@ -124,6 +124,12 @@ const routerSchema = z
           mode: z.enum(["mention", "active"]).optional(),
           /** Override activeGate.enabled for this session/channel (active mode only). */
           gate: z.boolean().optional(),
+          /**
+           * Optional extra session memo entries appended to the system prompt.
+           *
+           * Each entry can be literal text or a file:// URL.
+           */
+          additionalPrompts: z.array(z.string()).optional(),
         }),
       )
       .default({}),

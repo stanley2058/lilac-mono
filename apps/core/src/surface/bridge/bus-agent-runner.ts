@@ -39,6 +39,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Buffer } from "node:buffer";
+import { fileURLToPath } from "node:url";
 
 import { Logger } from "@stanley2058/simple-module-logger";
 
@@ -842,6 +843,14 @@ function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | nul
   return null;
 }
 
+function parseSessionConfigIdFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["sessionConfigId"];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function parseRequestControlFromRaw(raw: unknown): {
   requiresActive: boolean;
   cancel: boolean;
@@ -961,6 +970,80 @@ function buildSystemPromptForProfile(params: {
     "## Subagent Mode: Explore",
     buildExploreOverlay(params.exploreOverlay),
   ].join("\n");
+}
+
+export type SessionAdditionalPromptWarning = {
+  reason: "invalid_file_url" | "read_failed";
+  value: string;
+  filePath?: string;
+  error: string;
+};
+
+export async function resolveSessionAdditionalPrompts(params: {
+  entries: readonly string[] | undefined;
+  readFileText?: (filePath: string) => Promise<string>;
+  onWarn?: (warning: SessionAdditionalPromptWarning) => void;
+}): Promise<string[]> {
+  const readFileText = params.readFileText ?? ((filePath: string) => Bun.file(filePath).text());
+  const out: string[] = [];
+
+  for (const value of params.entries ?? []) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) continue;
+
+    if (!trimmed.startsWith("file://")) {
+      out.push(trimmed);
+      continue;
+    }
+
+    let filePath: string;
+    try {
+      const url = new URL(trimmed);
+      if (url.protocol !== "file:") {
+        throw new Error(`unsupported protocol '${url.protocol}'`);
+      }
+      filePath = fileURLToPath(url);
+    } catch (e) {
+      params.onWarn?.({
+        reason: "invalid_file_url",
+        value,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      continue;
+    }
+
+    try {
+      const content = (await readFileText(filePath)).trim();
+      const filename = path.basename(filePath) || filePath;
+      out.push(`# ${filename} (${filePath})\n${content.length > 0 ? content : "(empty)"}`);
+    } catch (e) {
+      params.onWarn?.({
+        reason: "read_failed",
+        value,
+        filePath,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return out;
+}
+
+export function appendAdditionalSessionMemoBlock(
+  baseSystemPrompt: string,
+  prompts: readonly string[],
+): string {
+  const combined = prompts.join("\n\n").trim();
+  if (combined.length === 0) {
+    return baseSystemPrompt;
+  }
+
+  const base = baseSystemPrompt.trimEnd();
+  if (base.length === 0) {
+    return `Additional Session Memo:\n${combined}`;
+  }
+
+  return `${base}\n\nAdditional Session Memo:\n${combined}`;
 }
 
 async function maybeBuildSkillsSectionForPrimary(): Promise<string | null> {
@@ -1540,13 +1623,35 @@ export async function startBusAgentRunner(params: {
         ? withStableAnthropicUpstreamOrder(resolved.provider, providerOptionsWithPromptCacheKey)
         : providerOptionsWithPromptCacheKey;
 
-      const systemPrompt = buildSystemPromptForProfile({
+      const baseSystemPrompt = buildSystemPromptForProfile({
         baseSystemPrompt: cfg.agent.systemPrompt,
         profile: runProfile,
         activeEditingTool: runProfile === "primary" ? editingToolMode : null,
         exploreOverlay: subagents.profiles.explore.promptOverlay,
         skillsSection: runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
       });
+
+      const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
+
+      const additionalSessionPrompts = await resolveSessionAdditionalPrompts({
+        entries: cfg.surface.router.sessionModes[sessionConfigId]?.additionalPrompts,
+        onWarn: (warning) => {
+          logger.warn("skipping invalid session additionalPrompts entry", {
+            requestId: next.requestId,
+            sessionId,
+            sessionConfigId,
+            reason: warning.reason,
+            value: warning.value,
+            filePath: warning.filePath,
+            error: warning.error,
+          });
+        },
+      });
+
+      const systemPrompt = appendAdditionalSessionMemoBlock(
+        baseSystemPrompt,
+        additionalSessionPrompts,
+      );
 
       const agentSystem = anthropicPromptCachingEnabled
         ? {
@@ -1562,6 +1667,7 @@ export async function startBusAgentRunner(params: {
         requestClient: next.requestClient,
         runProfile,
         subagentDepth: subagentMeta.depth,
+        sessionConfigId,
         model: resolved.spec,
         editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
         isRecoveryResume: Boolean(next.recovery),
