@@ -13,8 +13,8 @@ This README focuses on what differs in this fork and how to configure it.
 | Area   | What changed in this fork                                                                                                     | Where                                                                                     |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | CI     | Scheduled upstream sync (auto-merge `upstream/main` into `main`) and triggers image build on updates                          | `.github/workflows/sync-upstream.yml`                                                     |
-| CI     | Build & push Docker image to GHCR on `main` pushes                                                                            | `.github/workflows/build-image.yml`                                                       |
-| Docker | Container default user/uid and workspace env var name differ from upstream                                                    | `Dockerfile`                                                                              |
+| CI     | Build & push Docker image to GHCR on `main` pushes.                                                                           | `.github/workflows/build-image.yml`                                                       |
+| Docker | Container default user/uid and workspace env var name differ from upstream. It is point to `Catalinna` who has USERID=`3000`  | `Dockerfile`                                                                              |
 | Tools  | `tools search` backend is configurable: Tavily (default) or Exa (via `exa-js`, supports Exa-compatible proxies like exa-pool) | `apps/core/src/tool-server/tools/web.ts`, `apps/core/src/tool-server/tools/web-search.ts` |
 
 ## Quick start (fork)
