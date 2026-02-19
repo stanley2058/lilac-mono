@@ -55,6 +55,15 @@ export interface WebSearchProvider {
   ): Promise<readonly WebSearchResult[]>;
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal) return;
+  if (!signal.aborted) return;
+
+  const e = new Error("Aborted");
+  e.name = "AbortError";
+  throw e;
+}
+
 function missingConfigMessage(id: WebSearchProviderId): string | null {
   if (id === "exa") {
     return "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).";
@@ -82,8 +91,20 @@ export function resolveWebSearchProvider(params: {
     byId.set(p.id, p);
   }
 
-  const normalized = params.requested?.trim().toLowerCase();
-  const requested = normalized === "exa" ? "exa" : "tavily";
+  const normalized = params.requested?.trim().toLowerCase() ?? "";
+
+  let requested: "exa" | "tavily";
+  if (normalized === "exa") {
+    requested = "exa";
+  } else if (normalized === "tavily" || normalized.length === 0) {
+    requested = "tavily";
+  } else {
+    return {
+      provider: null,
+      error: `web.search is unavailable: unknown provider '${normalized}'. Registered: ${ids.join(", ") || "none"}.`,
+    };
+  }
+
   const p = byId.get(requested);
   if (!p) {
     return {
@@ -215,11 +236,15 @@ export class ExaWebSearchProvider implements WebSearchProvider {
 
   async search(
     input: WebSearchInput,
-    _opts?: {
+    opts?: {
       signal?: AbortSignal;
     },
   ): Promise<readonly WebSearchResult[]> {
+    throwIfAborted(opts?.signal);
     const client = this.getClient();
+
+    // Note: exa-js does not currently expose AbortSignal support in its search() options,
+    // so the external HTTP request cannot be cancelled once started.
 
     const startPublishedDate =
       input.startDate ?? (input.timeRange ? startDateFromTimeRange(input.timeRange) : undefined);
@@ -279,8 +304,16 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     return this.client;
   }
 
-  async search(input: WebSearchInput): Promise<readonly WebSearchResult[]> {
+  async search(
+    input: WebSearchInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ): Promise<readonly WebSearchResult[]> {
+    throwIfAborted(opts?.signal);
     const client = this.getClient();
+
+    // Note: @tavily/core's search() options are request parameters; AbortSignal is not supported.
     const { results } = await client.search(input.query, {
       topic: input.topic,
       searchDepth: input.searchDepth,

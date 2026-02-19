@@ -87,7 +87,6 @@ export class Web implements ServerTool {
     if (this.webSearchCoreConfigMtimeMs === stat.mtimeMs) {
       return this.webSearchProviderFromCoreConfig;
     }
-    this.webSearchCoreConfigMtimeMs = stat.mtimeMs;
 
     const raw = await Bun.file(configPath).text();
     const parsed = Bun.YAML.parse(raw) as unknown;
@@ -110,6 +109,7 @@ export class Web implements ServerTool {
     }
 
     this.webSearchProviderFromCoreConfig = typeof provider === "string" ? provider : undefined;
+    this.webSearchCoreConfigMtimeMs = stat.mtimeMs;
     return this.webSearchProviderFromCoreConfig;
   }
 
@@ -124,7 +124,6 @@ export class Web implements ServerTool {
     }
 
     const normalizedRequested = providerFromConfig?.trim().toLowerCase() ?? "";
-    const effectiveRequested = normalizedRequested === "exa" ? "exa" : "tavily";
 
     const exaBaseUrl = env.tools.web.exa.baseUrl;
     const exaApiKey = env.tools.web.exa.apiKey;
@@ -139,23 +138,19 @@ export class Web implements ServerTool {
     if (nextKey === this.webSearchProviderKey) return;
     this.webSearchProviderKey = nextKey;
 
-    if (normalizedRequested && normalizedRequested !== "tavily" && normalizedRequested !== "exa") {
-      this.logger.logInfo(
-        `Unknown tools.web.search.provider '${providerFromConfig}' in core-config.yaml; defaulting to 'tavily'.`,
-      );
-    }
-
     const prevId = this.webSearchProvider?.id ?? null;
 
+    const providers = createDefaultWebSearchProviders({
+      exa: {
+        baseUrl: exaBaseUrl,
+        apiKey: exaApiKey,
+      },
+      tavilyApiKey,
+    });
+
     const resolved = resolveWebSearchProvider({
-      requested: effectiveRequested,
-      providers: createDefaultWebSearchProviders({
-        exa: {
-          baseUrl: exaBaseUrl,
-          apiKey: exaApiKey,
-        },
-        tavilyApiKey,
-      }),
+      requested: providerFromConfig,
+      providers,
     });
 
     this.webSearchProvider = resolved.provider;

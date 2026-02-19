@@ -145,7 +145,7 @@ describe("web-search (exa)", () => {
       }
       expect(summary.query).toBe("hello");
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 
@@ -227,7 +227,7 @@ describe("web-search (exa)", () => {
         score: null,
       });
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 });
