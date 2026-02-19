@@ -7,8 +7,7 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import path from "node:path";
+import { env, getCoreConfig, resolveLogLevel } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 
@@ -57,8 +56,6 @@ export class Web implements ServerTool {
   private webSearchProvider: WebSearchProvider | null = null;
   private webSearchProviderError: string | null = null;
   private webSearchProviderKey: string | null = null;
-  private webSearchCoreConfigMtimeMs: number | null = null;
-  private webSearchProviderFromCoreConfig: string | undefined;
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null = null;
   private browserInit: Promise<{
@@ -75,42 +72,8 @@ export class Web implements ServerTool {
   }
 
   private async loadWebSearchProviderFromCoreConfig(): Promise<string | undefined> {
-    const configPath = path.join(env.dataDir, "core-config.yaml");
-
-    const stat = await fs.stat(configPath).catch(() => null);
-    if (!stat) {
-      this.webSearchCoreConfigMtimeMs = null;
-      this.webSearchProviderFromCoreConfig = undefined;
-      return undefined;
-    }
-
-    if (this.webSearchCoreConfigMtimeMs === stat.mtimeMs) {
-      return this.webSearchProviderFromCoreConfig;
-    }
-
-    const raw = await Bun.file(configPath).text();
-    const parsed = Bun.YAML.parse(raw) as unknown;
-
-    const isRecord = (v: unknown): v is Record<string, unknown> =>
-      typeof v === "object" && v !== null && !Array.isArray(v);
-
-    let provider: unknown = undefined;
-    if (isRecord(parsed)) {
-      const tools = parsed["tools"];
-      if (isRecord(tools)) {
-        const web = tools["web"];
-        if (isRecord(web)) {
-          const search = web["search"];
-          if (isRecord(search)) {
-            provider = search["provider"];
-          }
-        }
-      }
-    }
-
-    this.webSearchProviderFromCoreConfig = typeof provider === "string" ? provider : undefined;
-    this.webSearchCoreConfigMtimeMs = stat.mtimeMs;
-    return this.webSearchProviderFromCoreConfig;
+    const cfg = await getCoreConfig();
+    return cfg.tools.web.search.provider;
   }
 
   private async refreshWebSearchProvider(): Promise<void> {
@@ -157,6 +120,9 @@ export class Web implements ServerTool {
     this.webSearchProviderError = resolved.error;
 
     const nextId = this.webSearchProvider?.id ?? null;
+    if (resolved.warning) {
+      this.logger.logInfo(resolved.warning);
+    }
     if (nextId && nextId !== prevId) {
       this.logger.logInfo(`web.search provider: ${nextId}`);
     }

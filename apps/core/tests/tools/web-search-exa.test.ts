@@ -4,6 +4,7 @@ import {
   ExaWebSearchProvider,
   TavilyWebSearchProvider,
   resolveWebSearchProvider,
+  type WebSearchProvider,
   webSearchInputSchema,
 } from "../../src/tool-server/tools/web-search";
 
@@ -12,9 +13,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 describe("web-search (exa)", () => {
-  it("resolveWebSearchProvider returns a clear missing-config error for exa", () => {
+  it("resolveWebSearchProvider falls back to first configured provider", () => {
     const exa = new ExaWebSearchProvider({});
     const tavily = new TavilyWebSearchProvider({ apiKey: "tavily" });
+
+    const resolved = resolveWebSearchProvider({
+      requested: "exa",
+      providers: [exa, tavily],
+    });
+
+    expect(resolved.provider?.id).toBe("tavily");
+    expect(resolved.error).toBeNull();
+    expect(resolved.warning).toBe(
+      "web.search provider 'exa' is not configured; falling back to 'tavily'.",
+    );
+  });
+
+  it("resolveWebSearchProvider returns a clear missing-config error when no provider is configured", () => {
+    const exa = new ExaWebSearchProvider({});
+    const tavily = new TavilyWebSearchProvider({});
 
     const resolved = resolveWebSearchProvider({
       requested: "exa",
@@ -25,6 +42,47 @@ describe("web-search (exa)", () => {
     expect(resolved.error).toBe(
       "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).",
     );
+    expect(resolved.warning).toBeNull();
+  });
+
+  it("resolveWebSearchProvider rejects unknown provider ids", () => {
+    const exa = new ExaWebSearchProvider({ apiKey: "exa" });
+    const tavily = new TavilyWebSearchProvider({ apiKey: "tavily" });
+
+    const resolved = resolveWebSearchProvider({
+      requested: "duckduckgo",
+      providers: [exa, tavily],
+    });
+
+    expect(resolved.provider).toBeNull();
+    expect(resolved.error).toBe(
+      "web.search is unavailable: unknown provider 'duckduckgo'. Registered: exa, tavily.",
+    );
+    expect(resolved.warning).toBeNull();
+  });
+
+  it("resolveWebSearchProvider supports registered custom providers", () => {
+    const custom: WebSearchProvider = {
+      id: "MyProvider",
+      isConfigured: () => true,
+      search: async () => [],
+    };
+
+    const resolved = resolveWebSearchProvider({
+      requested: "myprovider",
+      providers: [custom],
+    });
+
+    expect(resolved.provider?.id).toBe("MyProvider");
+    expect(resolved.error).toBeNull();
+    expect(resolved.warning).toBeNull();
+  });
+
+  it("clamps maxResults in schema for all providers", () => {
+    expect(webSearchInputSchema.parse({ query: "x", maxResults: 0 }).maxResults).toBe(1);
+    expect(webSearchInputSchema.parse({ query: "x", maxResults: -5 }).maxResults).toBe(1);
+    expect(webSearchInputSchema.parse({ query: "x", maxResults: 999.9 }).maxResults).toBe(100);
+    expect(webSearchInputSchema.parse({ query: "x", maxResults: 3.9 }).maxResults).toBe(3);
   });
 
   it("sends the expected Exa request payload (clamp + topic + searchDepth + date filters)", async () => {
