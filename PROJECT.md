@@ -325,6 +325,7 @@ Key sections:
 
 - `surface.router`: mention/active routing config.
 - `surface.discord`: bot token env var name, allowlists, botName.
+- `tools.web.search.provider`: web search backend selector (`tavily` or `exa`).
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
 - `models`: model slots (`main`, `fast`) with optional preset aliases.
 - `entity`: optional aliasing/mention rewriting for users/sessions.
@@ -340,7 +341,8 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
 - `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
-- `TAVILY_API_KEY` (enables `tools search` and `tools fetch --mode=tavily`)
+- `TAVILY_API_KEY` and/or `EXA_API_KEY` (enable `tools search`; backend selected by `tools.web.search.provider`)
+- `EXA_API_BASE_URL` (optional Exa API endpoint override)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 
 ---

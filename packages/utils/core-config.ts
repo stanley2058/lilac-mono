@@ -177,7 +177,37 @@ const discordSurfaceSchema = z
     outputMode: "inline",
   });
 
+const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
+
+const toolsSchema = z
+  .object({
+    web: z
+      .object({
+        search: z
+          .object({
+            provider: webSearchProviderSchema,
+          })
+          .default({
+            provider: "tavily",
+          }),
+      })
+      .default({
+        search: {
+          provider: "tavily",
+        },
+      }),
+  })
+  .default({
+    web: {
+      search: {
+        provider: "tavily",
+      },
+    },
+  });
+
 export const coreConfigSchema = z.object({
+  tools: toolsSchema,
+
   surface: z
     .object({
       router: routerSchema,

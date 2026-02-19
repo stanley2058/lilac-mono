@@ -268,12 +268,29 @@ type DebounceBuffer = {
   timer: ReturnType<typeof setTimeout> | null;
 };
 
+type RouterConfigOverride = Omit<CoreConfig, "tools"> & {
+  tools?: CoreConfig["tools"];
+};
+
+function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig {
+  return {
+    ...config,
+    tools: config.tools ?? {
+      web: {
+        search: {
+          provider: "tavily",
+        },
+      },
+    },
+  };
+}
+
 export async function startBusRequestRouter(params: {
   adapter: SurfaceAdapter;
   bus: LilacBus;
   subscriptionId: string;
   /** Optionally inject config; defaults to getCoreConfig(). */
-  config?: CoreConfig;
+  config?: RouterConfigOverride;
   transcriptStore?: TranscriptStore;
   /**
    * Optionally suppress routing for specific adapter events.
@@ -292,7 +309,7 @@ export async function startBusRequestRouter(params: {
     logLevel: resolveLogLevel(),
   });
 
-  let cfg = params.config ?? (await getCoreConfig());
+  let cfg = params.config ? withDefaultToolsConfig(params.config) : await getCoreConfig();
   let coreConfigReloadHadError = false;
   let lastCoreConfigReloadError: string | null = null;
 

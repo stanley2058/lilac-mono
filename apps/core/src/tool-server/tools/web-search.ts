@@ -12,7 +12,13 @@ export const webSearchInputSchema = z.object({
     .describe(
       '"advanced" search is tailored to retrieve the most relevant sources and content snippets for your query, while "basic" search provides generic content snippets from each source.',
     ),
-  maxResults: z.coerce.number().optional().default(8).describe("Max results"),
+  maxResults: z.coerce
+    .number()
+    .finite()
+    .optional()
+    .default(8)
+    .transform((value) => clampInt(value, 1, 100))
+    .describe("Max results (1-100)"),
   timeRange: z
     .enum(["day", "week", "month", "year", "d", "w", "m", "y"])
     .optional()
@@ -40,6 +46,8 @@ export type WebSearchResult = {
   score: number | null;
 };
 
+const DEFAULT_WEB_SEARCH_PROVIDER = "tavily" as const;
+
 export type WebSearchProviderId = "exa" | "tavily" | (string & {});
 
 export interface WebSearchProvider {
@@ -53,6 +61,15 @@ export interface WebSearchProvider {
       signal?: AbortSignal;
     },
   ): Promise<readonly WebSearchResult[]>;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal) return;
+  if (!signal.aborted) return;
+
+  const e = new Error("Aborted");
+  e.name = "AbortError";
+  throw e;
 }
 
 function missingConfigMessage(id: WebSearchProviderId): string | null {
@@ -71,37 +88,58 @@ export function resolveWebSearchProvider(params: {
 }): {
   provider: WebSearchProvider | null;
   error: string | null;
+  warning: string | null;
 } {
-  const byId = new Map<WebSearchProviderId, WebSearchProvider>();
+  const byId = new Map<string, WebSearchProvider>();
   const ids: WebSearchProviderId[] = [];
 
   for (const p of params.providers) {
-    if (!byId.has(p.id)) {
+    const normalizedId = p.id.trim().toLowerCase();
+    if (!byId.has(normalizedId)) {
       ids.push(p.id);
     }
-    byId.set(p.id, p);
+    byId.set(normalizedId, p);
   }
 
-  const normalized = params.requested?.trim().toLowerCase();
-  const requested = normalized === "exa" ? "exa" : "tavily";
+  const normalized = params.requested?.trim().toLowerCase() ?? "";
+
+  const requested =
+    normalized.length > 0
+      ? normalized
+      : byId.has(DEFAULT_WEB_SEARCH_PROVIDER)
+        ? DEFAULT_WEB_SEARCH_PROVIDER
+        : (ids[0] ?? DEFAULT_WEB_SEARCH_PROVIDER);
+
   const p = byId.get(requested);
   if (!p) {
     return {
       provider: null,
-      error: `web.search is unavailable: provider '${requested}' is not registered. Registered: ${ids.join(", ") || "none"}.`,
+      error: `web.search is unavailable: unknown provider '${requested}'. Registered: ${ids.join(", ") || "none"}.`,
+      warning: null,
     };
   }
 
-  if (!p.isConfigured()) {
+  if (p.isConfigured()) {
+    return { provider: p, error: null, warning: null };
+  }
+
+  const fallback = params.providers.find((provider) => provider.isConfigured()) ?? null;
+
+  if (!fallback) {
     return {
       provider: null,
       error:
         missingConfigMessage(p.id) ??
         `web.search is unavailable: provider '${p.id}' is not configured.`,
+      warning: null,
     };
   }
 
-  return { provider: p, error: null };
+  return {
+    provider: fallback,
+    error: null,
+    warning: `web.search provider '${p.id}' is not configured; falling back to '${fallback.id}'.`,
+  };
 }
 
 function clampInt(value: number, min: number, max: number): number {
@@ -183,6 +221,36 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
 
+function withAbortSignal<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+  throwIfAborted(signal);
+
+  const pending = run();
+  if (!signal) {
+    return pending;
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      const e = new Error("Aborted");
+      e.name = "AbortError";
+      reject(e);
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    pending.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class ExaWebSearchProvider implements WebSearchProvider {
   readonly id = "exa" as const;
 
@@ -215,11 +283,14 @@ export class ExaWebSearchProvider implements WebSearchProvider {
 
   async search(
     input: WebSearchInput,
-    _opts?: {
+    opts?: {
       signal?: AbortSignal;
     },
   ): Promise<readonly WebSearchResult[]> {
     const client = this.getClient();
+
+    // Note: exa-js does not currently expose AbortSignal support in its search() options.
+    // We still surface cancellation to callers by rejecting early on signal abort.
 
     const startPublishedDate =
       input.startDate ?? (input.timeRange ? startDateFromTimeRange(input.timeRange) : undefined);
@@ -228,18 +299,20 @@ export class ExaWebSearchProvider implements WebSearchProvider {
     const category = mapTopicToExaCategory(input.topic);
     const type = mapSearchDepthToExaType(input.searchDepth);
 
-    const res = await client.search(input.query, {
-      type,
-      numResults: clampInt(input.maxResults, 1, 100),
-      ...(category ? { category } : {}),
-      ...(startPublishedDate ? { startPublishedDate } : {}),
-      ...(endPublishedDate ? { endPublishedDate } : {}),
-      contents: {
-        text: { maxCharacters: 1000 },
-        highlights: true,
-        summary: { query: input.query },
-      },
-    });
+    const res = await withAbortSignal(opts?.signal, () =>
+      client.search(input.query, {
+        type,
+        numResults: input.maxResults,
+        ...(category ? { category } : {}),
+        ...(startPublishedDate ? { startPublishedDate } : {}),
+        ...(endPublishedDate ? { endPublishedDate } : {}),
+        contents: {
+          text: { maxCharacters: 1000 },
+          highlights: true,
+          summary: { query: input.query },
+        },
+      }),
+    );
 
     return res.results.map((r) => {
       const title = typeof r.title === "string" && r.title.length > 0 ? r.title : r.url;
@@ -279,16 +352,26 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     return this.client;
   }
 
-  async search(input: WebSearchInput): Promise<readonly WebSearchResult[]> {
+  async search(
+    input: WebSearchInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ): Promise<readonly WebSearchResult[]> {
     const client = this.getClient();
-    const { results } = await client.search(input.query, {
-      topic: input.topic,
-      searchDepth: input.searchDepth,
-      maxResults: input.maxResults,
-      timeRange: input.timeRange,
-      startDate: input.startDate,
-      endDate: input.endDate,
-    });
+
+    // Note: @tavily/core does not currently expose AbortSignal support in search() options.
+    // We still surface cancellation to callers by rejecting early on signal abort.
+    const { results } = await withAbortSignal(opts?.signal, () =>
+      client.search(input.query, {
+        topic: input.topic,
+        searchDepth: input.searchDepth,
+        maxResults: input.maxResults,
+        timeRange: input.timeRange,
+        startDate: input.startDate,
+        endDate: input.endDate,
+      }),
+    );
 
     return results.map((r) => ({
       url: r.url,
