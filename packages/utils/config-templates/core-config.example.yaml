@@ -16,6 +16,11 @@ surface:
     #     # mode: active
     #     # Optional: override the global activeGate.enabled for this channel.
     #     # gate: false
+    #     # Optional: additional session memo entries appended to system prompt.
+    #     # Entries can be literal text or file:// URLs.
+    #     # additionalPrompts:
+    #     #   - "Keep replies concise for this session."
+    #     #   - "file:///abs/path/to/session-memo.md"
 
     # Debounce window (ms) for active mode initial prompt batching.
     activeDebounceMs: 3000
