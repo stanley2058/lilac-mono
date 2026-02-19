@@ -8,8 +8,16 @@ import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
 import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
+import path from "node:path";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+
+import {
+  createDefaultWebSearchProviders,
+  resolveWebSearchProvider,
+  webSearchInputSchema,
+  type WebSearchProvider,
+} from "./web-search";
 
 const getPageSchema = z.object({
   url: z.string().describe("URL to fetch"),
@@ -42,39 +50,15 @@ const getPageSchema = z.object({
     ),
 });
 
-const searchInputSchema = z.object({
-  query: z.string().describe("Search query"),
-  topic: z.enum(["general", "news", "finance"]).optional().default("general"),
-  searchDepth: z
-    .enum(["basic", "advanced"])
-    .optional()
-    .default("basic")
-    .describe(
-      '"advanced" search is tailored to retrieve the most relevant sources and content snippets for your query, while "basic" search provides generic content snippets from each source.',
-    ),
-  maxResults: z.coerce.number().optional().default(8).describe("Max results"),
-  timeRange: z
-    .enum(["day", "week", "month", "year", "d", "w", "m", "y"])
-    .optional()
-    .describe(
-      "The time range back from the current date based on publish date or last updated date.",
-    ),
-  startDate: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional()
-    .describe("Start date. Must be in YYYY-MM-DD format."),
-  endDate: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional()
-    .describe("End date. Must be in YYYY-MM-DD format."),
-});
-
 export class Web implements ServerTool {
   id = "web";
 
   private tavily: TavilyClient | null = null;
+  private webSearchProvider: WebSearchProvider | null = null;
+  private webSearchProviderError: string | null = null;
+  private webSearchProviderKey: string | null = null;
+  private webSearchCoreConfigMtimeMs: number | null = null;
+  private webSearchProviderFromCoreConfig: string | undefined;
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null = null;
   private browserInit: Promise<{
@@ -90,14 +74,108 @@ export class Web implements ServerTool {
     });
   }
 
+  private async loadWebSearchProviderFromCoreConfig(): Promise<string | undefined> {
+    const configPath = path.join(env.dataDir, "core-config.yaml");
+
+    const stat = await fs.stat(configPath).catch(() => null);
+    if (!stat) {
+      this.webSearchCoreConfigMtimeMs = null;
+      this.webSearchProviderFromCoreConfig = undefined;
+      return undefined;
+    }
+
+    if (this.webSearchCoreConfigMtimeMs === stat.mtimeMs) {
+      return this.webSearchProviderFromCoreConfig;
+    }
+
+    const raw = await Bun.file(configPath).text();
+    const parsed = Bun.YAML.parse(raw) as unknown;
+
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+
+    let provider: unknown = undefined;
+    if (isRecord(parsed)) {
+      const tools = parsed["tools"];
+      if (isRecord(tools)) {
+        const web = tools["web"];
+        if (isRecord(web)) {
+          const search = web["search"];
+          if (isRecord(search)) {
+            provider = search["provider"];
+          }
+        }
+      }
+    }
+
+    this.webSearchProviderFromCoreConfig = typeof provider === "string" ? provider : undefined;
+    this.webSearchCoreConfigMtimeMs = stat.mtimeMs;
+    return this.webSearchProviderFromCoreConfig;
+  }
+
+  private async refreshWebSearchProvider(): Promise<void> {
+    let providerFromConfig: string | undefined;
+    try {
+      providerFromConfig = await this.loadWebSearchProviderFromCoreConfig();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.logError(`Failed to read core-config.yaml for web.search provider: ${msg}`);
+      providerFromConfig = undefined;
+    }
+
+    const normalizedRequested = providerFromConfig?.trim().toLowerCase() ?? "";
+
+    const exaBaseUrl = env.tools.web.exa.baseUrl;
+    const exaApiKey = env.tools.web.exa.apiKey;
+    const tavilyApiKey = env.tools.web.tavilyApiKey;
+
+    const nextKey = JSON.stringify({
+      requested: normalizedRequested || null,
+      exaBaseUrl: exaBaseUrl ?? null,
+      hasExaApiKey: Boolean(exaApiKey),
+      hasTavilyApiKey: Boolean(tavilyApiKey),
+    });
+    if (nextKey === this.webSearchProviderKey) return;
+    this.webSearchProviderKey = nextKey;
+
+    const prevId = this.webSearchProvider?.id ?? null;
+
+    const providers = createDefaultWebSearchProviders({
+      exa: {
+        baseUrl: exaBaseUrl,
+        apiKey: exaApiKey,
+      },
+      tavilyApiKey,
+    });
+
+    const resolved = resolveWebSearchProvider({
+      requested: providerFromConfig,
+      providers,
+    });
+
+    this.webSearchProvider = resolved.provider;
+    this.webSearchProviderError = resolved.error;
+
+    const nextId = this.webSearchProvider?.id ?? null;
+    if (nextId && nextId !== prevId) {
+      this.logger.logInfo(`web.search provider: ${nextId}`);
+    }
+    if (!nextId && this.webSearchProviderError) {
+      this.logger.logError(this.webSearchProviderError);
+    }
+  }
+
   async init() {
     if (!env.tools.web.tavilyApiKey) {
       this.logger.logError(
-        "Tavily API key not configured (missing env var TAVILY_API_KEY). web.search is disabled and fetch(mode=tavily) will fall back to browser mode.",
+        "Tavily API key not configured (missing env var TAVILY_API_KEY). fetch(mode=tavily) will fall back to browser mode.",
       );
     } else {
       this.tavily = tavily({ apiKey: env.tools.web.tavilyApiKey });
     }
+
+    await this.refreshWebSearchProvider();
+
     this.logger.logInfo("Web extension initialized");
   }
 
@@ -120,10 +198,10 @@ export class Web implements ServerTool {
         callableId: "search",
         name: "Web Search",
         description: "Search the web",
-        shortInput: zodObjectToCliLines(searchInputSchema, {
+        shortInput: zodObjectToCliLines(webSearchInputSchema, {
           mode: "required",
         }),
-        input: zodObjectToCliLines(searchInputSchema),
+        input: zodObjectToCliLines(webSearchInputSchema),
       },
     ];
   }
@@ -131,14 +209,14 @@ export class Web implements ServerTool {
   async call(
     callableId: string,
     rawInput: Record<string, unknown>,
-    _opts?: {
+    opts?: {
       signal?: AbortSignal;
       context?: unknown;
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
     if (callableId === "fetch") return this.callFetch(rawInput);
-    if (callableId === "search") return this.callSearch(rawInput);
+    if (callableId === "search") return this.callSearch(rawInput, opts);
     throw new Error("Invalid callable ID");
   }
 
@@ -193,40 +271,33 @@ export class Web implements ServerTool {
     }
   }
 
-  private async callSearch(rawInput: unknown) {
-    const {
-      query,
-      topic,
-      maxResults = 8,
-      searchDepth = "basic",
-      timeRange,
-      startDate,
-      endDate,
-    } = searchInputSchema.parse(rawInput);
+  private async callSearch(
+    rawInput: unknown,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const input = webSearchInputSchema.parse(rawInput);
 
-    if (!this.tavily) {
+    await this.refreshWebSearchProvider();
+
+    if (!this.webSearchProvider) {
       return {
         isError: true as const,
-        error:
-          "web.search is unavailable: TAVILY_API_KEY is not configured (set env var TAVILY_API_KEY).",
+        error: this.webSearchProviderError ?? "web.search is unavailable: no provider configured.",
       };
     }
 
-    const { results } = await this.tavily.search(query, {
-      topic,
-      searchDepth,
-      maxResults,
-      timeRange,
-      startDate,
-      endDate,
-    });
-
-    return results.map((r) => ({
-      url: r.url,
-      title: r.title,
-      content: r.content,
-      score: r.score,
-    }));
+    try {
+      return await this.webSearchProvider.search(input, { signal: opts?.signal });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.logError(`web.search failed (${this.webSearchProvider.id}): ${msg}`);
+      return {
+        isError: true as const,
+        error: msg,
+      };
+    }
   }
 
   private async findSystemChromiumExecutable(): Promise<string | null> {
