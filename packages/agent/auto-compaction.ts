@@ -171,6 +171,254 @@ function estimateMessageTokens(message: ModelMessage): number {
   return estimateTokensFromText(stringifyUnknown(message));
 }
 
+function estimateMessagesTokens(messages: readonly ModelMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    total += estimateMessageTokens(message);
+  }
+  return total;
+}
+
+type RepairTranscriptResult = {
+  messages: ModelMessage[];
+  droppedOrphanToolResultParts: number;
+  droppedEmptyToolMessages: number;
+};
+
+function repairTranscriptForCompaction(messages: readonly ModelMessage[]): RepairTranscriptResult {
+  const repaired: ModelMessage[] = [];
+  const openToolCallIds = new Set<string>();
+  let droppedOrphanToolResultParts = 0;
+  let droppedEmptyToolMessages = 0;
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const id of getAssistantToolCallIds(message)) {
+        openToolCallIds.add(id);
+      }
+      repaired.push(cloneMessage(message));
+      continue;
+    }
+
+    if (message.role === "tool") {
+      const nextContent = [] as typeof message.content;
+
+      for (const part of message.content) {
+        const candidate = part as {
+          type?: unknown;
+          toolCallId?: unknown;
+        };
+
+        if (candidate.type !== "tool-result") {
+          nextContent.push({ ...part });
+          continue;
+        }
+
+        if (
+          typeof candidate.toolCallId !== "string" ||
+          !openToolCallIds.has(candidate.toolCallId)
+        ) {
+          droppedOrphanToolResultParts += 1;
+          continue;
+        }
+
+        openToolCallIds.delete(candidate.toolCallId);
+        nextContent.push({ ...part });
+      }
+
+      if (nextContent.length === 0) {
+        droppedEmptyToolMessages += 1;
+        continue;
+      }
+
+      repaired.push({
+        ...message,
+        content: nextContent,
+      });
+      continue;
+    }
+
+    repaired.push(cloneMessage(message));
+  }
+
+  return {
+    messages: repaired,
+    droppedOrphanToolResultParts,
+    droppedEmptyToolMessages,
+  };
+}
+
+function ensureMessagesEndNotAssistant(messages: readonly ModelMessage[]): ModelMessage[] {
+  let end = messages.length;
+  while (end > 0) {
+    const candidate = messages[end - 1];
+    if (!candidate || candidate.role !== "assistant") break;
+    end -= 1;
+  }
+
+  if (end === messages.length) return cloneMessages(messages);
+  return cloneMessages(messages.slice(0, end));
+}
+
+const EMERGENCY_TOOL_OUTPUT_PLACEHOLDER = "[tool output omitted by emergency compaction]";
+
+function compactOneToolResultOutput(messages: readonly ModelMessage[]): {
+  messages: ModelMessage[];
+  changed: boolean;
+} {
+  for (let messageIndex = 1; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]!;
+    if (message.role !== "tool") continue;
+
+    for (let partIndex = 0; partIndex < message.content.length; partIndex++) {
+      const part = message.content[partIndex];
+      const candidate = part as {
+        type?: unknown;
+        output?: unknown;
+      };
+      if (candidate.type !== "tool-result") continue;
+
+      const output = candidate.output;
+      if (
+        isRecord(output) &&
+        output["type"] === "text" &&
+        typeof output["value"] === "string" &&
+        output["value"] === EMERGENCY_TOOL_OUTPUT_PLACEHOLDER
+      ) {
+        continue;
+      }
+
+      const next = cloneMessages(messages);
+      const nextMessage = next[messageIndex];
+      if (!nextMessage || nextMessage.role !== "tool") {
+        return {
+          messages: next,
+          changed: false,
+        };
+      }
+
+      const nextPart = nextMessage.content[partIndex];
+      if (nextPart && typeof nextPart === "object") {
+        const nextPartRecord = nextPart as Record<string, unknown>;
+        nextPartRecord["output"] = {
+          type: "text",
+          value: EMERGENCY_TOOL_OUTPUT_PLACEHOLDER,
+        };
+      }
+
+      return {
+        messages: next,
+        changed: true,
+      };
+    }
+  }
+
+  return {
+    messages: cloneMessages(messages),
+    changed: false,
+  };
+}
+
+function shrinkCompactedMessagesToBudget(params: {
+  messages: readonly ModelMessage[];
+  inputBudget: number;
+  maxSteps?: number;
+}): ModelMessage[] {
+  const shrinkSingleMessage = (message: ModelMessage): ModelMessage => {
+    const maxChars = Math.max(64, params.inputBudget * 4);
+
+    if (message.role === "user" && typeof message.content === "string") {
+      return {
+        ...message,
+        content: truncateText(message.content, maxChars),
+      };
+    }
+
+    if (message.role === "assistant" && typeof message.content === "string") {
+      return {
+        ...message,
+        content: truncateText(message.content, maxChars),
+      };
+    }
+
+    return message;
+  };
+
+  let working = ensureMessagesEndNotAssistant(params.messages);
+  working = repairTranscriptForCompaction(working).messages;
+
+  const budget = Math.max(1, params.inputBudget);
+  const maxSteps = params.maxSteps ?? Math.max(8, working.length * 4);
+
+  for (let step = 0; step < maxSteps; step++) {
+    if (estimateMessagesTokens(working) <= budget) return working;
+
+    const lastUserIndex = (() => {
+      for (let i = working.length - 1; i >= 0; i--) {
+        if (working[i]?.role === "user") return i;
+      }
+      return -1;
+    })();
+
+    const compactedToolResult = compactOneToolResultOutput(working);
+    if (compactedToolResult.changed) {
+      working = ensureMessagesEndNotAssistant(
+        repairTranscriptForCompaction(compactedToolResult.messages).messages,
+      );
+      continue;
+    }
+
+    if (working.length <= 1) {
+      if (working.length === 0) return working;
+      return [shrinkSingleMessage(working[0]!)];
+    }
+
+    const head = working[0];
+    if (!head) return working;
+
+    let removableIndex = -1;
+    for (let i = 1; i < working.length; i++) {
+      if (i === working.length - 1) continue;
+      if (i === lastUserIndex) continue;
+      removableIndex = i;
+      break;
+    }
+
+    if (removableIndex < 0) {
+      const next = cloneMessages(working);
+      next[0] = shrinkSingleMessage(next[0]!);
+      if (estimateMessageTokens(next[0]!) >= estimateMessageTokens(working[0]!)) {
+        break;
+      }
+      working = ensureMessagesEndNotAssistant(repairTranscriptForCompaction(next).messages);
+      continue;
+    }
+
+    const droppedOldest = [
+      head,
+      ...working.slice(1, removableIndex),
+      ...working.slice(removableIndex + 1),
+    ];
+    working = ensureMessagesEndNotAssistant(repairTranscriptForCompaction(droppedOldest).messages);
+  }
+
+  if (estimateMessagesTokens(working) <= budget) return working;
+  if (working.length === 0) return [];
+
+  const lastUser = (() => {
+    for (let i = working.length - 1; i >= 0; i--) {
+      if (working[i]?.role === "user") return working[i]!;
+    }
+    return null;
+  })();
+
+  if (lastUser) {
+    return [shrinkSingleMessage(lastUser)];
+  }
+
+  return [shrinkSingleMessage(working[0]!)];
+}
+
 function chooseSuffixStartByMessageCount(
   messages: readonly ModelMessage[],
   keepLastMessages: number,
@@ -477,12 +725,75 @@ async function summarizeMessagesHierarchical(options: {
     : new Error("Compaction summarization failed after recursive chunk retries.");
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function renderDeterministicFallbackSummary(options: {
+  title: string;
+  messages: readonly ModelMessage[];
+  maxCharsTotal: number;
+}): string {
+  const rendered = renderMessagesForSummary(options.messages, {
+    maxCharsPerMessage: Math.max(400, Math.floor(options.maxCharsTotal / 4)),
+    maxCharsTotal: Math.max(500, options.maxCharsTotal),
+  }).trim();
+
+  if (!rendered) {
+    return `${options.title}\n\nNo transcript excerpt available.`;
+  }
+
+  return `${options.title}\n\n${rendered}`;
+}
+
 const DEFAULT_THRESHOLD_FRACTION = 0.8;
 const DEFAULT_KEEP_LAST_MESSAGES = 30;
 const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 const DEFAULT_SUMMARY_CHUNK_FRACTION = 0.35;
 const DEFAULT_SUMMARY_REDUCTION_PASSES = 6;
 const DEFAULT_OVERFLOW_RECOVERY_MAX_ATTEMPTS = 2;
+const DEFAULT_RESERVED_OUTPUT_FRACTION = 0.2;
+const DEFAULT_RESERVED_OUTPUT_MIN_TOKENS = 1_024;
+const DEFAULT_COMPACTION_MAX_PASSES = 4;
+const DEFAULT_SUMMARY_MAX_CHARS_FLOOR = 2_000;
+
+type InputCompactionBudget = {
+  inputBudget: number;
+  safeInputBudget: number;
+  earlyInputBudget: number;
+  reservedOutputTokens: number;
+};
+
+function computeInputCompactionBudget(params: {
+  contextLimit: number;
+  outputLimit: number;
+  thresholdFraction: number;
+}): InputCompactionBudget {
+  const contextLimit = Math.max(1, Math.floor(params.contextLimit));
+  const boundedThreshold = Math.max(0.05, Math.min(0.95, params.thresholdFraction));
+  const earlyInputBudget = Math.max(1, Math.floor(contextLimit * boundedThreshold));
+
+  const reservedOutputFromLimit =
+    params.outputLimit > 0 ? Math.max(256, Math.floor(params.outputLimit)) : 0;
+  const reservedOutputFallback = Math.max(
+    DEFAULT_RESERVED_OUTPUT_MIN_TOKENS,
+    Math.floor(contextLimit * DEFAULT_RESERVED_OUTPUT_FRACTION),
+  );
+  const reservedOutputTokens = Math.min(
+    Math.max(1, contextLimit - 1),
+    reservedOutputFromLimit > 0 ? reservedOutputFromLimit : reservedOutputFallback,
+  );
+
+  const safeInputBudget = Math.max(1, contextLimit - reservedOutputTokens);
+  const inputBudget = Math.max(1, Math.min(safeInputBudget, earlyInputBudget));
+
+  return {
+    inputBudget,
+    safeInputBudget,
+    earlyInputBudget,
+    reservedOutputTokens,
+  };
+}
 
 const AUTO_CONTINUE_AFTER_COMPACTION_TEXT =
   "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
@@ -681,11 +992,28 @@ async function resolveContextLimit(params: {
   options: AutoCompactionOptions;
   agent: AiSdkPiAgent;
   abortSignal?: AbortSignal;
-}): Promise<{ spec: ModelSpecifier; contextLimit: number }> {
+}): Promise<{ spec: ModelSpecifier; contextLimit: number; outputLimit: number }> {
   const resolvedSpecRaw = params.options.resolveCurrentModelSpecifier
     ? await params.options.resolveCurrentModelSpecifier()
     : params.agent.state.modelSpecifier;
   const spec = resolvedSpecRaw ?? params.options.model;
+
+  let modelInfo:
+    | {
+        limit: {
+          context: number;
+          output: number;
+        };
+      }
+    | undefined;
+  try {
+    modelInfo = await params.options.modelCapability.resolve(spec, {
+      signal: params.abortSignal,
+    });
+  } catch {
+    modelInfo = undefined;
+  }
+  const outputLimit = modelInfo?.limit.output ?? 0;
 
   if (params.options.resolveContextLimit) {
     const contextLimit = await params.options.resolveContextLimit({
@@ -698,15 +1026,18 @@ async function resolveContextLimit(params: {
     return {
       spec,
       contextLimit,
+      outputLimit,
     };
   }
 
-  const info = await params.options.modelCapability.resolve(spec, {
-    signal: params.abortSignal,
-  });
+  if (!modelInfo) {
+    throw new Error(`Failed to resolve model capability for ${spec}.`);
+  }
+
   return {
     spec,
-    contextLimit: info.limit.context,
+    contextLimit: modelInfo.limit.context,
+    outputLimit,
   };
 }
 
@@ -740,8 +1071,11 @@ export async function attachAutoCompaction(
     agent,
   });
   let currentContextLimit = initialLimit.contextLimit;
+  let currentOutputLimit = initialLimit.outputLimit;
 
-  const refreshContextLimit = async (abortSignal?: AbortSignal): Promise<number> => {
+  const refreshContextLimit = async (
+    abortSignal?: AbortSignal,
+  ): Promise<{ contextLimit: number; outputLimit: number }> => {
     const resolved = await resolveContextLimit({
       options,
       agent,
@@ -750,13 +1084,26 @@ export async function attachAutoCompaction(
     if (typeof resolved.contextLimit === "number" && resolved.contextLimit > 0) {
       currentContextLimit = resolved.contextLimit;
     }
-    return currentContextLimit;
+    if (typeof resolved.outputLimit === "number" && resolved.outputLimit > 0) {
+      currentOutputLimit = resolved.outputLimit;
+    }
+    return {
+      contextLimit: currentContextLimit,
+      outputLimit: currentOutputLimit,
+    };
   };
 
-  const evaluateThresholdWithLimit = (inputTokens: number, contextLimit: number): boolean => {
-    if (!(contextLimit > 0)) return false;
-    const fraction = inputTokens / contextLimit;
-    return fraction >= thresholdFraction;
+  const evaluateThresholdWithBudget = (inputTokens: number, inputBudget: number): boolean => {
+    if (!(inputBudget > 0)) return false;
+    return inputTokens >= inputBudget;
+  };
+
+  const resolveInputBudget = (): InputCompactionBudget => {
+    return computeInputCompactionBudget({
+      contextLimit: currentContextLimit,
+      outputLimit: currentOutputLimit,
+      thresholdFraction,
+    });
   };
 
   const turnErrorHandler: TurnErrorHandler = async (error, context) => {
@@ -796,7 +1143,8 @@ export async function attachAutoCompaction(
 
     lastTurnInputTokens = inputTokens;
 
-    if (!evaluateThresholdWithLimit(inputTokens, currentContextLimit)) return;
+    const budget = resolveInputBudget();
+    if (!evaluateThresholdWithBudget(inputTokens, budget.inputBudget)) return;
 
     const wasCompactionPending = shouldCompact;
     shouldCompact = true;
@@ -816,11 +1164,16 @@ export async function attachAutoCompaction(
       ? await options.baseTransformMessages(messages, context)
       : [...messages];
 
-    const latestContextLimit = await refreshContextLimit(context.abortSignal);
+    const latestLimits = await refreshContextLimit(context.abortSignal);
+    const latestBudget = computeInputCompactionBudget({
+      contextLimit: latestLimits.contextLimit,
+      outputLimit: latestLimits.outputLimit,
+      thresholdFraction,
+    });
     if (
       !shouldCompact &&
       lastTurnInputTokens !== null &&
-      evaluateThresholdWithLimit(lastTurnInputTokens, latestContextLimit)
+      evaluateThresholdWithBudget(lastTurnInputTokens, latestBudget.inputBudget)
     ) {
       shouldCompact = true;
     }
@@ -833,113 +1186,194 @@ export async function attachAutoCompaction(
     // Be conservative: compact only when context ends with user/tool.
     if (lastMessage?.role === "assistant") return maybeTransformed;
 
-    const boundary = resolveCompactionBoundary({
-      messages: maybeTransformed,
-      keepRecentTokens,
-      keepLastMessages,
-    });
-
-    if (boundary.suffixStart <= 0) return maybeTransformed;
-
-    const historyEnd = boundary.splitTurnStart ?? boundary.suffixStart;
-    const historyMessages = maybeTransformed.slice(0, historyEnd);
-    const splitTurnPrefixMessages =
-      boundary.splitTurnStart !== null
-        ? maybeTransformed.slice(boundary.splitTurnStart, boundary.suffixStart)
-        : [];
-    const suffixMessages = maybeTransformed.slice(boundary.suffixStart);
-
-    if (historyMessages.length === 0 && splitTurnPrefixMessages.length === 0) {
-      return maybeTransformed;
-    }
+    const repairedTranscript = repairTranscriptForCompaction(maybeTransformed);
+    const compactableMessages = repairedTranscript.messages;
+    if (compactableMessages.length === 0) return maybeTransformed;
 
     inCompaction = true;
     try {
       queuedAutoContinue = false;
 
       const modelToUse = summaryModel === "current" ? agent.state.model : summaryModel;
-      const summaryContextLimit = Math.max(1, latestContextLimit);
-      const chunkTokenBudget = Math.max(
-        1,
-        Math.floor(summaryContextLimit * DEFAULT_SUMMARY_CHUNK_FRACTION),
-      );
+      const summaryContextLimit = Math.max(1, latestLimits.contextLimit);
+      const maxCompactionPasses = DEFAULT_COMPACTION_MAX_PASSES;
+      let passKeepRecentTokens = Math.max(1, Math.min(keepRecentTokens, latestBudget.inputBudget));
+      let passKeepLastMessages = Math.max(1, keepLastMessages);
+      let compactedCandidate: ModelMessage[] | null = null;
 
-      const summarizeMainHistory = async (): Promise<string> => {
-        if (historyMessages.length === 0) return "";
-
-        const text = await summarizeMessagesHierarchical({
-          messages: historyMessages,
-          initialChunkTokenBudget: chunkTokenBudget,
-          maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
-          initialMaxCharsPerMessage: Math.max(2_000, chunkTokenBudget * 4),
-          initialMaxCharsTotal: Math.max(4_000, chunkTokenBudget * 6),
-          summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
-            const prompt = previousSummary
-              ? buildSummaryUpdatePrompt(previousSummary, transcriptText)
-              : buildSummaryPrompt(transcriptText);
-            return await summarizePrompt({
-              model: modelToUse,
-              system: summarySystem,
-              prompt,
-              abortSignal,
-            });
-          },
-          abortSignal: context.abortSignal,
+      for (let pass = 0; pass < maxCompactionPasses; pass++) {
+        const boundary = resolveCompactionBoundary({
+          messages: compactableMessages,
+          keepRecentTokens: passKeepRecentTokens,
+          keepLastMessages: passKeepLastMessages,
         });
 
-        return text.trim();
-      };
+        if (boundary.suffixStart <= 0) break;
 
-      const summarizeSplitTurnPrefix = async (): Promise<string> => {
-        if (splitTurnPrefixMessages.length === 0) return "";
-        const text = await summarizeMessagesHierarchical({
-          messages: splitTurnPrefixMessages,
-          initialChunkTokenBudget: Math.max(1, Math.floor(chunkTokenBudget * 0.7)),
-          maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
-          initialMaxCharsPerMessage: Math.max(1_500, Math.floor(chunkTokenBudget * 3)),
-          initialMaxCharsTotal: Math.max(3_000, Math.floor(chunkTokenBudget * 5)),
-          summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
-            const prompt = previousSummary
-              ? DEFAULT_SPLIT_TURN_UPDATE_PROMPT(previousSummary, transcriptText)
-              : buildSplitTurnSummaryPrompt(transcriptText);
-            return await summarizePrompt({
-              model: modelToUse,
-              system: summarySystem,
-              prompt,
-              abortSignal,
+        const historyEnd = boundary.splitTurnStart ?? boundary.suffixStart;
+        const historyMessages = compactableMessages.slice(0, historyEnd);
+        const splitTurnPrefixMessages =
+          boundary.splitTurnStart !== null
+            ? compactableMessages.slice(boundary.splitTurnStart, boundary.suffixStart)
+            : [];
+        const suffixMessages = compactableMessages.slice(boundary.suffixStart);
+
+        if (historyMessages.length === 0 && splitTurnPrefixMessages.length === 0) {
+          break;
+        }
+
+        const passScale = Math.pow(0.7, pass);
+        const chunkTokenBudget = Math.max(
+          1,
+          Math.floor(summaryContextLimit * DEFAULT_SUMMARY_CHUNK_FRACTION * passScale),
+        );
+        const summaryMaxChars = Math.max(
+          DEFAULT_SUMMARY_MAX_CHARS_FLOOR,
+          Math.floor(latestBudget.inputBudget * 4 * passScale),
+        );
+
+        const summarizeMainHistory = async (): Promise<string> => {
+          if (historyMessages.length === 0) return "";
+
+          try {
+            const text = await summarizeMessagesHierarchical({
+              messages: historyMessages,
+              initialChunkTokenBudget: chunkTokenBudget,
+              maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
+              initialMaxCharsPerMessage: Math.max(2_000, chunkTokenBudget * 4),
+              initialMaxCharsTotal: Math.max(4_000, chunkTokenBudget * 6),
+              summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
+                const prompt = previousSummary
+                  ? buildSummaryUpdatePrompt(previousSummary, transcriptText)
+                  : buildSummaryPrompt(transcriptText);
+                return await summarizePrompt({
+                  model: modelToUse,
+                  system: summarySystem,
+                  prompt,
+                  abortSignal,
+                });
+              },
+              abortSignal: context.abortSignal,
             });
+
+            return text.trim();
+          } catch (error) {
+            if (context.abortSignal?.aborted || isAbortLikeError(error)) throw error;
+            return renderDeterministicFallbackSummary({
+              title: "## History",
+              messages: historyMessages,
+              maxCharsTotal: summaryMaxChars,
+            });
+          }
+        };
+
+        const summarizeSplitTurnPrefix = async (): Promise<string> => {
+          if (splitTurnPrefixMessages.length === 0) return "";
+
+          try {
+            const text = await summarizeMessagesHierarchical({
+              messages: splitTurnPrefixMessages,
+              initialChunkTokenBudget: Math.max(1, Math.floor(chunkTokenBudget * 0.7)),
+              maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
+              initialMaxCharsPerMessage: Math.max(1_500, Math.floor(chunkTokenBudget * 3)),
+              initialMaxCharsTotal: Math.max(3_000, Math.floor(chunkTokenBudget * 5)),
+              summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
+                const prompt = previousSummary
+                  ? DEFAULT_SPLIT_TURN_UPDATE_PROMPT(previousSummary, transcriptText)
+                  : buildSplitTurnSummaryPrompt(transcriptText);
+                return await summarizePrompt({
+                  model: modelToUse,
+                  system: summarySystem,
+                  prompt,
+                  abortSignal,
+                });
+              },
+              abortSignal: context.abortSignal,
+            });
+
+            return text.trim();
+          } catch (error) {
+            if (context.abortSignal?.aborted || isAbortLikeError(error)) throw error;
+            return renderDeterministicFallbackSummary({
+              title: "## Turn Prefix",
+              messages: splitTurnPrefixMessages,
+              maxCharsTotal: Math.max(1_000, Math.floor(summaryMaxChars * 0.7)),
+            });
+          }
+        };
+
+        const [historySummary, splitTurnSummary] = await Promise.all([
+          summarizeMainHistory(),
+          summarizeSplitTurnPrefix(),
+        ]);
+
+        const summaryParts: string[] = [];
+        if (historySummary) summaryParts.push(historySummary);
+        if (splitTurnSummary) {
+          summaryParts.push(`**Turn Context (split turn):**\n\n${splitTurnSummary}`);
+        }
+
+        let finalSummary = summaryParts.join("\n\n---\n\n").trim();
+        if (!finalSummary) {
+          finalSummary = renderDeterministicFallbackSummary({
+            title: "## History",
+            messages: historyMessages,
+            maxCharsTotal: summaryMaxChars,
+          });
+        }
+
+        finalSummary = truncateText(finalSummary, summaryMaxChars);
+
+        const summaryMessage: ModelMessage = {
+          role: "user",
+          content: `<summary>\n${finalSummary}\n</summary>`,
+        };
+
+        const passCompacted = repairTranscriptForCompaction([
+          summaryMessage,
+          ...suffixMessages,
+        ]).messages;
+        const passEstimatedTokens = estimateMessagesTokens(passCompacted);
+        compactedCandidate = passCompacted;
+
+        if (passEstimatedTokens <= latestBudget.inputBudget) {
+          break;
+        }
+
+        passKeepRecentTokens = Math.max(1, Math.floor(passKeepRecentTokens * 0.6));
+        passKeepLastMessages = Math.max(1, Math.floor(passKeepLastMessages * 0.8));
+      }
+
+      if (!compactedCandidate) {
+        const emergencySummaryChars = Math.max(
+          DEFAULT_SUMMARY_MAX_CHARS_FLOOR,
+          latestBudget.inputBudget * 4,
+        );
+        const emergencySummary = truncateText(
+          renderDeterministicFallbackSummary({
+            title: "## History",
+            messages: compactableMessages,
+            maxCharsTotal: emergencySummaryChars,
+          }),
+          emergencySummaryChars,
+        );
+
+        compactedCandidate = [
+          {
+            role: "user",
+            content: `<summary>\n${emergencySummary}\n</summary>`,
           },
-          abortSignal: context.abortSignal,
-        });
-        return text.trim();
-      };
-
-      const [historySummary, splitTurnSummary] = await Promise.all([
-        summarizeMainHistory(),
-        summarizeSplitTurnPrefix(),
-      ]);
-
-      const summaryParts: string[] = [];
-      if (historySummary) summaryParts.push(historySummary);
-      if (splitTurnSummary) {
-        summaryParts.push(`**Turn Context (split turn):**\n\n${splitTurnSummary}`);
+        ];
       }
 
-      const finalSummary = summaryParts.join("\n\n---\n\n").trim();
-      if (!finalSummary) {
-        shouldCompact = false;
-        return maybeTransformed;
-      }
+      const compacted = shrinkCompactedMessagesToBudget({
+        messages: compactedCandidate,
+        inputBudget: latestBudget.inputBudget,
+      });
 
-      const summaryMessage: ModelMessage = {
-        role: "user",
-        content: `<summary>\n${finalSummary}\n</summary>`,
-      };
-
-      const compacted = [summaryMessage, ...suffixMessages];
       agent.replaceMessages(compacted, { reason: "compaction" });
 
-      shouldCompact = false;
+      shouldCompact = estimateMessagesTokens(compacted) > latestBudget.inputBudget;
 
       const outbound = cloneMessages(compacted);
       return options.baseTransformMessages
@@ -961,12 +1395,16 @@ export async function attachAutoCompaction(
 }
 
 export const __autoCompactionInternals = {
+  computeInputCompactionBudget,
   computeOverflowRecoveryDecision,
   chunkMessagesByEstimatedTokens,
   chooseSuffixStartByMessageCount,
   chooseSuffixStartByTokenBudget,
   estimateMessageTokens,
+  estimateMessagesTokens,
+  repairTranscriptForCompaction,
   renderMessagesForSummary,
   resolveCompactionBoundary,
+  shrinkCompactedMessagesToBudget,
   summarizeMessagesHierarchical,
 };
