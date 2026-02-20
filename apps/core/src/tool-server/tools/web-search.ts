@@ -349,9 +349,11 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     if (!apiKey) {
       throw new Error("TAVILY_API_KEY is not configured.");
     }
+    // if base url contains trailing slash, remove it since @tavily/core expects no trailing slash
+    const apiBaseURL = this.config.apiBaseUrl ? normalizeBaseUrl(this.config.apiBaseUrl.trim()) : undefined;
     this.client = tavily({
       apiKey,
-      apiBaseURL: this.config.apiBaseUrl,
+      apiBaseURL,
     });
     return this.client;
   }
