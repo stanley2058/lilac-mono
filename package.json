@@ -1,12 +1,14 @@
 {
   "name": "lilac-mono",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "lint": "oxlint --tsconfig tsconfig.json apps packages __tests__",
     "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages __tests__",
+    "typecheck": "for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit; fi; done",
     "fmt": "oxfmt --write \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
     "fmt:check": "oxfmt --check \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
-    "ci": "bun test && bun run lint && bun run fmt:check && echo 'check passed'"
+    "ci": "bun test && bun run lint && bun run typecheck && bun run fmt:check && echo 'check passed'"
   },
   "devDependencies": {
     "oxfmt": "^0.32.0",
