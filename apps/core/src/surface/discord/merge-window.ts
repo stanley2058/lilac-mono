@@ -3,6 +3,13 @@ export const DISCORD_MERGE_WINDOW_MS = 7 * 60 * 1000;
 type DiscordWindowCandidate = {
   authorId: string;
   ts: number;
+  /**
+   * When true, force this message to start a new merge group.
+   *
+   * Used for Discord reply semantics where a replied message starts
+   * a distinct visual block even if author/time would otherwise merge.
+   */
+  hardBreakBefore?: boolean;
 };
 
 export function splitByDiscordWindowOldestToNewest<T extends DiscordWindowCandidate>(
@@ -18,6 +25,14 @@ export function splitByDiscordWindowOldestToNewest<T extends DiscordWindowCandid
 
   for (let i = 1; i < candidates.length; i++) {
     const next = candidates[i]!;
+
+    if (next.hardBreakBefore) {
+      groups.push(current);
+      current = [next];
+      currentStartTs = next.ts;
+      currentAuthorId = next.authorId;
+      continue;
+    }
 
     const withinWindow = next.ts - currentStartTs <= DISCORD_MERGE_WINDOW_MS;
     const sameAuthor = next.authorId === currentAuthorId;
@@ -42,6 +57,7 @@ export type MergeCandidate = {
   authorId: string;
   ts: number;
   content: string;
+  hardBreakBefore?: boolean;
 };
 
 export function mergeByDiscordWindow(candidatesDesc: readonly MergeCandidate[]): {

@@ -574,6 +574,160 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("<@bot>");
   });
 
+  it("walks mention context via merged-group heads", async () => {
+    const sessionId = "c";
+
+    const b0: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b0" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uB",
+      userName: "userB",
+      text: "user B - 0",
+      ts: 0,
+      raw: { reference: {} },
+    };
+
+    const a1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "a1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uA",
+      userName: "userA",
+      text: "user A - 1",
+      ts: 120_000,
+      raw: { reference: { messageId: "b0", channelId: sessionId } },
+    };
+
+    const a2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "a2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uA",
+      userName: "userA",
+      text: "user A - 2",
+      ts: 122_000,
+      raw: { reference: {} },
+    };
+
+    const b1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uB",
+      userName: "userB",
+      text: "user B - 1",
+      ts: 240_000,
+      raw: { reference: { messageId: "a2", channelId: sessionId } },
+    };
+
+    const b2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uB",
+      userName: "userB",
+      text: "<@bot> user B - 2",
+      ts: 300_000,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:b0`]: b0,
+      [`${sessionId}:a1`]: a1,
+      [`${sessionId}:a2`]: a2,
+      [`${sessionId}:b1`]: b1,
+      [`${sessionId}:b2`]: b2,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: b2.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["b0", "a1", "a2", "b1", "b2"]);
+    expect(out.mergedGroups).toEqual([
+      { authorId: "uB", messageIds: ["b0"] },
+      { authorId: "uA", messageIds: ["a1", "a2"] },
+      { authorId: "uB", messageIds: ["b1", "b2"] },
+    ]);
+
+    expect(out.messages.length).toBe(3);
+  });
+
+  it("treats maxDepth as merged-group count when walking reply chains", async () => {
+    const sessionId = "c";
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root",
+      ts: 0,
+      raw: { reference: {} },
+    };
+
+    const a1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "a1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uA",
+      userName: "userA",
+      text: "A1",
+      ts: 1_000,
+      raw: { reference: { messageId: "root", channelId: sessionId } },
+    };
+
+    const a2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "a2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uA",
+      userName: "userA",
+      text: "A2",
+      ts: 1_100,
+      raw: { reference: {} },
+    };
+
+    const b1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uB",
+      userName: "userB",
+      text: "B1",
+      ts: 2_000,
+      raw: { reference: { messageId: "a2", channelId: sessionId } },
+    };
+
+    const b2: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "b2" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "uB",
+      userName: "userB",
+      text: "B2",
+      ts: 2_100,
+      raw: { reference: {} },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:root`]: root,
+      [`${sessionId}:a1`]: a1,
+      [`${sessionId}:a2`]: a2,
+      [`${sessionId}:b1`]: b1,
+      [`${sessionId}:b2`]: b2,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "reply", msgRef: b2.ref },
+      maxDepth: 2,
+    });
+
+    expect(out.chainMessageIds).toEqual(["a1", "a2", "b1", "b2"]);
+    expect(out.mergedGroups).toEqual([
+      { authorId: "uA", messageIds: ["a1", "a2"] },
+      { authorId: "uB", messageIds: ["b1", "b2"] },
+    ]);
+  });
+
   it("uses only the trigger group for mention-time context", async () => {
     const sessionId = "c";
     const minuteMs = 60_000;
