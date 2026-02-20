@@ -261,7 +261,7 @@ export class ExaWebSearchProvider implements WebSearchProvider {
       baseUrl?: string;
       apiKey?: string;
     },
-  ) { }
+  ) {}
 
   isConfigured(): boolean {
     return typeof this.config.apiKey === "string" && this.config.apiKey.length > 0;
@@ -337,7 +337,7 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
       apiKey?: string;
       apiBaseUrl?: string;
     },
-  ) { }
+  ) {}
 
   isConfigured(): boolean {
     return typeof this.config.apiKey === "string" && this.config.apiKey.length > 0;
