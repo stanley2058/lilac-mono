@@ -104,4 +104,133 @@ describe("auto-compaction internals", () => {
     expect(exhausted.recover).toBe(false);
     expect(exhausted.terminalError instanceof Error).toBe(true);
   });
+
+  it("computes input budget from safe and early thresholds", () => {
+    const largeWindow = __autoCompactionInternals.computeInputCompactionBudget({
+      contextLimit: 200_000,
+      outputLimit: 16_000,
+      thresholdFraction: 0.8,
+    });
+    expect(largeWindow.earlyInputBudget).toBe(160_000);
+    expect(largeWindow.safeInputBudget).toBe(184_000);
+    expect(largeWindow.inputBudget).toBe(160_000);
+
+    const smallWindow = __autoCompactionInternals.computeInputCompactionBudget({
+      contextLimit: 32_000,
+      outputLimit: 12_000,
+      thresholdFraction: 0.8,
+    });
+    expect(smallWindow.earlyInputBudget).toBe(25_600);
+    expect(smallWindow.safeInputBudget).toBe(20_000);
+    expect(smallWindow.inputBudget).toBe(20_000);
+  });
+
+  it("repairs orphan tool results before boundary selection", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "read",
+            input: { filePath: "a.ts" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "read",
+            output: { type: "text", value: "ok" },
+          },
+          {
+            type: "tool-result",
+            toolCallId: "orphan-1",
+            toolName: "read",
+            output: { type: "text", value: "orphan" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "orphan-2",
+            toolName: "grep",
+            output: { type: "text", value: "orphan" },
+          },
+        ],
+      },
+      { role: "user", content: "latest" },
+    ];
+
+    const repaired = __autoCompactionInternals.repairTranscriptForCompaction(messages);
+
+    expect(repaired.droppedOrphanToolResultParts).toBe(2);
+    expect(repaired.droppedEmptyToolMessages).toBe(1);
+    expect(repaired.messages).toHaveLength(3);
+    expect(repaired.messages[1]?.role).toBe("tool");
+  });
+
+  it("shrinks compacted transcript to fit input budget", () => {
+    const summary = `<summary>\n${"s".repeat(8_000)}\n</summary>`;
+    const messages: ModelMessage[] = [
+      { role: "user", content: summary },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "bash",
+            input: { command: "ls" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "bash",
+            output: { type: "text", value: "x".repeat(10_000) },
+          },
+        ],
+      },
+      { role: "user", content: "latest" },
+    ];
+
+    const budget = 500;
+    const shrunk = __autoCompactionInternals.shrinkCompactedMessagesToBudget({
+      messages,
+      inputBudget: budget,
+    });
+
+    expect(__autoCompactionInternals.estimateMessagesTokens(shrunk)).toBeLessThanOrEqual(budget);
+    expect(shrunk.length).toBeGreaterThan(0);
+    expect(shrunk[shrunk.length - 1]?.role).not.toBe("assistant");
+  });
+
+  it("preserves the latest user request during emergency shrinking", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: `<summary>\n${"s".repeat(3_000)}\n</summary>` },
+      { role: "user", content: "Please continue from here and make sure tests pass." },
+    ];
+
+    const shrunk = __autoCompactionInternals.shrinkCompactedMessagesToBudget({
+      messages,
+      inputBudget: 300,
+    });
+
+    expect(shrunk.length).toBeGreaterThan(0);
+    expect(shrunk[shrunk.length - 1]?.role).toBe("user");
+    const content = shrunk[shrunk.length - 1]?.content;
+    expect(typeof content === "string" && content.includes("Please continue from here")).toBe(true);
+  });
 });

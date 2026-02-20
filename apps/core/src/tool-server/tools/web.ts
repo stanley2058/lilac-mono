@@ -91,12 +91,14 @@ export class Web implements ServerTool {
     const exaBaseUrl = env.tools.web.exa.baseUrl;
     const exaApiKey = env.tools.web.exa.apiKey;
     const tavilyApiKey = env.tools.web.tavilyApiKey;
+    const tavilyApiBaseUrl = env.tools.web.tavilyApiBaseUrl;
 
     const nextKey = JSON.stringify({
       requested: normalizedRequested || null,
       exaBaseUrl: exaBaseUrl ?? null,
       hasExaApiKey: Boolean(exaApiKey),
       hasTavilyApiKey: Boolean(tavilyApiKey),
+      tavilyApiBaseUrl: tavilyApiBaseUrl ?? null,
     });
     if (nextKey === this.webSearchProviderKey) return;
     this.webSearchProviderKey = nextKey;
@@ -109,6 +111,7 @@ export class Web implements ServerTool {
         apiKey: exaApiKey,
       },
       tavilyApiKey,
+      tavilyApiBaseUrl,
     });
 
     const resolved = resolveWebSearchProvider({
@@ -137,7 +140,10 @@ export class Web implements ServerTool {
         "Tavily API key not configured (missing env var TAVILY_API_KEY). fetch(mode=tavily) will fall back to browser mode.",
       );
     } else {
-      this.tavily = tavily({ apiKey: env.tools.web.tavilyApiKey });
+      this.tavily = tavily({
+        apiKey: env.tools.web.tavilyApiKey,
+        apiBaseURL: env.tools.web.tavilyApiBaseUrl,
+      });
     }
 
     await this.refreshWebSearchProvider();
