@@ -400,8 +400,9 @@ export function createDefaultWebSearchProviders(config: {
       apiKey: config.exa.apiKey,
     }),
     new TavilyWebSearchProvider({
-      apiKey: config.tavilyApiKey,
       apiBaseUrl: config.tavilyApiBaseUrl,
+      apiKey: config.tavilyApiKey,
+      
     }),
   ];
 }
