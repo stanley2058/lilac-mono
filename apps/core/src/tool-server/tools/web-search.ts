@@ -349,7 +349,9 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     if (!apiKey) {
       throw new Error("TAVILY_API_KEY is not configured.");
     }
-    const apiBaseURL = this.config.apiBaseUrl ? normalizeBaseUrl(this.config.apiBaseUrl.trim()) : undefined;
+    const apiBaseURL = this.config.apiBaseUrl
+      ? normalizeBaseUrl(this.config.apiBaseUrl.trim())
+      : undefined;
     this.client = tavily({
       apiKey,
       apiBaseURL,
