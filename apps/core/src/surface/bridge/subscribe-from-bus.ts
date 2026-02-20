@@ -180,6 +180,8 @@ export type BusToAdapterRelaySnapshot = {
   replyTo?: MsgRef;
   createdOutputRefs: MsgRef[];
   visibleText: string;
+  totalTextChars?: number;
+  streamTextPrefixChars?: number;
   reasoning?: {
     startedAtMs: number;
     frozenAtMs?: number;
@@ -485,13 +487,15 @@ export async function bridgeBusToAdapter(params: {
     const baseReplyTo = input.restore?.replyTo ?? replyTo ?? undefined;
     let currentReplyTo: MsgRef | undefined = baseReplyTo;
 
-    let outTextAcc = input.restore?.visibleText ?? "";
+    let totalTextChars = input.restore?.totalTextChars ?? input.restore?.visibleText.length ?? 0;
+    let streamTextPrefixChars = input.restore?.streamTextPrefixChars ?? 0;
     let visibleTextAcc = input.restore?.visibleText ?? "";
     let reasoningStartedAtMs = input.restore?.reasoning?.startedAtMs;
     let reasoningFrozenAtMs = input.restore?.reasoning?.frozenAtMs;
     let reasoningDetailText = input.restore?.reasoning?.detailText ?? "";
     let pendingNoReplyPrefix = "";
     let bufferNoReplyPrefix = true;
+    let streamHasVisibleOutput = false;
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
     if (input.restore) {
       for (const update of input.restore.toolStatus) {
@@ -617,6 +621,7 @@ export async function bridgeBusToAdapter(params: {
 
       if (visibleTextAcc.trim().length > 0) {
         await out.push({ type: "text.set", text: visibleTextAcc });
+        streamHasVisibleOutput = true;
       }
       if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
         await out.push({
@@ -627,9 +632,11 @@ export async function bridgeBusToAdapter(params: {
             detailText: reasoningDetailText,
           },
         });
+        streamHasVisibleOutput = true;
       }
       for (const update of toolStatusById.values()) {
         await out.push({ type: "tool.status", update });
+        streamHasVisibleOutput = true;
       }
     }
 
@@ -776,7 +783,7 @@ export async function bridgeBusToAdapter(params: {
             }
 
             case lilacEventTypes.EvtAgentOutputDeltaText: {
-              outTextAcc += outMsg.data.delta;
+              totalTextChars += outMsg.data.delta.length;
 
               if (
                 platform === "discord" &&
@@ -874,12 +881,39 @@ export async function bridgeBusToAdapter(params: {
 
               const statsLineRaw = outMsg.data.statsForNerdsLine;
               const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
+
+              const finalText = outMsg.data.finalText;
+              const clampedStreamPrefixChars = Math.max(
+                0,
+                Math.min(streamTextPrefixChars, finalText.length),
+              );
+              const streamFinalText = finalText.slice(clampedStreamPrefixChars);
+
+              if (streamFinalText.length === 0 && !streamHasVisibleOutput) {
+                await out.abort("skip").catch(() => undefined);
+                await deleteCreatedOutputMessages();
+                await relayStop();
+
+                if (platform === "github") {
+                  await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
+                    logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                  });
+                }
+
+                logger.info("reply relay skipped empty post-reanchor stream", {
+                  requestId,
+                  sessionId,
+                });
+                lastOutCursor = outCtx.cursor;
+                return;
+              }
+
               if (statsLine.length > 0) {
                 await out.push({ type: "meta.stats", line: statsLine });
               }
 
-              outTextAcc = outMsg.data.finalText;
-              visibleTextAcc = outTextAcc;
+              totalTextChars = finalText.length;
+              visibleTextAcc = streamFinalText;
               pendingNoReplyPrefix = "";
               bufferNoReplyPrefix = false;
               if (
@@ -889,7 +923,8 @@ export async function bridgeBusToAdapter(params: {
               ) {
                 reasoningFrozenAtMs = outMsg.ts;
               }
-              await out.push({ type: "text.set", text: outTextAcc });
+              await out.push({ type: "text.set", text: streamFinalText });
+              streamHasVisibleOutput = true;
               const res = await out.finish();
 
               if (params.transcriptStore) {
@@ -918,7 +953,7 @@ export async function bridgeBusToAdapter(params: {
               logger.info("reply relay finished", {
                 requestId,
                 sessionId,
-                finalTextChars: outMsg.data.finalText.length,
+                finalTextChars: streamFinalText.length,
               });
               lastOutCursor = outCtx.cursor;
               return;
@@ -929,6 +964,7 @@ export async function bridgeBusToAdapter(params: {
           }
 
           if (part) {
+            streamHasVisibleOutput = true;
             await out.push(part);
           }
 
@@ -985,13 +1021,12 @@ export async function bridgeBusToAdapter(params: {
           await out.abort(reanchorAbortReason).catch(() => undefined);
 
           currentReplyTo = nextReplyTo;
+          streamTextPrefixChars = Math.max(0, totalTextChars - pendingNoReplyPrefix.length);
+          visibleTextAcc = "";
+          streamHasVisibleOutput = false;
 
           // Start a new output stream and prime it with current state.
           out = await adapter.startOutput(sessionRef, buildStartOpts(nextReplyTo, streamToken));
-
-          if (visibleTextAcc.trim().length > 0) {
-            await out.push({ type: "text.set", text: visibleTextAcc });
-          }
 
           if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
             await out.push({
@@ -1002,11 +1037,13 @@ export async function bridgeBusToAdapter(params: {
                 detailText: reasoningDetailText,
               },
             });
+            streamHasVisibleOutput = true;
           }
 
           // Replay tool status lines so the new stream shows current Actions.
           for (const u of toolStatusById.values()) {
             await out.push({ type: "tool.status", update: u });
+            streamHasVisibleOutput = true;
           }
         });
       },
@@ -1019,6 +1056,8 @@ export async function bridgeBusToAdapter(params: {
         replyTo: currentReplyTo,
         createdOutputRefs: createdOutputRefs.slice(),
         visibleText: visibleTextAcc,
+        totalTextChars,
+        streamTextPrefixChars,
         reasoning:
           typeof reasoningStartedAtMs === "number"
             ? {

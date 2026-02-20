@@ -878,6 +878,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           this.pendingAttachments = [];
         }
       }
+
+      if (this.isPreviewMode()) {
+        await this.deleteTransientPreviewMessages().catch(() => undefined);
+      }
     }
   }
 }
