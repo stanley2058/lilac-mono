@@ -50,3 +50,9 @@ Most commands below are long-running.
 - Tool server only (dev mode): `bun apps/tool-bridge/index.ts`
 - `tools` CLI (after building): `./apps/tool-bridge/dist/index.js --list`
   - Target a different server with `TOOL_SERVER_BACKEND_URL=http://host:port`
+
+## License
+
+This repository is licensed under MIT. See `LICENSE` for details.
+
+The `ref/` directory is vendored upstream/reference code and keeps each upstream project's own license terms.
