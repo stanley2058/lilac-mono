@@ -10,6 +10,7 @@ import {
   addEyesReactionToIssue,
   addEyesReactionToIssueComment,
   getGithubAppSlugOrNull,
+  getGithubUserLoginOrNull,
   getIssue,
   getPullRequest,
   listIssueComments,
@@ -56,23 +57,9 @@ export function verifyGithubWebhookSignature(input: {
 async function resolveBotMentions(): Promise<string[]> {
   const out: string[] = [];
 
-  // Prefer the local gh CLI identity (matches user expectation).
-  const gh = Bun.which("gh");
-  if (gh) {
-    try {
-      const p = Bun.spawn(["gh", "api", "user", "--jq", ".login"], {
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "ignore",
-      });
-      const [stdout, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
-      if (code === 0) {
-        const login = stdout.trim();
-        if (login) out.push(login);
-      }
-    } catch {
-      // ignore
-    }
+  const userLogin = await getGithubUserLoginOrNull().catch(() => null);
+  if (userLogin) {
+    out.push(userLogin);
   }
 
   // Also derive the GitHub App bot login when possible.

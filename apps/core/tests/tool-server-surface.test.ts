@@ -1083,4 +1083,56 @@ describe("tool-server surface", () => {
     expect((res as any).ok).toBe(true);
     expect(deleted).toEqual([1]);
   });
+
+  it("removes only preferred outbound actor reactions when available", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const deleted: number[] = [];
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async () => ({ id: 0 }),
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [
+        { id: 7, content: "+1", user: { login: "octocat", id: 1 } },
+        { id: 8, content: "+1", user: { login: "lilac[bot]", id: 2 } },
+      ],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async ({ reactionId }) => {
+        deleted.push(reactionId);
+      },
+      getGithubAppSlugOrNull: async () => "lilac",
+      getPreferredGithubActorLoginOrNull: async () => "octocat",
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+
+    const res = await tool.call("surface.reactions.remove", {
+      client: "github",
+      sessionId: "octo/repo#12",
+      messageId: "345",
+      reaction: "👍",
+    });
+
+    expect((res as any).ok).toBe(true);
+    expect(deleted).toEqual([7]);
+  });
 });

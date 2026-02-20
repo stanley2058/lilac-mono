@@ -34,6 +34,10 @@ export function dangerousInText(text: string): string | null {
       reason: "access to GitHub App private key",
     },
     {
+      regex: /github-user-token\.json\b/,
+      reason: "access to GitHub user token secret",
+    },
+    {
       regex: /\brm\s+(-[^\s]*r[^\s]*\s+-[^\s]*f|-\S*f\S*\s+-\S*r|-\S*rf|-\S*fr)\b/,
       reason: "rm -rf",
     },
