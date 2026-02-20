@@ -335,6 +335,7 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
   constructor(
     private readonly config: {
       apiKey?: string;
+      apiBaseUrl?: string;
     },
   ) {}
 
@@ -348,7 +349,10 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     if (!apiKey) {
       throw new Error("TAVILY_API_KEY is not configured.");
     }
-    this.client = tavily({ apiKey });
+    this.client = tavily({
+      apiKey,
+      apiBaseURL: this.config.apiBaseUrl,
+    });
     return this.client;
   }
 
@@ -388,6 +392,7 @@ export function createDefaultWebSearchProviders(config: {
     apiKey?: string;
   };
   tavilyApiKey?: string;
+  tavilyApiBaseUrl?: string;
 }): readonly WebSearchProvider[] {
   return [
     new ExaWebSearchProvider({
@@ -395,6 +400,7 @@ export function createDefaultWebSearchProviders(config: {
       apiKey: config.exa.apiKey,
     }),
     new TavilyWebSearchProvider({
+      apiBaseUrl: config.tavilyApiBaseUrl,
       apiKey: config.tavilyApiKey,
     }),
   ];
