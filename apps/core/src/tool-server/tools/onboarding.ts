@@ -32,6 +32,19 @@ import {
   writeGithubUserTokenSecret,
 } from "../../github/github-user-token";
 
+const githubBashEnvDocs = {
+  onlyWhenConfigured:
+    "Injected only when GitHub outbound auth is configured (user token and/or app auth).",
+  canonicalAuthVars: ["GH_TOKEN", "GITHUB_TOKEN"],
+  hostVar: "GH_HOST",
+  alternateAuthVars: ["LILAC_GITHUB_USER_TOKEN", "LILAC_GITHUB_APP_TOKEN"],
+  alternateHostVars: ["LILAC_GITHUB_USER_HOST", "LILAC_GITHUB_APP_HOST"],
+  precedence:
+    "Canonical GH_TOKEN/GITHUB_TOKEN prefer user token when configured, otherwise app token.",
+  forceAppHint:
+    "To force app auth in a command, set GH_TOKEN=$LILAC_GITHUB_APP_TOKEN (and GH_HOST=$LILAC_GITHUB_APP_HOST when present).",
+} as const;
+
 const bootstrapInputSchema = z.object({
   dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
   overwriteConfig: z
@@ -1300,6 +1313,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: Boolean(secret),
+          bashEnvVars: githubBashEnvDocs,
           ...(secret
             ? {
                 host: secret.host,
@@ -1344,6 +1358,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: true as const,
+          bashEnvVars: githubBashEnvDocs,
           host,
           apiBaseUrl,
           login,
@@ -1387,6 +1402,7 @@ export class Onboarding implements ServerTool {
         return {
           ok: true as const,
           dataDir,
+          bashEnvVars: githubBashEnvDocs,
           host: secret.host,
           apiBaseUrl,
           login,
@@ -1421,6 +1437,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: Boolean(secret),
+          bashEnvVars: githubBashEnvDocs,
           ...(secret
             ? {
                 appId: secret.appId,
@@ -1471,6 +1488,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: true as const,
+          bashEnvVars: githubBashEnvDocs,
           appId: input.appId,
           installationId: input.installationId,
           host,
@@ -1506,6 +1524,7 @@ export class Onboarding implements ServerTool {
         return {
           ok: true as const,
           dataDir,
+          bashEnvVars: githubBashEnvDocs,
           host: t.host,
           apiBaseUrl: t.apiBaseUrl,
           expiresAtMs: t.expiresAtMs,
