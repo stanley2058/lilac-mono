@@ -100,6 +100,16 @@ describe("formatToolArgsForDisplay", () => {
     ).toBe(" a,b /c");
   });
 
+  it("formats subagent_delegate task regardless of profile", () => {
+    const display = formatToolArgsForDisplay("subagent_delegate", {
+      profile: "general",
+      task: "Investigate flaky tests in apps/core and propose a fix",
+    });
+
+    expect(display.startsWith(" Investigate flaky tests in")).toBe(true);
+    expect(display.length).toBeLessThanOrEqual(31);
+  });
+
   it("formats bash with remote cwd prefix", () => {
     expect(
       formatToolArgsForDisplay("bash", {

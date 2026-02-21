@@ -45,6 +45,18 @@ type AgentConfig = {
         options?: JSONObject;
         promptOverlay?: string;
       };
+      general: {
+        modelSlot: "main" | "fast";
+        model?: string;
+        options?: JSONObject;
+        promptOverlay?: string;
+      };
+      self: {
+        modelSlot: "main" | "fast";
+        model?: string;
+        options?: JSONObject;
+        promptOverlay?: string;
+      };
     };
   };
 };
@@ -82,7 +94,7 @@ const subagentProfileSchema = z
 const subagentsSchema = z
   .object({
     enabled: z.boolean().default(true),
-    maxDepth: z.number().int().min(0).max(1).default(1),
+    maxDepth: z.number().int().min(0).max(2).default(2),
     defaultTimeoutMs: z
       .number()
       .int()
@@ -96,9 +108,13 @@ const subagentsSchema = z
     profiles: z
       .object({
         explore: subagentProfileSchema.default({ modelSlot: "main" }),
+        general: subagentProfileSchema.default({ modelSlot: "main" }),
+        self: subagentProfileSchema.default({ modelSlot: "main" }),
       })
       .default({
         explore: { modelSlot: "main" },
+        general: { modelSlot: "main" },
+        self: { modelSlot: "main" },
       }),
   })
   .superRefine((input, ctx) => {
@@ -235,11 +251,13 @@ export const coreConfigSchema = z.object({
       reasoningDisplay: reasoningDisplaySchema,
       subagents: subagentsSchema.default({
         enabled: true,
-        maxDepth: 1,
+        maxDepth: 2,
         defaultTimeoutMs: 3 * 60 * 1000,
         maxTimeoutMs: 8 * 60 * 1000,
         profiles: {
           explore: { modelSlot: "main" },
+          general: { modelSlot: "main" },
+          self: { modelSlot: "main" },
         },
       }),
     })
@@ -248,11 +266,13 @@ export const coreConfigSchema = z.object({
       reasoningDisplay: "simple",
       subagents: {
         enabled: true,
-        maxDepth: 1,
+        maxDepth: 2,
         defaultTimeoutMs: 3 * 60 * 1000,
         maxTimeoutMs: 8 * 60 * 1000,
         profiles: {
           explore: { modelSlot: "main" },
+          general: { modelSlot: "main" },
+          self: { modelSlot: "main" },
         },
       },
     }),

@@ -886,7 +886,10 @@ function requestRawReferencesMessage(raw: unknown, messageId: string): boolean {
   return getChainMessageIdsFromRaw(raw).includes(messageId);
 }
 
-type AgentRunProfile = "primary" | "explore";
+const SUBAGENT_PROFILES = ["explore", "general", "self"] as const;
+
+type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
+type AgentRunProfile = "primary" | SubagentProfile;
 
 type ParsedSubagentMeta = {
   profile: AgentRunProfile;
@@ -897,15 +900,25 @@ type SubagentConfig = NonNullable<CoreConfig["agent"]["subagents"]>;
 
 const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   enabled: true,
-  maxDepth: 1,
+  maxDepth: 2,
   defaultTimeoutMs: 3 * 60 * 1000,
   maxTimeoutMs: 8 * 60 * 1000,
   profiles: {
     explore: {
       modelSlot: "main",
     },
+    general: {
+      modelSlot: "main",
+    },
+    self: {
+      modelSlot: "main",
+    },
   },
 };
+
+function isSubagentProfile(value: unknown): value is SubagentProfile {
+  return typeof value === "string" && (SUBAGENT_PROFILES as readonly string[]).includes(value);
+}
 
 function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
   if (!raw || typeof raw !== "object") {
@@ -919,15 +932,15 @@ function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
 
   const o = subagent as Record<string, unknown>;
 
-  const profile: AgentRunProfile = o["profile"] === "explore" ? "explore" : "primary";
+  const rawProfile = o["profile"];
+  const profile: AgentRunProfile = isSubagentProfile(rawProfile) ? rawProfile : "primary";
 
   const depthRaw = o["depth"];
+  const defaultDepth = profile === "primary" ? 0 : 1;
   const depth =
     typeof depthRaw === "number" && Number.isFinite(depthRaw)
       ? Math.max(0, Math.trunc(depthRaw))
-      : profile === "explore"
-        ? 1
-        : 0;
+      : defaultDepth;
 
   return { profile, depth };
 }
@@ -949,14 +962,60 @@ function buildExploreOverlay(extra?: string): string {
   return lines.join("\n");
 }
 
+function buildGeneralOverlay(extra?: string): string {
+  const lines = [
+    "You are running in general subagent mode.",
+    "Focus on completing the delegated task end-to-end.",
+    "Use available tools directly, including edits and bash when needed.",
+    "Prefer parallel tool usage when calls are independent.",
+    "Do not delegate to another subagent.",
+  ];
+
+  if (extra && extra.trim().length > 0) {
+    lines.push(extra.trim());
+  }
+
+  return lines.join("\n");
+}
+
+function buildSelfOverlay(extra?: string): string {
+  if (extra && extra.trim().length > 0) {
+    return extra.trim();
+  }
+  return "";
+}
+
+function buildOverlayForProfile(params: {
+  profile: SubagentProfile;
+  exploreOverlay?: string;
+  generalOverlay?: string;
+  selfOverlay?: string;
+}): string {
+  if (params.profile === "general") {
+    return buildGeneralOverlay(params.generalOverlay);
+  }
+  if (params.profile === "self") {
+    return buildSelfOverlay(params.selfOverlay);
+  }
+  return buildExploreOverlay(params.exploreOverlay);
+}
+
+function subagentModeTitle(profile: SubagentProfile): string {
+  if (profile === "general") return "General";
+  if (profile === "self") return "Self";
+  return "Explore";
+}
+
 function buildSystemPromptForProfile(params: {
   baseSystemPrompt: string;
   profile: AgentRunProfile;
   exploreOverlay?: string;
+  generalOverlay?: string;
+  selfOverlay?: string;
   skillsSection?: string | null;
   activeEditingTool?: "apply_patch" | "edit_file" | null;
 }): string {
-  if (params.profile !== "explore") {
+  if (params.profile === "primary") {
     const parts = [params.baseSystemPrompt];
     if (params.skillsSection && params.skillsSection.trim().length > 0) {
       parts.push(params.skillsSection.trim());
@@ -964,12 +1023,25 @@ function buildSystemPromptForProfile(params: {
     return parts.join("\n\n");
   }
 
-  return [
-    params.baseSystemPrompt,
-    "",
-    "## Subagent Mode: Explore",
-    buildExploreOverlay(params.exploreOverlay),
-  ].join("\n");
+  const baseParts = [params.baseSystemPrompt];
+  if (params.skillsSection && params.skillsSection.trim().length > 0) {
+    baseParts.push(params.skillsSection.trim());
+  }
+
+  const overlay = buildOverlayForProfile({
+    profile: params.profile,
+    exploreOverlay: params.exploreOverlay,
+    generalOverlay: params.generalOverlay,
+    selfOverlay: params.selfOverlay,
+  });
+
+  if (overlay.trim().length === 0) {
+    return baseParts.join("\n\n");
+  }
+
+  return [...baseParts, "", `## Subagent Mode: ${subagentModeTitle(params.profile)}`, overlay].join(
+    "\n",
+  );
 }
 
 export type SessionAdditionalPromptWarning = {
@@ -1568,20 +1640,19 @@ export async function startBusAgentRunner(params: {
       });
       await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
 
-      const resolved =
-        runProfile === "explore" && subagents.profiles.explore.model
-          ? resolveModelRef(
-              cfg,
-              {
-                model: subagents.profiles.explore.model,
-                options: subagents.profiles.explore.options,
-              },
-              "agent.subagents.profiles.explore.model",
-            )
-          : resolveModelSlot(
-              cfg,
-              runProfile === "explore" ? subagents.profiles.explore.modelSlot : "main",
-            );
+      const subagentProfileConfig =
+        runProfile === "primary" ? null : subagents.profiles[runProfile];
+
+      const resolved = subagentProfileConfig?.model
+        ? resolveModelRef(
+            cfg,
+            {
+              model: subagentProfileConfig.model,
+              options: subagentProfileConfig.options,
+            },
+            `agent.subagents.profiles.${runProfile}.model`,
+          )
+        : resolveModelSlot(cfg, subagentProfileConfig?.modelSlot ?? "main");
       resolvedModelLabel = resolved.modelId;
       const editingToolMode = resolveEditingToolMode({
         provider: resolved.provider,
@@ -1626,9 +1697,11 @@ export async function startBusAgentRunner(params: {
       const baseSystemPrompt = buildSystemPromptForProfile({
         baseSystemPrompt: cfg.agent.systemPrompt,
         profile: runProfile,
-        activeEditingTool: runProfile === "primary" ? editingToolMode : null,
+        activeEditingTool: runProfile === "explore" ? null : editingToolMode,
         exploreOverlay: subagents.profiles.explore.promptOverlay,
-        skillsSection: runProfile === "primary" ? await maybeBuildSkillsSectionForPrimary() : null,
+        generalOverlay: subagents.profiles.general.promptOverlay,
+        selfOverlay: subagents.profiles.self.promptOverlay,
+        skillsSection: runProfile === "explore" ? null : await maybeBuildSkillsSectionForPrimary(),
       });
 
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;

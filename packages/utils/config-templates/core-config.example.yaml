@@ -79,8 +79,9 @@ agent:
   subagents:
     # Master switch for delegate-style subagents.
     enabled: true
-    # Subagents cannot spawn subagents (0 or 1 only).
-    maxDepth: 1
+    # Max delegation depth (primary=0). Default 2 allows self->(explore|general)
+    # while explore/general remain non-delegating by policy.
+    maxDepth: 2
     # Default timeout applied by subagent.delegate when timeoutMs is omitted.
     defaultTimeoutMs: 180000
     # Hard cap for subagent timeout.
@@ -95,6 +96,24 @@ agent:
         # Optional extra prompt fragment appended in explore mode.
         # promptOverlay: |
         #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
+      general:
+        # General subagent runs with full primary-equivalent tool access.
+        # Can be provider/model or an alias from models.def.
+        model: "openrouter/openai/gpt-4o"
+        # options:
+        #   temperature: 0.1
+        # Optional extra prompt fragment appended in general mode.
+        # promptOverlay: |
+        #   Prioritize execution over discussion and report concrete outcomes.
+      self:
+        # Self subagent is an isolated fork of the primary agent prompt/tooling.
+        # Can be provider/model or an alias from models.def.
+        model: "openrouter/openai/gpt-4o"
+        # options:
+        #   temperature: 0.2
+        # Optional extra prompt fragment appended in self mode.
+        # promptOverlay: |
+        #   Assume no prior conversation context; restate assumptions briefly.
 
 # Optional: extra system prompt text prepended to data/prompts/*.
 # basePrompt: |

@@ -10,11 +10,12 @@ import { resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import { requireRequestContext } from "../shared/req-context";
 
+const subagentProfileSchema = z.enum(["explore", "general", "self"]);
+
 const subagentDelegateInputSchema = z.object({
-  profile: z
-    .literal("explore")
+  profile: subagentProfileSchema
     .default("explore")
-    .describe("Subagent profile to run. Explore is read-only codebase mapping."),
+    .describe("Subagent profile to run (explore, general, self)."),
   task: z.string().min(1).describe("Objective for the subagent."),
   timeoutMs: z
     .number()
@@ -31,7 +32,7 @@ const subagentStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout
 const subagentDelegateOutputSchema = z.object({
   ok: z.boolean(),
   status: subagentStatusSchema,
-  profile: z.literal("explore"),
+  profile: subagentProfileSchema,
   childRequestId: z.string(),
   childSessionId: z.string(),
   timeoutMs: z.number().int().positive(),
@@ -43,6 +44,7 @@ const subagentDelegateOutputSchema = z.object({
 type SubagentDelegateInput = z.infer<typeof subagentDelegateInputSchema>;
 type SubagentDelegateOutput = z.infer<typeof subagentDelegateOutputSchema>;
 type SubagentStatus = z.infer<typeof subagentStatusSchema>;
+type SubagentProfile = z.infer<typeof subagentProfileSchema>;
 
 type ChildToolStatus = "running" | "done";
 
@@ -59,7 +61,10 @@ type RequestContextLike = {
   sessionId: string;
   requestClient: string;
   subagentDepth?: number;
+  subagentProfile?: string;
 };
+
+type CurrentRunProfile = SubagentProfile | "primary";
 
 function parseDepth(ctx: unknown): number {
   if (!ctx || typeof ctx !== "object") return 0;
@@ -74,6 +79,14 @@ function parseDepth(ctx: unknown): number {
     }
   }
   return 0;
+}
+
+function parseCurrentRunProfile(ctx: unknown): CurrentRunProfile {
+  if (!ctx || typeof ctx !== "object") return "primary";
+  const raw = (ctx as Record<string, unknown>)["subagentProfile"];
+  if (raw === "primary") return "primary";
+  if (raw === "explore" || raw === "general" || raw === "self") return raw;
+  return "primary";
 }
 
 function toAdapterPlatform(value: string): AdapterPlatform {
@@ -123,7 +136,7 @@ function childToolIcon(state: ChildToolState): string {
 }
 
 function renderSubagentDisplay(params: {
-  profile: "explore";
+  profile: SubagentProfile;
   children: ReadonlyMap<string, ChildToolState>;
 }): string {
   const children = Array.from(params.children.values());
@@ -172,6 +185,53 @@ function buildExplorePrompt(task: string): ModelMessage {
   };
 }
 
+function buildGeneralPrompt(task: string): ModelMessage {
+  const text = [
+    "You are a general subagent.",
+    "",
+    "Mission:",
+    task,
+    "",
+    "Rules:",
+    "- Execute the task directly with available tools.",
+    "- Prefer parallel tool usage when calls are independent.",
+    "- Keep output concise and actionable.",
+    "- Do not delegate to other subagents.",
+    "- Cite concrete file paths when code changes are involved.",
+  ].join("\n");
+
+  return {
+    role: "user",
+    content: text,
+  };
+}
+
+function buildSelfPrompt(task: string): ModelMessage {
+  const text = [
+    "You are a self subagent.",
+    "",
+    "Mission:",
+    task,
+    "",
+    "Rules:",
+    "- You run in a fresh, isolated context window.",
+    "- Execute the task directly with available tools.",
+    "- Do not delegate to other subagents.",
+    "- Cite concrete file paths when code changes are involved.",
+  ].join("\n");
+
+  return {
+    role: "user",
+    content: text,
+  };
+}
+
+function buildProfilePrompt(profile: SubagentProfile, task: string): ModelMessage {
+  if (profile === "general") return buildGeneralPrompt(task);
+  if (profile === "self") return buildSelfPrompt(task);
+  return buildExplorePrompt(task);
+}
+
 export function subagentTools(params: {
   bus: LilacBus;
   defaultTimeoutMs: number;
@@ -186,7 +246,8 @@ export function subagentTools(params: {
 
   return {
     subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
-      description: "Delegate to a read-only explore subagent and return its final response.",
+      description:
+        "Delegate to a subagent profile (explore, general, self) and return its final response.",
       inputSchema: subagentDelegateInputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input, { abortSignal, experimental_context, toolCallId }) => {
@@ -196,6 +257,16 @@ export function subagentTools(params: {
         ) as RequestContextLike;
 
         const depth = parseDepth(experimental_context);
+
+        const currentRunProfile = parseCurrentRunProfile(experimental_context);
+        if (currentRunProfile === "explore" || currentRunProfile === "general") {
+          throw new Error(`subagent_delegate is disabled in ${currentRunProfile} subagent runs`);
+        }
+
+        if (currentRunProfile === "self" && input.profile === "self") {
+          throw new Error("self subagent cannot delegate to self profile");
+        }
+
         if (depth >= params.maxDepth) {
           throw new Error("subagent_delegate is disabled in subagent runs (depth limit reached)");
         }
@@ -436,7 +507,7 @@ export function subagentTools(params: {
             lilacEventTypes.CmdRequestMessage,
             {
               queue: "prompt",
-              messages: [buildExplorePrompt(input.task)],
+              messages: [buildProfilePrompt(input.profile, input.task)],
               raw: {
                 subagent: {
                   profile: input.profile,
