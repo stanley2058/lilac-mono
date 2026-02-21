@@ -236,6 +236,111 @@ describe("subagent_delegate tool", () => {
     expect(res.childSessionId.startsWith("sub:s:1:")).toBe(true);
   });
 
+  it("supports general and self delegation profiles", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+    });
+
+    const seenProfiles: string[] = [];
+
+    await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "subagent-test-worker-profiles",
+        consumerId: "subagent-test-worker-profiles",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+          await ctx.commit();
+          return;
+        }
+
+        const requestId = msg.headers?.request_id;
+        const sessionId = msg.headers?.session_id;
+        const requestClient = msg.headers?.request_client;
+        if (!requestId || !sessionId || !requestClient) {
+          await ctx.commit();
+          return;
+        }
+
+        if (msg.data.queue !== "prompt") {
+          await ctx.commit();
+          return;
+        }
+
+        const profile = msg.headers?.subagent_profile;
+        if (typeof profile === "string") {
+          seenProfiles.push(profile);
+        }
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: `done:${profile ?? "unknown"}`,
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await ctx.commit();
+      },
+    );
+
+    const profiles = ["general", "self"] as const;
+
+    for (const profile of profiles) {
+      const res = await resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          { profile, task: "Do delegated work" },
+          {
+            toolCallId: `tool-${profile}`,
+            messages: [],
+            experimental_context: {
+              requestId: `r:${profile}`,
+              sessionId: `s:${profile}`,
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
+          },
+        ),
+      );
+
+      expect(res.ok).toBe(true);
+      expect(res.status).toBe("resolved");
+      expect(res.profile).toBe(profile);
+      expect(res.finalText).toBe(`done:${profile}`);
+    }
+
+    expect(seenProfiles).toEqual(["general", "self"]);
+  });
+
   it("rejects delegation when depth limit is reached", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -261,6 +366,159 @@ describe("subagent_delegate tool", () => {
         },
       ),
     ).rejects.toThrow(/depth limit reached/i);
+  });
+
+  it("rejects delegation from explore and general runs", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 2,
+    });
+
+    await expect(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Map auth flow" },
+        {
+          toolCallId: "tool-no-nest-explore",
+          messages: [],
+          experimental_context: {
+            requestId: "r:no-nest-explore",
+            sessionId: "s:no-nest-explore",
+            requestClient: "discord",
+            subagentDepth: 1,
+            subagentProfile: "explore",
+          },
+        },
+      ),
+    ).rejects.toThrow(/disabled in explore subagent runs/i);
+
+    await expect(
+      tools.subagent_delegate.execute!(
+        { profile: "general", task: "Fix lint" },
+        {
+          toolCallId: "tool-no-nest-general",
+          messages: [],
+          experimental_context: {
+            requestId: "r:no-nest-general",
+            sessionId: "s:no-nest-general",
+            requestClient: "discord",
+            subagentDepth: 1,
+            subagentProfile: "general",
+          },
+        },
+      ),
+    ).rejects.toThrow(/disabled in general subagent runs/i);
+  });
+
+  it("rejects self->self recursion but allows self->explore at depth 1", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 2,
+    });
+
+    await expect(
+      tools.subagent_delegate.execute!(
+        { profile: "self", task: "Spawn self again" },
+        {
+          toolCallId: "tool-self-self",
+          messages: [],
+          experimental_context: {
+            requestId: "r:self-self",
+            sessionId: "s:self-self",
+            requestClient: "discord",
+            subagentDepth: 1,
+            subagentProfile: "self",
+          },
+        },
+      ),
+    ).rejects.toThrow(/cannot delegate to self profile/i);
+
+    await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "subagent-test-worker-self-explore",
+        consumerId: "subagent-test-worker-self-explore",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+          await ctx.commit();
+          return;
+        }
+
+        const requestId = msg.headers?.request_id;
+        const sessionId = msg.headers?.session_id;
+        const requestClient = msg.headers?.request_client;
+        if (!requestId || !sessionId || !requestClient) {
+          await ctx.commit();
+          return;
+        }
+
+        if (msg.data.queue !== "prompt") {
+          await ctx.commit();
+          return;
+        }
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: "self->explore ok",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await ctx.commit();
+      },
+    );
+
+    const res = await resolveExecuteResult(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Map auth flow" },
+        {
+          toolCallId: "tool-self-explore",
+          messages: [],
+          experimental_context: {
+            requestId: "r:self-explore",
+            sessionId: "s:self-explore",
+            requestClient: "discord",
+            subagentDepth: 1,
+            subagentProfile: "self",
+          },
+        },
+      ),
+    );
+
+    expect(res.status).toBe("resolved");
+    expect(res.finalText).toBe("self->explore ok");
+    expect(res.profile).toBe("explore");
   });
 
   it("clamps timeoutMs to configured max", async () => {

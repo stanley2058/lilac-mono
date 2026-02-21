@@ -75,7 +75,7 @@ const localApplyPatchArgsSchema = z.object({
 });
 
 const subagentDelegateArgsSchema = z.object({
-  profile: z.literal("explore").optional(),
+  profile: z.enum(["explore", "general", "self"]).optional(),
   task: z.string().min(1),
   timeoutMs: z.number().optional(),
 });
