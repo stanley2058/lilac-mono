@@ -349,6 +349,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
 - `TAVILY_API_KEY` and/or `EXA_API_KEY` (enable `tools search`; backend selected by `tools.web.search.provider`)
 - `EXA_API_BASE_URL` (optional Exa API endpoint override)
+- `TAVILY_API_BASE_URL` (optional Tavily API endpoint override)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 
 ---

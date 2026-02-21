@@ -275,9 +275,8 @@ export class ExaWebSearchProvider implements WebSearchProvider {
       throw new Error("EXA_API_KEY is not configured.");
     }
 
-    this.client = this.config.baseUrl
-      ? new Exa(apiKey, normalizeBaseUrl(this.config.baseUrl))
-      : new Exa(apiKey);
+    const baseUrlRaw = this.config.baseUrl?.trim();
+    this.client = baseUrlRaw ? new Exa(apiKey, normalizeBaseUrl(baseUrlRaw)) : new Exa(apiKey);
     return this.client;
   }
 
@@ -349,9 +348,11 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
     if (!apiKey) {
       throw new Error("TAVILY_API_KEY is not configured.");
     }
+    const apiBaseUrlRaw = this.config.apiBaseUrl?.trim();
+    const apiBaseURL = apiBaseUrlRaw ? normalizeBaseUrl(apiBaseUrlRaw) : undefined;
     this.client = tavily({
       apiKey,
-      apiBaseURL: this.config.apiBaseUrl,
+      apiBaseURL,
     });
     return this.client;
   }
