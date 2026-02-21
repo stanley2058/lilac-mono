@@ -24,7 +24,26 @@ import {
   readGithubAppSecret,
   writeGithubAppSecret,
 } from "../../github/github-app";
+import { getGithubViewerLoginOrNull } from "../../github/github-auth";
 import { getGithubInstallationTokenOrThrow } from "../../github/github-app-token";
+import {
+  clearGithubUserTokenSecret,
+  readGithubUserTokenSecret,
+  writeGithubUserTokenSecret,
+} from "../../github/github-user-token";
+
+const githubBashEnvDocs = {
+  onlyWhenConfigured:
+    "Injected only when GitHub outbound auth is configured (user token and/or app auth).",
+  canonicalAuthVars: ["GH_TOKEN", "GITHUB_TOKEN"],
+  hostVar: "GH_HOST",
+  alternateAuthVars: ["LILAC_GITHUB_USER_TOKEN", "LILAC_GITHUB_APP_TOKEN"],
+  alternateHostVars: ["LILAC_GITHUB_USER_HOST", "LILAC_GITHUB_APP_HOST"],
+  precedence:
+    "Canonical GH_TOKEN/GITHUB_TOKEN prefer user token when configured, otherwise app token.",
+  forceAppHint:
+    "To force app auth in a command, set GH_TOKEN=$LILAC_GITHUB_APP_TOKEN (and GH_HOST=$LILAC_GITHUB_APP_HOST when present).",
+} as const;
 
 const bootstrapInputSchema = z.object({
   dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
@@ -150,6 +169,29 @@ const githubAppInputSchema = z.object({
     .min(1)
     .optional()
     .describe("Path to a GitHub App private key PEM file"),
+});
+
+const githubUserTokenInputSchema = z.object({
+  dataDir: z.string().optional().describe("Override DATA_DIR for this call"),
+  mode: z
+    .enum(["status", "configure", "test", "clear"])
+    .optional()
+    .default("status")
+    .describe(
+      "status: show config; configure: persist GitHub user token; test: call GitHub API /user; clear: remove stored token",
+    ),
+  token: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("GitHub personal access token (classic or fine-grained)"),
+  host: z.string().min(1).optional().describe("GitHub host (github.com or your GHES host)"),
+  apiBaseUrl: z
+    .url()
+    .optional()
+    .describe(
+      "GitHub API base URL (default: https://api.github.com; GHES example: https://github.example.com/api/v3)",
+    ),
 });
 
 const allInputSchema = z.object({
@@ -647,6 +689,17 @@ export class Onboarding implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(githubAppInputSchema),
+        hidden: true,
+      },
+      {
+        callableId: "onboarding.github_user_token",
+        name: "Onboarding GitHub User Token",
+        description:
+          "Configure GitHub user outbound auth via PAT/fine-grained PAT (preferred for GH_TOKEN/GITHUB_TOKEN in bash env). Hidden by default.",
+        shortInput: zodObjectToCliLines(githubUserTokenInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(githubUserTokenInputSchema),
         hidden: true,
       },
       {
@@ -1236,17 +1289,141 @@ export class Onboarding implements ServerTool {
       };
     }
 
+    if (callableId === "onboarding.github_user_token") {
+      const input = githubUserTokenInputSchema.parse(rawInput);
+      const dataDir = input.dataDir ?? env.dataDir;
+
+      const normalizeHost = (h: string | undefined) =>
+        (() => {
+          const trimmed = h?.trim();
+          if (!trimmed) return undefined;
+          const cleaned = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          return cleaned.length > 0 ? cleaned : undefined;
+        })();
+
+      if (input.mode === "status") {
+        const secret = await readGithubUserTokenSecret(dataDir);
+        const apiBaseUrl = secret
+          ? deriveApiBaseUrl({
+              host: secret.host,
+              apiBaseUrl: secret.apiBaseUrl,
+            })
+          : undefined;
+        return {
+          ok: true as const,
+          dataDir,
+          configured: Boolean(secret),
+          bashEnvVars: githubBashEnvDocs,
+          ...(secret
+            ? {
+                host: secret.host,
+                apiBaseUrl,
+                login: secret.login,
+              }
+            : {}),
+        };
+      }
+
+      if (input.mode === "clear") {
+        await clearGithubUserTokenSecret(dataDir);
+        return { ok: true as const, dataDir, cleared: true as const };
+      }
+
+      if (input.mode === "configure") {
+        if (!input.token) {
+          throw new Error("Missing required input: token");
+        }
+
+        const token = input.token.trim();
+        if (!token) {
+          throw new Error("Input token is empty");
+        }
+
+        const host = normalizeHost(input.host);
+        const apiBaseUrl = input.apiBaseUrl ?? deriveApiBaseUrl({ host });
+        const login = await getGithubViewerLoginOrNull({
+          apiBaseUrl,
+          token,
+        }).catch(() => null);
+
+        const wrote = await writeGithubUserTokenSecret({
+          dataDir,
+          token,
+          host,
+          apiBaseUrl,
+          login: login ?? undefined,
+        });
+
+        return {
+          ok: true as const,
+          dataDir,
+          configured: true as const,
+          bashEnvVars: githubBashEnvDocs,
+          host,
+          apiBaseUrl,
+          login,
+          jsonPath: wrote.jsonPath,
+          overwritten: wrote.overwritten,
+        };
+      }
+
+      if (input.mode === "test") {
+        const secret = await readGithubUserTokenSecret(dataDir);
+        if (!secret) {
+          throw new Error(
+            "GitHub user token not configured (run onboarding.github_user_token mode=configure)",
+          );
+        }
+
+        const apiBaseUrl = deriveApiBaseUrl({
+          host: secret.host,
+          apiBaseUrl: secret.apiBaseUrl,
+        });
+        const login = await getGithubViewerLoginOrNull({
+          apiBaseUrl,
+          token: secret.token,
+        });
+        if (!login) {
+          throw new Error(
+            `GitHub API test failed at ${apiBaseUrl}/user (invalid token or permissions)`,
+          );
+        }
+
+        if (secret.login !== login) {
+          await writeGithubUserTokenSecret({
+            dataDir,
+            token: secret.token,
+            host: secret.host,
+            apiBaseUrl: secret.apiBaseUrl,
+            login,
+          });
+        }
+
+        return {
+          ok: true as const,
+          dataDir,
+          bashEnvVars: githubBashEnvDocs,
+          host: secret.host,
+          apiBaseUrl,
+          login,
+        };
+      }
+
+      const _exhaustive: never = input.mode;
+      return _exhaustive;
+    }
+
     if (callableId === "onboarding.github_app") {
       const input = githubAppInputSchema.parse(rawInput);
       const dataDir = input.dataDir ?? env.dataDir;
 
       const normalizeHost = (h: string | undefined) =>
-        h
-          ? h
-              .trim()
-              .replace(/^https?:\/\//, "")
-              .replace(/\/+$/, "")
-          : undefined;
+        (() => {
+          const trimmed = h?.trim();
+          if (!trimmed) return undefined;
+          const cleaned = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          return cleaned.length > 0 ? cleaned : undefined;
+        })();
 
       if (input.mode === "status") {
         const secret = await readGithubAppSecret(dataDir);
@@ -1260,6 +1437,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: Boolean(secret),
+          bashEnvVars: githubBashEnvDocs,
           ...(secret
             ? {
                 appId: secret.appId,
@@ -1310,6 +1488,7 @@ export class Onboarding implements ServerTool {
           ok: true as const,
           dataDir,
           configured: true as const,
+          bashEnvVars: githubBashEnvDocs,
           appId: input.appId,
           installationId: input.installationId,
           host,
@@ -1345,6 +1524,7 @@ export class Onboarding implements ServerTool {
         return {
           ok: true as const,
           dataDir,
+          bashEnvVars: githubBashEnvDocs,
           host: t.host,
           apiBaseUrl: t.apiBaseUrl,
           expiresAtMs: t.expiresAtMs,

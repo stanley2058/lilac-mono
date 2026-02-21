@@ -679,11 +679,10 @@ describe("bridgeBusToAdapter", () => {
     // First stream gets the first delta.
     expect(adapter.streams[0]?.parts).toEqual([{ type: "text.delta", delta: "a" }]);
 
-    // Second stream is primed with the accumulated text, then continues.
+    // Second stream starts fresh and only shows post-reanchor text.
     expect(adapter.streams[1]?.parts).toEqual([
-      { type: "text.set", text: "a" },
       { type: "text.delta", delta: "b" },
-      { type: "text.set", text: "ab" },
+      { type: "text.set", text: "b" },
     ]);
 
     expect(adapter.streams[1]?.finished).toBe(true);
@@ -734,6 +733,161 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.streams.length).toBe(2);
     expect(adapter.streams[0]?.aborted).toBe("reanchor_interrupt");
+
+    await bridge.stop();
+  });
+
+  it("reanchors with reasoning/tool replay but without prior text replay", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reanchor_reasoning_tools";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "tool-1",
+        status: "start",
+        display: "bash ls",
+      },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "thinking", seq: 1 },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(2);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+
+    const stream2 = adapter.streams[1]!;
+    expect(stream2.parts[0]?.type).toBe("reasoning.status");
+    if (stream2.parts[0]?.type === "reasoning.status") {
+      expect(stream2.parts[0].update.detailText).toBe("thinking");
+    }
+    expect(stream2.parts[1]).toEqual({
+      type: "tool.status",
+      update: {
+        toolCallId: "tool-1",
+        status: "start",
+        display: "bash ls",
+        ok: undefined,
+        error: undefined,
+      },
+    });
+    expect(stream2.parts.at(-1)).toEqual({ type: "text.set", text: "" });
+    expect(stream2.parts.some((p) => p.type === "text.set" && p.text === "a")).toBe(false);
+
+    await bridge.stop();
+  });
+
+  it("skips empty post-reanchor stream when no new content exists", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reanchor_empty_noop";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(2);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+    expect(adapter.streams[1]?.aborted).toBe("skip");
+    expect(adapter.streams[1]?.finished).toBe(false);
+    expect(adapter.streams[1]?.parts).toEqual([]);
 
     await bridge.stop();
   });

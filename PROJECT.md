@@ -244,6 +244,12 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Implementations: `apps/core/src/tools/*`.
    - Key ones:
       - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
+        - Child env always includes request context vars (`LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`) and VCS vars (`GIT_CONFIG_GLOBAL`, `GNUPGHOME`, with color forced off via `NO_COLOR=1`).
+        - When GitHub outbound auth is configured, bash also injects GitHub auth vars from `apps/core/src/github/github-auth.ts`:
+          - Canonical: `GH_TOKEN`, `GITHUB_TOKEN` (prefer user token when configured, otherwise app token).
+          - Optional host: `GH_HOST`.
+          - Explicit alternates: `LILAC_GITHUB_USER_TOKEN`, `LILAC_GITHUB_USER_HOST`, `LILAC_GITHUB_APP_TOKEN`, `LILAC_GITHUB_APP_HOST`.
+          - This allows command-level override to app auth when needed (for example: `GH_TOKEN="$LILAC_GITHUB_APP_TOKEN" gh ...`).
       - `read_file`, `glob`, `grep` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg` unless `dangerouslyAllow=true`).
       - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`; remote denylist can be bypassed with `dangerouslyAllow=true`).
       - `batch` (`apps/core/src/tools/batch.ts`) for concurrent tool execution.
@@ -343,6 +349,7 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
 - `TAVILY_API_KEY` and/or `EXA_API_KEY` (enable `tools search`; backend selected by `tools.web.search.provider`)
 - `EXA_API_BASE_URL` (optional Exa API endpoint override)
+- `TAVILY_API_BASE_URL` (optional Tavily API endpoint override)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 
 ---

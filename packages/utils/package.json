@@ -1,6 +1,7 @@
 {
   "name": "@stanley2058/lilac-utils",
   "private": true,
+  "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest"
   },

@@ -3,7 +3,12 @@ import { createAppAuth } from "@octokit/auth-app";
 import { env } from "@stanley2058/lilac-utils";
 
 import { deriveApiBaseUrl, readGithubAppPrivateKeyPem, readGithubAppSecret } from "./github-app";
-import { getGithubInstallationTokenOrThrow } from "./github-app-token";
+import {
+  getGithubUserLoginOrNull as getGithubUserLoginFromAuth,
+  getGithubViewerLoginOrNull as getGithubViewerLoginByTokenOrNull,
+  getPreferredGithubAuthOrNull,
+  getPreferredGithubAuthOrThrow,
+} from "./github-auth";
 
 type GithubApiCtx = {
   apiBaseUrl: string;
@@ -21,7 +26,7 @@ function headers(token: string, extra?: Record<string, string>): HeadersInit {
 }
 
 async function ctx(): Promise<GithubApiCtx> {
-  const t = await getGithubInstallationTokenOrThrow({ dataDir: env.dataDir });
+  const t = await getPreferredGithubAuthOrThrow({ dataDir: env.dataDir });
   return { apiBaseUrl: t.apiBaseUrl, token: t.token };
 }
 
@@ -305,6 +310,26 @@ export async function getPullRequest(input: {
     ...c,
     path: `/repos/${input.owner}/${input.repo}/pulls/${input.number}`,
   });
+}
+
+export async function getGithubUserLoginOrNull(): Promise<string | null> {
+  return await getGithubUserLoginFromAuth({ dataDir: env.dataDir });
+}
+
+export async function getPreferredGithubActorLoginOrNull(): Promise<string | null> {
+  const auth = await getPreferredGithubAuthOrNull({ dataDir: env.dataDir });
+  if (!auth) return null;
+
+  if (auth.source === "user") {
+    return await getGithubViewerLoginByTokenOrNull({
+      apiBaseUrl: auth.apiBaseUrl,
+      token: auth.token,
+    });
+  }
+
+  const slug = await getGithubAppSlugOrNull();
+  if (!slug) return null;
+  return `${slug}[bot]`;
 }
 
 export async function getGithubAppSlugOrNull(): Promise<string | null> {

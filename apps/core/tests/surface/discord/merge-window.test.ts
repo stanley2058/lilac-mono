@@ -29,4 +29,15 @@ describe("discord merge window", () => {
     expect(out.mergedMessageIds).toEqual(["c"]);
     expect(out.mergedText).toBe("C");
   });
+
+  it("forces a hard break when a reply-targeted message starts a block", () => {
+    const minuteMs = 60_000;
+    const groups = splitByDiscordWindowOldestToNewest([
+      { authorId: "u", ts: 0, id: "a" },
+      { authorId: "u", ts: 1 * minuteMs, id: "b", hardBreakBefore: true },
+      { authorId: "u", ts: 2 * minuteMs, id: "c" },
+    ]);
+
+    expect(groups.map((g) => g.map((m) => m.id))).toEqual([["a"], ["b", "c"]]);
+  });
 });

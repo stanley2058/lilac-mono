@@ -1579,6 +1579,10 @@ function getReferenceFromRaw(raw: unknown): {
   return {};
 }
 
+function hasReplyTargetInRaw(raw: unknown): boolean {
+  return typeof getReferenceFromRaw(raw).messageId === "string";
+}
+
 function toReplyChainMessage(
   msg: SurfaceMessage,
   opts?: {
@@ -1645,6 +1649,7 @@ async function resolveMergeBlockEndingAt(
       message: m,
       authorId: m.userId,
       ts: m.ts,
+      hardBreakBefore: hasReplyTargetInRaw(m.raw),
     })),
   );
   const groupEndingAtTrigger = groups[groups.length - 1] ?? [];
@@ -1667,20 +1672,34 @@ async function fetchReplyChainFrom(
     botName: string;
     trigger: { type: "mention" | "reply"; msgRef: MsgRef };
     startMsgRef: MsgRef;
+    /** Maximum number of merged Discord UI groups to traverse. */
     maxDepth?: number;
   },
 ): Promise<ReplyChainMessage[]> {
-  const maxDepth = opts.maxDepth ?? 20;
+  const maxGroupCount = opts.maxDepth ?? 20;
 
-  const chainNewestToOldest: ReplyChainMessage[] = [];
+  const groupsNewestToOldest: ReplyChainMessage[][] = [];
+  const seenMessageIds = new Set<string>();
 
   let cur = await adapter.readMsg(opts.startMsgRef);
   if (!cur) return [];
 
-  for (let depth = 0; depth < maxDepth && cur; depth++) {
-    chainNewestToOldest.push(toReplyChainMessage(cur));
+  for (let depth = 0; depth < maxGroupCount && cur; depth++) {
+    const cursor = cur;
 
-    const ref = getReferenceFromRaw(cur.raw);
+    if (seenMessageIds.has(cursor.ref.messageId)) break;
+
+    const group = await resolveMergeBlockEndingAt(adapter, cursor).catch(() => [cursor]);
+    if (group.length === 0) break;
+
+    for (const m of group) {
+      seenMessageIds.add(m.ref.messageId);
+    }
+
+    groupsNewestToOldest.push(group.map((m) => toReplyChainMessage(m)));
+
+    const first = group[0]!;
+    const ref = getReferenceFromRaw(first.raw);
     if (!ref.messageId) break;
 
     // Stop if the reference crosses sessions.
@@ -1693,7 +1712,7 @@ async function fetchReplyChainFrom(
     });
   }
 
-  return chainNewestToOldest.slice().reverse();
+  return dedupeByMessageId(groupsNewestToOldest.slice().reverse().flat());
 }
 
 async function fetchMentionThreadContext(
@@ -1740,20 +1759,28 @@ function mergeChainByDiscordWindow(
 ): MergedChunk[] {
   if (chainOldestToNewest.length === 0) return [];
 
-  const groups = splitByDiscordWindowOldestToNewest(chainOldestToNewest);
+  const groups = splitByDiscordWindowOldestToNewest(
+    chainOldestToNewest.map((m) => ({
+      message: m,
+      authorId: m.authorId,
+      ts: m.ts,
+      hardBreakBefore: hasReplyTargetInRaw(m.raw),
+    })),
+  );
 
   return groups.map((group) => {
-    const first = group[0]!;
-    const last = group[group.length - 1]!;
+    const messages = group.map((m) => m.message);
+    const first = messages[0]!;
+    const last = messages[messages.length - 1]!;
 
     return {
-      messageIds: group.map((m) => m.messageId),
+      messageIds: messages.map((m) => m.messageId),
       authorId: first.authorId,
       authorName: first.authorName,
       tsStart: first.ts,
       tsEnd: last.ts,
-      text: group.map((m) => m.text).join("\n\n"),
-      attachments: group.flatMap((m) => m.attachments),
+      text: messages.map((m) => m.text).join("\n\n"),
+      attachments: messages.flatMap((m) => m.attachments),
     };
   });
 }

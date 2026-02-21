@@ -157,7 +157,6 @@ type SnapshotResult = {
       other: number;
     };
     items?: Array<{
-      id: string;
       content: string;
       status: string;
       priority: string;
@@ -809,7 +808,6 @@ async function runSnapshot(params: {
       ...(params.includeTodos
         ? {
             items: remaining.map((t) => ({
-              id: t.id,
               content: t.content,
               status: t.status,
               priority: t.priority,

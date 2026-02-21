@@ -119,24 +119,3 @@ export async function getGithubInstallationTokenOrThrow(params: { dataDir: strin
     pending = null;
   }
 }
-
-export async function getGithubEnvForBash(params: { dataDir: string }): Promise<
-  | {
-      GH_TOKEN: string;
-      GITHUB_TOKEN: string;
-      GH_HOST?: string;
-    }
-  | {}
-> {
-  try {
-    const t = await getGithubInstallationTokenOrThrow({ dataDir: params.dataDir });
-    return {
-      GH_TOKEN: t.token,
-      GITHUB_TOKEN: t.token,
-      ...(t.host ? { GH_HOST: t.host } : {}),
-    };
-  } catch {
-    // If not configured or misconfigured, do not block bash.
-    return {};
-  }
-}

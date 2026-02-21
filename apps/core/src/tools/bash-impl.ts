@@ -4,7 +4,7 @@ import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
 
-import { getGithubEnvForBash } from "../github/github-app-token";
+import { getGithubEnvForBash } from "../github/github-auth";
 
 import {
   formatRemoteDisplayPath,

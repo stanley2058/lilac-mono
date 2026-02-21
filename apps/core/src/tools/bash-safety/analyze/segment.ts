@@ -43,6 +43,10 @@ const SENSITIVE_TOKEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
     re: /github-app\.private-key\.pem\b/i,
     reason: "access to GitHub App private key",
   },
+  {
+    re: /github-user-token\.json\b/i,
+    reason: "access to GitHub user token secret",
+  },
 ];
 
 export type SegmentAnalyzeOptions = AnalyzeOptions & {

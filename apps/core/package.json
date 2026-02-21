@@ -6,6 +6,7 @@
   },
   "type": "module",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build:remote-runner": "bun run build-remote-runner.ts"
   },

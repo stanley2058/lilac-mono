@@ -38,6 +38,7 @@ import {
   deleteIssueReactionById,
   editIssueComment,
   getGithubAppSlugOrNull,
+  getPreferredGithubActorLoginOrNull,
   getIssue,
   getIssueComment,
   listIssueCommentReactions,
@@ -847,8 +848,14 @@ const defaultGithubApi = {
   deleteIssueReactionById,
   deleteIssueCommentReactionById,
   getGithubAppSlugOrNull,
+  getPreferredGithubActorLoginOrNull,
 };
-export type GithubSurfaceApi = typeof defaultGithubApi;
+export type GithubSurfaceApi = Omit<
+  typeof defaultGithubApi,
+  "getPreferredGithubActorLoginOrNull"
+> & {
+  getPreferredGithubActorLoginOrNull?: typeof getPreferredGithubActorLoginOrNull;
+};
 
 export class Surface implements ServerTool {
   id = "surface";
@@ -2022,13 +2029,17 @@ export class Surface implements ServerTool {
       const thread = parseGithubSessionId(sessionId);
       const content = githubReactionContentFromInput(input.reaction);
 
-      const slug = await this.gh().getGithubAppSlugOrNull();
-      if (!slug) {
+      const resolveActorLogin = this.gh().getPreferredGithubActorLoginOrNull;
+      let actorLogin = resolveActorLogin ? await resolveActorLogin() : null;
+      if (!actorLogin) {
+        const slug = await this.gh().getGithubAppSlugOrNull();
+        actorLogin = slug ? `${slug}[bot]` : null;
+      }
+      if (!actorLogin) {
         throw new Error(
-          "Unable to resolve GitHub App slug (required to remove reactions safely). Use gh to remove the reaction instead.",
+          "Unable to resolve the outbound GitHub actor login (required to remove reactions safely). Use gh to remove the reaction instead.",
         );
       }
-      const botLogin = `${slug}[bot]`;
 
       const reactions = await this.listGithubReactions({
         thread,
@@ -2036,7 +2047,7 @@ export class Surface implements ServerTool {
         messageId,
       });
 
-      const mine = reactions.filter((r) => r.content === content && r.user?.login === botLogin);
+      const mine = reactions.filter((r) => r.content === content && r.user?.login === actorLogin);
 
       if (isGithubIssueTriggerId({ sessionId, triggerId: messageId })) {
         for (const r of mine) {
