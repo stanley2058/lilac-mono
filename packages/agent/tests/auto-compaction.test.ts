@@ -1,7 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import type { ModelMessage } from "ai";
+import type { LanguageModel, ModelMessage } from "ai";
 
-import { __autoCompactionInternals } from "../auto-compaction";
+import { ModelCapability } from "@stanley2058/lilac-utils";
+
+import { attachAutoCompaction, __autoCompactionInternals } from "../auto-compaction";
+import { AiSdkPiAgent } from "../ai-sdk-pi-agent";
+
+function createRegistryFetch(registry: unknown): typeof fetch {
+  return (async () => {
+    return new Response(JSON.stringify(registry), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
+function fakeModel(): LanguageModel {
+  return {} as LanguageModel;
+}
 
 describe("auto-compaction internals", () => {
   it("selects a split-turn boundary using token budget", () => {
@@ -123,6 +139,73 @@ describe("auto-compaction internals", () => {
     expect(smallWindow.earlyInputBudget).toBe(25_600);
     expect(smallWindow.safeInputBudget).toBe(20_000);
     expect(smallWindow.inputBudget).toBe(20_000);
+  });
+
+  it("computes fallback budget for unknown-model overflow retries", () => {
+    const firstAttempt = __autoCompactionInternals.computeUnknownOverflowCompactionBudget({
+      estimatedInputTokens: 12_000,
+      lastTurnInputTokens: 10_000,
+      overflowAttempt: 1,
+    });
+    const secondAttempt = __autoCompactionInternals.computeUnknownOverflowCompactionBudget({
+      estimatedInputTokens: 12_000,
+      lastTurnInputTokens: 10_000,
+      overflowAttempt: 2,
+    });
+
+    expect(firstAttempt.inputBudget).toBe(8_400);
+    expect(secondAttempt.inputBudget).toBe(6_599);
+    expect(secondAttempt.inputBudget).toBeLessThan(firstAttempt.inputBudget);
+    expect(firstAttempt.reservedOutputTokens).toBe(0);
+    expect(firstAttempt.safeInputBudget).toBe(firstAttempt.inputBudget);
+  });
+
+  it("clears pending threshold compaction when capability becomes unknown", () => {
+    const cleared = __autoCompactionInternals.reconcilePendingCompactionReason({
+      pendingReason: "threshold",
+      capabilityKnown: false,
+    });
+    const keepOverflow = __autoCompactionInternals.reconcilePendingCompactionReason({
+      pendingReason: "overflow",
+      capabilityKnown: false,
+    });
+    const keepKnownThreshold = __autoCompactionInternals.reconcilePendingCompactionReason({
+      pendingReason: "threshold",
+      capabilityKnown: true,
+    });
+
+    expect(cleared).toBeNull();
+    expect(keepOverflow).toBe("overflow");
+    expect(keepKnownThreshold).toBe("threshold");
+  });
+
+  it("does not fail attach when model capability cannot be resolved", async () => {
+    const unknownCapabilityEvents: Array<{ spec: string; reason: string }> = [];
+
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      modelSpecifier: "custom/private-model",
+    });
+
+    const detach = await attachAutoCompaction(agent, {
+      model: "custom/private-model",
+      modelCapability: new ModelCapability({
+        apiUrl: "https://example.invalid/models.dev/api.json",
+        fetch: createRegistryFetch({}),
+      }),
+      onUnknownCapability: ({ spec, reason }) => {
+        unknownCapabilityEvents.push({ spec, reason });
+      },
+    });
+
+    expect(unknownCapabilityEvents).toHaveLength(1);
+    expect(unknownCapabilityEvents[0]).toEqual({
+      spec: "custom/private-model",
+      reason: "capability_unresolved",
+    });
+
+    detach();
   });
 
   it("repairs orphan tool results before boundary selection", () => {

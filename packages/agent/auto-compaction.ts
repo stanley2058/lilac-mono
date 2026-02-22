@@ -764,6 +764,32 @@ type InputCompactionBudget = {
   reservedOutputTokens: number;
 };
 
+type ResolvedContextWindow =
+  | {
+      known: true;
+      spec: ModelSpecifier;
+      contextLimit: number;
+      outputLimit: number;
+    }
+  | {
+      known: false;
+      spec: ModelSpecifier;
+      reason: "capability_unresolved" | "invalid_context_limit";
+      error?: unknown;
+    };
+
+type CompactionScheduleReason = "threshold" | "overflow";
+
+function reconcilePendingCompactionReason(params: {
+  pendingReason: CompactionScheduleReason | null;
+  capabilityKnown: boolean;
+}): CompactionScheduleReason | null {
+  if (!params.capabilityKnown && params.pendingReason === "threshold") {
+    return null;
+  }
+  return params.pendingReason;
+}
+
 function computeInputCompactionBudget(params: {
   contextLimit: number;
   outputLimit: number;
@@ -792,6 +818,30 @@ function computeInputCompactionBudget(params: {
     safeInputBudget,
     earlyInputBudget,
     reservedOutputTokens,
+  };
+}
+
+function computeUnknownOverflowCompactionBudget(params: {
+  estimatedInputTokens: number;
+  lastTurnInputTokens: number | null;
+  overflowAttempt: number;
+}): InputCompactionBudget {
+  const estimated = Math.max(1, Math.floor(params.estimatedInputTokens));
+  const lastTurnTokens =
+    typeof params.lastTurnInputTokens === "number" && params.lastTurnInputTokens > 0
+      ? Math.floor(params.lastTurnInputTokens)
+      : 0;
+  const baseline = Math.max(estimated, lastTurnTokens);
+
+  const attempt = Math.max(1, Math.floor(params.overflowAttempt));
+  const reductionFactor = Math.max(0.2, 0.7 - (attempt - 1) * 0.15);
+  const inputBudget = Math.max(256, Math.floor(baseline * reductionFactor));
+
+  return {
+    inputBudget,
+    safeInputBudget: inputBudget,
+    earlyInputBudget: inputBudget,
+    reservedOutputTokens: 0,
   };
 }
 
@@ -986,13 +1036,34 @@ export type AutoCompactionOptions = {
 
   /** Enable/disable (default: true). */
   enabled?: boolean;
+
+  /** Optional hook for observability when model capability is unknown. */
+  onUnknownCapability?: (params: {
+    spec: ModelSpecifier;
+    reason: "capability_unresolved" | "invalid_context_limit";
+    error?: unknown;
+  }) => void;
+
+  /** Optional hook for observability when overflow recovery retries. */
+  onOverflowRecoveryAttempt?: (params: {
+    spec: ModelSpecifier;
+    attempt: number;
+    maxAttempts: number;
+  }) => void;
+
+  /** Optional hook for observability when overflow recovery is exhausted. */
+  onOverflowRecoveryExhausted?: (params: {
+    spec: ModelSpecifier;
+    attempts: number;
+    maxAttempts: number;
+  }) => void;
 };
 
 async function resolveContextLimit(params: {
   options: AutoCompactionOptions;
   agent: AiSdkPiAgent;
   abortSignal?: AbortSignal;
-}): Promise<{ spec: ModelSpecifier; contextLimit: number; outputLimit: number }> {
+}): Promise<ResolvedContextWindow> {
   const resolvedSpecRaw = params.options.resolveCurrentModelSpecifier
     ? await params.options.resolveCurrentModelSpecifier()
     : params.agent.state.modelSpecifier;
@@ -1006,12 +1077,14 @@ async function resolveContextLimit(params: {
         };
       }
     | undefined;
+  let modelResolveError: unknown;
   try {
     modelInfo = await params.options.modelCapability.resolve(spec, {
       signal: params.abortSignal,
     });
-  } catch {
+  } catch (error) {
     modelInfo = undefined;
+    modelResolveError = error;
   }
   const outputLimit = modelInfo?.limit.output ?? 0;
 
@@ -1023,7 +1096,15 @@ async function resolveContextLimit(params: {
       modelCapability: params.options.modelCapability,
       abortSignal: params.abortSignal,
     });
+    if (!(typeof contextLimit === "number") || contextLimit <= 0) {
+      return {
+        known: false,
+        spec,
+        reason: "invalid_context_limit",
+      };
+    }
     return {
+      known: true,
       spec,
       contextLimit,
       outputLimit,
@@ -1031,10 +1112,24 @@ async function resolveContextLimit(params: {
   }
 
   if (!modelInfo) {
-    throw new Error(`Failed to resolve model capability for ${spec}.`);
+    return {
+      known: false,
+      spec,
+      reason: "capability_unresolved",
+      error: modelResolveError,
+    };
+  }
+
+  if (!(typeof modelInfo.limit.context === "number") || modelInfo.limit.context <= 0) {
+    return {
+      known: false,
+      spec,
+      reason: "invalid_context_limit",
+    };
   }
 
   return {
+    known: true,
     spec,
     contextLimit: modelInfo.limit.context,
     outputLimit,
@@ -1060,37 +1155,52 @@ export async function attachAutoCompaction(
   const overflowRecoveryMaxAttempts =
     options.overflowRecoveryMaxAttempts ?? DEFAULT_OVERFLOW_RECOVERY_MAX_ATTEMPTS;
 
-  let shouldCompact = false;
+  let pendingCompactionReason: CompactionScheduleReason | null = null;
   let inCompaction = false;
   let queuedAutoContinue = false;
   let overflowRecoveryAttempts = 0;
   let lastTurnInputTokens: number | null = null;
 
+  const seenUnknownCapabilitySpecs = new Set<string>();
+
+  const notifyUnknownCapability = (resolved: ResolvedContextWindow) => {
+    if (resolved.known) return;
+    if (seenUnknownCapabilitySpecs.has(resolved.spec)) return;
+    seenUnknownCapabilitySpecs.add(resolved.spec);
+    options.onUnknownCapability?.({
+      spec: resolved.spec,
+      reason: resolved.reason,
+      error: resolved.error,
+    });
+  };
+
+  const scheduleCompaction = (reason: CompactionScheduleReason) => {
+    if (reason === "overflow") {
+      pendingCompactionReason = "overflow";
+      return;
+    }
+
+    if (!pendingCompactionReason) {
+      pendingCompactionReason = "threshold";
+    }
+  };
+
   const initialLimit = await resolveContextLimit({
     options,
     agent,
   });
-  let currentContextLimit = initialLimit.contextLimit;
-  let currentOutputLimit = initialLimit.outputLimit;
+  notifyUnknownCapability(initialLimit);
+  let currentCapability = initialLimit;
 
-  const refreshContextLimit = async (
-    abortSignal?: AbortSignal,
-  ): Promise<{ contextLimit: number; outputLimit: number }> => {
+  const refreshContextLimit = async (abortSignal?: AbortSignal): Promise<ResolvedContextWindow> => {
     const resolved = await resolveContextLimit({
       options,
       agent,
       abortSignal,
     });
-    if (typeof resolved.contextLimit === "number" && resolved.contextLimit > 0) {
-      currentContextLimit = resolved.contextLimit;
-    }
-    if (typeof resolved.outputLimit === "number" && resolved.outputLimit > 0) {
-      currentOutputLimit = resolved.outputLimit;
-    }
-    return {
-      contextLimit: currentContextLimit,
-      outputLimit: currentOutputLimit,
-    };
+    currentCapability = resolved;
+    notifyUnknownCapability(resolved);
+    return resolved;
   };
 
   const evaluateThresholdWithBudget = (inputTokens: number, inputBudget: number): boolean => {
@@ -1098,11 +1208,36 @@ export async function attachAutoCompaction(
     return inputTokens >= inputBudget;
   };
 
-  const resolveInputBudget = (): InputCompactionBudget => {
+  const resolveKnownInputBudget = (): InputCompactionBudget | null => {
+    if (!currentCapability.known) return null;
     return computeInputCompactionBudget({
-      contextLimit: currentContextLimit,
-      outputLimit: currentOutputLimit,
+      contextLimit: currentCapability.contextLimit,
+      outputLimit: currentCapability.outputLimit,
       thresholdFraction,
+    });
+  };
+
+  const resolveActiveCompactionBudget = (params: {
+    capability: ResolvedContextWindow;
+    reason: CompactionScheduleReason;
+    estimatedInputTokens: number;
+  }): InputCompactionBudget | null => {
+    if (params.capability.known) {
+      return computeInputCompactionBudget({
+        contextLimit: params.capability.contextLimit,
+        outputLimit: params.capability.outputLimit,
+        thresholdFraction,
+      });
+    }
+
+    if (params.reason !== "overflow") {
+      return null;
+    }
+
+    return computeUnknownOverflowCompactionBudget({
+      estimatedInputTokens: params.estimatedInputTokens,
+      lastTurnInputTokens,
+      overflowAttempt: overflowRecoveryAttempts,
     });
   };
 
@@ -1120,12 +1255,24 @@ export async function attachAutoCompaction(
     });
 
     if (!decision.recover) {
-      if (decision.terminalError) throw decision.terminalError;
+      if (decision.terminalError) {
+        options.onOverflowRecoveryExhausted?.({
+          spec: currentCapability.spec,
+          attempts: overflowRecoveryAttempts,
+          maxAttempts: overflowRecoveryMaxAttempts,
+        });
+        throw decision.terminalError;
+      }
       return "fail";
     }
 
     overflowRecoveryAttempts = decision.nextAttempts;
-    shouldCompact = true;
+    options.onOverflowRecoveryAttempt?.({
+      spec: currentCapability.spec,
+      attempt: overflowRecoveryAttempts,
+      maxAttempts: overflowRecoveryMaxAttempts,
+    });
+    scheduleCompaction("overflow");
     queuedAutoContinue = false;
     return "retry";
   };
@@ -1143,11 +1290,12 @@ export async function attachAutoCompaction(
 
     lastTurnInputTokens = inputTokens;
 
-    const budget = resolveInputBudget();
+    const budget = resolveKnownInputBudget();
+    if (!budget) return;
     if (!evaluateThresholdWithBudget(inputTokens, budget.inputBudget)) return;
 
-    const wasCompactionPending = shouldCompact;
-    shouldCompact = true;
+    const wasCompactionPending = pendingCompactionReason !== null;
+    scheduleCompaction("threshold");
 
     if (event.finishReason === "tool-calls") return;
     if (wasCompactionPending || queuedAutoContinue) return;
@@ -1164,21 +1312,28 @@ export async function attachAutoCompaction(
       ? await options.baseTransformMessages(messages, context)
       : [...messages];
 
-    const latestLimits = await refreshContextLimit(context.abortSignal);
-    const latestBudget = computeInputCompactionBudget({
-      contextLimit: latestLimits.contextLimit,
-      outputLimit: latestLimits.outputLimit,
-      thresholdFraction,
+    const latestCapability = await refreshContextLimit(context.abortSignal);
+    pendingCompactionReason = reconcilePendingCompactionReason({
+      pendingReason: pendingCompactionReason,
+      capabilityKnown: latestCapability.known,
     });
+
     if (
-      !shouldCompact &&
-      lastTurnInputTokens !== null &&
-      evaluateThresholdWithBudget(lastTurnInputTokens, latestBudget.inputBudget)
+      latestCapability.known &&
+      pendingCompactionReason === null &&
+      lastTurnInputTokens !== null
     ) {
-      shouldCompact = true;
+      const latestBudget = computeInputCompactionBudget({
+        contextLimit: latestCapability.contextLimit,
+        outputLimit: latestCapability.outputLimit,
+        thresholdFraction,
+      });
+      if (evaluateThresholdWithBudget(lastTurnInputTokens, latestBudget.inputBudget)) {
+        scheduleCompaction("threshold");
+      }
     }
 
-    if (!shouldCompact || inCompaction) return maybeTransformed;
+    if (!pendingCompactionReason || inCompaction) return maybeTransformed;
 
     const lastMessage =
       maybeTransformed.length > 0 ? maybeTransformed[maybeTransformed.length - 1] : undefined;
@@ -1190,14 +1345,23 @@ export async function attachAutoCompaction(
     const compactableMessages = repairedTranscript.messages;
     if (compactableMessages.length === 0) return maybeTransformed;
 
+    const activeBudget = resolveActiveCompactionBudget({
+      capability: latestCapability,
+      reason: pendingCompactionReason,
+      estimatedInputTokens: estimateMessagesTokens(compactableMessages),
+    });
+    if (!activeBudget) return maybeTransformed;
+
     inCompaction = true;
     try {
       queuedAutoContinue = false;
 
       const modelToUse = summaryModel === "current" ? agent.state.model : summaryModel;
-      const summaryContextLimit = Math.max(1, latestLimits.contextLimit);
+      const summaryContextLimit = latestCapability.known
+        ? Math.max(1, latestCapability.contextLimit)
+        : Math.max(2_048, Math.floor(activeBudget.inputBudget * 1.5));
       const maxCompactionPasses = DEFAULT_COMPACTION_MAX_PASSES;
-      let passKeepRecentTokens = Math.max(1, Math.min(keepRecentTokens, latestBudget.inputBudget));
+      let passKeepRecentTokens = Math.max(1, Math.min(keepRecentTokens, activeBudget.inputBudget));
       let passKeepLastMessages = Math.max(1, keepLastMessages);
       let compactedCandidate: ModelMessage[] | null = null;
 
@@ -1229,7 +1393,7 @@ export async function attachAutoCompaction(
         );
         const summaryMaxChars = Math.max(
           DEFAULT_SUMMARY_MAX_CHARS_FLOOR,
-          Math.floor(latestBudget.inputBudget * 4 * passScale),
+          Math.floor(activeBudget.inputBudget * 4 * passScale),
         );
 
         const summarizeMainHistory = async (): Promise<string> => {
@@ -1336,7 +1500,7 @@ export async function attachAutoCompaction(
         const passEstimatedTokens = estimateMessagesTokens(passCompacted);
         compactedCandidate = passCompacted;
 
-        if (passEstimatedTokens <= latestBudget.inputBudget) {
+        if (passEstimatedTokens <= activeBudget.inputBudget) {
           break;
         }
 
@@ -1347,7 +1511,7 @@ export async function attachAutoCompaction(
       if (!compactedCandidate) {
         const emergencySummaryChars = Math.max(
           DEFAULT_SUMMARY_MAX_CHARS_FLOOR,
-          latestBudget.inputBudget * 4,
+          activeBudget.inputBudget * 4,
         );
         const emergencySummary = truncateText(
           renderDeterministicFallbackSummary({
@@ -1368,12 +1532,17 @@ export async function attachAutoCompaction(
 
       const compacted = shrinkCompactedMessagesToBudget({
         messages: compactedCandidate,
-        inputBudget: latestBudget.inputBudget,
+        inputBudget: activeBudget.inputBudget,
       });
 
       agent.replaceMessages(compacted, { reason: "compaction" });
 
-      shouldCompact = estimateMessagesTokens(compacted) > latestBudget.inputBudget;
+      if (latestCapability.known) {
+        pendingCompactionReason =
+          estimateMessagesTokens(compacted) > activeBudget.inputBudget ? "threshold" : null;
+      } else {
+        pendingCompactionReason = null;
+      }
 
       const outbound = cloneMessages(compacted);
       return options.baseTransformMessages
@@ -1396,7 +1565,9 @@ export async function attachAutoCompaction(
 
 export const __autoCompactionInternals = {
   computeInputCompactionBudget,
+  computeUnknownOverflowCompactionBudget,
   computeOverflowRecoveryDecision,
+  reconcilePendingCompactionReason,
   chunkMessagesByEstimatedTokens,
   chooseSuffixStartByMessageCount,
   chooseSuffixStartByTokenBudget,

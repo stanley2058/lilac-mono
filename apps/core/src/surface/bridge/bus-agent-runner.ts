@@ -1855,6 +1855,36 @@ export async function startBusAgentRunner(params: {
         modelCapability: new ModelCapability(),
         resolveCurrentModelSpecifier: () => agent.state.modelSpecifier ?? resolved.spec,
         baseTransformMessages: toolPruneTransform,
+        onUnknownCapability: ({ spec, reason, error }) => {
+          logger.warn(
+            "auto-compaction capability unknown; disabling threshold compaction",
+            {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              modelSpec: spec,
+              reason,
+            },
+            error,
+          );
+        },
+        onOverflowRecoveryAttempt: ({ spec, attempt, maxAttempts }) => {
+          logger.info("auto-compaction overflow recovery retry", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            modelSpec: spec,
+            attempt,
+            maxAttempts,
+          });
+        },
+        onOverflowRecoveryExhausted: ({ spec, attempts, maxAttempts }) => {
+          logger.warn("auto-compaction overflow recovery exhausted", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            modelSpec: spec,
+            attempts,
+            maxAttempts,
+          });
+        },
       });
 
       state.agent = agent;
