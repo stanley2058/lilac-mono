@@ -4,6 +4,9 @@ import { analyzeBashCommand } from "../../src/tools/bash-safety";
 import { env } from "@stanley2058/lilac-utils";
 import path from "node:path";
 
+const STDIN_PROBE_COMMAND =
+  "if cat >/dev/null 2>&1; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi";
+
 describe("executeBash", () => {
   it("executes a command and returns output", async () => {
     const res = await executeBash({ command: "echo hello" });
@@ -120,6 +123,23 @@ describe("executeBash", () => {
       expect(res.executionError.phase).toBe("spawn");
       expect(res.executionError.message.length).toBeGreaterThan(0);
     }
+  });
+
+  it("defaults to strict stdin mode that fails stdin reads", async () => {
+    const res = await executeBash({ command: STDIN_PROBE_COMMAND });
+
+    expect(res.exitCode).toBe(7);
+    expect(res.executionError).toBeUndefined();
+    expect(res.stdout).toContain("stdin_read_err");
+    expect(res.stdout).not.toContain("stdin_read_ok");
+  });
+
+  it("supports stdinMode=eof as a compatibility fallback", async () => {
+    const res = await executeBash({ command: STDIN_PROBE_COMMAND, stdinMode: "eof" });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.executionError).toBeUndefined();
+    expect(res.stdout).toContain("stdin_read_ok");
   });
 
   it("truncates very large output and appends a tool error hint", async () => {
