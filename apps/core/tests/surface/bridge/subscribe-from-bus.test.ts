@@ -1432,6 +1432,65 @@ describe("bridgeBusToAdapter", () => {
     await bridgeB.stop();
   });
 
+  it("keeps pre-restart visible text when resumed finalText is continuation-only", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_resume_suffix_only";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [
+          {
+            platform: "discord",
+            channelId: "chan",
+            messageId: "m_out_1",
+          },
+        ],
+        visibleText: "a",
+        totalTextChars: 1,
+        toolStatus: [],
+        outCursor: "10-0",
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    // Resume run may only emit the continuation suffix.
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts[0]).toEqual({ type: "text.set", text: "a" });
+    expect(adapter.stream?.parts.some((p) => p.type === "text.delta" && p.delta === "b")).toBe(
+      true,
+    );
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
+
+    await bridge.stop();
+  });
+
   it("uses resume metadata only for first restored startOutput", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

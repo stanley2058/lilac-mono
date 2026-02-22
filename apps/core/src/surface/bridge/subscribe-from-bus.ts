@@ -206,6 +206,23 @@ function toMsgRefFromSurfaceMsgRef(raw: unknown): MsgRef | null {
   };
 }
 
+function mergeContinuationText(existing: string, continuation: string): string {
+  if (existing.length === 0) return continuation;
+  if (continuation.length === 0) return existing;
+  if (continuation.startsWith(existing)) return continuation;
+
+  const maxOverlap = Math.min(existing.length, continuation.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    const existingSuffix = existing.slice(existing.length - overlap);
+    const continuationPrefix = continuation.slice(0, overlap);
+    if (existingSuffix === continuationPrefix) {
+      return `${existing}${continuation.slice(overlap)}`;
+    }
+  }
+
+  return `${existing}${continuation}`;
+}
+
 export async function bridgeBusToAdapter(params: {
   adapter: SurfaceAdapter;
   bus: LilacBus;
@@ -882,12 +899,20 @@ export async function bridgeBusToAdapter(params: {
               const statsLineRaw = outMsg.data.statsForNerdsLine;
               const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
 
+              const previousVisibleText = visibleTextAcc;
               const finalText = outMsg.data.finalText;
               const clampedStreamPrefixChars = Math.max(
                 0,
                 Math.min(streamTextPrefixChars, finalText.length),
               );
-              const streamFinalText = finalText.slice(clampedStreamPrefixChars);
+              let streamFinalText = finalText.slice(clampedStreamPrefixChars);
+
+              // On recovery resumes, the agent may emit only the continuation suffix
+              // (instead of the full final text). In that case, preserve already visible
+              // stream text and append the new suffix with overlap-aware merge.
+              if (finalText.length < totalTextChars) {
+                streamFinalText = mergeContinuationText(previousVisibleText, streamFinalText);
+              }
 
               if (streamFinalText.length === 0 && !streamHasVisibleOutput) {
                 await out.abort("skip").catch(() => undefined);
