@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   appendAdditionalSessionMemoBlock,
   resolveSessionAdditionalPrompts,
+  withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
 
@@ -126,5 +127,57 @@ describe("appendAdditionalSessionMemoBlock", () => {
   it("omits the block when combined memo is empty", () => {
     const out = appendAdditionalSessionMemoBlock("Base prompt", ["  ", "\n\n"]);
     expect(out).toBe("Base prompt");
+  });
+});
+
+describe("withBlankLineBetweenTextParts", () => {
+  it("adds a blank line when text part id changes", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Part one.",
+      delta: "Part two.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("\n\nPart two.");
+  });
+
+  it("extends an existing trailing newline to a blank line", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Part one.\n",
+      delta: "Part two.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("\nPart two.");
+  });
+
+  it("does not duplicate existing blank-line separation", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Part one.\n\n",
+      delta: "Part two.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("Part two.");
+  });
+
+  it("keeps provider whitespace when delta already starts with whitespace", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Part one.",
+      delta: "\nPart two.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("\nPart two.");
+  });
+
+  it("does not change deltas when part did not change", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Part one.",
+      delta: "Part two.",
+      partChanged: false,
+    });
+
+    expect(out).toBe("Part two.");
   });
 });
