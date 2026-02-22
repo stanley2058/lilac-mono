@@ -172,6 +172,9 @@ export type ComposeRecentChannelMessagesOpts = {
   /** Optional trigger message to force-include (mention/reply). */
   triggerMsgRef?: MsgRef;
   triggerType?: "mention" | "reply";
+  /** Optional transform applied to one selected user message id. */
+  transformUserTextForMessageId?: string;
+  transformUserText?: (text: string) => string;
 };
 
 export type ComposeSingleMessageOpts = {
@@ -194,6 +197,9 @@ export type ComposeRequestOpts = {
     msgRef: MsgRef;
   };
   maxDepth?: number;
+  /** Optional transform applied to one selected user message id. */
+  transformUserTextForMessageId?: string;
+  transformUserText?: (text: string) => string;
 };
 
 async function safeListReactions(adapter: SurfaceAdapter, msgRef: MsgRef): Promise<string[]> {
@@ -249,13 +255,25 @@ export async function composeRequestMessages(
     return !isDiscordSessionDividerText(m.text);
   });
 
+  const transformedChain = filteredChain.map((m) => {
+    if (m.authorId === opts.botUserId) return m;
+    if (!opts.transformUserText) return m;
+    const targetMessageId = opts.transformUserTextForMessageId ?? opts.trigger.msgRef.messageId;
+    if (m.messageId !== targetMessageId) return m;
+
+    return {
+      ...m,
+      text: opts.transformUserText(m.text),
+    };
+  });
+
   // IMPORTANT: session divider cutoff intentionally does NOT apply to explicit reply/mention
   // chains. If the user replies to (or mentions within) an assistant message after a divider,
   // they are explicitly re-opening that thread; we keep the full linked chain.
   // Divider markers are still always excluded from model context.
 
   // Step 2: merge by Discord window rules (same author + <= 7 min).
-  const merged = mergeChainByDiscordWindow(filteredChain);
+  const merged = mergeChainByDiscordWindow(transformedChain);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.
   const attState = createDiscordAttachmentState();
@@ -329,7 +347,7 @@ export async function composeRequestMessages(
 
   return {
     messages: modelMessages,
-    chainMessageIds: filteredChain.map((m) => m.messageId),
+    chainMessageIds: transformedChain.map((m) => m.messageId),
     mergedGroups: merged.map((m) => ({
       authorId: m.authorId,
       messageIds: [...m.messageIds],
@@ -394,7 +412,19 @@ export async function composeRecentChannelMessages(
           (m) => !isDiscordSessionDividerText(m.text),
         );
 
-        const merged = mergeChainByDiscordWindow(anchoredNoDivider);
+        const transformedAnchored = anchoredNoDivider.map((m) => {
+          if (m.authorId === opts.botUserId) return m;
+          if (!opts.transformUserText) return m;
+          const targetMessageId = opts.transformUserTextForMessageId ?? triggerMsg.ref.messageId;
+          if (m.messageId !== targetMessageId) return m;
+
+          return {
+            ...m,
+            text: opts.transformUserText(m.text),
+          };
+        });
+
+        const merged = mergeChainByDiscordWindow(transformedAnchored);
         const attState = createDiscordAttachmentState();
 
         const modelMessages: ModelMessage[] = [];
@@ -460,7 +490,7 @@ export async function composeRecentChannelMessages(
 
         return {
           messages: modelMessages,
-          chainMessageIds: anchoredNoDivider.map((m) => m.messageId),
+          chainMessageIds: transformedAnchored.map((m) => m.messageId),
           mergedGroups: merged.map((m) => ({
             authorId: m.authorId,
             messageIds: [...m.messageIds],
@@ -595,15 +625,25 @@ export async function composeRecentChannelMessages(
     (m) => !isDiscordSessionDividerSurfaceMessageAnyAuthor(m),
   );
 
-  const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => ({
-    messageId: m.ref.messageId,
-    authorId: m.userId,
-    authorName: m.userName ?? `user_${m.userId}`,
-    ts: m.ts,
-    text: m.text,
-    attachments: extractDiscordAttachmentsFromRaw(m.raw),
-    raw: m.raw,
-  }));
+  const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => {
+    const text =
+      opts.transformUserText &&
+      opts.triggerMsgRef &&
+      m.userId !== opts.botUserId &&
+      m.ref.messageId === (opts.transformUserTextForMessageId ?? opts.triggerMsgRef.messageId)
+        ? opts.transformUserText(m.text)
+        : m.text;
+
+    return {
+      messageId: m.ref.messageId,
+      authorId: m.userId,
+      authorName: m.userName ?? `user_${m.userId}`,
+      ts: m.ts,
+      text,
+      attachments: extractDiscordAttachmentsFromRaw(m.raw),
+      raw: m.raw,
+    };
+  });
 
   const merged = mergeChainByDiscordWindow(chain);
 

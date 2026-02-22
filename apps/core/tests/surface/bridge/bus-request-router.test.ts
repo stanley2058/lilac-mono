@@ -2756,4 +2756,694 @@ describe("startBusRequestRouter", () => {
     await sub.stop();
     await router.stop();
   });
+
+  it("propagates session model override from adapter raw", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const msgId = "m1";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          sessionModelOverride: "sonnet",
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.modelOverride).toBe("sonnet");
+    expect(received[0].data.raw?.modelOverride).toBe("sonnet");
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("prefers one-shot !m override over session override", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const msgId = "m1";
+    const oneShot = "openrouter/anthropic/claude-sonnet-4.6";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: `<@bot> !m:${oneShot} hi`,
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: `<@bot> !m:${oneShot} hi`,
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          sessionModelOverride: "sonnet",
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.modelOverride).toBe(oneShot);
+    const lastUser = [...received[0].data.messages]
+      .reverse()
+      .find((m: ModelMessage) => m.role === "user");
+    expect(typeof lastUser?.content === "string" ? lastUser.content.includes("!m:") : false).toBe(
+      false,
+    );
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("uses session model override from core config", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const msgId = "m1";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [sessionId]: {
+                model: "sonnet",
+              },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.modelOverride).toBe("sonnet");
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("inherits parent model override from core config for threads", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent";
+    const threadId = "thread";
+    const msgId = "m1";
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId, parentChannelId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: {
+                model: "sonnet",
+              },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.modelOverride).toBe("sonnet");
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("applies model precedence: prompt > in-memory > session config > global", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const configuredSessionId = "chan-config";
+    const globalSessionId = "chan-global";
+
+    const promptMsgId = "m-prompt";
+    const memoryMsgId = "m-memory";
+    const configMsgId = "m-config";
+    const globalMsgId = "m-global";
+
+    const adapter = new FakeAdapter({
+      [`${configuredSessionId}:${promptMsgId}`]: {
+        ref: { platform: "discord", channelId: configuredSessionId, messageId: promptMsgId },
+        session: { platform: "discord", channelId: configuredSessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> !m:one-shot hi",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+      [`${configuredSessionId}:${memoryMsgId}`]: {
+        ref: { platform: "discord", channelId: configuredSessionId, messageId: memoryMsgId },
+        session: { platform: "discord", channelId: configuredSessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi from memory",
+        ts: Date.now() + 1,
+        raw: { reference: {} },
+      },
+      [`${configuredSessionId}:${configMsgId}`]: {
+        ref: { platform: "discord", channelId: configuredSessionId, messageId: configMsgId },
+        session: { platform: "discord", channelId: configuredSessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi from config",
+        ts: Date.now() + 2,
+        raw: { reference: {} },
+      },
+      [`${globalSessionId}:${globalMsgId}`]: {
+        ref: { platform: "discord", channelId: globalSessionId, messageId: globalMsgId },
+        session: { platform: "discord", channelId: globalSessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi from global",
+        ts: Date.now() + 3,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [configuredSessionId]: {
+                model: "from-config",
+              },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: configuredSessionId,
+      messageId: promptMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> !m:one-shot hi",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          sessionModelOverride: "from-memory",
+        },
+      },
+    });
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: configuredSessionId,
+      messageId: memoryMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi from memory",
+      ts: Date.now() + 1,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          sessionModelOverride: "from-memory",
+        },
+      },
+    });
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: configuredSessionId,
+      messageId: configMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi from config",
+      ts: Date.now() + 2,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+        },
+      },
+    });
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: globalSessionId,
+      messageId: globalMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi from global",
+      ts: Date.now() + 3,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(4);
+    expect(received[0].data.modelOverride).toBe("one-shot");
+    expect(received[1].data.modelOverride).toBe("from-memory");
+    expect(received[2].data.modelOverride).toBe("from-config");
+    expect(received[3].data.modelOverride).toBeUndefined();
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("strips !m directive from earlier message in active debounce batch", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const firstMsgId = "m1";
+    const secondMsgId = "m2";
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${firstMsgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: firstMsgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "!m:sonnet write a short haiku",
+        ts: Date.now(),
+        raw: { reference: {} },
+      },
+      [`${sessionId}:${secondMsgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: secondMsgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "about shipping code",
+        ts: Date.now() + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: false, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: firstMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "!m:sonnet write a short haiku",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+        },
+      },
+    });
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: secondMsgId,
+      userId: "u1",
+      userName: "user1",
+      text: "about shipping code",
+      ts: Date.now() + 1,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.modelOverride).toBe("sonnet");
+
+    const userContents = (received[0].data.messages as ModelMessage[])
+      .filter((m) => m.role === "user" && typeof m.content === "string")
+      .map((m) => m.content as string);
+    expect(userContents.some((text) => text.includes("!m:"))).toBe(false);
+
+    await sub.stop();
+    await router.stop();
+  });
 });

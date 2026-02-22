@@ -21,6 +21,9 @@ surface:
     #     # mode: active
     #     # Optional: override the global activeGate.enabled for this channel.
     #     # gate: false
+    #     # Optional: override the request model for this session.
+    #     # Accepts an alias from models.def or provider/model.
+    #     # model: "sonnet"
     #     # Optional: additional session memo entries appended to system prompt.
     #     # Entries can be literal text or file:// URLs.
     #     # additionalPrompts:

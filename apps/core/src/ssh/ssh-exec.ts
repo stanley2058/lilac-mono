@@ -1,6 +1,9 @@
 import { requireConfiguredSshHost } from "./ssh-config";
 
 const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
+const DEFAULT_SSH_STDIN_MODE: SshBashStdinMode = "error";
+
+export type SshBashStdinMode = "error" | "eof";
 
 export type SshExecOptions = {
   timeoutMs: number;
@@ -110,8 +113,13 @@ function inferTransportError(
   return undefined;
 }
 
-function buildRemoteScript(params: { cmd: string; cwd?: string }) {
+function buildRemoteScript(params: { cmd: string; cwd?: string; stdinMode?: SshBashStdinMode }) {
+  const stdinMode = params.stdinMode ?? DEFAULT_SSH_STDIN_MODE;
   const cwd = params.cwd ?? "";
+  const runCommandSnippet =
+    stdinMode === "error"
+      ? 'bash --noprofile --norc -c \'exec 0>/dev/null; exec bash --noprofile --norc -c "$1"\' _ "$CMD"'
+      : 'bash --noprofile --norc -c "$CMD"';
   return `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -135,7 +143,7 @@ if [ -n "$CWD" ]; then
 fi
 
 # Run under a clean bash to avoid remote environment surprises (rc/profile).
-bash --noprofile --norc -c "$CMD"
+${runCommandSnippet}
 
 exit 0
 `;
@@ -156,6 +164,7 @@ export async function sshExecBash(params: {
   host: string;
   cmd: string;
   cwd?: string;
+  stdinMode?: SshBashStdinMode;
   timeoutMs: number;
   signal?: AbortSignal;
   maxOutputChars: number;
@@ -249,7 +258,11 @@ export async function sshExecBash(params: {
       "-s",
     ];
 
-    const script = buildRemoteScript({ cmd: params.cmd, cwd: params.cwd });
+    const script = buildRemoteScript({
+      cmd: params.cmd,
+      cwd: params.cwd,
+      stdinMode: params.stdinMode,
+    });
 
     child = Bun.spawn(["ssh", ...sshArgs], {
       stdout: "pipe",

@@ -808,6 +808,7 @@ type Enqueued = {
   requestClient: AdapterPlatform;
   queue: RequestQueueMode;
   messages: ModelMessage[];
+  modelOverride?: string;
   raw?: unknown;
   recovery?: {
     checkpointMessages: ModelMessage[];
@@ -822,6 +823,7 @@ export type AgentRunnerRecoveryEntry = {
   requestClient: AdapterPlatform;
   queue: RequestQueueMode;
   messages: ModelMessage[];
+  modelOverride?: string;
   raw?: unknown;
   recovery?: {
     checkpointMessages: ModelMessage[];
@@ -846,6 +848,14 @@ function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | nul
 function parseSessionConfigIdFromRaw(raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const value = (raw as Record<string, unknown>)["sessionConfigId"];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseRequestModelOverrideFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["modelOverride"];
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -1142,6 +1152,7 @@ type SessionQueue = {
     sessionId: string;
     requestClient: AdapterPlatform;
     queue: RequestQueueMode;
+    modelOverride?: string;
     raw?: unknown;
     partialText: string;
   } | null;
@@ -1243,6 +1254,7 @@ export async function startBusAgentRunner(params: {
         sessionId,
         requestClient,
         queue: msg.data.queue,
+        modelOverride: msg.data.modelOverride,
         messageCount: msg.data.messages.length,
       });
 
@@ -1256,6 +1268,7 @@ export async function startBusAgentRunner(params: {
         requestClient,
         queue: msg.data.queue,
         messages: msg.data.messages,
+        modelOverride: msg.data.modelOverride,
         raw: msg.data.raw,
       };
 
@@ -1459,6 +1472,7 @@ export async function startBusAgentRunner(params: {
       requestClient: state.activeRun.requestClient,
       queue: "prompt",
       messages: [],
+      ...(state.activeRun.modelOverride ? { modelOverride: state.activeRun.modelOverride } : {}),
       raw: state.activeRun.raw,
       recovery: {
         checkpointMessages,
@@ -1521,6 +1535,7 @@ export async function startBusAgentRunner(params: {
           requestClient: queued.requestClient,
           queue: queued.queue,
           messages: queued.messages,
+          ...(queued.modelOverride ? { modelOverride: queued.modelOverride } : {}),
           raw: queued.raw,
         });
       }
@@ -1551,6 +1566,7 @@ export async function startBusAgentRunner(params: {
         requestClient: entry.requestClient,
         queue: entry.queue,
         messages: entry.messages,
+        modelOverride: entry.modelOverride,
         raw: entry.raw,
         recovery: entry.recovery,
       });
@@ -1576,6 +1592,7 @@ export async function startBusAgentRunner(params: {
       sessionId: next.sessionId,
       requestClient: next.requestClient,
       queue: next.queue,
+      modelOverride: next.modelOverride,
       raw: next.raw,
       partialText: next.recovery?.partialText ?? "",
     };
@@ -1643,16 +1660,29 @@ export async function startBusAgentRunner(params: {
       const subagentProfileConfig =
         runProfile === "primary" ? null : subagents.profiles[runProfile];
 
-      const resolved = subagentProfileConfig?.model
+      const requestModelOverride =
+        runProfile === "primary"
+          ? (next.modelOverride ?? parseRequestModelOverrideFromRaw(next.raw) ?? undefined)
+          : undefined;
+
+      const resolved = requestModelOverride
         ? resolveModelRef(
             cfg,
             {
-              model: subagentProfileConfig.model,
-              options: subagentProfileConfig.options,
+              model: requestModelOverride,
             },
-            `agent.subagents.profiles.${runProfile}.model`,
+            "cmd.request.message.modelOverride",
           )
-        : resolveModelSlot(cfg, subagentProfileConfig?.modelSlot ?? "main");
+        : subagentProfileConfig?.model
+          ? resolveModelRef(
+              cfg,
+              {
+                model: subagentProfileConfig.model,
+                options: subagentProfileConfig.options,
+              },
+              `agent.subagents.profiles.${runProfile}.model`,
+            )
+          : resolveModelSlot(cfg, subagentProfileConfig?.modelSlot ?? "main");
       resolvedModelLabel = resolved.modelId;
       const editingToolMode = resolveEditingToolMode({
         provider: resolved.provider,
@@ -1741,6 +1771,7 @@ export async function startBusAgentRunner(params: {
         runProfile,
         subagentDepth: subagentMeta.depth,
         sessionConfigId,
+        requestModelOverride,
         model: resolved.spec,
         editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
         isRecoveryResume: Boolean(next.recovery),

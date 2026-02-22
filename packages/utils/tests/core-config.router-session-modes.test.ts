@@ -43,4 +43,20 @@ describe("coreConfigSchema surface.router.sessionModes", () => {
       "file:///tmp/session-memo.md",
     ]);
   });
+
+  it("accepts model session overrides", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        router: {
+          sessionModes: {
+            chan: {
+              model: "sonnet",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.surface.router.sessionModes.chan?.model).toBe("sonnet");
+  });
 });

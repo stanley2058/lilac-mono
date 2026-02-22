@@ -15,6 +15,7 @@ import { sshExecBash } from "../ssh/ssh-exec";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
+const DEFAULT_BASH_STDIN_MODE: BashStdinMode = "error";
 
 // Keep tool output bounded so we don't blow up agent context.
 const MAX_BASH_OUTPUT_CHARS = 200_000;
@@ -34,9 +35,17 @@ export type BashToolInput = {
   command: string;
   cwd?: string;
   timeoutMs?: number;
+  /**
+   * stdin behavior for child commands.
+   * - "error" (default): stdin reads fail immediately (EBADF).
+   * - "eof": stdin is /dev/null (reads return EOF).
+   */
+  stdinMode?: BashStdinMode;
   /** Bypass bash safety guardrails for this call. */
   dangerouslyAllow?: boolean;
 };
+
+export type BashStdinMode = "error" | "eof";
 
 export type BashExecutionError =
   | {
@@ -232,8 +241,16 @@ function buildBashChildEnv(params: {
   return childEnv;
 }
 
+function buildLocalSpawnArgs(command: string, stdinMode: BashStdinMode): string[] {
+  if (stdinMode === "eof") {
+    return ["bash", "-c", command];
+  }
+
+  return ["bash", "-c", `exec 0>/dev/null; ${command}`];
+}
+
 export async function executeBash(
-  { command, cwd, timeoutMs, dangerouslyAllow }: BashToolInput,
+  { command, cwd, timeoutMs, stdinMode, dangerouslyAllow }: BashToolInput,
   {
     context,
     abortSignal,
@@ -259,6 +276,7 @@ export async function executeBash(
     cwdTarget.kind === "ssh" ? { sshHost: cwdTarget.host, remoteCwd: cwdTarget.cwd } : {};
 
   const redactedCommand = redactSecrets(command);
+  const effectiveStdinMode = stdinMode ?? DEFAULT_BASH_STDIN_MODE;
   const startedAt = Date.now();
 
   logger.info("bash exec", {
@@ -267,6 +285,7 @@ export async function executeBash(
     target: cwdTarget.kind,
     ...remoteLogMeta,
     timeoutMs: timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
+    stdinMode: effectiveStdinMode,
     dangerouslyAllow: dangerouslyAllow === true,
     requestId: context?.requestId,
     sessionId: context?.sessionId,
@@ -383,6 +402,7 @@ export async function executeBash(
             cmd: command,
             cwd: cwdTarget.cwd,
             timeoutMs: effectiveTimeoutMs,
+            stdinMode: effectiveStdinMode,
             signal: controller.signal,
             maxOutputChars: MAX_BASH_OUTPUT_CHARS,
           })
@@ -552,7 +572,7 @@ export async function executeBash(
     // Intentionally avoid a login shell here.
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
-    child = Bun.spawn(["bash", "-c", command], {
+    child = Bun.spawn(buildLocalSpawnArgs(command, effectiveStdinMode), {
       cwd: resolvedCwd,
       stdout: "pipe",
       stderr: "pipe",

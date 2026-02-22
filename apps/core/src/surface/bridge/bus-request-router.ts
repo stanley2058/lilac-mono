@@ -95,6 +95,33 @@ function stripLeadingBotMentionPrefix(
 }
 
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
+const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!m:([^\s]+)(?:\s+|$)/iu;
+
+function parseLeadingModelOverride(input: { text: string; botName: string }): string | undefined {
+  const stripped = stripLeadingBotMentionPrefix(input.text, input.botName);
+  const target = stripped.hadLeadingMention ? stripped.text : input.text;
+  const m = target.match(LEADING_MODEL_OVERRIDE_RE);
+  if (!m) return undefined;
+
+  const model = String(m[1] ?? "").trim();
+  return model.length > 0 ? model : undefined;
+}
+
+function stripLeadingModelOverrideDirective(input: { text: string; botName: string }): string {
+  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botName);
+  if (!strippedMention.hadLeadingMention) {
+    return input.text.replace(LEADING_MODEL_OVERRIDE_RE, "").replace(/^\s+/u, "");
+  }
+
+  if (!LEADING_MODEL_OVERRIDE_RE.test(strippedMention.text)) {
+    return input.text;
+  }
+
+  const remainder = strippedMention.text
+    .replace(LEADING_MODEL_OVERRIDE_RE, "")
+    .replace(/^\s+/u, "");
+  return `${strippedMention.mentionPrefix}${remainder}`;
+}
 
 function parseSteerDirectiveMode(input: { text: string; botName: string }): "steer" | "interrupt" {
   const stripped = stripLeadingBotMentionPrefix(input.text, input.botName);
@@ -191,6 +218,27 @@ function resolveSessionGateEnabled(
   return cfg.surface.router.activeGate.enabled;
 }
 
+function resolveSessionModelOverride(
+  cfg: CoreConfig,
+  sessionId: string,
+  parentChannelId?: string,
+): string | undefined {
+  const threadModel = cfg.surface.router.sessionModes[sessionId]?.model;
+  if (typeof threadModel === "string" && threadModel.trim().length > 0) {
+    return threadModel.trim();
+  }
+
+  const parentId = parentChannelId?.trim();
+  if (!parentId) return undefined;
+
+  const parentModel = cfg.surface.router.sessionModes[parentId]?.model;
+  if (typeof parentModel === "string" && parentModel.trim().length > 0) {
+    return parentModel.trim();
+  }
+
+  return undefined;
+}
+
 function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
   const out = new Map<string, string>();
   const users = cfg.entity?.users ?? {};
@@ -210,6 +258,7 @@ function getDiscordFlags(raw: unknown): {
   replyToBot?: boolean;
   replyToMessageId?: string;
   parentChannelId?: string;
+  sessionModelOverride?: string;
 } {
   if (!raw || typeof raw !== "object") return {};
   const discord = (raw as { discord?: unknown }).discord;
@@ -223,6 +272,8 @@ function getDiscordFlags(raw: unknown): {
     replyToBot: typeof o.replyToBot === "boolean" ? o.replyToBot : undefined,
     replyToMessageId: typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
     parentChannelId: typeof o.parentChannelId === "string" ? o.parentChannelId : undefined,
+    sessionModelOverride:
+      typeof o.sessionModelOverride === "string" ? o.sessionModelOverride : undefined,
   };
 }
 
@@ -239,6 +290,8 @@ type BufferedMessage = {
   ts: number;
   mentionsBot: boolean;
   replyToBot: boolean;
+  sessionModelOverride?: string;
+  requestModelOverride?: string;
 };
 
 type RouterGateContextMode = "active-batch" | "direct-reply-mention-disambiguation";
@@ -560,6 +613,17 @@ export async function startBusRequestRouter(params: {
       const flags = getDiscordFlags(msg.data.raw);
       const isDm = flags.isDMBased === true;
       const parentChannelId = flags.parentChannelId;
+      const requestModelOverride = parseLeadingModelOverride({
+        text: msg.data.text,
+        botName: cfg.surface.discord.botName,
+      });
+      const configuredSessionModelOverride = resolveSessionModelOverride(
+        cfg,
+        sessionId,
+        parentChannelId,
+      );
+      const modelOverride =
+        requestModelOverride ?? flags.sessionModelOverride ?? configuredSessionModelOverride;
       const sessionConfigId = isDm
         ? sessionId
         : resolveSessionConfigId({
@@ -583,6 +647,8 @@ export async function startBusRequestRouter(params: {
         replyToBot: flags.replyToBot === true,
         activeRequestId: active?.requestId,
         sessionConfigId,
+        modelOverride,
+        requestModelOverride,
         textPreview:
           typeof msg.data.text === "string" && msg.data.text.trim().length > 0
             ? previewText(msg.data.text)
@@ -666,6 +732,8 @@ export async function startBusRequestRouter(params: {
             active,
             sessionMode: mode,
             sessionConfigId,
+            modelOverride,
+            requestModelOverride,
           });
         } else {
           await handleActiveChannelMode({
@@ -685,6 +753,8 @@ export async function startBusRequestRouter(params: {
             active,
             sessionMode: mode,
             sessionConfigId,
+            modelOverride,
+            requestModelOverride,
           });
         }
 
@@ -707,6 +777,8 @@ export async function startBusRequestRouter(params: {
         active,
         sessionMode: mode,
         sessionConfigId,
+        modelOverride,
+        requestModelOverride,
       });
 
       await ctx.commit();
@@ -737,6 +809,8 @@ export async function startBusRequestRouter(params: {
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
     sessionConfigId: string;
+    modelOverride?: string;
+    requestModelOverride?: string;
   }) {
     const {
       adapter,
@@ -751,6 +825,8 @@ export async function startBusRequestRouter(params: {
       active,
       sessionMode,
       sessionConfigId,
+      modelOverride,
+      requestModelOverride,
     } = input;
 
     if (active) {
@@ -792,8 +868,13 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             sessionConfigId,
-            transformUserText:
-              steerMode === "interrupt"
+            transformUserText: requestModelOverride
+              ? (text) =>
+                  stripLeadingModelOverrideDirective({
+                    text,
+                    botName: cfg.surface.discord.botName,
+                  })
+              : steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
@@ -814,6 +895,13 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
+          transformUserText: requestModelOverride
+            ? (text) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : undefined,
         });
         return;
       }
@@ -831,6 +919,15 @@ export async function startBusRequestRouter(params: {
           triggerType: "reply",
           sessionMode,
           sessionConfigId,
+          modelOverride,
+          transformTriggerUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : undefined,
+          transformUserTextForMessageId: msgRef.messageId,
           markActive: false,
         });
         return;
@@ -869,6 +966,15 @@ export async function startBusRequestRouter(params: {
       triggerType,
       sessionMode,
       sessionConfigId,
+      modelOverride,
+      transformTriggerUserText: requestModelOverride
+        ? (text) =>
+            stripLeadingModelOverrideDirective({
+              text,
+              botName: cfg.surface.discord.botName,
+            })
+        : undefined,
+      transformUserTextForMessageId: msgRef.messageId,
       markActive: true,
     });
   }
@@ -890,6 +996,8 @@ export async function startBusRequestRouter(params: {
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
     sessionConfigId: string;
+    modelOverride?: string;
+    requestModelOverride?: string;
   }) {
     const {
       adapter,
@@ -907,6 +1015,8 @@ export async function startBusRequestRouter(params: {
       active,
       sessionMode,
       sessionConfigId,
+      modelOverride,
+      requestModelOverride,
     } = input;
 
     if (active) {
@@ -949,8 +1059,13 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             sessionConfigId,
-            transformUserText:
-              steerMode === "interrupt"
+            transformUserText: requestModelOverride
+              ? (text: string) =>
+                  stripLeadingModelOverrideDirective({
+                    text,
+                    botName: cfg.surface.discord.botName,
+                  })
+              : steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
@@ -971,6 +1086,13 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
+          transformUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : undefined,
         });
         return;
       }
@@ -1002,8 +1124,13 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
-          transformUserText:
-            steerMode === "interrupt"
+          transformUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
@@ -1027,6 +1154,15 @@ export async function startBusRequestRouter(params: {
           triggerType: "reply",
           sessionMode,
           sessionConfigId,
+          transformTriggerUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : undefined,
+          transformUserTextForMessageId: msgRef.messageId,
+          modelOverride,
           markActive: false,
         });
         return;
@@ -1042,6 +1178,13 @@ export async function startBusRequestRouter(params: {
         msgRef,
         sessionMode,
         sessionConfigId,
+        transformUserText: requestModelOverride
+          ? (text: string) =>
+              stripLeadingModelOverrideDirective({
+                text,
+                botName: cfg.surface.discord.botName,
+              })
+          : undefined,
       });
       return;
     }
@@ -1066,6 +1209,15 @@ export async function startBusRequestRouter(params: {
         triggerType,
         sessionMode,
         sessionConfigId,
+        modelOverride,
+        transformTriggerUserText: requestModelOverride
+          ? (text: string) =>
+              stripLeadingModelOverrideDirective({
+                text,
+                botName: cfg.surface.discord.botName,
+              })
+          : undefined,
+        transformUserTextForMessageId: msgRef.messageId,
         markActive: true,
       });
       return;
@@ -1084,6 +1236,8 @@ export async function startBusRequestRouter(params: {
         ts: messageTs,
         mentionsBot,
         replyToBot,
+        sessionModelOverride: modelOverride,
+        requestModelOverride,
       },
     });
   }
@@ -1171,6 +1325,25 @@ export async function startBusRequestRouter(params: {
       "router gate forwarded batch",
     );
 
+    const overrideCarrier = (() => {
+      for (let i = b.messages.length - 1; i >= 0; i--) {
+        const requestOverride = b.messages[i]?.requestModelOverride;
+        if (requestOverride) {
+          const messageId = b.messages[i]?.msgRef.messageId;
+          if (messageId) {
+            return {
+              model: requestOverride,
+              messageId,
+            };
+          }
+          return { model: requestOverride, messageId: undefined };
+        }
+      }
+      return undefined;
+    })();
+    const modelOverride =
+      overrideCarrier?.model ?? b.messages[b.messages.length - 1]?.sessionModelOverride;
+
     // Gate-forwarded prompt: do NOT reply-to a message.
     // Use newest message as the context anchor.
     await publishActiveChannelPrompt({
@@ -1184,6 +1357,15 @@ export async function startBusRequestRouter(params: {
       triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,
       sessionMode: "active",
+      modelOverride,
+      transformTriggerUserText: overrideCarrier
+        ? (text: string) =>
+            stripLeadingModelOverrideDirective({
+              text,
+              botName: cfg.surface.discord.botName,
+            })
+        : undefined,
+      transformUserTextForMessageId: overrideCarrier?.messageId,
       markActive: true,
     });
   }
@@ -1317,6 +1499,8 @@ export async function startBusRequestRouter(params: {
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
     sessionConfigId: string;
+    modelOverride?: string;
+    requestModelOverride?: string;
   }) {
     const {
       adapter,
@@ -1330,6 +1514,7 @@ export async function startBusRequestRouter(params: {
       mentionsBot,
       replyToBot,
       active,
+      requestModelOverride,
     } = input;
 
     const triggerType = replyToBot ? "reply" : mentionsBot ? "mention" : null;
@@ -1375,8 +1560,13 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode: input.sessionMode,
           sessionConfigId: input.sessionConfigId,
-          transformUserText:
-            steerMode === "interrupt"
+          transformUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
@@ -1395,6 +1585,13 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode: input.sessionMode,
           sessionConfigId: input.sessionConfigId,
+          transformUserText: requestModelOverride
+            ? (text: string) =>
+                stripLeadingModelOverrideDirective({
+                  text,
+                  botName: cfg.surface.discord.botName,
+                })
+            : undefined,
         });
       }
       return;
@@ -1421,6 +1618,15 @@ export async function startBusRequestRouter(params: {
       userId,
       sessionMode: input.sessionMode,
       sessionConfigId: input.sessionConfigId,
+      modelOverride: input.modelOverride,
+      transformTriggerUserText: input.requestModelOverride
+        ? (text: string) =>
+            stripLeadingModelOverrideDirective({
+              text,
+              botName: cfg.surface.discord.botName,
+            })
+        : undefined,
+      transformUserTextForMessageId: msgRef.messageId,
     });
   }
 
@@ -1431,6 +1637,7 @@ export async function startBusRequestRouter(params: {
     queue: RequestQueueMode;
     triggerType: "mention" | "reply" | "active";
     sessionMode: SessionMode;
+    modelOverride?: string;
     messages: ModelMessage[];
     raw: unknown;
   }) {
@@ -1439,6 +1646,7 @@ export async function startBusRequestRouter(params: {
       sessionId: input.sessionId,
       queue: input.queue,
       triggerType: input.triggerType,
+      modelOverride: input.modelOverride,
       messageCount: input.messages.length,
       lastUserPreview: (() => {
         for (let i = input.messages.length - 1; i >= 0; i--) {
@@ -1455,12 +1663,14 @@ export async function startBusRequestRouter(params: {
       {
         queue: input.queue,
         messages: input.messages,
+        ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
         raw: {
           ...(input.raw && typeof input.raw === "object"
             ? (input.raw as Record<string, unknown>)
             : {}),
           sessionMode: input.sessionMode,
           sessionConfigId: input.sessionConfigId,
+          ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
         },
       },
       {
@@ -1485,6 +1695,9 @@ export async function startBusRequestRouter(params: {
     msgRef: MsgRef;
     userId: string;
     sessionMode: SessionMode;
+    modelOverride?: string;
+    transformTriggerUserText?: (text: string) => string;
+    transformUserTextForMessageId?: string;
   }) {
     const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } = input;
 
@@ -1497,6 +1710,8 @@ export async function startBusRequestRouter(params: {
       botName: cfg.surface.discord.botName,
       transcriptStore: params.transcriptStore,
       discordUserAliasById,
+      transformUserText: input.transformTriggerUserText,
+      transformUserTextForMessageId: input.transformUserTextForMessageId,
       trigger: {
         type: triggerType === "mention" ? "mention" : "reply",
         msgRef,
@@ -1510,6 +1725,7 @@ export async function startBusRequestRouter(params: {
       queue,
       triggerType,
       sessionMode: input.sessionMode,
+      modelOverride: input.modelOverride,
       messages: composed.messages,
       raw: {
         triggerType,
@@ -1529,6 +1745,9 @@ export async function startBusRequestRouter(params: {
     triggerMsgRef: MsgRef | undefined;
     triggerType: "mention" | "reply" | undefined;
     sessionMode: SessionMode;
+    modelOverride?: string;
+    transformTriggerUserText?: (text: string) => string;
+    transformUserTextForMessageId?: string;
     /** When true, update router's active session state immediately. */
     markActive: boolean;
   }) {
@@ -1545,6 +1764,8 @@ export async function startBusRequestRouter(params: {
             botName: cfg.surface.discord.botName,
             transcriptStore: params.transcriptStore,
             discordUserAliasById,
+            transformUserText: input.transformTriggerUserText,
+            transformUserTextForMessageId: input.transformUserTextForMessageId,
             trigger: {
               type: "reply",
               msgRef: triggerMsgRef,
@@ -1558,6 +1779,8 @@ export async function startBusRequestRouter(params: {
             limit: 8,
             transcriptStore: params.transcriptStore,
             discordUserAliasById,
+            transformUserText: input.transformTriggerUserText,
+            transformUserTextForMessageId: input.transformUserTextForMessageId,
             triggerMsgRef,
             triggerType,
           });
@@ -1569,6 +1792,7 @@ export async function startBusRequestRouter(params: {
       queue: "prompt",
       triggerType: triggerType ?? "active",
       sessionMode: input.sessionMode,
+      modelOverride: input.modelOverride,
       messages: composed.messages,
       raw: {
         triggerType: triggerType ?? "active",

@@ -11,6 +11,12 @@ export const bashInputSchema = z.object({
       "Working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
     ),
   timeoutMs: z.number().optional().describe("Timeout in ms (default: 1h)"),
+  stdinMode: z
+    .enum(["error", "eof"])
+    .optional()
+    .describe(
+      "stdin handling mode: 'error' (default, recommended) makes inherited stdin reads fail immediately (EBADF); use 'eof' only as a fallback if the command fails specifically due to this strict stdin mode.",
+    ),
   dangerouslyAllow: z.boolean().optional().describe("Bypass safety guardrails for this call"),
 });
 
