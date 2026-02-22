@@ -93,6 +93,8 @@ export type RequestQueueMode = "prompt" | "steer" | "followUp" | "interrupt";
 export type CmdRequestMessageData = {
   queue: RequestQueueMode;
   messages: ModelMessage[];
+  /** Optional direct model ref (provider/model or alias from models.def). */
+  modelOverride?: string;
   /** Raw adapter payload (platform event) if you need it later. */
   raw?: unknown;
 };

@@ -140,6 +140,8 @@ const routerSchema = z
           mode: z.enum(["mention", "active"]).optional(),
           /** Override activeGate.enabled for this session/channel (active mode only). */
           gate: z.boolean().optional(),
+          /** Optional per-session model override (alias from models.def or provider/model). */
+          model: z.string().trim().min(1).optional(),
           /**
            * Optional extra session memo entries appended to the system prompt.
            *

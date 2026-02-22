@@ -2,6 +2,7 @@ import {
   ActivityType,
   ApplicationCommandType,
   ApplicationCommandOptionType,
+  type AutocompleteInteraction,
   Client,
   type CacheType,
   type ChatInputCommandInteraction,
@@ -28,6 +29,7 @@ import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
   getCoreConfig,
   resolveLogLevel,
+  resolveModelRef,
   resolveDiscordDbPath,
   resolveDiscordToken,
 } from "@stanley2058/lilac-utils";
@@ -194,6 +196,19 @@ function compareDiscordSnowflake(a: string, b: string): number {
   }
 }
 
+export function resolveEffectiveSessionModelOverride(input: {
+  sessionId: string;
+  parentChannelId?: string | null;
+  overrides: ReadonlyMap<string, string>;
+}): string | undefined {
+  const threadOverride = input.overrides.get(input.sessionId);
+  if (threadOverride) return threadOverride;
+
+  const parentChannelId = input.parentChannelId?.trim();
+  if (!parentChannelId) return undefined;
+  return input.overrides.get(parentChannelId);
+}
+
 const CONTEXT_MENU_CANCEL_REQUEST_NAME = "Cancel Request";
 
 export class DiscordAdapter implements SurfaceAdapter {
@@ -204,6 +219,7 @@ export class DiscordAdapter implements SurfaceAdapter {
   private coreConfigReloadHadError = false;
   private lastCoreConfigReloadError: string | null = null;
   private handlers = new Set<AdapterEventHandler>();
+  private sessionModelOverrides = new Map<string, string>();
 
   private readonly logger = new Logger({
     logLevel: resolveLogLevel(),
@@ -905,9 +921,79 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private getParentChannelIdFromInteractionChannel(
+    interaction: ChatInputCommandInteraction<CacheType> | AutocompleteInteraction<CacheType>,
+  ): string | undefined {
+    const channel = interaction.channel;
+    if (!channel) return undefined;
+    if (!("isThread" in channel) || typeof channel.isThread !== "function") return undefined;
+    if (!channel.isThread()) return undefined;
+    return channel.parentId ?? undefined;
+  }
+
+  private getEffectiveSessionModelOverride(input: {
+    cfg?: CoreConfig;
+    sessionId: string;
+    parentChannelId?: string | null;
+  }): string | undefined {
+    const inMemoryOverride = this.getInMemorySessionModelOverride({
+      sessionId: input.sessionId,
+      parentChannelId: input.parentChannelId,
+    });
+    if (inMemoryOverride) return inMemoryOverride;
+
+    const cfg = input.cfg;
+    if (!cfg) return undefined;
+
+    const threadModel = cfg.surface.router.sessionModes[input.sessionId]?.model;
+    if (typeof threadModel === "string" && threadModel.trim().length > 0) {
+      return threadModel.trim();
+    }
+
+    const parentId = input.parentChannelId?.trim();
+    if (!parentId) return undefined;
+
+    const parentModel = cfg.surface.router.sessionModes[parentId]?.model;
+    if (typeof parentModel === "string" && parentModel.trim().length > 0) {
+      return parentModel.trim();
+    }
+
+    return undefined;
+  }
+
+  private getInMemorySessionModelOverride(input: {
+    sessionId: string;
+    parentChannelId?: string | null;
+  }): string | undefined {
+    return resolveEffectiveSessionModelOverride({
+      sessionId: input.sessionId,
+      parentChannelId: input.parentChannelId,
+      overrides: this.sessionModelOverrides,
+    });
+  }
+
+  private getSessionModelRef(input: {
+    cfg: CoreConfig;
+    sessionId: string;
+    parentChannelId?: string | null;
+  }): string {
+    return (
+      this.getEffectiveSessionModelOverride({
+        cfg: input.cfg,
+        sessionId: input.sessionId,
+        parentChannelId: input.parentChannelId,
+      }) ?? input.cfg.models.main.model
+    );
+  }
+
   private async onInteractionCreate(interaction: Interaction<CacheType>) {
     if (interaction.isChatInputCommand()) {
       await this.onChatInputCommand(interaction);
+      return;
+    }
+
+    if (interaction.isAutocomplete()) {
+      await this.onAutocomplete(interaction);
       return;
     }
 
@@ -1080,6 +1166,20 @@ export class DiscordAdapter implements SurfaceAdapter {
       ],
     } as const;
 
+    const modelSlashDefinition = {
+      name: "model",
+      description: "View or switch this session model",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "model",
+          description: "Model alias or provider/model",
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    } as const;
+
     const cancelContextMenuDefinition = {
       name: CONTEXT_MENU_CANCEL_REQUEST_NAME,
       type: ApplicationCommandType.Message,
@@ -1088,7 +1188,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     // Force-sync (bulk overwrite) so stale commands are removed.
     // This is intentional: we treat the current code's command list as the
     // source of truth for this application.
-    const desired = [slashDefinition, cancelContextMenuDefinition];
+    const desired = [slashDefinition, modelSlashDefinition, cancelContextMenuDefinition];
     await app.commands.set(desired).catch((e: unknown) => {
       this.logger.error("slash command sync failed", e);
       return null;
@@ -1121,6 +1221,8 @@ export class DiscordAdapter implements SurfaceAdapter {
   private async onChatInputCommand(
     interaction: ChatInputCommandInteraction<CacheType>,
   ): Promise<void> {
+    await this.reloadCoreConfigIfNeeded();
+
     const cfg = this.cfg;
     const client = this.client;
     const self = this.self;
@@ -1135,6 +1237,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       } catch {
         // ignore
       }
+      return;
+    }
+
+    if (interaction.commandName === "model") {
+      await this.onModelCommand(interaction, cfg);
       return;
     }
 
@@ -1249,6 +1356,145 @@ export class DiscordAdapter implements SurfaceAdapter {
         // ignore
       }
     }
+  }
+
+  private async onAutocomplete(interaction: AutocompleteInteraction<CacheType>): Promise<void> {
+    await this.reloadCoreConfigIfNeeded();
+
+    const cfg = this.cfg;
+    if (!cfg) {
+      await interaction.respond([]).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName !== "model") return;
+
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "model") return;
+
+    const query = String(focused.value ?? "")
+      .trim()
+      .toLowerCase();
+    const aliases = Object.keys(cfg.models.def ?? {}).sort((a, b) => a.localeCompare(b));
+    if (aliases.length === 0) {
+      await interaction.respond([]).catch(() => {});
+      return;
+    }
+
+    const sessionId = interaction.channelId;
+    const parentChannelId = this.getParentChannelIdFromInteractionChannel(interaction);
+    const current = sessionId
+      ? this.getSessionModelRef({
+          cfg,
+          sessionId,
+          parentChannelId,
+        })
+      : cfg.models.main.model;
+
+    const choices: Array<{ name: string; value: string }> = [];
+    if (aliases.includes(current) && current.toLowerCase().includes(query)) {
+      choices.push({
+        name: `${current} (current)`,
+        value: current,
+      });
+    }
+
+    for (const alias of aliases) {
+      if (alias === current) continue;
+      if (!alias.toLowerCase().includes(query)) continue;
+      choices.push({ name: alias, value: alias });
+      if (choices.length >= 25) break;
+    }
+
+    await interaction.respond(choices.slice(0, 25)).catch(() => {});
+  }
+
+  private async onModelCommand(
+    interaction: ChatInputCommandInteraction<CacheType>,
+    cfg: CoreConfig,
+  ): Promise<void> {
+    const channelId = interaction.channelId;
+    const guildId = interaction.guildId;
+
+    if (!channelId) {
+      await interaction
+        .reply({
+          content: "This command must be used in a channel.",
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    if (!shouldAllowMessage({ cfg, channelId, guildId })) {
+      await interaction
+        .reply({
+          content: "Not allowed in this channel.",
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    const parentChannelId = this.getParentChannelIdFromInteractionChannel(interaction);
+    const currentRef = this.getSessionModelRef({
+      cfg,
+      sessionId: channelId,
+      parentChannelId,
+    });
+
+    const modelInput = interaction.options.getString("model");
+    const trimmedModelInput = modelInput?.trim() ?? "";
+
+    if (trimmedModelInput.length === 0) {
+      let resolvedDisplay = currentRef;
+      try {
+        const resolved = resolveModelRef(
+          cfg,
+          { model: currentRef },
+          "surface.discord.slash.model.current",
+        );
+        resolvedDisplay = resolved.spec;
+      } catch {
+        // Keep best-effort display when config changed and override is stale.
+      }
+
+      await interaction
+        .reply({
+          content: `Current model for this session: \`${currentRef}\` (resolved: \`${resolvedDisplay}\`)`,
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    let resolvedSpec = "";
+    try {
+      const resolved = resolveModelRef(
+        cfg,
+        { model: trimmedModelInput },
+        "surface.discord.slash.model.override",
+      );
+      resolvedSpec = resolved.spec;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await interaction
+        .reply({
+          content: `Invalid model: ${msg}`,
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    this.sessionModelOverrides.set(channelId, trimmedModelInput);
+
+    await interaction
+      .reply({
+        content: `Session model set to \`${trimmedModelInput}\` (resolved: \`${resolvedSpec}\`)`,
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => {});
   }
 
   private async fetchDiscordMessage(input: {
@@ -1426,6 +1672,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       guildId,
       parentChannelId,
     });
+    const sessionModelOverride = this.getInMemorySessionModelOverride({
+      sessionId: channelId,
+      parentChannelId,
+    });
 
     return {
       ref: asDiscordMsgRef(channelId, msg.id),
@@ -1451,6 +1701,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           type: msg.type,
           typeName: getDiscordMessageTypeName(msg),
           isChat: isDiscordChatLikeMessage(msg),
+          sessionModelOverride,
         },
       },
     };
@@ -1463,6 +1714,9 @@ export class DiscordAdapter implements SurfaceAdapter {
       await this.onMessageCreate(full);
       return;
     }
+
+    await this.reloadCoreConfigIfNeeded();
+
     const cfg = this.cfg;
     const store = this.store;
     const client = this.client;
@@ -1597,6 +1851,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       guildId,
       parentChannelId,
     });
+    const sessionModelOverride = this.getInMemorySessionModelOverride({
+      sessionId: channelId,
+      parentChannelId,
+    });
 
     const surfaceMsg: SurfaceMessage = {
       ref: asDiscordMsgRef(channelId, msg.id),
@@ -1619,6 +1877,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           replyToMessageId: msg.reference?.messageId ?? undefined,
           guildId: guildId ?? undefined,
           parentChannelId: parentChannelId ?? undefined,
+          sessionModelOverride,
           attachments,
         },
       },

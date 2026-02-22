@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { MessageType, type Message } from "discord.js";
 
-import { isRoutableDiscordUserMessage } from "../../../src/surface/discord/discord-adapter";
+import {
+  isRoutableDiscordUserMessage,
+  resolveEffectiveSessionModelOverride,
+} from "../../../src/surface/discord/discord-adapter";
 
 function makeMessage(input: { bot: boolean; system: boolean; type: MessageType }): Message {
   return {
@@ -62,5 +65,44 @@ describe("isRoutableDiscordUserMessage", () => {
 
     expect(isRoutableDiscordUserMessage(botMessage)).toBe(false);
     expect(isRoutableDiscordUserMessage(systemMessage)).toBe(false);
+  });
+});
+
+describe("resolveEffectiveSessionModelOverride", () => {
+  it("uses thread override when present", () => {
+    const overrides = new Map<string, string>([
+      ["parent-1", "sonnet"],
+      ["thread-1", "gpt-5"],
+    ]);
+
+    const result = resolveEffectiveSessionModelOverride({
+      sessionId: "thread-1",
+      parentChannelId: "parent-1",
+      overrides,
+    });
+
+    expect(result).toBe("gpt-5");
+  });
+
+  it("inherits parent override when thread has none", () => {
+    const overrides = new Map<string, string>([["parent-1", "sonnet"]]);
+
+    const result = resolveEffectiveSessionModelOverride({
+      sessionId: "thread-1",
+      parentChannelId: "parent-1",
+      overrides,
+    });
+
+    expect(result).toBe("sonnet");
+  });
+
+  it("returns undefined when neither session nor parent has override", () => {
+    const result = resolveEffectiveSessionModelOverride({
+      sessionId: "thread-1",
+      parentChannelId: "parent-1",
+      overrides: new Map<string, string>(),
+    });
+
+    expect(result).toBeUndefined();
   });
 });
