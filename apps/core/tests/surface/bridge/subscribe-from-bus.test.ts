@@ -125,6 +125,125 @@ function createInMemoryRawBus(): RawBus {
   };
 }
 
+function createInMemoryRawBusWithBlockingTailStop(): {
+  raw: RawBus;
+  releaseTailStops(): void;
+} {
+  const topics = new Map<string, Array<Message<unknown>>>();
+  const subs = new Set<{
+    topic: string;
+    opts: SubscriptionOptions;
+    handler: (msg: Message<unknown>, ctx: HandleContext) => Promise<void>;
+  }>();
+
+  let tailStopGatePromise: Promise<void> | null = null;
+  let tailStopGateResolve: (() => void) | null = null;
+
+  const ensureTailStopGate = () => {
+    if (tailStopGatePromise) return tailStopGatePromise;
+    tailStopGatePromise = new Promise<void>((resolve) => {
+      tailStopGateResolve = resolve;
+    });
+    return tailStopGatePromise;
+  };
+
+  const raw: RawBus = {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
+      const id = String(Date.now()) + "-0";
+      const stored: Message<unknown> = {
+        topic: opts.topic,
+        id,
+        type: opts.type,
+        ts: Date.now(),
+        key: opts.key,
+        headers: opts.headers,
+        data: msg.data as unknown,
+      };
+
+      const list = topics.get(opts.topic) ?? [];
+      list.push(stored);
+      topics.set(opts.topic, list);
+
+      for (const s of subs) {
+        if (s.topic !== opts.topic) continue;
+        await s.handler(stored, { cursor: id, commit: async () => {} });
+      }
+
+      return { id, cursor: id };
+    },
+
+    subscribe: async <TData>(
+      topic: string,
+      opts: SubscriptionOptions,
+      handler: (msg: Message<TData>, ctx: HandleContext) => Promise<void>,
+    ) => {
+      const entry = {
+        topic,
+        opts,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
+      };
+      subs.add(entry);
+
+      if (opts.mode === "tail") {
+        const existing = topics.get(topic) ?? [];
+        if (opts.offset?.type === "begin") {
+          for (const m of existing) {
+            await handler(m as unknown as Message<TData>, {
+              cursor: m.id,
+              commit: async () => {},
+            });
+          }
+        } else if (opts.offset?.type === "cursor") {
+          let seenCursor = false;
+          for (const m of existing) {
+            if (!seenCursor) {
+              if (m.id === opts.offset.cursor) {
+                seenCursor = true;
+              }
+              continue;
+            }
+            await handler(m as unknown as Message<TData>, {
+              cursor: m.id,
+              commit: async () => {},
+            });
+          }
+        }
+      }
+
+      return {
+        stop: async () => {
+          subs.delete(entry);
+          if (opts.mode === "tail") {
+            await ensureTailStopGate();
+          }
+        },
+      };
+    },
+
+    fetch: async <TData>(topic: string, _opts: FetchOptions) => {
+      const existing = topics.get(topic) ?? [];
+      return {
+        messages: existing.map((m) => ({
+          msg: m as unknown as Message<TData>,
+          cursor: m.id,
+        })),
+        next: existing.length > 0 ? existing[existing.length - 1]!.id : undefined,
+      };
+    },
+
+    close: async () => {},
+  };
+
+  return {
+    raw,
+    releaseTailStops: () => {
+      tailStopGateResolve?.();
+      tailStopGateResolve = null;
+      tailStopGatePromise = null;
+    },
+  };
+}
+
 class FakeOutputStream {
   public readonly parts: SurfaceOutputPart[] = [];
   public finished = false;
@@ -1488,6 +1607,360 @@ describe("bridgeBusToAdapter", () => {
     );
     expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
 
+    await bridge.stop();
+  });
+
+  it("deduplicates overlap when resumed finalText is suffix-only", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_resume_suffix_overlap";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [],
+        visibleText: "abc",
+        totalTextChars: 3,
+        toolStatus: [],
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "def" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "cdef!" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "abcdef!" });
+
+    await bridge.stop();
+  });
+
+  it("appends non-overlapping suffix when resumed finalText is continuation-only", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_resume_suffix_non_overlap";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [],
+        visibleText: "abc",
+        totalTextChars: 3,
+        toolStatus: [],
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "def" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "XYZ" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "abcdefXYZ" });
+
+    await bridge.stop();
+  });
+
+  it("keeps prefix slicing semantics after restored reanchor snapshots", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore_reanchor_prefix";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [],
+        visibleText: "def",
+        totalTextChars: 6,
+        streamTextPrefixChars: 3,
+        toolStatus: [],
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "abcdefg" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "defg" });
+
+    await bridge.stop();
+  });
+
+  it("keeps continuation suffix when restored prefix exceeds continuation finalText", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore_reanchor_continuation_suffix";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [],
+        // Full text before restart was 6 chars of old lane + current lane "g".
+        visibleText: "g",
+        totalTextChars: 7,
+        streamTextPrefixChars: 6,
+        toolStatus: [],
+      },
+    ]);
+
+    // Resume publisher emits continuation-only final text.
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "!" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "g!" });
+
+    await bridge.stop();
+  });
+
+  it("does not replay consumed out events after cursor restore", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapterA = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore_no_duplicate_out";
+
+    const bridgeA = await bridgeBusToAdapter({
+      adapter: adapterA,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter-a",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const snapshot = bridgeA.snapshotRelays()[0]!;
+    await bridgeA.stop();
+
+    const adapterB = new FakeAdapter();
+    const bridgeB = await bridgeBusToAdapter({
+      adapter: adapterB,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter-b",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridgeB.restoreRelays([snapshot]);
+
+    // No new deltas were published after restore; only final arrives.
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const replayedA =
+      adapterB.stream?.parts.filter((p) => p.type === "text.delta" && p.delta === "a") ?? [];
+    expect(replayedA).toHaveLength(0);
+    expect(adapterB.stream?.parts.at(-1)).toEqual({ type: "text.set", text: "a" });
+
+    await bridgeB.stop();
+  });
+
+  it("deletes restored preview-chain refs when resumed delivery is skip", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_restore_skip_deletes_refs";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bridge.restoreRelays([
+      {
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        platform: "discord",
+        createdOutputRefs: [
+          {
+            platform: "discord",
+            channelId: "chan",
+            messageId: "m_old_1",
+          },
+          {
+            platform: "discord",
+            channelId: "chan",
+            messageId: "m_old_2",
+          },
+        ],
+        visibleText: "partial",
+        totalTextChars: 7,
+        toolStatus: [],
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ignored", delivery: "skip" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.stream?.aborted).toBe("skip");
+    expect(adapter.stream?.finished).toBe(false);
+    expect(adapter.deletedMsgs.map((m) => m.messageId)).toEqual(["m_out_1", "m_old_2", "m_old_1"]);
+    expect(bridge.snapshotRelays()).toHaveLength(0);
+
+    await bridge.stop();
+  });
+
+  it("removes finished relay before blocking output subscription stop", async () => {
+    const { raw, releaseTailStops } = createInMemoryRawBusWithBlockingTailStop();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_finish_blocking_tail_stop";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "hello" },
+      { headers: { request_id: requestId } },
+    );
+
+    const publishFinal = bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "hello" },
+      { headers: { request_id: requestId } },
+    );
+
+    const settled = await Promise.race([
+      publishFinal.then(() => "resolved" as const),
+      new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), 200);
+      }),
+    ]);
+
+    expect(settled).toBe("resolved");
+    expect(bridge.snapshotRelays()).toHaveLength(0);
+
+    releaseTailStops();
     await bridge.stop();
   });
 

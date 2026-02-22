@@ -692,6 +692,7 @@ export async function bridgeBusToAdapter(params: {
     let stopped = false;
     let outputSub: { stop(): Promise<void> } | null = null;
     let firstOutLogged = false;
+    let handlingOutputEvent = false;
 
     const deleteCreatedOutputMessages = async () => {
       if (platform !== "discord") return;
@@ -713,18 +714,30 @@ export async function bridgeBusToAdapter(params: {
     const relayStop = async () => {
       if (stopped) return;
       stopped = true;
+
+      // Remove from recoverable set immediately so graceful snapshots cannot
+      // include a relay that has already reached terminal state.
+      activeRelays.delete(requestId);
+      terminalLifecycleByRequestId.delete(requestId);
+
       if (timeout) {
         clearTimeout(timeout);
         timeout = null;
       }
       await stopTyping();
-      try {
-        await outputSub?.stop();
-      } catch {
-        // ignore
+
+      const subToStop = outputSub;
+      if (subToStop) {
+        if (handlingOutputEvent) {
+          void subToStop.stop().catch(() => undefined);
+        } else {
+          try {
+            await subToStop.stop();
+          } catch {
+            // ignore
+          }
+        }
       }
-      activeRelays.delete(requestId);
-      terminalLifecycleByRequestId.delete(requestId);
 
       logger.info("reply relay stopped", {
         requestId,
@@ -743,6 +756,11 @@ export async function bridgeBusToAdapter(params: {
         batch: { maxWaitMs: 250 },
       },
       async (outMsg, outCtx) => {
+        if (stopped) {
+          lastOutCursor = outCtx.cursor;
+          return;
+        }
+
         if (env.perf.log && !firstOutLogged) {
           firstOutLogged = true;
           const now = Date.now();
@@ -765,158 +783,222 @@ export async function bridgeBusToAdapter(params: {
         bumpTimeout();
 
         await enqueue(async () => {
-          let part: SurfaceOutputPart | null = null;
+          if (stopped) {
+            lastOutCursor = outCtx.cursor;
+            return;
+          }
 
-          switch (outMsg.type) {
-            case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-              if (platform === "discord") {
-                const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
-                reasoningStartedAtMs = startedAtMs;
+          handlingOutputEvent = true;
+          try {
+            let part: SurfaceOutputPart | null = null;
 
-                const seq = outMsg.data.seq;
-                if (typeof seq === "number" && Number.isFinite(seq)) {
-                  // New behavior: each sequenced event carries one fully completed
-                  // reasoning chunk and should replace the previous visible chunk.
-                  reasoningDetailText = clampReasoningDetail(outMsg.data.delta);
-                } else {
-                  // Back-compat for legacy publishers that stream incremental deltas.
-                  reasoningDetailText = appendReasoningDetail(
-                    reasoningDetailText,
-                    outMsg.data.delta,
-                  );
+            switch (outMsg.type) {
+              case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
+                if (platform === "discord") {
+                  const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
+                  reasoningStartedAtMs = startedAtMs;
+
+                  const seq = outMsg.data.seq;
+                  if (typeof seq === "number" && Number.isFinite(seq)) {
+                    // New behavior: each sequenced event carries one fully completed
+                    // reasoning chunk and should replace the previous visible chunk.
+                    reasoningDetailText = clampReasoningDetail(outMsg.data.delta);
+                  } else {
+                    // Back-compat for legacy publishers that stream incremental deltas.
+                    reasoningDetailText = appendReasoningDetail(
+                      reasoningDetailText,
+                      outMsg.data.delta,
+                    );
+                  }
+
+                  part = {
+                    type: "reasoning.status",
+                    update: {
+                      startedAtMs,
+                      frozenAtMs: reasoningFrozenAtMs,
+                      detailText: reasoningDetailText,
+                    },
+                  };
                 }
+                lastOutCursor = outCtx.cursor;
+                break;
+              }
+
+              case lilacEventTypes.EvtAgentOutputDeltaText: {
+                totalTextChars += outMsg.data.delta.length;
+
+                if (
+                  platform === "discord" &&
+                  typeof reasoningStartedAtMs === "number" &&
+                  typeof reasoningFrozenAtMs !== "number"
+                ) {
+                  reasoningFrozenAtMs = outMsg.ts;
+                }
+
+                if (!bufferNoReplyPrefix) {
+                  part = { type: "text.delta", delta: outMsg.data.delta };
+                  visibleTextAcc += outMsg.data.delta;
+                  break;
+                }
+
+                pendingNoReplyPrefix += outMsg.data.delta;
+                if (isPossibleNoReplyPrefix(pendingNoReplyPrefix)) {
+                  lastOutCursor = outCtx.cursor;
+                  break;
+                }
+
+                bufferNoReplyPrefix = false;
+                part = { type: "text.delta", delta: pendingNoReplyPrefix };
+                visibleTextAcc += pendingNoReplyPrefix;
+                pendingNoReplyPrefix = "";
+                lastOutCursor = outCtx.cursor;
+                break;
+              }
+
+              case lilacEventTypes.EvtAgentOutputToolCall: {
+                const update = {
+                  toolCallId: outMsg.data.toolCallId,
+                  display: outMsg.data.display,
+                  status: outMsg.data.status,
+                  ok: outMsg.data.ok,
+                  error: outMsg.data.error,
+                } satisfies SurfaceToolStatusUpdate;
+
+                toolStatusById.set(update.toolCallId, update);
 
                 part = {
-                  type: "reasoning.status",
-                  update: {
-                    startedAtMs,
-                    frozenAtMs: reasoningFrozenAtMs,
-                    detailText: reasoningDetailText,
-                  },
+                  type: "tool.status",
+                  update,
                 };
-              }
-              lastOutCursor = outCtx.cursor;
-              break;
-            }
-
-            case lilacEventTypes.EvtAgentOutputDeltaText: {
-              totalTextChars += outMsg.data.delta.length;
-
-              if (
-                platform === "discord" &&
-                typeof reasoningStartedAtMs === "number" &&
-                typeof reasoningFrozenAtMs !== "number"
-              ) {
-                reasoningFrozenAtMs = outMsg.ts;
-              }
-
-              if (!bufferNoReplyPrefix) {
-                part = { type: "text.delta", delta: outMsg.data.delta };
-                visibleTextAcc += outMsg.data.delta;
-                break;
-              }
-
-              pendingNoReplyPrefix += outMsg.data.delta;
-              if (isPossibleNoReplyPrefix(pendingNoReplyPrefix)) {
                 lastOutCursor = outCtx.cursor;
                 break;
               }
 
-              bufferNoReplyPrefix = false;
-              part = { type: "text.delta", delta: pendingNoReplyPrefix };
-              visibleTextAcc += pendingNoReplyPrefix;
-              pendingNoReplyPrefix = "";
-              lastOutCursor = outCtx.cursor;
-              break;
-            }
-
-            case lilacEventTypes.EvtAgentOutputToolCall: {
-              const update = {
-                toolCallId: outMsg.data.toolCallId,
-                display: outMsg.data.display,
-                status: outMsg.data.status,
-                ok: outMsg.data.ok,
-                error: outMsg.data.error,
-              } satisfies SurfaceToolStatusUpdate;
-
-              toolStatusById.set(update.toolCallId, update);
-
-              part = {
-                type: "tool.status",
-                update,
-              };
-              lastOutCursor = outCtx.cursor;
-              break;
-            }
-
-            case lilacEventTypes.EvtAgentOutputResponseBinary: {
-              part = {
-                type: "attachment.add",
-                attachment: toAttachment(outMsg.data),
-              };
-              lastOutCursor = outCtx.cursor;
-              break;
-            }
-
-            case lilacEventTypes.EvtAgentOutputResponseText: {
-              const delivery =
-                outMsg.data.delivery ?? resolveReplyDeliveryFromFinalText(outMsg.data.finalText);
-
-              if (delivery === "skip") {
-                await out.abort("skip").catch(() => undefined);
-                await deleteCreatedOutputMessages();
-                await relayStop();
-
-                if (platform === "github") {
-                  await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
-                    logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
-                  });
-                }
-
-                logger.info("reply relay skipped final surface reply", {
-                  requestId,
-                  sessionId,
-                });
+              case lilacEventTypes.EvtAgentOutputResponseBinary: {
+                part = {
+                  type: "attachment.add",
+                  attachment: toAttachment(outMsg.data),
+                };
                 lastOutCursor = outCtx.cursor;
-                return;
+                break;
               }
 
-              if (platform === "github") {
-                const latest = getGithubLatestRequestForSession(sessionId);
-                if (latest && latest !== requestId) {
-                  logger.info("github reply suppressed (superseded)", {
+              case lilacEventTypes.EvtAgentOutputResponseText: {
+                const delivery =
+                  outMsg.data.delivery ?? resolveReplyDeliveryFromFinalText(outMsg.data.finalText);
+
+                if (delivery === "skip") {
+                  await out.abort("skip").catch(() => undefined);
+                  await deleteCreatedOutputMessages();
+                  await relayStop();
+
+                  if (platform === "github") {
+                    await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
+                      logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                    });
+                  }
+
+                  logger.info("reply relay skipped final surface reply", {
                     requestId,
                     sessionId,
-                    latest,
                   });
-                  await out.abort("superseded").catch(() => undefined);
-                  await relayStop();
                   lastOutCursor = outCtx.cursor;
                   return;
                 }
-              }
 
-              const statsLineRaw = outMsg.data.statsForNerdsLine;
-              const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
+                if (platform === "github") {
+                  const latest = getGithubLatestRequestForSession(sessionId);
+                  if (latest && latest !== requestId) {
+                    logger.info("github reply suppressed (superseded)", {
+                      requestId,
+                      sessionId,
+                      latest,
+                    });
+                    await out.abort("superseded").catch(() => undefined);
+                    await relayStop();
+                    lastOutCursor = outCtx.cursor;
+                    return;
+                  }
+                }
 
-              const previousVisibleText = visibleTextAcc;
-              const finalText = outMsg.data.finalText;
-              const clampedStreamPrefixChars = Math.max(
-                0,
-                Math.min(streamTextPrefixChars, finalText.length),
-              );
-              let streamFinalText = finalText.slice(clampedStreamPrefixChars);
+                const statsLineRaw = outMsg.data.statsForNerdsLine;
+                const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
 
-              // On recovery resumes, the agent may emit only the continuation suffix
-              // (instead of the full final text). In that case, preserve already visible
-              // stream text and append the new suffix with overlap-aware merge.
-              if (finalText.length < totalTextChars) {
-                streamFinalText = mergeContinuationText(previousVisibleText, streamFinalText);
-              }
+                const previousVisibleText = visibleTextAcc;
+                const finalText = outMsg.data.finalText;
+                const clampedStreamPrefixChars = Math.max(
+                  0,
+                  Math.min(streamTextPrefixChars, finalText.length),
+                );
+                const isContinuationOnlyFinal = finalText.length < totalTextChars;
+                let streamFinalText = isContinuationOnlyFinal
+                  ? finalText
+                  : finalText.slice(clampedStreamPrefixChars);
 
-              if (streamFinalText.length === 0 && !streamHasVisibleOutput) {
-                await out.abort("skip").catch(() => undefined);
-                await deleteCreatedOutputMessages();
+                // On recovery resumes, the agent may emit only the continuation suffix
+                // (instead of the full final text). In that case, preserve already visible
+                // stream text and append the new suffix with overlap-aware merge.
+                if (isContinuationOnlyFinal) {
+                  streamFinalText = mergeContinuationText(previousVisibleText, streamFinalText);
+                }
+
+                if (streamFinalText.length === 0 && !streamHasVisibleOutput) {
+                  await out.abort("skip").catch(() => undefined);
+                  await deleteCreatedOutputMessages();
+                  await relayStop();
+
+                  if (platform === "github") {
+                    await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
+                      logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
+                    });
+                  }
+
+                  logger.info("reply relay skipped empty post-reanchor stream", {
+                    requestId,
+                    sessionId,
+                  });
+                  lastOutCursor = outCtx.cursor;
+                  return;
+                }
+
+                if (statsLine.length > 0) {
+                  await out.push({ type: "meta.stats", line: statsLine });
+                }
+
+                totalTextChars = Math.max(
+                  totalTextChars,
+                  finalText.length,
+                  clampedStreamPrefixChars + streamFinalText.length,
+                );
+                visibleTextAcc = streamFinalText;
+                pendingNoReplyPrefix = "";
+                bufferNoReplyPrefix = false;
+                if (
+                  platform === "discord" &&
+                  typeof reasoningStartedAtMs === "number" &&
+                  typeof reasoningFrozenAtMs !== "number"
+                ) {
+                  reasoningFrozenAtMs = outMsg.ts;
+                }
+                await out.push({ type: "text.set", text: streamFinalText });
+                streamHasVisibleOutput = true;
+                const res = await out.finish();
+
+                if (params.transcriptStore) {
+                  try {
+                    params.transcriptStore.linkSurfaceMessagesToRequest({
+                      requestId,
+                      created: res.created,
+                      last: res.last,
+                    });
+                  } catch (e: unknown) {
+                    logger.error(
+                      "failed to link transcript to surface messages",
+                      { requestId, sessionId },
+                      e,
+                    );
+                  }
+                }
                 await relayStop();
 
                 if (platform === "github") {
@@ -925,75 +1007,28 @@ export async function bridgeBusToAdapter(params: {
                   });
                 }
 
-                logger.info("reply relay skipped empty post-reanchor stream", {
+                logger.info("reply relay finished", {
                   requestId,
                   sessionId,
+                  finalTextChars: streamFinalText.length,
                 });
                 lastOutCursor = outCtx.cursor;
                 return;
               }
 
-              if (statsLine.length > 0) {
-                await out.push({ type: "meta.stats", line: statsLine });
-              }
-
-              totalTextChars = finalText.length;
-              visibleTextAcc = streamFinalText;
-              pendingNoReplyPrefix = "";
-              bufferNoReplyPrefix = false;
-              if (
-                platform === "discord" &&
-                typeof reasoningStartedAtMs === "number" &&
-                typeof reasoningFrozenAtMs !== "number"
-              ) {
-                reasoningFrozenAtMs = outMsg.ts;
-              }
-              await out.push({ type: "text.set", text: streamFinalText });
-              streamHasVisibleOutput = true;
-              const res = await out.finish();
-
-              if (params.transcriptStore) {
-                try {
-                  params.transcriptStore.linkSurfaceMessagesToRequest({
-                    requestId,
-                    created: res.created,
-                    last: res.last,
-                  });
-                } catch (e: unknown) {
-                  logger.error(
-                    "failed to link transcript to surface messages",
-                    { requestId, sessionId },
-                    e,
-                  );
-                }
-              }
-              await relayStop();
-
-              if (platform === "github") {
-                await cleanupGithubAck({ logger, requestId, sessionId }).catch((e: unknown) => {
-                  logger.warn("github ack cleanup failed", { requestId, sessionId }, e);
-                });
-              }
-
-              logger.info("reply relay finished", {
-                requestId,
-                sessionId,
-                finalTextChars: streamFinalText.length,
-              });
-              lastOutCursor = outCtx.cursor;
-              return;
+              default:
+                return;
             }
 
-            default:
-              return;
-          }
+            if (part) {
+              streamHasVisibleOutput = true;
+              await out.push(part);
+            }
 
-          if (part) {
-            streamHasVisibleOutput = true;
-            await out.push(part);
+            lastOutCursor = outCtx.cursor;
+          } finally {
+            handlingOutputEvent = false;
           }
-
-          lastOutCursor = outCtx.cursor;
         });
       },
     );
