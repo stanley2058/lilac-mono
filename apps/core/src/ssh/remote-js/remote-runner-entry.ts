@@ -2,6 +2,7 @@ import fssync from "node:fs";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
+import { z } from "zod";
 
 import { applyHunks, parsePatch } from "../../tools/apply-patch/apply-patch-core";
 import { FileSystem, type FileEdit, type EditFileResult } from "../../tools/fs/fs-impl";
@@ -38,9 +39,11 @@ function isDeniedPath(resolvedPath: string, denyAbs: readonly string[]): boolean
   return false;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+const remoteRunnerEnvelopeSchema = z.object({
+  op: z.string(),
+  input: z.record(z.string(), z.unknown()).optional().default({}),
+  denyPaths: z.array(z.string()).optional().default([]),
+});
 
 function numberOrUndefined(value: unknown): number | undefined {
   if (!Number.isFinite(value)) return undefined;
@@ -208,13 +211,10 @@ function readJsonFromStdin(): unknown {
 
 async function main(): Promise<void> {
   try {
-    const parsedRaw = readJsonFromStdin();
-    const parsed = isRecord(parsedRaw) ? parsedRaw : {};
-    const input = isRecord(parsed["input"]) ? parsed["input"] : {};
-    const op = String(parsed["op"] ?? "");
-    const denyPaths = Array.isArray(parsed["denyPaths"])
-      ? parsed["denyPaths"].map((p) => String(p))
-      : [];
+    const parsed = remoteRunnerEnvelopeSchema.parse(readJsonFromStdin());
+    const input = parsed.input;
+    const op = parsed.op;
+    const denyPaths = parsed.denyPaths;
     const denyAbs = denyPaths.map((p) => path.resolve(expandTilde(p)));
 
     const fsTool = new FileSystem(process.cwd(), { denyPaths });
