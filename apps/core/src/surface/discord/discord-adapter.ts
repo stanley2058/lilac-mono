@@ -50,11 +50,14 @@ import type { AdapterEvent } from "../events";
 import type {
   AdapterEventHandler,
   AdapterSubscription,
+  SurfaceMergeBlockPlanOptions,
+  SurfaceReplyChainPlanOptions,
   StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
 import { createDiscordEntityMapper, type EntityMapper } from "../../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../store/discord-surface-store";
+import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
@@ -697,6 +700,126 @@ export class DiscordAdapter implements SurfaceAdapter {
       });
   }
 
+  async planReplyChain(
+    msgRef: MsgRef,
+    opts?: SurfaceReplyChainPlanOptions,
+  ): Promise<readonly MsgRef[]> {
+    if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
+
+    const maxDepth = Math.min(100, Math.max(1, Math.floor(opts?.maxDepth ?? 20)));
+
+    const out: MsgRef[] = [];
+    const seen = new Set<string>();
+
+    let currentChannelId = msgRef.channelId;
+    let currentMessageId = msgRef.messageId;
+
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const key = `${currentChannelId}:${currentMessageId}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+
+      const rel = await this.ensureMessageRelation({
+        platform: "discord",
+        channelId: currentChannelId,
+        messageId: currentMessageId,
+      });
+
+      if (!rel) {
+        if (depth === 0) {
+          out.push({
+            platform: "discord",
+            channelId: currentChannelId,
+            messageId: currentMessageId,
+          });
+        }
+        break;
+      }
+
+      out.push({
+        platform: "discord",
+        channelId: rel.channel_id,
+        messageId: rel.message_id,
+      });
+
+      if (!rel.reply_to_message_id) break;
+
+      currentChannelId = rel.reply_to_channel_id ?? rel.channel_id;
+      currentMessageId = rel.reply_to_message_id;
+    }
+
+    out.reverse();
+    return out;
+  }
+
+  async planMergeBlockEndingAt(
+    msgRef: MsgRef,
+    opts?: SurfaceMergeBlockPlanOptions,
+  ): Promise<readonly MsgRef[]> {
+    if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
+
+    const lookbackLimit = Math.min(200, Math.max(5, Math.floor(opts?.lookbackLimit ?? 50)));
+
+    const store = this.store;
+    if (!store) return [msgRef];
+
+    const relation = await this.ensureMessageRelation(msgRef);
+    if (!relation) return [msgRef];
+
+    const list = store.listMessageRelationsBeforeOrAt({
+      channelId: relation.channel_id,
+      messageId: relation.message_id,
+      limit: lookbackLimit,
+    });
+
+    const targetIndex = list.findIndex((m) => m.message_id === relation.message_id);
+    if (targetIndex < 0) {
+      return [
+        {
+          platform: "discord",
+          channelId: relation.channel_id,
+          messageId: relation.message_id,
+        },
+      ];
+    }
+
+    const authorId = list[targetIndex]!.author_id;
+    let runStart = targetIndex;
+    for (let i = targetIndex - 1; i >= 0; i--) {
+      const prev = list[i]!;
+      if (prev.author_id !== authorId) break;
+      runStart = i;
+    }
+
+    const run = list.slice(runStart, targetIndex + 1);
+
+    const groups = splitByDiscordWindowOldestToNewest(
+      run.map((m) => ({
+        message: m,
+        authorId: m.author_id,
+        ts: m.ts,
+        hardBreakBefore: Boolean(m.reply_to_message_id),
+      })),
+    );
+
+    const endingGroup = groups[groups.length - 1] ?? [];
+    if (endingGroup.length === 0) {
+      return [
+        {
+          platform: "discord",
+          channelId: relation.channel_id,
+          messageId: relation.message_id,
+        },
+      ];
+    }
+
+    return endingGroup.map((item) => ({
+      platform: "discord",
+      channelId: item.message.channel_id,
+      messageId: item.message.message_id,
+    }));
+  }
+
   async addReaction(msgRef: MsgRef, reaction: string): Promise<void> {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
@@ -909,6 +1032,39 @@ export class DiscordAdapter implements SurfaceAdapter {
   private mustStore(): DiscordSurfaceStore {
     if (!this.store) throw new Error("DiscordAdapter not connected");
     return this.store;
+  }
+
+  private async ensureMessageRelation(msgRef: MsgRef) {
+    if (msgRef.platform !== "discord") return null;
+
+    const store = this.store;
+    if (!store) return null;
+
+    const existing = store.getMessageRelation(msgRef.channelId, msgRef.messageId);
+    if (existing) return existing;
+
+    await this.readMsg(msgRef).catch(() => null);
+
+    return store.getMessageRelation(msgRef.channelId, msgRef.messageId);
+  }
+
+  private upsertMessageRelationFromDiscordMessage(msg: Message, input?: { deleted?: boolean }) {
+    const store = this.store;
+    if (!store) return;
+
+    store.upsertMessageRelation({
+      channelId: msg.channelId,
+      messageId: msg.id,
+      guildId: msg.guildId ?? undefined,
+      authorId: msg.author.id,
+      authorName: getDisplayName(msg),
+      ts: getMessageTs(msg),
+      isChat: isDiscordChatLikeMessage(msg),
+      replyToChannelId: msg.reference?.channelId ?? undefined,
+      replyToMessageId: msg.reference?.messageId ?? undefined,
+      deleted: input?.deleted,
+      updatedTs: Date.now(),
+    });
   }
 
   private emit(evt: AdapterEvent) {
@@ -1623,6 +1779,8 @@ export class DiscordAdapter implements SurfaceAdapter {
           ? "thread"
           : "channel";
 
+    this.upsertMessageRelationFromDiscordMessage(msg);
+
     // Keep lightweight metadata caches warm (names/sessions), but do not cache message bodies.
     store.upsertSession({
       channelId,
@@ -1738,6 +1896,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       });
       return;
     }
+
+    this.upsertMessageRelationFromDiscordMessage(msg);
 
     this.logger.debug("message received", {
       channelId,
@@ -1939,6 +2099,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     const channelId = msg.channelId;
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
 
+    this.upsertMessageRelationFromDiscordMessage(msg);
+
     const channelName = getChannelName(msg.channel);
 
     const parentChannelId =
@@ -2044,7 +2206,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const store = this.store;
     if (!cfg || !store) return;
 
-    // Message caching removed: do not persist deletions. Still emit the event.
+    // We only persist immutable relation metadata + deletion state (no message body cache).
     let guildId: string | null = msg?.guildId ?? null;
 
     // If we didn't get a guild id from the event, best-effort resolve from channel.
@@ -2056,6 +2218,12 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     // Allowlist check should still apply even when Discord sends partial delete events.
     if (!shouldAllowMessage({ cfg, channelId, guildId })) return;
+
+    store.markMessageRelationDeleted({
+      channelId,
+      messageId,
+      updatedTs: Date.now(),
+    });
 
     const sess = store.getSession(channelId);
     const sessionRef = asDiscordSessionRef({

@@ -80,6 +80,10 @@ const subagentDelegateArgsSchema = z.object({
   timeoutMs: z.number().optional(),
 });
 
+const batchArgsSchema = z.object({
+  tool_calls: z.array(z.unknown()),
+});
+
 function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
   // Matches tool patch headers like:
   // *** Add File: path
@@ -100,10 +104,6 @@ function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
 }
 
 type ToolArgsFormatter = (args: unknown) => string;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 const DISPLAY_MAX_LEN = 30;
 const PATH_HEAD_LEN = 14;
@@ -228,10 +228,10 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   },
 
   batch: (args) => {
-    if (!isRecord(args)) return "";
-    const calls = args["tool_calls"];
-    if (!Array.isArray(calls)) return "";
-    const n = calls.length;
+    const parsed = safeValidateSync<{ tool_calls: unknown[] }>(batchArgsSchema, args);
+    if (!parsed) return "";
+
+    const n = parsed.tool_calls.length;
     if (!Number.isFinite(n) || n <= 0) return "";
     return ` (${n} tools)`;
   },

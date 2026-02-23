@@ -432,13 +432,23 @@ export async function bridgeBusToAdapter(params: {
         const shouldWarn = lagMs >= env.perf.lagWarnMs;
         const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
         if (shouldWarn || shouldSample) {
-          (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
-            stage: "evt.request.reply->bus_to_adapter",
-            lagMs,
-            requestId,
-            sessionId,
-            requestClient,
-          });
+          if (shouldWarn) {
+            logger.warn("perf.bus_lag", {
+              stage: "evt.request.reply->bus_to_adapter",
+              lagMs,
+              requestId,
+              sessionId,
+              requestClient,
+            });
+          } else {
+            logger.info("perf.bus_lag", {
+              stage: "evt.request.reply->bus_to_adapter",
+              lagMs,
+              requestId,
+              sessionId,
+              requestClient,
+            });
+          }
         }
       }
 
@@ -770,13 +780,23 @@ export async function bridgeBusToAdapter(params: {
             sinceRelayStartMs >= env.perf.lagWarnMs || outBusLagMs >= env.perf.lagWarnMs;
           const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
           if (shouldWarn || shouldSample) {
-            (shouldWarn ? logger.warn : logger.info)("perf.output_first_event", {
-              requestId,
-              sessionId,
-              sinceRelayStartMs,
-              outBusLagMs,
-              outType: outMsg.type,
-            });
+            if (shouldWarn) {
+              logger.warn("perf.output_first_event", {
+                requestId,
+                sessionId,
+                sinceRelayStartMs,
+                outBusLagMs,
+                outType: outMsg.type,
+              });
+            } else {
+              logger.info("perf.output_first_event", {
+                requestId,
+                sessionId,
+                sinceRelayStartMs,
+                outBusLagMs,
+                outType: outMsg.type,
+              });
+            }
           }
         }
 
@@ -1042,12 +1062,21 @@ export async function bridgeBusToAdapter(params: {
       const shouldWarn = setupMs >= env.perf.lagWarnMs;
       const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
       if (shouldWarn || shouldSample) {
-        (shouldWarn ? logger.warn : logger.info)("perf.subscription_setup", {
-          stage: "bus_to_adapter.output_subscribe",
-          requestId,
-          sessionId,
-          setupMs,
-        });
+        if (shouldWarn) {
+          logger.warn("perf.subscription_setup", {
+            stage: "bus_to_adapter.output_subscribe",
+            requestId,
+            sessionId,
+            setupMs,
+          });
+        } else {
+          logger.info("perf.subscription_setup", {
+            stage: "bus_to_adapter.output_subscribe",
+            requestId,
+            sessionId,
+            setupMs,
+          });
+        }
       }
     }
 

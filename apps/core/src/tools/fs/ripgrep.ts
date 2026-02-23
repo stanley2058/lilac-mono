@@ -1,5 +1,6 @@
 /* from @stanley2058/tool-eval */
 import { spawn } from "node:child_process";
+import { z } from "zod";
 
 export type GrepMatch = {
   file: string;
@@ -45,54 +46,39 @@ export type RipgrepResult = {
   truncated: boolean;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+const ripgrepSubmatchSchema = z.object({
+  match: z.object({ text: z.string() }),
+  start: z.number(),
+  end: z.number(),
+});
+
+const ripgrepMatchEventSchema = z.object({
+  type: z.literal("match"),
+  data: z.object({
+    path: z.object({ text: z.string().min(1) }),
+    line_number: z.number(),
+    lines: z
+      .object({
+        text: z.string(),
+      })
+      .optional(),
+    submatches: z.array(ripgrepSubmatchSchema).optional().default([]),
+  }),
+});
 
 function parseMatchEvent(event: unknown): GrepMatch | null {
-  if (!isRecord(event)) return null;
-  if (event["type"] !== "match") return null;
+  const parsed = ripgrepMatchEventSchema.safeParse(event);
+  if (!parsed.success) return null;
 
-  const data = event["data"];
-  if (!isRecord(data)) return null;
-
-  const pathValue = data["path"];
-  if (!isRecord(pathValue)) return null;
-  const file = pathValue["text"];
-  if (typeof file !== "string" || file.length === 0) return null;
-
-  const lineValue = data["line_number"];
-  if (typeof lineValue !== "number") return null;
-
-  const linesValue = data["lines"];
-  const text =
-    isRecord(linesValue) && typeof linesValue["text"] === "string" ? linesValue["text"] : "";
-
-  const rawSubmatches = data["submatches"];
-  const submatches = Array.isArray(rawSubmatches)
-    ? rawSubmatches
-        .map((item) => {
-          if (!isRecord(item)) return null;
-          const matchValue = item["match"];
-          if (!isRecord(matchValue)) return null;
-          const matchText = matchValue["text"];
-          const start = item["start"];
-          const end = item["end"];
-          if (
-            typeof matchText !== "string" ||
-            typeof start !== "number" ||
-            typeof end !== "number"
-          ) {
-            return null;
-          }
-          return {
-            match: matchText,
-            start,
-            end,
-          };
-        })
-        .filter((item): item is { match: string; start: number; end: number } => item !== null)
-    : [];
+  const data = parsed.data.data;
+  const file = data.path.text;
+  const lineValue = data.line_number;
+  const text = data.lines?.text ?? "";
+  const submatches = data.submatches.map((item) => ({
+    match: item.match.text,
+    start: item.start,
+    end: item.end,
+  }));
 
   return {
     file,

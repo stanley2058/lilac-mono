@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import { findWorkspaceRoot } from "./find-root";
 
@@ -53,6 +54,18 @@ type PromptTemplateState = {
   files: Partial<Record<CorePromptFileName, PromptTemplateStateEntry>>;
 };
 
+const promptTemplateStateEntrySchema = z.object({
+  status: z.enum(["managed", "customized"]),
+  templateHash: z.string().min(1),
+  appliedHash: z.string().optional(),
+});
+
+const promptTemplateStateSchema = z.object({
+  schemaVersion: z.literal(PROMPT_TEMPLATE_STATE_SCHEMA_VERSION),
+  templateBundleHash: z.string().min(1),
+  files: z.record(z.string(), promptTemplateStateEntrySchema).default({}),
+});
+
 function templatePath(name: CorePromptFileName): string {
   return path.join(import.meta.dir, "prompt-templates", name);
 }
@@ -80,63 +93,20 @@ function sha256HexText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
-function parseStateEntry(raw: unknown): PromptTemplateStateEntry | null {
-  if (!isRecord(raw)) return null;
-
-  const status = raw.status;
-  if (status !== "managed" && status !== "customized") {
-    return null;
-  }
-
-  const templateHash = raw.templateHash;
-  if (typeof templateHash !== "string" || templateHash.length === 0) {
-    return null;
-  }
-
-  const appliedRaw = raw.appliedHash;
-  if (typeof appliedRaw !== "undefined" && typeof appliedRaw !== "string") {
-    return null;
-  }
-
-  return {
-    status,
-    templateHash,
-    ...(typeof appliedRaw === "string" ? { appliedHash: appliedRaw } : {}),
-  };
-}
-
 function parsePromptTemplateState(raw: string): PromptTemplateState | null {
-  let parsed: unknown;
+  let parsedRaw: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    parsedRaw = JSON.parse(raw) as unknown;
   } catch {
     return null;
   }
 
-  if (!isRecord(parsed)) return null;
-
-  const schemaVersion = parsed.schemaVersion;
-  if (schemaVersion !== PROMPT_TEMPLATE_STATE_SCHEMA_VERSION) {
-    return null;
-  }
-
-  const templateBundleHash = parsed.templateBundleHash;
-  if (typeof templateBundleHash !== "string" || templateBundleHash.length === 0) {
-    return null;
-  }
-
-  const filesRaw = parsed.files;
-  if (!isRecord(filesRaw)) {
-    return null;
-  }
+  const parsed = promptTemplateStateSchema.safeParse(parsedRaw);
+  if (!parsed.success) return null;
 
   const files: Partial<Record<CorePromptFileName, PromptTemplateStateEntry>> = {};
   for (const name of CORE_PROMPT_FILES) {
-    const entry = parseStateEntry(filesRaw[name]);
+    const entry = parsed.data.files[name];
     if (entry) {
       files[name] = entry;
     }
@@ -144,7 +114,7 @@ function parsePromptTemplateState(raw: string): PromptTemplateState | null {
 
   return {
     schemaVersion: PROMPT_TEMPLATE_STATE_SCHEMA_VERSION,
-    templateBundleHash,
+    templateBundleHash: parsed.data.templateBundleHash,
     files,
   };
 }

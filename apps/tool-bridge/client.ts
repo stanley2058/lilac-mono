@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-control-regex */
 
 import { encode } from "@toon-format/toon";
+import { z } from "zod";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -41,20 +42,28 @@ type ToolOutputFull = {
 
 let callableIdsCache: string[] | undefined;
 
+const objectLikeSchema = z.record(z.string(), z.unknown());
+
+const listPayloadSchema = z.object({
+  tools: z.array(
+    z.object({
+      callableId: z.string().min(1),
+    }),
+  ),
+});
+
+const errorPayloadSchema = z
+  .object({
+    message: z.string().optional(),
+    output: z.string().optional(),
+    error: z.unknown().optional(),
+  })
+  .passthrough();
+
 function parseCallableIdsFromListPayload(payload: unknown): string[] {
-  if (!isRecord(payload)) return [];
-  const tools = payload.tools;
-  if (!Array.isArray(tools)) return [];
-
-  const callableIds: string[] = [];
-  for (const item of tools) {
-    if (!isRecord(item)) continue;
-    const callableId = item.callableId;
-    if (typeof callableId !== "string" || callableId.length === 0) continue;
-    callableIds.push(callableId);
-  }
-
-  return callableIds;
+  const parsed = listPayloadSchema.safeParse(payload);
+  if (!parsed.success) return [];
+  return parsed.data.tools.map((item) => item.callableId);
 }
 
 async function listCallableIdsBestEffort(): Promise<string[]> {
@@ -85,15 +94,16 @@ function extractErrorMessage(payload: unknown): string | undefined {
   const asString = maybeString(payload);
   if (asString) return asString;
 
-  if (!isRecord(payload)) return undefined;
+  const parsed = errorPayloadSchema.safeParse(payload);
+  if (!parsed.success) return undefined;
 
-  const directMessage = maybeString(payload.message);
+  const directMessage = maybeString(parsed.data.message);
   if (directMessage) return directMessage;
 
-  const outputMessage = maybeString(payload.output);
+  const outputMessage = maybeString(parsed.data.output);
   if (outputMessage) return outputMessage;
 
-  const errorValue = payload.error;
+  const errorValue = parsed.data.error;
   const nested = extractErrorMessage(errorValue);
   if (nested) return nested;
 
@@ -1029,8 +1039,9 @@ async function runOnboardingWizard(parsed: Extract<ParsedArgs, { type: "onboard"
   };
 
   const getStringField = (obj: unknown, key: string): string | undefined => {
-    if (!isRecord(obj)) return undefined;
-    const v = obj[key];
+    const parsed = objectLikeSchema.safeParse(obj);
+    if (!parsed.success) return undefined;
+    const v = parsed.data[key];
     return typeof v === "string" ? v : undefined;
   };
 
@@ -1110,10 +1121,6 @@ async function runOnboardingWizard(parsed: Extract<ParsedArgs, { type: "onboard"
   }
 }
 
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
 function parseJsonSource(value: string): JsonSource {
   if (value === "@-" || value === "-") {
     return { kind: "stdin" };
@@ -1136,10 +1143,11 @@ function parseJsonSource(value: string): JsonSource {
 
 async function readJsonObjectSource(source: JsonSource, label: string) {
   const value = await readJsonSource(source, label);
-  if (!isRecord(value)) {
+  const parsed = objectLikeSchema.safeParse(value);
+  if (!parsed.success) {
     throw new Error(`${label} must be a JSON object`);
   }
-  return value;
+  return parsed.data;
 }
 
 async function readJsonSource(source: JsonSource, label: string): Promise<unknown> {
