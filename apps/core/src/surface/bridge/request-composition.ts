@@ -676,22 +676,19 @@ export async function composeRecentChannelMessages(
   );
 
   const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => {
+    const base = toReplyChainMessage(m);
+
     const text =
       opts.transformUserText &&
       opts.triggerMsgRef &&
       m.userId !== opts.botUserId &&
       m.ref.messageId === (opts.transformUserTextForMessageId ?? opts.triggerMsgRef.messageId)
-        ? opts.transformUserText(m.text)
-        : m.text;
+        ? opts.transformUserText(base.text)
+        : base.text;
 
     return {
-      messageId: m.ref.messageId,
-      authorId: m.userId,
-      authorName: m.userName ?? `user_${m.userId}`,
-      ts: m.ts,
+      ...base,
       text,
-      attachments: extractDiscordAttachmentsFromRaw(m.raw),
-      raw: m.raw,
     };
   });
 
@@ -816,7 +813,7 @@ export async function composeSingleMessage(
   // Never include session divider markers in model context.
   if (isDiscordSessionDividerSurfaceMessageAnyAuthor(m)) return null;
 
-  let text = m.text;
+  let text = m.text.trim().length > 0 ? m.text : (getForwardSnapshotTextFromRaw(m.raw) ?? m.text);
 
   if (m.userId !== opts.botUserId && opts.transformUserText) {
     text = opts.transformUserText(text);
@@ -1667,8 +1664,116 @@ type DiscordAttachmentMeta = {
   size?: number;
 };
 
+const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
+const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+function extractDiscordAttachmentsFromList(list: readonly unknown[]): DiscordAttachmentMeta[] {
+  const out: DiscordAttachmentMeta[] = [];
+
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+
+    const url = typeof a.url === "string" ? a.url : null;
+    if (!url) continue;
+
+    out.push({
+      url,
+      filename: typeof a.filename === "string" ? a.filename : undefined,
+      mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
+      size: typeof a.size === "number" ? a.size : undefined,
+    });
+  }
+
+  return out;
+}
+
+function getDiscordReferenceTypeFromRaw(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+
+  if ("reference" in o) {
+    const ref = o.reference;
+    if (ref && typeof ref === "object") {
+      const type = (ref as Record<string, unknown>).type;
+      if (typeof type === "number") return type;
+    }
+  }
+
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+  const referenceType =
+    discord && typeof discord.referenceType === "number" ? discord.referenceType : undefined;
+  return referenceType;
+}
+
+function getForwardSnapshotMessageFromRaw(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const referenceType = getDiscordReferenceTypeFromRaw(raw) ?? DISCORD_REFERENCE_TYPE_DEFAULT;
+  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
+
+  const o = raw as Record<string, unknown>;
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+
+  const resolveSnapshotMessage = (value: unknown): Record<string, unknown> | null => {
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const first = value[0];
+    if (!first || typeof first !== "object") return null;
+
+    const firstObj = first as Record<string, unknown>;
+    const nestedMessage = firstObj.message;
+    if (nestedMessage && typeof nestedMessage === "object") {
+      return nestedMessage as Record<string, unknown>;
+    }
+
+    return firstObj;
+  };
+
+  return (
+    resolveSnapshotMessage(o.messageSnapshots) ?? resolveSnapshotMessage(discord?.messageSnapshots)
+  );
+}
+
+function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined {
+  const snapshot = getForwardSnapshotMessageFromRaw(raw);
+  if (!snapshot) return undefined;
+
+  const content = typeof snapshot.content === "string" ? snapshot.content : "";
+  if (content.trim().length > 0) return content;
+
+  const embeds = Array.isArray(snapshot.embeds) ? snapshot.embeds : [];
+  const descriptions = embeds
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return "";
+      const description = (item as Record<string, unknown>).description;
+      return typeof description === "string" ? description : "";
+    })
+    .filter((desc) => desc.trim().length > 0);
+
+  const fromEmbeds = descriptions.join("\n\n").trim();
+  return fromEmbeds.length > 0 ? fromEmbeds : undefined;
+}
+
 function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {
   if (!raw || typeof raw !== "object") return [];
+
+  const forwardSnapshot = getForwardSnapshotMessageFromRaw(raw);
+  if (forwardSnapshot) {
+    const snapshotAttachments =
+      "attachments" in forwardSnapshot && Array.isArray(forwardSnapshot.attachments)
+        ? extractDiscordAttachmentsFromList(forwardSnapshot.attachments)
+        : [];
+    if (snapshotAttachments.length > 0) {
+      return snapshotAttachments;
+    }
+  }
 
   // We store attachments in two places depending on origin:
   // - adapter persisted raw: { attachments: [...] }
@@ -1691,24 +1796,7 @@ function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[]
   const list = listFromDiscord ?? listFromTopLevel;
   if (!list) return [];
 
-  const out: DiscordAttachmentMeta[] = [];
-
-  for (const item of list) {
-    if (!item || typeof item !== "object") continue;
-    const a = item as Record<string, unknown>;
-
-    const url = typeof a.url === "string" ? a.url : null;
-    if (!url) continue;
-
-    out.push({
-      url,
-      filename: typeof a.filename === "string" ? a.filename : undefined,
-      mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
-      size: typeof a.size === "number" ? a.size : undefined,
-    });
-  }
-
-  return out;
+  return extractDiscordAttachmentsFromList(list);
 }
 
 function getReferenceFromRaw(raw: unknown): {
@@ -1725,7 +1813,10 @@ function getReferenceFromRaw(raw: unknown): {
       const r = ref as Record<string, unknown>;
       const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
       const channelId = typeof r.channelId === "string" ? r.channelId : undefined;
-      if (messageId) return { messageId, channelId };
+      const referenceType = typeof r.type === "number" ? r.type : DISCORD_REFERENCE_TYPE_DEFAULT;
+      if (messageId && referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) {
+        return { messageId, channelId };
+      }
     }
   }
 
@@ -1734,9 +1825,15 @@ function getReferenceFromRaw(raw: unknown): {
     "discord" in o && o.discord && typeof o.discord === "object"
       ? (o.discord as Record<string, unknown>)
       : null;
+  const referenceType =
+    discord && typeof discord.referenceType === "number"
+      ? discord.referenceType
+      : DISCORD_REFERENCE_TYPE_DEFAULT;
   const replyToMessageId =
     discord && typeof discord.replyToMessageId === "string" ? discord.replyToMessageId : undefined;
-  if (replyToMessageId) return { messageId: replyToMessageId };
+  if (replyToMessageId && referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) {
+    return { messageId: replyToMessageId };
+  }
 
   return {};
 }
@@ -1752,12 +1849,19 @@ function toReplyChainMessage(
     authorNameFallback?: string;
   },
 ): ReplyChainMessage {
+  const text =
+    opts?.overrideText !== undefined
+      ? opts.overrideText
+      : msg.text.trim().length > 0
+        ? msg.text
+        : (getForwardSnapshotTextFromRaw(msg.raw) ?? msg.text);
+
   return {
     messageId: msg.ref.messageId,
     authorId: msg.userId,
     authorName: msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
     ts: msg.ts,
-    text: opts?.overrideText ?? msg.text,
+    text,
     attachments: extractDiscordAttachmentsFromRaw(msg.raw),
     raw: msg.raw,
   };

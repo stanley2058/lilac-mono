@@ -109,6 +109,211 @@ function getDisplayName(msg: Message): string {
   return memberName ?? msg.author.globalName ?? msg.author.username;
 }
 
+type DiscordAttachmentMeta = {
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
+const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+function normalizeDiscordReference(msg: Message): {
+  messageId?: string;
+  channelId?: string;
+  guildId?: string;
+  type?: number;
+} | null {
+  const ref = msg.reference;
+  if (!ref) return null;
+
+  const messageId = typeof ref.messageId === "string" ? ref.messageId : undefined;
+  const channelId = typeof ref.channelId === "string" ? ref.channelId : undefined;
+  const guildId = typeof ref.guildId === "string" ? ref.guildId : undefined;
+  const type = typeof ref.type === "number" ? ref.type : undefined;
+
+  if (!messageId && !channelId && !guildId && type === undefined) {
+    return null;
+  }
+
+  return {
+    ...(messageId ? { messageId } : {}),
+    ...(channelId ? { channelId } : {}),
+    ...(guildId ? { guildId } : {}),
+    ...(type !== undefined ? { type } : {}),
+  };
+}
+
+function getReplyReference(msg: Message): {
+  messageId: string;
+  channelId?: string;
+} | null {
+  const ref = normalizeDiscordReference(msg);
+  if (!ref?.messageId) return null;
+
+  const type = ref.type ?? DISCORD_REFERENCE_TYPE_DEFAULT;
+  if (type === DISCORD_REFERENCE_TYPE_FORWARD) return null;
+
+  return {
+    messageId: ref.messageId,
+    ...(ref.channelId ? { channelId: ref.channelId } : {}),
+  };
+}
+
+function toDiscordAttachmentMeta(x: unknown): DiscordAttachmentMeta | null {
+  if (!x || typeof x !== "object") return null;
+  const o = x as Record<string, unknown>;
+
+  const url = typeof o.url === "string" ? o.url : null;
+  if (!url) return null;
+
+  const filename =
+    typeof o.name === "string" ? o.name : typeof o.filename === "string" ? o.filename : undefined;
+
+  const mimeType =
+    typeof o.contentType === "string"
+      ? o.contentType
+      : typeof o.mimeType === "string"
+        ? o.mimeType
+        : undefined;
+
+  const size = typeof o.size === "number" ? o.size : undefined;
+
+  return {
+    url,
+    ...(filename ? { filename } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    ...(size !== undefined ? { size } : {}),
+  };
+}
+
+function collectDiscordAttachmentMeta(input: unknown): DiscordAttachmentMeta[] {
+  const out: DiscordAttachmentMeta[] = [];
+
+  if (!input) return out;
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const normalized = toDiscordAttachmentMeta(item);
+      if (normalized) out.push(normalized);
+    }
+    return out;
+  }
+
+  if (typeof input === "object") {
+    const maybeValues = (input as { values?: unknown }).values;
+    if (typeof maybeValues === "function") {
+      for (const item of (maybeValues as () => Iterable<unknown>).call(input)) {
+        const normalized = toDiscordAttachmentMeta(item);
+        if (normalized) out.push(normalized);
+      }
+    }
+  }
+
+  return out;
+}
+
+function getSnapshotEmbedDescriptions(snapshot: Record<string, unknown>): string[] {
+  const embeds = snapshot.embeds;
+  if (!Array.isArray(embeds)) return [];
+
+  const out: string[] = [];
+  for (const emb of embeds) {
+    if (!emb || typeof emb !== "object") continue;
+    const desc = (emb as Record<string, unknown>).description;
+    if (typeof desc === "string" && desc.trim().length > 0) {
+      out.push(desc);
+    }
+  }
+
+  return out;
+}
+
+function normalizeFlagsNumber(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "bigint") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (!v || typeof v !== "object") return undefined;
+
+  const bitfield = (v as Record<string, unknown>).bitfield;
+  if (typeof bitfield === "number") return Number.isFinite(bitfield) ? bitfield : undefined;
+  if (typeof bitfield === "bigint") {
+    const n = Number(bitfield);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  return undefined;
+}
+
+function getForwardSnapshotPayload(msg: Message): {
+  content: string;
+  embeds: string[];
+  attachments: DiscordAttachmentMeta[];
+  timestamp?: number;
+  editedTimestamp?: number;
+  flags?: number;
+} | null {
+  const ref = normalizeDiscordReference(msg);
+  const referenceType = ref?.type ?? DISCORD_REFERENCE_TYPE_DEFAULT;
+  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
+
+  const snapshots = msg.messageSnapshots;
+  if (!snapshots || snapshots.size === 0) return null;
+
+  let firstSnapshot: unknown;
+  for (const snapshot of snapshots.values()) {
+    firstSnapshot = snapshot;
+    break;
+  }
+  if (!firstSnapshot || typeof firstSnapshot !== "object") return null;
+
+  const snapshot = firstSnapshot as Record<string, unknown>;
+
+  const content = typeof snapshot.content === "string" ? snapshot.content : "";
+  const embeds = getSnapshotEmbedDescriptions(snapshot);
+  const attachments = collectDiscordAttachmentMeta(snapshot.attachments);
+  const timestamp =
+    typeof snapshot.createdTimestamp === "number" ? snapshot.createdTimestamp : undefined;
+  const editedTimestamp =
+    typeof snapshot.editedTimestamp === "number" ? snapshot.editedTimestamp : undefined;
+  const flags = normalizeFlagsNumber(snapshot.flags);
+
+  return {
+    content,
+    embeds,
+    attachments,
+    ...(timestamp !== undefined ? { timestamp } : {}),
+    ...(editedTimestamp !== undefined ? { editedTimestamp } : {}),
+    ...(flags !== undefined ? { flags } : {}),
+  };
+}
+
+function buildForwardMessageSnapshots(
+  forwardSnapshot: ReturnType<typeof getForwardSnapshotPayload>,
+): Array<{ message: Record<string, unknown> }> | undefined {
+  if (!forwardSnapshot) return undefined;
+
+  return [
+    {
+      message: {
+        content: forwardSnapshot.content,
+        embeds: forwardSnapshot.embeds,
+        attachments: forwardSnapshot.attachments,
+        ...(forwardSnapshot.timestamp !== undefined
+          ? { timestamp: forwardSnapshot.timestamp }
+          : {}),
+        ...(forwardSnapshot.editedTimestamp !== undefined
+          ? { editedTimestamp: forwardSnapshot.editedTimestamp }
+          : {}),
+        ...(forwardSnapshot.flags !== undefined ? { flags: forwardSnapshot.flags } : {}),
+      },
+    },
+  ];
+}
+
 function getEmbedDescriptions(msg: Message): string[] {
   const out: string[] = [];
   for (const emb of msg.embeds) {
@@ -1052,6 +1257,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     const store = this.store;
     if (!store) return;
 
+    const replyRef = getReplyReference(msg);
+
     store.upsertMessageRelation({
       channelId: msg.channelId,
       messageId: msg.id,
@@ -1060,8 +1267,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       authorName: getDisplayName(msg),
       ts: getMessageTs(msg),
       isChat: isDiscordChatLikeMessage(msg),
-      replyToChannelId: msg.reference?.channelId ?? undefined,
-      replyToMessageId: msg.reference?.messageId ?? undefined,
+      replyToChannelId: replyRef?.channelId,
+      replyToMessageId: replyRef?.messageId,
       deleted: input?.deleted,
       updatedTs: Date.now(),
     });
@@ -1815,12 +2022,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg);
 
-    const attachments = [...msg.attachments.values()].map((a) => ({
-      url: a.url,
-      filename: a.name ?? undefined,
-      mimeType: a.contentType ?? undefined,
-      size: typeof a.size === "number" ? a.size : undefined,
-    }));
+    const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const reference = normalizeDiscordReference(msg);
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
@@ -1851,7 +2056,8 @@ export class DiscordAdapter implements SurfaceAdapter {
         authorId: msg.author.id,
         content: msg.content,
         embeds: getEmbedDescriptions(msg),
-        reference: msg.reference ?? undefined,
+        reference: reference ?? undefined,
+        messageSnapshots,
         editedTs,
         attachments,
         discord: {
@@ -1859,6 +2065,8 @@ export class DiscordAdapter implements SurfaceAdapter {
           type: msg.type,
           typeName: getDiscordMessageTypeName(msg),
           isChat: isDiscordChatLikeMessage(msg),
+          referenceType: reference?.type,
+          messageSnapshots,
           sessionModelOverride,
         },
       },
@@ -1996,12 +2204,11 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg);
 
-    const attachments = [...msg.attachments.values()].map((a) => ({
-      url: a.url,
-      filename: a.name ?? undefined,
-      mimeType: a.contentType ?? undefined,
-      size: typeof a.size === "number" ? a.size : undefined,
-    }));
+    const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const reference = normalizeDiscordReference(msg);
+    const replyRef = getReplyReference(msg);
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
@@ -2034,11 +2241,13 @@ export class DiscordAdapter implements SurfaceAdapter {
           isDMBased: sessionKind === "dm",
           mentionsBot: false,
           replyToBot: false,
-          replyToMessageId: msg.reference?.messageId ?? undefined,
+          replyToMessageId: replyRef?.messageId,
+          referenceType: reference?.type,
           guildId: guildId ?? undefined,
           parentChannelId: parentChannelId ?? undefined,
           sessionModelOverride,
           attachments,
+          messageSnapshots,
         },
       },
     };
@@ -2071,13 +2280,13 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.client;
     if (!client) return false;
 
-    const refId = msg.reference?.messageId;
-    if (!refId) return false;
+    const replyRef = getReplyReference(msg);
+    if (!replyRef) return false;
 
     try {
       const channel = msg.channel;
       if (!channel?.messages?.fetch) return false;
-      const parent = await channel.messages.fetch(refId);
+      const parent = await channel.messages.fetch(replyRef.messageId);
       return parent?.author?.id === botUserId;
     } catch {
       return false;
@@ -2138,12 +2347,11 @@ export class DiscordAdapter implements SurfaceAdapter {
     const ts = getMessageTs(msg);
     const editedTs = getMessageEditedTs(msg);
 
-    const attachments = [...msg.attachments.values()].map((a) => ({
-      url: a.url,
-      filename: a.name ?? undefined,
-      mimeType: a.contentType ?? undefined,
-      size: typeof a.size === "number" ? a.size : undefined,
-    }));
+    const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const reference = normalizeDiscordReference(msg);
+    const replyRef = getReplyReference(msg);
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
     const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
@@ -2184,10 +2392,12 @@ export class DiscordAdapter implements SurfaceAdapter {
           isDMBased: sessionKind === "dm",
           mentionsBot: false,
           replyToBot: false,
-          replyToMessageId: msg.reference?.messageId ?? undefined,
+          replyToMessageId: replyRef?.messageId,
+          referenceType: reference?.type,
           guildId: guildId ?? undefined,
           parentChannelId: parentChannelId ?? undefined,
           attachments,
+          messageSnapshots,
         },
       },
     };

@@ -401,6 +401,117 @@ describe("request-composition attachments", () => {
     expect(content[1].text).toContain("download failed");
     expect(content[1].text).toContain("https://cdn.discordapp.com/");
   });
+
+  it("uses forward snapshot content and visible attachments only", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "",
+      ts: 0,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "orig",
+          channelId: "other",
+        },
+        attachments: [
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/1/IMG_1.png",
+            filename: "IMG_1.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/2/IMG_2.png",
+            filename: "IMG_2.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/3/IMG_3.png",
+            filename: "IMG_3.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+        ],
+        messageSnapshots: [
+          {
+            message: {
+              content: "Forwarded snapshot text",
+              attachments: [
+                {
+                  url: "https://cdn.discordapp.com/attachments/fwd/1/IMG_VISIBLE.png",
+                  filename: "IMG_VISIBLE.png",
+                  mimeType: "image/jpeg",
+                  size: 10,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(Array.isArray(out?.content)).toBe(true);
+
+    const parts = out!.content as any[];
+    expect(parts[0].type).toBe("text");
+    expect(parts[0].text).toContain("Forwarded snapshot text");
+
+    const imageParts = parts.filter((p) => p && p.type === "image");
+    expect(imageParts.length).toBe(1);
+    expect(String(imageParts[0].image)).toContain("IMG_VISIBLE.png");
+  });
+
+  it("uses forward snapshot embed string description when content is empty", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "",
+      ts: 0,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "orig",
+          channelId: "other",
+        },
+        messageSnapshots: [
+          {
+            message: {
+              content: "",
+              embeds: ["forwarded embed text"],
+              attachments: [],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("forwarded embed text");
+  });
 });
 
 describe("request-composition mention thread context", () => {
@@ -852,6 +963,97 @@ describe("request-composition mention thread context", () => {
     expect(merged as string).toContain("new ask");
     expect(merged as string).not.toContain("old reply");
     expect(merged as string).not.toContain("Root");
+  });
+
+  it("treats forwarded references as root and uses forwarded snapshot payload", async () => {
+    const sessionId = "c";
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "root" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u0",
+      userName: "rooter",
+      text: "Root should not be expanded",
+      ts: 0,
+      raw: { reference: {} },
+    };
+
+    const forwardMention: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "fwd1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: "",
+      ts: 1_000,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "root",
+          channelId: sessionId,
+        },
+        attachments: [
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/1/IMG_1.png",
+            filename: "IMG_1.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/2/IMG_2.png",
+            filename: "IMG_2.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/3/IMG_3.png",
+            filename: "IMG_3.png",
+            mimeType: "image/jpeg",
+            size: 10,
+          },
+        ],
+        messageSnapshots: [
+          {
+            message: {
+              content: "Forwarded snapshot text",
+              attachments: [
+                {
+                  url: "https://cdn.discordapp.com/attachments/fwd/1/IMG_VISIBLE.png",
+                  filename: "IMG_VISIBLE.png",
+                  mimeType: "image/jpeg",
+                  size: 10,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:root`]: root,
+      [`${sessionId}:fwd1`]: forwardMention,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: forwardMention.ref },
+    });
+
+    expect(out.chainMessageIds).toEqual(["fwd1"]);
+    expect(out.messages.length).toBe(1);
+
+    const content = out.messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+
+    const parts = content as any[];
+    expect(parts[0].type).toBe("text");
+    expect(parts[0].text).toContain("Forwarded snapshot text");
+
+    const imageParts = parts.filter((p) => p && p.type === "image");
+    expect(imageParts.length).toBe(1);
+    expect(String(imageParts[0].image)).toContain("IMG_VISIBLE.png");
   });
 
   it("includes user alias in mention-thread attribution header when configured", async () => {
