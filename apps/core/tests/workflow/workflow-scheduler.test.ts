@@ -309,4 +309,83 @@ describe("workflow scheduler", () => {
     await scheduler.stop();
     await svc.stop();
   });
+
+  it("marks workflow/task failed for malformed cron task input", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const store = new SqliteWorkflowStore(":memory:");
+    const queries = createWorkflowStoreQueries(store);
+
+    const scheduler = await startWorkflowScheduler({
+      bus,
+      store,
+      queries,
+      subscriptionId: "workflow-scheduler-test",
+      intervalMs: 0,
+    });
+
+    const requestMsgs: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-malformed",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) requestMsgs.push(m);
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_bad_cron";
+    const taskId = "t_bad_cron";
+    const nowMs = Date.now();
+
+    store.upsertWorkflow({
+      workflowId,
+      state: "blocked",
+      createdAt: nowMs,
+      updatedAt: nowMs,
+      definition: {
+        version: 3,
+        kind: "scheduled",
+        schedule: {
+          mode: "cron",
+          expr: "*/5 * * * *",
+          tz: "UTC",
+        },
+        job: {
+          summary: "bad cron",
+          userPrompt: "run",
+        },
+      },
+      resumeSeq: 0,
+    });
+
+    store.upsertTask({
+      workflowId,
+      taskId,
+      kind: "time.cron",
+      description: "malformed",
+      state: "blocked",
+      input: {
+        tz: "UTC",
+      },
+      createdAt: nowMs,
+      updatedAt: nowMs,
+      timeoutAt: nowMs - 1,
+    });
+
+    await scheduler.tick(nowMs + 10);
+
+    expect(requestMsgs.length).toBe(0);
+    expect(store.getTask(workflowId, taskId)?.state).toBe("failed");
+    expect(store.getWorkflow(workflowId)?.state).toBe("failed");
+
+    await reqSub.stop();
+    await scheduler.stop();
+  });
 });

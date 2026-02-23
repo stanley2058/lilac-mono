@@ -208,4 +208,208 @@ describe("workflow-service (v2)", () => {
     await reqSub.stop();
     await svc.stop();
   });
+
+  it("is idempotent when the same reply event is delivered twice", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test",
+      pollTimeouts: { enabled: false },
+    });
+
+    const receivedReq: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          receivedReq.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_idempotent";
+
+    await bus.publish(
+      lilacEventTypes.CmdWorkflowCreate,
+      {
+        workflowId,
+        definition: {
+          version: 2,
+          origin: {
+            request_id: "discord:chanX:orig",
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          resumeTarget: {
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          summary: "wait for reply",
+          completion: "all",
+        },
+      },
+      {
+        headers: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdWorkflowTaskCreate,
+      {
+        workflowId,
+        taskId: "t1",
+        kind: "discord.wait_for_reply",
+        description: "wait",
+        input: {
+          channelId: "dmY",
+          messageId: "anchor1",
+          fromUserId: "userB",
+        },
+      },
+      {
+        headers: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+      },
+    );
+
+    const evt = {
+      platform: "discord" as const,
+      channelId: "dmY",
+      channelName: "dm",
+      messageId: "reply2",
+      userId: "userB",
+      userName: "B",
+      text: "same event",
+      ts: Date.now(),
+      raw: { discord: { replyToMessageId: "anchor1" } },
+    };
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, evt);
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, evt);
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(receivedReq.length).toBe(1);
+    expect(String(receivedReq[0]?.headers?.request_id).startsWith("wf:wf_idempotent:")).toBe(true);
+
+    const after = store.getWorkflow(workflowId);
+    expect(after?.resumePublishedAt).toBeDefined();
+
+    await reqSub.stop();
+    await svc.stop();
+  });
+
+  it("resolves timed out wait_for_reply task through timeout polling", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test-timeout",
+      pollTimeouts: { enabled: true, intervalMs: 5 },
+    });
+
+    const receivedReq: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-timeout",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          receivedReq.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_timeout";
+
+    await bus.publish(
+      lilacEventTypes.CmdWorkflowCreate,
+      {
+        workflowId,
+        definition: {
+          version: 2,
+          origin: {
+            request_id: "discord:chanX:orig",
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          resumeTarget: {
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          summary: "wait with timeout",
+          completion: "all",
+        },
+      },
+      {
+        headers: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdWorkflowTaskCreate,
+      {
+        workflowId,
+        taskId: "t_timeout",
+        kind: "discord.wait_for_reply",
+        description: "wait with timeout",
+        input: {
+          channelId: "dmY",
+          messageId: "anchor_timeout",
+          timeoutMs: 1,
+        },
+      },
+      {
+        headers: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(receivedReq.length).toBe(1);
+    const msg = receivedReq[0]!;
+    expect(msg.headers?.session_id).toBe("chanX");
+    expect(msg.data.queue).toBe("prompt");
+
+    const task = store.getTask(workflowId, "t_timeout");
+    expect(task?.state).toBe("resolved");
+    expect(task?.resolvedBy?.startsWith("timeout:")).toBe(true);
+
+    await reqSub.stop();
+    await svc.stop();
+  });
 });
