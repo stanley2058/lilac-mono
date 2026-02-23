@@ -58,6 +58,14 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
   };
 }
 
+function estimateJsonBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Buffer.byteLength(String(value), "utf8");
+  }
+}
+
 export type ToolServerOptions = {
   tools: ServerTool[];
   app?: Elysia;
@@ -149,13 +157,15 @@ export function createToolServer(options: ToolServerOptions) {
       }
 
       const ctx = parseRequestContext(headers);
+      const inputBytes = estimateJsonBytes(body.input);
 
-      logger.info("tool call", {
+      logger.debug("tool call", {
         callableId: body.callableId,
         requestId: ctx.requestId,
         sessionId: ctx.sessionId,
         requestClient: ctx.requestClient,
         cwd: ctx.cwd,
+        inputBytes,
       });
 
       logger.debug("tool call input", {
@@ -168,26 +178,48 @@ export function createToolServer(options: ToolServerOptions) {
           ? options.requestMessageCache?.get(ctx.requestId)
           : undefined;
 
+        if (!ctx.requestId || !ctx.sessionId || !ctx.requestClient) {
+          logger.warn("tool.call.context_missing", {
+            callableId: body.callableId,
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            requestClient: ctx.requestClient,
+            hasRequestId: Boolean(ctx.requestId),
+            hasSessionId: Boolean(ctx.sessionId),
+            hasRequestClient: Boolean(ctx.requestClient),
+          });
+        }
+
         const output = await tool.call(body.callableId, body.input, {
           signal: request.signal,
           context: ctx,
           messages,
         });
 
-        logger.info("tool call done", {
+        logger.info("tool.call.result", {
           callableId: body.callableId,
           requestId: ctx.requestId,
+          sessionId: ctx.sessionId,
+          requestClient: ctx.requestClient,
+          hasMessagesContext: Array.isArray(messages) && messages.length > 0,
+          inputBytes,
           durationMs: Date.now() - startedAt,
           ok: true,
         });
         return { isError: false, output };
       } catch (e) {
         logger.error(
-          "tool call failed",
+          "tool.call.result",
           {
             callableId: body.callableId,
             requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            requestClient: ctx.requestClient,
+            inputBytes,
             durationMs: Date.now() - startedAt,
+            ok: false,
+            errorClass: e instanceof Error ? e.name : "unknown",
+            cancelled: request.signal.aborted,
           },
           e,
         );

@@ -1279,7 +1279,7 @@ export async function startBusAgentRunner(params: {
         }
       }
 
-      logger.info("cmd.request.message received", {
+      logger.debug("cmd.request.message received", {
         requestId,
         sessionId,
         requestClient,
@@ -1304,16 +1304,6 @@ export async function startBusAgentRunner(params: {
 
       const requestControl = parseRequestControlFromRaw(entry.raw);
 
-      if (draining) {
-        logger.info("dropping request message while draining", {
-          requestId,
-          sessionId,
-          queue: msg.data.queue,
-        });
-        await ctx.commit();
-        return;
-      }
-
       const state =
         bySession.get(sessionId) ??
         ({
@@ -1326,12 +1316,56 @@ export async function startBusAgentRunner(params: {
         } satisfies SessionQueue);
       bySession.set(sessionId, state);
 
+      const logQueueTransition = (input: {
+        action: string;
+        queueDepthBefore: number;
+        queueDepthAfter: number;
+        reason?: string;
+        activeRequestId?: string | null;
+      }) => {
+        logger.info("agent.queue.transition", {
+          requestId,
+          sessionId,
+          requestClient,
+          queueMode: entry.queue,
+          running: state.running,
+          queueDepthBefore: input.queueDepthBefore,
+          queueDepthAfter: input.queueDepthAfter,
+          action: input.action,
+          reason: input.reason,
+          activeRequestId: input.activeRequestId ?? state.activeRequestId,
+          draining,
+        });
+      };
+
+      if (draining) {
+        logger.info("dropping request message while draining", {
+          requestId,
+          sessionId,
+          queue: msg.data.queue,
+        });
+        logQueueTransition({
+          action: "drop",
+          queueDepthBefore: state.queue.length,
+          queueDepthAfter: state.queue.length,
+          reason: "draining",
+        });
+        await ctx.commit();
+        return;
+      }
+
       const dropCancelNoTarget = async (reason: string) => {
         logger.info("dropping cancel request with no target", {
           requestId,
           sessionId,
           queue: entry.queue,
           activeRequestId: state.activeRequestId,
+          reason,
+        });
+        logQueueTransition({
+          action: "drop",
+          queueDepthBefore: state.queue.length,
+          queueDepthAfter: state.queue.length,
           reason,
         });
         await ctx.commit();
@@ -1378,6 +1412,12 @@ export async function startBusAgentRunner(params: {
             cancelledRequestIds: [...removed.keys()],
             queueDepth: state.queue.length,
           });
+          logQueueTransition({
+            action: "cancel_queued",
+            queueDepthBefore: state.queue.length + removed.size,
+            queueDepthAfter: state.queue.length,
+            reason: "cancel_queued",
+          });
 
           if (!state.running) {
             drainSessionQueue(sessionId, state).catch((e: unknown) => {
@@ -1406,6 +1446,14 @@ export async function startBusAgentRunner(params: {
             requestClient: state.activeRun?.requestClient ?? entry.requestClient,
           };
           await applyToRunningAgent(state.agent, activeCancelEntry, cancelledByRequestId);
+          logQueueTransition({
+            action: "apply_to_active",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: targetMatchesActive
+              ? "cancel_active_by_message_id"
+              : "cancel_active_by_request_id",
+          });
           await ctx.commit();
           return;
         }
@@ -1427,11 +1475,24 @@ export async function startBusAgentRunner(params: {
             sessionId,
             queue: entry.queue,
           });
+          logQueueTransition({
+            action: "drop",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: "requires_active_without_run",
+          });
           await ctx.commit();
           return;
         }
 
+        const queueDepthBefore = state.queue.length;
         state.queue.push(entry);
+        logQueueTransition({
+          action: "enqueue",
+          queueDepthBefore,
+          queueDepthAfter: state.queue.length,
+          reason: "start_when_idle",
+        });
         drainSessionQueue(sessionId, state).catch((e: unknown) => {
           logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
         });
@@ -1439,6 +1500,12 @@ export async function startBusAgentRunner(params: {
         // If the message is intended for the currently active request, apply immediately.
         if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
           await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
+          logQueueTransition({
+            action: "apply_to_active",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: "same_request_id",
+          });
         } else {
           // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
           // an unrelated active request.
@@ -1449,11 +1516,18 @@ export async function startBusAgentRunner(params: {
               activeRequestId: state.activeRequestId,
               queue: entry.queue,
             });
+            logQueueTransition({
+              action: "drop",
+              queueDepthBefore: state.queue.length,
+              queueDepthAfter: state.queue.length,
+              reason: "requires_active_different_request_id",
+            });
             await ctx.commit();
             return;
           }
 
           // No parallel runs: queue prompt messages for later.
+          const queueDepthBefore = state.queue.length;
           state.queue.push(entry);
 
           await publishLifecycle({
@@ -1472,6 +1546,12 @@ export async function startBusAgentRunner(params: {
             sessionId,
             activeRequestId: state.activeRequestId,
             queueDepth: state.queue.length,
+          });
+          logQueueTransition({
+            action: "enqueue",
+            queueDepthBefore,
+            queueDepthAfter: state.queue.length,
+            reason: "queued_behind_active",
           });
         }
       }
@@ -1612,8 +1692,23 @@ export async function startBusAgentRunner(params: {
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
     if (state.running) return;
 
+    const queueDepthBefore = state.queue.length;
     const next = state.queue.shift();
     if (!next) return;
+
+    logger.info("agent.queue.transition", {
+      requestId: next.requestId,
+      sessionId,
+      requestClient: next.requestClient,
+      queueMode: next.queue,
+      running: state.running,
+      queueDepthBefore,
+      queueDepthAfter: state.queue.length,
+      action: "dequeue",
+      reason: "drain_session_queue",
+      activeRequestId: state.activeRequestId,
+      draining,
+    });
 
     state.running = true;
     state.activeRequestId = next.requestId;

@@ -235,17 +235,31 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
   const app = new Elysia();
 
   app.post(path, async ({ request, set }) => {
+    const startedAt = Date.now();
     const event = request.headers.get("x-github-event") ?? "";
     const deliveryId = request.headers.get("x-github-delivery") ?? undefined;
     const sig256 = request.headers.get("x-hub-signature-256");
 
     const raw = new Uint8Array(await request.arrayBuffer());
     if (!verifyGithubWebhookSignature({ secret, signature256: sig256, rawBody: raw })) {
+      logger.warn("github.webhook.rejected", {
+        event,
+        deliveryId,
+        reason: "invalid_signature",
+        statusCode: 401,
+        durationMs: Date.now() - startedAt,
+      });
       set.status = 401;
       return { ok: false, error: "invalid signature" };
     }
 
     if (dedupe(deliveryId)) {
+      logger.info("github.webhook.deduped", {
+        event,
+        deliveryId,
+        statusCode: 200,
+        durationMs: Date.now() - startedAt,
+      });
       return { ok: true, deduped: true };
     }
 
@@ -253,15 +267,41 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
     try {
       payload = JSON.parse(new TextDecoder().decode(raw));
     } catch {
+      logger.warn("github.webhook.rejected", {
+        event,
+        deliveryId,
+        reason: "invalid_json",
+        statusCode: 400,
+        durationMs: Date.now() - startedAt,
+      });
       set.status = 400;
       return { ok: false, error: "invalid json" };
     }
 
     try {
-      await handleEvent({ bus: options.bus, logger, event, payload, botLogins });
+      const result = await handleEvent({ bus: options.bus, logger, event, payload, botLogins });
+      logger.info("github.webhook.ingress", {
+        event,
+        deliveryId,
+        action: result.action,
+        repo: result.repoFullName,
+        handled: result.handled,
+        reason: result.reason,
+        requestIdOut: result.requestId,
+        statusCode: 200,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.error("webhook handler failed", { event, deliveryId }, e);
+      logger.error("github.webhook.rejected", {
+        event,
+        deliveryId,
+        reason: "handler_error",
+        errorClass: e instanceof Error ? e.name : "unknown",
+        statusCode: 500,
+        durationMs: Date.now() - startedAt,
+      });
       set.status = 500;
       return { ok: false, error: msg };
     }
@@ -289,9 +329,17 @@ async function handleEvent(input: {
   event: string;
   payload: unknown;
   botLogins: readonly string[];
-}) {
+}): Promise<{
+  handled: boolean;
+  reason?: string;
+  action?: string;
+  repoFullName?: string;
+  requestId?: string;
+}> {
   const p = input.payload;
-  if (!p || typeof p !== "object") return;
+  if (!p || typeof p !== "object") {
+    return { handled: false, reason: "payload_not_object" };
+  }
   const action = (p as Record<string, unknown>)["action"];
   const repo = (p as Record<string, unknown>)["repository"];
   const repoFullName =
@@ -299,39 +347,77 @@ async function handleEvent(input: {
       ? ((repo as Record<string, unknown>)["full_name"] as unknown)
       : undefined;
 
-  if (typeof repoFullName !== "string" || repoFullName.length === 0) return;
+  if (typeof repoFullName !== "string" || repoFullName.length === 0) {
+    return {
+      handled: false,
+      reason: "missing_repo",
+      action: typeof action === "string" ? action : undefined,
+    };
+  }
 
   if (input.event === "issue_comment" && action === "created") {
-    await onIssueCommentCreated({
+    const requestId = await onIssueCommentCreated({
       bus: input.bus,
       logger: input.logger,
       repoFullName,
       payload: p as Record<string, unknown>,
       botLogins: input.botLogins,
     });
-    return;
+    return {
+      handled: Boolean(requestId),
+      reason: requestId ? undefined : "issue_comment_not_triggered",
+      action: "created",
+      repoFullName,
+      requestId: requestId ?? undefined,
+    };
   }
 
   if (input.event === "pull_request" && action === "review_requested") {
-    await onReviewRequested({
+    const requestId = await onReviewRequested({
       bus: input.bus,
       logger: input.logger,
       repoFullName,
       payload: p as Record<string, unknown>,
       botLogins: input.botLogins,
     });
-    return;
+    return {
+      handled: Boolean(requestId),
+      reason: requestId ? undefined : "review_requested_not_for_bot",
+      action: "review_requested",
+      repoFullName,
+      requestId: requestId ?? undefined,
+    };
   }
 
   if (input.event === "pull_request" && action === "synchronize") {
-    await onPullRequestSynchronize({
+    const requestId = await onPullRequestSynchronize({
       bus: input.bus,
       logger: input.logger,
       repoFullName,
       payload: p as Record<string, unknown>,
     });
-    return;
+    return {
+      handled: Boolean(requestId),
+      reason: requestId ? undefined : "synchronize_ignored",
+      action: "synchronize",
+      repoFullName,
+      requestId: requestId ?? undefined,
+    };
   }
+
+  input.logger.debug("github.webhook.ignored", {
+    event: input.event,
+    action,
+    repo: repoFullName,
+    reason: "unsupported_event",
+  });
+
+  return {
+    handled: false,
+    reason: "unsupported_event",
+    action: typeof action === "string" ? action : undefined,
+    repoFullName,
+  };
 }
 
 async function onIssueCommentCreated(input: {
@@ -340,11 +426,11 @@ async function onIssueCommentCreated(input: {
   repoFullName: string;
   payload: Record<string, unknown>;
   botLogins: readonly string[];
-}) {
+}): Promise<string | null> {
   const issue = input.payload["issue"];
   const comment = input.payload["comment"];
-  if (!issue || typeof issue !== "object") return;
-  if (!comment || typeof comment !== "object") return;
+  if (!issue || typeof issue !== "object") return null;
+  if (!comment || typeof comment !== "object") return null;
 
   const issueNumber = (issue as Record<string, unknown>)["number"];
   const commentId = (comment as Record<string, unknown>)["id"];
@@ -356,15 +442,25 @@ async function onIssueCommentCreated(input: {
       ? ((user as Record<string, unknown>)["login"] as unknown)
       : undefined;
 
-  if (typeof issueNumber !== "number" || typeof commentId !== "number") return;
-  if (typeof body !== "string" || body.trim().length === 0) return;
+  if (typeof issueNumber !== "number" || typeof commentId !== "number") return null;
+  if (typeof body !== "string" || body.trim().length === 0) return null;
 
   const shouldTrigger =
     isLilacCommand(body) || input.botLogins.some((login) => body.includes(`@${login}`));
-  if (!shouldTrigger) return;
+  if (!shouldTrigger) {
+    input.logger.debug("github.webhook.ignored", {
+      event: "issue_comment",
+      action: "created",
+      repo: input.repoFullName,
+      issueNumber,
+      commentId,
+      reason: "not_a_trigger",
+    });
+    return null;
+  }
 
   const [owner, repo] = input.repoFullName.split("/");
-  if (!owner || !repo) return;
+  if (!owner || !repo) return null;
 
   const sessionId = `${input.repoFullName}#${issueNumber}`;
   const requestId = newGithubRequestId({
@@ -449,6 +545,8 @@ async function onIssueCommentCreated(input: {
       },
     },
   );
+
+  return requestId;
 }
 
 async function onReviewRequested(input: {
@@ -457,9 +555,9 @@ async function onReviewRequested(input: {
   repoFullName: string;
   payload: Record<string, unknown>;
   botLogins: readonly string[];
-}) {
+}): Promise<string | null> {
   const pr = input.payload["pull_request"];
-  if (!pr || typeof pr !== "object") return;
+  if (!pr || typeof pr !== "object") return null;
 
   const requested = input.payload["requested_reviewer"];
   const requestedLogin =
@@ -468,12 +566,19 @@ async function onReviewRequested(input: {
       : undefined;
   if (typeof requestedLogin !== "string" || requestedLogin.length === 0) {
     // If this is a team review request, ignore for now.
-    return;
+    return null;
   }
 
   if (input.botLogins.length > 0 && !input.botLogins.includes(requestedLogin)) {
     // Review request is for someone else.
-    return;
+    input.logger.debug("github.webhook.ignored", {
+      event: "pull_request",
+      action: "review_requested",
+      repo: input.repoFullName,
+      requestedLogin,
+      reason: "review_requested_for_different_actor",
+    });
+    return null;
   }
 
   const prNumber = (pr as Record<string, unknown>)["number"];
@@ -483,10 +588,10 @@ async function onReviewRequested(input: {
       ? ((head as Record<string, unknown>)["sha"] as unknown)
       : undefined;
 
-  if (typeof prNumber !== "number" || typeof headSha !== "string" || !headSha) return;
+  if (typeof prNumber !== "number" || typeof headSha !== "string" || !headSha) return null;
 
   const [owner, repo] = input.repoFullName.split("/");
-  if (!owner || !repo) return;
+  if (!owner || !repo) return null;
 
   const sessionId = `${input.repoFullName}#${prNumber}`;
   const requestId = newGithubRequestId({
@@ -560,6 +665,8 @@ async function onReviewRequested(input: {
       },
     },
   );
+
+  return requestId;
 }
 
 async function onPullRequestSynchronize(input: {
@@ -567,30 +674,30 @@ async function onPullRequestSynchronize(input: {
   logger: Logger;
   repoFullName: string;
   payload: Record<string, unknown>;
-}) {
+}): Promise<string | null> {
   const pr = input.payload["pull_request"];
-  if (!pr || typeof pr !== "object") return;
+  if (!pr || typeof pr !== "object") return null;
   const prNumber = (pr as Record<string, unknown>)["number"];
   const head = (pr as Record<string, unknown>)["head"];
   const headSha =
     head && typeof head === "object"
       ? ((head as Record<string, unknown>)["sha"] as unknown)
       : undefined;
-  if (typeof prNumber !== "number" || typeof headSha !== "string" || !headSha) return;
+  if (typeof prNumber !== "number" || typeof headSha !== "string" || !headSha) return null;
 
   const sessionId = `${input.repoFullName}#${prNumber}`;
   const latest = getGithubLatestRequestForSession(sessionId);
-  if (!latest) return;
+  if (!latest) return null;
   const meta = getGithubRequestMeta(latest);
-  if (!meta?.pr || meta.pr.mode !== "review") return;
+  if (!meta?.pr || meta.pr.mode !== "review") return null;
 
   const ageMs = Date.now() - meta.createdAtMs;
   if (ageMs > 30 * 60 * 1000) {
     // Avoid surprise reruns long after a review completed.
-    return;
+    return null;
   }
 
-  if (meta.pr.headSha === headSha) return;
+  if (meta.pr.headSha === headSha) return null;
 
   input.logger.info("github pr updated mid-review; restarting", {
     repo: input.repoFullName,
@@ -601,7 +708,7 @@ async function onPullRequestSynchronize(input: {
   });
 
   const [owner, repo] = input.repoFullName.split("/");
-  if (!owner || !repo) return;
+  if (!owner || !repo) return null;
 
   const requestId = newGithubRequestId({
     sessionId,
@@ -691,4 +798,6 @@ async function onPullRequestSynchronize(input: {
       },
     },
   );
+
+  return requestId;
 }

@@ -3,6 +3,8 @@ import {
   type LilacBus,
   type LilacMessageForTopic,
 } from "@stanley2058/lilac-event-bus";
+import { resolveLogLevel } from "@stanley2058/lilac-utils";
+import { Logger } from "@stanley2058/simple-module-logger";
 
 type CacheEntry = {
   messages: readonly unknown[];
@@ -42,6 +44,10 @@ export async function createRequestMessageCache(
   // Prevent unbounded growth for a single requestId when follow-ups/steers
   // arrive as incremental message batches.
   const maxMessagesPerRequest = 512;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "tool-server:request-message-cache",
+  });
 
   const map = new Map<string, CacheEntry>();
 
@@ -49,6 +55,10 @@ export async function createRequestMessageCache(
     for (const [k, v] of map) {
       if (v.expiresAt <= now) {
         map.delete(k);
+        logger.debug("request_message_cache.expired", {
+          requestId: k,
+          expiresAt: v.expiresAt,
+        });
       }
     }
   }
@@ -67,6 +77,12 @@ export async function createRequestMessageCache(
 
       if (!oldestKey) break;
       map.delete(oldestKey);
+      logger.info("request_message_cache.evicted", {
+        requestId: oldestKey,
+        reason: "max_entries",
+        maxEntries,
+        sizeAfter: map.size,
+      });
     }
   }
 
@@ -81,6 +97,15 @@ export async function createRequestMessageCache(
       merged.length > maxMessagesPerRequest
         ? merged.slice(merged.length - maxMessagesPerRequest)
         : merged;
+
+    if (clamped.length < merged.length) {
+      logger.info("request_message_cache.clamped", {
+        requestId,
+        beforeCount: merged.length,
+        afterCount: clamped.length,
+        maxMessagesPerRequest,
+      });
+    }
 
     map.set(requestId, {
       messages: clamped,
@@ -106,6 +131,9 @@ export async function createRequestMessageCache(
       const requestId = msg.headers?.request_id;
       if (!requestId) {
         // keep unacked to surface the bug
+        logger.error("request_message_cache.missing_request_id", {
+          messageType: msg.type,
+        });
         throw new Error("cmd.request.message missing headers.request_id");
       }
 
@@ -122,11 +150,28 @@ export async function createRequestMessageCache(
     get: (requestId: string) => {
       const now = Date.now();
       const entry = map.get(requestId);
-      if (!entry) return undefined;
-      if (entry.expiresAt <= now) {
-        map.delete(requestId);
+      if (!entry) {
+        logger.debug("request_message_cache.get", {
+          requestId,
+          hit: false,
+          reason: "missing",
+        });
         return undefined;
       }
+      if (entry.expiresAt <= now) {
+        map.delete(requestId);
+        logger.debug("request_message_cache.get", {
+          requestId,
+          hit: false,
+          reason: "expired",
+        });
+        return undefined;
+      }
+      logger.debug("request_message_cache.get", {
+        requestId,
+        hit: true,
+        messageCount: entry.messages.length,
+      });
       return entry.messages;
     },
     stop: async () => {
