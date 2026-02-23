@@ -2008,7 +2008,9 @@ export async function startBusAgentRunner(params: {
 
       unsubscribeCompaction = await attachAutoCompaction(agent, {
         model: resolved.spec,
-        modelCapability: new ModelCapability(),
+        modelCapability: new ModelCapability({
+          forceUnknownProviders: ["openai-compatible"],
+        }),
         resolveCurrentModelSpecifier: () => agent.state.modelSpecifier ?? resolved.spec,
         baseTransformMessages: toolPruneTransform,
         onUnknownCapability: ({ spec, reason, error }) => {

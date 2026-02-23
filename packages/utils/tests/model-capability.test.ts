@@ -178,4 +178,62 @@ describe("ModelCapability", () => {
     expect(info.model).toBe("claude-sonnet-4.6");
     expect(info.limit.context).toBe(200_000);
   });
+
+  it("treats force-unknown providers as unresolved", async () => {
+    const registry = {
+      "openai-compatible": {
+        id: "openai-compatible",
+        npm: "@ai-sdk/openai-compatible",
+        name: "OpenAI Compatible",
+        models: {
+          "llama-3.1-8b": {
+            id: "llama-3.1-8b",
+            name: "Llama 3.1 8B",
+            family: "llama-3.1",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 8_192 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      forceUnknownProviders: ["openai-compatible"],
+    });
+
+    await expect(mc.resolve("openai-compatible/llama-3.1-8b")).rejects.toThrow(
+      "Model capability lookup intentionally disabled",
+    );
+  });
+
+  it("treats aliased force-unknown providers as unresolved", async () => {
+    const registry = {
+      openai: {
+        id: "openai",
+        npm: "@ai-sdk/openai",
+        name: "OpenAI",
+        models: {
+          "gpt-4o": {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            family: "gpt-4o",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 16_384 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      forceUnknownProviders: ["codex"],
+    });
+
+    await expect(mc.resolve("codex/gpt-4o")).rejects.toThrow(
+      "Model capability lookup intentionally disabled",
+    );
+  });
 });
