@@ -275,6 +275,20 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
   };
 }
 
+export function withBlankLineBetweenTextParts(params: {
+  accumulatedText: string;
+  delta: string;
+  partChanged: boolean;
+}): string {
+  if (!params.partChanged) return params.delta;
+  if (params.accumulatedText.length === 0) return params.delta;
+  if (params.delta.length === 0) return params.delta;
+  if (/^\s/u.test(params.delta)) return params.delta;
+  if (/\n\s*\n\s*$/u.test(params.accumulatedText)) return params.delta;
+  if (/\n\s*$/u.test(params.accumulatedText)) return `\n${params.delta}`;
+  return `\n\n${params.delta}`;
+}
+
 function estimateTokensFromValue(value: unknown): number {
   // Best-effort token estimate (OpenCode uses chars/4).
   const chars = safeStringify(value).length;
@@ -1921,6 +1935,7 @@ export async function startBusAgentRunner(params: {
       state.agent = agent;
 
       let finalText = "";
+      let lastTextPartId: string | null = null;
       const reasoningChunkById = new Map<string, string>();
       let reasoningChunkSeq = 0;
 
@@ -2012,7 +2027,14 @@ export async function startBusAgentRunner(params: {
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           runStats.firstTextDeltaAt ??= Date.now();
 
-          const delta = event.assistantMessageEvent.delta;
+          const partId = event.assistantMessageEvent.id;
+          const delta = withBlankLineBetweenTextParts({
+            accumulatedText: finalText,
+            delta: event.assistantMessageEvent.delta,
+            partChanged: lastTextPartId !== null && partId !== lastTextPartId,
+          });
+          lastTextPartId = partId;
+
           finalText += delta;
           if (state.activeRun && state.activeRun.requestId === next.requestId) {
             state.activeRun.partialText += delta;

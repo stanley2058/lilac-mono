@@ -154,7 +154,10 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     stop(): Promise<void>;
   } | null = null;
 
-  const GRACEFUL_RESTART_DEADLINE_MS = 120_000;
+  // How long shutdown waits for active runs/relays before forcing snapshot + exit.
+  const GRACEFUL_DRAIN_DEADLINE_MS = 3_000;
+  // How long a saved snapshot remains valid for restore on next boot.
+  const GRACEFUL_SNAPSHOT_TTL_MS = 120_000;
 
   async function validateCoreConfigOnChange(reason: "watch"): Promise<void> {
     const configPath = resolveCoreConfigPath();
@@ -518,20 +521,20 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopGithubWebhook = null;
 
       await safe("graceful.agentRunner.beginDrain", () =>
-        agentRunner.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }),
+        agentRunner.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }),
       );
 
       await safe(
         "graceful.discordBridge.beginDrain",
         () =>
-          stopBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+          stopBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }) ??
           Promise.resolve(),
       );
 
       await safe(
         "graceful.githubBridge.beginDrain",
         () =>
-          stopGithubBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_RESTART_DEADLINE_MS }) ??
+          stopGithubBusToAdapter?.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }) ??
           Promise.resolve(),
       );
 
@@ -546,14 +549,15 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           gracefulRestartStore?.saveCompletedSnapshot({
             version: 1,
             createdAt: Date.now(),
-            deadlineMs: GRACEFUL_RESTART_DEADLINE_MS,
+            deadlineMs: GRACEFUL_SNAPSHOT_TTL_MS,
             agent: agentRecoverables,
             relays: relayRecoverables,
           });
         });
 
         logger.info("Saved graceful restart snapshot", {
-          deadlineMs: GRACEFUL_RESTART_DEADLINE_MS,
+          drainDeadlineMs: GRACEFUL_DRAIN_DEADLINE_MS,
+          snapshotTtlMs: GRACEFUL_SNAPSHOT_TTL_MS,
           agentEntries: agentRecoverables.length,
           relayEntries: relayRecoverables.length,
         });
