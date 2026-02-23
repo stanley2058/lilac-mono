@@ -180,4 +180,24 @@ describe("withBlankLineBetweenTextParts", () => {
 
     expect(out).toBe("Part two.");
   });
+
+  it("supports restart recovery boundaries with prior visible text", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "Sure! Triggering now - see you on the other side.",
+      delta: "...and I'm back.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("\n\n...and I'm back.");
+  });
+
+  it("does not add separator when there is no prior visible text", () => {
+    const out = withBlankLineBetweenTextParts({
+      accumulatedText: "",
+      delta: "Fresh reply.",
+      partChanged: true,
+    });
+
+    expect(out).toBe("Fresh reply.");
+  });
 });
