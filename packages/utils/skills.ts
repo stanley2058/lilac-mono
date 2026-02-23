@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
+import { z } from "zod";
 
 export type SkillSource =
   | "lilac-data"
@@ -84,15 +85,12 @@ function globBaseDir(pattern: string): string {
   return base.length > 0 ? base : path.parse(pattern).root;
 }
 
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
-function trimNonEmptyString(x: unknown): string | undefined {
-  if (typeof x !== "string") return undefined;
-  const trimmed = x.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
+const skillFrontmatterSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    description: z.string().trim().min(1),
+  })
+  .passthrough();
 
 function splitFrontmatter(raw: string): {
   frontmatterText: string;
@@ -126,20 +124,15 @@ export function parseSkillMarkdown(raw: string): ParsedSkillFile {
     throw new Error(`Failed to parse YAML frontmatter: ${msg}`);
   }
 
-  if (!isRecord(parsedFrontmatter)) {
-    throw new Error("YAML frontmatter must be a mapping/object");
+  const parsed = skillFrontmatterSchema.safeParse(parsedFrontmatter);
+  if (!parsed.success) {
+    throw new Error("YAML frontmatter must be an object with non-empty name and description");
   }
 
-  const name = trimNonEmptyString(parsedFrontmatter.name);
-  const description = trimNonEmptyString(parsedFrontmatter.description);
-
-  if (!name) throw new Error("Frontmatter field 'name' is required");
-  if (!description) throw new Error("Frontmatter field 'description' is required");
-
   return {
-    frontmatter: parsedFrontmatter,
-    name,
-    description,
+    frontmatter: parsed.data,
+    name: parsed.data.name,
+    description: parsed.data.description,
     body: parts.body.trimStart(),
   };
 }
