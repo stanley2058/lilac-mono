@@ -489,6 +489,15 @@ export async function startBusRequestRouter(params: {
       const sessionId = msg.headers?.session_id;
       if (!requestId || !sessionId) {
         // Don't ack: malformed.
+        logger.error("router.message.invalid_headers", {
+          topic: "evt.request",
+          messageType: msg.type,
+          hasRequestId: Boolean(requestId),
+          hasSessionId: Boolean(sessionId),
+          cursor: ctx.cursor,
+          rawHeadersKeys: msg.headers ? Object.keys(msg.headers) : [],
+          action: "throw_unacked",
+        });
         throw new Error(
           "evt.request.lifecycle.changed missing required headers.request_id/session_id",
         );
@@ -531,6 +540,15 @@ export async function startBusRequestRouter(params: {
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
       if (!requestId || !sessionId) {
+        logger.error("router.message.invalid_headers", {
+          topic: "evt.surface",
+          messageType: msg.type,
+          hasRequestId: Boolean(requestId),
+          hasSessionId: Boolean(sessionId),
+          cursor: ctx.cursor,
+          rawHeadersKeys: msg.headers ? Object.keys(msg.headers) : [],
+          action: "throw_unacked",
+        });
         throw new Error(
           "evt.surface.output.message.created missing required headers.request_id/session_id",
         );
@@ -647,6 +665,25 @@ export async function startBusRequestRouter(params: {
 
       const active = activeBySession.get(sessionId);
 
+      const logRouteDecision = (input: {
+        decision: "forward" | "skip" | "queue_followup" | "queue_prompt" | "steer" | "interrupt";
+        reason: string;
+      }) => {
+        logger.info("router.route.decision", {
+          sessionId,
+          messageId: msgRef.messageId,
+          userId: msg.data.userId,
+          mode,
+          gateEnabled,
+          decision: input.decision,
+          reason: input.reason,
+          activeRequestId: active?.requestId,
+          sessionConfigId,
+          modelOverride,
+          requestModelOverride,
+        });
+      };
+
       logger.debug("adapter.message.created", {
         sessionId,
         messageId: msgRef.messageId,
@@ -712,18 +749,18 @@ export async function startBusRequestRouter(params: {
         });
 
         if (!decision.forward) {
-          logger.info(
-            { sessionId, reason: decision.reason ?? "skip" },
-            "router gate skipped direct reply",
-          );
+          logRouteDecision({
+            decision: "skip",
+            reason: `direct_reply_gate:${decision.reason ?? "skip"}`,
+          });
           await ctx.commit();
           return;
         }
 
-        logger.info(
-          { sessionId, reason: decision.reason ?? "forward" },
-          "router gate forwarded direct reply",
-        );
+        logRouteDecision({
+          decision: "forward",
+          reason: `direct_reply_gate:${decision.reason ?? "forward"}`,
+        });
       }
 
       if (mode === "active") {
@@ -1321,19 +1358,25 @@ export async function startBusRequestRouter(params: {
         });
 
     if (!decision.forward) {
-      logger.info({ sessionId, reason: decision.reason ?? "skip" }, "router gate skipped batch");
+      logger.info("router.route.decision", {
+        sessionId,
+        mode: "active",
+        gateEnabled,
+        decision: "skip",
+        reason: `active_batch_gate:${decision.reason ?? "skip"}`,
+        messageCount: b.messages.length,
+      });
       return;
     }
 
-    logger.info(
-      {
-        sessionId,
-        reason: decision.reason ?? "forward",
-        messageCount: b.messages.length,
-        gated: gateEnabled,
-      },
-      "router gate forwarded batch",
-    );
+    logger.info("router.route.decision", {
+      sessionId,
+      mode: "active",
+      gateEnabled,
+      decision: "forward",
+      reason: `active_batch_gate:${decision.reason ?? "forward"}`,
+      messageCount: b.messages.length,
+    });
 
     const overrideCarrier = (() => {
       for (let i = b.messages.length - 1; i >= 0; i--) {
@@ -1531,6 +1574,14 @@ export async function startBusRequestRouter(params: {
 
     if (!triggerType) {
       // Mention-only channels: ignore non-triggers (even if a request is active).
+      logger.debug("router.route.decision", {
+        sessionId,
+        mode: input.sessionMode,
+        gateEnabled: false,
+        decision: "skip",
+        reason: "mention_mode_non_trigger",
+        activeRequestId: active?.requestId,
+      });
       return;
     }
 
@@ -1651,7 +1702,7 @@ export async function startBusRequestRouter(params: {
     messages: ModelMessage[];
     raw: unknown;
   }) {
-    logger.info("cmd.request.message publish", {
+    logger.debug("cmd.request.message publish", {
       requestId: input.requestId,
       sessionId: input.sessionId,
       queue: input.queue,

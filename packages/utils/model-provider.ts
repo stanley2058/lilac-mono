@@ -1,4 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -15,6 +16,7 @@ import {
 
 export type Providers =
   | "openai"
+  | "openai-compatible"
   | "codex"
   | "xai"
   | "openrouter"
@@ -31,6 +33,15 @@ export function getModelProviders() {
       ? createOpenAI({
           baseURL: env.providers.openai.baseUrl,
           apiKey: env.providers.openai.apiKey,
+        })
+      : null,
+
+    "openai-compatible": env.providers.openaiCompatible.baseUrl
+      ? createOpenAICompatible({
+          name: "openaiCompatible",
+          baseURL: env.providers.openaiCompatible.baseUrl,
+          apiKey: env.providers.openaiCompatible.apiKey,
+          includeUsage: true,
         })
       : null,
 

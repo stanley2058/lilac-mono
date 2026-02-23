@@ -184,6 +184,117 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("bridgeAdapterToBus cancel mapping", () => {
+  it("maps adapter message and reaction events to Lilac bus events", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const adapter = new FakeAdapter();
+
+    await bridgeAdapterToBus({ adapter, bus, subscriptionId: "test" });
+
+    const published: Array<Message<unknown>> = [];
+    const evtSub = await bus.subscribeTopic(
+      "evt.adapter",
+      {
+        mode: "fanout",
+        subscriptionId: "test:evt",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        published.push(msg as Message<unknown>);
+        await ctx.commit();
+      },
+    );
+
+    const session = { platform: "discord" as const, channelId: "chan" };
+    const message = {
+      ref: { platform: "discord" as const, channelId: "chan", messageId: "m1" },
+      session,
+      userId: "u1",
+      userName: "alice",
+      text: "hello",
+      ts: Date.now(),
+      raw: { discord: { mentionsBot: false } },
+    };
+
+    adapter.emit({
+      type: "adapter.message.created",
+      platform: "discord",
+      ts: Date.now(),
+      message,
+    });
+
+    adapter.emit({
+      type: "adapter.message.updated",
+      platform: "discord",
+      ts: Date.now(),
+      message: {
+        ...message,
+        text: "hello updated",
+      },
+    });
+
+    adapter.emit({
+      type: "adapter.message.deleted",
+      platform: "discord",
+      ts: Date.now(),
+      messageRef: message.ref,
+      session,
+      raw: { reason: "deleted" },
+    });
+
+    adapter.emit({
+      type: "adapter.reaction.added",
+      platform: "discord",
+      ts: Date.now(),
+      messageRef: message.ref,
+      session,
+      reaction: "👍",
+      userId: "u2",
+      userName: "bob",
+    });
+
+    adapter.emit({
+      type: "adapter.reaction.removed",
+      platform: "discord",
+      ts: Date.now(),
+      messageRef: message.ref,
+      session,
+      reaction: "👍",
+      userId: "u2",
+      userName: "bob",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(published.map((m) => m.type)).toEqual([
+      lilacEventTypes.EvtAdapterMessageCreated,
+      lilacEventTypes.EvtAdapterMessageUpdated,
+      lilacEventTypes.EvtAdapterMessageDeleted,
+      lilacEventTypes.EvtAdapterReactionAdded,
+      lilacEventTypes.EvtAdapterReactionRemoved,
+    ]);
+
+    const created = published[0]!;
+    expect(created.data).toMatchObject({
+      platform: "discord",
+      channelId: "chan",
+      messageId: "m1",
+      userId: "u1",
+      text: "hello",
+    });
+
+    const reactionAdded = published[3]!;
+    expect(reactionAdded.data).toMatchObject({
+      platform: "discord",
+      channelId: "chan",
+      messageId: "m1",
+      reaction: "👍",
+      userId: "u2",
+    });
+
+    await evtSub.stop();
+  });
+
   it("keeps active-only behavior for cancel button events", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const adapter = new FakeAdapter();

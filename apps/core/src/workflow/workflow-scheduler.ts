@@ -89,6 +89,10 @@ async function publishWorkflowResolved(params: {
   });
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function nonEmptyStr(x: unknown): x is string {
   return typeof x === "string" && x.trim().length > 0;
 }
@@ -255,11 +259,17 @@ export async function startWorkflowScheduler(params: {
     workflow: WorkflowRecord & { definition: WorkflowDefinitionV3 };
     task: WorkflowTaskRecord;
   }) {
-    const { bus, store, workflow, task, nowMs } = input;
+    const { bus, store, workflow, task, nowMs, logger } = input;
 
     const bumped = store.bumpResumeSeq(workflow.workflowId);
     if (!bumped) {
       store.upsertTask({ ...task, state: "blocked", updatedAt: nowMs });
+      logger.warn("workflow.scheduler.failed", {
+        workflowId: workflow.workflowId,
+        taskId: task.taskId,
+        taskKind: task.kind,
+        detail: "failed to bump resume sequence",
+      });
       return;
     }
 
@@ -289,11 +299,114 @@ export async function startWorkflowScheduler(params: {
       },
     };
 
+    let nextCronAtMs: number | null = null;
+    if (task.kind === "time.cron") {
+      const cron = parseCronInput(task.input);
+      if (!cron) {
+        const failed: WorkflowTaskRecord = {
+          ...task,
+          state: "failed",
+          updatedAt: nowMs,
+          resolvedAt: nowMs,
+          result: { kind: "error", message: "invalid cron input" },
+        };
+        store.upsertTask(failed);
+        store.upsertWorkflow({
+          ...workflow,
+          state: "failed",
+          updatedAt: nowMs,
+          resolvedAt: nowMs,
+        });
+        await publishTaskLifecycle({
+          bus,
+          workflowId: workflow.workflowId,
+          taskId: task.taskId,
+          state: "failed",
+          detail: "invalid cron input",
+        });
+        await publishWorkflowLifecycle({
+          bus,
+          workflowId: workflow.workflowId,
+          state: "failed",
+          detail: "invalid cron input",
+        });
+        logger.warn("workflow.scheduler.failed", {
+          workflowId: workflow.workflowId,
+          taskId: task.taskId,
+          taskKind: task.kind,
+          runSeq,
+          requestId,
+          detail: "invalid cron input",
+        });
+        return;
+      }
+
+      try {
+        nextCronAtMs = computeNextCronAtMs(
+          {
+            expr: cron.expr,
+            tz: cron.tz,
+            startAtMs: cron.startAtMs,
+            skipMissed: cron.skipMissed,
+          },
+          nowMs,
+        );
+      } catch (e) {
+        const msg = errorMessage(e);
+        const failed: WorkflowTaskRecord = {
+          ...task,
+          state: "failed",
+          updatedAt: nowMs,
+          resolvedAt: nowMs,
+          result: { kind: "error", message: msg },
+        };
+        store.upsertTask(failed);
+        store.upsertWorkflow({
+          ...workflow,
+          state: "failed",
+          updatedAt: nowMs,
+          resolvedAt: nowMs,
+        });
+        await publishTaskLifecycle({
+          bus,
+          workflowId: workflow.workflowId,
+          taskId: task.taskId,
+          state: "failed",
+          detail: msg,
+        });
+        await publishWorkflowLifecycle({
+          bus,
+          workflowId: workflow.workflowId,
+          state: "failed",
+          detail: msg,
+        });
+        logger.warn("workflow.scheduler.failed", {
+          workflowId: workflow.workflowId,
+          taskId: task.taskId,
+          taskKind: task.kind,
+          runSeq,
+          requestId,
+          detail: msg,
+        });
+        return;
+      }
+    }
+
     await publishWorkflowLifecycle({
       bus,
       workflowId: workflow.workflowId,
       state: "running",
       detail: `trigger fired (${task.kind})`,
+    });
+
+    logger.info("workflow.scheduler.trigger_fired", {
+      workflowId: workflow.workflowId,
+      taskId: task.taskId,
+      taskKind: task.kind,
+      runSeq,
+      requestId,
+      timeoutAt: task.timeoutAt,
+      nowMs,
     });
 
     await bus.publish(lilacEventTypes.CmdRequestMessage, data, {
@@ -351,65 +464,15 @@ export async function startWorkflowScheduler(params: {
     }
 
     if (task.kind === "time.cron") {
-      const cron = parseCronInput(task.input);
-      if (!cron) {
-        const failed: WorkflowTaskRecord = {
-          ...task,
-          state: "failed",
-          updatedAt: nowMs,
-          resolvedAt: nowMs,
-          result: { kind: "error", message: "invalid cron input" },
-        };
-        store.upsertTask(failed);
-        await publishTaskLifecycle({
-          bus,
+      const nextAtMs = nextCronAtMs;
+      if (typeof nextAtMs !== "number") {
+        logger.warn("workflow.scheduler.failed", {
           workflowId: workflow.workflowId,
           taskId: task.taskId,
-          state: "failed",
-          detail: "invalid cron input",
-        });
-        await publishWorkflowLifecycle({
-          bus,
-          workflowId: workflow.workflowId,
-          state: "failed",
-          detail: "invalid cron input",
-        });
-        return;
-      }
-
-      let nextAtMs: number;
-      try {
-        nextAtMs = computeNextCronAtMs(
-          {
-            expr: cron.expr,
-            tz: cron.tz,
-            startAtMs: cron.startAtMs,
-            skipMissed: cron.skipMissed,
-          },
-          nowMs,
-        );
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        const failed: WorkflowTaskRecord = {
-          ...task,
-          state: "failed",
-          updatedAt: nowMs,
-          resolvedAt: nowMs,
-          result: { kind: "error", message: msg },
-        };
-        store.upsertTask(failed);
-        await publishTaskLifecycle({
-          bus,
-          workflowId: workflow.workflowId,
-          taskId: task.taskId,
-          state: "failed",
-          detail: msg,
-        });
-        await publishWorkflowLifecycle({
-          bus,
-          workflowId: workflow.workflowId,
-          state: "failed",
-          detail: msg,
+          taskKind: task.kind,
+          runSeq,
+          requestId,
+          detail: "missing computed next cron trigger",
         });
         return;
       }
@@ -446,6 +509,15 @@ export async function startWorkflowScheduler(params: {
         workflowId: workflow.workflowId,
         state: "blocked",
         detail: "cron rescheduled",
+      });
+      logger.info("workflow.scheduler.rescheduled", {
+        workflowId: workflow.workflowId,
+        taskId: task.taskId,
+        taskKind: task.kind,
+        runSeq,
+        requestId,
+        nowMs,
+        nextAtMs,
       });
       return;
     }

@@ -1135,4 +1135,58 @@ describe("tool-server surface", () => {
     expect((res as any).ok).toBe(true);
     expect(deleted).toEqual([7]);
   });
+
+  it("fails safely when outbound actor login cannot be resolved for github reaction removal", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    let deleteCalls = 0;
+
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async () => ({ id: 0 }),
+      getIssueComment: async () => ({ id: 0 }),
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [
+        { id: 1, content: "+1", user: { login: "someone", id: 2 } },
+      ],
+      deleteIssueReactionById: async () => {
+        deleteCalls += 1;
+      },
+      deleteIssueCommentReactionById: async () => {
+        deleteCalls += 1;
+      },
+      getGithubAppSlugOrNull: async () => null,
+      getPreferredGithubActorLoginOrNull: async () => null,
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+
+    await expect(
+      tool.call("surface.reactions.remove", {
+        client: "github",
+        sessionId: "octo/repo#12",
+        messageId: "345",
+        reaction: "👍",
+      }),
+    ).rejects.toThrow("Unable to resolve the outbound GitHub actor login");
+
+    expect(deleteCalls).toBe(0);
+  });
 });

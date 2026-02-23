@@ -67,6 +67,8 @@ export class RedisConnectionPool {
   >;
 
   private lastResizeAt = 0;
+  private lastExhaustedWarnAt = 0;
+  private exhaustedWarnSuppressed = 0;
 
   private closed = false;
 
@@ -258,19 +260,29 @@ export class RedisConnectionPool {
     // Pool exhausted.
     if (this.onExhausted === "fallback_to_shared_with_warn") {
       const s = this.stats();
-      this.logger?.warn("redis connection pool exhausted; falling back to shared client", {
-        label: this.label,
-        max: s.max,
-        created: s.created,
-        available: s.available,
-        inUse: s.inUse,
-        autoscale: this.autoscale.enabled
-          ? {
-              min: this.autoscale.min,
-              cap: this.autoscale.cap,
-            }
-          : undefined,
-      });
+      const nowMs = Date.now();
+      const warnCooldownMs = 30_000;
+      if (nowMs - this.lastExhaustedWarnAt >= warnCooldownMs) {
+        this.logger?.warn("redis connection pool exhausted; falling back to shared client", {
+          label: this.label,
+          max: s.max,
+          created: s.created,
+          available: s.available,
+          inUse: s.inUse,
+          autoscale: this.autoscale.enabled
+            ? {
+                min: this.autoscale.min,
+                cap: this.autoscale.cap,
+              }
+            : undefined,
+          suppressedCount: this.exhaustedWarnSuppressed,
+          warnCooldownMs,
+        });
+        this.lastExhaustedWarnAt = nowMs;
+        this.exhaustedWarnSuppressed = 0;
+      } else {
+        this.exhaustedWarnSuppressed += 1;
+      }
       return {
         redis: this.base,
         shared: true,

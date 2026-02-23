@@ -497,18 +497,42 @@ async function tryResolveWorkflow(params: {
   const { bus, store, workflowId, logger } = params;
 
   const w = store.getWorkflow(workflowId);
-  if (!w) return;
-
-  // Scheduled workflows are triggered by the scheduler, not by v2 resume logic.
-  if (w.definition.version !== 2) {
+  if (!w) {
+    logger.info("workflow.resolve.skip", {
+      workflowId,
+      reason: "workflow_missing",
+    });
     return;
   }
 
-  if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") return;
+  // Scheduled workflows are triggered by the scheduler, not by v2 resume logic.
+  if (w.definition.version !== 2) {
+    logger.debug("workflow.resolve.skip", {
+      workflowId,
+      reason: "definition_not_v2",
+      version: w.definition.version,
+    });
+    return;
+  }
+
+  if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") {
+    logger.info("workflow.resolve.skip", {
+      workflowId,
+      reason: "terminal_workflow_state",
+      state: w.state,
+    });
+    return;
+  }
 
   const tasks = store.listTasks(workflowId);
 
   if (!canResolveWorkflow(w.definition, tasks)) {
+    logger.debug("workflow.resolve.skip", {
+      workflowId,
+      reason: "completion_not_met",
+      completion: w.definition.completion,
+      taskCount: tasks.length,
+    });
     return;
   }
 
@@ -544,14 +568,30 @@ async function tryResolveWorkflow(params: {
 
   // Do not publish resume twice.
   if (wResolved.resumePublishedAt) {
+    logger.info("workflow.resolve.skip", {
+      workflowId,
+      reason: "resume_already_published",
+      resumePublishedAt: wResolved.resumePublishedAt,
+    });
     return;
   }
 
   const bumped = store.bumpResumeSeq(workflowId);
-  if (!bumped) return;
+  if (!bumped) {
+    logger.warn("workflow.resolve.skip", {
+      workflowId,
+      reason: "failed_to_bump_resume_seq",
+    });
+    return;
+  }
 
   if (bumped.definition.version !== 2) {
     // Defensive: should not happen since we only resolve v2 workflows here.
+    logger.warn("workflow.resolve.skip", {
+      workflowId,
+      reason: "bumped_definition_not_v2",
+      version: bumped.definition.version,
+    });
     return;
   }
 
@@ -565,6 +605,9 @@ async function tryResolveWorkflow(params: {
     requestId,
     sessionId: bumpedV2.definition.resumeTarget.session_id,
     requestClient: bumpedV2.definition.resumeTarget.request_client,
+    resumeSeq: bumped.resumeSeq,
+    completion: bumpedV2.definition.completion,
+    taskCount: store.listTasks(workflowId).length,
   });
 
   const resume = buildResumeRequest({
@@ -602,6 +645,15 @@ async function tryResolveWorkflow(params: {
       ...after,
       resumePublishedAt: now(),
       updatedAt: now(),
+    });
+
+    logger.info("workflow.resume.publish", {
+      workflowId,
+      requestId: resume.requestId,
+      sessionId: resume.sessionId,
+      requestClient: resume.requestClient,
+      resumeSeq: bumped.resumeSeq,
+      completion: bumpedV2.definition.completion,
     });
   }
 }

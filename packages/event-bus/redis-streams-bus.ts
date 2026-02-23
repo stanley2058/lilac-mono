@@ -51,18 +51,59 @@ function superJsonParse(value: string | undefined): unknown {
   }
 }
 
-function decodeMessage(topic: Topic, id: string, fields: unknown): Message {
+function decodeMessage(topic: Topic, id: string, fields: unknown, logger?: Logger): Message {
   const record = toRecord(fields);
 
   const type = record["type"] ?? "";
   const tsRaw = record["ts"];
   const ts = typeof tsRaw === "string" ? Number(tsRaw) : NaN;
 
+  if (!type) {
+    logger?.warn("event_bus.decode_anomaly", {
+      topic,
+      messageId: id,
+      decodeField: "type",
+      reason: "missing_or_empty",
+    });
+  }
+
+  if (!Number.isFinite(ts)) {
+    logger?.warn("event_bus.decode_anomaly", {
+      topic,
+      messageId: id,
+      decodeField: "ts",
+      reason: "invalid_number",
+      value: tsRaw,
+    });
+  }
+
+  const rawHeaders = record["headers"];
   const headersParsed = superJsonParse(record["headers"]);
   const headers =
     headersParsed && typeof headersParsed === "object"
       ? (headersParsed as Record<string, string>)
       : undefined;
+
+  if (rawHeaders && !headers) {
+    logger?.warn("event_bus.decode_anomaly", {
+      topic,
+      messageId: id,
+      decodeField: "headers",
+      reason: "parse_failed",
+    });
+  }
+
+  const rawData = record["data"];
+  const parsedData = superJsonParse(record["data"]);
+
+  if (rawData && typeof parsedData === "undefined") {
+    logger?.warn("event_bus.decode_anomaly", {
+      topic,
+      messageId: id,
+      decodeField: "data",
+      reason: "parse_failed",
+    });
+  }
 
   return {
     topic,
@@ -71,7 +112,7 @@ function decodeMessage(topic: Topic, id: string, fields: unknown): Message {
     ts: Number.isFinite(ts) ? ts : Date.now(),
     key: record["key"],
     headers,
-    data: superJsonParse(record["data"]),
+    data: parsedData,
   };
 }
 
@@ -188,6 +229,7 @@ export class RedisStreamsBus implements RawBus {
   ): Promise<{ id: string; cursor: Cursor }> {
     const streamKey = this.streamKey(opts.topic);
     const ts = Date.now();
+    const startedAt = Date.now();
 
     const fields: string[] = [
       "type",
@@ -221,6 +263,15 @@ export class RedisStreamsBus implements RawBus {
 
     if (!id) throw new Error("Redis XADD returned null id");
 
+    this.logger.debug("event_bus.publish", {
+      topic: opts.topic,
+      type: opts.type,
+      key: opts.key,
+      messageId: id,
+      hasHeaders: Boolean(opts.headers),
+      durationMs: Date.now() - startedAt,
+    });
+
     return { id, cursor: id };
   }
 
@@ -253,7 +304,7 @@ export class RedisStreamsBus implements RawBus {
         const fields = Array.isArray(entry) ? entry[1] : undefined;
         if (typeof id !== "string") continue;
 
-        const decoded = decodeMessage(topic, id, fields) as Message<TData>;
+        const decoded = decodeMessage(topic, id, fields, this.logger) as Message<TData>;
         messages.push({ msg: decoded, cursor: id });
       }
     }
@@ -363,7 +414,7 @@ export class RedisStreamsBus implements RawBus {
                 if (typeof id !== "string") continue;
 
                 cursor = id;
-                const msg = decodeMessage(topic, id, fields) as Message<TData>;
+                const msg = decodeMessage(topic, id, fields, this.logger) as Message<TData>;
                 const ctx: HandleContext = {
                   cursor: id,
                   commit: async () => {},
@@ -405,11 +456,26 @@ export class RedisStreamsBus implements RawBus {
               const fields = Array.isArray(entry) ? entry[1] : undefined;
               if (typeof id !== "string") continue;
 
-              const msg = decodeMessage(topic, id, fields) as Message<TData>;
+              const msg = decodeMessage(topic, id, fields, this.logger) as Message<TData>;
               const ctx: HandleContext = {
                 cursor: id,
                 commit: async () => {
-                  await subRedis.xack(streamKey, group, id);
+                  try {
+                    await subRedis.xack(streamKey, group, id);
+                  } catch (e) {
+                    this.logger.error(
+                      "event_bus.ack_failed",
+                      {
+                        topic,
+                        group,
+                        consumerId,
+                        messageId: id,
+                        type: msg.type,
+                      },
+                      e,
+                    );
+                    throw e;
+                  }
                 },
               };
 

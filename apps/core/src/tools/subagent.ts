@@ -17,6 +17,13 @@ const subagentDelegateInputSchema = z.object({
     .default("explore")
     .describe("Subagent profile to run (explore, general, self)."),
   task: z.string().min(1).describe("Objective for the subagent."),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional existing subagent session id to continue. Must belong to the current parent session.",
+    ),
   timeoutMs: z
     .number()
     .int()
@@ -116,6 +123,12 @@ function clampTimeoutMs(
   return Math.min(normalized, defaults.maxTimeoutMs);
 }
 
+function normalizeSessionId(value: string | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function truncateEnd(input: string, maxLen: number): string {
   if (input.length <= maxLen) return input;
   if (maxLen <= 3) return "...".slice(0, maxLen);
@@ -163,73 +176,11 @@ function renderSubagentDisplay(params: {
   return [header, ...lines].join("\n");
 }
 
-function buildExplorePrompt(task: string): ModelMessage {
-  const text = [
-    "You are an explore subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- Focus on codebase exploration and evidence-backed findings.",
-    "- Prefer parallel read/search with read_file, glob, grep, and batch.",
-    "- Do not edit files.",
-    "- Do not run bash.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths (and lines when helpful) in your answer.",
-  ].join("\n");
-
+function buildDelegatedTaskPrompt(task: string): ModelMessage {
   return {
     role: "user",
-    content: text,
+    content: task,
   };
-}
-
-function buildGeneralPrompt(task: string): ModelMessage {
-  const text = [
-    "You are a general subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- Execute the task directly with available tools.",
-    "- Prefer parallel tool usage when calls are independent.",
-    "- Keep output concise and actionable.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths when code changes are involved.",
-  ].join("\n");
-
-  return {
-    role: "user",
-    content: text,
-  };
-}
-
-function buildSelfPrompt(task: string): ModelMessage {
-  const text = [
-    "You are a self subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- You run in a fresh, isolated context window.",
-    "- Execute the task directly with available tools.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths when code changes are involved.",
-  ].join("\n");
-
-  return {
-    role: "user",
-    content: text,
-  };
-}
-
-function buildProfilePrompt(profile: SubagentProfile, task: string): ModelMessage {
-  if (profile === "general") return buildGeneralPrompt(task);
-  if (profile === "self") return buildSelfPrompt(task);
-  return buildExplorePrompt(task);
 }
 
 export function subagentTools(params: {
@@ -276,9 +227,16 @@ export function subagentTools(params: {
           maxTimeoutMs: params.maxTimeoutMs,
         });
 
+        const continuedSessionId = normalizeSessionId(input.sessionId);
+        if (continuedSessionId && !continuedSessionId.startsWith(`sub:${ctx.sessionId}:`)) {
+          throw new Error(
+            "subagent sessionId must belong to the current parent session (expected prefix sub:<parent-session-id>:)",
+          );
+        }
+
         const startedAt = Date.now();
         const childRequestId = `sub:${ctx.requestId}:${crypto.randomUUID()}`;
-        const childSessionId = `sub:${ctx.sessionId}:${childRequestId}`;
+        const childSessionId = continuedSessionId ?? `sub:${ctx.sessionId}:${childRequestId}`;
 
         const childHeaders = {
           request_id: childRequestId,
@@ -303,6 +261,7 @@ export function subagentTools(params: {
           profile: input.profile,
           parentDepth: depth,
           childDepth: depth + 1,
+          continuedSessionId: continuedSessionId ?? null,
           timeoutMs,
           task: truncateEnd(input.task.replace(/\s+/g, " ").trim(), 240),
         });
@@ -507,7 +466,7 @@ export function subagentTools(params: {
             lilacEventTypes.CmdRequestMessage,
             {
               queue: "prompt",
-              messages: [buildProfilePrompt(input.profile, input.task)],
+              messages: [buildDelegatedTaskPrompt(input.task)],
               raw: {
                 subagent: {
                   profile: input.profile,

@@ -7,9 +7,28 @@ import { pathToFileURL } from "node:url";
 import {
   appendAdditionalSessionMemoBlock,
   resolveSessionAdditionalPrompts,
+  toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
+
+describe("toOpenAIPromptCacheKey", () => {
+  it("returns the session id when it fits provider limits", () => {
+    const sessionId = "sub:abc123";
+
+    expect(toOpenAIPromptCacheKey(sessionId)).toBe(sessionId);
+  });
+
+  it("hashes long session ids down to 64 chars", () => {
+    const sessionId =
+      "sub:680343695673131032:sub:req:7984efa2-6f00-41c5-b1d0-bf77ada46e59:309873d2-712a-424e-9dd1-45273b4655d9";
+
+    const key = toOpenAIPromptCacheKey(sessionId);
+    expect(key).toHaveLength(64);
+    expect(key).toMatch(/^[0-9a-f]{64}$/u);
+    expect(key).not.toBe(sessionId);
+  });
+});
 
 describe("withReasoningSummaryDefaultForOpenAIModels", () => {
   it("does not inject reasoning summary when display is none", () => {

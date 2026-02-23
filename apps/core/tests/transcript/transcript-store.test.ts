@@ -180,4 +180,39 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
+
+  it("returns latest transcript by session", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+
+    const store = new SqliteTranscriptStore(dbPath);
+
+    store.saveRequestTranscript({
+      requestId: "r1",
+      sessionId: "sub:s:1:r1",
+      requestClient: "unknown",
+      messages: [{ role: "assistant", content: "first" }],
+      finalText: "first",
+      modelLabel: "test-model",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+
+    store.saveRequestTranscript({
+      requestId: "r2",
+      sessionId: "sub:s:1:r1",
+      requestClient: "unknown",
+      messages: [{ role: "assistant", content: "second" }],
+      finalText: "second",
+      modelLabel: "test-model",
+    });
+
+    const latest = store.getLatestTranscriptBySession({ sessionId: "sub:s:1:r1" });
+    expect(latest).not.toBeNull();
+    expect(latest?.requestId).toBe("r2");
+    expect(latest?.finalText).toBe("second");
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });

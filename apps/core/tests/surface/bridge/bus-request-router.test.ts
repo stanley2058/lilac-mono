@@ -3446,4 +3446,204 @@ describe("startBusRequestRouter", () => {
     await sub.stop();
     await router.stop();
   });
+
+  it("fails open for direct-reply disambiguation gate errors", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan-fail-open";
+    const repliedToId = "a1";
+    const triggerId = "u-trigger";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${repliedToId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: repliedToId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "previous bot answer",
+        ts: now - 10,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:${triggerId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: triggerId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "@otherbot should we proceed?",
+        ts: now,
+        raw: { reference: { messageId: repliedToId } },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test-fail-open",
+      routerGate: async () => {
+        throw new Error("gate failed");
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [sessionId]: { mode: "mention", gate: true },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: false, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-fail-open",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: triggerId,
+      userId: "u1",
+      userName: "user1",
+      text: "@otherbot should we proceed?",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: true,
+          replyToMessageId: repliedToId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(received.length).toBe(1);
+    expect(received[0].type).toBe(lilacEventTypes.CmdRequestMessage);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("fails closed for active-batch gate errors", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan-fail-closed";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "hello there",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test-fail-closed",
+      routerGate: async () => {
+        throw new Error("batch gate failed");
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {
+              [sessionId]: { mode: "active", gate: true },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-fail-closed",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "hello there",
+      ts: now,
+      raw: {
+        discord: { isDMBased: false, mentionsBot: false, replyToBot: false },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(received.length).toBe(0);
+
+    await sub.stop();
+    await router.stop();
+  });
 });

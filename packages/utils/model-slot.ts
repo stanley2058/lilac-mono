@@ -105,6 +105,9 @@ function providerOptionsNamespace(provider: string): string {
   // Codex uses the OpenAI provider under the hood.
   if (provider === "codex") return "openai";
 
+  // The OpenAI-compatible provider uses the openaiCompatible options namespace.
+  if (provider === "openai-compatible") return "openaiCompatible";
+
   // Our provider id is "vercel" but the AI SDK namespace is "gateway".
   if (provider === "vercel") return "gateway";
 
@@ -264,7 +267,8 @@ function resolveModel(params: {
   const providerOptions = buildProviderOptions({ provider, options: params.options });
 
   const p = providers[provider as Providers];
-  if (!p) {
+  const hasProvider = Object.prototype.hasOwnProperty.call(providers, provider);
+  if (!hasProvider) {
     throw new Error(
       `Unknown provider '${provider}' (${params.source}='${params.alias ?? params.spec}')`,
     );

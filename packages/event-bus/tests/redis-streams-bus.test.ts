@@ -411,4 +411,74 @@ describe("RedisStreamsBus", () => {
     expect(received).toEqual(complexData);
     await bus.close();
   });
+
+  it("keeps work subscription loop alive after handler error", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("work-loop")}`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix, ownsRedis: true });
+    const bus = createLilacBus(raw);
+
+    let calls = 0;
+    let deliveredAfterError = false;
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "work",
+        subscriptionId: "agent-service-loop",
+        consumerId: "instance-1",
+        offset: { type: "begin" },
+        batch: { maxWaitMs: 250 },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
+
+        calls += 1;
+        if (calls === 1) {
+          throw new Error("boom");
+        }
+
+        deliveredAfterError = true;
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "prompt",
+        messages: [{ role: "user", content: "first" }],
+      },
+      {
+        headers: {
+          request_id: randomId("req"),
+          session_id: "chan",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "prompt",
+        messages: [{ role: "user", content: "second" }],
+      },
+      {
+        headers: {
+          request_id: randomId("req"),
+          session_id: "chan",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 120));
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(deliveredAfterError).toBe(true);
+
+    await sub.stop();
+    await bus.close();
+  });
 });

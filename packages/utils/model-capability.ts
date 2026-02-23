@@ -60,6 +60,8 @@ export type ModelCapabilityOptions = {
   overrides?: ModelCapabilityOverrides;
   /** Optional provider alias mapping merged with defaults. */
   providerAliases?: Record<string, string>;
+  /** Providers to always treat as unknown/unresolved capability. */
+  forceUnknownProviders?: readonly string[];
   /** Override models.dev URL for testing. */
   apiUrl?: string;
   /** Inject custom fetch implementation (defaults to global fetch). */
@@ -134,6 +136,7 @@ function listSomeKeys(input: Record<string, unknown>, max: number): string[] {
 export class ModelCapability {
   private readonly overrides: ModelCapabilityOverrides;
   private readonly providerAliases: Record<string, string>;
+  private readonly forceUnknownProviders: ReadonlySet<string>;
   private readonly apiUrl: string;
   private readonly fetchFn: typeof fetch;
 
@@ -145,6 +148,9 @@ export class ModelCapability {
       ...DEFAULT_PROVIDER_ALIASES,
       ...options?.providerAliases,
     };
+    this.forceUnknownProviders = new Set(
+      (options?.forceUnknownProviders ?? []).map((provider) => provider.trim().toLowerCase()),
+    );
     this.apiUrl = options?.apiUrl ?? "https://models.dev/api.json";
     this.fetchFn = options?.fetch ?? fetch;
   }
@@ -251,12 +257,22 @@ export class ModelCapability {
     spec: ModelSpecifier,
     options?: { signal?: AbortSignal },
   ): Promise<ModelCapabilityInfo> {
+    const parsed = parseModelSpecifier(spec);
+    const provider = this.normalizeProvider(parsed.provider);
+    if (
+      this.forceUnknownProviders.has(parsed.provider.trim().toLowerCase()) ||
+      this.forceUnknownProviders.has(provider.toLowerCase())
+    ) {
+      throw new Error(
+        `Model capability lookup intentionally disabled for provider '${parsed.provider}' (spec '${spec}').`,
+      );
+    }
+
     const override = this.overrides[spec];
     if (override) {
-      const { provider, model } = parseModelSpecifier(spec);
       return {
-        provider,
-        model,
+        provider: parsed.provider,
+        model: parsed.model,
         cost: override.cost,
         limit: {
           context: override.limit.context,
@@ -265,9 +281,6 @@ export class ModelCapability {
         modalities: override.modalities,
       };
     }
-
-    const parsed = parseModelSpecifier(spec);
-    const provider = this.normalizeProvider(parsed.provider);
 
     const registry = await this.loadRegistry(options?.signal);
     const lookedUp = this.lookupWithFallback({

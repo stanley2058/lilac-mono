@@ -134,4 +134,32 @@ describe("tool-server attachment", () => {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it("rejects attachment.download URLs outside Discord CDN hosts", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tool = new Attachment({ bus });
+
+    await expect(
+      tool.call(
+        "attachment.download",
+        {},
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "file",
+                  mediaType: "application/pdf",
+                  filename: "external.pdf",
+                  data: "https://example.com/external.pdf",
+                },
+              ],
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("Blocked attachment host 'example.com'");
+  });
 });

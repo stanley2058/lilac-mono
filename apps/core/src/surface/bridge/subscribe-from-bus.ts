@@ -275,11 +275,26 @@ export async function bridgeBusToAdapter(params: {
       const requestClient = msg.headers?.request_client;
 
       if (!requestId || !sessionId) {
+        logger.warn("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          reason: "missing_headers",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
 
       if (requestClient && requestClient !== platform) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          requestClient,
+          reason: "platform_mismatch",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
@@ -298,6 +313,13 @@ export async function bridgeBusToAdapter(params: {
 
       const relay = activeRelays.get(requestId);
       if (!relay) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          reason: "no_active_relay",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
@@ -332,12 +354,27 @@ export async function bridgeBusToAdapter(params: {
       }
 
       if (requestClient && requestClient !== platform) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          requestClient,
+          reason: "platform_mismatch",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
 
       const relay = activeRelays.get(requestId);
       if (!relay) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          reason: "no_active_relay",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
@@ -383,10 +420,25 @@ export async function bridgeBusToAdapter(params: {
 
       if (!requestId || !sessionId) {
         // Do not ack malformed messages: they need investigation.
+        logger.error("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          reason: "missing_headers",
+          messageType: msg.type,
+        });
         throw new Error("evt.request.reply missing required headers.request_id/session_id");
       }
 
       if (requestClient && requestClient !== platform) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          requestClient,
+          reason: "platform_mismatch",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }
@@ -423,6 +475,14 @@ export async function bridgeBusToAdapter(params: {
       }
 
       if (activeRelays.has(requestId)) {
+        logger.info("relay.event.ignored", {
+          requestId,
+          sessionId,
+          platform,
+          requestClient,
+          reason: "already_active",
+          messageType: msg.type,
+        });
         await ctx.commit();
         return;
       }

@@ -28,6 +28,7 @@ import {
   type FetchOptions,
   type PublishOptions,
 } from "@stanley2058/lilac-event-bus";
+import { setGithubLatestRequestForSession } from "../../../src/github/github-state";
 
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
@@ -2041,6 +2042,125 @@ describe("bridgeBusToAdapter", () => {
       channelId: "chan",
       messageId: "new_anchor",
     });
+
+    await bridge.stop();
+  });
+
+  it("ignores cmd.request and cmd.surface events when request_client mismatches platform", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:mismatch";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.stream).not.toBeNull();
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      {
+        inheritReplyTo: true,
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "github",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "interrupt",
+        messages: [],
+        raw: { cancel: true, requiresActive: true },
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "github",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams[0]?.aborted).toBeUndefined();
+
+    await bridge.stop();
+  });
+
+  it("suppresses stale GitHub final replies when a newer request exists", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const sessionId = "octo/repo#12";
+    const staleRequestId = `github:${sessionId}:old`;
+    const latestRequestId = `github:${sessionId}:new`;
+    setGithubLatestRequestForSession(sessionId, latestRequestId);
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "github",
+      subscriptionId: "github-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: staleRequestId,
+          session_id: sessionId,
+          request_client: "github",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "stale output" },
+      {
+        headers: {
+          request_id: staleRequestId,
+          session_id: sessionId,
+          request_client: "github",
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams[0]?.aborted).toBe("superseded");
+    expect(adapter.streams[0]?.finished).toBe(false);
 
     await bridge.stop();
   });

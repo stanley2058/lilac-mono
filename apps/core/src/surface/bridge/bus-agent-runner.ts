@@ -39,6 +39,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { Logger } from "@stanley2058/simple-module-logger";
@@ -249,6 +250,16 @@ function withStableAnthropicUpstreamOrder(
 function isOpenAIBackedModel(provider: string, modelId: string): boolean {
   if (provider === "openai" || provider === "codex") return true;
   return modelId.startsWith("openai/");
+}
+
+const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
+
+export function toOpenAIPromptCacheKey(sessionId: string): string {
+  if (sessionId.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) {
+    return sessionId;
+  }
+
+  return createHash("sha256").update(sessionId).digest("hex");
 }
 
 export function withReasoningSummaryDefaultForOpenAIModels(params: {
@@ -978,6 +989,7 @@ function buildExploreOverlay(extra?: string): string {
   const lines = [
     "You are running in explore subagent mode.",
     "Focus on repository exploration and evidence-backed findings.",
+    "Treat the delegated user message as the full task input.",
     "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
     "Do not use bash.",
     "Do not edit files.",
@@ -995,6 +1007,7 @@ function buildGeneralOverlay(extra?: string): string {
   const lines = [
     "You are running in general subagent mode.",
     "Focus on completing the delegated task end-to-end.",
+    "Treat the delegated user message as the full task input.",
     "Use available tools directly, including edits and bash when needed.",
     "Prefer parallel tool usage when calls are independent.",
     "Do not delegate to another subagent.",
@@ -1008,10 +1021,19 @@ function buildGeneralOverlay(extra?: string): string {
 }
 
 function buildSelfOverlay(extra?: string): string {
+  const lines = [
+    "You are running in self subagent mode.",
+    "Focus on completing the delegated task in a fresh context window.",
+    "Treat the delegated user message as the full task input.",
+    "Use available tools directly, including edits and bash when needed.",
+    "Prefer parallel tool usage when calls are independent.",
+  ];
+
   if (extra && extra.trim().length > 0) {
-    return extra.trim();
+    lines.push(extra.trim());
   }
-  return "";
+
+  return lines.join("\n");
 }
 
 function buildOverlayForProfile(params: {
@@ -1279,7 +1301,7 @@ export async function startBusAgentRunner(params: {
         }
       }
 
-      logger.info("cmd.request.message received", {
+      logger.debug("cmd.request.message received", {
         requestId,
         sessionId,
         requestClient,
@@ -1304,16 +1326,6 @@ export async function startBusAgentRunner(params: {
 
       const requestControl = parseRequestControlFromRaw(entry.raw);
 
-      if (draining) {
-        logger.info("dropping request message while draining", {
-          requestId,
-          sessionId,
-          queue: msg.data.queue,
-        });
-        await ctx.commit();
-        return;
-      }
-
       const state =
         bySession.get(sessionId) ??
         ({
@@ -1326,12 +1338,56 @@ export async function startBusAgentRunner(params: {
         } satisfies SessionQueue);
       bySession.set(sessionId, state);
 
+      const logQueueTransition = (input: {
+        action: string;
+        queueDepthBefore: number;
+        queueDepthAfter: number;
+        reason?: string;
+        activeRequestId?: string | null;
+      }) => {
+        logger.info("agent.queue.transition", {
+          requestId,
+          sessionId,
+          requestClient,
+          queueMode: entry.queue,
+          running: state.running,
+          queueDepthBefore: input.queueDepthBefore,
+          queueDepthAfter: input.queueDepthAfter,
+          action: input.action,
+          reason: input.reason,
+          activeRequestId: input.activeRequestId ?? state.activeRequestId,
+          draining,
+        });
+      };
+
+      if (draining) {
+        logger.info("dropping request message while draining", {
+          requestId,
+          sessionId,
+          queue: msg.data.queue,
+        });
+        logQueueTransition({
+          action: "drop",
+          queueDepthBefore: state.queue.length,
+          queueDepthAfter: state.queue.length,
+          reason: "draining",
+        });
+        await ctx.commit();
+        return;
+      }
+
       const dropCancelNoTarget = async (reason: string) => {
         logger.info("dropping cancel request with no target", {
           requestId,
           sessionId,
           queue: entry.queue,
           activeRequestId: state.activeRequestId,
+          reason,
+        });
+        logQueueTransition({
+          action: "drop",
+          queueDepthBefore: state.queue.length,
+          queueDepthAfter: state.queue.length,
           reason,
         });
         await ctx.commit();
@@ -1378,6 +1434,12 @@ export async function startBusAgentRunner(params: {
             cancelledRequestIds: [...removed.keys()],
             queueDepth: state.queue.length,
           });
+          logQueueTransition({
+            action: "cancel_queued",
+            queueDepthBefore: state.queue.length + removed.size,
+            queueDepthAfter: state.queue.length,
+            reason: "cancel_queued",
+          });
 
           if (!state.running) {
             drainSessionQueue(sessionId, state).catch((e: unknown) => {
@@ -1406,6 +1468,14 @@ export async function startBusAgentRunner(params: {
             requestClient: state.activeRun?.requestClient ?? entry.requestClient,
           };
           await applyToRunningAgent(state.agent, activeCancelEntry, cancelledByRequestId);
+          logQueueTransition({
+            action: "apply_to_active",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: targetMatchesActive
+              ? "cancel_active_by_message_id"
+              : "cancel_active_by_request_id",
+          });
           await ctx.commit();
           return;
         }
@@ -1427,11 +1497,24 @@ export async function startBusAgentRunner(params: {
             sessionId,
             queue: entry.queue,
           });
+          logQueueTransition({
+            action: "drop",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: "requires_active_without_run",
+          });
           await ctx.commit();
           return;
         }
 
+        const queueDepthBefore = state.queue.length;
         state.queue.push(entry);
+        logQueueTransition({
+          action: "enqueue",
+          queueDepthBefore,
+          queueDepthAfter: state.queue.length,
+          reason: "start_when_idle",
+        });
         drainSessionQueue(sessionId, state).catch((e: unknown) => {
           logger.error("drainSessionQueue failed", { sessionId, requestId }, e);
         });
@@ -1439,6 +1522,12 @@ export async function startBusAgentRunner(params: {
         // If the message is intended for the currently active request, apply immediately.
         if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
           await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
+          logQueueTransition({
+            action: "apply_to_active",
+            queueDepthBefore: state.queue.length,
+            queueDepthAfter: state.queue.length,
+            reason: "same_request_id",
+          });
         } else {
           // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
           // an unrelated active request.
@@ -1449,11 +1538,18 @@ export async function startBusAgentRunner(params: {
               activeRequestId: state.activeRequestId,
               queue: entry.queue,
             });
+            logQueueTransition({
+              action: "drop",
+              queueDepthBefore: state.queue.length,
+              queueDepthAfter: state.queue.length,
+              reason: "requires_active_different_request_id",
+            });
             await ctx.commit();
             return;
           }
 
           // No parallel runs: queue prompt messages for later.
+          const queueDepthBefore = state.queue.length;
           state.queue.push(entry);
 
           await publishLifecycle({
@@ -1472,6 +1568,12 @@ export async function startBusAgentRunner(params: {
             sessionId,
             activeRequestId: state.activeRequestId,
             queueDepth: state.queue.length,
+          });
+          logQueueTransition({
+            action: "enqueue",
+            queueDepthBefore,
+            queueDepthAfter: state.queue.length,
+            reason: "queued_behind_active",
           });
         }
       }
@@ -1612,8 +1714,23 @@ export async function startBusAgentRunner(params: {
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
     if (state.running) return;
 
+    const queueDepthBefore = state.queue.length;
     const next = state.queue.shift();
     if (!next) return;
+
+    logger.info("agent.queue.transition", {
+      requestId: next.requestId,
+      sessionId,
+      requestClient: next.requestClient,
+      queueMode: next.queue,
+      running: state.running,
+      queueDepthBefore,
+      queueDepthAfter: state.queue.length,
+      action: "dequeue",
+      reason: "drain_session_queue",
+      activeRequestId: state.activeRequestId,
+      draining,
+    });
 
     state.running = true;
     state.activeRequestId = next.requestId;
@@ -1745,7 +1862,7 @@ export async function startBusAgentRunner(params: {
           ...base,
           openai: {
             ...existingOpenAI,
-            promptCacheKey: sessionId,
+            promptCacheKey: toOpenAIPromptCacheKey(sessionId),
           },
         };
       })();
@@ -1785,6 +1902,33 @@ export async function startBusAgentRunner(params: {
         baseSystemPrompt,
         additionalSessionPrompts,
       );
+
+      let seededSessionMessages: ModelMessage[] = [];
+      if (!next.recovery && runProfile !== "primary" && params.transcriptStore) {
+        try {
+          const latest = params.transcriptStore.getLatestTranscriptBySession?.({
+            sessionId: next.sessionId,
+          });
+          if (latest && latest.messages.length > 0) {
+            seededSessionMessages = latest.messages;
+            logger.info("subagent continuation seeded from transcript", {
+              requestId: next.requestId,
+              sessionId: next.sessionId,
+              fromRequestId: latest.requestId,
+              messagesSeeded: latest.messages.length,
+            });
+          }
+        } catch (e) {
+          logger.warn(
+            "failed to load subagent continuation transcript",
+            {
+              requestId: next.requestId,
+              sessionId: next.sessionId,
+            },
+            e,
+          );
+        }
+      }
 
       const agentSystem = anthropicPromptCachingEnabled
         ? {
@@ -1868,7 +2012,7 @@ export async function startBusAgentRunner(params: {
         system: agentSystem,
         model: resolved.model,
         modelSpecifier: resolved.spec,
-        messages: next.recovery?.checkpointMessages ?? [],
+        messages: next.recovery?.checkpointMessages ?? seededSessionMessages,
         tools,
         providerOptions: providerOptionsForAgent,
         debug: {
@@ -1913,7 +2057,9 @@ export async function startBusAgentRunner(params: {
 
       unsubscribeCompaction = await attachAutoCompaction(agent, {
         model: resolved.spec,
-        modelCapability: new ModelCapability(),
+        modelCapability: new ModelCapability({
+          forceUnknownProviders: ["openai-compatible"],
+        }),
         resolveCurrentModelSpecifier: () => agent.state.modelSpecifier ?? resolved.spec,
         baseTransformMessages: toolPruneTransform,
         onUnknownCapability: ({ spec, reason, error }) => {
@@ -2276,20 +2422,22 @@ export async function startBusAgentRunner(params: {
         finalText = "";
       }
 
-      // Intentional: skip-reply turns are not persisted for transcript expansion.
-      if (params.transcriptStore && !shouldSkipSurfaceReply) {
+      // Keep skip-reply behavior for primary runs.
+      // For subagent runs we still persist to support explicit session continuation.
+      if (params.transcriptStore && (!shouldSkipSurfaceReply || runProfile !== "primary")) {
         try {
-          const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(responseStartIndex)
-            : agent.state.messages.slice(responseStartIndex);
+          const finalMessagesForPersistence = runStats.finalMessages ?? agent.state.messages;
+          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+          const persistedMessages =
+            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
             requestClient: headers.request_client,
-            // Store only this request's newly produced messages.
-            // The request context is reconstructed from the surface thread.
-            messages: responseMessages,
+            // Primary runs can reconstruct context from the surface thread.
+            // Subagent runs need full per-session transcript for explicit continuation.
+            messages: persistedMessages,
             finalText,
             modelLabel: resolvedModelLabel,
           });
@@ -2383,15 +2531,17 @@ export async function startBusAgentRunner(params: {
 
       if (params.transcriptStore) {
         try {
-          const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(responseStartIndex)
-            : (activeAgent?.state.messages.slice(responseStartIndex) ?? []);
+          const finalMessagesForPersistence =
+            runStats.finalMessages ?? activeAgent?.state.messages ?? [];
+          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+          const persistedMessages =
+            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
             requestClient: headers.request_client,
-            messages: responseMessages,
+            messages: persistedMessages,
             finalText: `Error: ${msg}`,
             modelLabel: resolvedModelLabel,
           });

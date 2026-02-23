@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   CODEX_BASE_INSTRUCTIONS,
   coreConfigSchema,
+  providers,
   resolveModelRef,
   resolveModelSlot,
   type CoreConfig,
@@ -72,6 +73,56 @@ describe("resolveModelSlot", () => {
         parallelToolCalls: true,
       },
     });
+  });
+
+  it("maps openai-compatible provider shorthand options to openaiCompatible namespace", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openai-compatible/llama-3.1-8b",
+      options: {
+        temperature: 0.2,
+      },
+    };
+
+    const providerMap = providers as unknown as Record<
+      string,
+      ((modelId: string) => unknown) | null
+    >;
+    const originalProvider = providerMap["openai-compatible"];
+    providerMap["openai-compatible"] = (modelId: string) => ({ modelId });
+
+    try {
+      const resolved = resolveModelSlot(cfg, "main");
+      expect(resolved.providerOptions).toEqual({
+        openaiCompatible: {
+          temperature: 0.2,
+        },
+      });
+    } finally {
+      providerMap["openai-compatible"] = originalProvider ?? null;
+    }
+  });
+
+  it("reports not configured when provider exists but is disabled", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openai-compatible/llama-3.1-8b",
+    };
+
+    const providerMap = providers as unknown as Record<
+      string,
+      ((modelId: string) => unknown) | null
+    >;
+    const originalProvider = providerMap["openai-compatible"];
+    providerMap["openai-compatible"] = null;
+
+    try {
+      expect(() => resolveModelSlot(cfg, "main")).toThrow(
+        "Provider 'openai-compatible' is not configured",
+      );
+    } finally {
+      providerMap["openai-compatible"] = originalProvider ?? null;
+    }
   });
 
   it("enables openai.parallelToolCalls by default for openai models", () => {
