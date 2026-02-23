@@ -573,13 +573,23 @@ export async function startBusRequestRouter(params: {
         const shouldWarn = lagMs >= env.perf.lagWarnMs;
         const shouldSample = env.perf.sampleRate > 0 && Math.random() < env.perf.sampleRate;
         if (shouldWarn || shouldSample) {
-          (shouldWarn ? logger.warn : logger.info)("perf.bus_lag", {
-            stage: "evt.adapter->router",
-            lagMs,
-            sessionId: msg.data.channelId,
-            messageId: msg.data.messageId,
-            userId: msg.data.userId,
-          });
+          if (shouldWarn) {
+            logger.warn("perf.bus_lag", {
+              stage: "evt.adapter->router",
+              lagMs,
+              sessionId: msg.data.channelId,
+              messageId: msg.data.messageId,
+              userId: msg.data.userId,
+            });
+          } else {
+            logger.info("perf.bus_lag", {
+              stage: "evt.adapter->router",
+              lagMs,
+              sessionId: msg.data.channelId,
+              messageId: msg.data.messageId,
+              userId: msg.data.userId,
+            });
+          }
         }
       }
 

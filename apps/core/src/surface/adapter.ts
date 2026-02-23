@@ -41,6 +41,14 @@ export type SurfaceOutputResult = {
   last: MsgRef;
 };
 
+export type SurfaceReplyChainPlanOptions = {
+  maxDepth?: number;
+};
+
+export type SurfaceMergeBlockPlanOptions = {
+  lookbackLimit?: number;
+};
+
 export interface SurfaceOutputStream {
   push(part: SurfaceOutputPart): Promise<void>;
   finish(): Promise<SurfaceOutputResult>;
@@ -102,6 +110,28 @@ export interface SurfaceAdapter {
 
   getUnRead(sessionRef: SessionRef): Promise<SurfaceMessage[]>;
   markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void>;
+}
+
+/** Optional capability: plan reply-chain traversal using local metadata/indexes. */
+export interface SurfaceReplyChainPlannerProvider {
+  planReplyChain(msgRef: MsgRef, opts?: SurfaceReplyChainPlanOptions): Promise<readonly MsgRef[]>;
+  planMergeBlockEndingAt(
+    msgRef: MsgRef,
+    opts?: SurfaceMergeBlockPlanOptions,
+  ): Promise<readonly MsgRef[]>;
+}
+
+export function hasReplyChainPlannerProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & SurfaceReplyChainPlannerProvider {
+  const maybe = adapter as unknown as {
+    planReplyChain?: unknown;
+    planMergeBlockEndingAt?: unknown;
+  };
+
+  return (
+    typeof maybe.planReplyChain === "function" && typeof maybe.planMergeBlockEndingAt === "function"
+  );
 }
 
 export type SurfaceBurstCacheInput = {

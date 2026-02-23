@@ -39,6 +39,20 @@ export type DbDiscordRoleName = {
   updated_ts: number;
 };
 
+export type DbDiscordMessageRelation = {
+  channel_id: string;
+  message_id: string;
+  guild_id: string | null;
+  author_id: string;
+  author_name: string | null;
+  ts: number;
+  is_chat: number;
+  reply_to_channel_id: string | null;
+  reply_to_message_id: string | null;
+  deleted: number;
+  updated_ts: number;
+};
+
 export class DiscordSurfaceStore {
   private readonly db: Database;
 
@@ -114,6 +128,38 @@ export class DiscordSurfaceStore {
         updated_ts INTEGER NOT NULL,
         PRIMARY KEY (guild_id, role_id)
       );
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS discord_message_relations (
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        guild_id TEXT,
+        author_id TEXT NOT NULL,
+        author_name TEXT,
+        ts INTEGER NOT NULL,
+        is_chat INTEGER NOT NULL,
+        reply_to_channel_id TEXT,
+        reply_to_message_id TEXT,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        updated_ts INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, message_id)
+      );
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discord_message_relations_channel_ts
+      ON discord_message_relations(channel_id, ts DESC, message_id DESC);
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discord_message_relations_reply_target
+      ON discord_message_relations(channel_id, reply_to_message_id);
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discord_message_relations_cross_reply_target
+      ON discord_message_relations(reply_to_channel_id, reply_to_message_id);
     `);
   }
 
@@ -256,6 +302,112 @@ export class DiscordSurfaceStore {
     return this.db
       .query("SELECT * FROM discord_role_names WHERE guild_id = ? AND role_id = ?")
       .get(guildId, roleId) as DbDiscordRoleName | null;
+  }
+
+  upsertMessageRelation(input: {
+    channelId: string;
+    messageId: string;
+    guildId?: string;
+    authorId: string;
+    authorName?: string;
+    ts: number;
+    isChat: boolean;
+    replyToChannelId?: string;
+    replyToMessageId?: string;
+    deleted?: boolean;
+    updatedTs: number;
+  }) {
+    this.db.run(
+      `
+      INSERT INTO discord_message_relations (
+        channel_id,
+        message_id,
+        guild_id,
+        author_id,
+        author_name,
+        ts,
+        is_chat,
+        reply_to_channel_id,
+        reply_to_message_id,
+        deleted,
+        updated_ts
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel_id, message_id) DO UPDATE SET
+        guild_id=excluded.guild_id,
+        author_id=excluded.author_id,
+        author_name=excluded.author_name,
+        ts=excluded.ts,
+        is_chat=excluded.is_chat,
+        reply_to_channel_id=excluded.reply_to_channel_id,
+        reply_to_message_id=excluded.reply_to_message_id,
+        deleted=excluded.deleted,
+        updated_ts=excluded.updated_ts;
+      `,
+      [
+        input.channelId,
+        input.messageId,
+        input.guildId ?? null,
+        input.authorId,
+        input.authorName ?? null,
+        input.ts,
+        input.isChat ? 1 : 0,
+        input.replyToChannelId ?? null,
+        input.replyToMessageId ?? null,
+        input.deleted ? 1 : 0,
+        input.updatedTs,
+      ],
+    );
+  }
+
+  getMessageRelation(channelId: string, messageId: string): DbDiscordMessageRelation | null {
+    return this.db
+      .query("SELECT * FROM discord_message_relations WHERE channel_id = ? AND message_id = ?")
+      .get(channelId, messageId) as DbDiscordMessageRelation | null;
+  }
+
+  listMessageRelationsBeforeOrAt(input: {
+    channelId: string;
+    messageId: string;
+    limit: number;
+  }): DbDiscordMessageRelation[] {
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .query(
+        `
+        SELECT r.*
+        FROM discord_message_relations r
+        JOIN discord_message_relations c
+          ON c.channel_id = ?
+         AND c.message_id = ?
+        WHERE r.channel_id = c.channel_id
+          AND c.deleted = 0
+          AND r.deleted = 0
+          AND (
+            r.ts < c.ts
+            OR (r.ts = c.ts AND r.message_id <= c.message_id)
+          )
+        ORDER BY r.ts DESC, r.message_id DESC
+        LIMIT ?
+        `,
+      )
+      .all(input.channelId, input.messageId, safeLimit) as DbDiscordMessageRelation[];
+
+    rows.reverse();
+    return rows;
+  }
+
+  markMessageRelationDeleted(input: { channelId: string; messageId: string; updatedTs: number }) {
+    this.db.run(
+      `
+      UPDATE discord_message_relations
+      SET deleted = 1,
+          updated_ts = ?
+      WHERE channel_id = ?
+        AND message_id = ?
+      `,
+      [input.updatedTs, input.channelId, input.messageId],
+    );
   }
 
   getOrInitReadState(channelId: string): DbDiscordReadState {
