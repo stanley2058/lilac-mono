@@ -228,7 +228,12 @@ const sessionStatusEntrySchema = z.object({
 const sessionStatusMapSchema = z.record(z.string(), z.unknown());
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(error);
 }
 
 function toInt(x: unknown): number | null {

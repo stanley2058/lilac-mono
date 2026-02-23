@@ -261,7 +261,11 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
   if (!isOpenAIBackedModel(params.provider, params.modelId)) return params.providerOptions;
 
   const base = params.providerOptions ?? {};
-  const existingOpenAI = (base["openai"] as JSONObject | undefined) ?? {};
+  const rawOpenAI = base["openai"];
+  const existingOpenAI: JSONObject =
+    rawOpenAI && typeof rawOpenAI === "object" && !Array.isArray(rawOpenAI)
+      ? (rawOpenAI as JSONObject)
+      : {};
 
   if ("reasoningSummary" in existingOpenAI) {
     return params.providerOptions;
