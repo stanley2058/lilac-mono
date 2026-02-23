@@ -1936,6 +1936,7 @@ export async function startBusAgentRunner(params: {
 
       let finalText = "";
       let lastTextPartId: string | null = null;
+      let pendingRecoveryTextBoundary = Boolean(next.recovery?.partialText.trim());
       const reasoningChunkById = new Map<string, string>();
       let reasoningChunkSeq = 0;
 
@@ -2028,11 +2029,17 @@ export async function startBusAgentRunner(params: {
           runStats.firstTextDeltaAt ??= Date.now();
 
           const partId = event.assistantMessageEvent.id;
+          const hasPartBoundary = lastTextPartId !== null && partId !== lastTextPartId;
+          const accumulatedTextForBoundary =
+            finalText.length > 0 ? finalText : (next.recovery?.partialText ?? "");
           const delta = withBlankLineBetweenTextParts({
-            accumulatedText: finalText,
+            accumulatedText: accumulatedTextForBoundary,
             delta: event.assistantMessageEvent.delta,
-            partChanged: lastTextPartId !== null && partId !== lastTextPartId,
+            partChanged: hasPartBoundary || pendingRecoveryTextBoundary,
           });
+          if (delta.length > 0) {
+            pendingRecoveryTextBoundary = false;
+          }
           lastTextPartId = partId;
 
           finalText += delta;
