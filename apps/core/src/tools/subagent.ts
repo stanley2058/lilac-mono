@@ -17,6 +17,13 @@ const subagentDelegateInputSchema = z.object({
     .default("explore")
     .describe("Subagent profile to run (explore, general, self)."),
   task: z.string().min(1).describe("Objective for the subagent."),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional existing subagent session id to continue. Must belong to the current parent session.",
+    ),
   timeoutMs: z
     .number()
     .int()
@@ -114,6 +121,12 @@ function clampTimeoutMs(
   const requested = input ?? defaults.defaultTimeoutMs;
   const normalized = Math.max(1_000, Math.trunc(requested));
   return Math.min(normalized, defaults.maxTimeoutMs);
+}
+
+function normalizeSessionId(value: string | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function truncateEnd(input: string, maxLen: number): string {
@@ -276,9 +289,16 @@ export function subagentTools(params: {
           maxTimeoutMs: params.maxTimeoutMs,
         });
 
+        const continuedSessionId = normalizeSessionId(input.sessionId);
+        if (continuedSessionId && !continuedSessionId.startsWith(`sub:${ctx.sessionId}:`)) {
+          throw new Error(
+            "subagent sessionId must belong to the current parent session (expected prefix sub:<parent-session-id>:)",
+          );
+        }
+
         const startedAt = Date.now();
         const childRequestId = `sub:${ctx.requestId}:${crypto.randomUUID()}`;
-        const childSessionId = `sub:${ctx.sessionId}:${childRequestId}`;
+        const childSessionId = continuedSessionId ?? `sub:${ctx.sessionId}:${childRequestId}`;
 
         const childHeaders = {
           request_id: childRequestId,
@@ -303,6 +323,7 @@ export function subagentTools(params: {
           profile: input.profile,
           parentDepth: depth,
           childDepth: depth + 1,
+          continuedSessionId: continuedSessionId ?? null,
           timeoutMs,
           task: truncateEnd(input.task.replace(/\s+/g, " ").trim(), 240),
         });

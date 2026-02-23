@@ -341,6 +341,133 @@ describe("subagent_delegate tool", () => {
     expect(seenProfiles).toEqual(["general", "self"]);
   });
 
+  it("reuses provided child session id for continuation", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+    });
+
+    const continuedSessionId = "sub:s:parent:session-1";
+    let seenChildSessionId: string | null = null;
+
+    await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "subagent-test-worker-continued-session",
+        consumerId: "subagent-test-worker-continued-session",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+          await ctx.commit();
+          return;
+        }
+
+        const requestId = msg.headers?.request_id;
+        const sessionId = msg.headers?.session_id;
+        const requestClient = msg.headers?.request_client;
+        if (!requestId || !sessionId || !requestClient) {
+          await ctx.commit();
+          return;
+        }
+
+        if (msg.data.queue !== "prompt") {
+          await ctx.commit();
+          return;
+        }
+
+        seenChildSessionId = sessionId;
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          {
+            finalText: "continued",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await bus.publish(
+          lilacEventTypes.EvtRequestLifecycleChanged,
+          {
+            state: "resolved",
+          },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: sessionId,
+              request_client: requestClient,
+            },
+          },
+        );
+
+        await ctx.commit();
+      },
+    );
+
+    const res = await resolveExecuteResult(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Continue prior work", sessionId: continuedSessionId },
+        {
+          toolCallId: "tool-continued-session",
+          messages: [],
+          experimental_context: {
+            requestId: "r:continued-session",
+            sessionId: "s:parent",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    );
+
+    expect(res.status).toBe("resolved");
+    expect(res.childSessionId).toBe(continuedSessionId);
+    expect(seenChildSessionId === continuedSessionId).toBe(true);
+  });
+
+  it("rejects continued session ids outside parent session namespace", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+    });
+
+    await expect(
+      tools.subagent_delegate.execute!(
+        {
+          profile: "explore",
+          task: "Continue prior work",
+          sessionId: "sub:s:someone-else:session-1",
+        },
+        {
+          toolCallId: "tool-invalid-continued-session",
+          messages: [],
+          experimental_context: {
+            requestId: "r:invalid-continued-session",
+            sessionId: "s:parent",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    ).rejects.toThrow(/must belong to the current parent session/i);
+  });
+
   it("rejects delegation when depth limit is reached", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

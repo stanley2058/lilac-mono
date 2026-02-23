@@ -37,6 +37,8 @@ export type TranscriptStore = {
     messageId: string;
   }): TranscriptSnapshot | null;
 
+  getLatestTranscriptBySession?(input: { sessionId: string }): TranscriptSnapshot | null;
+
   close(): void;
 };
 
@@ -199,6 +201,46 @@ export class SqliteTranscriptStore implements TranscriptStore {
       messages_json: string;
     } | null;
 
+    return this.rowToSnapshot(row);
+  }
+
+  getLatestTranscriptBySession(input: { sessionId: string }): TranscriptSnapshot | null {
+    const row = this.db
+      .query(
+        `
+        SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json
+        FROM request_transcripts
+        WHERE session_id = ?
+        ORDER BY updated_ts DESC, created_ts DESC, rowid DESC
+        LIMIT 1
+        `,
+      )
+      .get(input.sessionId) as {
+      request_id: string;
+      session_id: string;
+      request_client: string;
+      created_ts: number;
+      updated_ts: number;
+      model_label: string | null;
+      final_text: string | null;
+      messages_json: string;
+    } | null;
+
+    return this.rowToSnapshot(row);
+  }
+
+  private rowToSnapshot(
+    row: {
+      request_id: string;
+      session_id: string;
+      request_client: string;
+      created_ts: number;
+      updated_ts: number;
+      model_label: string | null;
+      final_text: string | null;
+      messages_json: string;
+    } | null,
+  ): TranscriptSnapshot | null {
     if (!row) return null;
 
     let messages: ModelMessage[];

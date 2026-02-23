@@ -1881,6 +1881,33 @@ export async function startBusAgentRunner(params: {
         additionalSessionPrompts,
       );
 
+      let seededSessionMessages: ModelMessage[] = [];
+      if (!next.recovery && runProfile !== "primary" && params.transcriptStore) {
+        try {
+          const latest = params.transcriptStore.getLatestTranscriptBySession?.({
+            sessionId: next.sessionId,
+          });
+          if (latest && latest.messages.length > 0) {
+            seededSessionMessages = latest.messages;
+            logger.info("subagent continuation seeded from transcript", {
+              requestId: next.requestId,
+              sessionId: next.sessionId,
+              fromRequestId: latest.requestId,
+              messagesSeeded: latest.messages.length,
+            });
+          }
+        } catch (e) {
+          logger.warn(
+            "failed to load subagent continuation transcript",
+            {
+              requestId: next.requestId,
+              sessionId: next.sessionId,
+            },
+            e,
+          );
+        }
+      }
+
       const agentSystem = anthropicPromptCachingEnabled
         ? {
             role: "system" as const,
@@ -1963,7 +1990,7 @@ export async function startBusAgentRunner(params: {
         system: agentSystem,
         model: resolved.model,
         modelSpecifier: resolved.spec,
-        messages: next.recovery?.checkpointMessages ?? [],
+        messages: next.recovery?.checkpointMessages ?? seededSessionMessages,
         tools,
         providerOptions: providerOptionsForAgent,
         debug: {
@@ -2373,20 +2400,22 @@ export async function startBusAgentRunner(params: {
         finalText = "";
       }
 
-      // Intentional: skip-reply turns are not persisted for transcript expansion.
-      if (params.transcriptStore && !shouldSkipSurfaceReply) {
+      // Keep skip-reply behavior for primary runs.
+      // For subagent runs we still persist to support explicit session continuation.
+      if (params.transcriptStore && (!shouldSkipSurfaceReply || runProfile !== "primary")) {
         try {
-          const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(responseStartIndex)
-            : agent.state.messages.slice(responseStartIndex);
+          const finalMessagesForPersistence = runStats.finalMessages ?? agent.state.messages;
+          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+          const persistedMessages =
+            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
             requestClient: headers.request_client,
-            // Store only this request's newly produced messages.
-            // The request context is reconstructed from the surface thread.
-            messages: responseMessages,
+            // Primary runs can reconstruct context from the surface thread.
+            // Subagent runs need full per-session transcript for explicit continuation.
+            messages: persistedMessages,
             finalText,
             modelLabel: resolvedModelLabel,
           });
@@ -2480,15 +2509,17 @@ export async function startBusAgentRunner(params: {
 
       if (params.transcriptStore) {
         try {
-          const responseMessages = runStats.finalMessages
-            ? runStats.finalMessages.slice(responseStartIndex)
-            : (activeAgent?.state.messages.slice(responseStartIndex) ?? []);
+          const finalMessagesForPersistence =
+            runStats.finalMessages ?? activeAgent?.state.messages ?? [];
+          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+          const persistedMessages =
+            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
             requestClient: headers.request_client,
-            messages: responseMessages,
+            messages: persistedMessages,
             finalText: `Error: ${msg}`,
             modelLabel: resolvedModelLabel,
           });
