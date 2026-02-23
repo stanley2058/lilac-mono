@@ -39,6 +39,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { Logger } from "@stanley2058/simple-module-logger";
@@ -249,6 +250,16 @@ function withStableAnthropicUpstreamOrder(
 function isOpenAIBackedModel(provider: string, modelId: string): boolean {
   if (provider === "openai" || provider === "codex") return true;
   return modelId.startsWith("openai/");
+}
+
+const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
+
+export function toOpenAIPromptCacheKey(sessionId: string): string {
+  if (sessionId.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) {
+    return sessionId;
+  }
+
+  return createHash("sha256").update(sessionId).digest("hex");
 }
 
 export function withReasoningSummaryDefaultForOpenAIModels(params: {
@@ -1840,7 +1851,7 @@ export async function startBusAgentRunner(params: {
           ...base,
           openai: {
             ...existingOpenAI,
-            promptCacheKey: sessionId,
+            promptCacheKey: toOpenAIPromptCacheKey(sessionId),
           },
         };
       })();
