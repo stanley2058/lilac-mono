@@ -65,10 +65,6 @@ type ToolLike = {
   ) => unknown;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function hasParse(schema: unknown): schema is { parse: (v: unknown) => unknown } {
   if (!schema || typeof schema !== "object") return false;
   return "parse" in schema && typeof (schema as { parse?: unknown }).parse === "function";
@@ -277,13 +273,13 @@ export function batchTool(params: {
         for (let i = 0; i < calls.length; i++) {
           const call = calls[i]!;
           if (!activeEditTool || call.tool !== activeEditTool) continue;
-          const raw = call.parameters;
-          const cwd = isRecord(raw) && typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
+          const raw = call.parameters as Record<string, unknown>;
+          const cwd = typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
 
           let touched: Set<string>;
 
           if (activeEditTool === "apply_patch") {
-            if (!isRecord(raw) || typeof raw["patchText"] !== "string") {
+            if (typeof raw["patchText"] !== "string") {
               throw new Error("batch: apply_patch parameters must include patchText (string)");
             }
 
@@ -298,7 +294,7 @@ export function batchTool(params: {
               continue;
             }
           } else {
-            if (!isRecord(raw) || typeof raw["path"] !== "string") {
+            if (typeof raw["path"] !== "string") {
               throw new Error("batch: edit_file parameters must include path (string)");
             }
             touched = collectEditFileTouchedPaths({

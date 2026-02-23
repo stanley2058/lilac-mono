@@ -44,10 +44,6 @@ function resolveRemoteDenyPaths(dangerouslyAllow?: boolean): readonly string[] {
   return dangerouslyAllow === true ? [] : REMOTE_DENY_PATHS;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function isPathWithin(candidatePath: string, parentDir: string): boolean {
   const rel = path.relative(parentDir, candidatePath);
   if (rel === "") return true;
@@ -102,31 +98,35 @@ function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): 
   const out = new Set<string>();
 
   for (const msg of messages) {
-    if (!isRecord(msg)) continue;
-    if (msg["role"] !== "tool") continue;
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) continue;
+    const msgRecord = msg as Record<string, unknown>;
+    if (msgRecord["role"] !== "tool") continue;
 
-    const content = msg["content"];
+    const content = msgRecord["content"];
     if (!Array.isArray(content)) continue;
 
     for (const part of content) {
-      if (!isRecord(part)) continue;
-      if (part["type"] !== "tool-result") continue;
-      if (part["toolName"] !== "read_file") continue;
+      if (!part || typeof part !== "object" || Array.isArray(part)) continue;
+      const partRecord = part as Record<string, unknown>;
+      if (partRecord["type"] !== "tool-result") continue;
+      if (partRecord["toolName"] !== "read_file") continue;
 
-      const output = part["output"];
-      if (!isRecord(output)) continue;
+      const output = partRecord["output"];
+      if (!output || typeof output !== "object" || Array.isArray(output)) continue;
+      const outputRecord = output as Record<string, unknown>;
 
-      if (output["type"] === "json") {
-        const value = output["value"];
-        if (isRecord(value)) {
-          const loaded = value["loadedInstructions"];
+      if (outputRecord["type"] === "json") {
+        const value = outputRecord["value"];
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const valueRecord = value as Record<string, unknown>;
+          const loaded = valueRecord["loadedInstructions"];
           if (Array.isArray(loaded)) {
             for (const p of loaded) {
               if (typeof p === "string" && p.length > 0) out.add(p);
             }
           }
 
-          const instructionsText = value["instructionsText"];
+          const instructionsText = valueRecord["instructionsText"];
           if (typeof instructionsText === "string") {
             for (const p of parseInstructionPathsFromText(instructionsText)) {
               out.add(p);
@@ -136,13 +136,14 @@ function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): 
         continue;
       }
 
-      if (output["type"] === "content") {
-        const value = output["value"];
+      if (outputRecord["type"] === "content") {
+        const value = outputRecord["value"];
         if (!Array.isArray(value)) continue;
         for (const p of value) {
-          if (!isRecord(p)) continue;
-          if (p["type"] !== "text") continue;
-          const t = p["text"];
+          if (!p || typeof p !== "object" || Array.isArray(p)) continue;
+          const pRecord = p as Record<string, unknown>;
+          if (pRecord["type"] !== "text") continue;
+          const t = pRecord["text"];
           if (typeof t !== "string") continue;
           for (const loadedPath of parseInstructionPathsFromText(t)) {
             out.add(loadedPath);

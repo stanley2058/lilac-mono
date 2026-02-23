@@ -30,15 +30,12 @@ export type ResolvedModelSlot = {
 
 export type ResolvedModelRef = Omit<ResolvedModelSlot, "slot">;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
-}
-
 function cloneJson(value: JSONValue): JSONValue {
   if (Array.isArray(value)) return value.map(cloneJson);
-  if (isRecord(value)) {
+  if (value !== null && typeof value === "object") {
+    const source = value as Record<string, JSONValue | undefined>;
     const next: Record<string, JSONValue | undefined> = {};
-    for (const [k, v] of Object.entries(value)) {
+    for (const [k, v] of Object.entries(source)) {
       next[k] = v === undefined ? undefined : cloneJson(v as JSONValue);
     }
     return next;
@@ -52,18 +49,25 @@ function deepMergeJson(base: JSONValue, override: JSONValue): JSONValue {
     return cloneJson(override);
   }
 
-  if (isRecord(base) && isRecord(override)) {
+  if (
+    base !== null &&
+    typeof base === "object" &&
+    override !== null &&
+    typeof override === "object"
+  ) {
+    const baseRecord = base as Record<string, JSONValue | undefined>;
+    const overrideRecord = override as Record<string, JSONValue | undefined>;
     const out: Record<string, JSONValue | undefined> = {};
 
-    const baseEntries = Object.entries(base);
+    const baseEntries = Object.entries(baseRecord);
     for (const [k, v] of baseEntries) {
       out[k] = v === undefined ? undefined : cloneJson(v as JSONValue);
     }
 
-    for (const [k, vOverride] of Object.entries(override)) {
+    for (const [k, vOverride] of Object.entries(overrideRecord)) {
       if (vOverride === undefined) continue;
 
-      const vBase = (base as Record<string, unknown>)[k];
+      const vBase = baseRecord[k];
       if (vBase === undefined) {
         out[k] = cloneJson(vOverride as JSONValue);
         continue;
@@ -92,7 +96,7 @@ function looksLikeProviderOptionsMap(obj: JSONObject): boolean {
   // If there are scalars at the top-level, treat as shorthand.
   for (const v of values) {
     if (v === undefined) continue;
-    if (!isRecord(v)) return false;
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
   }
   return true;
 }
@@ -114,7 +118,12 @@ function withOpenAIParallelToolCallsDefault(
   if (provider !== "openai" && provider !== "codex") return providerOptions;
 
   const openaiOptions = providerOptions?.openai;
-  if (isRecord(openaiOptions) && "parallelToolCalls" in openaiOptions) {
+  if (
+    openaiOptions !== null &&
+    openaiOptions !== undefined &&
+    typeof openaiOptions === "object" &&
+    "parallelToolCalls" in openaiOptions
+  ) {
     return providerOptions;
   }
 
@@ -123,7 +132,9 @@ function withOpenAIParallelToolCallsDefault(
   return {
     ...base,
     openai: {
-      ...(isRecord(openaiOptions) ? (openaiOptions as JSONObject) : {}),
+      ...(openaiOptions !== null && typeof openaiOptions === "object"
+        ? (openaiOptions as JSONObject)
+        : {}),
       parallelToolCalls: true,
     },
   };

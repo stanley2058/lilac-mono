@@ -10,10 +10,6 @@ import { AiSdkPiAgent } from "./ai-sdk-pi-agent";
 import { isLikelyContextOverflowError } from "./context-overflow";
 import { ModelCapability, type ModelSpecifier } from "@stanley2058/lilac-utils";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
-}
-
 function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -139,7 +135,7 @@ function estimateMessageTokens(message: ModelMessage): number {
     }
     let text = "";
     for (const part of message.content) {
-      if (!isRecord(part)) {
+      if (typeof part !== "object" || part === null) {
         text += stringifyUnknown(part);
         continue;
       }
@@ -280,10 +276,11 @@ function compactOneToolResultOutput(messages: readonly ModelMessage[]): {
 
       const output = candidate.output;
       if (
-        isRecord(output) &&
-        output["type"] === "text" &&
-        typeof output["value"] === "string" &&
-        output["value"] === EMERGENCY_TOOL_OUTPUT_PLACEHOLDER
+        typeof output === "object" &&
+        output !== null &&
+        (output as Record<string, unknown>)["type"] === "text" &&
+        typeof (output as Record<string, unknown>)["value"] === "string" &&
+        (output as Record<string, unknown>)["value"] === EMERGENCY_TOOL_OUTPUT_PLACEHOLDER
       ) {
         continue;
       }
@@ -532,7 +529,7 @@ function renderMessageForSummary(
 
     const lines: string[] = [];
     for (const part of message.content) {
-      if (isRecord(part)) {
+      if (typeof part === "object" && part !== null) {
         const record = part as Record<string, unknown>;
         const type = getString(record["type"]);
 
@@ -565,7 +562,7 @@ function renderMessageForSummary(
   if (message.role === "tool") {
     const lines: string[] = [];
     for (const part of message.content) {
-      if (isRecord(part)) {
+      if (typeof part === "object" && part !== null) {
         const record = part as Record<string, unknown>;
         const type = getString(record["type"]);
         if (type === "tool-result") {

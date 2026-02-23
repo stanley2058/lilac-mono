@@ -126,10 +126,6 @@ function safeStringify(value: unknown): string {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function buildResumePrompt(partialText: string): ModelMessage {
   const base =
     "System notice: the server restarted during your previous turn. Continue from the last stable boundary. If a tool was interrupted, treat it as failed with error: server restarted, and proceed safely.";
@@ -181,11 +177,17 @@ function mergeProviderOptions(
   base: ModelMessage["providerOptions"],
   patch: NonNullable<ModelMessage["providerOptions"]>,
 ): NonNullable<ModelMessage["providerOptions"]> {
-  const out = (isRecord(base) ? { ...base } : {}) as NonNullable<ModelMessage["providerOptions"]>;
+  const out =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? ({ ...base } as NonNullable<ModelMessage["providerOptions"]>)
+      : ({} as NonNullable<ModelMessage["providerOptions"]>);
 
   for (const [k, v] of Object.entries(patch)) {
     const existing = (out as Record<string, unknown>)[k];
-    (out as Record<string, unknown>)[k] = isRecord(existing) ? { ...existing, ...v } : v;
+    (out as Record<string, unknown>)[k] =
+      existing && typeof existing === "object" && !Array.isArray(existing)
+        ? { ...(existing as Record<string, unknown>), ...v }
+        : v;
   }
 
   return out;
@@ -214,7 +216,7 @@ function withStableAnthropicUpstreamOrder(
   const base = providerOptions ?? {};
 
   if (provider === "vercel") {
-    const existingGateway = isRecord(base["gateway"]) ? base["gateway"] : {};
+    const existingGateway = (base["gateway"] as JSONObject | undefined) ?? {};
     return {
       ...base,
       gateway: {
@@ -225,10 +227,9 @@ function withStableAnthropicUpstreamOrder(
   }
 
   if (provider === "openrouter") {
-    const existingOpenRouter = isRecord(base["openrouter"]) ? base["openrouter"] : {};
-    const existingProvider = isRecord(existingOpenRouter["provider"])
-      ? existingOpenRouter["provider"]
-      : {};
+    const existingOpenRouter = (base["openrouter"] as JSONObject | undefined) ?? {};
+    const existingProvider =
+      (existingOpenRouter["provider"] as Record<string, unknown> | undefined) ?? {};
 
     return {
       ...base,
@@ -260,7 +261,7 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
   if (!isOpenAIBackedModel(params.provider, params.modelId)) return params.providerOptions;
 
   const base = params.providerOptions ?? {};
-  const existingOpenAI = isRecord(base["openai"]) ? base["openai"] : {};
+  const existingOpenAI = (base["openai"] as JSONObject | undefined) ?? {};
 
   if ("reasoningSummary" in existingOpenAI) {
     return params.providerOptions;
@@ -424,7 +425,7 @@ function scrubLargeBinaryForModelView(messages: readonly ModelMessage[]): ModelM
 
       for (let j = 0; j < value.length; j++) {
         const item = value[j];
-        if (!isRecord(item)) continue;
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
 
         const t = item.type;
         if (t !== "image-data" && t !== "file-data") continue;
@@ -480,14 +481,14 @@ function scrubLargeBinaryForModelView(messages: readonly ModelMessage[]): ModelM
 }
 
 function getBatchOkFromResult(result: unknown): boolean | null {
-  if (!isRecord(result)) return null;
-  const v = result["ok"];
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const v = (result as Record<string, unknown>)["ok"];
   return typeof v === "boolean" ? v : null;
 }
 
 function getSubagentOkFromResult(result: unknown): boolean | null {
-  if (!isRecord(result)) return null;
-  const v = result["ok"];
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const v = (result as Record<string, unknown>)["ok"];
   return typeof v === "boolean" ? v : null;
 }
 
@@ -716,9 +717,9 @@ function systemPromptToText(system: unknown): string {
       .join("\n\n");
   }
 
-  if (!isRecord(system)) return safeStringify(system);
+  if (!system || typeof system !== "object" || Array.isArray(system)) return safeStringify(system);
 
-  const content = system["content"];
+  const content = (system as Record<string, unknown>)["content"];
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map(safeStringify).join("");
   return safeStringify(content);

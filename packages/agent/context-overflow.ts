@@ -1,7 +1,3 @@
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
-
 const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /context\s*(length|window).*(exceed|exceeded|overflow|too\s*long)/i,
   /maximum\s+context\s+length/i,
@@ -48,7 +44,9 @@ function visit(value: unknown, seen: Set<unknown>, depth: number): boolean {
     return false;
   }
 
-  if (!isRecord(value)) return false;
+  if (typeof value !== "object" || value === null) return false;
+
+  const objectValue = value as Record<string, unknown>;
 
   const keysToInspect = [
     "message",
@@ -66,11 +64,11 @@ function visit(value: unknown, seen: Set<unknown>, depth: number): boolean {
   ] as const;
 
   for (const key of keysToInspect) {
-    if (!(key in value)) continue;
-    if (visit(value[key], seen, depth + 1)) return true;
+    if (!(key in objectValue)) continue;
+    if (visit(objectValue[key], seen, depth + 1)) return true;
   }
 
-  for (const [k, v] of Object.entries(value)) {
+  for (const [k, v] of Object.entries(objectValue)) {
     if (keysToInspect.includes(k as (typeof keysToInspect)[number])) continue;
     if (
       typeof v === "string" &&
