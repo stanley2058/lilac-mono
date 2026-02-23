@@ -176,73 +176,11 @@ function renderSubagentDisplay(params: {
   return [header, ...lines].join("\n");
 }
 
-function buildExplorePrompt(task: string): ModelMessage {
-  const text = [
-    "You are an explore subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- Focus on codebase exploration and evidence-backed findings.",
-    "- Prefer parallel read/search with read_file, glob, grep, and batch.",
-    "- Do not edit files.",
-    "- Do not run bash.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths (and lines when helpful) in your answer.",
-  ].join("\n");
-
+function buildDelegatedTaskPrompt(task: string): ModelMessage {
   return {
     role: "user",
-    content: text,
+    content: task,
   };
-}
-
-function buildGeneralPrompt(task: string): ModelMessage {
-  const text = [
-    "You are a general subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- Execute the task directly with available tools.",
-    "- Prefer parallel tool usage when calls are independent.",
-    "- Keep output concise and actionable.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths when code changes are involved.",
-  ].join("\n");
-
-  return {
-    role: "user",
-    content: text,
-  };
-}
-
-function buildSelfPrompt(task: string): ModelMessage {
-  const text = [
-    "You are a self subagent.",
-    "",
-    "Mission:",
-    task,
-    "",
-    "Rules:",
-    "- You run in a fresh, isolated context window.",
-    "- Execute the task directly with available tools.",
-    "- Do not delegate to other subagents.",
-    "- Cite concrete file paths when code changes are involved.",
-  ].join("\n");
-
-  return {
-    role: "user",
-    content: text,
-  };
-}
-
-function buildProfilePrompt(profile: SubagentProfile, task: string): ModelMessage {
-  if (profile === "general") return buildGeneralPrompt(task);
-  if (profile === "self") return buildSelfPrompt(task);
-  return buildExplorePrompt(task);
 }
 
 export function subagentTools(params: {
@@ -528,7 +466,7 @@ export function subagentTools(params: {
             lilacEventTypes.CmdRequestMessage,
             {
               queue: "prompt",
-              messages: [buildProfilePrompt(input.profile, input.task)],
+              messages: [buildDelegatedTaskPrompt(input.task)],
               raw: {
                 subagent: {
                   profile: input.profile,

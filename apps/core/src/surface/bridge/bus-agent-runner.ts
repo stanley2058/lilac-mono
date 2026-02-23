@@ -989,6 +989,7 @@ function buildExploreOverlay(extra?: string): string {
   const lines = [
     "You are running in explore subagent mode.",
     "Focus on repository exploration and evidence-backed findings.",
+    "Treat the delegated user message as the full task input.",
     "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
     "Do not use bash.",
     "Do not edit files.",
@@ -1006,6 +1007,7 @@ function buildGeneralOverlay(extra?: string): string {
   const lines = [
     "You are running in general subagent mode.",
     "Focus on completing the delegated task end-to-end.",
+    "Treat the delegated user message as the full task input.",
     "Use available tools directly, including edits and bash when needed.",
     "Prefer parallel tool usage when calls are independent.",
     "Do not delegate to another subagent.",
@@ -1019,10 +1021,19 @@ function buildGeneralOverlay(extra?: string): string {
 }
 
 function buildSelfOverlay(extra?: string): string {
+  const lines = [
+    "You are running in self subagent mode.",
+    "Focus on completing the delegated task in a fresh context window.",
+    "Treat the delegated user message as the full task input.",
+    "Use available tools directly, including edits and bash when needed.",
+    "Prefer parallel tool usage when calls are independent.",
+  ];
+
   if (extra && extra.trim().length > 0) {
-    return extra.trim();
+    lines.push(extra.trim());
   }
-  return "";
+
+  return lines.join("\n");
 }
 
 function buildOverlayForProfile(params: {
