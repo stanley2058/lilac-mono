@@ -60,6 +60,7 @@
       },
       "dependencies": {
         "@opencode-ai/sdk": "^1.2.1",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -79,6 +80,7 @@
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.3",
         "@toon-format/toon": "^2.1.0",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/bun": "latest",

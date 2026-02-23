@@ -11,6 +11,7 @@ import {
   type PermissionRule,
   type Session,
 } from "@opencode-ai/sdk/v2";
+import { z } from "zod";
 
 declare const PACKAGE_VERSION: string;
 
@@ -179,8 +180,55 @@ type SnapshotResult = {
   error?: unknown;
 };
 
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null;
+const runStatusSchema = z.enum([
+  "submitted",
+  "running",
+  "completed",
+  "failed",
+  "aborted",
+  "timeout",
+]);
+
+const assistantSummarySchema: z.ZodType<AssistantSummary> = z.object({
+  messageID: z.string().min(1),
+  created: z.number().int(),
+  text: z.string(),
+  error: z.unknown().optional(),
+  modelID: z.string().min(1).optional(),
+  providerID: z.string().min(1).optional(),
+  agent: z.string().min(1).optional(),
+  tokens: z.unknown().optional(),
+  cost: z.number().optional(),
+  finish: z.string().min(1).optional(),
+});
+
+const promptRunRecordSchema: z.ZodType<PromptRunRecord> = z.object({
+  id: z.string().regex(/^run_[a-f0-9-]+$/),
+  status: runStatusSchema,
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  directory: z.string().min(1),
+  baseUrl: z.string().min(1),
+  sessionID: z.string().min(1),
+  userMessageID: z.string().min(1).optional(),
+  textHash: z.string().min(1),
+  textNormalized: z.string(),
+  textPreview: z.string(),
+  agent: z.string().min(1),
+  model: z.string().min(1).optional(),
+  variant: z.string().min(1).optional(),
+  assistant: assistantSummarySchema.optional(),
+  error: z.unknown().optional(),
+});
+
+const sessionStatusEntrySchema = z.object({
+  type: z.enum(["busy", "idle", "retry"]),
+});
+
+const sessionStatusMapSchema = z.record(z.string(), z.unknown());
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function toInt(x: unknown): number | null {
@@ -355,78 +403,13 @@ async function saveRunRecord(run: PromptRunRecord): Promise<void> {
 
 async function loadRunRecord(runID: string): Promise<PromptRunRecord> {
   const content = await fs.readFile(runFilePath(runID), "utf8");
-  const parsed: unknown = JSON.parse(content);
-  if (!isRecord(parsed)) {
+  const parsedRaw: unknown = JSON.parse(content);
+  const parsed = promptRunRecordSchema.safeParse(parsedRaw);
+  if (!parsed.success) {
     throw new Error(`Run record '${runID}' is malformed.`);
   }
-  const status = parsed.status;
-  if (
-    status !== "submitted" &&
-    status !== "running" &&
-    status !== "completed" &&
-    status !== "failed" &&
-    status !== "aborted" &&
-    status !== "timeout"
-  ) {
-    throw new Error(`Run record '${runID}' has invalid status.`);
-  }
 
-  const createdAt = toInt(parsed.createdAt);
-  const updatedAt = toInt(parsed.updatedAt);
-  if (createdAt === null || updatedAt === null) {
-    throw new Error(`Run record '${runID}' has invalid timestamps.`);
-  }
-
-  const id = typeof parsed.id === "string" ? parsed.id : "";
-  const directory = typeof parsed.directory === "string" ? parsed.directory : "";
-  const baseUrl = typeof parsed.baseUrl === "string" ? parsed.baseUrl : "";
-  const sessionID = typeof parsed.sessionID === "string" ? parsed.sessionID : "";
-  const textHash = typeof parsed.textHash === "string" ? parsed.textHash : "";
-  const textNormalized = typeof parsed.textNormalized === "string" ? parsed.textNormalized : "";
-  const textPreviewValue = typeof parsed.textPreview === "string" ? parsed.textPreview : "";
-  const agent = typeof parsed.agent === "string" ? parsed.agent : "";
-
-  if (!id || !directory || !baseUrl || !sessionID || !textHash || !agent) {
-    throw new Error(`Run record '${runID}' is missing required fields.`);
-  }
-
-  const assistant = isRecord(parsed.assistant)
-    ? {
-        messageID: typeof parsed.assistant.messageID === "string" ? parsed.assistant.messageID : "",
-        created: toInt(parsed.assistant.created) ?? 0,
-        text: typeof parsed.assistant.text === "string" ? parsed.assistant.text : "",
-        ...("error" in parsed.assistant ? { error: parsed.assistant.error } : {}),
-        ...(typeof parsed.assistant.modelID === "string"
-          ? { modelID: parsed.assistant.modelID }
-          : {}),
-        ...(typeof parsed.assistant.providerID === "string"
-          ? { providerID: parsed.assistant.providerID }
-          : {}),
-        ...(typeof parsed.assistant.agent === "string" ? { agent: parsed.assistant.agent } : {}),
-        ...("tokens" in parsed.assistant ? { tokens: parsed.assistant.tokens } : {}),
-        ...(typeof parsed.assistant.cost === "number" ? { cost: parsed.assistant.cost } : {}),
-        ...(typeof parsed.assistant.finish === "string" ? { finish: parsed.assistant.finish } : {}),
-      }
-    : undefined;
-
-  return {
-    id,
-    status,
-    createdAt,
-    updatedAt,
-    directory,
-    baseUrl,
-    sessionID,
-    ...(typeof parsed.userMessageID === "string" ? { userMessageID: parsed.userMessageID } : {}),
-    textHash,
-    textNormalized,
-    textPreview: textPreviewValue,
-    agent,
-    ...(typeof parsed.model === "string" ? { model: parsed.model } : {}),
-    ...(typeof parsed.variant === "string" ? { variant: parsed.variant } : {}),
-    ...(assistant ? { assistant } : {}),
-    ...("error" in parsed ? { error: parsed.error } : {}),
-  };
+  return parsed.data;
 }
 
 async function readStdinText(): Promise<string> {
@@ -842,7 +825,7 @@ async function runSnapshot(params: {
     return out;
   } catch (e) {
     out.ok = false;
-    out.error = isRecord(e) && "message" in e ? e.message : String(e);
+    out.error = errorMessage(e);
     return out;
   }
 }
@@ -1066,13 +1049,13 @@ function sessionStatusTypeForSession(params: {
   statusMap: unknown;
   sessionID: string;
 }): "busy" | "idle" | "retry" | "unknown" {
-  if (!isRecord(params.statusMap)) return "unknown";
-  const raw = params.statusMap[params.sessionID];
-  if (!isRecord(raw) || typeof raw.type !== "string") return "unknown";
-  if (raw.type === "busy" || raw.type === "idle" || raw.type === "retry") {
-    return raw.type;
-  }
-  return "unknown";
+  const mapParsed = sessionStatusMapSchema.safeParse(params.statusMap);
+  if (!mapParsed.success) return "unknown";
+
+  const raw = mapParsed.data[params.sessionID];
+  const parsed = sessionStatusEntrySchema.safeParse(raw);
+  if (!parsed.success) return "unknown";
+  return parsed.data.type;
 }
 
 async function inspectRunState(params: {
@@ -1233,7 +1216,7 @@ function startAutoResponder(params: {
     }
   })().catch((e) => {
     if (!controller.signal.aborted) {
-      sessionError = isRecord(e) && "message" in e ? e.message : String(e);
+      sessionError = errorMessage(e);
     }
   });
 
@@ -1371,7 +1354,7 @@ async function waitForRunRecord(params: {
         permissionsAutoFailed: 0,
         questionsAutoRejected: 0,
       },
-      error: isRecord(e) && "message" in e ? e.message : String(e),
+      error: errorMessage(e),
     };
   }
 }
@@ -1556,7 +1539,7 @@ async function runPromptSubmit(params: {
   } catch (e) {
     if (prestartedAuto) prestartedAuto.stop();
     out.ok = false;
-    out.error = isRecord(e) && "message" in e ? e.message : String(e);
+    out.error = errorMessage(e);
     return out;
   }
 }
@@ -1635,7 +1618,7 @@ async function runPromptInspect(params: {
         textPreview: "",
         agent: "",
       },
-      error: isRecord(e) && "message" in e ? e.message : String(e),
+      error: errorMessage(e),
     };
   }
 }
