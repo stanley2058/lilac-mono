@@ -37,7 +37,7 @@ export async function bridgeAdapterToBus(params: {
     ok: boolean;
     errorClass?: string;
   }) => {
-    logger.info("adapter.event.publish", {
+    logger.debug("adapter.event.publish", {
       adapterEventType: input.adapterEventType,
       busType: input.busType,
       platform: input.platform,
