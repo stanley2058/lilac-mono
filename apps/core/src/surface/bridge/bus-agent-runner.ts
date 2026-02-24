@@ -2384,12 +2384,12 @@ export async function startBusAgentRunner(params: {
               if (typeof last.content === "string") {
                 finalText = last.content;
               } else {
-                const buf: string[] = []
+                const buf: string[] = [];
                 for (const part of last.content) {
-                  if (part.type !== "text") continue
-                  buf.push(part.text)
+                  if (part.type !== "text") continue;
+                  buf.push(part.text);
                 }
-                finalText = buf.join("\n\n")
+                finalText = buf.join("\n\n");
               }
             }
           }
