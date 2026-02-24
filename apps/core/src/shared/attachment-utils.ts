@@ -22,6 +22,16 @@ export function inferMimeTypeFromFilename(filename: string): string {
       return "image/webp";
     case ".svg":
       return "image/svg+xml";
+    case ".mp4":
+      return "video/mp4";
+    case ".mov":
+      return "video/quicktime";
+    case ".webm":
+      return "video/webm";
+    case ".m4v":
+      return "video/x-m4v";
+    case ".mkv":
+      return "video/x-matroska";
     case ".pdf":
       return "application/pdf";
     case ".txt":
@@ -66,6 +76,16 @@ export function inferExtensionFromMimeType(mimeType: string): string {
       return ".webp";
     case "image/svg+xml":
       return ".svg";
+    case "video/mp4":
+      return ".mp4";
+    case "video/quicktime":
+      return ".mov";
+    case "video/webm":
+      return ".webm";
+    case "video/x-m4v":
+      return ".m4v";
+    case "video/x-matroska":
+      return ".mkv";
     case "application/pdf":
       return ".pdf";
     case "text/plain":
