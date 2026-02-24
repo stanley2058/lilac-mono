@@ -24,6 +24,10 @@ export function parseEnv() {
   const contextDumpEnabled = env.LILAC_CONTEXT_DUMP === "1" || env.LILAC_CONTEXT_DUMP === "true";
   const contextDumpDir = env.LILAC_CONTEXT_DUMP_DIR || "/data/debug";
 
+  const skipEmptyReasoningReply =
+    env.LILAC_SKIP_EMPTY_REASONING_REPLY === "1" ||
+    env.LILAC_SKIP_EMPTY_REASONING_REPLY === "true";
+
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
@@ -89,6 +93,9 @@ export function parseEnv() {
       log: perfLog,
       lagWarnMs: Number.isFinite(perfLagWarnMs) ? perfLagWarnMs : 200,
       sampleRate: Number.isFinite(perfSampleRate) && perfSampleRate >= 0 ? perfSampleRate : 0,
+    },
+    featureFlags: {
+      skipEmptyReasoningReply,
     },
     debug: {
       contextDump: {
