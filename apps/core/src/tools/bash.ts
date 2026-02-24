@@ -40,6 +40,11 @@ const bashExecutionErrorSchema = z.discriminatedUnion("type", [
     phase: z.enum(["spawn", "stdout", "stderr", "unknown"]),
     message: z.string(),
   }),
+  z.object({
+    type: z.literal("truncated"),
+    message: z.string(),
+    outputPath: z.string().optional(),
+  }),
 ]);
 
 const bashOutputSchema = z.object({
@@ -47,6 +52,11 @@ const bashOutputSchema = z.object({
   stderr: z.string(),
   exitCode: z.number(),
   executionError: bashExecutionErrorSchema.optional(),
+  truncation: z
+    .object({
+      outputPath: z.string(),
+    })
+    .optional(),
 });
 
 export function bashTool() {
@@ -56,10 +66,11 @@ export function bashTool() {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: (input, { experimental_context: context, abortSignal }) =>
+      execute: (input, { experimental_context: context, abortSignal, toolCallId }) =>
         executeBash(input, {
           context,
           abortSignal,
+          toolCallId,
         } as {
           context?: {
             requestId: string;
@@ -67,6 +78,7 @@ export function bashTool() {
             requestClient: string;
           };
           abortSignal?: AbortSignal;
+          toolCallId?: string;
         }),
     }),
   };
@@ -79,10 +91,11 @@ export function bashToolWithCwd(defaultCwd: string) {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: (input, { experimental_context: context, abortSignal }) =>
+      execute: (input, { experimental_context: context, abortSignal, toolCallId }) =>
         executeBash({ ...input, cwd: input.cwd ?? defaultCwd }, {
           context,
           abortSignal,
+          toolCallId,
         } as {
           context?: {
             requestId: string;
@@ -90,6 +103,7 @@ export function bashToolWithCwd(defaultCwd: string) {
             requestClient: string;
           };
           abortSignal?: AbortSignal;
+          toolCallId?: string;
         }),
     }),
   };
