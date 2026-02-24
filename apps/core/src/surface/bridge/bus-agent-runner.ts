@@ -2435,43 +2435,43 @@ export async function startBusAgentRunner(params: {
           .filter((type) => type.length > 0);
       });
 
-      // Classify whether the run ended with reasoning-only content and no user-facing text part.
+      // Classify terminal assistant output shape for empty-reply mitigation.
+      const hasAssistantTextOutput = assistantOutputPartTypes.some(
+        (type) => type === "text" || type === "output_text",
+      );
       const hasReasoningOnlyOutput =
-        assistantOutputPartTypes.includes("reasoning") &&
-        !assistantOutputPartTypes.some((type) => type === "text" || type === "output_text");
+        assistantOutputPartTypes.includes("reasoning") && !hasAssistantTextOutput;
       const hasAssistantToolCallOutput = assistantOutputPartTypes.includes("tool-call");
-      const hasStrictReasoningOnlyAssistantOutput =
-        assistantOutputPartTypes.length > 0 &&
-        assistantOutputPartTypes.every((type) => type === "reasoning" || type === "unknown");
+      const hasNonTextAssistantOutput =
+        assistantOutputPartTypes.length > 0 && !hasAssistantTextOutput;
       let isEmptyFinalText = finalText.trim().length === 0;
       const outputTokens = runStats.totalUsage?.outputTokens;
       // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
       const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
-      // Guardrail for observed failure mode: reasoning/tool-call terminal responses can resolve
-      // with empty final text (finishReason may be "other" and usage fields may be missing).
-      // When flagged on, replace empty reply rendering with explicit fallback text.
+      // Guardrail for observed failure mode: terminal runs can finish with non-text-only
+      // assistant parts and empty final text. When flagged on, emit explicit fallback text.
       const hasPendingToolCalls = pendingToolCallIds.size > 0;
-      const shouldHandleReasoningOnlyEmptyReply =
+      const shouldHandleNonTextEmptyReply =
         skipEmptyReasoningReplyEnabled &&
         !isCancelled &&
         isEmptyFinalText &&
-        hasReasoningOnlyOutput &&
-        hasStrictReasoningOnlyAssistantOutput;
+        hasNonTextAssistantOutput;
 
       let delivery = resolveReplyDeliveryFromFinalText(finalText);
-      if (delivery !== "skip" && shouldHandleReasoningOnlyEmptyReply) {
+      if (delivery !== "skip" && shouldHandleNonTextEmptyReply) {
         const fallbackText = hasPendingToolCalls
           ? "A tool call did not finish cleanly, so I could not produce a final answer. Please retry."
           : hasAssistantToolCallOutput
             ? "I completed tool execution but did not produce a final visible answer. Please retry."
             : "I could not produce a final visible answer for that request. Please try again.";
-        logger.warn("replacing empty reasoning-only final reply with fallback text", {
+        logger.warn("replacing empty non-text final reply with fallback text", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
           modelLabel: resolvedModelLabel,
           finishReason: runStats.lastTurnFinishReason,
           outputTokens,
           reasoningChunkSeq,
+          hasReasoningOnlyOutput,
           hasAssistantToolCallOutput,
           pendingToolCallCount: pendingToolCallIds.size,
           outputPartTypes: assistantOutputPartTypes,
@@ -2530,14 +2530,15 @@ export async function startBusAgentRunner(params: {
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
       // Keep a diagnostics breadcrumb when empty final text still reaches reply delivery.
-      if (!shouldSkipSurfaceReply && isEmptyFinalText && hasReasoningOnlyOutput) {
-        logger.warn("agent run resolved with reasoning-only output and empty final text", {
+      if (!shouldSkipSurfaceReply && isEmptyFinalText && hasNonTextAssistantOutput) {
+        logger.warn("agent run resolved with non-text output and empty final text", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
           modelLabel: resolvedModelLabel,
           delivery,
           finishReason: runStats.lastTurnFinishReason,
           reasoningChunkSeq,
+          hasReasoningOnlyOutput,
           hasAssistantToolCallOutput,
           pendingToolCallCount: pendingToolCallIds.size,
           outputPartTypes: assistantOutputPartTypes,
