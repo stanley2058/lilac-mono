@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
@@ -13,6 +14,8 @@ import {
   refreshAccessToken,
   writeCodexTokens,
 } from "./codex-oauth";
+import { resolveLogLevel } from "./logging";
+import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
 
 export type Providers =
   | "openai"
@@ -27,12 +30,46 @@ export type Providers =
 
 export function getModelProviders() {
   let codexRefreshInFlight: Promise<void> | null = null;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "utils:model-provider",
+  });
+
+  const openaiResponsesFetch = createOpenAIResponsesWebSocketFetch({
+    mode: env.providers.openai.responsesTransport,
+    onAutoFallback: (details) => {
+      logger.warn("responses transport fallback to sse", {
+        provider: "openai",
+        ...details,
+      });
+    },
+  });
+
+  const codexResponsesFetch = createOpenAIResponsesWebSocketFetch({
+    mode: env.providers.codex.responsesTransport,
+    url: "wss://chatgpt.com/backend-api/codex/responses",
+    completionEventTypes: ["response.completed", "response.done"],
+    normalizeEvent: (event) => {
+      if (event.type !== "response.done") return event;
+      return {
+        ...event,
+        type: "response.completed",
+      };
+    },
+    onAutoFallback: (details) => {
+      logger.warn("responses transport fallback to sse", {
+        provider: "codex",
+        ...details,
+      });
+    },
+  });
 
   const providers = {
     openai: env.providers.openai
       ? createOpenAI({
           baseURL: env.providers.openai.baseUrl,
           apiKey: env.providers.openai.apiKey,
+          fetch: openaiResponsesFetch,
         })
       : null,
 
@@ -210,7 +247,7 @@ export function getModelProviders() {
           }
         }
 
-        return fetch(url, {
+        return codexResponsesFetch(url, {
           ...init,
           headers,
           body,

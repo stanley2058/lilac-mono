@@ -4,6 +4,14 @@ import { findWorkspaceRoot } from "./find-root";
 
 export type Env = ReturnType<typeof parseEnv>;
 
+export type ResponsesTransportMode = "sse" | "auto" | "websocket";
+
+function parseResponsesTransportMode(value: string | undefined): ResponsesTransportMode {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "auto" || normalized === "websocket") return normalized;
+  return "sse";
+}
+
 export function parseEnv() {
   const env = process.env;
 
@@ -28,6 +36,10 @@ export function parseEnv() {
       openai: {
         baseUrl: env.OPENAI_BASE_URL,
         apiKey: env.OPENAI_API_KEY,
+        responsesTransport: parseResponsesTransportMode(env.OPENAI_RESPONSES_TRANSPORT),
+      },
+      codex: {
+        responsesTransport: parseResponsesTransportMode(env.CODEX_RESPONSES_TRANSPORT),
       },
       openaiCompatible: {
         baseUrl: env.OPENAI_COMPATIBLE_BASE_URL,
