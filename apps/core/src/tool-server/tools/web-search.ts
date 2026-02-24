@@ -403,7 +403,6 @@ export function createDefaultWebSearchProviders(config: {
     new TavilyWebSearchProvider({
       apiBaseUrl: config.tavilyApiBaseUrl,
       apiKey: config.tavilyApiKey,
-      
     }),
   ];
 }

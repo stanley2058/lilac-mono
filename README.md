@@ -1,92 +1,59 @@
 # Lilac Monorepo (Fork)
 
-This repository is a fork of the upstream project.
+This repository tracks upstream:
 
-| Upstream        | https://github.com/stanley2058/lilac-mono                     |
-| --------------- | ------------------------------------------------------------- |
+| Item | Value |
+| --- | --- |
+| Upstream repo | https://github.com/stanley2058/lilac-mono |
 | Upstream README | https://github.com/stanley2058/lilac-mono/blob/main/README.md |
 
-This README focuses on what differs in this fork and how to configure it.
+## Fork Policy
 
-## Fork features
+- `main` is kept as close to `upstream/main` as possible.
+- Fork-only behavior should be explicitly documented and, when possible, guarded by feature flags (default off).
+- Upstream-accepted work is listed separately and marked **PR ACCEPTED**.
 
-| Area   | What changed in this fork                                                                                                     | Where                                                                                     |
-| ------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| CI     | Scheduled upstream sync (auto-merge `upstream/main` into `main`) and triggers image build on updates                          | `.github/workflows/sync-upstream.yml`                                                     |
-| CI     | Build & push Docker image to GHCR on `main` pushes.                                                                           | `.github/workflows/build-image.yml`                                                       |
-| Docker | Container default user/uid and workspace env var name differ from upstream. It is point to `Catalinna` who has USERID=`3000`  | `Dockerfile`                                                                              |
-| Tools  | `tools search` backend is configurable: Tavily (default) or Exa (via `exa-js`, supports Exa-compatible proxies like exa-pool) | `apps/core/src/tool-server/tools/web.ts`, `apps/core/src/tool-server/tools/web-search.ts` |
+## Current Fork-Only Differences
 
-## Quick start (fork)
+These are the intentional differences between this fork `main` and `upstream/main`.
 
-1. Copy `.env.example` to `.env` and set required values.
-2. Configure `data/core-config.yaml` (auto-seeded on first run; see `packages/utils/core-config.ts`).
-3. Run one of these:
+| Area | Files | Difference | Why |
+| --- | --- | --- | --- |
+| CI (fork ops) | `.github/workflows/sync-upstream.yml` | Adds scheduled/manual upstream sync workflow for this fork. | Keep fork branch current with upstream automatically. |
+| CI (image publish) | `.github/workflows/build-image.yml` | Adds Docker image build/push workflow for this fork registry flow. | Keep fork-specific container image pipeline. |
+| Container runtime identity | `Dockerfile` | Default container user/uid is customized (`Catalinna` / `3000`), plus fork environment wiring. | Match this fork's host/runtime permission model. |
+| Empty-reply guardrail (default off) | `packages/utils/env.ts`, `.env.example`, `apps/core/src/surface/bridge/bus-agent-runner.ts` | Adds feature flag `LILAC_SKIP_EMPTY_REASONING_REPLY`; when enabled, reasoning-only + empty final reply is skipped with diagnostics instead of posting empty placeholder text. | Keep upstream default behavior by default, but allow operational mitigation when needed. |
+| Fork documentation | `README.md` | Documents only fork-specific deltas and upstream acceptance status. | Make review/audit of fork changes explicit. |
 
-- Docker dev (includes Redis): `docker compose up --build`
-- Tool server only (dev): `bun apps/tool-bridge/index.ts`
+### Feature Flag: `LILAC_SKIP_EMPTY_REASONING_REPLY`
 
-## Configuration
-
-There are two config surfaces:
-
-- `core-config.yaml`: runtime behavior (non-secret). Default path is `data/core-config.yaml` (controlled by `DATA_DIR`).
-- Environment variables: secrets (API keys) and endpoint overrides.
-
-## Web search provider
-
-This fork keeps the upstream `tools search` input/output contract but allows swapping the search backend.
-
-### Configure provider (core-config.yaml)
-
-Add this to `data/core-config.yaml`:
-
-```yaml
-tools:
-  web:
-    search:
-      # tavily (default) or exa
-      # any other value falls back to tavily
-      provider: tavily
-```
-
-### Configure credentials + endpoints (env)
+- Default: **disabled** (upstream behavior preserved).
+- Enable with:
 
 ```bash
-# Required when provider=tavily
-TAVILY_API_KEY=...
-
-# Required when provider=exa
-EXA_API_KEY=...
-
-# Optional: Exa base URL override.
-# If omitted, exa-js defaults to https://api.exa.ai.
-# You can set this to an Exa-compatible proxy such as exa-pool.
-EXA_API_BASE_URL=https://api.exa.ai
+LILAC_SKIP_EMPTY_REASONING_REPLY=true
 ```
 
-### Provider selection policy
+- Intended effect when enabled:
+  - If a run ends with empty final text and reasoning-only assistant output, the bridge skips emitting a user-facing empty reply.
+  - Adds structured warning logs to support debugging/review.
 
-- Default provider is Tavily.
-- Only `tools.web.search.provider: exa` switches to Exa.
-- Missing/unknown provider values fall back to Tavily and log an info line.
-- No automatic failover between providers.
+## Upstream-Accepted Contributions From This Fork (PR ACCEPTED)
 
-### Output compatibility
+These changes were first developed from this fork and are now merged into upstream.
 
-`tools search` returns a list of `{ url, title, content, score }`.
+| Status | PR | Title | Merged At |
+| --- | --- | --- | --- |
+| PR ACCEPTED | https://github.com/stanley2058/lilac-mono/pull/1 | `feat(core): add Exa web search provider` | 2026-02-19 |
+| PR ACCEPTED | https://github.com/stanley2058/lilac-mono/pull/4 | `add support for custom Tavily API endpoint.` | 2026-02-20 |
+| PR ACCEPTED | https://github.com/stanley2058/lilac-mono/pull/5 | `Cleaning up for #4` | 2026-02-21 |
 
-- Tavily provider uses Tavily search `content` directly.
-- Exa provider normalizes `content` as a snippet (not full-page text) by preferring:
-  `highlights`, then `summary`, then truncated `text`.
+## Quick Validation Commands
 
-### Tool server modes
+Use these commands to verify divergence and branch state:
 
-- Core runtime and tool-bridge both read `data/core-config.yaml` (via `DATA_DIR`) and apply the same provider selection.
-
-## Author Murmur
-
-The patch is most from AIGC. Use at your own risk.
-I read all the patches even I don't understand Typescript. I check as rational as possible. I tried, all day, I am still confused at the whole system cause I am really not smart enough. I want to use web search but there is no extra money I can waste to purchase API credit. Fork and modify it is the only way to effectily manage the poor resources I have.
-Except God-damn AI-agent, scraper and data stealler, I don't think there is any Homo sapiens want to see this rubbish so go to hell. Why the hack I should be endure as everything cursing me.
-
+```bash
+git diff --name-status upstream/main..main
+git log --oneline --decorate main..upstream/main
+git log --oneline --decorate upstream/main..main
+```
