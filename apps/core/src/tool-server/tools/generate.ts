@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { fileTypeFromBuffer } from "file-type/core";
 import fs from "node:fs/promises";
-import { dirname, extname } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { z } from "zod";
 import {
   inferExtensionFromMimeType,
@@ -104,6 +104,7 @@ const GROK_VIDEO_ALLOWED_ASPECT_RATIOS = [
 ] as const;
 const GROK_VIDEO_ALLOWED_RESOLUTIONS = ["1280x720", "854x480", "640x480"] as const;
 const DEFAULT_VIDEO_MODEL_FALLBACK_ORDER: readonly SupportedVideoModelId[] = ["grok-imagine-video"];
+const DEFAULT_IMAGE_OUTPUT_BASENAME = "generated-image";
 
 const optionalNonEmptyStringListInputSchema = z
   .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
@@ -115,7 +116,13 @@ const optionalNonEmptyStringListInputSchema = z
 
 export const imageGenerateInputSchema = z
   .object({
-    path: z.string().min(1).describe("Output file path to write the generated image"),
+    outputDir: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Optional output directory. Defaults to current working directory. File extension is inferred from returned MIME type.",
+      ),
 
     prompt: z.string().min(1).describe("Text prompt for image generation/editing"),
 
@@ -163,6 +170,7 @@ export const imageGenerateInputSchema = z
         ].join("\n"),
       ),
   })
+  .strict()
   .superRefine((input, ctx) => {
     if (input.size && input.aspectRatio) {
       ctx.addIssue({
@@ -579,22 +587,25 @@ export async function buildVideoGenerationPrompt(
   };
 }
 
-async function pathExists(p: string): Promise<boolean> {
-  return await fs
-    .access(p)
-    .then(() => true)
-    .catch(() => false);
-}
-
-async function pickAvailableFilename(targetPath: string): Promise<string> {
-  if (!(await pathExists(targetPath))) return targetPath;
-
+async function writeFileWithUniqueName(targetPath: string, bytes: Uint8Array): Promise<string> {
   const ext = extname(targetPath);
   const base = ext ? targetPath.slice(0, -ext.length) : targetPath;
 
-  for (let i = 1; i < 10_000; i++) {
-    const next = `${base} (${i})${ext}`;
-    if (!(await pathExists(next))) return next;
+  for (let i = 0; i < 10_000; i++) {
+    const candidate = i === 0 ? targetPath : `${base} (${i})${ext}`;
+    try {
+      await fs.writeFile(candidate, bytes, { flag: "wx" });
+      return candidate;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? (error.code as string | undefined)
+          : undefined;
+      if (code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
   }
 
   throw new Error(`Failed to find an available filename for: ${targetPath}`);
@@ -654,7 +665,7 @@ export class Generate implements ServerTool {
         callableId: "generate.image",
         name: "Generate Image",
         description:
-          "Generate or edit an image with a configured provider and write it to a local file. " +
+          "Generate or edit an image with a configured provider and write it to a local file in outputDir (or cwd). Returns absolute output path + MIME type. " +
           `Available models: ${imageModels.join(", ")}`,
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
@@ -723,7 +734,7 @@ export class Generate implements ServerTool {
     descriptor.validateInput(payload);
 
     const cwd = opts?.context?.cwd ?? process.cwd();
-    const resolvedTarget = resolveToolPath(cwd, payload.path);
+    const resolvedOutputDir = resolveToolPath(cwd, payload.outputDir ?? ".");
 
     const size =
       payload.size && payload.size.length > 0
@@ -747,14 +758,11 @@ export class Generate implements ServerTool {
     });
 
     const image = res.image;
-    const originalExt = extname(resolvedTarget);
     const inferredExt = inferExtensionFromMimeType(image.mediaType) || ".png";
-    const targetWithExt =
-      originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
+    const targetWithExt = join(resolvedOutputDir, `${DEFAULT_IMAGE_OUTPUT_BASENAME}${inferredExt}`);
 
-    const outPath = await pickAvailableFilename(targetWithExt);
-    await fs.mkdir(dirname(outPath), { recursive: true });
-    await fs.writeFile(outPath, image.uint8Array);
+    await fs.mkdir(dirname(targetWithExt), { recursive: true });
+    const outPath = await writeFileWithUniqueName(targetWithExt, image.uint8Array);
 
     return {
       ok: true as const,
@@ -809,9 +817,8 @@ export class Generate implements ServerTool {
     const targetWithExt =
       originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
 
-    const outPath = await pickAvailableFilename(targetWithExt);
-    await fs.mkdir(dirname(outPath), { recursive: true });
-    await fs.writeFile(outPath, video.uint8Array);
+    await fs.mkdir(dirname(targetWithExt), { recursive: true });
+    const outPath = await writeFileWithUniqueName(targetWithExt, video.uint8Array);
 
     return {
       ok: true as const,

@@ -41,6 +41,8 @@ export type SurfaceOutputResult = {
   last: MsgRef;
 };
 
+export type SurfaceFinalTextMode = "continuation" | "full";
+
 export type SurfaceReplyChainPlanOptions = {
   maxDepth?: number;
 };
@@ -53,6 +55,12 @@ export interface SurfaceOutputStream {
   push(part: SurfaceOutputPart): Promise<void>;
   finish(): Promise<SurfaceOutputResult>;
   abort(reason?: string): Promise<void>;
+  /**
+   * Optional final-text policy for bridge slicing behavior.
+   * - continuation: treat finalText as current-lane continuation after reanchor
+   * - full: treat finalText as complete reply text for the lane
+   */
+  getFinalTextMode?(): SurfaceFinalTextMode;
 }
 
 export type StartOutputOpts = {

@@ -16,7 +16,7 @@ const ONE_BY_ONE_PNG_BASE64 =
 describe("tool-server image generation", () => {
   it("normalizes a single inputImages value into an array", () => {
     const parsed = imageGenerateInputSchema.parse({
-      path: "output.png",
+      outputDir: "outputs",
       prompt: "Make this brighter",
       inputImages: "input.png",
     });
@@ -27,11 +27,28 @@ describe("tool-server image generation", () => {
   it("requires inputImages when maskImage is provided", () => {
     expect(() =>
       imageGenerateInputSchema.parse({
-        path: "output.png",
+        outputDir: "outputs",
         prompt: "Edit this image",
         maskImage: "mask.png",
       }),
     ).toThrow("maskImage requires inputImages.");
+  });
+
+  it("accepts omitted outputDir and defaults to cwd at execution time", () => {
+    const parsed = imageGenerateInputSchema.parse({
+      prompt: "Create a landscape photo",
+    });
+
+    expect(parsed.outputDir).toBeUndefined();
+  });
+
+  it("rejects deprecated path input for image output", () => {
+    expect(() =>
+      imageGenerateInputSchema.parse({
+        path: "legacy-output.png",
+        prompt: "Generate a portrait",
+      }),
+    ).toThrow("Unrecognized key");
   });
 
   it("returns plain text prompt when inputImages are not provided", async () => {

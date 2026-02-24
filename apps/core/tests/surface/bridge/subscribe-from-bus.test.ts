@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { bridgeBusToAdapter } from "../../../src/surface/bridge/subscribe-from-bus";
 import type {
+  SurfaceFinalTextMode,
   SurfaceAdapter,
   SurfaceOutputPart,
   SurfaceOutputResult,
@@ -251,7 +252,10 @@ class FakeOutputStream {
   public aborted: string | undefined;
   private created = false;
 
-  constructor(private readonly onFirstPush?: () => void) {}
+  constructor(
+    private readonly onFirstPush?: () => void,
+    private readonly finalTextMode: SurfaceFinalTextMode = "continuation",
+  ) {}
 
   async push(part: SurfaceOutputPart): Promise<void> {
     if (!this.created) {
@@ -270,6 +274,10 @@ class FakeOutputStream {
   async abort(reason?: string): Promise<void> {
     this.aborted = reason;
   }
+
+  getFinalTextMode(): SurfaceFinalTextMode {
+    return this.finalTextMode;
+  }
 }
 
 class FakeAdapter implements SurfaceAdapter {
@@ -280,6 +288,8 @@ class FakeAdapter implements SurfaceAdapter {
   public typingStarts: SessionRef[] = [];
   public typingStops = 0;
   public deletedMsgs: MsgRef[] = [];
+  public outputFinalTextMode: SurfaceFinalTextMode = "continuation";
+  public outputFinalTextModesByStart: SurfaceFinalTextMode[] = [];
   private nextOutputMessageId = 1;
 
   async connect(): Promise<void> {
@@ -302,6 +312,7 @@ class FakeAdapter implements SurfaceAdapter {
     this.lastStart = { sessionRef, opts };
     this.starts.push({ sessionRef, opts });
     const outputMessageId = `m_out_${this.nextOutputMessageId++}`;
+    const mode = this.outputFinalTextModesByStart.shift() ?? this.outputFinalTextMode;
     const s = new FakeOutputStream(() => {
       if (sessionRef.platform !== "discord") return;
       opts?.onMessageCreated?.({
@@ -309,7 +320,7 @@ class FakeAdapter implements SurfaceAdapter {
         channelId: sessionRef.channelId,
         messageId: outputMessageId,
       });
-    });
+    }, mode);
     this.stream = s;
     this.streams.push(s);
     return s;
@@ -853,6 +864,244 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.streams.length).toBe(2);
     expect(adapter.streams[0]?.aborted).toBe("reanchor_interrupt");
+
+    await bridge.stop();
+  });
+
+  it("uses full final text mode across multiple reanchors", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+    adapter.outputFinalTextMode = "full";
+
+    const requestId = "discord:chan:msg_reanchor_preview_full_final";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "c" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "abc" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(3);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+    expect(adapter.streams[1]?.aborted).toBe("reanchor");
+    expect(adapter.streams[2]?.parts.at(-1)).toEqual({ type: "text.set", text: "abc" });
+
+    await bridge.stop();
+  });
+
+  it("keeps continuation slicing across multiple reanchors in inline mode", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+
+    const requestId = "discord:chan:msg_reanchor_inline_continuation";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "c" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "abc" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(3);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+    expect(adapter.streams[1]?.aborted).toBe("reanchor");
+    expect(adapter.streams[2]?.parts.at(-1)).toEqual({ type: "text.set", text: "c" });
+
+    await bridge.stop();
+  });
+
+  it("refreshes final text mode when reanchor starts a new stream", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+    adapter.outputFinalTextModesByStart = ["continuation", "full"];
+
+    const requestId = "discord:chan:msg_reanchor_mode_refresh";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ab" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(2);
+    expect(adapter.streams[0]?.aborted).toBe("reanchor");
+    expect(adapter.streams[1]?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
 
     await bridge.stop();
   });
