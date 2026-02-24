@@ -2439,14 +2439,14 @@ export async function startBusAgentRunner(params: {
       const hasStrictReasoningOnlyAssistantOutput =
         assistantOutputPartTypes.length > 0 &&
         assistantOutputPartTypes.every((type) => type === "reasoning" || type === "unknown");
-      const isEmptyFinalText = finalText.trim().length === 0;
+      let isEmptyFinalText = finalText.trim().length === 0;
       const outputTokens = runStats.totalUsage?.outputTokens;
       // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
       const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
       // Guardrail for observed failure mode: reasoning-only terminal responses can resolve
       // with empty final text (finishReason often "other" and usage may be missing).
-      // When flagged on, skip empty reply rendering for this exact shape.
-      const shouldForceSkipReasoningOnlyEmpty =
+      // When flagged on, replace empty reply rendering with explicit fallback text.
+      const shouldHandleReasoningOnlyEmptyReply =
         skipEmptyReasoningReplyEnabled &&
         !isCancelled &&
         isEmptyFinalText &&
@@ -2455,8 +2455,10 @@ export async function startBusAgentRunner(params: {
         !hasAssistantToolCallOutput;
 
       let delivery = resolveReplyDeliveryFromFinalText(finalText);
-      if (delivery !== "skip" && shouldForceSkipReasoningOnlyEmpty) {
-        logger.warn("forcing skip reply for reasoning-only output with empty final text", {
+      if (delivery !== "skip" && shouldHandleReasoningOnlyEmptyReply) {
+        const fallbackText =
+          "I could not produce a final visible answer for that request. Please try again.";
+        logger.warn("replacing empty reasoning-only final reply with fallback text", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
           modelLabel: resolvedModelLabel,
@@ -2466,7 +2468,9 @@ export async function startBusAgentRunner(params: {
           outputPartTypes: assistantOutputPartTypes,
           usage: runStats.totalUsage,
         });
-        delivery = "skip";
+        finalText = fallbackText;
+        isEmptyFinalText = false;
+        delivery = "reply";
       }
 
       const shouldSkipSurfaceReply = delivery === "skip";
