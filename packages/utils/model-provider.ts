@@ -16,6 +16,7 @@ import {
 } from "./codex-oauth";
 import { resolveLogLevel } from "./logging";
 import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
+import { withLlmWireDebugFetch } from "./llm-wire-debug";
 
 export type Providers =
   | "openai"
@@ -64,12 +65,24 @@ export function getModelProviders() {
     },
   });
 
+  const openaiFetch = withLlmWireDebugFetch({
+    provider: "openai",
+    fetchFn: openaiResponsesFetch,
+    warn: (message, details) => logger.warn(message, details),
+  });
+
+  const codexFetch = withLlmWireDebugFetch({
+    provider: "codex",
+    fetchFn: codexResponsesFetch,
+    warn: (message, details) => logger.warn(message, details),
+  });
+
   const providers = {
     openai: env.providers.openai
       ? createOpenAI({
           baseURL: env.providers.openai.baseUrl,
           apiKey: env.providers.openai.apiKey,
-          fetch: openaiResponsesFetch,
+          fetch: openaiFetch,
         })
       : null,
 
@@ -247,7 +260,7 @@ export function getModelProviders() {
           }
         }
 
-        return codexResponsesFetch(url, {
+        return codexFetch(url, {
           ...init,
           headers,
           body,

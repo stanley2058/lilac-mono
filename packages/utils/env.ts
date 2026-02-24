@@ -6,6 +6,20 @@ export type Env = ReturnType<typeof parseEnv>;
 
 export type ResponsesTransportMode = "sse" | "auto" | "websocket";
 
+function parseBoolean(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n <= 0) return fallback;
+  return Math.floor(n);
+}
+
 function parseResponsesTransportMode(value: string | undefined): ResponsesTransportMode {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "auto" || normalized === "websocket") return normalized;
@@ -15,14 +29,21 @@ function parseResponsesTransportMode(value: string | undefined): ResponsesTransp
 export function parseEnv() {
   const env = process.env;
 
-  const perfLog = env.LILAC_PERF_LOG === "1" || env.LILAC_PERF_LOG === "true";
+  const perfLog = parseBoolean(env.LILAC_PERF_LOG);
   const perfLagWarnMsRaw = env.LILAC_PERF_LAG_WARN_MS;
   const perfLagWarnMs = perfLagWarnMsRaw ? Number(perfLagWarnMsRaw) : 200;
   const perfSampleRateRaw = env.LILAC_PERF_SAMPLE_RATE;
   const perfSampleRate = perfSampleRateRaw ? Number(perfSampleRateRaw) : 0;
 
-  const contextDumpEnabled = env.LILAC_CONTEXT_DUMP === "1" || env.LILAC_CONTEXT_DUMP === "true";
+  const contextDumpEnabled = parseBoolean(env.LILAC_CONTEXT_DUMP);
   const contextDumpDir = env.LILAC_CONTEXT_DUMP_DIR || "/data/debug";
+  const llmWireDebugEnabled = parseBoolean(env.LILAC_LLM_WIRE_DEBUG);
+  const llmWireDebugDir = env.LILAC_LLM_WIRE_DEBUG_DIR || path.resolve(contextDumpDir, "llm-wire");
+  const llmWireDebugMaxBodyBytes = parsePositiveInt(
+    env.LILAC_LLM_WIRE_DEBUG_MAX_BODY_BYTES,
+    64 * 1024,
+  );
+  const llmWireDebugMaxEvents = parsePositiveInt(env.LILAC_LLM_WIRE_DEBUG_MAX_EVENTS, 400);
 
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
@@ -94,6 +115,12 @@ export function parseEnv() {
       contextDump: {
         enabled: contextDumpEnabled,
         dir: contextDumpDir,
+      },
+      llmWire: {
+        enabled: llmWireDebugEnabled,
+        dir: llmWireDebugDir,
+        maxBodyBytes: llmWireDebugMaxBodyBytes,
+        maxEvents: llmWireDebugMaxEvents,
       },
     },
   } as const;
