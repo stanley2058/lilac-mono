@@ -146,7 +146,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     const fallbackCalls: unknown[] = [];
     let fallbackDetails:
       | {
-          reason: "websocket_busy" | "websocket_connect_failed";
+          reason: "websocket_connect_failed";
           requestUrl: string;
           errorMessage?: string;
         }
@@ -219,5 +219,68 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     expect(text).toContain('"type":"response.completed"');
     expect(text).not.toContain('"type":"response.done"');
+  });
+
+  it("supports concurrent websocket requests via dedicated connection", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+
+    const response1 = await wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "turn-1" }),
+    });
+
+    const response2 = await wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "turn-2" }),
+    });
+
+    expect(FakeWebSocket.instances.length).toBe(2);
+    const socket1 = FakeWebSocket.instances[0];
+    const socket2 = FakeWebSocket.instances[1];
+    expect(socket1).toBeDefined();
+    expect(socket2).toBeDefined();
+
+    const text1Promise = response1.text();
+    const text2Promise = response2.text();
+
+    socket2?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    socket1?.emitMessage(JSON.stringify({ type: "response.completed" }));
+
+    const [text1, text2] = await Promise.all([text1Promise, text2Promise]);
+    expect(text1).toContain("[DONE]");
+    expect(text2).toContain("[DONE]");
+    wsFetch.close();
+  });
+
+  it("closes reusable websocket after idle timeout", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      idleTimeoutMs: 10,
+    });
+
+    const response = await wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hello" }),
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    const textPromise = response.text();
+    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    const text = await textPromise;
+    expect(text).toContain("[DONE]");
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(socket?.readyState).toBe(FakeWebSocket.CLOSED);
+    wsFetch.close();
   });
 });

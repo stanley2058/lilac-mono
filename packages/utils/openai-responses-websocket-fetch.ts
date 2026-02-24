@@ -8,8 +8,9 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   fetch?: typeof globalThis.fetch;
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
+  idleTimeoutMs?: number;
   onAutoFallback?: (details: {
-    reason: "websocket_busy" | "websocket_connect_failed";
+    reason: "websocket_connect_failed";
     requestUrl: string;
     errorMessage?: string;
   }) => void;
@@ -22,20 +23,29 @@ export type OpenAIResponsesWebSocketFetch = typeof globalThis.fetch & {
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
 
+type WebSocketWithHeadersConstructor = {
+  new (
+    url: string | URL,
+    options?: Bun.WebSocketOptions,
+  ): WebSocket;
+};
+
 export function createOpenAIResponsesWebSocketFetch(
   options: CreateOpenAIResponsesWebSocketFetchOptions,
 ): OpenAIResponsesWebSocketFetch {
   const fetchFn = options.fetch ?? globalThis.fetch;
   const completionEventTypes = new Set(options.completionEventTypes ?? ["response.completed"]);
+  const idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
 
   let ws: WebSocket | null = null;
   let connecting: Promise<WebSocket> | null = null;
   let connectingKey: string | null = null;
-  let busy = false;
+  let reusableBusy = false;
+  let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let connectionHeadersKey: string | null = null;
 
   function reportAutoFallback(details: {
-    reason: "websocket_busy" | "websocket_connect_failed";
+    reason: "websocket_connect_failed";
     requestUrl: URL;
     error?: unknown;
   }): void {
@@ -69,63 +79,103 @@ export function createOpenAIResponsesWebSocketFetch(
     } catch {}
   }
 
-  function getConnection(socketUrl: string, headers: Record<string, string>): Promise<WebSocket> {
-    const key = `${socketUrl}|${JSON.stringify(
-      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
-    )}`;
+  function clearIdleCloseTimer(): void {
+    if (!idleCloseTimer) return;
+    clearTimeout(idleCloseTimer);
+    idleCloseTimer = null;
+  }
 
-    if (ws?.readyState === WebSocket.OPEN && !busy && connectionHeadersKey === key) {
-      return Promise.resolve(ws);
-    }
+  function scheduleIdleClose(): void {
+    clearIdleCloseTimer();
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-    if (connecting && !busy && connectingKey === key) {
-      return connecting;
-    }
-
-    if (ws && !busy && connectionHeadersKey !== key) {
+    if (idleTimeoutMs <= 0) {
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
+      return;
     }
 
-    connecting = new Promise<WebSocket>((resolve, reject) => {
+    idleCloseTimer = setTimeout(() => {
+      if (!reusableBusy && ws?.readyState === WebSocket.OPEN) {
+        closeSocket(ws);
+        ws = null;
+        connectionHeadersKey = null;
+      }
+      idleCloseTimer = null;
+    }, idleTimeoutMs);
+  }
+
+  function connectWebSocket(
+    socketUrl: string,
+    headers: Record<string, string>,
+  ): Promise<WebSocket> {
+    return new Promise<WebSocket>((resolve, reject) => {
       let socket: WebSocket;
+      const WebSocketCtor = globalThis.WebSocket as typeof globalThis.WebSocket &
+        WebSocketWithHeadersConstructor;
 
       try {
-        socket = new WebSocket(socketUrl, { headers });
+        socket = new WebSocketCtor(socketUrl, { headers });
       } catch (error) {
-        connecting = null;
-        connectingKey = null;
         reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
 
       const onOpen = () => {
-        ws = socket;
-        connectionHeadersKey = key;
-        connecting = null;
-        connectingKey = null;
+        socket.removeEventListener("error", onError);
         resolve(socket);
       };
 
       const onError = (event: Event) => {
-        if (!connecting) return;
-        connecting = null;
-        connectingKey = null;
+        socket.removeEventListener("open", onOpen);
         reject(extractWebSocketError(event));
-      };
-
-      const onClose = () => {
-        if (ws === socket) {
-          ws = null;
-          connectionHeadersKey = null;
-        }
       };
 
       socket.addEventListener("open", onOpen, { once: true });
       socket.addEventListener("error", onError, { once: true });
-      socket.addEventListener("close", onClose, { once: true });
     });
+  }
+
+  function getConnection(socketUrl: string, headers: Record<string, string>): Promise<WebSocket> {
+    const key = `${socketUrl}|${JSON.stringify(
+      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
+    )}`;
+
+    if (ws?.readyState === WebSocket.OPEN && connectionHeadersKey === key) {
+      return Promise.resolve(ws);
+    }
+
+    if (connecting && connectingKey === key) {
+      return connecting;
+    }
+
+    if (ws && connectionHeadersKey !== key) {
+      closeSocket(ws);
+      ws = null;
+      connectionHeadersKey = null;
+    }
+
+    connecting = connectWebSocket(socketUrl, headers)
+      .then((socket) => {
+        ws = socket;
+        connectionHeadersKey = key;
+        socket.addEventListener(
+          "close",
+          () => {
+            if (ws === socket) {
+              ws = null;
+              connectionHeadersKey = null;
+            }
+          },
+          { once: true },
+        );
+        return socket;
+      })
+      .finally(() => {
+        connecting = null;
+        connectingKey = null;
+      });
 
     connectingKey = key;
 
@@ -161,22 +211,15 @@ export function createOpenAIResponsesWebSocketFetch(
       return fetchFn(input, init);
     }
 
-    if (busy) {
-      if (options.mode === "auto") {
-        reportAutoFallback({
-          reason: "websocket_busy",
-          requestUrl,
-        });
-        return fetchFn(input, init);
-      }
-      throw new Error("WebSocket transport is busy");
-    }
-
     const wsHeaders = toWebSocketHeaders(getRequestHeaders(input, init));
+    const socketUrl = getWebSocketUrl(requestUrl);
 
     let connection: WebSocket;
+    const useReusableConnection = !reusableBusy;
     try {
-      connection = await getConnection(getWebSocketUrl(requestUrl), wsHeaders);
+      connection = useReusableConnection
+        ? await getConnection(socketUrl, wsHeaders)
+        : await connectWebSocket(socketUrl, wsHeaders);
     } catch (error) {
       if (options.mode === "auto") {
         reportAutoFallback({
@@ -189,26 +232,40 @@ export function createOpenAIResponsesWebSocketFetch(
       throw error;
     }
 
-    busy = true;
+    if (useReusableConnection) {
+      reusableBusy = true;
+      clearIdleCloseTimer();
+    }
 
     const { stream: _stream, ...requestBody } = parsedBody;
     const encoder = new TextEncoder();
 
     const responseStream = new ReadableStream<Uint8Array>({
       start(controller) {
+        let cleanedUp = false;
         const cleanup = (params?: { closeConnection?: boolean }) => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+
           connection.removeEventListener("message", onMessage);
           connection.removeEventListener("error", onError);
           connection.removeEventListener("close", onClose);
           signal?.removeEventListener("abort", onAbort);
-          busy = false;
 
-          if (params?.closeConnection) {
+          if (useReusableConnection) {
+            reusableBusy = false;
+          }
+
+          const shouldClose = params?.closeConnection === true || !useReusableConnection;
+
+          if (shouldClose) {
             closeSocket(connection);
             if (ws === connection) {
               ws = null;
               connectionHeadersKey = null;
             }
+          } else {
+            scheduleIdleClose();
           }
         };
 
@@ -287,6 +344,7 @@ export function createOpenAIResponsesWebSocketFetch(
 
   return Object.assign(websocketFetch as typeof globalThis.fetch, {
     close() {
+      clearIdleCloseTimer();
       if (connecting) {
         connecting = null;
         connectingKey = null;
@@ -294,7 +352,7 @@ export function createOpenAIResponsesWebSocketFetch(
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
-      busy = false;
+      reusableBusy = false;
     },
   }) as OpenAIResponsesWebSocketFetch;
 }
