@@ -209,7 +209,7 @@ export const videoGenerateInputSchema = z.object({
     .optional()
     .describe("Optional output resolution. For grok-imagine-video: 1280x720 | 854x480 | 640x480."),
 
-  duration: z
+  duration: z.coerce
     .number()
     .int()
     .min(1)

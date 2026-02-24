@@ -120,6 +120,16 @@ describe("tool-server image generation", () => {
     expect(parsed.duration).toBe(5);
   });
 
+  it("coerces string duration for CLI flag inputs", () => {
+    const parsed = videoGenerateInputSchema.parse({
+      path: "output.mp4",
+      prompt: "A fox running in the snow",
+      duration: "5",
+    });
+
+    expect(parsed.duration).toBe(5);
+  });
+
   it("returns plain text prompt when video inputImage is not provided", async () => {
     const prompt = await buildVideoGenerationPrompt(process.cwd(), {
       prompt: "A cinematic drone shot of mountain cliffs",
