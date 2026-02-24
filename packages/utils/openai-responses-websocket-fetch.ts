@@ -8,6 +8,11 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   fetch?: typeof globalThis.fetch;
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
+  onAutoFallback?: (details: {
+    reason: "websocket_busy" | "websocket_connect_failed";
+    requestUrl: string;
+    errorMessage?: string;
+  }) => void;
 };
 
 export type OpenAIResponsesWebSocketFetch = typeof globalThis.fetch & {
@@ -28,6 +33,24 @@ export function createOpenAIResponsesWebSocketFetch(
   let connectingKey: string | null = null;
   let busy = false;
   let connectionHeadersKey: string | null = null;
+
+  function reportAutoFallback(details: {
+    reason: "websocket_busy" | "websocket_connect_failed";
+    requestUrl: URL;
+    error?: unknown;
+  }): void {
+    if (options.mode !== "auto") return;
+    options.onAutoFallback?.({
+      reason: details.reason,
+      requestUrl: details.requestUrl.toString(),
+      errorMessage:
+        details.error instanceof Error
+          ? details.error.message
+          : details.error === undefined
+            ? undefined
+            : String(details.error),
+    });
+  }
 
   function getWebSocketUrl(requestUrl: URL): string {
     if (typeof options.url === "function") return options.url(requestUrl);
@@ -140,6 +163,10 @@ export function createOpenAIResponsesWebSocketFetch(
 
     if (busy) {
       if (options.mode === "auto") {
+        reportAutoFallback({
+          reason: "websocket_busy",
+          requestUrl,
+        });
         return fetchFn(input, init);
       }
       throw new Error("WebSocket transport is busy");
@@ -152,6 +179,11 @@ export function createOpenAIResponsesWebSocketFetch(
       connection = await getConnection(getWebSocketUrl(requestUrl), wsHeaders);
     } catch (error) {
       if (options.mode === "auto") {
+        reportAutoFallback({
+          reason: "websocket_connect_failed",
+          requestUrl,
+          error,
+        });
         return fetchFn(input, init);
       }
       throw error;

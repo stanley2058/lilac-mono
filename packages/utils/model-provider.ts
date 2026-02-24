@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { Logger } from "@stanley2058/simple-module-logger";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
@@ -13,6 +14,7 @@ import {
   refreshAccessToken,
   writeCodexTokens,
 } from "./codex-oauth";
+import { resolveLogLevel } from "./logging";
 import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
 
 export type Providers =
@@ -28,9 +30,19 @@ export type Providers =
 
 export function getModelProviders() {
   let codexRefreshInFlight: Promise<void> | null = null;
+  const logger = new Logger({
+    logLevel: resolveLogLevel(),
+    module: "utils:model-provider",
+  });
 
   const openaiResponsesFetch = createOpenAIResponsesWebSocketFetch({
     mode: env.providers.openai.responsesTransport,
+    onAutoFallback: (details) => {
+      logger.warn("responses transport fallback to sse", {
+        provider: "openai",
+        ...details,
+      });
+    },
   });
 
   const codexResponsesFetch = createOpenAIResponsesWebSocketFetch({
@@ -43,6 +55,12 @@ export function getModelProviders() {
         ...event,
         type: "response.completed",
       };
+    },
+    onAutoFallback: (details) => {
+      logger.warn("responses transport fallback to sse", {
+        provider: "codex",
+        ...details,
+      });
     },
   });
 

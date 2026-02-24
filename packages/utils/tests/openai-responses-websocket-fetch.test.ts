@@ -144,6 +144,13 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
   it("falls back to HTTP when mode=auto and websocket transport is unavailable", async () => {
     const fallbackCalls: unknown[] = [];
+    let fallbackDetails:
+      | {
+          reason: "websocket_busy" | "websocket_connect_failed";
+          requestUrl: string;
+          errorMessage?: string;
+        }
+      | undefined;
     globals.fetch = (async (...args: Parameters<typeof fetch>) => {
       fallbackCalls.push(args);
       return new Response("fallback");
@@ -151,7 +158,12 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     globals.WebSocket = undefined as unknown as typeof WebSocket;
 
-    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "auto" });
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "auto",
+      onAutoFallback: (details) => {
+        fallbackDetails = details;
+      },
+    });
 
     const response = await wsFetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -160,6 +172,8 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     expect(await response.text()).toBe("fallback");
     expect(fallbackCalls.length).toBe(1);
+    expect(fallbackDetails?.reason).toBe("websocket_connect_failed");
+    expect(fallbackDetails?.requestUrl).toBe("https://api.openai.com/v1/responses");
   });
 
   it("throws when mode=websocket and websocket transport is unavailable", async () => {
