@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { env } from "@stanley2058/lilac-utils";
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { executeBash } from "../../src/tools/bash-impl";
 import { analyzeBashCommand } from "../../src/tools/bash-safety";
-import { env } from "@stanley2058/lilac-utils";
-import path from "node:path";
 
 const STDIN_PROBE_COMMAND =
   "if cat >/dev/null 2>&1; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi";
@@ -143,15 +145,45 @@ describe("executeBash", () => {
   });
 
   it("truncates very large output and appends a tool error hint", async () => {
-    // 210k characters of output (over the 200k tool limit).
-    const res = await executeBash({
-      command: "head -c 210000 /dev/zero | tr '\\0' 'a'",
-    });
+    // 210k characters of output (over the 50KB tool limit).
+    const requestId = "bash-trunc-test-request";
+    const toolCallId = "bash-trunc-test-tool";
+    const outPath = `/tmp/${requestId}-${toolCallId}.log`;
+
+    await fs.unlink(outPath).catch(() => undefined);
+
+    const res = await executeBash(
+      {
+        command: "head -c 210000 /dev/zero | tr '\\0' 'a'",
+      },
+      {
+        context: {
+          requestId,
+          sessionId: "bash-trunc-test-session",
+          requestClient: "test",
+        },
+        toolCallId,
+      },
+    );
 
     expect(res.exitCode).toBe(0);
-    expect(res.stdout.length + res.stderr.length).toBeLessThanOrEqual(200_000);
-    expect(res.stderr).toContain("<bash_tool_error>");
-    expect(res.stderr).toContain("output truncated");
+    expect(res.stdout.length + res.stderr.length).toBeLessThanOrEqual(50 * 1024);
+    expect(res.stderr).toBe("");
+
+    expect(res.truncation?.outputPath).toBe(outPath);
+    expect(res.executionError).toBeDefined();
+    expect(res.executionError?.type).toBe("truncated");
+    if (res.executionError?.type === "truncated") {
+      expect(res.executionError.message).toContain("output truncated");
+      expect(res.executionError.outputPath).toBe(outPath);
+    }
+
+    const fullOutput = await fs.readFile(outPath, "utf8");
+    expect(fullOutput).toContain("<bash_tool_full_output>");
+    expect(fullOutput).toContain("--- stdout ---");
+    expect(fullOutput).toContain("--- stderr ---");
+
+    await fs.unlink(outPath).catch(() => undefined);
   });
 });
 
