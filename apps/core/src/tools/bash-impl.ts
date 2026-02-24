@@ -1,5 +1,9 @@
 import { env, resolveLogLevel, resolveVcsEnv } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
+import { createReadStream, createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "./fs/fs-impl";
@@ -16,15 +20,18 @@ import { sshExecBash } from "../ssh/ssh-exec";
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
 const DEFAULT_BASH_STDIN_MODE: BashStdinMode = "error";
+const BASH_TRUNCATED_OUTPUT_DIR = "/tmp";
 
 // Keep tool output bounded so we don't blow up agent context.
-const MAX_BASH_OUTPUT_CHARS = 200_000;
+const MAX_BASH_OUTPUT_CHARS = 50 * 1024;
 
-const BASH_TOOL_OUTPUT_TRUNCATED_SUFFIX =
-  "\n<bash_tool_error>\n" +
-  "output truncated due to length > 200,000 characters.\n" +
-  "Tip: narrow output, or pipe it to a file and inspect with rg.\n" +
-  "</bash_tool_error>\n";
+function buildBashOutputTruncationMessage(outputPath?: string): string {
+  if (typeof outputPath === "string" && outputPath.length > 0) {
+    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full raw output saved to: ${outputPath}`;
+  }
+
+  return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output file could not be written; narrow output and retry.`;
+}
 
 const logger = new Logger({
   logLevel: resolveLogLevel(),
@@ -66,6 +73,11 @@ export type BashExecutionError =
       type: "exception";
       phase: "spawn" | "stdout" | "stderr" | "unknown";
       message: string;
+    }
+  | {
+      type: "truncated";
+      message: string;
+      outputPath?: string;
     };
 
 export type BashToolOutput = {
@@ -80,11 +92,14 @@ export type BashToolOutput = {
    */
   exitCode: number;
   /**
-   * Tool-level error (timeout, spawn failure, stream read failure).
+   * Tool-level error (timeout, spawn failure, stream read failure, output truncation).
    *
    * This is distinct from a command failure, which is represented by a non-zero exitCode.
    */
   executionError?: BashExecutionError;
+  truncation?: {
+    outputPath: string;
+  };
 };
 
 function toErrorMessage(error: unknown) {
@@ -100,9 +115,34 @@ type StreamTextResult = {
   text: string;
   totalChars: number;
   capped: boolean;
+  overflowFilePath?: string;
 };
 
-async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<StreamTextResult> {
+async function appendOverflowChunk(params: {
+  overflowFilePath: string;
+  chunk: string;
+  initialized: boolean;
+}): Promise<boolean> {
+  try {
+    if (!params.initialized) {
+      await fs.writeFile(params.overflowFilePath, params.chunk, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    } else {
+      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readStreamTextCapped(
+  stream: unknown,
+  maxChars: number,
+  options?: { overflowFilePath?: string },
+): Promise<StreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, capped: false };
   }
@@ -116,6 +156,51 @@ async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<
     let text = "";
     let totalChars = 0;
     let capped = false;
+    let overflowInitialized = false;
+    let overflowWriteFailed = false;
+    let overflowFilePath: string | undefined;
+
+    const writeOverflowChunk = async (chunk: string) => {
+      if (chunk.length === 0) return;
+      if (overflowWriteFailed) return;
+      const target = options?.overflowFilePath;
+      if (!target) return;
+
+      const ok = await appendOverflowChunk({
+        overflowFilePath: target,
+        chunk,
+        initialized: overflowInitialized,
+      });
+      if (!ok) {
+        overflowWriteFailed = true;
+        return;
+      }
+      overflowInitialized = true;
+      overflowFilePath = target;
+    };
+
+    const consumeChunkText = async (chunkText: string) => {
+      if (chunkText.length === 0) return;
+
+      totalChars += chunkText.length;
+
+      if (capped) {
+        await writeOverflowChunk(chunkText);
+        return;
+      }
+
+      const previousText = text;
+      const nextLen = previousText.length + chunkText.length;
+      if (nextLen <= maxChars) {
+        text = previousText + chunkText;
+        return;
+      }
+
+      capped = true;
+      const remaining = Math.max(0, maxChars - previousText.length);
+      text = previousText + chunkText.slice(0, remaining);
+      await writeOverflowChunk(previousText + chunkText);
+    };
 
     try {
       while (true) {
@@ -124,46 +209,145 @@ async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<
         if (!value) continue;
 
         const chunkText = decoder.decode(value, { stream: true });
-        totalChars += chunkText.length;
-
-        if (text.length < maxChars) {
-          const remaining = maxChars - text.length;
-          if (chunkText.length <= remaining) {
-            text += chunkText;
-          } else {
-            text += chunkText.slice(0, remaining);
-            capped = true;
-          }
-        } else {
-          capped = true;
-        }
+        await consumeChunkText(chunkText);
       }
 
       const tail = decoder.decode();
       if (tail.length > 0) {
-        totalChars += tail.length;
-        if (text.length < maxChars) {
-          const remaining = maxChars - text.length;
-          text += tail.length <= remaining ? tail : tail.slice(0, remaining);
-          if (tail.length > remaining) capped = true;
-        } else {
-          capped = true;
-        }
+        await consumeChunkText(tail);
       }
     } finally {
       reader.releaseLock();
     }
 
-    return { text, totalChars, capped };
+    return { text, totalChars, capped, overflowFilePath };
   }
 
   // Fallback (should be rare): read everything, then cap.
   const full = await new Response(stream as any).text();
+  const capped = full.length > maxChars;
+  let overflowFilePath: string | undefined;
+  if (capped && options?.overflowFilePath) {
+    const ok = await appendOverflowChunk({
+      overflowFilePath: options.overflowFilePath,
+      chunk: full,
+      initialized: false,
+    });
+    if (ok) overflowFilePath = options.overflowFilePath;
+  }
+
   return {
     text: full.length > maxChars ? full.slice(0, maxChars) : full,
     totalChars: full.length,
-    capped: full.length > maxChars,
+    capped,
+    overflowFilePath,
   };
+}
+
+function sanitizeTempFileToken(value: string | undefined, fallback: string): string {
+  const trimmed = (value ?? "").trim();
+  if (trimmed.length === 0) return fallback;
+
+  const safe = trimmed
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 80);
+  return safe.length > 0 ? safe : fallback;
+}
+
+function buildTruncatedOutputPaths(params: { requestId?: string; toolCallId?: string }): {
+  outputPath: string;
+  stdoutOverflowPath: string;
+  stderrOverflowPath: string;
+} {
+  const requestToken = sanitizeTempFileToken(params.requestId, "unknown-request");
+  const toolToken = sanitizeTempFileToken(params.toolCallId, "unknown-tool");
+  const fileName = `${requestToken}-${toolToken}.log`;
+  const outputPath = path.join(BASH_TRUNCATED_OUTPUT_DIR, fileName);
+  return {
+    outputPath,
+    stdoutOverflowPath: `${outputPath}.stdout.part`,
+    stderrOverflowPath: `${outputPath}.stderr.part`,
+  };
+}
+
+async function appendSectionOutput(params: {
+  outputPath: string;
+  label: "stdout" | "stderr";
+  captured: string;
+  overflowFilePath?: string;
+}) {
+  await fs.appendFile(params.outputPath, `--- ${params.label} ---\n`, "utf8");
+
+  if (params.overflowFilePath) {
+    try {
+      await fs.stat(params.overflowFilePath);
+      await pipeline(
+        createReadStream(params.overflowFilePath),
+        createWriteStream(params.outputPath, { flags: "a", mode: 0o600 }),
+      );
+      await fs.appendFile(params.outputPath, "\n", "utf8");
+      return;
+    } catch {
+      // Fall back to captured fragment when spill file is unavailable.
+    }
+  }
+
+  if (params.captured.length > 0) {
+    await fs.appendFile(params.outputPath, params.captured, "utf8");
+  }
+  await fs.appendFile(params.outputPath, "\n", "utf8");
+}
+
+async function maybeWriteTruncatedOutputFile(params: {
+  outputPath: string;
+  requestId?: string;
+  toolCallId?: string;
+  stdout: string;
+  stderr: string;
+  stdoutOverflowPath?: string;
+  stderrOverflowPath?: string;
+}): Promise<string | undefined> {
+  try {
+    const header =
+      "<bash_tool_full_output>\n" +
+      `requestId: ${params.requestId ?? "unknown"}\n` +
+      `toolCallId: ${params.toolCallId ?? "unknown"}\n\n`;
+    await fs.writeFile(params.outputPath, header, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+
+    await appendSectionOutput({
+      outputPath: params.outputPath,
+      label: "stdout",
+      captured: params.stdout,
+      overflowFilePath: params.stdoutOverflowPath,
+    });
+
+    await fs.appendFile(params.outputPath, "\n", "utf8");
+
+    await appendSectionOutput({
+      outputPath: params.outputPath,
+      label: "stderr",
+      captured: params.stderr,
+      overflowFilePath: params.stderrOverflowPath,
+    });
+
+    await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
+    await fs.chmod(params.outputPath, 0o600);
+  } catch {
+    return undefined;
+  }
+
+  if (params.stdoutOverflowPath) {
+    await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
+  }
+  if (params.stderrOverflowPath) {
+    await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
+  }
+
+  return params.outputPath;
 }
 
 function limitBashOutput(
@@ -175,25 +359,20 @@ function limitBashOutput(
   truncated: boolean;
 } {
   const totalLen = input.stdout.length + input.stderr.length;
-  const needsTruncation = totalLen > MAX_BASH_OUTPUT_CHARS;
-  const shouldAddHint = Boolean(options?.truncated) || needsTruncation;
-  if (!shouldAddHint) {
+  const truncated = Boolean(options?.truncated) || totalLen > MAX_BASH_OUTPUT_CHARS;
+  if (!truncated) {
     return { ...input, truncated: false };
   }
 
-  const suffix = BASH_TOOL_OUTPUT_TRUNCATED_SUFFIX;
-
-  // If we can fit the hint without trimming, keep all content.
-  if (totalLen + suffix.length <= MAX_BASH_OUTPUT_CHARS) {
+  if (totalLen <= MAX_BASH_OUTPUT_CHARS) {
     return {
       stdout: input.stdout,
-      stderr: input.stderr + suffix,
+      stderr: input.stderr,
       truncated: true,
     };
   }
 
-  // Otherwise, reserve space for the hint so the agent always sees it.
-  const available = Math.max(0, MAX_BASH_OUTPUT_CHARS - suffix.length);
+  const available = Math.max(0, MAX_BASH_OUTPUT_CHARS);
 
   const stdoutPart = input.stdout.slice(0, available);
   const stderrPart =
@@ -201,18 +380,42 @@ function limitBashOutput(
 
   return {
     stdout: stdoutPart,
-    stderr: stderrPart + suffix,
+    stderr: stderrPart,
     truncated: true,
   };
 }
 
 function withLimitedOutput(
   output: BashToolOutput,
-  options?: { truncated?: boolean },
+  options?: { truncated?: boolean; outputPath?: string },
 ): BashToolOutput {
-  const limited = limitBashOutput({ stdout: output.stdout, stderr: output.stderr }, options);
+  const limited = limitBashOutput(
+    { stdout: output.stdout, stderr: output.stderr },
+    { truncated: options?.truncated },
+  );
   if (!limited.truncated) return output;
-  return { ...output, stdout: limited.stdout, stderr: limited.stderr };
+
+  const truncationMessage = buildBashOutputTruncationMessage(options?.outputPath);
+  const executionError =
+    output.executionError ??
+    ({
+      type: "truncated",
+      message: truncationMessage,
+      ...(options?.outputPath ? { outputPath: options.outputPath } : {}),
+    } satisfies BashExecutionError);
+
+  const truncation =
+    typeof options?.outputPath === "string" && options.outputPath.length > 0
+      ? { outputPath: options.outputPath }
+      : output.truncation;
+
+  return {
+    ...output,
+    stdout: limited.stdout,
+    stderr: limited.stderr,
+    executionError,
+    ...(truncation ? { truncation } : {}),
+  };
 }
 
 function buildBashChildEnv(params: {
@@ -254,6 +457,7 @@ export async function executeBash(
   {
     context,
     abortSignal,
+    toolCallId,
   }: {
     context?: {
       requestId: string;
@@ -261,6 +465,7 @@ export async function executeBash(
       requestClient: string;
     };
     abortSignal?: AbortSignal;
+    toolCallId?: string;
   } = {},
 ): Promise<BashToolOutput> {
   const cwdTarget = parseSshCwdTarget(cwd);
@@ -278,6 +483,10 @@ export async function executeBash(
   const redactedCommand = redactSecrets(command);
   const effectiveStdinMode = stdinMode ?? DEFAULT_BASH_STDIN_MODE;
   const startedAt = Date.now();
+  const truncatedOutputPaths = buildTruncatedOutputPaths({
+    requestId: context?.requestId,
+    toolCallId,
+  });
 
   logger.info("bash exec", {
     command: redactedCommand,
@@ -290,6 +499,7 @@ export async function executeBash(
     requestId: context?.requestId,
     sessionId: context?.sessionId,
     requestClient: context?.requestClient,
+    toolCallId,
   });
 
   if (!dangerouslyAllow) {
@@ -405,6 +615,7 @@ export async function executeBash(
             stdinMode: effectiveStdinMode,
             signal: controller.signal,
             maxOutputChars: MAX_BASH_OUTPUT_CHARS,
+            overflowOutputPath: truncatedOutputPaths.outputPath,
           })
         : null;
 
@@ -419,6 +630,17 @@ export async function executeBash(
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
         streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+      const truncatedOutputPath = outputTruncated
+        ? await maybeWriteTruncatedOutputFile({
+            outputPath: truncatedOutputPaths.outputPath,
+            requestId: context?.requestId,
+            toolCallId,
+            stdout,
+            stderr,
+            stdoutOverflowPath: execResult.overflowPaths.stdout,
+            stderrOverflowPath: execResult.overflowPaths.stderr,
+          })
+        : undefined;
 
       const durationMs = execResult.durationMs;
 
@@ -449,7 +671,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated },
+          { truncated: outputTruncated, outputPath: truncatedOutputPath },
         );
       }
 
@@ -479,7 +701,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated },
+          { truncated: outputTruncated, outputPath: truncatedOutputPath },
         );
       }
 
@@ -510,7 +732,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated },
+          { truncated: outputTruncated, outputPath: truncatedOutputPath },
         );
       }
 
@@ -527,6 +749,7 @@ export async function executeBash(
           stderrTotalChars: stderr.length,
           stdoutCapped: execResult.capped.stdout,
           stderrCapped: execResult.capped.stderr,
+          outputPath: truncatedOutputPath,
           requestId: context?.requestId,
           sessionId: context?.sessionId,
           requestClient: context?.requestClient,
@@ -564,7 +787,7 @@ export async function executeBash(
 
       return withLimitedOutput(
         { stdout: safeStdout, stderr: safeStderr, exitCode },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -589,8 +812,12 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS),
-      readStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS),
+      readStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
+        overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
+      }),
+      readStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
+        overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
+      }),
       child.exited,
     ]);
 
@@ -608,6 +835,19 @@ export async function executeBash(
       (stderrResult.status === "fulfilled" && stderrResult.value.capped);
     const outputTruncated =
       streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+    const truncatedOutputPath = outputTruncated
+      ? await maybeWriteTruncatedOutputFile({
+          outputPath: truncatedOutputPaths.outputPath,
+          requestId: context?.requestId,
+          toolCallId,
+          stdout,
+          stderr,
+          stdoutOverflowPath:
+            stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
+          stderrOverflowPath:
+            stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
+        })
+      : undefined;
 
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
@@ -635,7 +875,7 @@ export async function executeBash(
             signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
           },
         },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -666,7 +906,7 @@ export async function executeBash(
             signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
           },
         },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -696,7 +936,7 @@ export async function executeBash(
             message: toErrorMessage(stdoutResult.reason),
           },
         },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -726,7 +966,7 @@ export async function executeBash(
             message: toErrorMessage(stderrResult.reason),
           },
         },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -756,7 +996,7 @@ export async function executeBash(
             message: toErrorMessage(exitResult.reason),
           },
         },
-        { truncated: outputTruncated },
+        { truncated: outputTruncated, outputPath: truncatedOutputPath },
       );
     }
 
@@ -773,6 +1013,7 @@ export async function executeBash(
         stderrTotalChars: stderrResult.status === "fulfilled" ? stderrResult.value.totalChars : 0,
         stdoutCapped: stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
         stderrCapped: stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
+        outputPath: truncatedOutputPath,
         requestId: context?.requestId,
         sessionId: context?.sessionId,
         requestClient: context?.requestClient,
@@ -811,7 +1052,7 @@ export async function executeBash(
 
     return withLimitedOutput(
       { stdout: safeStdout, stderr: safeStderr, exitCode },
-      { truncated: outputTruncated },
+      { truncated: outputTruncated, outputPath: truncatedOutputPath },
     );
   } catch (err) {
     const durationMs = Date.now() - startedAt;

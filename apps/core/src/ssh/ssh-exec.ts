@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+
 import { requireConfiguredSshHost } from "./ssh-config";
 
 const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
@@ -13,6 +15,7 @@ export type SshExecOptions = {
    * If output exceeds this cap, it is truncated and `capped=true`.
    */
   maxOutputChars: number;
+  overflowOutputPath?: string;
 };
 
 export type SshExecResult = {
@@ -23,15 +26,41 @@ export type SshExecResult = {
   timedOut: boolean;
   aborted: boolean;
   capped: { stdout: boolean; stderr: boolean };
+  overflowPaths: { stdout?: string; stderr?: string };
 };
 
 type StreamTextResult = {
   text: string;
   totalChars: number;
   capped: boolean;
+  overflowFilePath?: string;
 };
 
-async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<StreamTextResult> {
+async function appendOverflowChunk(params: {
+  overflowFilePath: string;
+  chunk: string;
+  initialized: boolean;
+}): Promise<boolean> {
+  try {
+    if (!params.initialized) {
+      await fs.writeFile(params.overflowFilePath, params.chunk, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    } else {
+      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readStreamTextCapped(
+  stream: unknown,
+  maxChars: number,
+  options?: { overflowFilePath?: string },
+): Promise<StreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, capped: false };
   }
@@ -44,6 +73,51 @@ async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<
     let text = "";
     let totalChars = 0;
     let capped = false;
+    let overflowInitialized = false;
+    let overflowWriteFailed = false;
+    let overflowFilePath: string | undefined;
+
+    const writeOverflowChunk = async (chunk: string) => {
+      if (chunk.length === 0) return;
+      if (overflowWriteFailed) return;
+      const target = options?.overflowFilePath;
+      if (!target) return;
+
+      const ok = await appendOverflowChunk({
+        overflowFilePath: target,
+        chunk,
+        initialized: overflowInitialized,
+      });
+      if (!ok) {
+        overflowWriteFailed = true;
+        return;
+      }
+      overflowInitialized = true;
+      overflowFilePath = target;
+    };
+
+    const consumeChunkText = async (chunkText: string) => {
+      if (chunkText.length === 0) return;
+
+      totalChars += chunkText.length;
+
+      if (capped) {
+        await writeOverflowChunk(chunkText);
+        return;
+      }
+
+      const previousText = text;
+      const nextLen = previousText.length + chunkText.length;
+      if (nextLen <= maxChars) {
+        text = previousText + chunkText;
+        return;
+      }
+
+      capped = true;
+      const remaining = Math.max(0, maxChars - previousText.length);
+      text = previousText + chunkText.slice(0, remaining);
+      await writeOverflowChunk(previousText + chunkText);
+    };
 
     try {
       while (true) {
@@ -52,44 +126,37 @@ async function readStreamTextCapped(stream: unknown, maxChars: number): Promise<
         if (!value) continue;
 
         const chunkText = decoder.decode(value, { stream: true });
-        totalChars += chunkText.length;
-
-        if (text.length < maxChars) {
-          const remaining = maxChars - text.length;
-          if (chunkText.length <= remaining) {
-            text += chunkText;
-          } else {
-            text += chunkText.slice(0, remaining);
-            capped = true;
-          }
-        } else {
-          capped = true;
-        }
+        await consumeChunkText(chunkText);
       }
 
       const tail = decoder.decode();
       if (tail.length > 0) {
-        totalChars += tail.length;
-        if (text.length < maxChars) {
-          const remaining = maxChars - text.length;
-          text += tail.length <= remaining ? tail : tail.slice(0, remaining);
-          if (tail.length > remaining) capped = true;
-        } else {
-          capped = true;
-        }
+        await consumeChunkText(tail);
       }
     } finally {
       reader.releaseLock();
     }
 
-    return { text, totalChars, capped };
+    return { text, totalChars, capped, overflowFilePath };
   }
 
   const full = await new Response(stream as any).text();
+  const capped = full.length > maxChars;
+  let overflowFilePath: string | undefined;
+  if (capped && options?.overflowFilePath) {
+    const ok = await appendOverflowChunk({
+      overflowFilePath: options.overflowFilePath,
+      chunk: full,
+      initialized: false,
+    });
+    if (ok) overflowFilePath = options.overflowFilePath;
+  }
+
   return {
     text: full.length > maxChars ? full.slice(0, maxChars) : full,
     totalChars: full.length,
-    capped: full.length > maxChars,
+    capped,
+    overflowFilePath,
   };
 }
 
@@ -168,6 +235,7 @@ export async function sshExecBash(params: {
   timeoutMs: number;
   signal?: AbortSignal;
   maxOutputChars: number;
+  overflowOutputPath?: string;
 }): Promise<
   SshExecResult & {
     transportError?: { type: "hostkey" | "auth" | "connect" | "unknown"; message: string };
@@ -275,8 +343,16 @@ export async function sshExecBash(params: {
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamTextCapped(child.stdout, params.maxOutputChars),
-      readStreamTextCapped(child.stderr, params.maxOutputChars),
+      readStreamTextCapped(child.stdout, params.maxOutputChars, {
+        overflowFilePath: params.overflowOutputPath
+          ? `${params.overflowOutputPath}.stdout.part`
+          : undefined,
+      }),
+      readStreamTextCapped(child.stderr, params.maxOutputChars, {
+        overflowFilePath: params.overflowOutputPath
+          ? `${params.overflowOutputPath}.stderr.part`
+          : undefined,
+      }),
       child.exited,
     ]);
 
@@ -296,6 +372,12 @@ export async function sshExecBash(params: {
       capped: {
         stdout: stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
         stderr: stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
+      },
+      overflowPaths: {
+        stdout:
+          stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
+        stderr:
+          stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
       },
       transportError,
     };
