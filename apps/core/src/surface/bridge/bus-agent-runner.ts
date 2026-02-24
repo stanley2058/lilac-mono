@@ -2103,6 +2103,7 @@ export async function startBusAgentRunner(params: {
       let reasoningChunkSeq = 0;
 
       const toolStartMs = new Map<string, number>();
+      const pendingToolCallIds = new Set<string>();
 
       const contextDumpEnabled = env.debug.contextDump.enabled;
       const contextDumpDir = env.debug.contextDump.dir;
@@ -2296,6 +2297,7 @@ export async function startBusAgentRunner(params: {
 
         if (event.type === "tool_execution_start") {
           toolStartMs.set(event.toolCallId, Date.now());
+          pendingToolCallIds.add(event.toolCallId);
 
           bus
             .publish(
@@ -2324,6 +2326,8 @@ export async function startBusAgentRunner(params: {
         if (event.type === "tool_execution_end") {
           const started = toolStartMs.get(event.toolCallId);
           const toolDurationMs = started ? Date.now() - started : undefined;
+          pendingToolCallIds.delete(event.toolCallId);
+          if (started) toolStartMs.delete(event.toolCallId);
 
           const ok =
             event.toolName === "batch"
@@ -2443,21 +2447,24 @@ export async function startBusAgentRunner(params: {
       const outputTokens = runStats.totalUsage?.outputTokens;
       // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
       const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
-      // Guardrail for observed failure mode: reasoning-only terminal responses can resolve
-      // with empty final text (finishReason often "other" and usage may be missing).
+      // Guardrail for observed failure mode: reasoning/tool-call terminal responses can resolve
+      // with empty final text (finishReason may be "other" and usage fields may be missing).
       // When flagged on, replace empty reply rendering with explicit fallback text.
+      const hasPendingToolCalls = pendingToolCallIds.size > 0;
       const shouldHandleReasoningOnlyEmptyReply =
         skipEmptyReasoningReplyEnabled &&
         !isCancelled &&
         isEmptyFinalText &&
         hasReasoningOnlyOutput &&
-        hasStrictReasoningOnlyAssistantOutput &&
-        !hasAssistantToolCallOutput;
+        hasStrictReasoningOnlyAssistantOutput;
 
       let delivery = resolveReplyDeliveryFromFinalText(finalText);
       if (delivery !== "skip" && shouldHandleReasoningOnlyEmptyReply) {
-        const fallbackText =
-          "I could not produce a final visible answer for that request. Please try again.";
+        const fallbackText = hasPendingToolCalls
+          ? "A tool call did not finish cleanly, so I could not produce a final answer. Please retry."
+          : hasAssistantToolCallOutput
+            ? "I completed tool execution but did not produce a final visible answer. Please retry."
+            : "I could not produce a final visible answer for that request. Please try again.";
         logger.warn("replacing empty reasoning-only final reply with fallback text", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
@@ -2465,6 +2472,8 @@ export async function startBusAgentRunner(params: {
           finishReason: runStats.lastTurnFinishReason,
           outputTokens,
           reasoningChunkSeq,
+          hasAssistantToolCallOutput,
+          pendingToolCallCount: pendingToolCallIds.size,
           outputPartTypes: assistantOutputPartTypes,
           usage: runStats.totalUsage,
         });
@@ -2529,6 +2538,8 @@ export async function startBusAgentRunner(params: {
           delivery,
           finishReason: runStats.lastTurnFinishReason,
           reasoningChunkSeq,
+          hasAssistantToolCallOutput,
+          pendingToolCallCount: pendingToolCallIds.size,
           outputPartTypes: assistantOutputPartTypes,
           usage: runStats.totalUsage,
         });
