@@ -2442,10 +2442,13 @@ export async function startBusAgentRunner(params: {
       const isEmptyFinalText = finalText.trim().length === 0;
       const outputTokens = runStats.totalUsage?.outputTokens;
       const endedNormally = runStats.lastTurnFinishReason === "stop";
+      // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
+      const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
       // Guardrail: if the run ends normally but assistant output is reasoning-only
       // (no user-facing text part), skip the reply to prevent posting empty placeholders.
       // Apply force-skip only for normal (non-cancelled) terminal states with model work evidence.
       const shouldForceSkipReasoningOnlyEmpty =
+        skipEmptyReasoningReplyEnabled &&
         !isCancelled &&
         isEmptyFinalText &&
         hasReasoningOnlyOutput &&
