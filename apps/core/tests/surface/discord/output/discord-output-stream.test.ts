@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import type { Client } from "discord.js";
 
 import {
+  DiscordOutputStream,
   buildOutputAllowedMentions,
   buildThinkingDisplay,
   clampReasoningDetail,
@@ -18,6 +20,116 @@ describe("escapeDiscordMarkdown", () => {
     expect(escapeDiscordMarkdown("[x](y) _z_ `k` ~u~")).toBe(
       "\\[x\\]\\(y\\) \\_z\\_ \\`k\\` \\~u\\~",
     );
+  });
+});
+
+function createFakeDiscordClient(): {
+  client: Client;
+  createdMessageIds: string[];
+  deletedMessageIds: string[];
+} {
+  type FakeMessage = {
+    readonly id: string;
+    readonly channelId: string;
+    edit(options: unknown): Promise<FakeMessage>;
+    reply(options: unknown): Promise<FakeMessage>;
+    delete(): Promise<void>;
+  };
+
+  const deletedMessageIds: string[] = [];
+  const createdMessageIds: string[] = [];
+  const messages = new Map<string, FakeMessage>();
+  let nextMessageId = 1;
+  const channelId = "chan";
+
+  const createMessage = (): FakeMessage => {
+    const id = `m_${nextMessageId++}`;
+    createdMessageIds.push(id);
+    const message: FakeMessage = {
+      id,
+      channelId,
+      edit: async (_options) => message,
+      reply: async (_options) => createMessage(),
+      delete: async () => {
+        deletedMessageIds.push(id);
+        messages.delete(id);
+      },
+    };
+
+    messages.set(id, message);
+    return message;
+  };
+
+  const channel = {
+    send: async (_options: unknown) => createMessage(),
+    messages: {
+      fetch: async (messageId: string) => messages.get(messageId) ?? null,
+    },
+  };
+
+  const client = {
+    channels: {
+      fetch: async (id: string) => (id === channelId ? channel : null),
+    },
+  };
+
+  return {
+    client: client as unknown as Client,
+    createdMessageIds,
+    deletedMessageIds,
+  };
+}
+
+describe("preview reanchor behavior", () => {
+  it("keeps frozen placeholder lane messages on reanchor", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      reasoningDisplayMode: "none",
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    await out.abort("reanchor");
+
+    expect(createdMessageIds.length).toBeGreaterThan(0);
+    expect(out.getFinalTextMode()).toBe("full");
+    expect(deletedMessageIds).toEqual([]);
+  });
+
+  it("keeps frozen placeholder lane messages on interrupt reanchor", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      reasoningDisplayMode: "none",
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    await out.abort("reanchor_interrupt");
+
+    expect(createdMessageIds.length).toBeGreaterThan(0);
+    expect(deletedMessageIds).toEqual([]);
+  });
+
+  it("reports continuation final text mode for inline streams", () => {
+    const { client } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+    });
+
+    expect(out.getFinalTextMode()).toBe("continuation");
   });
 });
 

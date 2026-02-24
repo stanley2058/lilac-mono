@@ -4,6 +4,7 @@ import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 
 import type {
+  SurfaceFinalTextMode,
   SurfaceAdapter,
   SurfaceOutputPart,
   StartOutputOpts,
@@ -674,6 +675,7 @@ export async function bridgeBusToAdapter(params: {
 
     streamToken += 1;
     let out = await adapter.startOutput(sessionRef, buildStartOpts(baseReplyTo, streamToken));
+    let finalTextMode: SurfaceFinalTextMode = out.getFinalTextMode?.() ?? "continuation";
     useResumeOpts = false;
 
     if (input.restore) {
@@ -1011,9 +1013,12 @@ export async function bridgeBusToAdapter(params: {
                   Math.min(streamTextPrefixChars, finalText.length),
                 );
                 const isContinuationOnlyFinal = finalText.length < totalTextChars;
-                let streamFinalText = isContinuationOnlyFinal
-                  ? finalText
-                  : finalText.slice(clampedStreamPrefixChars);
+                let streamFinalText =
+                  finalTextMode === "full"
+                    ? finalText
+                    : isContinuationOnlyFinal
+                      ? finalText
+                      : finalText.slice(clampedStreamPrefixChars);
 
                 // On recovery resumes, the agent may emit only the continuation suffix
                 // (instead of the full final text). In that case, preserve already visible
@@ -1176,6 +1181,7 @@ export async function bridgeBusToAdapter(params: {
 
           // Start a new output stream and prime it with current state.
           out = await adapter.startOutput(sessionRef, buildStartOpts(nextReplyTo, streamToken));
+          finalTextMode = out.getFinalTextMode?.() ?? "continuation";
 
           if (platform === "discord" && typeof reasoningStartedAtMs === "number") {
             await out.push({

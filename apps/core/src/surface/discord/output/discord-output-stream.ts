@@ -879,10 +879,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         }
       }
 
-      if (this.isPreviewMode()) {
-        await this.deleteTransientPreviewMessages().catch(() => undefined);
-      }
+      // Keep frozen preview lane messages after reanchor so reply-thread
+      // lineage remains intact for follow-up steering turns.
     }
+  }
+
+  getFinalTextMode(): "continuation" | "full" {
+    return this.isPreviewMode() ? "full" : "continuation";
   }
 }
 
