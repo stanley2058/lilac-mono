@@ -2441,21 +2441,18 @@ export async function startBusAgentRunner(params: {
         assistantOutputPartTypes.every((type) => type === "reasoning" || type === "unknown");
       const isEmptyFinalText = finalText.trim().length === 0;
       const outputTokens = runStats.totalUsage?.outputTokens;
-      const endedNormally = runStats.lastTurnFinishReason === "stop";
       // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
       const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
-      // Guardrail: if the run ends normally but assistant output is reasoning-only
-      // (no user-facing text part), skip the reply to prevent posting empty placeholders.
-      // Apply force-skip only for normal (non-cancelled) terminal states with model work evidence.
+      // Guardrail for observed failure mode: reasoning-only terminal responses can resolve
+      // with empty final text (finishReason often "other" and usage may be missing).
+      // When flagged on, skip empty reply rendering for this exact shape.
       const shouldForceSkipReasoningOnlyEmpty =
         skipEmptyReasoningReplyEnabled &&
         !isCancelled &&
         isEmptyFinalText &&
         hasReasoningOnlyOutput &&
         hasStrictReasoningOnlyAssistantOutput &&
-        !hasAssistantToolCallOutput &&
-        endedNormally &&
-        (reasoningChunkSeq > 0 || typeof outputTokens === "number");
+        !hasAssistantToolCallOutput;
 
       let delivery = resolveReplyDeliveryFromFinalText(finalText);
       if (delivery !== "skip" && shouldForceSkipReasoningOnlyEmpty) {
