@@ -2380,8 +2380,17 @@ export async function startBusAgentRunner(params: {
           // Best-effort fallback: if deltas didn't populate finalText, take last assistant string.
           if (!finalText) {
             const last = event.messages[event.messages.length - 1];
-            if (last && last.role === "assistant" && typeof last.content === "string") {
-              finalText = last.content;
+            if (last && last.role === "assistant") {
+              if (typeof last.content === "string") {
+                finalText = last.content;
+              } else {
+                const buf: string[] = []
+                for (const part of last.content) {
+                  if (part.type !== "text") continue
+                  buf.push(part.text)
+                }
+                finalText = buf.join("\n\n")
+              }
             }
           }
         }
