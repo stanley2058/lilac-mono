@@ -6,7 +6,7 @@ import {
   buildImageGenerationPrompt,
   imageGenerateInputSchema,
   resolveImageEditInputs,
-} from "../src/tool-server/tools/image-generation";
+} from "../src/tool-server/tools/generate";
 
 const ONE_BY_ONE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+9n0AAAAASUVORK5CYII=";
