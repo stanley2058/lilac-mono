@@ -2412,7 +2412,63 @@ export async function startBusAgentRunner(params: {
         finalText = "Cancelled.";
       }
 
-      const delivery = resolveReplyDeliveryFromFinalText(finalText);
+      // Inspect only the current run's newly produced assistant outputs.
+      const responseMessages = runStats.finalMessages
+        ? runStats.finalMessages.slice(responseStartIndex)
+        : agent.state.messages.slice(responseStartIndex);
+
+      const assistantOutputPartTypes = responseMessages.flatMap((message) => {
+        if (message.role !== "assistant") return [] as string[];
+        if (typeof message.content === "string") return ["text"];
+        if (!Array.isArray(message.content)) return [] as string[];
+
+        return message.content
+          .map((part) => {
+            if (!part || typeof part !== "object") return "unknown";
+            const typedPart = part as { type?: unknown };
+            return typeof typedPart.type === "string" ? typedPart.type : "unknown";
+          })
+          .filter((type) => type.length > 0);
+      });
+
+      // Classify whether the run ended with reasoning-only content and no user-facing text part.
+      const hasReasoningOnlyOutput =
+        assistantOutputPartTypes.includes("reasoning") &&
+        !assistantOutputPartTypes.some((type) => type === "text" || type === "output_text");
+      const hasAssistantToolCallOutput = assistantOutputPartTypes.includes("tool-call");
+      const hasStrictReasoningOnlyAssistantOutput =
+        assistantOutputPartTypes.length > 0 &&
+        assistantOutputPartTypes.every((type) => type === "reasoning" || type === "unknown");
+      const isEmptyFinalText = finalText.trim().length === 0;
+      const outputTokens = runStats.totalUsage?.outputTokens;
+      const endedNormally = runStats.lastTurnFinishReason === "stop";
+      // Guardrail: if the run ends normally but assistant output is reasoning-only
+      // (no user-facing text part), skip the reply to prevent posting empty placeholders.
+      // Apply force-skip only for normal (non-cancelled) terminal states with model work evidence.
+      const shouldForceSkipReasoningOnlyEmpty =
+        !isCancelled &&
+        isEmptyFinalText &&
+        hasReasoningOnlyOutput &&
+        hasStrictReasoningOnlyAssistantOutput &&
+        !hasAssistantToolCallOutput &&
+        endedNormally &&
+        (reasoningChunkSeq > 0 || typeof outputTokens === "number");
+
+      let delivery = resolveReplyDeliveryFromFinalText(finalText);
+      if (delivery !== "skip" && shouldForceSkipReasoningOnlyEmpty) {
+        logger.warn("forcing skip reply for reasoning-only output with empty final text", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          modelLabel: resolvedModelLabel,
+          finishReason: runStats.lastTurnFinishReason,
+          outputTokens,
+          reasoningChunkSeq,
+          outputPartTypes: assistantOutputPartTypes,
+          usage: runStats.totalUsage,
+        });
+        delivery = "skip";
+      }
+
       const shouldSkipSurfaceReply = delivery === "skip";
       if (shouldSkipSurfaceReply) {
         logger.info("agent requested skip reply", {
@@ -2430,7 +2486,6 @@ export async function startBusAgentRunner(params: {
           const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
           const persistedMessages =
             runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
-
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
@@ -2453,7 +2508,6 @@ export async function startBusAgentRunner(params: {
       // Build stats in the js-llmcord-ish one-liner format.
       const endAt = runStats.lastTurnEndAt ?? Date.now();
       const ttftMs = runStats.firstTextDeltaAt ? runStats.firstTextDeltaAt - runStartedAt : null;
-      const outputTokens = runStats.totalUsage?.outputTokens;
       const rawTps =
         typeof outputTokens === "number" &&
         runStats.lastTurnFinishReason === "stop" &&
@@ -2462,9 +2516,19 @@ export async function startBusAgentRunner(params: {
           : null;
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
-      const responseMessages = runStats.finalMessages
-        ? runStats.finalMessages.slice(responseStartIndex)
-        : [];
+      // Keep a diagnostics breadcrumb when empty final text still reaches reply delivery.
+      if (!shouldSkipSurfaceReply && isEmptyFinalText && hasReasoningOnlyOutput) {
+        logger.warn("agent run resolved with reasoning-only output and empty final text", {
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          modelLabel: resolvedModelLabel,
+          delivery,
+          finishReason: runStats.lastTurnFinishReason,
+          reasoningChunkSeq,
+          outputPartTypes: assistantOutputPartTypes,
+          usage: runStats.totalUsage,
+        });
+      }
 
       const icLine = buildInputCompositionLine({
         system: systemPromptToText(agent.state.system),
