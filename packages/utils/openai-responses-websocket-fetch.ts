@@ -24,10 +24,7 @@ type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
 
 type WebSocketWithHeadersConstructor = {
-  new (
-    url: string | URL,
-    options?: Bun.WebSocketOptions,
-  ): WebSocket;
+  new (url: string | URL, options?: Bun.WebSocketOptions): WebSocket;
 };
 
 export function createOpenAIResponsesWebSocketFetch(
