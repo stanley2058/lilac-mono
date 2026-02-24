@@ -5,6 +5,6 @@ export * from "./workflow";
 export * from "./surface";
 export * from "./skills";
 export * from "./codex";
-export * from "./image-generation";
+export * from "./generate";
 export * from "./onboarding";
 export * from "./ssh";

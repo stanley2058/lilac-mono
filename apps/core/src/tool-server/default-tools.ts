@@ -7,7 +7,7 @@ import type { ServerTool } from "./types";
 import {
   Attachment,
   Codex,
-  ImageGeneration,
+  Generate,
   Onboarding,
   SSH,
   Skills,
@@ -32,7 +32,7 @@ export function createDefaultToolServerTools(params?: {
     new Summarize(),
     new Skills(),
     new Codex(),
-    new ImageGeneration(),
+    new Generate(),
   ];
 
   if (params?.bus) {

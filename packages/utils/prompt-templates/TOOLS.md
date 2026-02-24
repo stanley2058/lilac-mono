@@ -50,7 +50,8 @@ cat payload.json | tools <tool> --stdin
 - `fetch` — Fetch a web page
 - `search` — Search the web
 - `summarize` — Summarize the input using Gemini AI
-- `image.generate` — Generate or edit an image with a configured provider and write it to a local file
+- `generate.image` — Generate or edit an image with a configured provider and write it to a local file
+- `generate.video` — Generate a video with a configured provider and write it to a local file
 - `skills.list` — List and search skills discovered from common directories
 - `skills.brief` — Load a skill's frontmatter + a truncated SKILL.md body
 - `skills.full` — Load a skill's frontmatter + a larger SKILL.md body, plus a top-level directory listing
