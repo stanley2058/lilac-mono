@@ -14,7 +14,7 @@ const EMBED_COLOR_COMPLETE = Colors.Blue;
 const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
 
 const PROGRESS_FIELD_MAX_CHARS = 500;
-const EMBED_TITLE_MAX_CHARS = 256;
+const PROGRESS_FIELD_TITLE_MAX_CHARS = 256;
 
 function clampWithEllipsis(text: string, maxChars: number): string {
   if (maxChars <= 0) return "";
@@ -27,6 +27,28 @@ function buildActionsValue(lines: readonly string[]): string {
   const max = 4;
   const clamped = lines.slice(-max);
   return clampWithEllipsis(clamped.join("\n"), PROGRESS_FIELD_MAX_CHARS);
+}
+
+function buildProgressFieldValue(input: {
+  reasoningValue?: string | null;
+  actionsValue?: string | null;
+}): string {
+  const reasoning = input.reasoningValue ? clampWithEllipsis(input.reasoningValue, PROGRESS_FIELD_MAX_CHARS) : "";
+  const actions = input.actionsValue ? clampWithEllipsis(input.actionsValue, PROGRESS_FIELD_MAX_CHARS) : "";
+
+  if (reasoning && actions) {
+    return `${reasoning}\n\n${actions}`;
+  }
+
+  if (reasoning) {
+    return reasoning;
+  }
+
+  if (actions) {
+    return actions;
+  }
+
+  return "\u200b";
 }
 
 function buildStatsValue(line: string): string {
@@ -51,21 +73,14 @@ function buildEmbed(params: {
   emb.setColor(params.color);
 
   if (params.isStreaming && params.progressTitle) {
-    emb.setTitle(clampWithEllipsis(params.progressTitle, EMBED_TITLE_MAX_CHARS));
-  }
-
-  if (params.isStreaming && params.reasoningValue) {
-    emb.addFields({
-      name: "\u200b",
-      value: clampWithEllipsis(params.reasoningValue, PROGRESS_FIELD_MAX_CHARS),
-      inline: false,
+    const progressFieldValue = buildProgressFieldValue({
+      reasoningValue: params.reasoningValue,
+      actionsValue: params.actionsValue,
     });
-  }
 
-  if (params.isStreaming && params.actionsValue) {
     emb.addFields({
-      name: "\u200b",
-      value: clampWithEllipsis(params.actionsValue, PROGRESS_FIELD_MAX_CHARS),
+      name: clampWithEllipsis(params.progressTitle, PROGRESS_FIELD_TITLE_MAX_CHARS),
+      value: progressFieldValue,
       inline: false,
     });
   }
