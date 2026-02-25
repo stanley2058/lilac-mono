@@ -832,6 +832,15 @@ function buildStatsLine(params: {
   return `*${parts.join("; ")}*`;
 }
 
+function buildNoAssistantTextError(params: {
+  provider: string;
+  modelId: string;
+  finishReason?: FinishReason;
+}): string {
+  const finishReason = params.finishReason ? ` finishReason='${params.finishReason}'.` : "";
+  return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} This often means the model is unavailable or unsupported by the upstream backend (for example, model_not_found).`;
+}
+
 type Enqueued = {
   requestId: string;
   sessionId: string;
@@ -2422,6 +2431,16 @@ export async function startBusAgentRunner(params: {
       }
 
       const delivery = resolveReplyDeliveryFromFinalText(finalText);
+      if (!isCancelled && delivery !== "skip" && finalText.length === 0) {
+        throw new Error(
+          buildNoAssistantTextError({
+            provider: resolved.provider,
+            modelId: resolved.modelId,
+            finishReason: runStats.lastTurnFinishReason,
+          }),
+        );
+      }
+
       const shouldSkipSurfaceReply = delivery === "skip";
       if (shouldSkipSurfaceReply) {
         logger.info("agent requested skip reply", {

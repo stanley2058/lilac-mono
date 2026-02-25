@@ -99,6 +99,32 @@ afterEach(() => {
   FakeWebSocket.reset();
 });
 
+function eventStreamResponse(body: string): Response {
+  return new Response(body, {
+    headers: {
+      "content-type": "text/event-stream",
+    },
+  });
+}
+
+function chunkedEventStreamResponse(chunks: readonly string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+    },
+  });
+}
+
 describe("createOpenAIResponsesWebSocketFetch", () => {
   it("routes streaming /responses calls through websocket", async () => {
     const fallbackCalls: unknown[] = [];
@@ -219,6 +245,135 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     expect(text).toContain('"type":"response.completed"');
     expect(text).not.toContain('"type":"response.done"');
+  });
+
+  it("normalizes websocket response.failed into error events", async () => {
+    globals.fetch = (async () => new Response("fallback")) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+    });
+
+    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    const textPromise = response.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: {
+            type: "invalid_request_error",
+            code: "model_not_found",
+            message: "model not found",
+          },
+        },
+      }),
+    );
+
+    const text = await textPromise;
+    expect(text).toContain('"type":"error"');
+    expect(text).toContain('"code":"model_not_found"');
+    expect(text).not.toContain('"type":"response.failed"');
+    expect(text).toContain("[DONE]");
+  });
+
+  it("normalizes SSE response.done events", async () => {
+    globals.fetch = (async () =>
+      eventStreamResponse(
+        `data: ${JSON.stringify({ type: "response.done" })}\n\ndata: [DONE]\n\n`,
+      )) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "sse",
+      normalizeEvent: (event) => {
+        if (event.type !== "response.done") return event;
+        return {
+          ...event,
+          type: "response.completed",
+        };
+      },
+    });
+
+    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const text = await response.text();
+    expect(text).toContain('"type":"response.completed"');
+    expect(text).not.toContain('"type":"response.done"');
+  });
+
+  it("normalizes SSE response.failed into error events", async () => {
+    globals.fetch = (async () =>
+      eventStreamResponse(
+        `data: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: {
+              type: "invalid_request_error",
+              code: "model_not_found",
+              message: "model not found",
+            },
+          },
+        })}\n\ndata: [DONE]\n\n`,
+      )) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "sse",
+    });
+
+    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const text = await response.text();
+    expect(text).toContain('"type":"error"');
+    expect(text).toContain('"code":"model_not_found"');
+    expect(text).not.toContain('"type":"response.failed"');
+  });
+
+  it("normalizes SSE response.failed when CRLF delimiters are split across chunks", async () => {
+    globals.fetch = (async () =>
+      chunkedEventStreamResponse([
+        `data: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: {
+              type: "invalid_request_error",
+              code: "model_not_found",
+              message: "model not found",
+            },
+          },
+        })}\r`,
+        "\n\r",
+        "\ndata: [DONE]\r\n\r\n",
+      ])) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "sse",
+    });
+
+    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const text = await response.text();
+    expect(text).toContain('"type":"error"');
+    expect(text).toContain('"code":"model_not_found"');
+    expect(text).not.toContain('"type":"response.failed"');
+    expect(text).toContain("data: [DONE]");
   });
 
   it("supports concurrent websocket requests via dedicated connection", async () => {

@@ -32,6 +32,7 @@ export function createOpenAIResponsesWebSocketFetch(
 ): OpenAIResponsesWebSocketFetch {
   const fetchFn = options.fetch ?? globalThis.fetch;
   const completionEventTypes = new Set(options.completionEventTypes ?? ["response.completed"]);
+  completionEventTypes.add("response.incomplete");
   const idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
 
   let ws: WebSocket | null = null;
@@ -183,29 +184,36 @@ export function createOpenAIResponsesWebSocketFetch(
     const requestUrl = getRequestUrl(input);
     const method = getRequestMethod(input, init);
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const isResponsesRequest = method === "POST" && requestUrl.pathname.endsWith("/responses");
 
-    if (
-      options.mode === "sse" ||
-      method !== "POST" ||
-      !requestUrl.pathname.endsWith("/responses")
-    ) {
-      return fetchFn(input, init);
+    const forwardWithSseNormalization = async (): Promise<Response> => {
+      const response = await fetchFn(input, init);
+      return maybeNormalizeResponsesSseResponse({
+        response,
+        requestUrl,
+        method,
+        normalizeEvent: options.normalizeEvent,
+      });
+    };
+
+    if (options.mode === "sse" || !isResponsesRequest) {
+      return forwardWithSseNormalization();
     }
 
     const encodedBody = await decodeRequestBody(input, init);
     if (encodedBody === undefined) {
-      return fetchFn(input, init);
+      return forwardWithSseNormalization();
     }
 
     let parsedBody: Record<string, unknown>;
     try {
       parsedBody = JSON.parse(encodedBody) as Record<string, unknown>;
     } catch {
-      return fetchFn(input, init);
+      return forwardWithSseNormalization();
     }
 
     if (parsedBody.stream !== true) {
-      return fetchFn(input, init);
+      return forwardWithSseNormalization();
     }
 
     const wsHeaders = toWebSocketHeaders(getRequestHeaders(input, init));
@@ -224,7 +232,7 @@ export function createOpenAIResponsesWebSocketFetch(
           requestUrl,
           error,
         });
-        return fetchFn(input, init);
+        return forwardWithSseNormalization();
       }
       throw error;
     }
@@ -278,9 +286,7 @@ export function createOpenAIResponsesWebSocketFetch(
               return;
             }
 
-            const normalized = options.normalizeEvent
-              ? options.normalizeEvent(eventJson)
-              : eventJson;
+            const normalized = normalizeResponsesEvent(eventJson, options.normalizeEvent);
 
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
 
@@ -358,6 +364,246 @@ function getRequestUrl(input: FetchInput): URL {
   if (input instanceof URL) return input;
   if (typeof input === "string") return new URL(input);
   return new URL(input.url);
+}
+
+function maybeNormalizeResponsesSseResponse(input: {
+  response: Response;
+  requestUrl: URL;
+  method: string;
+  normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
+}): Response {
+  const { response, requestUrl, method, normalizeEvent } = input;
+
+  if (!response.body) return response;
+  if (method !== "POST" || !requestUrl.pathname.endsWith("/responses")) return response;
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!/text\/event-stream/i.test(contentType)) return response;
+
+  const source = response.body;
+  const transformed = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const reader = source.getReader();
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      let buffered = "";
+
+      const flushFrame = (frame: string) => {
+        if (frame.length === 0) return;
+        const next = normalizeSseFrame(frame, normalizeEvent);
+        controller.enqueue(encoder.encode(next));
+      };
+
+      void (async () => {
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+
+            buffered += decoder.decode(value, { stream: true });
+
+            while (true) {
+              const split = findSseFrameDelimiter(buffered);
+              if (!split) break;
+              const frame = buffered.slice(0, split.index);
+              buffered = buffered.slice(split.index + split.delimiterLength);
+              flushFrame(frame);
+            }
+          }
+
+          const tail = decoder.decode();
+          if (tail.length > 0) {
+            buffered += tail;
+          }
+          if (buffered.length > 0) {
+            flushFrame(buffered);
+          }
+
+          controller.close();
+        } catch (error) {
+          controller.error(error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch {}
+        }
+      })();
+    },
+  });
+
+  return new Response(transformed, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+function normalizeSseFrame(
+  frame: string,
+  normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>,
+): string {
+  const normalizedFrame = frame.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  const dataLines = normalizedFrame
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+
+  if (dataLines.length === 0) {
+    return `${normalizedFrame}\n\n`;
+  }
+
+  const data = dataLines.join("\n");
+  if (data.trim() === "[DONE]") {
+    return "data: [DONE]\n\n";
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data) as unknown;
+  } catch {
+    return `${normalizedFrame}\n\n`;
+  }
+
+  const event = asRecord(parsed);
+  if (!event) {
+    return `${normalizedFrame}\n\n`;
+  }
+
+  return `data: ${JSON.stringify(normalizeResponsesEvent(event, normalizeEvent))}\n\n`;
+}
+
+function normalizeResponsesEvent(
+  event: Record<string, unknown>,
+  normalizeEvent: ((event: Record<string, unknown>) => Record<string, unknown>) | undefined,
+): Record<string, unknown> {
+  const normalized = normalizeEvent ? normalizeEvent(event) : event;
+  const withResponseFailureHandled = normalizeResponsesFailureEvent(normalized);
+  return normalizeErrorEventShape(withResponseFailureHandled);
+}
+
+function normalizeResponsesFailureEvent(event: Record<string, unknown>): Record<string, unknown> {
+  const type = readString(event.type);
+  if (!type) return event;
+
+  const response = asRecord(event.response);
+  const responseStatus = readString(response?.status);
+  const responseError = asRecord(response?.error) ?? asRecord(event.error);
+
+  const isTerminalType =
+    type === "response.completed" || type === "response.incomplete" || type === "response.done";
+  const shouldConvertToError =
+    type === "response.failed" ||
+    (responseStatus === "failed" && (isTerminalType || type === "response.failed")) ||
+    (isTerminalType && responseError !== null);
+
+  if (!shouldConvertToError) return event;
+
+  const fallback =
+    responseStatus && responseStatus.length > 0
+      ? `Responses request failed (status=${responseStatus})`
+      : "Responses request failed";
+
+  const details = extractErrorDetails(responseError, fallback);
+
+  return {
+    type: "error",
+    sequence_number: readNumber(event.sequence_number) ?? 0,
+    error: {
+      type: details.type,
+      code: details.code,
+      message: details.message,
+      param: details.param,
+    },
+  };
+}
+
+function normalizeErrorEventShape(event: Record<string, unknown>): Record<string, unknown> {
+  if (readString(event.type) !== "error") return event;
+
+  const nested = asRecord(event.error);
+  const message =
+    readString(nested?.message) ?? readString(event.message) ?? "Response stream error";
+  const code = readString(nested?.code) ?? readString(event.code) ?? "response_error";
+  const errorType = readString(nested?.type) ?? code;
+  const param = readString(nested?.param) ?? readString(event.param) ?? null;
+
+  return {
+    type: "error",
+    sequence_number: readNumber(event.sequence_number) ?? 0,
+    error: {
+      type: errorType,
+      code,
+      message,
+      param,
+    },
+  };
+}
+
+function extractErrorDetails(
+  errorLike: Record<string, unknown> | null,
+  fallbackMessage: string,
+): {
+  message: string;
+  code: string;
+  type: string;
+  param: string | null;
+} {
+  const message = readString(errorLike?.message) ?? fallbackMessage;
+  const code = readString(errorLike?.code) ?? "response_failed";
+  const type = readString(errorLike?.type) ?? code;
+  const param = readString(errorLike?.param) ?? null;
+
+  return {
+    message,
+    code,
+    type,
+    param,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function findSseFrameDelimiter(buffer: string): { index: number; delimiterLength: number } | null {
+  const idxCrlf = buffer.indexOf("\r\n\r\n");
+  const idxLf = buffer.indexOf("\n\n");
+  const idxCr = buffer.indexOf("\r\r");
+
+  let bestIndex = -1;
+  let bestLength = 0;
+
+  if (idxCrlf >= 0 && (bestIndex < 0 || idxCrlf < bestIndex)) {
+    bestIndex = idxCrlf;
+    bestLength = 4;
+  }
+
+  if (idxLf >= 0 && (bestIndex < 0 || idxLf < bestIndex)) {
+    bestIndex = idxLf;
+    bestLength = 2;
+  }
+
+  if (idxCr >= 0 && (bestIndex < 0 || idxCr < bestIndex)) {
+    bestIndex = idxCr;
+    bestLength = 2;
+  }
+
+  if (bestIndex < 0) return null;
+  return { index: bestIndex, delimiterLength: bestLength };
 }
 
 function getRequestMethod(input: FetchInput, init?: FetchInit): string {
