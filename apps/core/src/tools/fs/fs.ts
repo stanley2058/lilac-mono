@@ -1,7 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger, env } from "@stanley2058/lilac-utils";
 import { fileTypeFromBuffer } from "file-type/core";
 import {
   EDIT_ERROR_CODES,
@@ -491,8 +490,7 @@ function normalizeEditOutput(output: {
 }
 
 export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "tool:fs",
   });
   const includeEditFile = opts?.includeEditFile ?? false;

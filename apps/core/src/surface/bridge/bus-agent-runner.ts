@@ -17,9 +17,9 @@ import {
   formatAvailableSkillsSection,
   getCoreConfig,
   ModelCapability,
+  createLogger,
   resolveEditingToolMode,
   type JSONObject,
-  resolveLogLevel,
   resolveModelRef,
   resolveModelSlot,
 } from "@stanley2058/lilac-utils";
@@ -42,8 +42,6 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-
-import { Logger } from "@stanley2058/simple-module-logger";
 
 import { applyPatchTool } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
@@ -1274,8 +1272,7 @@ export async function startBusAgentRunner(params: {
 }) {
   const { bus, subscriptionId } = params;
 
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "bus-agent-runner",
   });
 

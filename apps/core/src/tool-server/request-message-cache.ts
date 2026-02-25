@@ -3,8 +3,7 @@ import {
   type LilacBus,
   type LilacMessageForTopic,
 } from "@stanley2058/lilac-event-bus";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 
 type CacheEntry = {
   messages: readonly unknown[];
@@ -44,8 +43,7 @@ export async function createRequestMessageCache(
   // Prevent unbounded growth for a single requestId when follow-ups/steers
   // arrive as incremental message batches.
   const maxMessagesPerRequest = 512;
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "tool-server:request-message-cache",
   });
 

@@ -1,5 +1,4 @@
-import { env, resolveLogLevel, resolveVcsEnv } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger, env, resolveVcsEnv } from "@stanley2058/lilac-utils";
 import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -33,8 +32,7 @@ function buildBashOutputTruncationMessage(outputPath?: string): string {
   return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output file could not be written; narrow output and retry.`;
 }
 
-const logger = new Logger({
-  logLevel: resolveLogLevel(),
+const logger = createLogger({
   module: "tool:bash",
 });
 

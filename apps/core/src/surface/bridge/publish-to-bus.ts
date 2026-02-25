@@ -1,7 +1,6 @@
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import { lilacEventTypes } from "@stanley2058/lilac-event-bus";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 
 import type { SurfaceAdapter } from "../adapter";
 import type { AdapterEvent } from "../events";
@@ -19,8 +18,7 @@ export async function bridgeAdapterToBus(params: {
   subscriptionId: string;
 }) {
   const { adapter, bus } = params;
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "bridge:adapter-to-bus",
   });
 

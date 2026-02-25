@@ -2,7 +2,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { Logger } from "@stanley2058/simple-module-logger";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
@@ -14,7 +13,7 @@ import {
   refreshAccessToken,
   writeCodexTokens,
 } from "./codex-oauth";
-import { resolveLogLevel } from "./logging";
+import { createLogger } from "./logging";
 import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
 import { withLlmWireDebugFetch } from "./llm-wire-debug";
 
@@ -31,8 +30,7 @@ export type Providers =
 
 export function getModelProviders() {
   let codexRefreshInFlight: Promise<void> | null = null;
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "utils:model-provider",
   });
 

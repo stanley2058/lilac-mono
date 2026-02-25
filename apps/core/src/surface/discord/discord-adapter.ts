@@ -27,13 +27,12 @@ import type {
 } from "@stanley2058/lilac-event-bus";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
+  createLogger,
   getCoreConfig,
-  resolveLogLevel,
   resolveModelRef,
   resolveDiscordDbPath,
   resolveDiscordToken,
 } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -429,8 +428,7 @@ export class DiscordAdapter implements SurfaceAdapter {
   private handlers = new Set<AdapterEventHandler>();
   private sessionModelOverrides = new Map<string, string>();
 
-  private readonly logger = new Logger({
-    logLevel: resolveLogLevel(),
+  private readonly logger = createLogger({
     module: "surface:discord",
   });
 

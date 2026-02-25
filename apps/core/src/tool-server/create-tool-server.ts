@@ -1,6 +1,6 @@
 import Elysia, { NotFoundError } from "elysia";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
+import type { Logger } from "@stanley2058/simple-module-logger";
 
 import { BridgeFnRequest, BridgeFnResponse, BridgeListResponse } from "./schema";
 import type { RequestContext, ServerTool } from "./types";
@@ -79,8 +79,7 @@ export type ToolServerOptions = {
 export function createToolServer(options: ToolServerOptions) {
   const logger =
     options.logger ??
-    new Logger({
-      logLevel: resolveLogLevel(),
+    createLogger({
       module: "tool-server",
     });
 

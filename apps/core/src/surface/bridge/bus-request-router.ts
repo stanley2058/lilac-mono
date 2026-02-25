@@ -2,9 +2,9 @@ import { generateText, Output, type ModelMessage } from "ai";
 import { z } from "zod";
 
 import {
+  createLogger,
   getCoreConfig,
   env,
-  resolveLogLevel,
   resolveModelSlot,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
@@ -14,8 +14,6 @@ import {
   type LilacBus,
   type RequestQueueMode,
 } from "@stanley2058/lilac-event-bus";
-import { Logger } from "@stanley2058/simple-module-logger";
-
 import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef, SurfaceMessage } from "../types";
 import type { TranscriptStore } from "../../transcript/transcript-store";
@@ -357,9 +355,8 @@ export async function startBusRequestRouter(params: {
 }) {
   const { adapter, bus, subscriptionId } = params;
 
-  const logger = new Logger({
+  const logger = createLogger({
     module: "bus-request-router",
-    logLevel: resolveLogLevel(),
   });
 
   let cfg = params.config ? withDefaultToolsConfig(params.config) : await getCoreConfig();

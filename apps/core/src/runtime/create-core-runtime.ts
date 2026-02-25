@@ -1,11 +1,11 @@
 import Redis from "ioredis";
-import { Logger, type LogLevel } from "@stanley2058/simple-module-logger";
+import type { LogLevel } from "@stanley2058/simple-module-logger";
 import {
+  createLogger,
   env,
   getCoreConfig,
   resolveCoreConfigPath,
   resolveDiscordSearchDbPath,
-  resolveLogLevel,
   resolveTranscriptDbPath,
 } from "@stanley2058/lilac-utils";
 import path from "node:path";
@@ -61,8 +61,8 @@ function subId(prefix: string, name: string): string {
 }
 
 export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<CoreRuntime> {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(opts.logLevel),
+  const logger = createLogger({
+    logLevel: opts.logLevel,
     module: "core-runtime",
   });
 
@@ -372,8 +372,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           workflowStore,
           discordSearch: discordSearchService ?? undefined,
         }),
-        logger: new Logger({
-          logLevel: resolveLogLevel(),
+        logger: createLogger({
           module: "tool-server",
         }),
         requestMessageCache: {

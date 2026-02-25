@@ -1,7 +1,7 @@
 import { lilacEventTypes, outReqTopic, type LilacBus } from "@stanley2058/lilac-event-bus";
 
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger, env } from "@stanley2058/lilac-utils";
+import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type {
   SurfaceFinalTextMode,
@@ -232,8 +232,7 @@ export async function bridgeBusToAdapter(params: {
   idleTimeoutMs?: number;
   transcriptStore?: TranscriptStore;
 }) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "bridge:bus-to-adapter",
   });
 

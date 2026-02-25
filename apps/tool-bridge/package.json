@@ -20,7 +20,7 @@
   "dependencies": {
     "@stanley2058/lilac-core": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
-    "@stanley2058/simple-module-logger": "^0.0.3",
+    "@stanley2058/simple-module-logger": "^0.0.4",
     "@toon-format/toon": "^2.1.0",
     "zod": "^4.3.6"
   }

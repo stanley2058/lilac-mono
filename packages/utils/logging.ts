@@ -1,4 +1,4 @@
-import type { LogLevel } from "@stanley2058/simple-module-logger";
+import { Logger, type LogLevel, type LoggerOptions } from "@stanley2058/simple-module-logger";
 
 function hasTestGlobals(): boolean {
   const g = globalThis as unknown as Record<string, unknown>;
@@ -24,4 +24,16 @@ export function resolveLogLevel(override?: LogLevel): LogLevel {
   if (isTestEnv()) return "error";
   const fromEnv = process.env.LOG_LEVEL as LogLevel | undefined;
   return fromEnv ?? "info";
+}
+
+export type CreateLoggerOptions = Omit<LoggerOptions, "logLevel"> & {
+  logLevel?: LogLevel;
+};
+
+export function createLogger(options: CreateLoggerOptions = {}): Logger {
+  const { logLevel, ...rest } = options;
+  return new Logger({
+    ...rest,
+    logLevel: resolveLogLevel(logLevel),
+  });
 }

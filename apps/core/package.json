@@ -25,7 +25,7 @@
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-event-bus": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
-    "@stanley2058/simple-module-logger": "^0.0.3",
+    "@stanley2058/simple-module-logger": "^0.0.4",
     "@tavily/core": "^0.6.4",
     "@types/jsdom": "^27.0.0",
     "@types/turndown": "^5.0.6",
