@@ -41,17 +41,48 @@ function sanitizeUserToken(name: string): string {
 
 const USER_MENTION_TOKEN_RE = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu;
 
-function hasNonSelfMentionToken(input: { text: string; botName: string }): boolean {
-  const selfLc = sanitizeUserToken(input.botName).toLowerCase();
+function hasNonSelfMentionToken(input: { text: string; botNames: readonly string[] }): boolean {
+  const selfNamesLc = new Set(
+    input.botNames
+      .map((name) => sanitizeUserToken(name).toLowerCase())
+      .filter((name) => name.length > 0),
+  );
 
   for (const m of input.text.matchAll(USER_MENTION_TOKEN_RE)) {
     const token = String(m[2] ?? "").trim();
     if (!token) continue;
-    if (sanitizeUserToken(token).toLowerCase() === selfLc) continue;
+    if (selfNamesLc.has(sanitizeUserToken(token).toLowerCase())) continue;
     return true;
   }
 
   return false;
+}
+
+function resolveBotMentionNames(input: { cfg: CoreConfig; botUserId?: string }): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  const addName = (raw: string | undefined) => {
+    if (typeof raw !== "string") return;
+    const sanitized = sanitizeUserToken(raw);
+    if (!sanitized) return;
+    const key = sanitized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(sanitized);
+  };
+
+  addName(input.cfg.surface.discord.botName);
+
+  if (input.botUserId) {
+    const users = input.cfg.entity?.users ?? {};
+    for (const [alias, rec] of Object.entries(users)) {
+      if (rec.discord !== input.botUserId) continue;
+      addName(alias);
+    }
+  }
+
+  return out;
 }
 
 function compareMessagePosition(
@@ -72,17 +103,20 @@ function normalizeGateText(text: string | undefined, max = 280): string | undefi
 
 function stripLeadingBotMentionPrefix(
   text: string,
-  botName: string,
+  botNames: readonly string[],
 ): {
   hadLeadingMention: boolean;
   mentionPrefix: string;
   text: string;
 } {
-  const sanitizedBotName = sanitizeUserToken(botName);
-  const mentionRe = new RegExp(
-    `^\\s*(?:<@!?[^>]+>|@${escapeRegExp(sanitizedBotName)})(?:[,:]\\s*|\\s+)`,
-    "iu",
-  );
+  const sanitizedBotNames = botNames
+    .map((name) => sanitizeUserToken(name))
+    .filter((name) => name.length > 0);
+  const nameAlternation =
+    sanitizedBotNames.length > 0
+      ? `|@(?:${sanitizedBotNames.map((name) => escapeRegExp(name)).join("|")})`
+      : "";
+  const mentionRe = new RegExp(`^\\s*(?:<@!?[^>]+>${nameAlternation})(?:[,:]\\s*|\\s+)`, "iu");
   const m = text.match(mentionRe);
   if (!m) return { hadLeadingMention: false, mentionPrefix: "", text };
   return {
@@ -95,8 +129,11 @@ function stripLeadingBotMentionPrefix(
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
 const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!m:([^\s]+)(?:\s+|$)/iu;
 
-function parseLeadingModelOverride(input: { text: string; botName: string }): string | undefined {
-  const stripped = stripLeadingBotMentionPrefix(input.text, input.botName);
+function parseLeadingModelOverride(input: {
+  text: string;
+  botNames: readonly string[];
+}): string | undefined {
+  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
   const target = stripped.hadLeadingMention ? stripped.text : input.text;
   const m = target.match(LEADING_MODEL_OVERRIDE_RE);
   if (!m) return undefined;
@@ -105,8 +142,11 @@ function parseLeadingModelOverride(input: { text: string; botName: string }): st
   return model.length > 0 ? model : undefined;
 }
 
-function stripLeadingModelOverrideDirective(input: { text: string; botName: string }): string {
-  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botName);
+function stripLeadingModelOverrideDirective(input: {
+  text: string;
+  botNames: readonly string[];
+}): string {
+  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botNames);
   if (!strippedMention.hadLeadingMention) {
     return input.text.replace(LEADING_MODEL_OVERRIDE_RE, "").replace(/^\s+/u, "");
   }
@@ -121,14 +161,20 @@ function stripLeadingModelOverrideDirective(input: { text: string; botName: stri
   return `${strippedMention.mentionPrefix}${remainder}`;
 }
 
-function parseSteerDirectiveMode(input: { text: string; botName: string }): "steer" | "interrupt" {
-  const stripped = stripLeadingBotMentionPrefix(input.text, input.botName);
+function parseSteerDirectiveMode(input: {
+  text: string;
+  botNames: readonly string[];
+}): "steer" | "interrupt" {
+  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
   if (!stripped.hadLeadingMention) return "steer";
   return LEADING_INTERRUPT_COMMAND_RE.test(stripped.text) ? "interrupt" : "steer";
 }
 
-function stripLeadingInterruptDirective(input: { text: string; botName: string }): string {
-  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botName);
+function stripLeadingInterruptDirective(input: {
+  text: string;
+  botNames: readonly string[];
+}): string {
+  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botNames);
   if (!strippedMention.hadLeadingMention) {
     return input.text.replace(LEADING_INTERRUPT_COMMAND_RE, "").replace(/^\s+/u, "");
   }
@@ -257,6 +303,7 @@ function getDiscordFlags(raw: unknown): {
   replyToMessageId?: string;
   parentChannelId?: string;
   sessionModelOverride?: string;
+  botUserId?: string;
 } {
   if (!raw || typeof raw !== "object") return {};
   const discord = (raw as { discord?: unknown }).discord;
@@ -272,6 +319,7 @@ function getDiscordFlags(raw: unknown): {
     parentChannelId: typeof o.parentChannelId === "string" ? o.parentChannelId : undefined,
     sessionModelOverride:
       typeof o.sessionModelOverride === "string" ? o.sessionModelOverride : undefined,
+    botUserId: typeof o.botUserId === "string" ? o.botUserId : undefined,
   };
 }
 
@@ -288,6 +336,7 @@ type BufferedMessage = {
   ts: number;
   mentionsBot: boolean;
   replyToBot: boolean;
+  botUserId?: string;
   sessionModelOverride?: string;
   requestModelOverride?: string;
 };
@@ -463,11 +512,11 @@ export async function startBusRequestRouter(params: {
     replyToBot: boolean;
     mentionsBot: boolean;
     text: string;
-    botName: string;
+    botNames: readonly string[];
   }): boolean {
     if (!input.replyToBot) return false;
     if (input.mentionsBot) return false;
-    return hasNonSelfMentionToken({ text: input.text, botName: input.botName });
+    return hasNonSelfMentionToken({ text: input.text, botNames: input.botNames });
   }
 
   const lifecycleSub = await bus.subscribeTopic(
@@ -638,9 +687,13 @@ export async function startBusRequestRouter(params: {
       const flags = getDiscordFlags(msg.data.raw);
       const isDm = flags.isDMBased === true;
       const parentChannelId = flags.parentChannelId;
+      const botMentionNames = resolveBotMentionNames({
+        cfg,
+        botUserId: flags.botUserId,
+      });
       const requestModelOverride = parseLeadingModelOverride({
         text: msg.data.text,
-        botName: cfg.surface.discord.botName,
+        botNames: botMentionNames,
       });
       const configuredSessionModelOverride = resolveSessionModelOverride(
         cfg,
@@ -706,7 +759,7 @@ export async function startBusRequestRouter(params: {
           replyToBot: flags.replyToBot === true,
           mentionsBot: flags.mentionsBot === true,
           text: msg.data.text,
-          botName: cfg.surface.discord.botName,
+          botNames: botMentionNames,
         })
       ) {
         const gate = params.routerGate ?? shouldForwardByGate;
@@ -778,6 +831,7 @@ export async function startBusRequestRouter(params: {
             sessionConfigId,
             modelOverride,
             requestModelOverride,
+            botMentionNames,
           });
         } else {
           await handleActiveChannelMode({
@@ -793,12 +847,14 @@ export async function startBusRequestRouter(params: {
             mentionsBot: flags.mentionsBot === true,
             replyToBot: flags.replyToBot === true,
             replyToMessageId: flags.replyToMessageId,
+            botUserId: flags.botUserId,
             parentChannelId,
             active,
             sessionMode: mode,
             sessionConfigId,
             modelOverride,
             requestModelOverride,
+            botMentionNames,
           });
         }
 
@@ -823,6 +879,7 @@ export async function startBusRequestRouter(params: {
         sessionConfigId,
         modelOverride,
         requestModelOverride,
+        botMentionNames,
       });
 
       await ctx.commit();
@@ -855,6 +912,7 @@ export async function startBusRequestRouter(params: {
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    botMentionNames: readonly string[];
   }) {
     const {
       adapter,
@@ -871,6 +929,7 @@ export async function startBusRequestRouter(params: {
       sessionConfigId,
       modelOverride,
       requestModelOverride,
+      botMentionNames,
     } = input;
 
     if (active) {
@@ -889,7 +948,7 @@ export async function startBusRequestRouter(params: {
         if (mentionsBot) {
           const steerMode = parseSteerDirectiveMode({
             text: userText,
-            botName: cfg.surface.discord.botName,
+            botNames: botMentionNames,
           });
 
           await publishSurfaceOutputReanchor({
@@ -916,13 +975,13 @@ export async function startBusRequestRouter(params: {
               ? (text) =>
                   stripLeadingModelOverrideDirective({
                     text,
-                    botName: cfg.surface.discord.botName,
+                    botNames: botMentionNames,
                   })
               : steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
-                      botName: cfg.surface.discord.botName,
+                      botNames: botMentionNames,
                     })
                 : undefined,
           });
@@ -943,7 +1002,7 @@ export async function startBusRequestRouter(params: {
             ? (text) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : undefined,
         });
@@ -968,7 +1027,7 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : undefined,
           transformUserTextForMessageId: msgRef.messageId,
@@ -1015,7 +1074,7 @@ export async function startBusRequestRouter(params: {
         ? (text) =>
             stripLeadingModelOverrideDirective({
               text,
-              botName: cfg.surface.discord.botName,
+              botNames: botMentionNames,
             })
         : undefined,
       transformUserTextForMessageId: msgRef.messageId,
@@ -1036,12 +1095,14 @@ export async function startBusRequestRouter(params: {
     mentionsBot: boolean;
     replyToBot: boolean;
     replyToMessageId?: string;
+    botUserId?: string;
     parentChannelId?: string;
     active: ActiveSessionState | undefined;
     sessionMode: SessionMode;
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    botMentionNames: readonly string[];
   }) {
     const {
       adapter,
@@ -1055,12 +1116,14 @@ export async function startBusRequestRouter(params: {
       messageTs,
       mentionsBot,
       replyToBot,
+      botUserId,
       parentChannelId,
       active,
       sessionMode,
       sessionConfigId,
       modelOverride,
       requestModelOverride,
+      botMentionNames,
     } = input;
 
     if (active) {
@@ -1080,7 +1143,7 @@ export async function startBusRequestRouter(params: {
         if (mentionsBot) {
           const steerMode = parseSteerDirectiveMode({
             text: userText,
-            botName: cfg.surface.discord.botName,
+            botNames: botMentionNames,
           });
 
           await publishSurfaceOutputReanchor({
@@ -1107,13 +1170,13 @@ export async function startBusRequestRouter(params: {
               ? (text: string) =>
                   stripLeadingModelOverrideDirective({
                     text,
-                    botName: cfg.surface.discord.botName,
+                    botNames: botMentionNames,
                   })
               : steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
-                      botName: cfg.surface.discord.botName,
+                      botNames: botMentionNames,
                     })
                 : undefined,
           });
@@ -1134,7 +1197,7 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : undefined,
         });
@@ -1146,7 +1209,7 @@ export async function startBusRequestRouter(params: {
       if (!replyToBot && mentionsBot) {
         const steerMode = parseSteerDirectiveMode({
           text: userText,
-          botName: cfg.surface.discord.botName,
+          botNames: botMentionNames,
         });
 
         await publishSurfaceOutputReanchor({
@@ -1172,13 +1235,13 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
-                    botName: cfg.surface.discord.botName,
+                    botNames: botMentionNames,
                   })
               : undefined,
         });
@@ -1202,7 +1265,7 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : undefined,
           transformUserTextForMessageId: msgRef.messageId,
@@ -1226,7 +1289,7 @@ export async function startBusRequestRouter(params: {
           ? (text: string) =>
               stripLeadingModelOverrideDirective({
                 text,
-                botName: cfg.surface.discord.botName,
+                botNames: botMentionNames,
               })
           : undefined,
       });
@@ -1258,7 +1321,7 @@ export async function startBusRequestRouter(params: {
           ? (text: string) =>
               stripLeadingModelOverrideDirective({
                 text,
-                botName: cfg.surface.discord.botName,
+                botNames: botMentionNames,
               })
           : undefined,
         transformUserTextForMessageId: msgRef.messageId,
@@ -1280,6 +1343,7 @@ export async function startBusRequestRouter(params: {
         ts: messageTs,
         mentionsBot,
         replyToBot,
+        botUserId,
         sessionModelOverride: modelOverride,
         requestModelOverride,
       },
@@ -1384,9 +1448,14 @@ export async function startBusRequestRouter(params: {
             return {
               model: requestOverride,
               messageId,
+              botUserId: b.messages[i]?.botUserId,
             };
           }
-          return { model: requestOverride, messageId: undefined };
+          return {
+            model: requestOverride,
+            messageId: undefined,
+            botUserId: b.messages[i]?.botUserId,
+          };
         }
       }
       return undefined;
@@ -1412,7 +1481,7 @@ export async function startBusRequestRouter(params: {
         ? (text: string) =>
             stripLeadingModelOverrideDirective({
               text,
-              botName: cfg.surface.discord.botName,
+              botNames: resolveBotMentionNames({ cfg, botUserId: overrideCarrier?.botUserId }),
             })
         : undefined,
       transformUserTextForMessageId: overrideCarrier?.messageId,
@@ -1551,6 +1620,7 @@ export async function startBusRequestRouter(params: {
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    botMentionNames: readonly string[];
   }) {
     const {
       adapter,
@@ -1565,6 +1635,7 @@ export async function startBusRequestRouter(params: {
       replyToBot,
       active,
       requestModelOverride,
+      botMentionNames,
     } = input;
 
     const triggerType = replyToBot ? "reply" : mentionsBot ? "mention" : null;
@@ -1595,7 +1666,7 @@ export async function startBusRequestRouter(params: {
       if (mentionsBot) {
         const steerMode = parseSteerDirectiveMode({
           text: userText,
-          botName: cfg.surface.discord.botName,
+          botNames: botMentionNames,
         });
 
         await publishSurfaceOutputReanchor({
@@ -1622,13 +1693,13 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
-                    botName: cfg.surface.discord.botName,
+                    botNames: botMentionNames,
                   })
               : undefined,
         });
@@ -1647,7 +1718,7 @@ export async function startBusRequestRouter(params: {
             ? (text: string) =>
                 stripLeadingModelOverrideDirective({
                   text,
-                  botName: cfg.surface.discord.botName,
+                  botNames: botMentionNames,
                 })
             : undefined,
         });
@@ -1681,7 +1752,7 @@ export async function startBusRequestRouter(params: {
         ? (text: string) =>
             stripLeadingModelOverrideDirective({
               text,
-              botName: cfg.surface.discord.botName,
+              botNames: botMentionNames,
             })
         : undefined,
       transformUserTextForMessageId: msgRef.messageId,

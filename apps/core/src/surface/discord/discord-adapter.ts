@@ -2289,6 +2289,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const rawDiscord = surfaceMsg.raw as { discord?: Record<string, unknown> } | undefined;
     if (rawDiscord?.discord) {
+      rawDiscord.discord["botUserId"] = botId;
       rawDiscord.discord["mentionsBot"] = isMention;
       rawDiscord.discord["replyToBot"] = isReplyToBot;
     }
