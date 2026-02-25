@@ -8,6 +8,7 @@
 */
 
 import {
+  type CallWarning,
   streamText,
   type AssistantContent,
   type AssistantModelMessage,
@@ -127,6 +128,11 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
       usage: LanguageModelUsage;
       /** Token usage summed across steps for this turn. */
       totalUsage: LanguageModelUsage;
+    }
+  /** Provider warnings emitted for the active model turn. */
+  | {
+      type: "turn_warnings";
+      warnings: CallWarning[];
     }
   /** A model request (turn) was aborted and will not emit `turn_end`. */
   | {
@@ -1231,11 +1237,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     let finishReason: FinishReason;
     let usage: LanguageModelUsage;
     let totalUsage: LanguageModelUsage;
+    let warnings: CallWarning[] | undefined;
     try {
       response = await result.response;
       finishReason = await result.finishReason;
       usage = await result.usage;
       totalUsage = await result.totalUsage;
+      warnings = await result.warnings;
     } catch (e) {
       if (this.abortController?.signal.aborted) {
         if (assistantStarted) {
@@ -1252,6 +1260,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         throw new TurnAbortedError({ reason, phase: "model" });
       }
       throw e;
+    }
+
+    if (warnings && warnings.length > 0) {
+      this.emit({
+        type: "turn_warnings",
+        warnings,
+      });
     }
 
     const newMessages: ModelMessage[] = response.messages;

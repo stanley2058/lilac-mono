@@ -2,6 +2,7 @@
 
 import {
   asSchema,
+  type CallWarning,
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
@@ -836,9 +837,62 @@ function buildNoAssistantTextError(params: {
   provider: string;
   modelId: string;
   finishReason?: FinishReason;
+  warningSummary?: string;
 }): string {
   const finishReason = params.finishReason ? ` finishReason='${params.finishReason}'.` : "";
-  return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} This often means the model is unavailable or unsupported by the upstream backend (for example, model_not_found).`;
+
+  const warningSuffix = params.warningSummary ? ` Provider warnings: ${params.warningSummary}` : "";
+
+  return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} This often means the model is unavailable or unsupported by the upstream backend (for example, model_not_found).${warningSuffix}`;
+}
+
+function formatCallWarning(warning: CallWarning): string {
+  switch (warning.type) {
+    case "unsupported":
+      return warning.details
+        ? `unsupported ${warning.feature} (${warning.details})`
+        : `unsupported ${warning.feature}`;
+    case "compatibility":
+      return warning.details
+        ? `compatibility ${warning.feature} (${warning.details})`
+        : `compatibility ${warning.feature}`;
+    case "other":
+      return warning.message;
+    default: {
+      const _exhaustive: never = warning;
+      return String(_exhaustive);
+    }
+  }
+}
+
+function summarizeCallWarnings(warnings: readonly CallWarning[]): string | null {
+  if (warnings.length === 0) return null;
+
+  const unique = [
+    ...new Set(warnings.map(formatCallWarning).filter((item) => item.trim().length > 0)),
+  ];
+  if (unique.length === 0) return null;
+
+  const visible = unique.slice(0, 3);
+  const more = unique.length - visible.length;
+  return more > 0 ? `${visible.join(" | ")} (+${more} more)` : visible.join(" | ");
+}
+
+function maybeAppendWarningSummaryToUnclearError(
+  message: string,
+  warningSummary: string | null,
+): string {
+  if (!warningSummary) return message;
+  if (message.includes("Provider warnings:")) return message;
+
+  const normalized = message.trim().toLowerCase();
+  const isUnclear =
+    normalized === "response stream error" ||
+    normalized.startsWith("responses request failed") ||
+    normalized.startsWith("no assistant text was produced") ||
+    normalized === "no content generated";
+
+  return isUnclear ? `${message} Provider warnings: ${warningSummary}` : message;
 }
 
 type Enqueued = {
@@ -1777,6 +1831,7 @@ export async function startBusAgentRunner(params: {
       lastTurnFinishReason?: FinishReason;
       lastTurnEndAt?: number;
     } = {};
+    const streamWarnings: CallWarning[] = [];
 
     let resolvedModelLabel = "unknown";
     let activeAgent: AiSdkPiAgent<ToolSet> | null = null;
@@ -2196,6 +2251,17 @@ export async function startBusAgentRunner(params: {
           void dumpContextAfterTurn(event);
         }
 
+        if (event.type === "turn_warnings") {
+          streamWarnings.push(...event.warnings);
+
+          logger.warn("model stream warnings", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            count: event.warnings.length,
+            warnings: event.warnings.map((warning) => formatCallWarning(warning)),
+          });
+        }
+
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           runStats.firstTextDeltaAt ??= Date.now();
 
@@ -2437,6 +2503,7 @@ export async function startBusAgentRunner(params: {
             provider: resolved.provider,
             modelId: resolved.modelId,
             finishReason: runStats.lastTurnFinishReason,
+            warningSummary: summarizeCallWarnings(streamWarnings) ?? undefined,
           }),
         );
       }
@@ -2555,7 +2622,11 @@ export async function startBusAgentRunner(params: {
         return;
       }
 
-      const msg = e instanceof Error ? e.message : String(e);
+      const rawMsg = e instanceof Error ? e.message : String(e);
+      const msg = maybeAppendWarningSummaryToUnclearError(
+        rawMsg,
+        summarizeCallWarnings(streamWarnings),
+      );
 
       if (params.transcriptStore) {
         try {
