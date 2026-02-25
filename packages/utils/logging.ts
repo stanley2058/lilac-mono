@@ -108,6 +108,109 @@ function resolveOpenObserveLogLevel(fallback: LogLevel): LogLevel {
   return fromEnv ?? fallback;
 }
 
+function reportOpenObserveFailure(message: string): void {
+  try {
+    process.stderr.write(`[openobserve] ${message}\n`);
+  } catch {
+    // Ignore stderr write failures.
+  }
+}
+
+function toSingleLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+const MAX_OBJECT_FIELDS_PER_ARG = 40;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function sanitizeFieldSegment(value: string): string {
+  const sanitized = value.replace(/[^A-Za-z0-9_]/g, "_");
+  return sanitized.length > 0 ? sanitized : "field";
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function addNormalizedArgFields(
+  target: Record<string, unknown>,
+  index: number,
+  value: unknown,
+): void {
+  const prefix = `arg${index}`;
+
+  if (isPrimitive(value)) {
+    target[prefix] = value;
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    target[`${prefix}Type`] = "array";
+    target[`${prefix}Json`] = safeJsonStringify(value);
+    return;
+  }
+
+  if (isRecord(value)) {
+    target[`${prefix}Type`] = "object";
+
+    let fieldCount = 0;
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (fieldCount >= MAX_OBJECT_FIELDS_PER_ARG) {
+        target[`${prefix}_truncated`] = true;
+        break;
+      }
+
+      const fieldName = `${prefix}_${sanitizeFieldSegment(key)}`;
+      target[fieldName] = isPrimitive(nestedValue) ? nestedValue : safeJsonStringify(nestedValue);
+      fieldCount += 1;
+    }
+
+    return;
+  }
+
+  if (typeof value === "bigint") {
+    target[prefix] = value.toString();
+    return;
+  }
+
+  target[prefix] = String(value);
+}
+
+function normalizeRecordForOpenObserve(record: unknown): Record<string, unknown> | null {
+  if (!isRecord(record)) return null;
+
+  const normalized: Record<string, unknown> = { ...record };
+  const args = record["args"];
+  if (!Array.isArray(args)) {
+    return normalized;
+  }
+
+  normalized.argsCount = args.length;
+  delete normalized.args;
+
+  for (const [index, value] of args.entries()) {
+    addNormalizedArgFields(normalized, index, value);
+  }
+
+  return normalized;
+}
+
 class OpenObserveJsonlStream implements WriteStream {
   private readonly queue: unknown[] = [];
   private flushScheduled = false;
@@ -121,7 +224,11 @@ class OpenObserveJsonlStream implements WriteStream {
       const line = rawLine.trim();
       if (!line) continue;
       try {
-        this.queue.push(JSON.parse(line) as unknown);
+        const parsed = JSON.parse(line) as unknown;
+        const normalized = normalizeRecordForOpenObserve(parsed);
+        if (normalized) {
+          this.queue.push(normalized);
+        }
       } catch {
         // Ignore malformed lines; logger output should be valid JSONL.
       }
@@ -168,13 +275,32 @@ class OpenObserveJsonlStream implements WriteStream {
     }
 
     try {
-      await fetch(this.config.endpoint, {
+      const response = await fetch(this.config.endpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(batch),
       });
+
+      if (!response.ok) {
+        const details = await this.readResponseDetails(response);
+        reportOpenObserveFailure(
+          `log ingest failed (${response.status} ${response.statusText}) to ${this.config.endpoint}${details ? `: ${details}` : ""}`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reportOpenObserveFailure(`log ingest request failed to ${this.config.endpoint}: ${message}`);
+    }
+  }
+
+  private async readResponseDetails(response: Response): Promise<string | undefined> {
+    try {
+      const text = (await response.text()).trim();
+      if (!text) return undefined;
+      const singleLine = toSingleLine(text);
+      return singleLine.slice(0, 300);
     } catch {
-      // Best-effort remote logging; local logging remains authoritative.
+      return undefined;
     }
   }
 }

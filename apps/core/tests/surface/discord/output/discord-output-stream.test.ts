@@ -4,7 +4,7 @@ import type { Client } from "discord.js";
 import {
   DiscordOutputStream,
   buildOutputAllowedMentions,
-  buildThinkingDisplay,
+  buildWorkingTitle,
   clampReasoningDetail,
   escapeDiscordMarkdown,
   formatReasoningAsBlockquote,
@@ -90,6 +90,7 @@ describe("preview reanchor behavior", () => {
       useSmartSplitting: false,
       outputMode: "preview",
       reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
     });
 
     await out.push({ type: "text.delta", delta: "hello" });
@@ -109,6 +110,7 @@ describe("preview reanchor behavior", () => {
       useSmartSplitting: false,
       outputMode: "preview",
       reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
     });
 
     await out.push({ type: "text.delta", delta: "hello" });
@@ -127,6 +129,7 @@ describe("preview reanchor behavior", () => {
       useSmartSplitting: false,
       outputMode: "inline",
       reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
     });
 
     expect(out.getFinalTextMode()).toBe("continuation");
@@ -144,50 +147,21 @@ describe("reasoning display helpers", () => {
     );
   });
 
-  it("renders simple thinking status with spinner and elapsed seconds", () => {
+  it("renders working title with elapsed request seconds", () => {
     expect(
-      buildThinkingDisplay({
-        nowMs: 10_500,
-        startedAtMs: 10_000,
-        mode: "simple",
-      }),
-    ).toBe("⣟ Thinking... 0s");
-  });
-
-  it("renders detailed thinking status with blockquoted detail", () => {
-    expect(
-      buildThinkingDisplay({
+      buildWorkingTitle({
         nowMs: 21_500,
         startedAtMs: 20_000,
-        mode: "detailed",
-        detailText: "line 1\nline 2",
+        indicator: "Working",
       }),
-    ).toBe("⣽ Thinking... 1s\n> line 1\n> line 2");
+    ).toBe("Working... 1s");
   });
 
-  it("clamps detailed reasoning body to 512 chars", () => {
+  it("clamps reasoning detail body to 500 chars by default", () => {
     const detail = `${"a".repeat(520)}\n${"b".repeat(10)}`;
-    const output = buildThinkingDisplay({
-      nowMs: 21_500,
-      startedAtMs: 20_000,
-      mode: "detailed",
-      detailText: detail,
-    });
-
-    expect(output.startsWith("⣽ Thinking... 1s\n> ")).toBe(true);
+    const output = clampReasoningDetail(detail);
     expect(output.includes("…")).toBe(true);
-    expect(output.length).toBeLessThanOrEqual("⣽ Thinking... 1s\n> ".length + 512);
-  });
-
-  it("renders empty output for none mode", () => {
-    expect(
-      buildThinkingDisplay({
-        nowMs: 21_500,
-        startedAtMs: 20_000,
-        mode: "none",
-        detailText: "line 1\nline 2",
-      }),
-    ).toBe("");
+    expect(output.length).toBe(500);
   });
 });
 

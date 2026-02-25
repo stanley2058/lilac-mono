@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Buffer } from "node:buffer";
 
 import { createLogger } from "../logging";
 
@@ -82,16 +83,23 @@ async function withEnv<T>(patch: EnvPatch, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function withMockFetch<T>(fn: (calls: FetchCall[]) => Promise<T>): Promise<T> {
+async function withMockFetch<T>(
+  fn: (calls: FetchCall[]) => Promise<T>,
+  responseForCall?: (call: FetchCall) => Response | Promise<Response>,
+): Promise<T> {
   const calls: FetchCall[] = [];
   const globals = globalThis as unknown as { fetch: typeof fetch };
   const originalFetch = globals.fetch;
 
   globals.fetch = (async (...args: Parameters<typeof fetch>) => {
-    calls.push({
+    const call: FetchCall = {
       url: String(args[0]),
       init: args[1],
-    });
+    };
+    calls.push(call);
+    if (responseForCall) {
+      return await responseForCall(call);
+    }
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
 
@@ -99,6 +107,30 @@ async function withMockFetch<T>(fn: (calls: FetchCall[]) => Promise<T>): Promise
     return await fn(calls);
   } finally {
     globals.fetch = originalFetch;
+  }
+}
+
+async function withCapturedStderr<T>(fn: (chunks: string[]) => Promise<T>): Promise<T> {
+  const stderr = process.stderr as unknown as {
+    write: (chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => boolean;
+  };
+  const originalWrite = stderr.write;
+  const chunks: string[] = [];
+
+  stderr.write = ((chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
+    if (typeof chunk === "string") {
+      chunks.push(chunk);
+    } else {
+      chunks.push(Buffer.from(chunk).toString("utf8"));
+    }
+    callback?.(null);
+    return true;
+  }) as typeof stderr.write;
+
+  try {
+    return await fn(chunks);
+  } finally {
+    stderr.write = originalWrite;
   }
 }
 
@@ -270,6 +302,89 @@ describe("logging", () => {
 
           expect(messages).toContain("local-and-remote-warn");
           expect(messages).not.toContain("local-only-info");
+        });
+      },
+    );
+  });
+
+  it("normalizes args into indexed fields for OpenObserve", async () => {
+    await withEnv(
+      {
+        LILAC_LOG_OPENOBSERVE_BASE_URL: "https://observe.example",
+      },
+      async () => {
+        await withMockFetch(async (calls) => {
+          const logger = createLogger({
+            module: "logging-test",
+            logLevel: "info",
+            stdout: new MemoryWriteStream(),
+            stderr: new MemoryWriteStream(),
+          });
+
+          logger.info(
+            "structured-event",
+            {
+              adapterEventType: "adapter.message.updated",
+              durationMs: 1,
+              nested: { hello: "world" },
+            },
+            "second-arg",
+            42,
+          );
+          await waitForAsyncLogging();
+
+          const records = calls.flatMap((call) => parseJsonBody(call.init?.body));
+          expect(records.length).toBe(1);
+
+          const record = records[0] as Record<string, unknown>;
+          expect(record.message).toBe("structured-event");
+          expect(record.args).toBeUndefined();
+          expect(record.argsCount).toBe(3);
+
+          expect(record.arg0Type).toBe("object");
+          expect(record.arg0_adapterEventType).toBe("adapter.message.updated");
+          expect(record.arg0_durationMs).toBe(1);
+          expect(record.arg0_nested).toBe('{"hello":"world"}');
+
+          expect(record.arg1).toBe("second-arg");
+          expect(record.arg2).toBe(42);
+        });
+      },
+    );
+  });
+
+  it("writes an error to stderr when OpenObserve ingestion fails", async () => {
+    await withEnv(
+      {
+        LILAC_LOG_OPENOBSERVE_BASE_URL: "https://observe.example",
+        LILAC_LOG_OPENOBSERVE_BEARER_TOKEN: "bad-token",
+      },
+      async () => {
+        await withCapturedStderr(async (stderrChunks) => {
+          await withMockFetch(
+            async (calls) => {
+              const logger = createLogger({
+                module: "logging-test",
+                logLevel: "info",
+                stdout: new MemoryWriteStream(),
+                stderr: new MemoryWriteStream(),
+              });
+
+              logger.info("hello-failed-ingest");
+              await waitForAsyncLogging();
+
+              expect(calls.length).toBe(1);
+              const stderrText = stderrChunks.join("");
+              expect(stderrText).toContain("[openobserve]");
+              expect(stderrText).toContain("401 Unauthorized");
+              expect(stderrText).toContain("https://observe.example/api/default/lilac/_json");
+            },
+            () =>
+              new Response('{"error":"invalid token"}', {
+                status: 401,
+                statusText: "Unauthorized",
+              }),
+          );
         });
       },
     );

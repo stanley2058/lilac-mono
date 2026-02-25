@@ -437,6 +437,7 @@ describe("bridgeBusToAdapter", () => {
       channelId: "chan",
       messageId: "msg_1",
     });
+    expect(adapter.lastStart?.opts?.requestStartedAtMs).toBeTypeOf("number");
 
     expect(adapter.stream?.parts).toEqual([
       { type: "text.delta", delta: "hello" },
@@ -803,6 +804,10 @@ describe("bridgeBusToAdapter", () => {
     expect(adapter.starts.length).toBe(2);
     expect(adapter.starts[0]?.opts?.replyTo?.messageId).toBe("msg_3");
     expect(adapter.starts[1]?.opts?.replyTo?.messageId).toBe("msg_3");
+    expect(adapter.starts[0]?.opts?.requestStartedAtMs).toBeTypeOf("number");
+    expect(adapter.starts[1]?.opts?.requestStartedAtMs).toBe(
+      adapter.starts[0]?.opts?.requestStartedAtMs,
+    );
 
     expect(adapter.streams.length).toBe(2);
     expect(adapter.streams[0]?.aborted).toBe("reanchor");
@@ -1590,6 +1595,7 @@ describe("bridgeBusToAdapter", () => {
 
     const snapshot = snapshots[0]!;
     expect(snapshot.requestId).toBe(requestId);
+    expect(snapshot.requestStartedAtMs).toBeTypeOf("number");
     expect(snapshot.visibleText).toBe("hello");
     expect(snapshot.reasoning).toBeUndefined();
     expect(snapshot.createdOutputRefs).toEqual([

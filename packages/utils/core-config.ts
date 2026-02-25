@@ -9,6 +9,7 @@ import {
   CORE_PROMPT_FILES,
   promptWorkspaceSignature,
 } from "./agent-prompts";
+import { cloneDefaultDiscordWorkingIndicators } from "./discord-working-indicators";
 
 export type JSONValue = null | string | number | boolean | JSONObject | JSONArray;
 export type JSONArray = JSONValue[];
@@ -186,6 +187,12 @@ const discordSurfaceSchema = z
 
     /** Optional: allow Discord reply + @mention notifications for output messages. */
     outputNotification: z.boolean().optional(),
+
+    /** Streaming embed title phrases rotated while a request is in-progress. */
+    workingIndicators: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .default(cloneDefaultDiscordWorkingIndicators()),
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",
@@ -193,6 +200,7 @@ const discordSurfaceSchema = z
     allowedGuildIds: [],
     botName: "lilac",
     outputMode: "inline",
+    workingIndicators: cloneDefaultDiscordWorkingIndicators(),
   });
 
 const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
@@ -244,6 +252,7 @@ export const coreConfigSchema = z.object({
         allowedGuildIds: [],
         botName: "lilac",
         outputMode: "inline",
+        workingIndicators: cloneDefaultDiscordWorkingIndicators(),
       },
     }),
 
@@ -351,7 +360,14 @@ export const coreConfigSchema = z.object({
   basePrompt: z.string().optional(),
 });
 
-export type CoreConfig = Omit<z.infer<typeof coreConfigSchema>, "agent"> & {
+type ParsedCoreConfig = z.infer<typeof coreConfigSchema>;
+
+export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface"> & {
+  surface: Omit<ParsedCoreConfig["surface"], "discord"> & {
+    discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators"> & {
+      workingIndicators?: string[];
+    };
+  };
   agent: AgentConfig;
 };
 

@@ -747,6 +747,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       outputMode: cfg.surface.discord.outputMode ?? "inline",
       outputNotification: cfg.surface.discord.outputNotification === true,
+      workingIndicators: cfg.surface.discord.workingIndicators ?? ["Working"],
     });
   }
 
