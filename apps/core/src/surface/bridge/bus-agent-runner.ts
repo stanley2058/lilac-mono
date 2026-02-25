@@ -2,6 +2,7 @@
 
 import {
   asSchema,
+  type CallWarning,
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
@@ -830,6 +831,68 @@ function buildStatsLine(params: {
   }
 
   return `*${parts.join("; ")}*`;
+}
+
+function buildNoAssistantTextError(params: {
+  provider: string;
+  modelId: string;
+  finishReason?: FinishReason;
+  warningSummary?: string;
+}): string {
+  const finishReason = params.finishReason ? ` finishReason='${params.finishReason}'.` : "";
+
+  const warningSuffix = params.warningSummary ? ` Provider warnings: ${params.warningSummary}` : "";
+
+  return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} This often means the model is unavailable or unsupported by the upstream backend (for example, model_not_found).${warningSuffix}`;
+}
+
+function formatCallWarning(warning: CallWarning): string {
+  switch (warning.type) {
+    case "unsupported":
+      return warning.details
+        ? `unsupported ${warning.feature} (${warning.details})`
+        : `unsupported ${warning.feature}`;
+    case "compatibility":
+      return warning.details
+        ? `compatibility ${warning.feature} (${warning.details})`
+        : `compatibility ${warning.feature}`;
+    case "other":
+      return warning.message;
+    default: {
+      const _exhaustive: never = warning;
+      return String(_exhaustive);
+    }
+  }
+}
+
+function summarizeCallWarnings(warnings: readonly CallWarning[]): string | null {
+  if (warnings.length === 0) return null;
+
+  const unique = [
+    ...new Set(warnings.map(formatCallWarning).filter((item) => item.trim().length > 0)),
+  ];
+  if (unique.length === 0) return null;
+
+  const visible = unique.slice(0, 3);
+  const more = unique.length - visible.length;
+  return more > 0 ? `${visible.join(" | ")} (+${more} more)` : visible.join(" | ");
+}
+
+function maybeAppendWarningSummaryToUnclearError(
+  message: string,
+  warningSummary: string | null,
+): string {
+  if (!warningSummary) return message;
+  if (message.includes("Provider warnings:")) return message;
+
+  const normalized = message.trim().toLowerCase();
+  const isUnclear =
+    normalized === "response stream error" ||
+    normalized.startsWith("responses request failed") ||
+    normalized.startsWith("no assistant text was produced") ||
+    normalized === "no content generated";
+
+  return isUnclear ? `${message} Provider warnings: ${warningSummary}` : message;
 }
 
 type Enqueued = {
@@ -1768,6 +1831,7 @@ export async function startBusAgentRunner(params: {
       lastTurnFinishReason?: FinishReason;
       lastTurnEndAt?: number;
     } = {};
+    const streamWarnings: CallWarning[] = [];
 
     let resolvedModelLabel = "unknown";
     let activeAgent: AiSdkPiAgent<ToolSet> | null = null;
@@ -2103,7 +2167,6 @@ export async function startBusAgentRunner(params: {
       let reasoningChunkSeq = 0;
 
       const toolStartMs = new Map<string, number>();
-      const pendingToolCallIds = new Set<string>();
 
       const contextDumpEnabled = env.debug.contextDump.enabled;
       const contextDumpDir = env.debug.contextDump.dir;
@@ -2297,7 +2360,6 @@ export async function startBusAgentRunner(params: {
 
         if (event.type === "tool_execution_start") {
           toolStartMs.set(event.toolCallId, Date.now());
-          pendingToolCallIds.add(event.toolCallId);
 
           bus
             .publish(
@@ -2326,8 +2388,6 @@ export async function startBusAgentRunner(params: {
         if (event.type === "tool_execution_end") {
           const started = toolStartMs.get(event.toolCallId);
           const toolDurationMs = started ? Date.now() - started : undefined;
-          pendingToolCallIds.delete(event.toolCallId);
-          if (started) toolStartMs.delete(event.toolCallId);
 
           const ok =
             event.toolName === "batch"
@@ -2425,70 +2485,16 @@ export async function startBusAgentRunner(params: {
         finalText = "Cancelled.";
       }
 
-      // Inspect only the current run's newly produced assistant outputs.
-      const responseMessages = runStats.finalMessages
-        ? runStats.finalMessages.slice(responseStartIndex)
-        : agent.state.messages.slice(responseStartIndex);
-
-      const assistantOutputPartTypes = responseMessages.flatMap((message) => {
-        if (message.role !== "assistant") return [] as string[];
-        if (typeof message.content === "string") return ["text"];
-        if (!Array.isArray(message.content)) return [] as string[];
-
-        return message.content
-          .map((part) => {
-            if (!part || typeof part !== "object") return "unknown";
-            const typedPart = part as { type?: unknown };
-            return typeof typedPart.type === "string" ? typedPart.type : "unknown";
-          })
-          .filter((type) => type.length > 0);
-      });
-
-      // Classify terminal assistant output shape for empty-reply mitigation.
-      const hasAssistantTextOutput = assistantOutputPartTypes.some(
-        (type) => type === "text" || type === "output_text",
-      );
-      const hasReasoningOnlyOutput =
-        assistantOutputPartTypes.includes("reasoning") && !hasAssistantTextOutput;
-      const hasAssistantToolCallOutput = assistantOutputPartTypes.includes("tool-call");
-      const hasNonTextAssistantOutput =
-        assistantOutputPartTypes.length > 0 && !hasAssistantTextOutput;
-      let isEmptyFinalText = finalText.trim().length === 0;
-      const outputTokens = runStats.totalUsage?.outputTokens;
-      // Feature flag (default off): preserve upstream behavior unless explicitly enabled.
-      const skipEmptyReasoningReplyEnabled = env.featureFlags.skipEmptyReasoningReply;
-      // Guardrail for observed failure mode: terminal runs can finish with non-text-only
-      // assistant parts and empty final text. When flagged on, emit explicit fallback text.
-      const hasPendingToolCalls = pendingToolCallIds.size > 0;
-      const shouldHandleNonTextEmptyReply =
-        skipEmptyReasoningReplyEnabled &&
-        !isCancelled &&
-        isEmptyFinalText &&
-        hasNonTextAssistantOutput;
-
-      let delivery = resolveReplyDeliveryFromFinalText(finalText);
-      if (delivery !== "skip" && shouldHandleNonTextEmptyReply) {
-        const fallbackText = hasPendingToolCalls
-          ? "A tool call did not finish cleanly, so I could not produce a final answer. Please retry."
-          : hasAssistantToolCallOutput
-            ? "I completed tool execution but did not produce a final visible answer. Please retry."
-            : "I could not produce a final visible answer for that request. Please try again.";
-        logger.warn("replacing empty non-text final reply with fallback text", {
-          requestId: headers.request_id,
-          sessionId: headers.session_id,
-          modelLabel: resolvedModelLabel,
-          finishReason: runStats.lastTurnFinishReason,
-          outputTokens,
-          reasoningChunkSeq,
-          hasReasoningOnlyOutput,
-          hasAssistantToolCallOutput,
-          pendingToolCallCount: pendingToolCallIds.size,
-          outputPartTypes: assistantOutputPartTypes,
-          usage: runStats.totalUsage,
-        });
-        finalText = fallbackText;
-        isEmptyFinalText = false;
-        delivery = "reply";
+      const delivery = resolveReplyDeliveryFromFinalText(finalText);
+      if (!isCancelled && delivery !== "skip" && finalText.length === 0) {
+        throw new Error(
+          buildNoAssistantTextError({
+            provider: resolved.provider,
+            modelId: resolved.modelId,
+            finishReason: runStats.lastTurnFinishReason,
+            warningSummary: summarizeCallWarnings(streamWarnings) ?? undefined,
+          }),
+        );
       }
 
       const shouldSkipSurfaceReply = delivery === "skip";
@@ -2508,6 +2514,7 @@ export async function startBusAgentRunner(params: {
           const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
           const persistedMessages =
             runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
             sessionId: headers.session_id,
@@ -2530,6 +2537,7 @@ export async function startBusAgentRunner(params: {
       // Build stats in the js-llmcord-ish one-liner format.
       const endAt = runStats.lastTurnEndAt ?? Date.now();
       const ttftMs = runStats.firstTextDeltaAt ? runStats.firstTextDeltaAt - runStartedAt : null;
+      const outputTokens = runStats.totalUsage?.outputTokens;
       const rawTps =
         typeof outputTokens === "number" &&
         runStats.lastTurnFinishReason === "stop" &&
@@ -2538,22 +2546,9 @@ export async function startBusAgentRunner(params: {
           : null;
       const tps = rawTps !== null && Number.isFinite(rawTps) ? rawTps : null;
 
-      // Keep a diagnostics breadcrumb when empty final text still reaches reply delivery.
-      if (!shouldSkipSurfaceReply && isEmptyFinalText && hasNonTextAssistantOutput) {
-        logger.warn("agent run resolved with non-text output and empty final text", {
-          requestId: headers.request_id,
-          sessionId: headers.session_id,
-          modelLabel: resolvedModelLabel,
-          delivery,
-          finishReason: runStats.lastTurnFinishReason,
-          reasoningChunkSeq,
-          hasReasoningOnlyOutput,
-          hasAssistantToolCallOutput,
-          pendingToolCallCount: pendingToolCallIds.size,
-          outputPartTypes: assistantOutputPartTypes,
-          usage: runStats.totalUsage,
-        });
-      }
+      const responseMessages = runStats.finalMessages
+        ? runStats.finalMessages.slice(responseStartIndex)
+        : [];
 
       const icLine = buildInputCompositionLine({
         system: systemPromptToText(agent.state.system),
@@ -2616,7 +2611,11 @@ export async function startBusAgentRunner(params: {
         return;
       }
 
-      const msg = e instanceof Error ? e.message : String(e);
+      const rawMsg = e instanceof Error ? e.message : String(e);
+      const msg = maybeAppendWarningSummaryToUnclearError(
+        rawMsg,
+        summarizeCallWarnings(streamWarnings),
+      );
 
       if (params.transcriptStore) {
         try {

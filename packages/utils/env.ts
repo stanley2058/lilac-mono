@@ -45,10 +45,6 @@ export function parseEnv() {
   );
   const llmWireDebugMaxEvents = parsePositiveInt(env.LILAC_LLM_WIRE_DEBUG_MAX_EVENTS, 400);
 
-  const skipEmptyReasoningReply =
-    env.LILAC_SKIP_EMPTY_REASONING_REPLY === "1" ||
-    env.LILAC_SKIP_EMPTY_REASONING_REPLY === "true";
-
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
@@ -114,9 +110,6 @@ export function parseEnv() {
       log: perfLog,
       lagWarnMs: Number.isFinite(perfLagWarnMs) ? perfLagWarnMs : 200,
       sampleRate: Number.isFinite(perfSampleRate) && perfSampleRate >= 0 ? perfSampleRate : 0,
-    },
-    featureFlags: {
-      skipEmptyReasoningReply,
     },
     debug: {
       contextDump: {
