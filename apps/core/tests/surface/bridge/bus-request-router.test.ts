@@ -2627,6 +2627,171 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("supports bot alias prefix for reply+mention !int interrupt directives", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const sessionId = "chan";
+    const requestId = `discord:${sessionId}:anchor`;
+    const replyToActiveId = "a2";
+    const msgId = "m-int-alias";
+    const botUserId = "bot-123";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${sessionId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: msgId },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u2",
+        userName: "user2",
+        text: "@BotAlias: !int focus on failing test first",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+        entity: {
+          users: {
+            BotAlias: { discord: botUserId },
+          },
+          sessions: { discord: {} },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const surfaceCmd: any[] = [];
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const subSurface = await bus.subscribeTopic(
+      "cmd.surface",
+      {
+        mode: "fanout",
+        subscriptionId: "test-surface",
+        consumerId: "c2",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdSurfaceOutputReanchor) {
+          surfaceCmd.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running", ts: Date.now() },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtSurfaceOutputMessageCreated,
+      {
+        msgRef: {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: replyToActiveId,
+        },
+      },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: sessionId,
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: msgId,
+      userId: "u2",
+      userName: "user2",
+      text: "@BotAlias: !int focus on failing test first",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: true,
+          replyToMessageId: replyToActiveId,
+          botUserId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("interrupt");
+    expect(received[0].headers?.request_id).toBe(requestId);
+
+    const interruptText = received[0].data.messages?.[0]?.content;
+    expect(typeof interruptText).toBe("string");
+    expect(interruptText as string).toContain("@BotAlias");
+    expect(interruptText as string).toContain("focus on failing test first");
+    expect(interruptText as string).not.toContain("!int");
+
+    expect(surfaceCmd.length).toBe(1);
+    expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
+    expect(surfaceCmd[0].data.inheritReplyTo).toBe(false);
+    expect(surfaceCmd[0].data.replyTo?.messageId).toBe(msgId);
+    expect(surfaceCmd[0].data.mode).toBe("interrupt");
+
+    await subSurface.stop();
+    await sub.stop();
+    await router.stop();
+  });
+
   it("ignores non-triggers in mention-only channels, and queues triggers behind active requests", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
