@@ -2251,6 +2251,17 @@ export async function startBusAgentRunner(params: {
           void dumpContextAfterTurn(event);
         }
 
+        if (event.type === "turn_warnings") {
+          streamWarnings.push(...event.warnings);
+
+          logger.warn("model stream warnings", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            count: event.warnings.length,
+            warnings: event.warnings.map((warning) => formatCallWarning(warning)),
+          });
+        }
+
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           runStats.firstTextDeltaAt ??= Date.now();
 
