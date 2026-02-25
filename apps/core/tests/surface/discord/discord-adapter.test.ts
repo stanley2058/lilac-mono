@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { MessageType, type Message } from "discord.js";
 
 import {
+  hasExplicitDiscordUserMentionInContent,
+  isExplicitDiscordUserMention,
   isRoutableDiscordUserMessage,
   resolveEffectiveSessionModelOverride,
 } from "../../../src/surface/discord/discord-adapter";
@@ -65,6 +67,67 @@ describe("isRoutableDiscordUserMessage", () => {
 
     expect(isRoutableDiscordUserMessage(botMessage)).toBe(false);
     expect(isRoutableDiscordUserMessage(systemMessage)).toBe(false);
+  });
+});
+
+describe("hasExplicitDiscordUserMentionInContent", () => {
+  it("returns false when text has no explicit mention token", () => {
+    expect(
+      hasExplicitDiscordUserMentionInContent({
+        content: "thanks for the help",
+        userId: "42",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true for <@id> mention tokens", () => {
+    expect(
+      hasExplicitDiscordUserMentionInContent({
+        content: "<@42> can you take a look?",
+        userId: "42",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true for <@!id> nickname mention tokens", () => {
+    expect(
+      hasExplicitDiscordUserMentionInContent({
+        content: "hey <@!42> please review",
+        userId: "42",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("isExplicitDiscordUserMention", () => {
+  it("returns false when Discord did not parse a mention", () => {
+    expect(
+      isExplicitDiscordUserMention({
+        content: "`<@42>`",
+        userId: "42",
+        hasParsedMention: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when parsed mention exists but no explicit token in content", () => {
+    expect(
+      isExplicitDiscordUserMention({
+        content: "thanks for the answer",
+        userId: "42",
+        hasParsedMention: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when parsed mention and explicit token both exist", () => {
+    expect(
+      isExplicitDiscordUserMention({
+        content: "<@42> please refine this",
+        userId: "42",
+        hasParsedMention: true,
+      }),
+    ).toBe(true);
   });
 });
 

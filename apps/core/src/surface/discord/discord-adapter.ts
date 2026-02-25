@@ -389,6 +389,29 @@ export function isRoutableDiscordUserMessage(msg: Message): boolean {
   return msg.type === MessageType.Default || msg.type === MessageType.Reply;
 }
 
+export function hasExplicitDiscordUserMentionInContent(input: {
+  content: string;
+  userId: string;
+}): boolean {
+  return (
+    input.content.includes(`<@${input.userId}>`) || input.content.includes(`<@!${input.userId}>`)
+  );
+}
+
+export function isExplicitDiscordUserMention(input: {
+  content: string;
+  userId: string;
+  hasParsedMention: boolean;
+}): boolean {
+  return (
+    input.hasParsedMention &&
+    hasExplicitDiscordUserMentionInContent({
+      content: input.content,
+      userId: input.userId,
+    })
+  );
+}
+
 function compareDiscordSnowflake(a: string, b: string): number {
   // Prefer numeric comparison (snowflakes are numeric strings).
   // Fall back to localeCompare if parsing fails.
@@ -2257,7 +2280,11 @@ export class DiscordAdapter implements SurfaceAdapter {
     const botId = client.user?.id;
     if (!botId) return;
 
-    const isMention = msg.mentions.users.has(botId);
+    const isMention = isExplicitDiscordUserMention({
+      content: msg.content ?? "",
+      userId: botId,
+      hasParsedMention: msg.mentions.users.has(botId),
+    });
     const isReplyToBot = await this.isReplyToBot(msg, botId);
 
     const rawDiscord = surfaceMsg.raw as { discord?: Record<string, unknown> } | undefined;
