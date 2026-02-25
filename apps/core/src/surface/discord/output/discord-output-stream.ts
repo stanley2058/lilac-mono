@@ -59,6 +59,7 @@ export function escapeDiscordMarkdown(text: string): string {
 const PROGRESS_REASONING_MAX_CHARS = 500;
 const WORKING_INDICATOR_ROTATE_MIN_MS = 10_000;
 const WORKING_INDICATOR_ROTATE_MAX_MS = 30_000;
+const TASK_CHANGE_FORCE_ROTATE_MIN_WORD_AGE_MS = 5_000;
 const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
 const THINKING_SPINNER_TICK_MS = 250;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
@@ -260,7 +261,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private hasReasoningStatus = false;
   private reasoningDetailText = "";
   private activeWorkingIndicator = "";
+  private activeWorkingIndicatorSetAtMs = 0;
   private nextWorkingIndicatorRotateAtMs = 0;
+  private latestTaskProgressKey: string | null = null;
+  private pendingTaskDrivenIndicatorChange = false;
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -393,6 +397,19 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     this.nextWorkingIndicatorRotateAtMs = nowMs + WORKING_INDICATOR_ROTATE_MIN_MS + randomOffset;
   }
 
+  private markTaskProgress(nextTaskKey: string): void {
+    if (this.latestTaskProgressKey === nextTaskKey) return;
+    this.latestTaskProgressKey = nextTaskKey;
+    this.pendingTaskDrivenIndicatorChange = true;
+  }
+
+  private rotateWorkingIndicator(nowMs: number): void {
+    this.activeWorkingIndicator = this.pickRandomWorkingIndicator(this.activeWorkingIndicator);
+    this.activeWorkingIndicatorSetAtMs = nowMs;
+    this.pendingTaskDrivenIndicatorChange = false;
+    this.scheduleNextWorkingIndicatorRotation(nowMs);
+  }
+
   private pickRandomWorkingIndicator(previous?: string): string {
     if (this.workingIndicators.length === 0) return "Working";
     if (this.workingIndicators.length === 1) return this.workingIndicators[0] ?? "Working";
@@ -406,17 +423,29 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private getWorkingIndicator(nowMs: number): string {
     if (this.activeWorkingIndicator.length === 0) {
       this.activeWorkingIndicator = this.pickRandomWorkingIndicator();
+      this.activeWorkingIndicatorSetAtMs = nowMs;
+      this.pendingTaskDrivenIndicatorChange = false;
       this.scheduleNextWorkingIndicatorRotation(nowMs);
       return this.activeWorkingIndicator;
     }
 
-    if (
-      this.workingIndicators.length > 1 &&
-      this.nextWorkingIndicatorRotateAtMs > 0 &&
-      nowMs >= this.nextWorkingIndicatorRotateAtMs
-    ) {
-      this.activeWorkingIndicator = this.pickRandomWorkingIndicator(this.activeWorkingIndicator);
-      this.scheduleNextWorkingIndicatorRotation(nowMs);
+    if (this.workingIndicators.length < 2) {
+      this.pendingTaskDrivenIndicatorChange = false;
+      return this.activeWorkingIndicator;
+    }
+
+    const workingIndicatorAgeMs = Math.max(0, nowMs - this.activeWorkingIndicatorSetAtMs);
+    const shouldForceRotateForTaskProgress =
+      this.pendingTaskDrivenIndicatorChange &&
+      workingIndicatorAgeMs >= TASK_CHANGE_FORCE_ROTATE_MIN_WORD_AGE_MS;
+
+    if (shouldForceRotateForTaskProgress) {
+      this.rotateWorkingIndicator(nowMs);
+      return this.activeWorkingIndicator;
+    }
+
+    if (this.nextWorkingIndicatorRotateAtMs > 0 && nowMs >= this.nextWorkingIndicatorRotateAtMs) {
+      this.rotateWorkingIndicator(nowMs);
     }
 
     return this.activeWorkingIndicator;
@@ -651,6 +680,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         if (this.deps.reasoningDisplayMode === "none") {
           return;
         }
+        if (!this.hasReasoningStatus) {
+          this.markTaskProgress("reasoning");
+        }
         this.hasReasoningStatus = true;
         this.reasoningDetailText = part.update.detailText ?? "";
         await this.ensureStarted();
@@ -658,6 +690,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       }
       case "tool.status": {
         const line = buildToolLine(part.update);
+        if (part.update.status === "start") {
+          this.markTaskProgress(`tool:${part.update.toolCallId}`);
+        }
         const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
         if (idx >= 0) {
           this.toolLines[idx] = { toolCallId: part.update.toolCallId, line };
