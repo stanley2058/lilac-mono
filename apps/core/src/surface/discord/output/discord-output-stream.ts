@@ -57,8 +57,10 @@ export function escapeDiscordMarkdown(text: string): string {
 }
 
 const PROGRESS_REASONING_MAX_CHARS = 500;
-const WORKING_INDICATOR_ROTATE_MIN_MS = 4_000;
-const WORKING_INDICATOR_ROTATE_MAX_MS = 9_000;
+const WORKING_INDICATOR_ROTATE_MIN_MS = 10_000;
+const WORKING_INDICATOR_ROTATE_MAX_MS = 30_000;
+const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
+const THINKING_SPINNER_TICK_MS = 250;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
 
 type DiscordOutputMode = "inline" | "preview";
@@ -96,8 +98,11 @@ export function buildWorkingTitle(input: {
 }): string {
   const elapsedMs = Math.max(0, input.nowMs - input.startedAtMs);
   const elapsedSec = Math.floor(elapsedMs / 1000);
+  const frameIdx =
+    Math.floor(elapsedMs / THINKING_SPINNER_TICK_MS) % THINKING_SPINNER_FRAMES.length;
+  const spinner = THINKING_SPINNER_FRAMES[frameIdx] ?? THINKING_SPINNER_FRAMES[0];
   const indicator = input.indicator.trim().length > 0 ? input.indicator.trim() : "Working";
-  return `${indicator}... ${elapsedSec}s`;
+  return `${spinner} ${indicator}... ${elapsedSec}s`;
 }
 
 function isBatchToolDisplay(display: string): boolean {

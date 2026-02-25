@@ -154,7 +154,7 @@ describe("reasoning display helpers", () => {
         startedAtMs: 20_000,
         indicator: "Working",
       }),
-    ).toBe("Working... 1s");
+    ).toBe("⣽ Working... 1s");
   });
 
   it("clamps reasoning detail body to 500 chars by default", () => {

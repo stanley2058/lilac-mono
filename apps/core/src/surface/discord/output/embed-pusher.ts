@@ -7,6 +7,7 @@ export type SafeEdit = (msg: Message, options: Parameters<Message["edit"]>[0]) =
 
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
+const STREAM_MIN_PUSH_INTERVAL_MS = 500;
 const CLOSING_TAG_BUFFER = 10;
 const PROGRESS_HEARTBEAT_MS = 1_000;
 
@@ -33,8 +34,12 @@ function buildProgressFieldValue(input: {
   reasoningValue?: string | null;
   actionsValue?: string | null;
 }): string {
-  const reasoning = input.reasoningValue ? clampWithEllipsis(input.reasoningValue, PROGRESS_FIELD_MAX_CHARS) : "";
-  const actions = input.actionsValue ? clampWithEllipsis(input.actionsValue, PROGRESS_FIELD_MAX_CHARS) : "";
+  const reasoning = input.reasoningValue
+    ? clampWithEllipsis(input.reasoningValue, PROGRESS_FIELD_MAX_CHARS)
+    : "";
+  const actions = input.actionsValue
+    ? clampWithEllipsis(input.actionsValue, PROGRESS_FIELD_MAX_CHARS)
+    : "";
 
   if (reasoning && actions) {
     return `${reasoning}\n\n${actions}`;
@@ -151,6 +156,7 @@ export async function startEmbedPusher(params: {
 
   let responseQueue: string[] = [];
   let lastProgressHeartbeatAt = 0;
+  let lastStreamPushAt = 0;
 
   const syncToDiscord = async (content: string): Promise<boolean> => {
     const maxChunkLength = params.getMaxLength(false);
@@ -198,8 +204,11 @@ export async function startEmbedPusher(params: {
       const statsLineForChunk = !showStreamIndicator && isLast ? statsLine : null;
       const progressTitleForChunk = showStreamIndicator ? progressTitle : null;
       const reasoningValueForChunk = showStreamIndicator ? reasoningValue : null;
+      const nowMs = Date.now();
       const shouldForceProgressHeartbeat =
         heartbeatDue && showStreamIndicator && Boolean(progressTitleForChunk);
+      const shouldForceStreamPush =
+        showStreamIndicator && nowMs - lastStreamPushAt >= STREAM_MIN_PUSH_INTERVAL_MS;
       const actionsValueForChunk =
         showStreamIndicator && actionsLines.length > 0 ? buildActionsValue(actionsLines) : "";
 
@@ -232,8 +241,11 @@ export async function startEmbedPusher(params: {
         sentReasoning[i] = reasoningValueForChunk ?? "";
         sentActions[i] = actionsValueForChunk;
         sentStats[i] = statsLineForChunk ?? "";
+        if (showStreamIndicator) {
+          lastStreamPushAt = nowMs;
+        }
         if (showStreamIndicator && progressTitleForChunk) {
-          lastProgressHeartbeatAt = Date.now();
+          lastProgressHeartbeatAt = nowMs;
         }
         didUpdate = true;
         continue;
@@ -246,7 +258,8 @@ export async function startEmbedPusher(params: {
         sentReasoning[i] !== (reasoningValueForChunk ?? "") ||
         sentActions[i] !== actionsValueForChunk ||
         sentStats[i] !== (statsLineForChunk ?? "") ||
-        shouldForceProgressHeartbeat
+        shouldForceProgressHeartbeat ||
+        shouldForceStreamPush
       ) {
         await params.safeEdit(chunkMessages[i]!, {
           embeds: [emb],
@@ -258,8 +271,11 @@ export async function startEmbedPusher(params: {
         sentReasoning[i] = reasoningValueForChunk ?? "";
         sentActions[i] = actionsValueForChunk;
         sentStats[i] = statsLineForChunk ?? "";
+        if (showStreamIndicator) {
+          lastStreamPushAt = nowMs;
+        }
         if (showStreamIndicator && progressTitleForChunk) {
-          lastProgressHeartbeatAt = Date.now();
+          lastProgressHeartbeatAt = nowMs;
         }
         didUpdate = true;
       }
