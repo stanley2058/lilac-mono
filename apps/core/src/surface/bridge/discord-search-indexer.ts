@@ -1,5 +1,4 @@
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../adapter";
 import type { AdapterEvent } from "../events";
 import { DiscordSearchService } from "../store/discord-search-store";
@@ -8,8 +7,7 @@ export async function startDiscordSearchIndexer(params: {
   adapter: SurfaceAdapter;
   search: DiscordSearchService;
 }) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "surface:discord-search-indexer",
   });
 

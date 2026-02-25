@@ -5,8 +5,8 @@ import {
   type CmdRequestMessageData,
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
+import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type { WorkflowStoreQueries } from "./workflow-store-queries";
 import type { WorkflowStore } from "./workflow-store";
@@ -144,8 +144,7 @@ export async function startWorkflowScheduler(params: {
   subscriptionId: string;
   intervalMs?: number;
 }) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "workflow-scheduler",
   });
 

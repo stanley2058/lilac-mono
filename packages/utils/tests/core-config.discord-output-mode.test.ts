@@ -38,4 +38,17 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
 
     expect(parsed.surface.discord.outputNotification).toBe(true);
   });
+
+  it("accepts custom workingIndicators", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        discord: {
+          botName: "lilac",
+          workingIndicators: ["Planning", "Reading", "Tooling"],
+        },
+      },
+    });
+
+    expect(parsed.surface.discord.workingIndicators).toEqual(["Planning", "Reading", "Tooling"]);
+  });
 });

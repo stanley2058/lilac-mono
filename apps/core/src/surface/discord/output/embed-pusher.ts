@@ -7,16 +7,53 @@ export type SafeEdit = (msg: Message, options: Parameters<Message["edit"]>[0]) =
 
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
+const STREAM_MIN_PUSH_INTERVAL_MS = 500;
 const CLOSING_TAG_BUFFER = 10;
-const THINKING_HEARTBEAT_MS = 1_000;
+const PROGRESS_HEARTBEAT_MS = 1_000;
 
 const EMBED_COLOR_COMPLETE = Colors.Blue;
 const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
 
+const PROGRESS_FIELD_MAX_CHARS = 500;
+const PROGRESS_FIELD_TITLE_MAX_CHARS = 256;
+
+function clampWithEllipsis(text: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  if (maxChars === 1) return "…";
+  return `${text.slice(0, maxChars - 1)}…`;
+}
+
 function buildActionsValue(lines: readonly string[]): string {
   const max = 4;
   const clamped = lines.slice(-max);
-  return clamped.join("\n");
+  return clampWithEllipsis(clamped.join("\n"), PROGRESS_FIELD_MAX_CHARS);
+}
+
+function buildProgressFieldValue(input: {
+  reasoningValue?: string | null;
+  actionsValue?: string | null;
+}): string {
+  const reasoning = input.reasoningValue
+    ? clampWithEllipsis(input.reasoningValue, PROGRESS_FIELD_MAX_CHARS)
+    : "";
+  const actions = input.actionsValue
+    ? clampWithEllipsis(input.actionsValue, PROGRESS_FIELD_MAX_CHARS)
+    : "";
+
+  if (reasoning && actions) {
+    return `${reasoning}\n\n${actions}`;
+  }
+
+  if (reasoning) {
+    return reasoning;
+  }
+
+  if (actions) {
+    return actions;
+  }
+
+  return "\u200b";
 }
 
 function buildStatsValue(line: string): string {
@@ -30,8 +67,9 @@ function buildStatsValue(line: string): string {
 function buildEmbed(params: {
   description: string;
   color: number;
-  thinkingValue?: string | null;
-  actionsLines: readonly string[];
+  progressTitle?: string | null;
+  reasoningValue?: string | null;
+  actionsValue?: string | null;
   statsLine?: string | null;
   isStreaming: boolean;
 }): EmbedBuilder {
@@ -39,18 +77,15 @@ function buildEmbed(params: {
   emb.setDescription(params.description || "*<empty_string>*");
   emb.setColor(params.color);
 
-  if (params.isStreaming && params.thinkingValue) {
-    emb.addFields({
-      name: "Thinking",
-      value: params.thinkingValue,
-      inline: false,
+  if (params.isStreaming && params.progressTitle) {
+    const progressFieldValue = buildProgressFieldValue({
+      reasoningValue: params.reasoningValue,
+      actionsValue: params.actionsValue,
     });
-  }
 
-  if (params.isStreaming && params.actionsLines.length > 0) {
     emb.addFields({
-      name: "Actions",
-      value: buildActionsValue(params.actionsLines),
+      name: clampWithEllipsis(params.progressTitle, PROGRESS_FIELD_TITLE_MAX_CHARS),
+      value: progressFieldValue,
       inline: false,
     });
   }
@@ -85,8 +120,9 @@ export async function startEmbedPusher(params: {
   createFirst: (emb: EmbedBuilder) => Promise<Message>;
   createReply: (parent: Message, emb: EmbedBuilder) => Promise<Message>;
   getContent: () => string;
-  getThinkingValue?: () => string | null;
-  shouldHeartbeatThinking?: () => boolean;
+  getProgressTitle?: () => string | null;
+  getReasoningValue?: () => string | null;
+  shouldHeartbeatProgress?: () => boolean;
   getActionsLines: () => readonly string[];
   getStatsLine?: () => string | null;
   getMaxLength: (isStreaming: boolean) => number;
@@ -113,12 +149,14 @@ export async function startEmbedPusher(params: {
 
   const sentDescriptions: string[] = [];
   const sentColors: number[] = [];
-  const sentThinking: string[] = [];
+  const sentProgressTitle: string[] = [];
+  const sentReasoning: string[] = [];
   const sentActions: string[] = [];
   const sentStats: string[] = [];
 
   let responseQueue: string[] = [];
-  let lastThinkingHeartbeatAt = 0;
+  let lastProgressHeartbeatAt = 0;
+  let lastStreamPushAt = 0;
 
   const syncToDiscord = async (content: string): Promise<boolean> => {
     const maxChunkLength = params.getMaxLength(false);
@@ -130,17 +168,21 @@ export async function startEmbedPusher(params: {
       useSmartSplitting: params.useSmartSplitting,
     });
 
-    const thinkingValue = params.getThinkingValue?.() ?? null;
-    const shouldHeartbeatThinking = params.shouldHeartbeatThinking?.() ?? false;
+    const progressTitle = params.getProgressTitle?.() ?? null;
+    const reasoningValue = params.getReasoningValue?.() ?? null;
+    const shouldHeartbeatProgress = params.shouldHeartbeatProgress?.() ?? false;
     const heartbeatDue =
       streaming &&
-      shouldHeartbeatThinking &&
-      Date.now() - lastThinkingHeartbeatAt >= THINKING_HEARTBEAT_MS;
+      shouldHeartbeatProgress &&
+      Date.now() - lastProgressHeartbeatAt >= PROGRESS_HEARTBEAT_MS;
     const actionsLines = params.getActionsLines();
     const statsLine = params.getStatsLine?.() ?? null;
 
-    // Allow tool progress (Actions) / stats to render before any text is produced.
-    if (displayChunks.length === 0 && (!!thinkingValue || actionsLines.length > 0 || !!statsLine)) {
+    // Allow progress / stats to render before any text is produced.
+    if (
+      displayChunks.length === 0 &&
+      (!!progressTitle || !!reasoningValue || actionsLines.length > 0 || !!statsLine)
+    ) {
       displayChunks = [""];
     }
 
@@ -160,19 +202,22 @@ export async function startEmbedPusher(params: {
       const description = showStreamIndicator ? addStreamingIndicator(chunk) : chunk;
       const color = showStreamIndicator ? EMBED_COLOR_INCOMPLETE : EMBED_COLOR_COMPLETE;
       const statsLineForChunk = !showStreamIndicator && isLast ? statsLine : null;
-      const thinkingValueForChunk = showStreamIndicator ? thinkingValue : null;
-      const shouldForceThinkingHeartbeat =
-        heartbeatDue && showStreamIndicator && Boolean(thinkingValueForChunk);
-
-      // Only show actions while streaming. Once done, actions disappear.
-      const actionsValue =
+      const progressTitleForChunk = showStreamIndicator ? progressTitle : null;
+      const reasoningValueForChunk = showStreamIndicator ? reasoningValue : null;
+      const nowMs = Date.now();
+      const shouldForceProgressHeartbeat =
+        heartbeatDue && showStreamIndicator && Boolean(progressTitleForChunk);
+      const shouldForceStreamPush =
+        showStreamIndicator && nowMs - lastStreamPushAt >= STREAM_MIN_PUSH_INTERVAL_MS;
+      const actionsValueForChunk =
         showStreamIndicator && actionsLines.length > 0 ? buildActionsValue(actionsLines) : "";
 
       const emb = buildEmbed({
         description,
         color,
-        thinkingValue: thinkingValueForChunk,
-        actionsLines,
+        progressTitle: progressTitleForChunk,
+        reasoningValue: reasoningValueForChunk,
+        actionsValue: actionsValueForChunk,
         statsLine: statsLineForChunk,
         isStreaming: showStreamIndicator,
       });
@@ -192,11 +237,15 @@ export async function startEmbedPusher(params: {
         discordMessageCreated.push(msg.id);
         sentDescriptions[i] = description;
         sentColors[i] = color;
-        sentThinking[i] = thinkingValueForChunk ?? "";
-        sentActions[i] = actionsValue;
+        sentProgressTitle[i] = progressTitleForChunk ?? "";
+        sentReasoning[i] = reasoningValueForChunk ?? "";
+        sentActions[i] = actionsValueForChunk;
         sentStats[i] = statsLineForChunk ?? "";
-        if (showStreamIndicator && thinkingValueForChunk) {
-          lastThinkingHeartbeatAt = Date.now();
+        if (showStreamIndicator) {
+          lastStreamPushAt = nowMs;
+        }
+        if (showStreamIndicator && progressTitleForChunk) {
+          lastProgressHeartbeatAt = nowMs;
         }
         didUpdate = true;
         continue;
@@ -205,10 +254,12 @@ export async function startEmbedPusher(params: {
       if (
         sentDescriptions[i] !== description ||
         sentColors[i] !== color ||
-        sentThinking[i] !== (thinkingValueForChunk ?? "") ||
-        sentActions[i] !== actionsValue ||
+        sentProgressTitle[i] !== (progressTitleForChunk ?? "") ||
+        sentReasoning[i] !== (reasoningValueForChunk ?? "") ||
+        sentActions[i] !== actionsValueForChunk ||
         sentStats[i] !== (statsLineForChunk ?? "") ||
-        shouldForceThinkingHeartbeat
+        shouldForceProgressHeartbeat ||
+        shouldForceStreamPush
       ) {
         await params.safeEdit(chunkMessages[i]!, {
           embeds: [emb],
@@ -216,11 +267,15 @@ export async function startEmbedPusher(params: {
         });
         sentDescriptions[i] = description;
         sentColors[i] = color;
-        sentThinking[i] = thinkingValueForChunk ?? "";
-        sentActions[i] = actionsValue;
+        sentProgressTitle[i] = progressTitleForChunk ?? "";
+        sentReasoning[i] = reasoningValueForChunk ?? "";
+        sentActions[i] = actionsValueForChunk;
         sentStats[i] = statsLineForChunk ?? "";
-        if (showStreamIndicator && thinkingValueForChunk) {
-          lastThinkingHeartbeatAt = Date.now();
+        if (showStreamIndicator) {
+          lastStreamPushAt = nowMs;
+        }
+        if (showStreamIndicator && progressTitleForChunk) {
+          lastProgressHeartbeatAt = nowMs;
         }
         didUpdate = true;
       }

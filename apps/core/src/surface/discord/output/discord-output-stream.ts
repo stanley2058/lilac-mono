@@ -56,22 +56,32 @@ export function escapeDiscordMarkdown(text: string): string {
   return text.replace(/([\\*_`~|>[\]()])/g, "\\$1");
 }
 
+const PROGRESS_REASONING_MAX_CHARS = 500;
+const WORKING_INDICATOR_ROTATE_MIN_MS = 10_000;
+const WORKING_INDICATOR_ROTATE_MAX_MS = 30_000;
+const TASK_CHANGE_FORCE_ROTATE_MIN_WORD_AGE_MS = 5_000;
 const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
 const THINKING_SPINNER_TICK_MS = 250;
-const THINKING_DETAIL_MAX_CHARS = 512;
-const DISCORD_EMBED_FIELD_MAX_CHARS = 1024;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
 
 type DiscordOutputMode = "inline" | "preview";
 const NOTIFY_PARSE_USERS = ["users"] as const;
 
-export function clampReasoningDetail(text: string, maxChars = THINKING_DETAIL_MAX_CHARS): string {
+function clampWithEllipsis(text: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  if (maxChars === 1) return "…";
+  return `${text.slice(0, maxChars - 1)}…`;
+}
+
+export function clampReasoningDetail(
+  text: string,
+  maxChars = PROGRESS_REASONING_MAX_CHARS,
+): string {
   if (maxChars <= 0) return "";
 
   const normalized = text.replace(/\r\n?/g, "\n").trim();
-  if (normalized.length <= maxChars) return normalized;
-  if (maxChars === 1) return "…";
-  return `${normalized.slice(0, maxChars - 1)}…`;
+  return clampWithEllipsis(normalized, maxChars);
 }
 
 export function formatReasoningAsBlockquote(text: string): string {
@@ -82,44 +92,18 @@ export function formatReasoningAsBlockquote(text: string): string {
     .join("\n");
 }
 
-export function buildThinkingDisplay(input: {
+export function buildWorkingTitle(input: {
   nowMs: number;
   startedAtMs: number;
-  mode: "simple" | "detailed" | "none";
-  detailText?: string;
+  indicator: string;
 }): string {
   const elapsedMs = Math.max(0, input.nowMs - input.startedAtMs);
   const elapsedSec = Math.floor(elapsedMs / 1000);
   const frameIdx =
     Math.floor(elapsedMs / THINKING_SPINNER_TICK_MS) % THINKING_SPINNER_FRAMES.length;
   const spinner = THINKING_SPINNER_FRAMES[frameIdx] ?? THINKING_SPINNER_FRAMES[0];
-  const head = `${spinner} Thinking... ${elapsedSec}s`;
-
-  if (input.mode === "none") {
-    return "";
-  }
-
-  if (input.mode === "simple") {
-    return head;
-  }
-
-  const clamped = clampReasoningDetail(input.detailText ?? "");
-  if (!clamped) {
-    return head;
-  }
-
-  const maxDetailChars = Math.max(0, DISCORD_EMBED_FIELD_MAX_CHARS - head.length - 1);
-  if (maxDetailChars === 0) return head;
-
-  const blockquoted = formatReasoningAsBlockquote(clamped);
-  const safeDetail =
-    blockquoted.length <= maxDetailChars
-      ? blockquoted
-      : maxDetailChars === 1
-        ? "…"
-        : `${blockquoted.slice(0, maxDetailChars - 1)}…`;
-
-  return `${head}\n${safeDetail}`;
+  const indicator = input.indicator.trim().length > 0 ? input.indicator.trim() : "Working";
+  return `${spinner} ${indicator}... ${elapsedSec}s`;
 }
 
 function isBatchToolDisplay(display: string): boolean {
@@ -271,10 +255,16 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly transientPreviewRefs: MsgRef[] = [];
   private readonly transientPreviewRefKeys = new Set<string>();
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
+  private readonly requestStartedAtMs: number;
+  private readonly workingIndicators: readonly string[];
   private statsForNerdsLine: string | null = null;
-  private reasoningStartedAtMs: number | null = null;
+  private hasReasoningStatus = false;
   private reasoningDetailText = "";
-  private reasoningFrozenAtMs: number | null = null;
+  private activeWorkingIndicator = "";
+  private activeWorkingIndicatorSetAtMs = 0;
+  private nextWorkingIndicatorRotateAtMs = 0;
+  private latestTaskProgressKey: string | null = null;
+  private pendingTaskDrivenIndicatorChange = false;
 
   private textAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
@@ -298,8 +288,19 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       outputMode: DiscordOutputMode;
       outputNotification?: boolean;
       reasoningDisplayMode: "none" | "simple" | "detailed";
+      workingIndicators: readonly string[];
     },
   ) {
+    const startTs = this.deps.opts?.requestStartedAtMs;
+    this.requestStartedAtMs =
+      typeof startTs === "number" && Number.isFinite(startTs) ? Math.max(0, startTs) : Date.now();
+
+    const normalizedIndicators = this.deps.workingIndicators
+      .map((word) => word.trim())
+      .filter((word) => word.length > 0);
+
+    this.workingIndicators = normalizedIndicators.length > 0 ? normalizedIndicators : ["Working"];
+
     let resolveFn: (() => void) | null = null;
     const promise = new Promise<void>((resolve) => {
       resolveFn = resolve;
@@ -385,28 +386,94 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     await msg.delete().catch(() => undefined);
   }
 
-  private getThinkingValue(): string | null {
-    if (this.reasoningStartedAtMs === null) return null;
-    if (this.deps.reasoningDisplayMode === "none") return null;
+  private shouldShowProgressTitle(): boolean {
+    if (this.toolLines.length > 0) return true;
+    return this.deps.reasoningDisplayMode !== "none" && this.hasReasoningStatus;
+  }
 
-    const nowMs = this.reasoningFrozenAtMs ?? Date.now();
+  private scheduleNextWorkingIndicatorRotation(nowMs: number): void {
+    const spread = WORKING_INDICATOR_ROTATE_MAX_MS - WORKING_INDICATOR_ROTATE_MIN_MS;
+    const randomOffset = Math.floor(Math.random() * (spread + 1));
+    this.nextWorkingIndicatorRotateAtMs = nowMs + WORKING_INDICATOR_ROTATE_MIN_MS + randomOffset;
+  }
 
-    return buildThinkingDisplay({
+  private markTaskProgress(nextTaskKey: string): void {
+    if (this.latestTaskProgressKey === nextTaskKey) return;
+    this.latestTaskProgressKey = nextTaskKey;
+    this.pendingTaskDrivenIndicatorChange = true;
+  }
+
+  private rotateWorkingIndicator(nowMs: number): void {
+    this.activeWorkingIndicator = this.pickRandomWorkingIndicator(this.activeWorkingIndicator);
+    this.activeWorkingIndicatorSetAtMs = nowMs;
+    this.pendingTaskDrivenIndicatorChange = false;
+    this.scheduleNextWorkingIndicatorRotation(nowMs);
+  }
+
+  private pickRandomWorkingIndicator(previous?: string): string {
+    if (this.workingIndicators.length === 0) return "Working";
+    if (this.workingIndicators.length === 1) return this.workingIndicators[0] ?? "Working";
+
+    const choices = this.workingIndicators.filter((value) => value !== previous);
+    const pool = choices.length > 0 ? choices : this.workingIndicators;
+    const idx = Math.floor(Math.random() * pool.length);
+    return pool[idx] ?? this.workingIndicators[0] ?? "Working";
+  }
+
+  private getWorkingIndicator(nowMs: number): string {
+    if (this.activeWorkingIndicator.length === 0) {
+      this.activeWorkingIndicator = this.pickRandomWorkingIndicator();
+      this.activeWorkingIndicatorSetAtMs = nowMs;
+      this.pendingTaskDrivenIndicatorChange = false;
+      this.scheduleNextWorkingIndicatorRotation(nowMs);
+      return this.activeWorkingIndicator;
+    }
+
+    if (this.workingIndicators.length < 2) {
+      this.pendingTaskDrivenIndicatorChange = false;
+      return this.activeWorkingIndicator;
+    }
+
+    const workingIndicatorAgeMs = Math.max(0, nowMs - this.activeWorkingIndicatorSetAtMs);
+    const shouldForceRotateForTaskProgress =
+      this.pendingTaskDrivenIndicatorChange &&
+      workingIndicatorAgeMs >= TASK_CHANGE_FORCE_ROTATE_MIN_WORD_AGE_MS;
+
+    if (shouldForceRotateForTaskProgress) {
+      this.rotateWorkingIndicator(nowMs);
+      return this.activeWorkingIndicator;
+    }
+
+    if (this.nextWorkingIndicatorRotateAtMs > 0 && nowMs >= this.nextWorkingIndicatorRotateAtMs) {
+      this.rotateWorkingIndicator(nowMs);
+    }
+
+    return this.activeWorkingIndicator;
+  }
+
+  private getProgressTitle(): string | null {
+    if (!this.shouldShowProgressTitle()) return null;
+
+    const nowMs = Date.now();
+    const indicator = this.getWorkingIndicator(nowMs);
+    return buildWorkingTitle({
       nowMs,
-      startedAtMs: this.reasoningStartedAtMs,
-      mode: this.deps.reasoningDisplayMode,
-      detailText: this.reasoningDetailText,
+      startedAtMs: this.requestStartedAtMs,
+      indicator,
     });
   }
 
-  private freezeReasoningTimerIfNeeded(): void {
-    if (this.reasoningStartedAtMs === null) return;
-    if (this.reasoningFrozenAtMs !== null) return;
-    this.reasoningFrozenAtMs = Date.now();
+  private getReasoningValue(): string | null {
+    if (this.deps.reasoningDisplayMode !== "detailed") return null;
+
+    const clamped = clampReasoningDetail(this.reasoningDetailText, PROGRESS_REASONING_MAX_CHARS);
+    if (!clamped) return null;
+
+    return clampWithEllipsis(formatReasoningAsBlockquote(clamped), PROGRESS_REASONING_MAX_CHARS);
   }
 
-  private isReasoningTimerLive(): boolean {
-    return this.reasoningStartedAtMs !== null && this.reasoningFrozenAtMs === null;
+  private isProgressTimerLive(): boolean {
+    return this.shouldShowProgressTitle();
   }
 
   private async ensureStarted(): Promise<void> {
@@ -499,7 +566,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (
       this.textAcc.length === 0 &&
       this.toolLines.length === 0 &&
-      this.reasoningStartedAtMs === null &&
+      !this.hasReasoningStatus &&
       this.statsForNerdsLine === null
     ) {
       this.lastMsg = first;
@@ -547,8 +614,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           return msg;
         },
         getContent: () => this.getStreamingDisplayText(),
-        getThinkingValue: () => this.getThinkingValue(),
-        shouldHeartbeatThinking: () => this.isReasoningTimerLive(),
+        getProgressTitle: () => this.getProgressTitle(),
+        getReasoningValue: () => this.getReasoningValue(),
+        shouldHeartbeatProgress: () => this.isProgressTimerLive(),
         getActionsLines: () =>
           clampLast(
             this.toolLines.map((t) => t.line),
@@ -598,12 +666,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     switch (part.type) {
       case "text.delta":
         this.textAcc += part.delta;
-        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "text.set":
         this.textAcc = part.text;
-        this.freezeReasoningTimerIfNeeded();
         await this.ensureStarted();
         return;
       case "meta.stats":
@@ -614,19 +680,19 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         if (this.deps.reasoningDisplayMode === "none") {
           return;
         }
-        this.reasoningStartedAtMs ??= Math.max(0, part.update.startedAtMs);
-        if (typeof part.update.frozenAtMs === "number" && Number.isFinite(part.update.frozenAtMs)) {
-          this.reasoningFrozenAtMs = Math.max(0, part.update.frozenAtMs);
+        if (!this.hasReasoningStatus) {
+          this.markTaskProgress("reasoning");
         }
+        this.hasReasoningStatus = true;
         this.reasoningDetailText = part.update.detailText ?? "";
-        if (this.textAcc.length > 0 && this.reasoningFrozenAtMs === null) {
-          this.freezeReasoningTimerIfNeeded();
-        }
         await this.ensureStarted();
         return;
       }
       case "tool.status": {
         const line = buildToolLine(part.update);
+        if (part.update.status === "start") {
+          this.markTaskProgress(`tool:${part.update.toolCallId}`);
+        }
         const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
         if (idx >= 0) {
           this.toolLines[idx] = { toolCallId: part.update.toolCallId, line };
@@ -908,6 +974,7 @@ export async function sendDiscordStyledMessage(params: {
     outputMode: "inline",
     outputNotification: params.outputNotification,
     reasoningDisplayMode: "none",
+    workingIndicators: ["Working"],
   });
 
   for (const a of attachments) {

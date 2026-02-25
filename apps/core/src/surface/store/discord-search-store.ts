@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 import {
   type SurfaceCacheBurstProvider,
   type SurfaceAdapter,
@@ -296,8 +295,7 @@ function hasBurstCache(
 }
 
 export class DiscordSearchService {
-  private readonly logger = new Logger({
-    logLevel: resolveLogLevel(),
+  private readonly logger = createLogger({
     module: "surface:discord-search",
   });
 

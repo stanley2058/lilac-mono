@@ -1,7 +1,7 @@
 import { lilacEventTypes, outReqTopic, type LilacBus } from "@stanley2058/lilac-event-bus";
 
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger, env } from "@stanley2058/lilac-utils";
+import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type {
   SurfaceFinalTextMode,
@@ -177,6 +177,7 @@ export type BusToAdapterRelaySnapshot = {
   sessionId: string;
   requestClient?: string;
   platform: "discord" | "github";
+  requestStartedAtMs?: number;
   routerSessionMode?: "mention" | "active";
   replyTo?: MsgRef;
   createdOutputRefs: MsgRef[];
@@ -232,8 +233,7 @@ export async function bridgeBusToAdapter(params: {
   idleTimeoutMs?: number;
   transcriptStore?: TranscriptStore;
 }) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "bridge:bus-to-adapter",
   });
 
@@ -525,6 +525,7 @@ export async function bridgeBusToAdapter(params: {
         platform,
         requestId,
         sessionId,
+        requestStartedAtMs: msg.ts,
         routerSessionMode,
         requestClient,
         idleTimeoutMs,
@@ -553,6 +554,7 @@ export async function bridgeBusToAdapter(params: {
     platform: "discord" | "github";
     requestId: string;
     sessionId: string;
+    requestStartedAtMs?: number;
     routerSessionMode?: "mention" | "active";
     requestClient?: string;
     idleTimeoutMs: number;
@@ -561,6 +563,10 @@ export async function bridgeBusToAdapter(params: {
     const { requestId, sessionId, idleTimeoutMs } = input;
 
     const relayStartedAt = Date.now();
+    const requestStartedAtMs = Math.max(
+      0,
+      input.restore?.requestStartedAtMs ?? input.requestStartedAtMs ?? relayStartedAt,
+    );
 
     const sessionRef: SessionRef =
       platform === "discord"
@@ -658,6 +664,7 @@ export async function bridgeBusToAdapter(params: {
       const startOpts: StartOutputOpts = {
         replyTo: overrideReplyTo,
         requestId,
+        requestStartedAtMs,
         onMessageCreated: publishCreatedForToken(token),
         ...(useResumeOpts
           ? {
@@ -1207,6 +1214,7 @@ export async function bridgeBusToAdapter(params: {
         sessionId,
         requestClient: input.requestClient,
         platform: input.platform,
+        requestStartedAtMs,
         routerSessionMode: input.routerSessionMode,
         replyTo: currentReplyTo,
         createdOutputRefs: createdOutputRefs.slice(),

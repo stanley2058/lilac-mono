@@ -1,10 +1,8 @@
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 
 import { createCoreRuntime } from "./create-core-runtime";
 
-const logger = new Logger({
-  logLevel: resolveLogLevel(),
+const logger = createLogger({
   module: "core-main",
 });
 

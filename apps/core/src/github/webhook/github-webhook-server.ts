@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import Elysia from "elysia";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import { lilacEventTypes } from "@stanley2058/lilac-event-bus";
-import { env, resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger, env } from "@stanley2058/lilac-utils";
+import type { Logger } from "@stanley2058/simple-module-logger";
 import type { ModelMessage } from "ai";
 
 import {
@@ -195,9 +195,8 @@ function newGithubRequestId(input: {
 export async function startGithubWebhookServer(options: GithubWebhookOptions): Promise<{
   stop(): Promise<void>;
 }> {
-  const logger = new Logger({
+  const logger = createLogger({
     module: "github:webhook",
-    logLevel: resolveLogLevel(),
   });
 
   // Only start when configured.

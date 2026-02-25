@@ -1,14 +1,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 import { requireRequestContext } from "../../shared/req-context";
 
 export function workflowTool(params: { bus: LilacBus }) {
   const { bus } = params;
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "tool:workflow",
   });
 

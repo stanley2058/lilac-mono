@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Logger } from "@stanley2058/simple-module-logger";
+import type { Logger } from "@stanley2058/simple-module-logger";
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
@@ -7,7 +7,7 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
-import { env, getCoreConfig, resolveLogLevel } from "@stanley2058/lilac-utils";
+import { createLogger, env, getCoreConfig } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 
@@ -65,8 +65,7 @@ export class Web implements ServerTool {
   private logger: Logger;
 
   constructor() {
-    this.logger = new Logger({
-      logLevel: resolveLogLevel(),
+    this.logger = createLogger({
       module: "server-tool:web",
     });
   }

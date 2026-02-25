@@ -65,6 +65,12 @@ surface:
     # for final output messages. Default is disabled.
     # outputNotification: true
 
+    # Streaming embed title phrases for in-progress updates.
+    # A random entry is selected and rotated periodically while the request is running.
+    # Keep this as a list so larger built-in banks can be managed as data.
+    workingIndicators:
+      - "Working"
+
 agent:
   # Optional: include token/model timing stats in final response metadata.
   #
@@ -74,9 +80,9 @@ agent:
   statsForNerds: false
 
   # Discord-only streaming thinking display lane.
-  # - none: disable thinking lane
-  # - simple: spinner + elapsed time only
-  # - detailed: spinner + elapsed + collapsed reasoning tail (120 chars)
+  # - none: hide reasoning lane content
+  # - simple: show only the working title + elapsed request timer
+  # - detailed: also show blockquoted reasoning content (clamped to 500 chars)
   reasoningDisplay: simple
 
   subagents:

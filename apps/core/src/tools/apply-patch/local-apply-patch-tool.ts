@@ -1,7 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { resolveLogLevel } from "@stanley2058/lilac-utils";
-import { Logger } from "@stanley2058/simple-module-logger";
+import { createLogger } from "@stanley2058/lilac-utils";
 
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import { applyHunks, parsePatch } from "./apply-patch-core";
@@ -59,8 +58,7 @@ type ToolContext = {
 export { parsePatch };
 
 export function localApplyPatchTool(defaultCwd: string) {
-  const logger = new Logger({
-    logLevel: resolveLogLevel(),
+  const logger = createLogger({
     module: "tool:apply_patch",
   });
 

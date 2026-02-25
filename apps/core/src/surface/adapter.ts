@@ -69,6 +69,8 @@ export type StartOutputOpts = {
   sessionMode?: "mention" | "active";
   /** Request id for this stream (used for surface controls like Cancel buttons). */
   requestId?: string;
+  /** Request lifetime start timestamp used by streaming progress UIs. */
+  requestStartedAtMs?: number;
   /** Optional hook invoked when the surface creates a message for this stream. */
   onMessageCreated?: (msgRef: MsgRef) => void;
   /** Optional resume metadata used to continue editing an existing output chain. */
