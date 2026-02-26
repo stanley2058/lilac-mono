@@ -178,6 +178,23 @@ function msgRefKey(ref: MsgRef): string {
   return `${ref.platform}:${ref.channelId}:${ref.messageId}`;
 }
 
+function createWorkingIndicatorQueue(indicators: readonly string[]): string[] {
+  if (indicators.length <= 1) return [...indicators];
+
+  const queue = [...indicators];
+
+  for (let i = queue.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const atI = queue[i];
+    const atJ = queue[j];
+    if (atI === undefined || atJ === undefined) continue;
+    queue[i] = atJ;
+    queue[j] = atI;
+  }
+
+  return queue;
+}
+
 function buildFinalStatsFieldValue(line: string): string {
   const wrapped = line.startsWith("*") && line.endsWith("*") ? line : `*${line}*`;
   const maxLength = 1024;
@@ -257,6 +274,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
   private readonly requestStartedAtMs: number;
   private readonly workingIndicators: readonly string[];
+  private readonly workingIndicatorQueue: string[];
   private statsForNerdsLine: string | null = null;
   private hasReasoningStatus = false;
   private reasoningDetailText = "";
@@ -300,6 +318,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       .filter((word) => word.length > 0);
 
     this.workingIndicators = normalizedIndicators.length > 0 ? normalizedIndicators : ["Working"];
+    this.workingIndicatorQueue = createWorkingIndicatorQueue(this.workingIndicators);
 
     let resolveFn: (() => void) | null = null;
     const promise = new Promise<void>((resolve) => {
@@ -411,13 +430,25 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   }
 
   private pickRandomWorkingIndicator(previous?: string): string {
-    if (this.workingIndicators.length === 0) return "Working";
-    if (this.workingIndicators.length === 1) return this.workingIndicators[0] ?? "Working";
+    if (this.workingIndicatorQueue.length === 0) return "Working";
+    if (this.workingIndicatorQueue.length === 1) {
+      return this.workingIndicatorQueue[0] ?? "Working";
+    }
 
-    const choices = this.workingIndicators.filter((value) => value !== previous);
-    const pool = choices.length > 0 ? choices : this.workingIndicators;
-    const idx = Math.floor(Math.random() * pool.length);
-    return pool[idx] ?? this.workingIndicators[0] ?? "Working";
+    const next = this.workingIndicatorQueue.shift();
+    if (!next) return this.workingIndicators[0] ?? "Working";
+
+    if (previous && next === previous) {
+      const alternate = this.workingIndicatorQueue.shift();
+      if (alternate) {
+        this.workingIndicatorQueue.push(next);
+        this.workingIndicatorQueue.push(alternate);
+        return alternate;
+      }
+    }
+
+    this.workingIndicatorQueue.push(next);
+    return next;
   }
 
   private getWorkingIndicator(nowMs: number): string {
