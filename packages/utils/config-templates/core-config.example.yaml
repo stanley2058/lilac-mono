@@ -68,8 +68,8 @@ surface:
     # Streaming embed title phrases for in-progress updates.
     # A random entry is selected and rotated periodically while the request is running.
     # Keep this as a list so larger built-in banks can be managed as data.
-    workingIndicators:
-      - "Working"
+    # workingIndicators:
+    #   - "Working"
 
     # Experimental Discord-only output features.
     experimental:
