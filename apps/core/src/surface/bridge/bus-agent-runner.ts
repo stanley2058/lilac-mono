@@ -54,6 +54,16 @@ import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
+import { buildSystemPromptForProfile } from "./bus-agent-runner/subagent-prompt";
+import {
+  parseBufferedForActiveRequestIdFromRaw,
+  parseRequestControlFromRaw,
+  parseRequestModelOverrideFromRaw,
+  parseRouterSessionModeFromRaw,
+  parseSessionConfigIdFromRaw,
+  parseSubagentMetaFromRaw,
+  requestRawReferencesMessage,
+} from "./bus-agent-runner/raw";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -930,61 +940,6 @@ class RestartDrainingAbort extends Error {
   }
 }
 
-function parseRouterSessionModeFromRaw(raw: unknown): "mention" | "active" | null {
-  if (!raw || typeof raw !== "object") return null;
-  const v = (raw as Record<string, unknown>)["sessionMode"];
-  if (v === "mention" || v === "active") return v;
-  return null;
-}
-
-function parseSessionConfigIdFromRaw(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object") return null;
-  const value = (raw as Record<string, unknown>)["sessionConfigId"];
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function parseRequestModelOverrideFromRaw(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object") return null;
-  const value = (raw as Record<string, unknown>)["modelOverride"];
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function parseRequestControlFromRaw(raw: unknown): {
-  requiresActive: boolean;
-  cancel: boolean;
-  cancelQueued: boolean;
-  targetMessageId: string | null;
-} {
-  if (!raw || typeof raw !== "object") {
-    return {
-      requiresActive: false,
-      cancel: false,
-      cancelQueued: false,
-      targetMessageId: null,
-    };
-  }
-
-  const record = raw as Record<string, unknown>;
-  return {
-    requiresActive: record["requiresActive"] === true,
-    cancel: record["cancel"] === true,
-    cancelQueued: record["cancelQueued"] === true,
-    targetMessageId: typeof record["messageId"] === "string" ? record["messageId"] : null,
-  };
-}
-
-function parseBufferedForActiveRequestIdFromRaw(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object") return null;
-  const value = (raw as Record<string, unknown>)["bufferedForActiveRequestId"];
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function isCancelControlEntry(entry: Enqueued): boolean {
   const raw = entry.raw;
   if (!raw || typeof raw !== "object") return false;
@@ -1056,27 +1011,6 @@ async function publishAbsorbedQueuedPromptCancelled(input: {
   }
 }
 
-function getChainMessageIdsFromRaw(raw: unknown): readonly string[] {
-  if (!raw || typeof raw !== "object") return [];
-  const value = (raw as Record<string, unknown>)["chainMessageIds"];
-  if (!Array.isArray(value)) return [];
-  return value.filter((id): id is string => typeof id === "string");
-}
-
-function requestRawReferencesMessage(raw: unknown, messageId: string): boolean {
-  return getChainMessageIdsFromRaw(raw).includes(messageId);
-}
-
-const SUBAGENT_PROFILES = ["explore", "general", "self"] as const;
-
-type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
-type AgentRunProfile = "primary" | SubagentProfile;
-
-type ParsedSubagentMeta = {
-  profile: AgentRunProfile;
-  depth: number;
-};
-
 type SubagentConfig = NonNullable<CoreConfig["agent"]["subagents"]>;
 
 const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
@@ -1096,145 +1030,6 @@ const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
     },
   },
 };
-
-function isSubagentProfile(value: unknown): value is SubagentProfile {
-  return typeof value === "string" && (SUBAGENT_PROFILES as readonly string[]).includes(value);
-}
-
-function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
-  if (!raw || typeof raw !== "object") {
-    return { profile: "primary", depth: 0 };
-  }
-
-  const subagent = (raw as Record<string, unknown>)["subagent"];
-  if (!subagent || typeof subagent !== "object") {
-    return { profile: "primary", depth: 0 };
-  }
-
-  const o = subagent as Record<string, unknown>;
-
-  const rawProfile = o["profile"];
-  const profile: AgentRunProfile = isSubagentProfile(rawProfile) ? rawProfile : "primary";
-
-  const depthRaw = o["depth"];
-  const defaultDepth = profile === "primary" ? 0 : 1;
-  const depth =
-    typeof depthRaw === "number" && Number.isFinite(depthRaw)
-      ? Math.max(0, Math.trunc(depthRaw))
-      : defaultDepth;
-
-  return { profile, depth };
-}
-
-function buildExploreOverlay(extra?: string): string {
-  const lines = [
-    "You are running in explore subagent mode.",
-    "Focus on repository exploration and evidence-backed findings.",
-    "Treat the delegated user message as the full task input.",
-    "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
-    "Do not use bash.",
-    "Do not edit files.",
-    "Do not delegate to another subagent.",
-  ];
-
-  if (extra && extra.trim().length > 0) {
-    lines.push(extra.trim());
-  }
-
-  return lines.join("\n");
-}
-
-function buildGeneralOverlay(extra?: string): string {
-  const lines = [
-    "You are running in general subagent mode.",
-    "Focus on completing the delegated task end-to-end.",
-    "Treat the delegated user message as the full task input.",
-    "Use available tools directly, including edits and bash when needed.",
-    "Prefer parallel tool usage when calls are independent.",
-    "Do not delegate to another subagent.",
-  ];
-
-  if (extra && extra.trim().length > 0) {
-    lines.push(extra.trim());
-  }
-
-  return lines.join("\n");
-}
-
-function buildSelfOverlay(extra?: string): string {
-  const lines = [
-    "You are running in self subagent mode.",
-    "Focus on completing the delegated task in a fresh context window.",
-    "Treat the delegated user message as the full task input.",
-    "Use available tools directly, including edits and bash when needed.",
-    "Prefer parallel tool usage when calls are independent.",
-  ];
-
-  if (extra && extra.trim().length > 0) {
-    lines.push(extra.trim());
-  }
-
-  return lines.join("\n");
-}
-
-function buildOverlayForProfile(params: {
-  profile: SubagentProfile;
-  exploreOverlay?: string;
-  generalOverlay?: string;
-  selfOverlay?: string;
-}): string {
-  if (params.profile === "general") {
-    return buildGeneralOverlay(params.generalOverlay);
-  }
-  if (params.profile === "self") {
-    return buildSelfOverlay(params.selfOverlay);
-  }
-  return buildExploreOverlay(params.exploreOverlay);
-}
-
-function subagentModeTitle(profile: SubagentProfile): string {
-  if (profile === "general") return "General";
-  if (profile === "self") return "Self";
-  return "Explore";
-}
-
-function buildSystemPromptForProfile(params: {
-  baseSystemPrompt: string;
-  profile: AgentRunProfile;
-  exploreOverlay?: string;
-  generalOverlay?: string;
-  selfOverlay?: string;
-  skillsSection?: string | null;
-  activeEditingTool?: "apply_patch" | "edit_file" | null;
-}): string {
-  if (params.profile === "primary") {
-    const parts = [params.baseSystemPrompt];
-    if (params.skillsSection && params.skillsSection.trim().length > 0) {
-      parts.push(params.skillsSection.trim());
-    }
-    return parts.join("\n\n");
-  }
-
-  const baseParts = [params.baseSystemPrompt];
-  if (params.skillsSection && params.skillsSection.trim().length > 0) {
-    baseParts.push(params.skillsSection.trim());
-  }
-
-  const overlay = buildOverlayForProfile({
-    profile: params.profile,
-    exploreOverlay: params.exploreOverlay,
-    generalOverlay: params.generalOverlay,
-    selfOverlay: params.selfOverlay,
-  });
-
-  if (overlay.trim().length === 0) {
-    return baseParts.join("\n\n");
-  }
-
-  return [...baseParts, "", `## Subagent Mode: ${subagentModeTitle(params.profile)}`, overlay].join(
-    "\n",
-  );
-}
 
 export type SessionAdditionalPromptWarning = {
   reason: "invalid_file_url" | "read_failed";
