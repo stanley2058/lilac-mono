@@ -6,11 +6,13 @@ import { pathToFileURL } from "node:url";
 
 import {
   appendAdditionalSessionMemoBlock,
+  mergeToSingleUserMessage,
   resolveSessionAdditionalPrompts,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
+import type { ModelMessage } from "ai";
 
 describe("toOpenAIPromptCacheKey", () => {
   it("returns the session id when it fits provider limits", () => {
@@ -218,5 +220,76 @@ describe("withBlankLineBetweenTextParts", () => {
     });
 
     expect(out).toBe("Fresh reply.");
+  });
+});
+
+describe("mergeToSingleUserMessage", () => {
+  it("keeps all user text when merging plain-text messages", () => {
+    const out = mergeToSingleUserMessage([
+      { role: "user", content: "B one" },
+      { role: "assistant", content: "ignored" },
+      { role: "user", content: "C two" },
+      { role: "user", content: "D steer" },
+    ] satisfies ModelMessage[]);
+
+    expect(out.role).toBe("user");
+    expect(typeof out.content).toBe("string");
+    expect(out.content).toContain("B one");
+    expect(out.content).toContain("C two");
+    expect(out.content).toContain("D steer");
+  });
+
+  it("preserves buffered multipart content and steering text in one merged user message", () => {
+    const out = mergeToSingleUserMessage([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "B with image" },
+          { type: "image", image: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+        ],
+      },
+      { role: "user", content: "D steer" },
+    ] satisfies ModelMessage[]);
+
+    expect(out.role).toBe("user");
+    expect(Array.isArray(out.content)).toBe(true);
+    expect(
+      Array.isArray(out.content) &&
+        out.content.some((part) => part.type === "text" && part.text.includes("B with image")),
+    ).toBe(true);
+    expect(
+      Array.isArray(out.content) &&
+        out.content.some((part) => part.type === "text" && part.text.includes("D steer")),
+    ).toBe(true);
+    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "image")).toBe(
+      true,
+    );
+  });
+
+  it("preserves steering multipart content and buffered text in one merged user message", () => {
+    const out = mergeToSingleUserMessage([
+      { role: "user", content: "B one" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "D interrupt with image" },
+          { type: "image", image: new Uint8Array([7, 8]), mediaType: "image/jpeg" },
+        ],
+      },
+    ] satisfies ModelMessage[]);
+
+    expect(out.role).toBe("user");
+    expect(Array.isArray(out.content)).toBe(true);
+    expect(
+      Array.isArray(out.content) &&
+        out.content.some((part) => part.type === "text" && part.text.includes("B one")),
+    ).toBe(true);
+    expect(
+      Array.isArray(out.content) &&
+        out.content.some((part) => part.type === "text" && part.text.includes("D interrupt")),
+    ).toBe(true);
+    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "image")).toBe(
+      true,
+    );
   });
 });

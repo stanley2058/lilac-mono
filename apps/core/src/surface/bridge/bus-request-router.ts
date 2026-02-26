@@ -198,6 +198,10 @@ function randomRequestId(): string {
   return `req:${crypto.randomUUID()}`;
 }
 
+function bufferedPromptRequestIdForActiveRequest(activeRequestId: string): string {
+  return `queued:${activeRequestId}`;
+}
+
 function parseDiscordMsgRefFromAdapterEvent(data: {
   platform: string;
   channelId: string;
@@ -1474,16 +1478,16 @@ export async function startBusRequestRouter(params: {
         return;
       }
 
-      await publishSingleMessageToActiveRequest({
+      await publishSingleMessagePrompt({
         adapter,
         bus,
         cfg,
-        requestId: active.requestId,
+        requestId: bufferedPromptRequestIdForActiveRequest(active.requestId),
         sessionId,
-        queue: "followUp",
+        sessionConfigId,
         msgRef,
         sessionMode,
-        sessionConfigId,
+        modelOverride,
         transformUserText: requestModelOverride
           ? (text: string) =>
               stripLeadingModelOverrideDirective({
@@ -1491,6 +1495,9 @@ export async function startBusRequestRouter(params: {
                 botNames: botMentionNames,
               })
           : undefined,
+        raw: {
+          bufferedForActiveRequestId: active.requestId,
+        },
       });
       return;
     }
@@ -1501,9 +1508,9 @@ export async function startBusRequestRouter(params: {
       // Discard any pending buffer to avoid a second gated request for the same context.
       clearDebounceBuffer(sessionId);
 
-      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
-
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
+      const requestId =
+        triggerType === "reply" ? `discord:${sessionId}:${msgRef.messageId}` : randomRequestId();
 
       await publishActiveChannelPrompt({
         adapter,
@@ -2177,6 +2184,52 @@ export async function startBusRequestRouter(params: {
       messages: [msg],
       raw: {
         triggerType: "active",
+      },
+    });
+  }
+
+  async function publishSingleMessagePrompt(input: {
+    adapter: SurfaceAdapter;
+    bus: LilacBus;
+    cfg: CoreConfig;
+    requestId: string;
+    sessionId: string;
+    sessionConfigId: string;
+    msgRef: MsgRef;
+    sessionMode: SessionMode;
+    modelOverride?: string;
+    transformUserText?: (text: string) => string;
+    raw?: Record<string, unknown>;
+  }) {
+    const { adapter, cfg, requestId, sessionId, msgRef } = input;
+
+    const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
+
+    const msg = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: self.userId,
+      botName: cfg.surface.discord.botName,
+      msgRef,
+      discordUserAliasById,
+      transformUserText: input.transformUserText,
+    });
+
+    if (!msg) return;
+
+    await publishBusRequest({
+      requestId,
+      sessionId,
+      sessionConfigId: input.sessionConfigId,
+      queue: "prompt",
+      triggerType: "active",
+      sessionMode: input.sessionMode,
+      modelOverride: input.modelOverride,
+      messages: [msg],
+      raw: {
+        triggerType: "active",
+        chainMessageIds: [msgRef.messageId],
+        ...input.raw,
       },
     });
   }
