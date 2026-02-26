@@ -20,6 +20,7 @@ import type {
   SurfaceToolStatusUpdate,
 } from "../../adapter";
 import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../types";
+import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-renderer";
 
 // NOTE: We currently only guarantee "images on same message" when the attachments are
 // known before the first outbound send. Attaching files to an existing Discord message
@@ -27,6 +28,7 @@ import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../t
 
 import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
+import { renderMarkdownTablesAsCodeBlocks } from "../../../shared/markdown-table-renderer";
 import { buildCancelCustomId } from "../discord-cancel";
 
 function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
@@ -295,6 +297,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
   private running: Promise<void> | null = null;
   private usedEmbedPusher = false;
+  private renderedTextCacheInput: string | null = null;
+  private renderedTextCacheOutput = "";
 
   constructor(
     private readonly deps: {
@@ -303,6 +307,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       opts?: StartOutputOpts;
       useSmartSplitting: boolean;
       rewriteText?: (text: string) => string;
+      markdownTableRender?: MarkdownTableRenderOptions;
       outputMode: DiscordOutputMode;
       outputNotification?: boolean;
       reasoningDisplayMode: "none" | "simple" | "detailed";
@@ -354,8 +359,21 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   }
 
   private getRenderedText(): string {
+    if (this.renderedTextCacheInput === this.textAcc) {
+      return this.renderedTextCacheOutput;
+    }
+
     const rewrite = this.deps.rewriteText;
-    return rewrite ? rewrite(this.textAcc) : this.textAcc;
+    let rendered = rewrite ? rewrite(this.textAcc) : this.textAcc;
+
+    const tableRender = this.deps.markdownTableRender;
+    if (tableRender) {
+      rendered = renderMarkdownTablesAsCodeBlocks(rendered, tableRender);
+    }
+
+    this.renderedTextCacheInput = this.textAcc;
+    this.renderedTextCacheOutput = rendered;
+    return rendered;
   }
 
   private getStreamingDisplayText(): string {
@@ -993,6 +1011,7 @@ export async function sendDiscordStyledMessage(params: {
   opts?: StartOutputOpts;
   useSmartSplitting: boolean;
   rewriteText?: (text: string) => string;
+  markdownTableRender?: MarkdownTableRenderOptions;
   outputNotification?: boolean;
 }): Promise<MsgRef> {
   const { text, attachments } = normalizeContent(params.content);
@@ -1002,6 +1021,7 @@ export async function sendDiscordStyledMessage(params: {
     opts: params.opts,
     useSmartSplitting: params.useSmartSplitting,
     rewriteText: params.rewriteText,
+    markdownTableRender: params.markdownTableRender,
     outputMode: "inline",
     outputNotification: params.outputNotification,
     reasoningDisplayMode: "none",

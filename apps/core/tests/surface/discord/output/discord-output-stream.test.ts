@@ -136,6 +136,62 @@ describe("preview reanchor behavior", () => {
   });
 });
 
+describe("experimental markdown table rendering", () => {
+  const markdownTable = [
+    "| Name | Score |",
+    "| --- | ---: |",
+    "| Alice | 10 |",
+    "| Bob | 200 |",
+  ].join("\n");
+
+  function getRenderedText(stream: DiscordOutputStream): string {
+    const method = Reflect.get(stream as object, "getRenderedText");
+    if (typeof method !== "function") {
+      throw new Error("getRenderedText is unavailable");
+    }
+    return method.call(stream) as string;
+  }
+
+  it("rewrites markdown tables into fixed-width blocks when enabled", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+      markdownTableRender: {
+        style: "unicode",
+        maxWidth: 40,
+      },
+    });
+
+    Reflect.set(out as object, "textAcc", markdownTable);
+
+    const rendered = getRenderedText(out);
+    expect(rendered).toContain("```text");
+    expect(rendered).toContain("┌");
+  });
+
+  it("leaves markdown table text untouched when disabled", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    Reflect.set(out as object, "textAcc", markdownTable);
+
+    const rendered = getRenderedText(out);
+    expect(rendered).toBe(markdownTable);
+  });
+});
+
 describe("reasoning display helpers", () => {
   it("clamps long reasoning output and preserves leading content", () => {
     expect(clampReasoningDetail("0123456789", 4)).toBe("012…");

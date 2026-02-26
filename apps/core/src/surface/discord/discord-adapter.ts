@@ -60,6 +60,7 @@ import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
+import type { MarkdownTableRenderOptions } from "../../shared/markdown-table-renderer";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
@@ -81,6 +82,21 @@ function asDiscordSessionRef(input: {
 
 function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
   return { platform: "discord", channelId, messageId };
+}
+
+function resolveMarkdownTableRenderOptions(
+  cfg: CoreConfig | null | undefined,
+): MarkdownTableRenderOptions | undefined {
+  const tableRender = cfg?.surface.discord.experimental?.markdownTableRender;
+  if (!tableRender || tableRender.enabled !== true) {
+    return undefined;
+  }
+
+  return {
+    style: tableRender.style ?? "unicode",
+    maxWidth: tableRender.maxWidth ?? 80,
+    fallbackMode: tableRender.fallbackMode ?? "list",
+  };
 }
 
 function getChannelName<T extends { isDMBased?: () => boolean } | { name?: string }>(
@@ -757,6 +773,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const cfg = this.cfg;
     const client = this.mustClient();
     if (!cfg) throw new Error("DiscordAdapter not connected");
+    const markdownTableRender = resolveMarkdownTableRenderOptions(cfg);
 
     // TODO: plumb config for smart splitting.
     const useSmartSplitting = true;
@@ -767,6 +784,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       opts,
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
+      markdownTableRender,
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       outputMode: cfg.surface.discord.outputMode ?? "inline",
       outputNotification: cfg.surface.discord.outputNotification === true,
@@ -837,6 +855,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const cfg = this.cfg;
     const client = this.mustClient();
     if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
+    const markdownTableRender = resolveMarkdownTableRenderOptions(cfg);
 
     const useSmartSplitting = true;
 
@@ -847,6 +866,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       opts: opts?.replyTo ? { replyTo: opts.replyTo } : undefined,
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
+      markdownTableRender,
       outputNotification: cfg?.surface.discord.outputNotification === true,
     });
   }

@@ -51,4 +51,40 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
 
     expect(parsed.surface.discord.workingIndicators).toEqual(["Planning", "Reading", "Tooling"]);
   });
+
+  it("defaults markdown table render experiment to disabled unicode@80", () => {
+    const parsed = coreConfigSchema.parse({});
+
+    expect(parsed.surface.discord.experimental.markdownTableRender).toEqual({
+      enabled: false,
+      style: "unicode",
+      maxWidth: 80,
+      fallbackMode: "list",
+    });
+  });
+
+  it("accepts markdown table render experimental overrides", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        discord: {
+          botName: "lilac",
+          experimental: {
+            markdownTableRender: {
+              enabled: true,
+              style: "ascii",
+              maxWidth: 100,
+              fallbackMode: "passthrough",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.surface.discord.experimental.markdownTableRender).toEqual({
+      enabled: true,
+      style: "ascii",
+      maxWidth: 100,
+      fallbackMode: "passthrough",
+    });
+  });
 });
