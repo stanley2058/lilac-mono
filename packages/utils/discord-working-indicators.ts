@@ -133,58 +133,6 @@ export const DEFAULT_DISCORD_WORKING_INDICATORS = [
   "Zesting",
 ] as const;
 
-export const ENGINEERING_DISCORD_WORKING_INDICATORS_EN = [
-  "Appeasing the Linter",
-  "Caching the Cosmos",
-  "Chasing a Heisenbug",
-  "Convincing DNS",
-  "Deploying Hope",
-  "Feeding the Garbage Collector",
-  "Hydrating the Frontend",
-  "Rebasing Reality",
-  "Taming the Merge Dragon",
-  "YAML Whispering",
-] as const;
-
-export const ENGINEERING_DISCORD_WORKING_INDICATORS_ZH = [
-  "安撫 Linter 到點頭",
-  "把 Deploy 當放天燈",
-  "把 Log 當籤詩解",
-  "把 Merge 衝突哄睡",
-  "跟 DNS 講道理",
-  "跟 TypeScript 喬條件",
-  "在 Kubernetes 裡找出口",
-  "對著 YAML 念咒",
-  "替 Cache 點香拜拜",
-  "追捕海森堡蟲",
-] as const;
-
-export const CHUUNI_DISCORD_WORKING_INDICATORS_EN = [
-  "Binding Bugs into Sigils",
-  "Consulting the Prophecy Logs",
-  "Carving Types into Stone",
-  "Negotiating with the Void Pointer",
-  "Sealing the Release Scroll",
-  "Signing the Commit in Moonlight",
-  "Summoning the Build Spirits",
-  "Walking the Stack Trace Labyrinth",
-  "Whispering to the Compiler",
-  "Stitching Time in the Event Loop",
-] as const;
-
-export const CHUUNI_DISCORD_WORKING_INDICATORS_ZH = [
-  "把 Bug 鎖進符印",
-  "翻閱預言般的 Logs",
-  "以型別刻下誓約",
-  "與虛無指標談判",
-  "封印 Release 卷軸",
-  "用月光簽下 Commit",
-  "召喚編譯精靈",
-  "踏入 Stack Trace 迷宮",
-  "向編譯器低語",
-  "在事件迴圈縫時間",
-] as const;
-
 export function cloneDefaultDiscordWorkingIndicators(): string[] {
   return [...DEFAULT_DISCORD_WORKING_INDICATORS];
 }
