@@ -71,6 +71,20 @@ surface:
     workingIndicators:
       - "Working"
 
+    # Experimental Discord-only output features.
+    experimental:
+      markdownTableRender:
+        # Convert markdown tables into fixed-width codeblock tables.
+        enabled: false
+        # Rendering style for generated codeblock tables: unicode | ascii.
+        style: unicode
+        # Max rendered table width (display cells, not bytes).
+        maxWidth: 80
+        # Fallback when a table cannot fit maxWidth:
+        # - list: render a wrapped row/key-value list in a text codeblock
+        # - passthrough: keep original markdown table unchanged
+        fallbackMode: list
+
 agent:
   # Optional: include token/model timing stats in final response metadata.
   #

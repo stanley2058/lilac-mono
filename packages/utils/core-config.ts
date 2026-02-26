@@ -170,6 +170,33 @@ const routerSchema = z
     activeGate: { enabled: false, timeoutMs: 2500 },
   });
 
+const discordMarkdownTableRenderSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    style: z.enum(["unicode", "ascii"]).default("unicode"),
+    maxWidth: z.number().int().min(40).max(240).default(80),
+    fallbackMode: z.enum(["list", "passthrough"]).default("list"),
+  })
+  .default({
+    enabled: false,
+    style: "unicode",
+    maxWidth: 80,
+    fallbackMode: "list",
+  });
+
+const discordExperimentalSchema = z
+  .object({
+    markdownTableRender: discordMarkdownTableRenderSchema,
+  })
+  .default({
+    markdownTableRender: {
+      enabled: false,
+      style: "unicode",
+      maxWidth: 80,
+      fallbackMode: "list",
+    },
+  });
+
 const discordSurfaceSchema = z
   .object({
     tokenEnv: z.string().min(1).default("DISCORD_TOKEN"),
@@ -193,6 +220,9 @@ const discordSurfaceSchema = z
       .array(z.string().trim().min(1))
       .min(1)
       .default(cloneDefaultDiscordWorkingIndicators()),
+
+    /** Experimental Discord-only output features. */
+    experimental: discordExperimentalSchema,
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",
@@ -201,6 +231,14 @@ const discordSurfaceSchema = z
     botName: "lilac",
     outputMode: "inline",
     workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+    experimental: {
+      markdownTableRender: {
+        enabled: false,
+        style: "unicode",
+        maxWidth: 80,
+        fallbackMode: "list",
+      },
+    },
   });
 
 const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
@@ -253,6 +291,14 @@ export const coreConfigSchema = z.object({
         botName: "lilac",
         outputMode: "inline",
         workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+        experimental: {
+          markdownTableRender: {
+            enabled: false,
+            style: "unicode",
+            maxWidth: 80,
+            fallbackMode: "list",
+          },
+        },
       },
     }),
 
@@ -364,8 +410,16 @@ type ParsedCoreConfig = z.infer<typeof coreConfigSchema>;
 
 export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface"> & {
   surface: Omit<ParsedCoreConfig["surface"], "discord"> & {
-    discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators"> & {
+    discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators" | "experimental"> & {
       workingIndicators?: string[];
+      experimental?: {
+        markdownTableRender?: {
+          enabled?: boolean;
+          style?: "unicode" | "ascii";
+          maxWidth?: number;
+          fallbackMode?: "list" | "passthrough";
+        };
+      };
     };
   };
   agent: AgentConfig;
