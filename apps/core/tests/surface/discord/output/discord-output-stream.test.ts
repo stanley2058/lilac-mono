@@ -165,6 +165,71 @@ describe("reasoning display helpers", () => {
   });
 });
 
+describe("working indicator picker", () => {
+  function getPicker(stream: DiscordOutputStream): (previous?: string) => string {
+    const picker = Reflect.get(stream as object, "pickRandomWorkingIndicator");
+    if (typeof picker !== "function") {
+      throw new Error("pickRandomWorkingIndicator is unavailable");
+    }
+    return (previous?: string) => picker.call(stream, previous) as string;
+  }
+
+  it("cycles without immediate repeats for unique indicators", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Planning", "Reading", "Tooling"],
+    });
+
+    const pick = getPicker(out);
+    let previous: string | undefined;
+
+    for (let i = 0; i < 30; i++) {
+      const next = pick(previous);
+      if (previous) {
+        expect(next).not.toBe(previous);
+      }
+      previous = next;
+    }
+  });
+
+  it("reuses shuffled queue order across full cycles", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Planning", "Reading", "Tooling"],
+    });
+
+    const pick = getPicker(out);
+    const cycleOne: string[] = [];
+    const cycleTwo: string[] = [];
+
+    let previous: string | undefined;
+    for (let i = 0; i < 3; i++) {
+      const next = pick(previous);
+      cycleOne.push(next);
+      previous = next;
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const next = pick(previous);
+      cycleTwo.push(next);
+      previous = next;
+    }
+
+    expect(new Set(cycleOne).size).toBe(3);
+    expect(cycleTwo).toEqual(cycleOne);
+  });
+});
+
 describe("preview tail helper", () => {
   it("returns input unchanged when already within limit", () => {
     expect(toPreviewTail("hello", 10)).toBe("hello");
