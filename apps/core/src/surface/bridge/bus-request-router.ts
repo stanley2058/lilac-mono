@@ -198,6 +198,10 @@ function randomRequestId(): string {
   return `req:${crypto.randomUUID()}`;
 }
 
+function bufferedPromptRequestIdForActiveRequest(activeRequestId: string): string {
+  return `queued:${activeRequestId}`;
+}
+
 function parseDiscordMsgRefFromAdapterEvent(data: {
   platform: string;
   channelId: string;
@@ -368,6 +372,20 @@ type DebounceBuffer = {
   timer: ReturnType<typeof setTimeout> | null;
 };
 
+type PendingMentionReplyBatchItem = {
+  msgRef: MsgRef;
+  requestModelOverride?: string;
+  botMentionNames: readonly string[];
+};
+
+type PendingMentionReplyBatch = {
+  sourceRequestId: string;
+  sessionConfigId: string;
+  sessionMode: SessionMode;
+  modelOverride?: string;
+  items: PendingMentionReplyBatchItem[];
+};
+
 type RouterConfigOverride = Omit<CoreConfig, "tools"> & {
   tools?: CoreConfig["tools"];
 };
@@ -442,6 +460,7 @@ export async function startBusRequestRouter(params: {
 
   const activeBySession = new Map<string, ActiveSessionState>();
   const buffers = new Map<string, DebounceBuffer>();
+  const pendingMentionReplyBatchBySession = new Map<string, PendingMentionReplyBatch>();
 
   async function resolvePreviousMessageText(input: {
     msgRef: MsgRef;
@@ -563,6 +582,10 @@ export async function startBusRequestRouter(params: {
       ) {
         const cur = activeBySession.get(sessionId);
         if (cur?.requestId === requestId) {
+          await flushPendingMentionReplyBatchAsPrompt({
+            sessionId,
+            sourceRequestId: requestId,
+          });
           activeBySession.delete(sessionId);
         }
       }
@@ -894,6 +917,186 @@ export async function startBusRequestRouter(params: {
       clearTimeout(b.timer);
       b.timer = null;
     }
+  }
+
+  function enqueuePendingMentionReplyBatch(input: {
+    sessionId: string;
+    sourceRequestId: string;
+    sessionConfigId: string;
+    sessionMode: SessionMode;
+    modelOverride?: string;
+    item: PendingMentionReplyBatchItem;
+  }) {
+    const existing = pendingMentionReplyBatchBySession.get(input.sessionId);
+
+    if (!existing || existing.sourceRequestId !== input.sourceRequestId) {
+      pendingMentionReplyBatchBySession.set(input.sessionId, {
+        sourceRequestId: input.sourceRequestId,
+        sessionConfigId: input.sessionConfigId,
+        sessionMode: input.sessionMode,
+        modelOverride: input.modelOverride,
+        items: [
+          {
+            msgRef: input.item.msgRef,
+            requestModelOverride: input.item.requestModelOverride,
+            botMentionNames: [...input.item.botMentionNames],
+          },
+        ],
+      });
+      return;
+    }
+
+    const alreadyTracked = existing.items.some(
+      (item) => item.msgRef.messageId === input.item.msgRef.messageId,
+    );
+    if (!alreadyTracked) {
+      existing.items.push({
+        msgRef: input.item.msgRef,
+        requestModelOverride: input.item.requestModelOverride,
+        botMentionNames: [...input.item.botMentionNames],
+      });
+    }
+
+    if (input.modelOverride) {
+      existing.modelOverride = input.modelOverride;
+    }
+    existing.sessionConfigId = input.sessionConfigId;
+    existing.sessionMode = input.sessionMode;
+  }
+
+  function takePendingMentionReplyBatch(input: {
+    sessionId: string;
+    sourceRequestId: string;
+  }): PendingMentionReplyBatch | null {
+    const batch = pendingMentionReplyBatchBySession.get(input.sessionId);
+    if (!batch) return null;
+    if (batch.sourceRequestId !== input.sourceRequestId) return null;
+
+    pendingMentionReplyBatchBySession.delete(input.sessionId);
+    return batch;
+  }
+
+  function transformPendingUserText(
+    item: PendingMentionReplyBatchItem,
+  ): ((text: string) => string) | undefined {
+    if (!item.requestModelOverride) return undefined;
+    return (text: string) =>
+      stripLeadingModelOverrideDirective({
+        text,
+        botNames: item.botMentionNames,
+      });
+  }
+
+  async function flushPendingMentionReplyBatchAsFollowUp(input: {
+    sessionId: string;
+    sourceRequestId: string;
+  }) {
+    const batch = takePendingMentionReplyBatch(input);
+    if (!batch || batch.items.length === 0) return;
+
+    for (const item of batch.items) {
+      await publishSingleMessageToActiveRequest({
+        adapter,
+        bus,
+        cfg,
+        requestId: input.sourceRequestId,
+        sessionId: input.sessionId,
+        sessionConfigId: batch.sessionConfigId,
+        queue: "followUp",
+        msgRef: item.msgRef,
+        sessionMode: batch.sessionMode,
+        transformUserText: transformPendingUserText(item),
+      });
+    }
+  }
+
+  async function flushPendingMentionReplyBatchAsPrompt(input: {
+    sessionId: string;
+    sourceRequestId: string;
+  }) {
+    const batch = takePendingMentionReplyBatch(input);
+    if (!batch || batch.items.length === 0) return;
+
+    const last = batch.items[batch.items.length - 1]!;
+    const requestId = `discord:${input.sessionId}:${last.msgRef.messageId}`;
+
+    const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
+
+    const composed = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: self.userId,
+      botName: cfg.surface.discord.botName,
+      transcriptStore: params.transcriptStore,
+      discordUserAliasById,
+      transformUserText: transformPendingUserText(last),
+      transformUserTextForMessageId: last.msgRef.messageId,
+      trigger: {
+        type: "reply",
+        msgRef: last.msgRef,
+      },
+    });
+
+    const chainMessageIds = new Set(composed.chainMessageIds);
+    const extraMessages: ModelMessage[] = [];
+
+    for (const item of batch.items) {
+      if (chainMessageIds.has(item.msgRef.messageId)) continue;
+      const extra = await composeSingleMessage(adapter, {
+        platform: "discord",
+        botUserId: self.userId,
+        botName: cfg.surface.discord.botName,
+        msgRef: item.msgRef,
+        discordUserAliasById,
+        transformUserText: transformPendingUserText(item),
+      });
+
+      if (!extra) continue;
+      extraMessages.push(extra);
+      chainMessageIds.add(item.msgRef.messageId);
+    }
+
+    const finalMessages = (() => {
+      if (extraMessages.length === 0) return composed.messages;
+
+      let insertAt = -1;
+      for (let i = composed.messages.length - 1; i >= 0; i--) {
+        if (composed.messages[i]?.role === "user") {
+          insertAt = i;
+          break;
+        }
+      }
+
+      if (insertAt < 0) {
+        return [...composed.messages, ...extraMessages];
+      }
+
+      return [
+        ...composed.messages.slice(0, insertAt),
+        ...extraMessages,
+        ...composed.messages.slice(insertAt),
+      ];
+    })();
+
+    await publishBusRequest({
+      requestId,
+      sessionId: input.sessionId,
+      sessionConfigId: batch.sessionConfigId,
+      queue: "prompt",
+      triggerType: "reply",
+      sessionMode: batch.sessionMode,
+      modelOverride: batch.modelOverride,
+      messages: finalMessages,
+      raw: {
+        triggerType: "reply",
+        chainMessageIds: [...chainMessageIds],
+        mergedGroups: composed.mergedGroups,
+        pendingMentionReplyBatch: {
+          sourceRequestId: batch.sourceRequestId,
+          size: batch.items.length,
+        },
+      },
+    });
   }
 
   async function handleActiveDmMode(input: {
@@ -1275,16 +1478,16 @@ export async function startBusRequestRouter(params: {
         return;
       }
 
-      await publishSingleMessageToActiveRequest({
+      await publishSingleMessagePrompt({
         adapter,
         bus,
         cfg,
-        requestId: active.requestId,
+        requestId: bufferedPromptRequestIdForActiveRequest(active.requestId),
         sessionId,
-        queue: "followUp",
+        sessionConfigId,
         msgRef,
         sessionMode,
-        sessionConfigId,
+        modelOverride,
         transformUserText: requestModelOverride
           ? (text: string) =>
               stripLeadingModelOverrideDirective({
@@ -1292,6 +1495,9 @@ export async function startBusRequestRouter(params: {
                 botNames: botMentionNames,
               })
           : undefined,
+        raw: {
+          bufferedForActiveRequestId: active.requestId,
+        },
       });
       return;
     }
@@ -1302,9 +1508,9 @@ export async function startBusRequestRouter(params: {
       // Discard any pending buffer to avoid a second gated request for the same context.
       clearDebounceBuffer(sessionId);
 
-      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
-
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
+      const requestId =
+        triggerType === "reply" ? `discord:${sessionId}:${msgRef.messageId}` : randomRequestId();
 
       await publishActiveChannelPrompt({
         adapter,
@@ -1656,7 +1862,8 @@ export async function startBusRequestRouter(params: {
     const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
     // Special case: if the user is replying to the currently active output message chain,
-    // treat it as a follow-up or steer into the running request (instead of forking).
+    // treat mention replies as steer/interrupt into the running request, and
+    // queue plain replies into a deferred prompt batch.
     if (
       active &&
       replyToBot &&
@@ -1703,24 +1910,23 @@ export async function startBusRequestRouter(params: {
                   })
               : undefined,
         });
-      } else {
-        await publishSingleMessageToActiveRequest({
-          adapter,
-          bus,
-          cfg,
-          requestId: active.requestId,
+
+        await flushPendingMentionReplyBatchAsFollowUp({
           sessionId,
-          queue: "followUp",
-          msgRef,
-          sessionMode: input.sessionMode,
+          sourceRequestId: active.requestId,
+        });
+      } else {
+        enqueuePendingMentionReplyBatch({
+          sessionId,
+          sourceRequestId: active.requestId,
           sessionConfigId: input.sessionConfigId,
-          transformUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : undefined,
+          sessionMode: input.sessionMode,
+          modelOverride: input.modelOverride,
+          item: {
+            msgRef,
+            requestModelOverride,
+            botMentionNames,
+          },
         });
       }
       return;
@@ -1982,6 +2188,52 @@ export async function startBusRequestRouter(params: {
     });
   }
 
+  async function publishSingleMessagePrompt(input: {
+    adapter: SurfaceAdapter;
+    bus: LilacBus;
+    cfg: CoreConfig;
+    requestId: string;
+    sessionId: string;
+    sessionConfigId: string;
+    msgRef: MsgRef;
+    sessionMode: SessionMode;
+    modelOverride?: string;
+    transformUserText?: (text: string) => string;
+    raw?: Record<string, unknown>;
+  }) {
+    const { adapter, cfg, requestId, sessionId, msgRef } = input;
+
+    const self = await adapter.getSelf();
+    const discordUserAliasById = buildDiscordUserAliasById(cfg);
+
+    const msg = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: self.userId,
+      botName: cfg.surface.discord.botName,
+      msgRef,
+      discordUserAliasById,
+      transformUserText: input.transformUserText,
+    });
+
+    if (!msg) return;
+
+    await publishBusRequest({
+      requestId,
+      sessionId,
+      sessionConfigId: input.sessionConfigId,
+      queue: "prompt",
+      triggerType: "active",
+      sessionMode: input.sessionMode,
+      modelOverride: input.modelOverride,
+      messages: [msg],
+      raw: {
+        triggerType: "active",
+        chainMessageIds: [msgRef.messageId],
+        ...input.raw,
+      },
+    });
+  }
+
   async function publishSurfaceOutputReanchor(input: {
     bus: LilacBus;
     requestId: string;
@@ -2024,6 +2276,7 @@ export async function startBusRequestRouter(params: {
         if (b.timer) clearTimeout(b.timer);
       }
       buffers.clear();
+      pendingMentionReplyBatchBySession.clear();
     },
   };
 }

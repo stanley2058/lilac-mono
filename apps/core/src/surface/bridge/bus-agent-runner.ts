@@ -8,6 +8,7 @@ import {
   type ModelMessage,
   type ToolContent,
   type ToolSet,
+  type UserContent,
 } from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
@@ -976,6 +977,85 @@ function parseRequestControlFromRaw(raw: unknown): {
   };
 }
 
+function parseBufferedForActiveRequestIdFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["bufferedForActiveRequestId"];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isCancelControlEntry(entry: Enqueued): boolean {
+  const raw = entry.raw;
+  if (!raw || typeof raw !== "object") return false;
+  const v = (raw as Record<string, unknown>)["cancel"];
+  return v === true;
+}
+
+function collectBufferedPromptEntriesForActiveRequest(input: {
+  queue: readonly Enqueued[];
+  activeRequestId: string;
+}): Enqueued[] {
+  const out: Enqueued[] = [];
+
+  for (const next of input.queue) {
+    if (next.queue !== "prompt") continue;
+    if (parseBufferedForActiveRequestIdFromRaw(next.raw) !== input.activeRequestId) continue;
+    out.push(next);
+  }
+
+  return out;
+}
+
+function removeQueuedEntriesByReference(queue: Enqueued[], removed: readonly Enqueued[]): number {
+  if (removed.length === 0) return 0;
+  const targets = new Set(removed);
+  const before = queue.length;
+
+  for (let i = 0; i < queue.length; ) {
+    if (!targets.has(queue[i]!)) {
+      i += 1;
+      continue;
+    }
+
+    queue.splice(i, 1);
+  }
+
+  return before - queue.length;
+}
+
+async function publishAbsorbedQueuedPromptCancelled(input: {
+  bus: LilacBus;
+  sessionId: string;
+  entries: readonly Enqueued[];
+  mode: "steer" | "interrupt";
+}) {
+  if (input.entries.length === 0) return;
+
+  const dedup = new Map<string, AdapterPlatform>();
+  for (const entry of input.entries) {
+    dedup.set(entry.requestId, entry.requestClient);
+  }
+
+  const detail =
+    input.mode === "interrupt"
+      ? "cancelled: absorbed into active interrupt"
+      : "cancelled: absorbed into active steer";
+
+  for (const [requestId, requestClient] of dedup) {
+    await publishLifecycle({
+      bus: input.bus,
+      headers: {
+        request_id: requestId,
+        session_id: input.sessionId,
+        request_client: requestClient,
+      },
+      state: "cancelled",
+      detail,
+    });
+  }
+}
+
 function getChainMessageIdsFromRaw(raw: unknown): readonly string[] {
   if (!raw || typeof raw !== "object") return [];
   const value = (raw as Record<string, unknown>)["chainMessageIds"];
@@ -1581,12 +1661,51 @@ export async function startBusAgentRunner(params: {
       } else {
         // If the message is intended for the currently active request, apply immediately.
         if (state.activeRequestId && state.activeRequestId === requestId && state.agent) {
-          await applyToRunningAgent(state.agent, entry, cancelledByRequestId);
+          const queueDepthBefore = state.queue.length;
+          const shouldAbsorbBufferedPrompts =
+            (entry.queue === "steer" || entry.queue === "interrupt") &&
+            !isCancelControlEntry(entry);
+
+          const bufferedPrompts = shouldAbsorbBufferedPrompts
+            ? collectBufferedPromptEntriesForActiveRequest({
+                queue: state.queue,
+                activeRequestId: requestId,
+              })
+            : [];
+
+          const mergedEntry =
+            bufferedPrompts.length > 0
+              ? ({
+                  ...entry,
+                  messages: [
+                    ...bufferedPrompts.flatMap((queuedPrompt) => queuedPrompt.messages),
+                    ...entry.messages,
+                  ],
+                } satisfies Enqueued)
+              : entry;
+
+          await applyToRunningAgent(state.agent, mergedEntry, cancelledByRequestId);
+
+          if (bufferedPrompts.length > 0) {
+            const absorbMode: "steer" | "interrupt" =
+              entry.queue === "interrupt" ? "interrupt" : "steer";
+            removeQueuedEntriesByReference(state.queue, bufferedPrompts);
+            await publishAbsorbedQueuedPromptCancelled({
+              bus,
+              sessionId,
+              entries: bufferedPrompts,
+              mode: absorbMode,
+            });
+          }
+
           logQueueTransition({
             action: "apply_to_active",
-            queueDepthBefore: state.queue.length,
+            queueDepthBefore,
             queueDepthAfter: state.queue.length,
-            reason: "same_request_id",
+            reason:
+              bufferedPrompts.length > 0
+                ? `same_request_id_absorbed_${bufferedPrompts.length}`
+                : "same_request_id",
           });
         } else {
           // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
@@ -2795,21 +2914,40 @@ async function applyToRunningAgent(
   }
 }
 
-function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
-  // If any user message has non-string content (multipart), do not merge.
-  // Preserve raw parts for downstream processing.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const newest = messages[i]!;
-    if (newest.role !== "user") continue;
-    if (typeof newest.content !== "string") {
-      return newest;
+export function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
+  const userMessages = messages.filter((m) => m.role === "user");
+  if (userMessages.length === 0) {
+    return { role: "user", content: "" };
+  }
+
+  const hasMultipart = userMessages.some((m) => typeof m.content !== "string");
+
+  if (hasMultipart) {
+    const parts: UserContent = [];
+    for (let i = 0; i < userMessages.length; i++) {
+      const msg = userMessages[i]!;
+      if (i > 0) {
+        parts.push({ type: "text", text: "\n\n" });
+      }
+
+      if (typeof msg.content === "string") {
+        if (msg.content.length > 0) {
+          parts.push({ type: "text", text: msg.content });
+        }
+      } else {
+        parts.push(...msg.content);
+      }
     }
+
+    return {
+      role: "user",
+      content: parts,
+    };
   }
 
   // Preserve existing behavior: merge batches into one user message separated by blank lines.
   const parts: string[] = [];
-  for (const m of messages) {
-    if (m.role !== "user") continue;
+  for (const m of userMessages) {
     if (typeof m.content === "string") {
       parts.push(m.content);
     }

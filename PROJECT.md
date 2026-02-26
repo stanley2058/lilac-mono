@@ -153,6 +153,14 @@ Router gate behavior (Discord):
 - Active-mode channels with a **running request** are not active-batch gated:
   - messages are routed as follow-up/steer/queued prompt according to in-flight rules
 
+Mention-mode mixed reply behavior (active request):
+
+- If a user replies to the currently active output message **without** mentioning the bot,
+  router defers that reply and batches it as the next `prompt` request.
+- The batched prompt is anchored to the latest reply in that deferred batch (thread reply target = batch end).
+- If a reply+mention steer/interrupt arrives before the active request resolves,
+  the deferred batch is converted into `followUp` messages on the active request instead of starting a separate prompt.
+
 Direct-reply mention disambiguation gate (additional path):
 
 - Runs for **non-DM** messages when all are true:
