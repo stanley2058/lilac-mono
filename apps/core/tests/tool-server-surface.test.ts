@@ -785,6 +785,34 @@ describe("tool-server surface", () => {
     expect(sent.content.attachments?.[0]?.filename).toBe("renamed.txt");
   });
 
+  it("forwards silent=true for send", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg });
+
+    const res = await tool.call("surface.messages.send", {
+      sessionId: "ops",
+      text: "hi",
+      silent: true,
+      client: "discord",
+    });
+
+    expect((res as any).ok).toBe(true);
+    expect(adapter.sendCalls.length).toBe(1);
+    expect(adapter.sendCalls[0]?.opts?.silent).toBe(true);
+  });
+
   it("allows guild allowlist when channel is not cached", async () => {
     const cfg = testConfig({
       surface: {

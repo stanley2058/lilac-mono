@@ -235,6 +235,7 @@ describe("tool-server workflow", () => {
         {
           sessionId: "#ops",
           text: "hello",
+          silent: true,
           paths: p,
           filenames: "renamed.txt",
           taskDescription: "wait for reply",
@@ -247,6 +248,7 @@ describe("tool-server workflow", () => {
       expect(adapter.sendCalls.length).toBe(1);
       expect(adapter.sendCalls[0]?.content.attachments?.length).toBe(1);
       expect(adapter.sendCalls[0]?.content.attachments?.[0]?.filename).toBe("renamed.txt");
+      expect(adapter.sendCalls[0]?.opts?.silent).toBe(true);
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

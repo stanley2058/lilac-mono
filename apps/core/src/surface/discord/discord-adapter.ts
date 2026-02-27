@@ -99,6 +99,15 @@ function resolveMarkdownTableRenderOptions(
   };
 }
 
+export function resolveOutputNotificationEnabled(input: {
+  configured?: boolean;
+  silent?: boolean;
+}): boolean {
+  if (input.silent === true) return false;
+  if (typeof input.configured === "boolean") return input.configured;
+  return true;
+}
+
 function getChannelName<T extends { isDMBased?: () => boolean } | { name?: string }>(
   channel: T | null,
 ): string | undefined {
@@ -787,7 +796,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       markdownTableRender,
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       outputMode: cfg.surface.discord.outputMode ?? "inline",
-      outputNotification: cfg.surface.discord.outputNotification === true,
+      outputNotification: resolveOutputNotificationEnabled({
+        configured: cfg.surface.discord.outputNotification,
+        silent: opts?.silent,
+      }),
       workingIndicators: cfg.surface.discord.workingIndicators ?? ["Working"],
     });
   }
@@ -867,7 +879,10 @@ export class DiscordAdapter implements SurfaceAdapter {
       useSmartSplitting,
       rewriteText: this.entityMapper?.rewriteOutgoingText,
       markdownTableRender,
-      outputNotification: cfg?.surface.discord.outputNotification === true,
+      outputNotification: resolveOutputNotificationEnabled({
+        configured: cfg?.surface.discord.outputNotification,
+        silent: opts?.silent,
+      }),
     });
   }
 

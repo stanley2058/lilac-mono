@@ -744,6 +744,10 @@ const messagesSendInputSchema = baseInputSchema.extend({
     ),
   text: z.string().min(1),
   replyToMessageId: z.string().min(1).optional(),
+  silent: z.coerce
+    .boolean()
+    .optional()
+    .describe("Disable all notifications for this message (mentions + reply ping)."),
   paths: optionalNonEmptyStringListInputSchema.describe(
     "Local file paths to attach (resolved relative to request cwd)",
   ),
@@ -1060,6 +1064,7 @@ export class Surface implements ServerTool {
         messageId:
           "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>'.",
         replyToMessageId: "When sending a message, optionally reply to an existing messageId.",
+        silent: "When true, suppress all notifications for this send (mentions + reply ping).",
         attachments:
           "Local files attached to an outbound message (paths resolved relative to request cwd).",
       },
@@ -1650,7 +1655,12 @@ export class Surface implements ServerTool {
         text: input.text,
         attachments,
       },
-      replyTo ? { replyTo } : undefined,
+      replyTo || input.silent === true
+        ? {
+            ...(replyTo ? { replyTo } : {}),
+            ...(input.silent === true ? { silent: true } : {}),
+          }
+        : undefined,
     );
 
     return { ok: true as const, ref };
