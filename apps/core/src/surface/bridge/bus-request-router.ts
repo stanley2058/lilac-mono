@@ -1,367 +1,71 @@
-import { generateText, Output, type ModelMessage } from "ai";
-import { z } from "zod";
+import { type ModelMessage } from "ai";
 
-import {
-  createLogger,
-  getCoreConfig,
-  env,
-  resolveModelSlot,
-  type CoreConfig,
-} from "@stanley2058/lilac-utils";
+import { createLogger, getCoreConfig, env, type CoreConfig } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
   type EvtAdapterMessageCreatedData,
   type LilacBus,
-  type RequestQueueMode,
 } from "@stanley2058/lilac-event-bus";
 import type { SurfaceAdapter } from "../adapter";
-import type { MsgRef, SurfaceMessage } from "../types";
+import type { MsgRef } from "../types";
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import { composeRequestMessages, composeSingleMessage } from "./request-composition";
+
 import {
-  composeRecentChannelMessages,
-  composeRequestMessages,
-  composeSingleMessage,
-} from "./request-composition";
-
-type SessionMode = "mention" | "active";
-
-function previewText(text: string, max = 200): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, max)}...`;
-}
-
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function sanitizeUserToken(name: string): string {
-  return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
-}
-
-const USER_MENTION_TOKEN_RE = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu;
-
-function hasNonSelfMentionToken(input: { text: string; botNames: readonly string[] }): boolean {
-  const selfNamesLc = new Set(
-    input.botNames
-      .map((name) => sanitizeUserToken(name).toLowerCase())
-      .filter((name) => name.length > 0),
-  );
-
-  for (const m of input.text.matchAll(USER_MENTION_TOKEN_RE)) {
-    const token = String(m[2] ?? "").trim();
-    if (!token) continue;
-    if (selfNamesLc.has(sanitizeUserToken(token).toLowerCase())) continue;
-    return true;
-  }
-
-  return false;
-}
-
-function resolveBotMentionNames(input: { cfg: CoreConfig; botUserId?: string }): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  const addName = (raw: string | undefined) => {
-    if (typeof raw !== "string") return;
-    const sanitized = sanitizeUserToken(raw);
-    if (!sanitized) return;
-    const key = sanitized.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(sanitized);
-  };
-
-  addName(input.cfg.surface.discord.botName);
-
-  if (input.botUserId) {
-    const users = input.cfg.entity?.users ?? {};
-    for (const [alias, rec] of Object.entries(users)) {
-      if (rec.discord !== input.botUserId) continue;
-      addName(alias);
-    }
-  }
-
-  return out;
-}
-
-function compareMessagePosition(
-  a: { ts: number; messageId: string },
-  b: { ts: number; messageId: string },
-): number {
-  if (a.ts !== b.ts) return a.ts - b.ts;
-  return a.messageId.localeCompare(b.messageId);
-}
-
-function normalizeGateText(text: string | undefined, max = 280): string | undefined {
-  if (!text) return undefined;
-  const normalized = text.trim().replace(/\s+/gu, " ");
-  if (!normalized) return undefined;
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, max)}...`;
-}
-
-function stripLeadingBotMentionPrefix(
-  text: string,
-  botNames: readonly string[],
-): {
-  hadLeadingMention: boolean;
-  mentionPrefix: string;
-  text: string;
-} {
-  const sanitizedBotNames = botNames
-    .map((name) => sanitizeUserToken(name))
-    .filter((name) => name.length > 0);
-  const nameAlternation =
-    sanitizedBotNames.length > 0
-      ? `|@(?:${sanitizedBotNames.map((name) => escapeRegExp(name)).join("|")})`
-      : "";
-  const mentionRe = new RegExp(`^\\s*(?:<@!?[^>]+>${nameAlternation})(?:[,:]\\s*|\\s+)`, "iu");
-  const m = text.match(mentionRe);
-  if (!m) return { hadLeadingMention: false, mentionPrefix: "", text };
-  return {
-    hadLeadingMention: true,
-    mentionPrefix: m[0],
-    text: text.slice(m[0].length),
-  };
-}
-
-const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
-const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!m:([^\s]+)(?:\s+|$)/iu;
-
-function parseLeadingModelOverride(input: {
-  text: string;
-  botNames: readonly string[];
-}): string | undefined {
-  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
-  const target = stripped.hadLeadingMention ? stripped.text : input.text;
-  const m = target.match(LEADING_MODEL_OVERRIDE_RE);
-  if (!m) return undefined;
-
-  const model = String(m[1] ?? "").trim();
-  return model.length > 0 ? model : undefined;
-}
-
-function stripLeadingModelOverrideDirective(input: {
-  text: string;
-  botNames: readonly string[];
-}): string {
-  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botNames);
-  if (!strippedMention.hadLeadingMention) {
-    return input.text.replace(LEADING_MODEL_OVERRIDE_RE, "").replace(/^\s+/u, "");
-  }
-
-  if (!LEADING_MODEL_OVERRIDE_RE.test(strippedMention.text)) {
-    return input.text;
-  }
-
-  const remainder = strippedMention.text
-    .replace(LEADING_MODEL_OVERRIDE_RE, "")
-    .replace(/^\s+/u, "");
-  return `${strippedMention.mentionPrefix}${remainder}`;
-}
-
-function parseSteerDirectiveMode(input: {
-  text: string;
-  botNames: readonly string[];
-}): "steer" | "interrupt" {
-  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
-  if (!stripped.hadLeadingMention) return "steer";
-  return LEADING_INTERRUPT_COMMAND_RE.test(stripped.text) ? "interrupt" : "steer";
-}
-
-function stripLeadingInterruptDirective(input: {
-  text: string;
-  botNames: readonly string[];
-}): string {
-  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botNames);
-  if (!strippedMention.hadLeadingMention) {
-    return input.text.replace(LEADING_INTERRUPT_COMMAND_RE, "").replace(/^\s+/u, "");
-  }
-
-  if (!LEADING_INTERRUPT_COMMAND_RE.test(strippedMention.text)) {
-    return input.text;
-  }
-
-  const remainder = strippedMention.text
-    .replace(LEADING_INTERRUPT_COMMAND_RE, "")
-    .replace(/^\s+/u, "");
-  return `${strippedMention.mentionPrefix}${remainder}`;
-}
-
-function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
-function randomRequestId(): string {
-  // Use a stable prefix to make it easy to spot in logs.
-  return `req:${crypto.randomUUID()}`;
-}
-
-function bufferedPromptRequestIdForActiveRequest(activeRequestId: string): string {
-  return `queued:${activeRequestId}`;
-}
-
-function parseDiscordMsgRefFromAdapterEvent(data: {
-  platform: string;
-  channelId: string;
-  messageId: string;
-}): MsgRef {
-  if (data.platform !== "discord") {
-    throw new Error(`Unsupported platform '${data.platform}'`);
-  }
-  return {
-    platform: "discord",
-    channelId: data.channelId,
-    messageId: data.messageId,
-  };
-}
-
-function resolveSessionConfigId(input: {
-  cfg: CoreConfig;
-  sessionId: string;
-  parentChannelId?: string;
-}): string {
-  const entry = input.cfg.surface.router.sessionModes[input.sessionId];
-  if (entry && Object.prototype.hasOwnProperty.call(entry, "additionalPrompts")) {
-    return input.sessionId;
-  }
-
-  const parentChannelId = input.parentChannelId?.trim();
-  if (!parentChannelId) return input.sessionId;
-
-  const parentEntry = input.cfg.surface.router.sessionModes[parentChannelId];
-  if (parentEntry && Object.prototype.hasOwnProperty.call(parentEntry, "additionalPrompts")) {
-    return parentChannelId;
-  }
-
-  return input.sessionId;
-}
-
-function getSessionMode(cfg: CoreConfig, sessionId: string, parentChannelId?: string): SessionMode {
-  const threadMode = cfg.surface.router.sessionModes[sessionId]?.mode;
-  if (threadMode) return threadMode;
-
-  const parentId = parentChannelId?.trim();
-  if (parentId) {
-    const parentMode = cfg.surface.router.sessionModes[parentId]?.mode;
-    if (parentMode) return parentMode;
-  }
-
-  return cfg.surface.router.defaultMode;
-}
-
-function resolveSessionGateEnabled(
-  cfg: CoreConfig,
-  sessionId: string,
-  parentChannelId?: string,
-): boolean {
-  const threadGate = cfg.surface.router.sessionModes[sessionId]?.gate;
-  if (typeof threadGate === "boolean") return threadGate;
-
-  const parentId = parentChannelId?.trim();
-  const parentGate = parentId ? cfg.surface.router.sessionModes[parentId]?.gate : undefined;
-  if (typeof parentGate === "boolean") return parentGate;
-
-  return cfg.surface.router.activeGate.enabled;
-}
-
-function resolveSessionModelOverride(
-  cfg: CoreConfig,
-  sessionId: string,
-  parentChannelId?: string,
-): string | undefined {
-  const threadModel = cfg.surface.router.sessionModes[sessionId]?.model;
-  if (typeof threadModel === "string" && threadModel.trim().length > 0) {
-    return threadModel.trim();
-  }
-
-  const parentId = parentChannelId?.trim();
-  if (!parentId) return undefined;
-
-  const parentModel = cfg.surface.router.sessionModes[parentId]?.model;
-  if (typeof parentModel === "string" && parentModel.trim().length > 0) {
-    return parentModel.trim();
-  }
-
-  return undefined;
-}
-
-function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
-  const out = new Map<string, string>();
-  const users = cfg.entity?.users ?? {};
-
-  for (const [alias, rec] of Object.entries(users)) {
-    if (!out.has(rec.discord)) {
-      out.set(rec.discord, alias);
-    }
-  }
-
-  return out;
-}
-
-function getDiscordFlags(raw: unknown): {
-  isDMBased?: boolean;
-  mentionsBot?: boolean;
-  replyToBot?: boolean;
-  replyToMessageId?: string;
-  parentChannelId?: string;
-  sessionModelOverride?: string;
-  botUserId?: string;
-} {
-  if (!raw || typeof raw !== "object") return {};
-  const discord = (raw as { discord?: unknown }).discord;
-  if (!discord || typeof discord !== "object") return {};
-
-  const o = discord as Record<string, unknown>;
-
-  return {
-    isDMBased: typeof o.isDMBased === "boolean" ? o.isDMBased : undefined,
-    mentionsBot: typeof o.mentionsBot === "boolean" ? o.mentionsBot : undefined,
-    replyToBot: typeof o.replyToBot === "boolean" ? o.replyToBot : undefined,
-    replyToMessageId: typeof o.replyToMessageId === "string" ? o.replyToMessageId : undefined,
-    parentChannelId: typeof o.parentChannelId === "string" ? o.parentChannelId : undefined,
-    sessionModelOverride:
-      typeof o.sessionModelOverride === "string" ? o.sessionModelOverride : undefined,
-    botUserId: typeof o.botUserId === "string" ? o.botUserId : undefined,
-  };
-}
+  type SessionMode,
+  type RouterConfigOverride,
+  previewText,
+  resolveBotMentionNames,
+  normalizeGateText,
+  parseLeadingModelOverride,
+  stripLeadingModelOverrideDirective,
+  parseSteerDirectiveMode,
+  stripLeadingInterruptDirective,
+  shouldRunDirectReplyMentionGate,
+  consumerId,
+  randomRequestId,
+  bufferedPromptRequestIdForActiveRequest,
+  parseDiscordMsgRefFromAdapterEvent,
+  resolveSessionConfigId,
+  getSessionMode,
+  resolveSessionGateEnabled,
+  resolveSessionModelOverride,
+  buildDiscordUserAliasById,
+  getDiscordFlags,
+  withDefaultToolsConfig,
+} from "./bus-request-router/common";
+import {
+  type BufferedMessage,
+  type RouterGateInput,
+  type RouterGateDecision,
+  shouldForwardByGate,
+} from "./bus-request-router/gate";
+import {
+  type PendingMentionReplyBatch,
+  type PendingMentionReplyBatchItem,
+  enqueuePendingMentionReplyBatch as enqueuePendingMentionReplyBatchImpl,
+  takePendingMentionReplyBatch as takePendingMentionReplyBatchImpl,
+  transformPendingUserText as transformPendingUserTextImpl,
+} from "./bus-request-router/pending-batch";
+import {
+  type PublishBusRequestInput,
+  publishActiveChannelPrompt as publishActiveChannelPromptImpl,
+  publishBusRequest as publishBusRequestImpl,
+  publishComposedRequest as publishComposedRequestImpl,
+  publishSingleMessagePrompt as publishSingleMessagePromptImpl,
+  publishSingleMessageToActiveRequest as publishSingleMessageToActiveRequestImpl,
+  publishSurfaceOutputReanchor as publishSurfaceOutputReanchorImpl,
+} from "./bus-request-router/publish";
+import {
+  resolvePreviousBatchMessageText as resolvePreviousBatchMessageTextImpl,
+  resolvePreviousMessageText as resolvePreviousMessageTextImpl,
+  resolveRepliedToMessageText as resolveRepliedToMessageTextImpl,
+} from "./bus-request-router/context";
 
 type ActiveSessionState = {
   requestId: string;
   /** IDs of bot output messages in the current active output chain. */
   activeOutputMessageIds: Set<string>;
-};
-
-type BufferedMessage = {
-  msgRef: MsgRef;
-  userId: string;
-  text: string;
-  ts: number;
-  mentionsBot: boolean;
-  replyToBot: boolean;
-  botUserId?: string;
-  sessionModelOverride?: string;
-  requestModelOverride?: string;
-};
-
-type RouterGateContextMode = "active-batch" | "direct-reply-mention-disambiguation";
-
-type RouterGateInput = {
-  sessionId: string;
-  botName: string;
-  messages: BufferedMessage[];
-  context?: {
-    mode: RouterGateContextMode;
-    triggerMessageText?: string;
-    previousMessageText?: string;
-    repliedToMessageText?: string;
-  };
-};
-
-type RouterGateDecision = {
-  forward: boolean;
-  reason?: string;
 };
 
 type DebounceBuffer = {
@@ -371,37 +75,6 @@ type DebounceBuffer = {
   messages: BufferedMessage[];
   timer: ReturnType<typeof setTimeout> | null;
 };
-
-type PendingMentionReplyBatchItem = {
-  msgRef: MsgRef;
-  requestModelOverride?: string;
-  botMentionNames: readonly string[];
-};
-
-type PendingMentionReplyBatch = {
-  sourceRequestId: string;
-  sessionConfigId: string;
-  sessionMode: SessionMode;
-  modelOverride?: string;
-  items: PendingMentionReplyBatchItem[];
-};
-
-type RouterConfigOverride = Omit<CoreConfig, "tools"> & {
-  tools?: CoreConfig["tools"];
-};
-
-function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig {
-  return {
-    ...config,
-    tools: config.tools ?? {
-      web: {
-        search: {
-          provider: "tavily",
-        },
-      },
-    },
-  };
-}
 
 export async function startBusRequestRouter(params: {
   adapter: SurfaceAdapter;
@@ -461,81 +134,30 @@ export async function startBusRequestRouter(params: {
   const activeBySession = new Map<string, ActiveSessionState>();
   const buffers = new Map<string, DebounceBuffer>();
   const pendingMentionReplyBatchBySession = new Map<string, PendingMentionReplyBatch>();
+  const evaluateRouterGate = (input: RouterGateInput): Promise<RouterGateDecision> => {
+    return params.routerGate
+      ? params.routerGate(input)
+      : shouldForwardByGate({ cfg, input, logger });
+  };
 
   async function resolvePreviousMessageText(input: {
     msgRef: MsgRef;
     triggerTs: number;
   }): Promise<string | undefined> {
-    const around = await adapter.getReplyContext(input.msgRef, { limit: 8 }).catch(() => []);
-    if (around.length === 0) return undefined;
-
-    let prev: SurfaceMessage | null = null;
-    for (const candidate of around) {
-      const cmp = compareMessagePosition(
-        { ts: candidate.ts, messageId: candidate.ref.messageId },
-        { ts: input.triggerTs, messageId: input.msgRef.messageId },
-      );
-      if (cmp >= 0) continue;
-      if (
-        !prev ||
-        compareMessagePosition(
-          { ts: prev.ts, messageId: prev.ref.messageId },
-          { ts: candidate.ts, messageId: candidate.ref.messageId },
-        ) < 0
-      ) {
-        prev = candidate;
-      }
-    }
-
-    return normalizeGateText(prev?.text);
+    return resolvePreviousMessageTextImpl({ adapter, input });
   }
 
   async function resolveRepliedToMessageText(input: {
     sessionId: string;
     replyToMessageId?: string;
   }): Promise<string | undefined> {
-    if (!input.replyToMessageId) return undefined;
-
-    const repliedTo = await adapter
-      .readMsg({
-        platform: "discord",
-        channelId: input.sessionId,
-        messageId: input.replyToMessageId,
-      })
-      .catch(() => null);
-
-    return normalizeGateText(repliedTo?.text ?? undefined);
+    return resolveRepliedToMessageTextImpl({ adapter, input });
   }
 
   async function resolvePreviousBatchMessageText(
     messages: readonly BufferedMessage[],
   ): Promise<string | undefined> {
-    if (messages.length === 0) return undefined;
-
-    const oldest = messages.reduce((best, cur) => {
-      return compareMessagePosition(
-        { ts: cur.ts, messageId: cur.msgRef.messageId },
-        { ts: best.ts, messageId: best.msgRef.messageId },
-      ) < 0
-        ? cur
-        : best;
-    });
-
-    return resolvePreviousMessageText({
-      msgRef: oldest.msgRef,
-      triggerTs: oldest.ts,
-    });
-  }
-
-  function shouldRunDirectReplyMentionGate(input: {
-    replyToBot: boolean;
-    mentionsBot: boolean;
-    text: string;
-    botNames: readonly string[];
-  }): boolean {
-    if (!input.replyToBot) return false;
-    if (input.mentionsBot) return false;
-    return hasNonSelfMentionToken({ text: input.text, botNames: input.botNames });
+    return resolvePreviousBatchMessageTextImpl({ adapter, messages });
   }
 
   const lifecycleSub = await bus.subscribeTopic(
@@ -785,7 +407,6 @@ export async function startBusRequestRouter(params: {
           botNames: botMentionNames,
         })
       ) {
-        const gate = params.routerGate ?? shouldForwardByGate;
         const [previousMessageText, repliedToMessageText] = await Promise.all([
           resolvePreviousMessageText({ msgRef, triggerTs: msg.data.ts }),
           resolveRepliedToMessageText({
@@ -794,7 +415,7 @@ export async function startBusRequestRouter(params: {
           }),
         ]);
 
-        const decision = await gate({
+        const decision = await evaluateRouterGate({
           sessionId,
           botName: cfg.surface.discord.botName,
           messages: [
@@ -927,64 +548,26 @@ export async function startBusRequestRouter(params: {
     modelOverride?: string;
     item: PendingMentionReplyBatchItem;
   }) {
-    const existing = pendingMentionReplyBatchBySession.get(input.sessionId);
-
-    if (!existing || existing.sourceRequestId !== input.sourceRequestId) {
-      pendingMentionReplyBatchBySession.set(input.sessionId, {
-        sourceRequestId: input.sourceRequestId,
-        sessionConfigId: input.sessionConfigId,
-        sessionMode: input.sessionMode,
-        modelOverride: input.modelOverride,
-        items: [
-          {
-            msgRef: input.item.msgRef,
-            requestModelOverride: input.item.requestModelOverride,
-            botMentionNames: [...input.item.botMentionNames],
-          },
-        ],
-      });
-      return;
-    }
-
-    const alreadyTracked = existing.items.some(
-      (item) => item.msgRef.messageId === input.item.msgRef.messageId,
-    );
-    if (!alreadyTracked) {
-      existing.items.push({
-        msgRef: input.item.msgRef,
-        requestModelOverride: input.item.requestModelOverride,
-        botMentionNames: [...input.item.botMentionNames],
-      });
-    }
-
-    if (input.modelOverride) {
-      existing.modelOverride = input.modelOverride;
-    }
-    existing.sessionConfigId = input.sessionConfigId;
-    existing.sessionMode = input.sessionMode;
+    enqueuePendingMentionReplyBatchImpl({
+      pendingMentionReplyBatchBySession,
+      input,
+    });
   }
 
   function takePendingMentionReplyBatch(input: {
     sessionId: string;
     sourceRequestId: string;
   }): PendingMentionReplyBatch | null {
-    const batch = pendingMentionReplyBatchBySession.get(input.sessionId);
-    if (!batch) return null;
-    if (batch.sourceRequestId !== input.sourceRequestId) return null;
-
-    pendingMentionReplyBatchBySession.delete(input.sessionId);
-    return batch;
+    return takePendingMentionReplyBatchImpl({
+      pendingMentionReplyBatchBySession,
+      input,
+    });
   }
 
   function transformPendingUserText(
     item: PendingMentionReplyBatchItem,
   ): ((text: string) => string) | undefined {
-    if (!item.requestModelOverride) return undefined;
-    return (text: string) =>
-      stripLeadingModelOverrideDirective({
-        text,
-        botNames: item.botMentionNames,
-      });
+    return transformPendingUserTextImpl(item);
   }
 
   async function flushPendingMentionReplyBatchAsFollowUp(input: {
@@ -1601,13 +1184,12 @@ export async function startBusRequestRouter(params: {
 
     // Gate is only for active channels with no running request.
     const gateEnabled = resolveSessionGateEnabled(cfg, b.sessionId, b.parentChannelId);
-    const gate = params.routerGate ?? shouldForwardByGate;
     const previousMessageText = gateEnabled
       ? await resolvePreviousBatchMessageText(b.messages)
       : undefined;
 
     const decision = gateEnabled
-      ? await gate({
+      ? await evaluateRouterGate({
           sessionId,
           botName: cfg.surface.discord.botName,
           messages: b.messages,
@@ -1693,120 +1275,6 @@ export async function startBusRequestRouter(params: {
       transformUserTextForMessageId: overrideCarrier?.messageId,
       markActive: true,
     });
-  }
-
-  const gateSchema = z.object({
-    forward: z.boolean(),
-    reason: z.string().optional(),
-  });
-
-  async function shouldForwardByGate(input: RouterGateInput): Promise<RouterGateDecision> {
-    const gateCfg = cfg.surface.router.activeGate;
-
-    const timeoutMs = gateCfg.timeoutMs;
-    const abort = new AbortController();
-
-    const timeout = setTimeout(() => abort.abort(), timeoutMs);
-
-    try {
-      const resolved = resolveModelSlot(cfg, "fast");
-
-      const prompt = (() => {
-        if (input.context?.mode === "direct-reply-mention-disambiguation") {
-          const triggerMessageText = input.context.triggerMessageText ?? "";
-          const previousMessageText = input.context.previousMessageText ?? "";
-          const repliedToMessageText = input.context.repliedToMessageText ?? "";
-
-          return [
-            {
-              role: "system",
-              content: [
-                "You are a router gate for a chat bot.",
-                "Decide whether THIS bot should reply to this direct-reply message.",
-                "The user replied to this bot, did not mention this bot explicitly, and included another @mention.",
-                'Return strict JSON only: {"forward": true|false, "reason"?: string}',
-                "Use context to distinguish address vs reference mentions.",
-                "If uncertain, return forward=true.",
-              ].join("\n"),
-            },
-            {
-              role: "user",
-              content: [
-                `sessionId=${input.sessionId}`,
-                `botName=${input.botName}`,
-                "",
-                `triggerMessage=${triggerMessageText || "(none)"}`,
-                `repliedToMessage=${repliedToMessageText || "(none)"}`,
-                `previousMessage=${previousMessageText || "(none)"}`,
-                "",
-                "forward=true when the message still seeks this bot's input (even if another bot is referenced).",
-                "forward=false only when it is clearly addressed to someone else.",
-              ].join("\n"),
-            },
-          ] satisfies ModelMessage[];
-        }
-
-        const indirectMention = input.messages.some((m) =>
-          m.text.toLowerCase().includes(input.botName.toLowerCase()),
-        );
-
-        const transcript = input.messages.map((m) => `[user_id=${m.userId}] ${m.text}`).join("\n");
-
-        return [
-          {
-            role: "system",
-            content: [
-              "You are a router gate for a chat bot.",
-              "Decide whether the bot should start a new request and reply.",
-              'Return strict JSON only: {"forward": true|false, "reason"?: string}',
-              "If uncertain, return forward=false.",
-            ].join("\n"),
-          },
-          {
-            role: "user",
-            content: [
-              `sessionId=${input.sessionId}`,
-              `botName=${input.botName}`,
-              `indirectMention=${String(indirectMention)}`,
-              `previousMessage=${input.context?.previousMessageText ?? "(none)"}`,
-              "",
-              "Batch:",
-              transcript,
-              "",
-              "Special case: if this looks like a heartbeat poll that expects a reply (e.g. mentions HEARTBEAT.md/HEARTBEAT_OK), forward=true.",
-            ].join("\n"),
-          },
-        ] satisfies ModelMessage[];
-      })();
-
-      const res = await generateText({
-        model: resolved.model,
-        output: Output.object({ schema: gateSchema }),
-        prompt,
-        abortSignal: abort.signal,
-        maxOutputTokens: 1024,
-        providerOptions: resolved.providerOptions,
-      });
-
-      return res.output;
-    } catch (e) {
-      const failOpen = input.context?.mode === "direct-reply-mention-disambiguation";
-      logger.error(
-        "router gate error",
-        {
-          sessionId: input.sessionId,
-          mode: input.context?.mode ?? "active-batch",
-          failOpen,
-        },
-        e,
-      );
-      return {
-        forward: failOpen,
-        reason: failOpen ? "error-fail-open" : "error",
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
   }
 
   async function handleMentionMode(input: {
@@ -1965,306 +1433,100 @@ export async function startBusRequestRouter(params: {
     });
   }
 
-  async function publishBusRequest(input: {
-    requestId: string;
-    sessionId: string;
-    sessionConfigId: string;
-    queue: RequestQueueMode;
-    triggerType: "mention" | "reply" | "active";
-    sessionMode: SessionMode;
-    modelOverride?: string;
-    messages: ModelMessage[];
-    raw: unknown;
-  }) {
-    logger.debug("cmd.request.message publish", {
-      requestId: input.requestId,
-      sessionId: input.sessionId,
-      queue: input.queue,
-      triggerType: input.triggerType,
-      modelOverride: input.modelOverride,
-      messageCount: input.messages.length,
-      lastUserPreview: (() => {
-        for (let i = input.messages.length - 1; i >= 0; i--) {
-          const m = input.messages[i]!;
-          if (m.role !== "user") continue;
-          if (typeof m.content === "string") return previewText(m.content);
-        }
-        return undefined;
-      })(),
-    });
-
-    await bus.publish(
-      lilacEventTypes.CmdRequestMessage,
-      {
-        queue: input.queue,
-        messages: input.messages,
-        ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
-        raw: {
-          ...(input.raw && typeof input.raw === "object"
-            ? (input.raw as Record<string, unknown>)
-            : {}),
-          sessionMode: input.sessionMode,
-          sessionConfigId: input.sessionConfigId,
-          ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
-        },
-      },
-      {
-        headers: {
-          request_id: input.requestId,
-          session_id: input.sessionId,
-          request_client: "discord",
-        },
-      },
-    );
+  async function publishBusRequest(input: PublishBusRequestInput) {
+    await publishBusRequestImpl({ logger, bus, input });
   }
 
-  async function publishComposedRequest(input: {
+  type PublishComposedLocalInput = Parameters<typeof publishComposedRequestImpl>[0]["input"] & {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
-    requestId: string;
-    sessionId: string;
-    sessionConfigId: string;
-    queue: RequestQueueMode;
-    triggerType: "mention" | "reply" | "active";
-    msgRef: MsgRef;
-    userId: string;
-    sessionMode: SessionMode;
-    modelOverride?: string;
-    transformTriggerUserText?: (text: string) => string;
-    transformUserTextForMessageId?: string;
-  }) {
-    const { adapter, cfg, requestId, sessionId, queue, triggerType, msgRef } = input;
+  };
 
-    const self = await adapter.getSelf();
-    const discordUserAliasById = buildDiscordUserAliasById(cfg);
-
-    const composed = await composeRequestMessages(adapter, {
-      platform: "discord",
-      botUserId: self.userId,
-      botName: cfg.surface.discord.botName,
+  async function publishComposedRequest(input: PublishComposedLocalInput) {
+    const { adapter, bus, cfg, ...requestInput } = input;
+    await publishComposedRequestImpl({
+      adapter,
+      bus,
+      cfg,
       transcriptStore: params.transcriptStore,
-      discordUserAliasById,
-      transformUserText: input.transformTriggerUserText,
-      transformUserTextForMessageId: input.transformUserTextForMessageId,
-      trigger: {
-        type: triggerType === "mention" ? "mention" : "reply",
-        msgRef,
-      },
-    });
-
-    await publishBusRequest({
-      requestId,
-      sessionId,
-      sessionConfigId: input.sessionConfigId,
-      queue,
-      triggerType,
-      sessionMode: input.sessionMode,
-      modelOverride: input.modelOverride,
-      messages: composed.messages,
-      raw: {
-        triggerType,
-        chainMessageIds: composed.chainMessageIds,
-        mergedGroups: composed.mergedGroups,
-      },
+      logger,
+      input: requestInput,
     });
   }
 
-  async function publishActiveChannelPrompt(input: {
+  type PublishActiveChannelPromptLocalInput = Parameters<
+    typeof publishActiveChannelPromptImpl
+  >[0]["input"] & {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
-    requestId: string;
-    sessionId: string;
-    sessionConfigId: string;
-    triggerMsgRef: MsgRef | undefined;
-    triggerType: "mention" | "reply" | undefined;
-    sessionMode: SessionMode;
-    modelOverride?: string;
-    transformTriggerUserText?: (text: string) => string;
-    transformUserTextForMessageId?: string;
-    /** When true, update router's active session state immediately. */
     markActive: boolean;
-  }) {
-    const { adapter, cfg, requestId, sessionId, triggerMsgRef, triggerType } = input;
+  };
 
-    const self = await adapter.getSelf();
-    const discordUserAliasById = buildDiscordUserAliasById(cfg);
-
-    const composed =
-      triggerMsgRef && triggerType === "reply"
-        ? await composeRequestMessages(adapter, {
-            platform: "discord",
-            botUserId: self.userId,
-            botName: cfg.surface.discord.botName,
-            transcriptStore: params.transcriptStore,
-            discordUserAliasById,
-            transformUserText: input.transformTriggerUserText,
-            transformUserTextForMessageId: input.transformUserTextForMessageId,
-            trigger: {
-              type: "reply",
-              msgRef: triggerMsgRef,
-            },
-          })
-        : await composeRecentChannelMessages(adapter, {
-            platform: "discord",
-            sessionId,
-            botUserId: self.userId,
-            botName: cfg.surface.discord.botName,
-            limit: 8,
-            transcriptStore: params.transcriptStore,
-            discordUserAliasById,
-            transformUserText: input.transformTriggerUserText,
-            transformUserTextForMessageId: input.transformUserTextForMessageId,
-            triggerMsgRef,
-            triggerType,
-          });
-
-    await publishBusRequest({
-      requestId,
-      sessionId,
-      sessionConfigId: input.sessionConfigId,
-      queue: "prompt",
-      triggerType: triggerType ?? "active",
-      sessionMode: input.sessionMode,
-      modelOverride: input.modelOverride,
-      messages: composed.messages,
-      raw: {
-        triggerType: triggerType ?? "active",
-        chainMessageIds: composed.chainMessageIds,
-        mergedGroups: composed.mergedGroups,
-      },
+  async function publishActiveChannelPrompt(input: PublishActiveChannelPromptLocalInput) {
+    const { adapter, bus, cfg, markActive, ...requestInput } = input;
+    await publishActiveChannelPromptImpl({
+      adapter,
+      bus,
+      cfg,
+      transcriptStore: params.transcriptStore,
+      logger,
+      input: requestInput,
     });
 
-    // Only mark active when this request is expected to start immediately.
-    // For queued-behind requests we must not clobber the running request id.
-    if (input.markActive) {
-      activeBySession.set(sessionId, {
-        requestId,
+    if (markActive) {
+      activeBySession.set(input.sessionId, {
+        requestId: input.requestId,
         activeOutputMessageIds: new Set(),
       });
     }
   }
 
-  async function publishSingleMessageToActiveRequest(input: {
+  type PublishSingleMessageToActiveRequestLocalInput = Parameters<
+    typeof publishSingleMessageToActiveRequestImpl
+  >[0]["input"] & {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
-    requestId: string;
-    sessionId: string;
-    sessionConfigId: string;
-    queue: "followUp" | "steer" | "interrupt";
-    msgRef: MsgRef;
-    sessionMode: SessionMode;
-    transformUserText?: (text: string) => string;
-  }) {
-    const { adapter, cfg, requestId, sessionId, queue, msgRef } = input;
+  };
 
-    const self = await adapter.getSelf();
-    const discordUserAliasById = buildDiscordUserAliasById(cfg);
-
-    const msg = await composeSingleMessage(adapter, {
-      platform: "discord",
-      botUserId: self.userId,
-      botName: cfg.surface.discord.botName,
-      msgRef,
-      discordUserAliasById,
-      transformUserText: input.transformUserText,
-    });
-
-    if (!msg) return;
-
-    await publishBusRequest({
-      requestId,
-      sessionId,
-      sessionConfigId: input.sessionConfigId,
-      queue,
-      triggerType: "active",
-      sessionMode: input.sessionMode,
-      messages: [msg],
-      raw: {
-        triggerType: "active",
-      },
+  async function publishSingleMessageToActiveRequest(
+    input: PublishSingleMessageToActiveRequestLocalInput,
+  ) {
+    const { adapter, bus, cfg, ...requestInput } = input;
+    await publishSingleMessageToActiveRequestImpl({
+      adapter,
+      bus,
+      cfg,
+      logger,
+      input: requestInput,
     });
   }
 
-  async function publishSingleMessagePrompt(input: {
+  type PublishSingleMessagePromptLocalInput = Parameters<
+    typeof publishSingleMessagePromptImpl
+  >[0]["input"] & {
     adapter: SurfaceAdapter;
     bus: LilacBus;
     cfg: CoreConfig;
-    requestId: string;
-    sessionId: string;
-    sessionConfigId: string;
-    msgRef: MsgRef;
-    sessionMode: SessionMode;
-    modelOverride?: string;
-    transformUserText?: (text: string) => string;
-    raw?: Record<string, unknown>;
-  }) {
-    const { adapter, cfg, requestId, sessionId, msgRef } = input;
+  };
 
-    const self = await adapter.getSelf();
-    const discordUserAliasById = buildDiscordUserAliasById(cfg);
-
-    const msg = await composeSingleMessage(adapter, {
-      platform: "discord",
-      botUserId: self.userId,
-      botName: cfg.surface.discord.botName,
-      msgRef,
-      discordUserAliasById,
-      transformUserText: input.transformUserText,
-    });
-
-    if (!msg) return;
-
-    await publishBusRequest({
-      requestId,
-      sessionId,
-      sessionConfigId: input.sessionConfigId,
-      queue: "prompt",
-      triggerType: "active",
-      sessionMode: input.sessionMode,
-      modelOverride: input.modelOverride,
-      messages: [msg],
-      raw: {
-        triggerType: "active",
-        chainMessageIds: [msgRef.messageId],
-        ...input.raw,
-      },
+  async function publishSingleMessagePrompt(input: PublishSingleMessagePromptLocalInput) {
+    const { adapter, bus, cfg, ...requestInput } = input;
+    await publishSingleMessagePromptImpl({
+      adapter,
+      bus,
+      cfg,
+      logger,
+      input: requestInput,
     });
   }
 
-  async function publishSurfaceOutputReanchor(input: {
-    bus: LilacBus;
-    requestId: string;
-    sessionId: string;
-    inheritReplyTo: boolean;
-    replyTo?: MsgRef;
-    mode?: "steer" | "interrupt";
-  }) {
-    const { bus, requestId, sessionId, inheritReplyTo, replyTo, mode } = input;
-
-    await bus.publish(
-      lilacEventTypes.CmdSurfaceOutputReanchor,
-      {
-        inheritReplyTo,
-        mode,
-        replyTo: replyTo
-          ? {
-              platform: replyTo.platform,
-              channelId: replyTo.channelId,
-              messageId: replyTo.messageId,
-            }
-          : undefined,
-      },
-      {
-        headers: {
-          request_id: requestId,
-          session_id: sessionId,
-          request_client: "discord",
-        },
-      },
-    );
+  async function publishSurfaceOutputReanchor(
+    input: Parameters<typeof publishSurfaceOutputReanchorImpl>[0],
+  ) {
+    await publishSurfaceOutputReanchorImpl(input);
   }
 
   return {

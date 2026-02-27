@@ -212,7 +212,10 @@ const discordSurfaceSchema = z
     /** Output rendering mode for Discord reply streams. */
     outputMode: z.enum(["inline", "preview"]).default("inline"),
 
-    /** Optional: allow Discord reply + @mention notifications for output messages. */
+    /**
+     * Optional global override for Discord output notifications.
+     * true = allow reply ping + @mentions, false = suppress by default.
+     */
     outputNotification: z.boolean().optional(),
 
     /** Streaming embed title phrases rotated while a request is in-progress. */

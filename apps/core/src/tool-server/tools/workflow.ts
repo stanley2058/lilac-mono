@@ -86,6 +86,7 @@ export class Workflow implements ServerTool {
         input: [
           "--session-id=<string> | Target session/channel (raw id, <#id>, or configured token alias)",
           "--text=<string> | Message to send",
+          "--silent=<boolean> | Disable all notifications for this message (mentions + reply ping)",
           "--paths=<string | string[]> | Optional local attachment paths",
           "--filenames=<string | string[]> | Optional filenames for each attachment",
           "--mime-types=<string | string[]> | Optional mime types for each attachment",
@@ -320,7 +321,12 @@ export class Workflow implements ServerTool {
       const sentRef = await this.params.adapter.sendMsg(
         sessionRef,
         { text: payload.text, attachments },
-        replyTo ? ({ replyTo } satisfies SendOpts) : undefined,
+        replyTo || payload.silent === true
+          ? ({
+              ...(replyTo ? { replyTo } : {}),
+              ...(payload.silent === true ? { silent: true } : {}),
+            } satisfies SendOpts)
+          : undefined,
       );
 
       const sentMessageId = sentRef.messageId;
@@ -528,6 +534,7 @@ export class Workflow implements ServerTool {
 const workflowSendAndWaitInputSchema = z.object({
   sessionId: z.string().min(1),
   text: z.string().min(1),
+  silent: z.coerce.boolean().optional(),
   paths: optionalNonEmptyStringListInputSchema,
   filenames: optionalNonEmptyStringListInputSchema,
   mimeTypes: optionalNonEmptyStringListInputSchema,

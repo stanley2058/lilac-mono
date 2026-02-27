@@ -5,6 +5,7 @@ import {
   hasExplicitDiscordUserMentionInContent,
   isExplicitDiscordUserMention,
   isRoutableDiscordUserMessage,
+  resolveOutputNotificationEnabled,
   resolveEffectiveSessionModelOverride,
 } from "../../../src/surface/discord/discord-adapter";
 
@@ -167,5 +168,19 @@ describe("resolveEffectiveSessionModelOverride", () => {
     });
 
     expect(result).toBeUndefined();
+  });
+});
+
+describe("resolveOutputNotificationEnabled", () => {
+  it("defaults to enabled when config is unset", () => {
+    expect(resolveOutputNotificationEnabled({})).toBe(true);
+  });
+
+  it("respects explicit config false", () => {
+    expect(resolveOutputNotificationEnabled({ configured: false })).toBe(false);
+  });
+
+  it("forces notifications off when silent=true", () => {
+    expect(resolveOutputNotificationEnabled({ configured: true, silent: true })).toBe(false);
   });
 });

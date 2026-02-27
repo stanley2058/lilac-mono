@@ -65,6 +65,8 @@ export interface SurfaceOutputStream {
 
 export type StartOutputOpts = {
   replyTo?: MsgRef;
+  /** Disable all Discord notifications for this output stream (mentions + reply ping). */
+  silent?: boolean;
   /** Router-derived session mode. Used for surface-specific behaviors (e.g. mention pings). */
   sessionMode?: "mention" | "active";
   /** Request id for this stream (used for surface controls like Cancel buttons). */

@@ -108,6 +108,8 @@ export type ContentOpts = {
 
 export type SendOpts = {
   replyTo?: MsgRef;
+  /** Disable all Discord notifications for this send (mentions + reply ping). */
+  silent?: boolean;
 };
 
 export type AdapterCapabilities = {

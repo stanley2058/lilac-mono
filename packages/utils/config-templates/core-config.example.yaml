@@ -61,9 +61,11 @@ surface:
     #   delete the preview window
     outputMode: inline
 
-    # Optional: enable Discord reply notifications and user-mention notifications
-    # for final output messages. Default is disabled.
-    # outputNotification: true
+    # Optional: global override for Discord notifications on output messages.
+    # - true: allow reply ping + @user mentions to notify
+    # - false: suppress notifications by default
+    # If omitted, notifications are enabled unless a tool call uses --silent=true.
+    # outputNotification: false
 
     # Streaming embed title phrases for in-progress updates.
     # A random entry is selected and rotated periodically while the request is running.

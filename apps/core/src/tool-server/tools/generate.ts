@@ -29,6 +29,12 @@ type SupportedImageModelId =
    */
   | "nanobanana"
   /**
+   * - Provider/slug: openrouter/google/gemini-3.1-flash-image-preview
+   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 1:4, 4:1, 1:8, 8:1
+   * - Supported resolution tiers: 1K, 2K, 4K
+   */
+  | "nanobanana-2"
+  /**
    * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16
    * - Supported resolution tiers: 1K, 2K, 4K
    */
@@ -69,6 +75,14 @@ const NANOBANANA_ALLOWED_ASPECT_RATIOS = [
   "9:16",
 ] as const;
 
+const NANOBANANA_2_ALLOWED_ASPECT_RATIOS = [
+  ...NANOBANANA_ALLOWED_ASPECT_RATIOS,
+  "1:4",
+  "4:1",
+  "1:8",
+  "8:1",
+] as const;
+
 const GROK_IMAGE_ALLOWED_ASPECT_RATIOS = [
   "1:1",
   "16:9",
@@ -86,6 +100,7 @@ const GROK_IMAGE_ALLOWED_ASPECT_RATIOS = [
 ] as const;
 
 const DEFAULT_IMAGE_MODEL_FALLBACK_ORDER: readonly SupportedImageModelId[] = [
+  "nanobanana-2",
   "nanobanana-pro",
   "gpt-5-image",
   "grok-imagine-image-pro",
@@ -150,7 +165,7 @@ export const imageGenerateInputSchema = z
         [
           "Optional output size as '{width}x{height}'. (Use only one of --size or --aspect-ratio)",
           "- For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
-          "- For nanobanana(-pro): calculate based-on 1K, 2K, 4K. E.g.,",
+          "- For nanobanana(-2|-pro): calculate based-on 1K, 2K, 4K. E.g.,",
           "  - 1:1 @ 1K/2K/4K: 1024^2 / 2048^2 / 4096^2",
           "  - 16:9 @ 4K: about 7282 x 4096",
           "  - 9:16 @ 4K: about 4096 x 7282",
@@ -165,7 +180,8 @@ export const imageGenerateInputSchema = z
         [
           "Optional aspect ratio. (Use only one of --size or --aspect-ratio)",
           "- For gpt-5-image: 1:1 | 3:2 | 2:3.",
-          "- For nanobanana(-pro): 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
+          "- For nanobanana/nanobanana-pro: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
+          "- For nanobanana-2: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16 | 1:4 | 4:1 | 1:8 | 8:1.",
           "- For grok-imagine-image(-pro): 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 2:1 | 1:2 | 19.5:9 | 9:19.5 | 20:9 | 9:20.",
         ].join("\n"),
       ),
@@ -279,11 +295,16 @@ function validateGptImageInput(input: ImageGenerateInput): void {
 
 function validateNanobananaInput(
   input: ImageGenerateInput,
-  modelId: "nanobanana" | "nanobanana-pro",
+  modelId: "nanobanana" | "nanobanana-2" | "nanobanana-pro",
 ): void {
-  if (input.aspectRatio && !isOneOf(NANOBANANA_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
+  const allowedAspectRatios =
+    modelId === "nanobanana-2"
+      ? NANOBANANA_2_ALLOWED_ASPECT_RATIOS
+      : NANOBANANA_ALLOWED_ASPECT_RATIOS;
+
+  if (input.aspectRatio && !isOneOf(allowedAspectRatios, input.aspectRatio)) {
     throw new Error(
-      `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${NANOBANANA_ALLOWED_ASPECT_RATIOS.join(", ")}.`,
+      `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${allowedAspectRatios.join(", ")}.`,
     );
   }
 }
@@ -337,6 +358,16 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       return undefined;
     },
     validateInput: (input) => validateNanobananaInput(input, "nanobanana"),
+  },
+  {
+    id: "nanobanana-2",
+    createModel: (providers) => {
+      if (isConfiguredProvider("openrouter")) {
+        return providers.openrouter?.imageModel("google/gemini-3.1-flash-image-preview");
+      }
+      return undefined;
+    },
+    validateInput: (input) => validateNanobananaInput(input, "nanobanana-2"),
   },
   {
     id: "nanobanana-pro",

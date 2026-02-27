@@ -320,6 +320,96 @@ describe("request-composition attachments", () => {
     expect(calls).toBe(1);
   });
 
+  it("inlines text when mimeType is application/x-yaml", async () => {
+    let calls = 0;
+    // @ts-expect-error stub fetch
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response("name: lilac\nmode: active\n", {
+        headers: { "content-type": "application/x-yaml" },
+      });
+    };
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: 0,
+      raw: {
+        discord: {
+          attachments: [
+            {
+              url: "https://cdn.discordapp.com/attachments/1/2/config.yaml",
+              filename: "config.yaml",
+              mimeType: "application/x-yaml",
+            },
+          ],
+        },
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    const content = out!.content as any[];
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain("name: lilac");
+    expect(calls).toBe(1);
+  });
+
+  it("inlines text when mimeType ends with +json", async () => {
+    let calls = 0;
+    // @ts-expect-error stub fetch
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response('{"status":"ok"}', {
+        headers: { "content-type": "application/vnd.api+json" },
+      });
+    };
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: 0,
+      raw: {
+        discord: {
+          attachments: [
+            {
+              url: "https://cdn.discordapp.com/attachments/1/2/doc.api.json",
+              filename: "doc.api.json",
+              mimeType: "application/vnd.api+json",
+            },
+          ],
+        },
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    const content = out!.content as any[];
+    expect(content[1].type).toBe("text");
+    expect(content[1].text).toContain('{"status":"ok"}');
+    expect(calls).toBe(1);
+  });
+
   it("treats non-text binary as URL-only text", async () => {
     // @ts-expect-error stub fetch
     globalThis.fetch = async () => {
