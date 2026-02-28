@@ -472,6 +472,223 @@ function mustPresentString(v: unknown, label: string): string {
   throw new Error(`surface tool internal error: missing ${label}`);
 }
 
+type SurfaceMessageAttachmentKind = "image" | "video" | "audio" | "file";
+
+type SurfaceMessageAttachmentMeta = {
+  url: string;
+  kind: SurfaceMessageAttachmentKind;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+type SurfaceMessageAttachmentHints = {
+  hasAttachments: boolean;
+  attachmentCount: number;
+  hasMedia: boolean;
+  mediaCount: number;
+  mediaKinds: SurfaceMessageAttachmentKind[];
+};
+
+const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
+const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+function normalizeMimeTypeForAttachment(mimeType: string): string | undefined {
+  const normalized = mimeType.split(";")[0]?.trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function inferAttachmentMimeType(params: {
+  mimeType?: string;
+  filename?: string;
+  url: string;
+}): string | undefined {
+  if (params.mimeType) {
+    const normalized = normalizeMimeTypeForAttachment(params.mimeType);
+    if (normalized) return normalized;
+  }
+
+  if (params.filename) {
+    const inferred = inferMimeTypeFromFilename(params.filename);
+    if (inferred !== "application/octet-stream") return inferred;
+  }
+
+  const basenameFromUrl = (() => {
+    try {
+      const u = new URL(params.url);
+      const pathBasename = basename(u.pathname);
+      return pathBasename.length > 0 ? pathBasename : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  if (basenameFromUrl) {
+    const inferred = inferMimeTypeFromFilename(basenameFromUrl);
+    if (inferred !== "application/octet-stream") return inferred;
+  }
+
+  return undefined;
+}
+
+function attachmentKindFromMimeType(mimeType: string | undefined): SurfaceMessageAttachmentKind {
+  if (!mimeType) return "file";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+function normalizeAttachmentMeta(input: unknown): SurfaceMessageAttachmentMeta | null {
+  if (!input || typeof input !== "object") return null;
+  const o = input as Record<string, unknown>;
+
+  const url = typeof o.url === "string" ? o.url : null;
+  if (!url) return null;
+
+  const filename =
+    typeof o.filename === "string" ? o.filename : typeof o.name === "string" ? o.name : undefined;
+
+  const rawMimeType =
+    typeof o.mimeType === "string"
+      ? o.mimeType
+      : typeof o.contentType === "string"
+        ? o.contentType
+        : undefined;
+
+  const mimeType = inferAttachmentMimeType({
+    mimeType: rawMimeType,
+    filename,
+    url,
+  });
+
+  const size = typeof o.size === "number" ? o.size : undefined;
+
+  return {
+    url,
+    kind: attachmentKindFromMimeType(mimeType),
+    ...(filename ? { filename } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    ...(size !== undefined ? { size } : {}),
+  };
+}
+
+function extractAttachmentMetaFromList(list: readonly unknown[]): SurfaceMessageAttachmentMeta[] {
+  const out: SurfaceMessageAttachmentMeta[] = [];
+  for (const item of list) {
+    const normalized = normalizeAttachmentMeta(item);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
+
+function getDiscordReferenceTypeFromRaw(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+
+  if ("reference" in o) {
+    const ref = o.reference;
+    if (ref && typeof ref === "object") {
+      const type = (ref as Record<string, unknown>).type;
+      if (typeof type === "number") return type;
+    }
+  }
+
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+
+  return discord && typeof discord.referenceType === "number" ? discord.referenceType : undefined;
+}
+
+function getForwardSnapshotMessageFromRaw(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const referenceType = getDiscordReferenceTypeFromRaw(raw) ?? DISCORD_REFERENCE_TYPE_DEFAULT;
+  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
+
+  const o = raw as Record<string, unknown>;
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+
+  const resolveSnapshotMessage = (value: unknown): Record<string, unknown> | null => {
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const first = value[0];
+    if (!first || typeof first !== "object") return null;
+
+    const firstObj = first as Record<string, unknown>;
+    const nestedMessage = firstObj.message;
+    if (nestedMessage && typeof nestedMessage === "object") {
+      return nestedMessage as Record<string, unknown>;
+    }
+
+    return firstObj;
+  };
+
+  return (
+    resolveSnapshotMessage(o.messageSnapshots) ?? resolveSnapshotMessage(discord?.messageSnapshots)
+  );
+}
+
+function extractDiscordAttachmentMetaFromRaw(raw: unknown): SurfaceMessageAttachmentMeta[] {
+  if (!raw || typeof raw !== "object") return [];
+
+  const forwardSnapshot = getForwardSnapshotMessageFromRaw(raw);
+  if (forwardSnapshot) {
+    const snapshotList =
+      "attachments" in forwardSnapshot && Array.isArray(forwardSnapshot.attachments)
+        ? forwardSnapshot.attachments
+        : null;
+    if (snapshotList) {
+      const fromSnapshot = extractAttachmentMetaFromList(snapshotList);
+      if (fromSnapshot.length > 0) return fromSnapshot;
+    }
+  }
+
+  const o = raw as Record<string, unknown>;
+
+  const listFromTopLevel =
+    "attachments" in o && Array.isArray(o.attachments) ? o.attachments : null;
+
+  const discord =
+    "discord" in o && o.discord && typeof o.discord === "object"
+      ? (o.discord as Record<string, unknown>)
+      : null;
+
+  const listFromDiscord =
+    discord && "attachments" in discord && Array.isArray(discord.attachments)
+      ? discord.attachments
+      : null;
+
+  const list = listFromDiscord ?? listFromTopLevel;
+  if (!list) return [];
+
+  return extractAttachmentMetaFromList(list);
+}
+
+function getMessageAttachmentMeta(msg: SurfaceMessage): SurfaceMessageAttachmentMeta[] {
+  if (msg.session.platform === "discord") {
+    return extractDiscordAttachmentMetaFromRaw(msg.raw);
+  }
+  return [];
+}
+
+function buildAttachmentHints(
+  attachments: readonly SurfaceMessageAttachmentMeta[],
+): SurfaceMessageAttachmentHints {
+  const mediaFiles = attachments.filter((a) => a.kind !== "file");
+  return {
+    hasAttachments: attachments.length > 0,
+    attachmentCount: attachments.length,
+    hasMedia: mediaFiles.length > 0,
+    mediaCount: mediaFiles.length,
+    mediaKinds: Array.from(new Set(mediaFiles.map((a) => a.kind))),
+  };
+}
+
 function getDiscordMessageTypeMetaFromRaw(raw: unknown): {
   typeId?: number;
   typeName?: string;
@@ -560,7 +777,7 @@ function toSessionMeta(session: SessionRef): {
 
 function toCompactMessage(
   msg: SurfaceMessage,
-  opts: { includeRaw: boolean },
+  opts: { includeRaw: boolean; includeAttachments: boolean },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
     messageId: msg.ref.messageId,
@@ -584,6 +801,21 @@ function toCompactMessage(
     }
   }
 
+  const attachments = getMessageAttachmentMeta(msg);
+  const mediaFiles = attachments.filter((a) => a.kind !== "file");
+  const hints = buildAttachmentHints(attachments);
+
+  out["hasAttachments"] = hints.hasAttachments;
+  out["attachmentCount"] = hints.attachmentCount;
+  out["hasMedia"] = hints.hasMedia;
+  out["mediaCount"] = hints.mediaCount;
+  out["mediaKinds"] = hints.mediaKinds;
+
+  if (opts.includeAttachments) {
+    out["attachments"] = attachments;
+    out["mediaFiles"] = mediaFiles;
+  }
+
   if (opts.includeRaw && msg.raw !== undefined) {
     out["raw"] = msg.raw;
   }
@@ -596,6 +828,7 @@ function buildMessagesListOutput(params: {
   messages: readonly SurfaceMessage[];
   order: MessageListOrder;
   includeRaw: boolean;
+  includeAttachments: boolean;
 }): {
   meta: {
     session: {
@@ -618,7 +851,12 @@ function buildMessagesListOutput(params: {
       order: params.order,
       count: sorted.length,
     },
-    messages: sorted.map((msg) => toCompactMessage(msg, { includeRaw: params.includeRaw })),
+    messages: sorted.map((msg) =>
+      toCompactMessage(msg, {
+        includeRaw: params.includeRaw,
+        includeAttachments: params.includeAttachments,
+      }),
+    ),
   };
 }
 
@@ -643,7 +881,10 @@ function buildMessagesReadOutput(params: {
       session: toSessionMeta(session),
     },
     message: params.message
-      ? toCompactMessage(params.message, { includeRaw: params.includeRaw })
+      ? toCompactMessage(params.message, {
+          includeRaw: params.includeRaw,
+          includeAttachments: true,
+        })
       : null,
   };
 }
@@ -682,6 +923,12 @@ const messagesListInputSchema = baseInputSchema.extend({
     .boolean()
     .optional()
     .describe("Include raw platform payloads (default: false)."),
+  includeAttachments: z.coerce
+    .boolean()
+    .optional()
+    .describe(
+      "Include full attachment/media metadata arrays (default: false; list always includes attachment/media hints).",
+    ),
 });
 
 const messagesReadInputSchema = baseInputSchema.extend({
@@ -1066,7 +1313,7 @@ export class Surface implements ServerTool {
         replyToMessageId: "When sending a message, optionally reply to an existing messageId.",
         silent: "When true, suppress all notifications for this send (mentions + reply ping).",
         attachments:
-          "Local files attached to an outbound message (paths resolved relative to request cwd).",
+          "Outbound: local files attached to a send (paths resolved relative to request cwd). Inbound: message attachment/media metadata is first-class on surface.messages.read and hinted on surface.messages.list.",
       },
       sessionIdFormats:
         effectiveClient === "discord" || effectiveClient === undefined
@@ -1228,6 +1475,7 @@ export class Surface implements ServerTool {
     const client = resolveClient({ inputClient: input.client, ctx });
     const order: MessageListOrder = input.order ?? "ts_desc";
     const includeRaw = input.includeRaw ?? false;
+    const includeAttachments = input.includeAttachments ?? false;
 
     if (client === "github") {
       const sessionId = mustPresentString(input.sessionId, "sessionId");
@@ -1270,6 +1518,7 @@ export class Surface implements ServerTool {
         messages,
         order,
         includeRaw,
+        includeAttachments,
       });
     }
 
@@ -1327,6 +1576,7 @@ export class Surface implements ServerTool {
       messages: filtered,
       order,
       includeRaw,
+      includeAttachments,
     });
   }
 
@@ -1546,6 +1796,19 @@ export class Surface implements ServerTool {
       hits.reverse();
     }
 
+    const attachmentHintsByMessageId = new Map<string, SurfaceMessageAttachmentHints>();
+    await Promise.all(
+      hits.map(async (hit) => {
+        try {
+          const msg = await this.params.adapter.readMsg(hit.ref);
+          const attachments = msg ? getMessageAttachmentMeta(msg) : [];
+          attachmentHintsByMessageId.set(hit.ref.messageId, buildAttachmentHints(attachments));
+        } catch {
+          attachmentHintsByMessageId.set(hit.ref.messageId, buildAttachmentHints([]));
+        }
+      }),
+    );
+
     return {
       meta: {
         session: toSessionMeta(sessionRef),
@@ -1563,6 +1826,7 @@ export class Surface implements ServerTool {
         ts: hit.ts,
         editedTs: hit.editedTs,
         score: hit.score,
+        ...(attachmentHintsByMessageId.get(hit.ref.messageId) ?? buildAttachmentHints([])),
       })),
     };
   }

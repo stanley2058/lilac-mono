@@ -310,6 +310,16 @@ describe("tool-server surface", () => {
             userId: "u1",
             text: "deploy completed successfully",
             ts: 100,
+            raw: {
+              discord: {
+                attachments: [
+                  {
+                    url: "https://cdn.discordapp.com/attachments/1/2/deploy.png",
+                    filename: "deploy.png",
+                  },
+                ],
+              },
+            },
           },
           {
             ref: { platform: "discord", channelId: c1, messageId: "m2" },
@@ -348,7 +358,15 @@ describe("tool-server surface", () => {
         session: { channelId: string };
         order: string;
       };
-      hits: Array<{ messageId: string; userAlias?: string }>;
+      hits: Array<{
+        messageId: string;
+        userAlias?: string;
+        hasAttachments?: boolean;
+        attachmentCount?: number;
+        hasMedia?: boolean;
+        mediaCount?: number;
+        mediaKinds?: string[];
+      }>;
       heal: { attempted: boolean; limit: number } | null;
     };
 
@@ -357,6 +375,11 @@ describe("tool-server surface", () => {
     expect(first.hits.length).toBe(1);
     expect(first.hits[0]?.messageId).toBe("m1");
     expect(first.hits[0]!.userAlias).toBe("alice");
+    expect(first.hits[0]?.hasAttachments).toBe(true);
+    expect(first.hits[0]?.attachmentCount).toBe(1);
+    expect(first.hits[0]?.hasMedia).toBe(true);
+    expect(first.hits[0]?.mediaCount).toBe(1);
+    expect(first.hits[0]?.mediaKinds).toEqual(["image"]);
     expect(first.heal?.attempted).toBe(true);
     expect(first.heal?.limit).toBe(300);
     expect(adapter.listCalls.length).toBe(1);
@@ -441,7 +464,10 @@ describe("tool-server surface", () => {
             userId: "u",
             text: "hi",
             ts: 0,
-            raw: { sample: true },
+            raw: {
+              sample: true,
+              attachments: [{ url: "https://cdn.discordapp.com/attachments/1/2/log.txt" }],
+            },
           },
         ],
       },
@@ -453,11 +479,20 @@ describe("tool-server surface", () => {
       sessionId: channelId,
       messageId: "m1",
     })) as {
-      message: { raw?: unknown } | null;
+      message: {
+        raw?: unknown;
+        hasAttachments?: boolean;
+        attachmentCount?: number;
+        attachments?: unknown[];
+      } | null;
     };
 
     expect(base.message).not.toBeNull();
     expect("raw" in (base.message ?? {})).toBe(false);
+    expect(base.message?.hasAttachments).toBe(true);
+    expect(base.message?.attachmentCount).toBe(1);
+    expect(Array.isArray(base.message?.attachments)).toBe(true);
+    expect(base.message?.attachments?.length).toBe(1);
 
     const withRaw = (await tool.call("surface.messages.read", {
       client: "discord",
@@ -468,7 +503,10 @@ describe("tool-server surface", () => {
       message: { raw?: unknown } | null;
     };
 
-    expect(withRaw.message?.raw).toEqual({ sample: true });
+    expect(withRaw.message?.raw).toEqual({
+      sample: true,
+      attachments: [{ url: "https://cdn.discordapp.com/attachments/1/2/log.txt" }],
+    });
   });
 
   it("accepts discord:channel:<id> as sessionId", async () => {
@@ -621,6 +659,93 @@ describe("tool-server surface", () => {
     expect(ascWithRaw.meta.order).toBe("ts_asc");
     expect(ascWithRaw.messages.map((m) => m.messageId)).toEqual(["m1", "m2"]);
     expect(ascWithRaw.messages[0]?.raw).toBeDefined();
+  });
+
+  it("returns attachment/media hints in list and full metadata on demand", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u1",
+            text: "see files",
+            ts: 100,
+            raw: {
+              discord: {
+                attachments: [
+                  {
+                    url: "https://cdn.discordapp.com/attachments/1/2/screenshot.png",
+                    filename: "screenshot.png",
+                    size: 42,
+                  },
+                  {
+                    url: "https://cdn.discordapp.com/attachments/1/2/notes.pdf",
+                    filename: "notes.pdf",
+                    mimeType: "application/pdf",
+                    size: 88,
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+
+    const hintsOnly = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+    })) as {
+      messages: Array<{
+        hasAttachments?: boolean;
+        attachmentCount?: number;
+        hasMedia?: boolean;
+        mediaCount?: number;
+        mediaKinds?: string[];
+        attachments?: unknown[];
+      }>;
+    };
+
+    expect(hintsOnly.messages[0]?.hasAttachments).toBe(true);
+    expect(hintsOnly.messages[0]?.attachmentCount).toBe(2);
+    expect(hintsOnly.messages[0]?.hasMedia).toBe(true);
+    expect(hintsOnly.messages[0]?.mediaCount).toBe(1);
+    expect(hintsOnly.messages[0]?.mediaKinds).toEqual(["image"]);
+    expect("attachments" in (hintsOnly.messages[0] ?? {})).toBe(false);
+
+    const withAttachments = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      includeAttachments: true,
+    })) as {
+      messages: Array<{
+        attachments?: Array<{ kind?: string; filename?: string; mimeType?: string }>;
+        mediaFiles?: Array<{ kind?: string }>;
+      }>;
+    };
+
+    expect(withAttachments.messages[0]?.attachments?.length).toBe(2);
+    expect(withAttachments.messages[0]?.attachments?.[0]?.kind).toBe("image");
+    expect(withAttachments.messages[0]?.attachments?.[0]?.mimeType).toBe("image/png");
+    expect(withAttachments.messages[0]?.attachments?.[1]?.kind).toBe("file");
+    expect(withAttachments.messages[0]?.mediaFiles?.length).toBe(1);
+    expect(withAttachments.messages[0]?.mediaFiles?.[0]?.kind).toBe("image");
   });
 
   it("supports search order options", async () => {
