@@ -11,7 +11,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "ai": "^6.0.77",
+    "ai": "^6.0.105",
     "ioredis": "^5.9.2",
     "superjson": "^2.2.6",
     "@stanley2058/lilac-utils": "workspace:*",
