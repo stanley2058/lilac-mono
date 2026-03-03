@@ -178,6 +178,64 @@ describe("resolveModelSlot", () => {
     expect(resolved.providerOptions?.codex_instructions).toBeUndefined();
   });
 
+  it("uses response_commentary as a top-level meta option for openai", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openai/gpt-4o",
+      options: {
+        response_commentary: true,
+        openai: {
+          temperature: 0.1,
+        },
+      },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.responseCommentary).toBe(true);
+    expect(resolved.providerOptions?.openai?.parallelToolCalls).toBe(true);
+    expect(resolved.providerOptions?.openai?.temperature).toBe(0.1);
+
+    // Ensure the meta key is not forwarded.
+    expect(resolved.providerOptions?.response_commentary).toBeUndefined();
+  });
+
+  it("uses response_commentary as a top-level meta option for codex", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "codex/gpt-4o",
+      options: {
+        response_commentary: true,
+      },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.responseCommentary).toBe(true);
+    expect(resolved.providerOptions?.openai?.instructions).toBe(CODEX_BASE_INSTRUCTIONS);
+    expect(resolved.providerOptions?.openai?.parallelToolCalls).toBe(true);
+    expect(resolved.providerOptions?.openai?.store).toBe(false);
+
+    // Ensure the meta key is not forwarded.
+    expect(resolved.providerOptions?.response_commentary).toBeUndefined();
+  });
+
+  it("ignores response_commentary for non-openai and non-codex providers", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openrouter/anthropic/claude-sonnet-4.5",
+      options: {
+        response_commentary: true,
+        openrouter: {
+          route: "fallback",
+        },
+      },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.responseCommentary).toBeUndefined();
+    expect(resolved.providerOptions?.openrouter?.route).toBe("fallback");
+    expect(resolved.providerOptions?.response_commentary).toBeUndefined();
+  });
+
   it("applies codex defaults when options are omitted", () => {
     const cfg = baseConfig();
     cfg.models.main = {
