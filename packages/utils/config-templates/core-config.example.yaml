@@ -164,6 +164,9 @@ models:
     # model: "openai-compatible/your-model-id"
     # options:
     #   temperature: 0.2
+    #   # For direct openai/codex providers, append commentary/final_answer
+    #   # channel guidance to the end of the system prompt.
+    #   response_commentary: true
     #   # For openai/codex providers, parallelToolCalls defaults to true.
     #   # Set false to force sequential provider-side tool calling.
     #   openai:

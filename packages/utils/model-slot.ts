@@ -26,6 +26,8 @@ export type ResolvedModelSlot = {
   model: LanguageModel;
   /** AI SDK providerOptions; may include multiple provider namespaces. */
   providerOptions?: { [x: string]: JSONObject };
+  /** Optional Responses API commentary-phase behavior toggle for OpenAI/Codex providers. */
+  responseCommentary?: boolean;
 };
 
 export type ResolvedModelRef = Omit<ResolvedModelSlot, "slot">;
@@ -143,20 +145,26 @@ function withOpenAIParallelToolCallsDefault(
   };
 }
 
-function buildProviderOptions(params: {
-  provider: string;
-  options?: JSONObject;
-}): { [x: string]: JSONObject } | undefined {
+function buildProviderOptions(params: { provider: string; options?: JSONObject }): {
+  providerOptions?: { [x: string]: JSONObject };
+  responseCommentary?: boolean;
+} {
   const options = params.options ?? {};
 
-  const { codex_instructions, ...rest } = options as JSONObject & {
+  const { codex_instructions, response_commentary, ...rest } = options as JSONObject & {
     codex_instructions?: JSONValue;
+    response_commentary?: JSONValue;
   };
 
   const hasRest = Object.keys(rest).length > 0;
   const codexInstructions =
     typeof codex_instructions === "string" && codex_instructions.length > 0
       ? codex_instructions
+      : undefined;
+
+  const responseCommentary =
+    response_commentary === true && (params.provider === "openai" || params.provider === "codex")
+      ? true
       : undefined;
 
   const provider = params.provider;
@@ -172,7 +180,10 @@ function buildProviderOptions(params: {
 
   if (provider !== "codex") {
     // Non-codex: codex_instructions is ignored; also not forwarded.
-    return withOpenAIParallelToolCallsDefault(provider, providerOptions);
+    return {
+      providerOptions: withOpenAIParallelToolCallsDefault(provider, providerOptions),
+      responseCommentary,
+    };
   }
 
   // Codex: ensure OpenAI namespace exists + has instructions.
@@ -192,10 +203,13 @@ function buildProviderOptions(params: {
     store: false,
   } satisfies JSONObject;
 
-  return withOpenAIParallelToolCallsDefault(provider, {
-    ...providerOptions,
-    [openaiKey]: nextOpenAI,
-  });
+  return {
+    providerOptions: withOpenAIParallelToolCallsDefault(provider, {
+      ...providerOptions,
+      [openaiKey]: nextOpenAI,
+    }),
+    responseCommentary,
+  };
 }
 
 function resolveModelSpecFromRaw(
@@ -264,7 +278,10 @@ function resolveModel(params: {
   const parsed = parseModelSpecifier(params.spec);
   const provider = parsed.provider;
   const modelId = parsed.model;
-  const providerOptions = buildProviderOptions({ provider, options: params.options });
+  const { providerOptions, responseCommentary } = buildProviderOptions({
+    provider,
+    options: params.options,
+  });
 
   const p = providers[provider as Providers];
   const hasProvider = Object.prototype.hasOwnProperty.call(providers, provider);
@@ -286,6 +303,7 @@ function resolveModel(params: {
     modelId,
     model: p(modelId),
     providerOptions,
+    responseCommentary,
   };
 }
 

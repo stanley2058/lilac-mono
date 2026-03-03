@@ -3,16 +3,18 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { RESPONSE_COMMENTARY_INSTRUCTIONS } from "@stanley2058/lilac-utils";
+import type { ModelMessage } from "ai";
 
 import {
   appendAdditionalSessionMemoBlock,
   mergeToSingleUserMessage,
+  maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
-import type { ModelMessage } from "ai";
 
 describe("toOpenAIPromptCacheKey", () => {
   it("returns the session id when it fits provider limits", () => {
@@ -147,6 +149,48 @@ describe("appendAdditionalSessionMemoBlock", () => {
 
   it("omits the block when combined memo is empty", () => {
     const out = appendAdditionalSessionMemoBlock("Base prompt", ["  ", "\n\n"]);
+    expect(out).toBe("Base prompt");
+  });
+});
+
+describe("maybeAppendResponseCommentaryPrompt", () => {
+  it("appends commentary guidance for openai provider when enabled", () => {
+    const out = maybeAppendResponseCommentaryPrompt({
+      baseSystemPrompt: "Base prompt",
+      provider: "openai",
+      responseCommentary: true,
+    });
+
+    expect(out).toBe(`Base prompt\n\n${RESPONSE_COMMENTARY_INSTRUCTIONS}`);
+  });
+
+  it("appends commentary guidance for codex provider when enabled", () => {
+    const out = maybeAppendResponseCommentaryPrompt({
+      baseSystemPrompt: "Base prompt",
+      provider: "codex",
+      responseCommentary: true,
+    });
+
+    expect(out).toBe(`Base prompt\n\n${RESPONSE_COMMENTARY_INSTRUCTIONS}`);
+  });
+
+  it("does not append when disabled", () => {
+    const out = maybeAppendResponseCommentaryPrompt({
+      baseSystemPrompt: "Base prompt",
+      provider: "openai",
+      responseCommentary: false,
+    });
+
+    expect(out).toBe("Base prompt");
+  });
+
+  it("does not append for unsupported providers", () => {
+    const out = maybeAppendResponseCommentaryPrompt({
+      baseSystemPrompt: "Base prompt",
+      provider: "openrouter",
+      responseCommentary: true,
+    });
+
     expect(out).toBe("Base prompt");
   });
 });

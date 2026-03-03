@@ -18,6 +18,7 @@ import {
   formatAvailableSkillsSection,
   getCoreConfig,
   ModelCapability,
+  RESPONSE_COMMENTARY_INSTRUCTIONS,
   createLogger,
   resolveEditingToolMode,
   type JSONObject,
@@ -1105,6 +1106,32 @@ export function appendAdditionalSessionMemoBlock(
   return `${base}\n\nAdditional Session Memo:\n${combined}`;
 }
 
+export function maybeAppendResponseCommentaryPrompt(params: {
+  baseSystemPrompt: string;
+  provider: string;
+  responseCommentary?: boolean;
+}): string {
+  if (params.responseCommentary !== true) {
+    return params.baseSystemPrompt;
+  }
+
+  if (params.provider !== "openai" && params.provider !== "codex") {
+    return params.baseSystemPrompt;
+  }
+
+  const commentaryPrompt = RESPONSE_COMMENTARY_INSTRUCTIONS.trim();
+  if (commentaryPrompt.length === 0) {
+    return params.baseSystemPrompt;
+  }
+
+  const base = params.baseSystemPrompt.trimEnd();
+  if (base.length === 0) {
+    return commentaryPrompt;
+  }
+
+  return `${base}\n\n${commentaryPrompt}`;
+}
+
 async function maybeBuildSkillsSectionForPrimary(): Promise<string | null> {
   try {
     const workspaceRoot = findWorkspaceRoot();
@@ -1873,10 +1900,16 @@ export async function startBusAgentRunner(params: {
         },
       });
 
-      const systemPrompt = appendAdditionalSessionMemoBlock(
+      const systemPromptWithSessionMemo = appendAdditionalSessionMemoBlock(
         baseSystemPrompt,
         additionalSessionPrompts,
       );
+
+      const systemPrompt = maybeAppendResponseCommentaryPrompt({
+        baseSystemPrompt: systemPromptWithSessionMemo,
+        provider: resolved.provider,
+        responseCommentary: resolved.responseCommentary,
+      });
 
       let seededSessionMessages: ModelMessage[] = [];
       if (!next.recovery && runProfile !== "primary" && params.transcriptStore) {
@@ -1922,6 +1955,7 @@ export async function startBusAgentRunner(params: {
         sessionConfigId,
         requestModelOverride,
         model: resolved.spec,
+        responseCommentary: resolved.responseCommentary === true,
         editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
         isRecoveryResume: Boolean(next.recovery),
         messageCount: next.messages.length,
