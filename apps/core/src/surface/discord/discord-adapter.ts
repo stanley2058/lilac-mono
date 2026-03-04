@@ -60,6 +60,11 @@ import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
+import {
+  buildDiscordRichTextFromContentAndEmbeds,
+  normalizeDiscordEmbeds,
+  type DiscordEmbedTextMeta,
+} from "./discord-embed-text";
 import type { MarkdownTableRenderOptions } from "../../shared/markdown-table-renderer";
 
 export type DiscordAdapterOptions = {
@@ -238,20 +243,8 @@ function collectDiscordAttachmentMeta(input: unknown): DiscordAttachmentMeta[] {
   return out;
 }
 
-function getSnapshotEmbedDescriptions(snapshot: Record<string, unknown>): string[] {
-  const embeds = snapshot.embeds;
-  if (!Array.isArray(embeds)) return [];
-
-  const out: string[] = [];
-  for (const emb of embeds) {
-    if (!emb || typeof emb !== "object") continue;
-    const desc = (emb as Record<string, unknown>).description;
-    if (typeof desc === "string" && desc.trim().length > 0) {
-      out.push(desc);
-    }
-  }
-
-  return out;
+function getSnapshotEmbeds(snapshot: Record<string, unknown>): DiscordEmbedTextMeta[] {
+  return normalizeDiscordEmbeds(snapshot.embeds);
 }
 
 function normalizeFlagsNumber(v: unknown): number | undefined {
@@ -274,7 +267,7 @@ function normalizeFlagsNumber(v: unknown): number | undefined {
 
 function getForwardSnapshotPayload(msg: Message): {
   content: string;
-  embeds: string[];
+  embeds: DiscordEmbedTextMeta[];
   attachments: DiscordAttachmentMeta[];
   timestamp?: number;
   editedTimestamp?: number;
@@ -297,7 +290,7 @@ function getForwardSnapshotPayload(msg: Message): {
   const snapshot = firstSnapshot as Record<string, unknown>;
 
   const content = typeof snapshot.content === "string" ? snapshot.content : "";
-  const embeds = getSnapshotEmbedDescriptions(snapshot);
+  const embeds = getSnapshotEmbeds(snapshot);
   const attachments = collectDiscordAttachmentMeta(snapshot.attachments);
   const timestamp =
     typeof snapshot.createdTimestamp === "number" ? snapshot.createdTimestamp : undefined;
@@ -338,25 +331,16 @@ function buildForwardMessageSnapshots(
   ];
 }
 
-function getEmbedDescriptions(msg: Message): string[] {
-  const out: string[] = [];
-  for (const emb of msg.embeds) {
-    const d = emb.description;
-    if (typeof d === "string" && d.trim().length > 0) {
-      out.push(d);
-    }
-  }
-  return out;
+function getMessageEmbeds(msg: Message): DiscordEmbedTextMeta[] {
+  return normalizeDiscordEmbeds(msg.embeds);
 }
 
 function getDisplayTextFromDiscordMessage(msg: Message): string {
-  const content = msg.content ?? "";
-  if (content.trim().length > 0) return content;
-
-  const desc = getEmbedDescriptions(msg).join("\n\n").trim();
-  if (desc.length > 0) return desc;
-
-  return "";
+  return buildDiscordRichTextFromContentAndEmbeds({
+    content: msg.content ?? "",
+    embeds: getMessageEmbeds(msg),
+    mode: "inbound",
+  });
 }
 
 function isDiscordChatLikeMessage(msg: Message): boolean {
@@ -2080,6 +2064,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const editedTs = getMessageEditedTs(msg);
 
     const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const forwardSnapshot = getForwardSnapshotPayload(msg);
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
@@ -2112,7 +2097,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         guildId,
         authorId: msg.author.id,
         content: msg.content,
-        embeds: getEmbedDescriptions(msg),
+        embeds,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
@@ -2262,6 +2247,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const editedTs = getMessageEditedTs(msg);
 
     const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
     const forwardSnapshot = getForwardSnapshotPayload(msg);
@@ -2289,6 +2275,12 @@ export class DiscordAdapter implements SurfaceAdapter {
       ts,
       editedTs,
       raw: {
+        content: msg.content,
+        embeds,
+        reference: reference ?? undefined,
+        messageSnapshots,
+        editedTs,
+        attachments,
         discord: {
           id: msg.id,
           system: msg.system,
@@ -2410,6 +2402,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const editedTs = getMessageEditedTs(msg);
 
     const attachments = collectDiscordAttachmentMeta(msg.attachments);
+    const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
     const forwardSnapshot = getForwardSnapshotPayload(msg);
@@ -2444,6 +2437,12 @@ export class DiscordAdapter implements SurfaceAdapter {
       ts,
       editedTs,
       raw: {
+        content: msg.content,
+        embeds,
+        reference: reference ?? undefined,
+        messageSnapshots,
+        editedTs,
+        attachments,
         discord: {
           id: msg.id,
           system: msg.system,

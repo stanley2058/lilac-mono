@@ -22,9 +22,7 @@ import type {
 import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../types";
 import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-renderer";
 
-// NOTE: We currently only guarantee "images on same message" when the attachments are
-// known before the first outbound send. Attaching files to an existing Discord message
-// via edit is not consistently supported across environments.
+// Attachments are buffered during streaming and finalized on the terminal message.
 
 import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
@@ -538,9 +536,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     // - we have something to display (text/action), or
     // - finish() is called.
     //
-    // In preview mode, attachments are intentionally sent *after* the final reply.
-    // In inline mode, we keep the old behavior of attaching files to the first message.
-    const MAX_FILES = 10;
+    // Attachments are finalized later (finish/abort) so they land on the terminal message.
 
     this.cancelCustomId = (() => {
       const requestId = this.deps.opts?.requestId;
@@ -567,14 +563,6 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     });
     const resumed = resumedMessages.length > 0;
 
-    const includeInitialAttachments = !this.isPreviewMode();
-    const initialAttachments =
-      resumed || !includeInitialAttachments ? [] : this.pendingAttachments.slice(0, MAX_FILES);
-    const remainingAttachments =
-      resumed || !includeInitialAttachments
-        ? this.pendingAttachments.slice()
-        : this.pendingAttachments.slice(MAX_FILES);
-
     const first =
       resumedMessages[0] ??
       (await channel.send({
@@ -584,7 +572,6 @@ export class DiscordOutputStream implements SurfaceOutputStream {
           this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
             ? { messageReference: this.deps.opts.replyTo.messageId }
             : undefined,
-        files: toDiscordFiles(initialAttachments),
         components: buildCancelComponents(true),
         allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: false }),
       }));
@@ -606,9 +593,6 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       this.trackTransientPreviewRef(ref);
       this.notifyCreated(ref);
     }
-
-    // Keep overflow/new attachments for follow-up messages.
-    this.pendingAttachments = remainingAttachments;
 
     // Special case: attachments-only output (no text and no tool lines).
     // In this case we don't start the embed pusher at all.
@@ -753,16 +737,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         return;
       }
       case "attachment.add": {
-        // Best-effort: attach on the initial send.
-        // If we already started, we do not try to mutate files on an existing message
-        // (Discord edit-with-files is tricky); instead we buffer and will send as follow-up
-        // messages when we finish.
-        if (!this.firstMsg) {
-          this.pendingAttachments.push(part.attachment);
-          return;
-        }
-
-        // Already started: buffer for post-stream followup.
+        // Buffer during stream; attach at terminal phase so files land on final message.
         this.pendingAttachments.push(part.attachment);
         return;
       }
@@ -799,6 +774,36 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     return created;
   }
 
+  private async attachPendingAttachmentsToFinalMessage(target: Message): Promise<MsgRef[]> {
+    if (this.pendingAttachments.length === 0) return [];
+
+    const MAX_FILES = 10;
+    const filesForFinal = this.pendingAttachments.slice(0, MAX_FILES);
+    const overflow = this.pendingAttachments.slice(MAX_FILES);
+
+    if (filesForFinal.length === 0) return [];
+
+    const keepAttachmentIds = [...target.attachments.keys()].map((id) => ({ id }));
+    const edited = await safeEdit(target, {
+      files: toDiscordFiles(filesForFinal),
+      attachments: keepAttachmentIds.length > 0 ? keepAttachmentIds : undefined,
+    });
+
+    if (!edited) {
+      // Fallback: if edit-with-files fails, preserve delivery via follow-up attachment replies.
+      return this.flushPendingAttachments(target);
+    }
+
+    this.lastMsg = target;
+    this.pendingAttachments = overflow;
+
+    if (this.pendingAttachments.length === 0) {
+      return [];
+    }
+
+    return this.flushPendingAttachments(target);
+  }
+
   private async postFinalReplyEmbeds(): Promise<{ created: MsgRef[]; lastMsg: Message }> {
     const { client, sessionRef } = this.deps;
     if (!isDiscordSessionRef(sessionRef)) {
@@ -822,6 +827,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       maxLastChunkLength: maxChunkLength,
       useSmartSplitting: this.deps.useSmartSplitting,
     });
+
+    const MAX_FILES = 10;
+    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
+    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
 
     const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
     const createdMsgs: Message[] = [];
@@ -847,6 +856,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         parent === null
           ? await sendChannel.send({
               embeds: [emb],
+              files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
               reply:
                 this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
                   ? { messageReference: this.deps.opts.replyTo.messageId }
@@ -855,6 +865,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             })
           : await parent.reply({
               embeds: [emb],
+              files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
               allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
             });
 
@@ -875,6 +886,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       throw new Error("DiscordOutputStream produced no final messages");
     }
 
+    this.pendingAttachments = overflowAttachments;
     this.lastMsg = lastMsg;
     return {
       created,
@@ -895,7 +907,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       const finalReply = await finalReplyPromise;
       await deletePreviewPromise;
 
-      const attachmentCreated = await this.flushPendingAttachments(finalReply.lastMsg);
+      const attachmentCreated = await this.attachPendingAttachmentsToFinalMessage(
+        finalReply.lastMsg,
+      );
       const created = [...finalReply.created, ...attachmentCreated];
       const last = created.at(-1);
 
@@ -920,7 +934,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       if (!replyTo) {
         throw new Error("DiscordOutputStream missing reply anchor");
       }
-      await this.flushPendingAttachments(replyTo);
+      await this.attachPendingAttachmentsToFinalMessage(replyTo);
     }
 
     const last = this.created.at(-1);
@@ -942,6 +956,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     if (isCancel && this.textAcc.trim().length === 0) {
       this.textAcc = "Cancelled.";
+    }
+
+    if (isCancel && this.pendingAttachments.length > 0 && !this.firstMsg) {
+      // Ensure we have a message anchor so buffered attachments can be finalized on cancel.
+      await this.ensureStarted();
     }
 
     if (isReanchor) {
@@ -972,25 +991,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       await safeEdit(this.firstMsg, { components: [] });
     }
 
-    // On reanchor, flush any buffered attachments so they aren't dropped.
-    if (isReanchor) {
+    // On reanchor/cancel, flush any buffered attachments so they aren't dropped.
+    if (isReanchor || isCancel) {
       const { sessionRef } = this.deps;
       if (isDiscordSessionRef(sessionRef) && this.pendingAttachments.length > 0) {
         const replyTo = this.lastMsg ?? this.firstMsg;
         if (replyTo) {
-          const MAX_FILES = 10;
-          for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
-            const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
-            const msg = await replyTo.reply({
-              files: toDiscordFiles(chunk),
-              allowedMentions: { parse: [], repliedUser: false },
-            });
-            const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
-            this.created.push(ref);
-            this.notifyCreated(ref);
-            this.lastMsg = msg;
-          }
-          this.pendingAttachments = [];
+          await this.attachPendingAttachmentsToFinalMessage(replyTo);
         }
       }
 
