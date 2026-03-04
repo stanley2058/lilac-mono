@@ -10,7 +10,7 @@ import {
   type ToolSet,
   type UserContent,
 } from "ai";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import type { CoreConfig, ModelCapabilityInfo } from "@stanley2058/lilac-utils";
 import {
   discoverSkills,
   env,
@@ -1770,6 +1770,14 @@ export async function startBusAgentRunner(params: {
       lastTurnEndAt?: number;
     } = {};
     const streamWarnings: CallWarning[] = [];
+    const modelCapability = new ModelCapability({
+      forceUnknownProviders: ["openai-compatible"],
+    });
+    let modelCapabilityInfo: ModelCapabilityInfo | null = null;
+    let costEstimateStatus: "estimated" | "unavailable" = "unavailable";
+    let costEstimateReason: string | undefined;
+    let roundEstimatedCostUsdTotal: number | undefined;
+    let roundEstimatedCostCount = 0;
 
     let resolvedModelLabel = "unknown";
     let activeAgent: AiSdkPiAgent<ToolSet> | null = null;
@@ -1833,6 +1841,20 @@ export async function startBusAgentRunner(params: {
             )
           : resolveModelSlot(cfg, subagentProfileConfig?.modelSlot ?? "main");
       resolvedModelLabel = resolved.modelId;
+      try {
+        modelCapabilityInfo = await modelCapability.resolve(resolved.spec);
+        if (modelCapabilityInfo.cost) {
+          costEstimateStatus = "estimated";
+        } else {
+          costEstimateReason = "model_cost_missing";
+        }
+      } catch (error) {
+        costEstimateReason =
+          error instanceof Error
+            ? `capability_resolve_failed:${error.message}`
+            : `capability_resolve_failed:${String(error)}`;
+      }
+
       const editingToolMode = resolveEditingToolMode({
         provider: resolved.provider,
         modelId: resolved.modelId,
@@ -2066,9 +2088,7 @@ export async function startBusAgentRunner(params: {
 
       unsubscribeCompaction = await attachAutoCompaction(agent, {
         model: resolved.spec,
-        modelCapability: new ModelCapability({
-          forceUnknownProviders: ["openai-compatible"],
-        }),
+        modelCapability,
         resolveCurrentModelSpecifier: () => agent.state.modelSpecifier ?? resolved.spec,
         baseTransformMessages: toolPruneTransform,
         onUnknownCapability: ({ spec, reason, error }) => {
@@ -2181,6 +2201,11 @@ export async function startBusAgentRunner(params: {
         }
       };
 
+      const estimateUsageCostUsd = (usage: LanguageModelUsage | undefined): number | undefined => {
+        if (!usage || !modelCapabilityInfo?.cost) return undefined;
+        return modelCapability.estimateCostUsd(modelCapabilityInfo, usage);
+      };
+
       unsubscribe = agent.subscribe((event: AiSdkPiAgentEvent<ToolSet>) => {
         if (event.type === "agent_end") {
           runStats.totalUsage = event.totalUsage;
@@ -2191,6 +2216,30 @@ export async function startBusAgentRunner(params: {
           turnEndCount++;
           runStats.lastTurnFinishReason = event.finishReason;
           runStats.lastTurnEndAt = Date.now();
+
+          const roundEstimatedCostUsd = estimateUsageCostUsd(event.usage);
+          if (roundEstimatedCostUsd !== undefined) {
+            roundEstimatedCostUsdTotal = (roundEstimatedCostUsdTotal ?? 0) + roundEstimatedCostUsd;
+            roundEstimatedCostCount += 1;
+          }
+
+          logger.info("agent.round.stats", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            round: turnEndCount,
+            finishReason: event.finishReason,
+            inputTokens: event.usage.inputTokens,
+            outputTokens: event.usage.outputTokens,
+            totalTokens: event.usage.totalTokens,
+            cacheReadTokens: event.usage.inputTokenDetails.cacheReadTokens,
+            cacheWriteTokens: event.usage.inputTokenDetails.cacheWriteTokens,
+            estimatedCostUsd: roundEstimatedCostUsd,
+            estimatedCostUsdTotal: roundEstimatedCostUsdTotal,
+            costEstimateStatus:
+              roundEstimatedCostUsd !== undefined ? "estimated" : costEstimateStatus,
+            costEstimateReason:
+              roundEstimatedCostUsd === undefined ? costEstimateReason : undefined,
+          });
 
           // Fire-and-forget debug dump; do not block the run.
           void dumpContextAfterTurn(event);
@@ -2533,6 +2582,13 @@ export async function startBusAgentRunner(params: {
           })
         : undefined;
 
+      const estimatedCostUsdFromTotalUsage = estimateUsageCostUsd(runStats.totalUsage);
+      const estimatedCostUsdTotal = estimatedCostUsdFromTotalUsage ?? roundEstimatedCostUsdTotal;
+      const resolvedCostEstimateStatus =
+        estimatedCostUsdTotal !== undefined ? "estimated" : costEstimateStatus;
+      const resolvedCostEstimateReason =
+        estimatedCostUsdTotal !== undefined ? undefined : costEstimateReason;
+
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
         { finalText, delivery, statsForNerdsLine },
@@ -2542,6 +2598,12 @@ export async function startBusAgentRunner(params: {
       logger.info(statsLine, {
         requestId: headers.request_id,
         sessionId: headers.session_id,
+        turns: turnEndCount,
+        estimatedCostUsd: estimatedCostUsdTotal,
+        costEstimateStatus: resolvedCostEstimateStatus,
+        costEstimateReason: resolvedCostEstimateReason,
+        estimatedCostTurnCoverage:
+          turnEndCount > 0 ? roundEstimatedCostCount / turnEndCount : undefined,
       });
 
       logger.info("agent run resolved", {
@@ -2549,6 +2611,10 @@ export async function startBusAgentRunner(params: {
         sessionId: headers.session_id,
         durationMs: Date.now() - runStartedAt,
         finalTextChars: finalText.length,
+        turns: turnEndCount,
+        estimatedCostUsd: estimatedCostUsdTotal,
+        costEstimateStatus: resolvedCostEstimateStatus,
+        costEstimateReason: resolvedCostEstimateReason,
       });
 
       await publishLifecycle({

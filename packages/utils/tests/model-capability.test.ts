@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { LanguageModelUsage } from "ai";
 
 import { ModelCapability } from "../model-capability";
 
@@ -9,6 +10,34 @@ function createRegistryFetch(registry: unknown): typeof fetch {
       headers: { "content-type": "application/json" },
     });
   }) as unknown as typeof fetch;
+}
+
+function makeUsage(params: {
+  inputTokens: number;
+  outputTokens: number;
+  noCacheTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}): LanguageModelUsage {
+  const cacheReadTokens = params.cacheReadTokens ?? 0;
+  const cacheWriteTokens = params.cacheWriteTokens ?? 0;
+
+  return {
+    inputTokens: params.inputTokens,
+    outputTokens: params.outputTokens,
+    totalTokens: params.inputTokens + params.outputTokens,
+    reasoningTokens: 0,
+    cachedInputTokens: cacheReadTokens,
+    inputTokenDetails: {
+      noCacheTokens: params.noCacheTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+    },
+    outputTokenDetails: {
+      textTokens: params.outputTokens,
+      reasoningTokens: 0,
+    },
+  };
 }
 
 describe("ModelCapability", () => {
@@ -235,5 +264,93 @@ describe("ModelCapability", () => {
     await expect(mc.resolve("codex/gpt-4o")).rejects.toThrow(
       "Model capability lookup intentionally disabled",
     );
+  });
+
+  it("uses no-cache tokens for base input pricing when cache pricing is present", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 2,
+          output: 8,
+          cache_read: 0.5,
+          cache_write: 3,
+        },
+      },
+      makeUsage({
+        inputTokens: 120_000,
+        outputTokens: 5_000,
+        noCacheTokens: 70_000,
+        cacheReadTokens: 40_000,
+        cacheWriteTokens: 10_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(0.23, 8);
+  });
+
+  it("falls back cache tokens to base input pricing when cache-specific pricing is missing", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 2,
+          output: 8,
+        },
+      },
+      makeUsage({
+        inputTokens: 120_000,
+        outputTokens: 5_000,
+        noCacheTokens: 70_000,
+        cacheReadTokens: 40_000,
+        cacheWriteTokens: 10_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(0.28, 8);
+  });
+
+  it("backs out cache token counts from input tokens when noCacheTokens is unavailable", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 2,
+          output: 8,
+          cache_read: 0.5,
+          cache_write: 3,
+        },
+      },
+      makeUsage({
+        inputTokens: 120_000,
+        outputTokens: 5_000,
+        cacheReadTokens: 40_000,
+        cacheWriteTokens: 10_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(0.23, 8);
+  });
+
+  it("ignores invalid negative no-cache token counts and falls back safely", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 2,
+          output: 8,
+          cache_read: 0.5,
+        },
+      },
+      makeUsage({
+        inputTokens: 15,
+        outputTokens: 0,
+        noCacheTokens: -1137,
+        cacheReadTokens: 1152,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(0.000576, 12);
+    expect(costUsd).toBeGreaterThanOrEqual(0);
   });
 });
