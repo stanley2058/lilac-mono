@@ -1,6 +1,10 @@
 import type { MsgRef, SurfaceMessage } from "../../types";
 
 import { hasReplyChainPlannerProvider, type SurfaceAdapter } from "../../adapter";
+import {
+  buildDiscordRichTextFromContentAndEmbeds,
+  normalizeDiscordEmbeds,
+} from "../../discord/discord-embed-text";
 
 import { splitByDiscordWindowOldestToNewest } from "../../discord/merge-window";
 
@@ -99,21 +103,13 @@ export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined 
   const snapshot = getForwardSnapshotMessageFromRaw(raw);
   if (!snapshot) return undefined;
 
-  const content = typeof snapshot.content === "string" ? snapshot.content : "";
-  if (content.trim().length > 0) return content;
+  const fromSnapshot = buildDiscordRichTextFromContentAndEmbeds({
+    content: typeof snapshot.content === "string" ? snapshot.content : "",
+    embeds: normalizeDiscordEmbeds(snapshot.embeds),
+    mode: "inbound",
+  });
 
-  const embeds = Array.isArray(snapshot.embeds) ? snapshot.embeds : [];
-  const descriptions = embeds
-    .map((item) => {
-      if (typeof item === "string") return item;
-      if (!item || typeof item !== "object") return "";
-      const description = (item as Record<string, unknown>).description;
-      return typeof description === "string" ? description : "";
-    })
-    .filter((desc) => desc.trim().length > 0);
-
-  const fromEmbeds = descriptions.join("\n\n").trim();
-  return fromEmbeds.length > 0 ? fromEmbeds : undefined;
+  return fromSnapshot.length > 0 ? fromSnapshot : undefined;
 }
 
 function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {

@@ -509,6 +509,136 @@ describe("tool-server surface", () => {
     });
   });
 
+  it("builds discord read richText from raw content and embeds", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "inbound shadow text",
+            ts: 0,
+            raw: {
+              content: "normal-text",
+              embeds: [
+                {
+                  title: "embed-title",
+                  description: "embed-description",
+                  fields: [
+                    { name: "field-1", value: "value-1" },
+                    { name: "field-2", value: "value-2" },
+                  ],
+                  image: { url: "https://example.com/embed-image.png" },
+                  footer: { text: "embed-footer" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const out = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+      includeRaw: true,
+    })) as {
+      message: {
+        richText: string;
+        raw?: { content?: string };
+      } | null;
+    };
+
+    expect(out.message?.richText).toBe(
+      [
+        "normal-text",
+        "embed-title",
+        "embed-description",
+        "field-1: value-1\nfield-2: value-2",
+        "https://example.com/embed-image.png",
+        "embed-footer",
+      ].join("\n\n"),
+    );
+    expect(out.message?.raw?.content).toBe("normal-text");
+  });
+
+  it("keeps forward comment text and appends snapshot richText", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "inbound text",
+            ts: 0,
+            raw: {
+              content: "forward-comment",
+              reference: { type: 1, messageId: "orig", channelId: "other" },
+              messageSnapshots: [
+                {
+                  message: {
+                    content: "snapshot-content",
+                    embeds: [
+                      {
+                        title: "snapshot-title",
+                        description: "snapshot-description",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const out = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+    })) as {
+      message: { richText: string } | null;
+    };
+
+    expect(out.message?.richText).toBe(
+      ["forward-comment", "snapshot-content", "snapshot-title", "snapshot-description"].join(
+        "\n\n",
+      ),
+    );
+  });
+
   it("accepts discord:channel:<id> as sessionId", async () => {
     const channelId = "123";
     const cfg = testConfig({
@@ -1069,13 +1199,13 @@ describe("tool-server surface", () => {
 
     const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
       meta: { session: { platform: string } };
-      message: { messageId: string; text: string } | null;
+      message: { messageId: string; richText: string } | null;
     };
     expect(calls.length).toBe(1);
     expect(calls[0]).toEqual({ owner: "octo", repo: "repo", commentId: 345 });
     expect(msg.meta.session.platform).toBe("github");
     expect(msg.message?.messageId).toBe("345");
-    expect(msg.message?.text).toBe("hello");
+    expect(msg.message?.richText).toBe("hello");
   });
 
   it("reads github issue body when messageId matches issue number", async () => {
@@ -1123,12 +1253,12 @@ describe("tool-server surface", () => {
 
     const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
       meta: { session: { platform: string } };
-      message: { messageId: string; text: string } | null;
+      message: { messageId: string; richText: string } | null;
     };
     expect(msg.meta.session.platform).toBe("github");
     expect(msg.message?.messageId).toBe("12");
-    expect(msg.message?.text).toContain("Title: t");
-    expect(msg.message?.text).toContain("b");
+    expect(msg.message?.richText).toContain("Title: t");
+    expect(msg.message?.richText).toContain("b");
   });
 
   it("maps github reaction emoji to content on add", async () => {

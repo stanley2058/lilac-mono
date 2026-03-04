@@ -602,6 +602,59 @@ describe("request-composition attachments", () => {
     expect(typeof out?.content).toBe("string");
     expect(out!.content as string).toContain("forwarded embed text");
   });
+
+  it("uses forward snapshot embed title/description/image when content is empty", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "",
+      ts: 0,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "orig",
+          channelId: "other",
+        },
+        messageSnapshots: [
+          {
+            message: {
+              content: "",
+              embeds: [
+                {
+                  title: "forwarded title",
+                  description: "forwarded description",
+                  fields: [{ name: "internal", value: "skip-for-inbound" }],
+                  image: { url: "https://example.com/snapshot-image.png" },
+                  footer: { text: "skip-footer-for-inbound" },
+                },
+              ],
+              attachments: [],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+
+    const content = out!.content as string;
+    expect(content).toContain("forwarded title");
+    expect(content).toContain("forwarded description");
+    expect(content).toContain("https://example.com/snapshot-image.png");
+    expect(content).not.toContain("skip-for-inbound");
+    expect(content).not.toContain("skip-footer-for-inbound");
+  });
 });
 
 describe("request-composition mention thread context", () => {
