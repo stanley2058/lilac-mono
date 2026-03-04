@@ -328,19 +328,50 @@ export class ModelCapability {
 
     const inputTokens = usage.inputTokens ?? 0;
     const outputTokens = usage.outputTokens ?? 0;
-
-    let total = 0;
-    total += (inputTokens / 1_000_000) * info.cost.input;
-    total += (outputTokens / 1_000_000) * info.cost.output;
-
     const cacheReadTokens = usage.inputTokenDetails.cacheReadTokens ?? 0;
     const cacheWriteTokens = usage.inputTokenDetails.cacheWriteTokens ?? 0;
+    const noCacheTokens = usage.inputTokenDetails.noCacheTokens;
+    const cacheReadPrice = info.cost.cache_read;
+    const cacheWritePrice = info.cost.cache_write;
 
-    if (info.cost.cache_read !== undefined) {
-      total += (cacheReadTokens / 1_000_000) * info.cost.cache_read;
+    const hasCacheReadPrice = cacheReadPrice !== undefined;
+    const hasCacheWritePrice = cacheWritePrice !== undefined;
+
+    const hasSaneNoCacheTokens =
+      typeof noCacheTokens === "number" &&
+      Number.isFinite(noCacheTokens) &&
+      noCacheTokens >= 0 &&
+      noCacheTokens <= inputTokens;
+
+    let inputTokensAtBaseRate: number;
+    if (hasSaneNoCacheTokens) {
+      inputTokensAtBaseRate = noCacheTokens;
+      if (!hasCacheReadPrice) {
+        inputTokensAtBaseRate += cacheReadTokens;
+      }
+      if (!hasCacheWritePrice) {
+        inputTokensAtBaseRate += cacheWriteTokens;
+      }
+    } else {
+      inputTokensAtBaseRate = inputTokens;
+      if (hasCacheReadPrice) {
+        inputTokensAtBaseRate -= cacheReadTokens;
+      }
+      if (hasCacheWritePrice) {
+        inputTokensAtBaseRate -= cacheWriteTokens;
+      }
+      inputTokensAtBaseRate = Math.max(0, inputTokensAtBaseRate);
     }
-    if (info.cost.cache_write !== undefined) {
-      total += (cacheWriteTokens / 1_000_000) * info.cost.cache_write;
+
+    let total = 0;
+    total += (inputTokensAtBaseRate / 1_000_000) * info.cost.input;
+    total += (outputTokens / 1_000_000) * info.cost.output;
+
+    if (hasCacheReadPrice) {
+      total += (cacheReadTokens / 1_000_000) * cacheReadPrice;
+    }
+    if (hasCacheWritePrice) {
+      total += (cacheWriteTokens / 1_000_000) * cacheWritePrice;
     }
 
     return total;
