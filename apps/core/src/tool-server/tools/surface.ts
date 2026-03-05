@@ -12,6 +12,7 @@ import type {
   SurfaceMessage,
   SurfaceReactionDetail,
   SurfaceReactionSummary,
+  SurfaceSessionParticipantsResult,
   SurfaceSession,
 } from "../../surface/types";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
@@ -353,6 +354,13 @@ type ReactionDetailsProvider = {
   listReactionDetails(msgRef: MsgRef): Promise<SurfaceReactionDetail[]>;
 };
 
+type SessionParticipantsProvider = {
+  listSessionParticipants(
+    sessionRef: SessionRef,
+    opts?: { limit?: number },
+  ): Promise<SurfaceSessionParticipantsResult>;
+};
+
 function hasGuildIdResolver(adapter: SurfaceAdapter): adapter is SurfaceAdapter & GuildIdResolver {
   return (
     typeof (adapter as unknown as { fetchGuildIdForChannel?: unknown }).fetchGuildIdForChannel ===
@@ -366,6 +374,18 @@ function hasReactionDetailsProvider(
   return (
     typeof (adapter as unknown as { listReactionDetails?: unknown }).listReactionDetails ===
     "function"
+  );
+}
+
+function hasSessionParticipantsProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & SessionParticipantsProvider {
+  return (
+    typeof (
+      adapter as unknown as {
+        listSessionParticipants?: unknown;
+      }
+    ).listSessionParticipants === "function"
   );
 }
 
@@ -958,6 +978,23 @@ function buildMessagesReadOutput(params: {
 
 const sessionsListInputSchema = baseInputSchema;
 
+const sessionsListParticipantsInputSchema = baseInputSchema.extend({
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+    ),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(2000)
+    .optional()
+    .describe("Max participants (default: 200)."),
+});
+
 const messagesListInputSchema = baseInputSchema.extend({
   sessionId: z
     .string()
@@ -1213,6 +1250,16 @@ export class Surface implements ServerTool {
         input: zodObjectToCliLines(sessionsListInputSchema),
       },
       {
+        callableId: "surface.sessions.listParticipants",
+        name: "Surface Sessions List Participants",
+        description:
+          "List current Discord session participants (thread members when available; otherwise guild members).",
+        shortInput: zodObjectToCliLines(sessionsListParticipantsInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(sessionsListParticipantsInputSchema),
+      },
+      {
         callableId: "surface.messages.list",
         name: "Surface Messages List",
         description: "List messages for a session.",
@@ -1319,6 +1366,9 @@ export class Surface implements ServerTool {
     }
     if (callableId === "surface.sessions.list") {
       return await this.callSessionsList(input, opts?.context);
+    }
+    if (callableId === "surface.sessions.listParticipants") {
+      return await this.callSessionsListParticipants(input, opts?.context);
     }
     if (callableId === "surface.messages.list") {
       return await this.callMessagesList(input, opts?.context);
@@ -1532,6 +1582,62 @@ export class Surface implements ServerTool {
     }
 
     return out;
+  }
+
+  private async callSessionsListParticipants(
+    rawInput: Record<string, unknown>,
+    ctx: RequestContext | undefined,
+  ) {
+    const input = sessionsListParticipantsInputSchema.parse(withDefaultSessionId(rawInput, ctx));
+    const client = resolveClient({ inputClient: input.client, ctx });
+    if (client === "github") {
+      throw new Error(
+        "surface.sessions.listParticipants is not supported for GitHub. This callable is Discord-only.",
+      );
+    }
+    ensureDiscordClient(client);
+
+    if (!hasSessionParticipantsProvider(this.params.adapter)) {
+      throw new Error(
+        "surface.sessions.listParticipants requires an adapter that supports listing session participants",
+      );
+    }
+
+    const cfg = await this.getCfg();
+
+    const channelId = resolveDiscordSessionId({
+      sessionId: mustPresentString(input.sessionId, "sessionId"),
+      cfg,
+    });
+
+    const guildId = await resolveGuildIdForChannel({
+      adapter: this.params.adapter,
+      channelId,
+    });
+
+    if (
+      !shouldAllowDiscordChannel({
+        cfg,
+        channelId,
+        guildId,
+      })
+    ) {
+      throw new Error(`Not allowed: channelId '${channelId}'`);
+    }
+
+    const sessionRef = asDiscordSessionRef(channelId, guildId ?? undefined);
+    const participants = await this.params.adapter.listSessionParticipants(sessionRef, {
+      limit: input.limit,
+    });
+
+    return {
+      meta: {
+        session: toSessionMeta(sessionRef),
+        source: participants.source,
+        count: participants.participants.length,
+      },
+      participants: participants.participants,
+    };
   }
 
   private async callMessagesList(

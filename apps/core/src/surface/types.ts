@@ -72,6 +72,28 @@ export type SurfaceReactionDetail = {
   users: SurfaceReactionUser[];
 };
 
+export type SurfaceSessionParticipantActivity = {
+  type: string;
+  name?: string;
+  state?: string;
+  details?: string;
+  url?: string;
+  emoji?: string;
+};
+
+export type SurfaceSessionParticipant = {
+  userId: string;
+  userName?: string;
+  displayName?: string;
+  status?: string;
+  activities?: SurfaceSessionParticipantActivity[];
+};
+
+export type SurfaceSessionParticipantsResult = {
+  source: "thread_members" | "guild_members";
+  participants: SurfaceSessionParticipant[];
+};
+
 export type SurfaceReactionSummary = {
   emoji: string;
   count: number;

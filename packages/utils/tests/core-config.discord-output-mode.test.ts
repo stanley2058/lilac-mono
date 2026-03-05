@@ -52,6 +52,24 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
     expect(parsed.surface.discord.workingIndicators).toEqual(["Planning", "Reading", "Tooling"]);
   });
 
+  it("keeps memberPresence optional by default", () => {
+    const parsed = coreConfigSchema.parse({});
+    expect(parsed.surface.discord.memberPresence).toBeUndefined();
+  });
+
+  it("accepts memberPresence=true", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        discord: {
+          botName: "lilac",
+          memberPresence: true,
+        },
+      },
+    });
+
+    expect(parsed.surface.discord.memberPresence).toBe(true);
+  });
+
   it("defaults markdown table render experiment to disabled unicode@80", () => {
     const parsed = coreConfigSchema.parse({});
 

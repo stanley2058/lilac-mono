@@ -4,13 +4,16 @@ import {
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
   Client,
+  type GuildMember,
   type CacheType,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
   MessageFlags,
   type MessageContextMenuCommandInteraction,
   MessageType,
+  PermissionFlagsBits,
   Partials,
+  type Presence,
   type Interaction,
   type Message,
   type MessageReaction,
@@ -41,6 +44,9 @@ import type {
   SendOpts,
   SessionRef,
   SurfaceMessage,
+  SurfaceSessionParticipant,
+  SurfaceSessionParticipantActivity,
+  SurfaceSessionParticipantsResult,
   SurfaceReactionDetail,
   SurfaceSelf,
   SurfaceSession,
@@ -136,6 +142,51 @@ function getMessageEditedTs(msg: Message): number | undefined {
 function getDisplayName(msg: Message): string {
   const memberName = msg.member && "displayName" in msg.member ? msg.member.displayName : undefined;
   return memberName ?? msg.author.globalName ?? msg.author.username;
+}
+
+function toSurfaceParticipantActivities(
+  presence: Presence | null | undefined,
+): SurfaceSessionParticipantActivity[] {
+  if (!presence) return [];
+
+  const out: SurfaceSessionParticipantActivity[] = [];
+  for (const activity of presence.activities) {
+    const typeName = ActivityType[activity.type];
+    const mapped: SurfaceSessionParticipantActivity = {
+      type: typeof typeName === "string" ? typeName.toLowerCase() : String(activity.type),
+    };
+
+    if (typeof activity.name === "string" && activity.name.length > 0) {
+      mapped.name = activity.name;
+    }
+    if (typeof activity.state === "string" && activity.state.length > 0) {
+      mapped.state = activity.state;
+    }
+    if (typeof activity.details === "string" && activity.details.length > 0) {
+      mapped.details = activity.details;
+    }
+    if (typeof activity.url === "string" && activity.url.length > 0) {
+      mapped.url = activity.url;
+    }
+    if (activity.emoji?.name && activity.emoji.name.length > 0) {
+      mapped.emoji = activity.emoji.name;
+    }
+
+    out.push(mapped);
+  }
+
+  return out;
+}
+
+function sortSurfaceParticipants(
+  participants: readonly SurfaceSessionParticipant[],
+): SurfaceSessionParticipant[] {
+  return [...participants].sort((a, b) => {
+    const aName = (a.displayName ?? a.userName ?? a.userId).toLowerCase();
+    const bName = (b.displayName ?? b.userName ?? b.userId).toLowerCase();
+    if (aName !== bName) return aName.localeCompare(bName);
+    return a.userId.localeCompare(b.userId);
+  });
 }
 
 type DiscordAttachmentMeta = {
@@ -490,13 +541,19 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const token = resolveDiscordToken(cfg);
 
+    const intents = [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMessageReactions,
+    ];
+
+    if (cfg.surface.discord.memberPresence === true) {
+      intents.push(GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildPresences);
+    }
+
     const client = new Client({
-      intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions,
-      ],
+      intents,
       partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     });
 
@@ -1168,6 +1225,201 @@ export class DiscordAdapter implements SurfaceAdapter {
       if (a.count !== b.count) return b.count - a.count;
       return a.emoji.localeCompare(b.emoji);
     });
+
+    return out;
+  }
+
+  async listSessionParticipants(
+    sessionRef: SessionRef,
+    opts?: { limit?: number },
+  ): Promise<SurfaceSessionParticipantsResult> {
+    if (sessionRef.platform !== "discord") throw new Error("Unsupported platform");
+
+    const cfg = this.cfg;
+    const client = this.client;
+    if (!cfg || !client) {
+      throw new Error("DiscordAdapter not connected");
+    }
+
+    const ch = await client.channels.fetch(sessionRef.channelId).catch(() => null);
+    if (!ch) {
+      return { source: "guild_members", participants: [] };
+    }
+
+    const guildId = "guildId" in ch ? ch.guildId : null;
+    if (
+      !shouldAllowMessage({
+        cfg,
+        channelId: sessionRef.channelId,
+        guildId,
+      })
+    ) {
+      throw new Error(`Not allowed: channelId '${sessionRef.channelId}'`);
+    }
+
+    const limit = Math.min(2000, Math.max(1, Math.floor(opts?.limit ?? 200)));
+
+    if ("isThread" in ch && typeof ch.isThread === "function" && ch.isThread()) {
+      const members = await ch.members.fetch().catch(() => null);
+      if (!members) {
+        return { source: "thread_members", participants: [] };
+      }
+
+      const out: SurfaceSessionParticipant[] = [];
+      for (const threadMember of members.values()) {
+        if (out.length >= limit) break;
+
+        const userId =
+          "userId" in threadMember && typeof threadMember.userId === "string"
+            ? threadMember.userId
+            : typeof threadMember.id === "string"
+              ? threadMember.id
+              : null;
+        if (!userId) continue;
+
+        const member =
+          ch.guild.members.cache.get(userId) ??
+          (await ch.guild.members.fetch(userId).catch(() => null));
+        const user = member?.user ?? (await client.users.fetch(userId).catch(() => null));
+        out.push(
+          this.toSurfaceSessionParticipant({
+            userId,
+            member,
+            user,
+            presence: member?.presence ?? ch.guild.presences.cache.get(userId) ?? null,
+          }),
+        );
+      }
+
+      return {
+        source: "thread_members",
+        participants: sortSurfaceParticipants(out),
+      };
+    }
+
+    const guild = "guild" in ch ? ch.guild : null;
+    if (!guild) {
+      return { source: "guild_members", participants: [] };
+    }
+
+    const out: SurfaceSessionParticipant[] = [];
+    const seenUserIds = new Set<string>();
+
+    let after: string | undefined;
+    let exhausted = false;
+
+    while (out.length < limit) {
+      const pageLimit = Math.min(1000, Math.max(1, limit - out.length));
+      const page = await guild.members
+        .list({ limit: pageLimit, ...(after ? { after } : {}) })
+        .catch(() => null);
+
+      if (!page) {
+        exhausted = true;
+        break;
+      }
+
+      if (page.size === 0) {
+        exhausted = true;
+        break;
+      }
+
+      for (const member of page.values()) {
+        if (out.length >= limit) break;
+
+        if ("permissionsFor" in ch && typeof ch.permissionsFor === "function") {
+          const permissions = ch.permissionsFor(member);
+          if (permissions && !permissions.has(PermissionFlagsBits.ViewChannel)) {
+            continue;
+          }
+        }
+
+        out.push(
+          this.toSurfaceSessionParticipant({
+            userId: member.id,
+            member,
+            user: member.user,
+            presence: member.presence ?? guild.presences.cache.get(member.id) ?? null,
+          }),
+        );
+        seenUserIds.add(member.id);
+      }
+
+      after = page.lastKey() ?? undefined;
+      if (!after || page.size < pageLimit) {
+        exhausted = true;
+        break;
+      }
+    }
+
+    if (out.length < limit && exhausted) {
+      for (const member of guild.members.cache.values()) {
+        if (out.length >= limit) break;
+        if (seenUserIds.has(member.id)) continue;
+
+        if ("permissionsFor" in ch && typeof ch.permissionsFor === "function") {
+          const permissions = ch.permissionsFor(member);
+          if (permissions && !permissions.has(PermissionFlagsBits.ViewChannel)) {
+            continue;
+          }
+        }
+
+        out.push(
+          this.toSurfaceSessionParticipant({
+            userId: member.id,
+            member,
+            user: member.user,
+            presence: member.presence ?? guild.presences.cache.get(member.id) ?? null,
+          }),
+        );
+        seenUserIds.add(member.id);
+      }
+    }
+
+    return {
+      source: "guild_members",
+      participants: sortSurfaceParticipants(out),
+    };
+  }
+
+  private toSurfaceSessionParticipant(input: {
+    userId: string;
+    member?: GuildMember | null;
+    user?: User | null;
+    presence?: Presence | null;
+  }): SurfaceSessionParticipant {
+    const store = this.mustStore();
+    const now = Date.now();
+
+    const user = input.user ?? input.member?.user ?? null;
+    const userName = user?.username;
+    const displayName = input.member?.displayName ?? user?.globalName ?? user?.username;
+    const presence = input.presence ?? input.member?.presence ?? null;
+
+    if (user) {
+      store.upsertUserName({
+        userId: input.userId,
+        username: user.username,
+        globalName: user.globalName ?? undefined,
+        displayName,
+        updatedTs: now,
+      });
+    }
+
+    const out: SurfaceSessionParticipant = {
+      userId: input.userId,
+      ...(userName ? { userName } : {}),
+      ...(displayName ? { displayName } : {}),
+    };
+
+    if (presence?.status) {
+      out.status = presence.status;
+    }
+
+    const activities = toSurfaceParticipantActivities(presence);
+    if (activities.length > 0) {
+      out.activities = activities;
+    }
 
     return out;
   }
