@@ -501,6 +501,26 @@ export function resolveEffectiveSessionModelOverride(input: {
 
 const CONTEXT_MENU_CANCEL_REQUEST_NAME = "Cancel Request";
 
+const DISCORD_BOT_INVITE_SCOPES = "bot applications.commands";
+const DISCORD_STANDARD_INVITE_PERMISSIONS =
+  PermissionFlagsBits.ViewChannel |
+  PermissionFlagsBits.SendMessages |
+  PermissionFlagsBits.SendMessagesInThreads |
+  PermissionFlagsBits.ReadMessageHistory |
+  PermissionFlagsBits.EmbedLinks |
+  PermissionFlagsBits.AttachFiles |
+  PermissionFlagsBits.AddReactions |
+  PermissionFlagsBits.UseExternalEmojis;
+
+function buildDiscordBotInviteUrl(input: { clientId: string; permissions: bigint }): string {
+  const params = new URLSearchParams({
+    client_id: input.clientId,
+    scope: DISCORD_BOT_INVITE_SCOPES,
+    permissions: input.permissions.toString(),
+  });
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
 export class DiscordAdapter implements SurfaceAdapter {
   private client: Client | null = null;
   private store: DiscordSurfaceStore | null = null;
@@ -581,6 +601,20 @@ export class DiscordAdapter implements SurfaceAdapter {
         userId: user.id,
         botName,
       });
+
+      const applicationId = client.application?.id ?? user.id;
+      this.logger.info(
+        buildDiscordBotInviteUrl({
+          clientId: applicationId,
+          permissions: DISCORD_STANDARD_INVITE_PERMISSIONS,
+        }),
+      );
+      this.logger.info(
+        buildDiscordBotInviteUrl({
+          clientId: applicationId,
+          permissions: PermissionFlagsBits.Administrator,
+        }),
+      );
 
       // Register/refresh slash commands on boot.
       // Strategy:
