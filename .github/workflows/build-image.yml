@@ -48,6 +48,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ matrix.variant.tag }}
+            type=raw,value=latest,enable=${{ matrix.variant.tag == 'catalinna' }}
             type=sha,prefix=${{ matrix.variant.tag }}-,format=short
 
       - name: Build and push

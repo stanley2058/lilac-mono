@@ -21,7 +21,7 @@ These are the intentional differences between this fork `main` and `upstream/mai
 | --- | --- | --- | --- |
 | CI (fork ops) | `.github/workflows/sync-upstream.yml` | Adds scheduled/manual upstream sync workflow for this fork. | Keep fork branch current with upstream automatically. |
 | CI (image publish) | `.github/workflows/build-image.yml` | Adds Docker image build/push workflow for this fork registry flow. | Keep fork-specific container image pipeline. |
-| Container image variants | `Dockerfile`, `.github/workflows/build-image.yml` | CI workflow directly defines variant build args for runtime identity and publishes tags (`catalinna`, `claudia`). | Keep upstream defaults while producing fork-specific image variants. |
+| Container image variants | `Dockerfile`, `.github/workflows/build-image.yml` | CI workflow directly defines variant build args for runtime identity and publishes tags (`catalinna`, `claudia`), with `latest` aligned to `catalinna`. | Keep upstream defaults while producing fork-specific image variants. |
 | Empty-reply guardrail (default off) | `packages/utils/env.ts`, `.env.example`, `apps/core/src/surface/bridge/bus-agent-runner.ts` | Adds feature flag `LILAC_SKIP_EMPTY_REASONING_REPLY`; when enabled, reasoning-only + empty final reply is skipped with diagnostics instead of posting empty placeholder text. | Keep upstream default behavior by default, but allow operational mitigation when needed. |
 | Fork documentation | `README.md` | Documents only fork-specific deltas and upstream acceptance status. | Make review/audit of fork changes explicit. |
 
