@@ -954,7 +954,61 @@ describe("bridgeBusToAdapter", () => {
     expect(adapter.streams).toHaveLength(3);
     expect(adapter.streams[0]?.aborted).toBe("reanchor");
     expect(adapter.streams[1]?.aborted).toBe("reanchor");
-    expect(adapter.streams[2]?.parts.at(-1)).toEqual({ type: "text.set", text: "abc" });
+    expect(adapter.streams[2]?.parts.at(-1)).toEqual({ type: "text.set", text: "c" });
+
+    await bridge.stop();
+  });
+
+  it("keeps full final text behavior in full mode without reanchor", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+    adapter.outputFinalTextMode = "full";
+
+    const requestId = "discord:chan:msg_full_mode_no_reanchor";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      { headers: { request_id: requestId } },
+    );
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "ab" },
+      { headers: { request_id: requestId } },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(adapter.streams).toHaveLength(1);
+    expect(adapter.streams[0]?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
 
     await bridge.stop();
   });
@@ -1106,7 +1160,7 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.streams).toHaveLength(2);
     expect(adapter.streams[0]?.aborted).toBe("reanchor");
-    expect(adapter.streams[1]?.parts.at(-1)).toEqual({ type: "text.set", text: "ab" });
+    expect(adapter.streams[1]?.parts.at(-1)).toEqual({ type: "text.set", text: "b" });
 
     await bridge.stop();
   });

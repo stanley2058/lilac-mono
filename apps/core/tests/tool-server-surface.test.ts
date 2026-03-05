@@ -21,6 +21,7 @@ import type {
   SurfaceMessage,
   SurfaceReactionDetail,
   SurfaceSelf,
+  SurfaceSessionParticipantsResult,
   SurfaceSession,
 } from "../src/surface/types";
 
@@ -43,6 +44,7 @@ class FakeAdapter implements SurfaceAdapter {
     private readonly sessions: SurfaceSession[],
     private readonly messagesByChannelId: Record<string, SurfaceMessage[]>,
     private readonly guildIdByChannelId: Record<string, string> = {},
+    private readonly participantsByChannelId: Record<string, SurfaceSessionParticipantsResult> = {},
   ) {}
 
   async fetchGuildIdForChannel(channelId: string): Promise<string | null> {
@@ -145,6 +147,24 @@ class FakeAdapter implements SurfaceAdapter {
     ];
   }
 
+  async listSessionParticipants(
+    sessionRef: SessionRef,
+    opts?: { limit?: number },
+  ): Promise<SurfaceSessionParticipantsResult> {
+    const row = this.participantsByChannelId[sessionRef.channelId];
+    const base: SurfaceSessionParticipantsResult = row ?? {
+      source: "guild_members",
+      participants: [],
+    };
+
+    const limit = Math.min(2000, Math.max(1, Math.floor(opts?.limit ?? 200)));
+
+    return {
+      source: base.source,
+      participants: base.participants.slice(0, limit),
+    };
+  }
+
   async subscribe(): Promise<any> {
     throw new Error("not implemented");
   }
@@ -234,6 +254,103 @@ describe("tool-server surface", () => {
     expect(sessions.length).toBe(1);
     expect(sessions[0].channelId).toBe("c1");
     expect(sessions[0].token).toBe("ops");
+  });
+
+  it("lists session participants", async () => {
+    const channelId = "123456789012345678";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "thread" }],
+      {},
+      {},
+      {
+        [channelId]: {
+          source: "thread_members",
+          participants: [
+            {
+              userId: "u1",
+              userName: "alice",
+              displayName: "Alice",
+              status: "online",
+              activities: [{ type: "playing", name: "Chess" }],
+            },
+          ],
+        },
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+
+    const out = (await tool.call("surface.sessions.listParticipants", {
+      client: "discord",
+      sessionId: channelId,
+    })) as {
+      meta: { source: string; count: number };
+      participants: Array<{ userId: string; status?: string }>;
+    };
+
+    expect(out.meta.source).toBe("thread_members");
+    expect(out.meta.count).toBe(1);
+    expect(out.participants[0]?.userId).toBe("u1");
+    expect(out.participants[0]?.status).toBe("online");
+  });
+
+  it("defaults sessionId from request context for participant listing", async () => {
+    const channelId = "223456789012345678";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [],
+      {},
+      {},
+      {
+        [channelId]: {
+          source: "guild_members",
+          participants: [
+            { userId: "u1", userName: "alice" },
+            { userId: "u2", userName: "bob" },
+          ],
+        },
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const ctx: RequestContext = {
+      requestId: "req:participants",
+      requestClient: "discord",
+      sessionId: channelId,
+    };
+
+    const out = (await tool.call(
+      "surface.sessions.listParticipants",
+      { client: "discord", limit: 1 },
+      { context: ctx },
+    )) as {
+      meta: { count: number };
+      participants: Array<{ userId: string }>;
+    };
+
+    expect(out.meta.count).toBe(1);
+    expect(out.participants[0]?.userId).toBe("u1");
   });
 
   it("defaults sessionId from request context", async () => {
@@ -1148,6 +1265,29 @@ describe("tool-server surface", () => {
     const tool = new Surface({ adapter, config: cfg });
 
     await expect(tool.call("surface.sessions.list", { client: "github" })).rejects.toThrow("gh");
+  });
+
+  it("errors for github sessions.listParticipants", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg });
+
+    await expect(
+      tool.call("surface.sessions.listParticipants", {
+        client: "github",
+        sessionId: "OWNER/REPO#1",
+      }),
+    ).rejects.toThrow("Discord-only");
   });
 
   it("defaults github sessionId/messageId from requestId", async () => {

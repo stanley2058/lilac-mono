@@ -208,6 +208,7 @@ const discordSurfaceSchema = z
       .min(1)
       .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
     statusMessage: z.string().optional(),
+    memberPresence: z.boolean().optional(),
 
     /** Output rendering mode for Discord reply streams. */
     outputMode: z.enum(["inline", "preview"]).default("inline"),
