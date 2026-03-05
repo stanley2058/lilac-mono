@@ -16,6 +16,15 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant:
+          - tag: catalinna
+            container_user: Catalinna
+            container_uid: 3000
+          - tag: claudia
+            container_user: Claudia
+            container_uid: 3000
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,15 +47,17 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=,format=short
-            type=raw,value={{date 'YYYYMMDD'}}-{{sha}}
+            type=raw,value=${{ matrix.variant.tag }}
+            type=sha,prefix=${{ matrix.variant.tag }}-,format=short
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          build-args: |
+            CONTAINER_USER=${{ matrix.variant.container_user }}
+            CONTAINER_UID=${{ matrix.variant.container_uid }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

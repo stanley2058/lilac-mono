@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=ubuntu:24.04
 ARG NODE_MAJOR=22
-ARG CONTAINER_USER=Catalinna
-ARG CONTAINER_UID=3000
+ARG CONTAINER_USER=lilac
+ARG CONTAINER_UID=1000
 
 ############################
 # Stage 1: sandbox tools
@@ -92,7 +92,7 @@ RUN if id -u "$LILAC_USER" >/dev/null 2>&1; then \
   fi
 ENV HOME=/home/${LILAC_USER}
 ENV DATA_DIR=/data
-ENV CATALINNA_WORKSPACE_DIR=${DATA_DIR}/workspace
+ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
 ENV GIT_CONFIG_GLOBAL=${DATA_DIR}/.gitconfig
 ENV GNUPGHOME=${DATA_DIR}/secret/gnupg
 ENV BUN_INSTALL_GLOBAL_DIR=${DATA_DIR}/.bun/install/global
