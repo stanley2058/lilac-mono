@@ -1020,12 +1020,13 @@ export async function bridgeBusToAdapter(params: {
                   Math.min(streamTextPrefixChars, finalText.length),
                 );
                 const isContinuationOnlyFinal = finalText.length < totalTextChars;
-                let streamFinalText =
-                  finalTextMode === "full"
+                const hasPriorLanePrefix = clampedStreamPrefixChars > 0;
+                const shouldUseFullLaneFinal = finalTextMode === "full" && !hasPriorLanePrefix;
+                let streamFinalText = shouldUseFullLaneFinal
+                  ? finalText
+                  : isContinuationOnlyFinal
                     ? finalText
-                    : isContinuationOnlyFinal
-                      ? finalText
-                      : finalText.slice(clampedStreamPrefixChars);
+                    : finalText.slice(clampedStreamPrefixChars);
 
                 // On recovery resumes, the agent may emit only the continuation suffix
                 // (instead of the full final text). In that case, preserve already visible
