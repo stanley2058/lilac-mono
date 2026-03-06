@@ -266,6 +266,135 @@ describe("ModelCapability", () => {
     );
   });
 
+  it("supports inherited overrides for newly introduced models", async () => {
+    const registry = {
+      openai: {
+        id: "openai",
+        npm: "@ai-sdk/openai",
+        name: "OpenAI",
+        models: {
+          "gpt-4o-mini": {
+            id: "gpt-4o-mini",
+            name: "GPT-4o mini",
+            family: "gpt-4o",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 200_000, output: 16_384 },
+            cost: {
+              input: 0.15,
+              output: 0.6,
+            },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      overrides: {
+        "openai-compatible/my-new-model": {
+          inherit: "openai/gpt-4o-mini",
+          limit: {
+            context: 262_144,
+          },
+        },
+      },
+    });
+
+    const info = await mc.resolve("openai-compatible/my-new-model");
+    expect(info.provider).toBe("openai-compatible");
+    expect(info.model).toBe("my-new-model");
+    expect(info.limit).toEqual({ context: 262_144, output: 16_384 });
+    expect(info.cost).toEqual({ input: 0.15, output: 0.6 });
+    expect(info.modalities).toEqual({ input: ["text"], output: ["text"] });
+  });
+
+  it("supports inheritance chains across override entries", async () => {
+    const registry = {
+      openai: {
+        id: "openai",
+        npm: "@ai-sdk/openai",
+        name: "OpenAI",
+        models: {
+          "gpt-4o": {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            family: "gpt-4o",
+            modalities: { input: ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 16_384 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      overrides: {
+        "custom/base": {
+          inherit: "openai/gpt-4o",
+          limit: {
+            context: 160_000,
+          },
+        },
+        "custom/derived": {
+          inherit: "custom/base",
+          limit: {
+            output: 4096,
+          },
+        },
+      },
+    });
+
+    const info = await mc.resolve("custom/derived");
+    expect(info.limit).toEqual({ context: 160_000, output: 4096 });
+  });
+
+  it("detects override inheritance cycles", async () => {
+    const mc = new ModelCapability({
+      overrides: {
+        "custom/a": { inherit: "custom/b", limit: { context: 1000 } },
+        "custom/b": { inherit: "custom/a", limit: { context: 1000 } },
+      },
+    });
+
+    await expect(mc.resolve("custom/a")).rejects.toThrow("override cycle detected");
+  });
+
+  it("resolves explicit overrides even when provider is force-unknown", async () => {
+    const mc = new ModelCapability({
+      forceUnknownProviders: ["openai-compatible"],
+      overrides: {
+        "openai-compatible/local-model": {
+          inherit: "openai/gpt-4o",
+          limit: {
+            context: 200_000,
+          },
+        },
+      },
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch({
+        openai: {
+          id: "openai",
+          npm: "@ai-sdk/openai",
+          name: "OpenAI",
+          models: {
+            "gpt-4o": {
+              id: "gpt-4o",
+              name: "GPT-4o",
+              family: "gpt-4o",
+              modalities: { input: ["text"], output: ["text"] },
+              limit: { context: 128_000, output: 16_384 },
+            },
+          },
+        },
+      }),
+    });
+
+    const info = await mc.resolve("openai-compatible/local-model");
+    expect(info.limit).toEqual({ context: 200_000, output: 16_384 });
+  });
+
   it("uses no-cache tokens for base input pricing when cache pricing is present", () => {
     const mc = new ModelCapability();
     const costUsd = mc.estimateCostUsd(

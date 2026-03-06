@@ -40,20 +40,24 @@ export type ModelCapabilityInfo = {
   };
 };
 
-export type ModelCapabilityOverrides = Record<
-  ModelSpecifier,
-  {
-    cost?: ModelCost;
-    limit: {
-      context: number;
-      output?: number;
-    };
-    modalities?: {
-      input: ModelModality[];
-      output?: ModelModality[];
-    };
-  }
->;
+export type ModelCapabilityOverride = {
+  /** Optional base model capability to inherit from (provider/model). */
+  inherit?: ModelSpecifier;
+  /** Optional partial cost patch merged onto inherited/base cost. */
+  cost?: Partial<ModelCost>;
+  /** Optional partial limit patch merged onto inherited/base limits. */
+  limit?: {
+    context?: number;
+    output?: number;
+  };
+  /** Optional partial modalities patch merged onto inherited/base modalities. */
+  modalities?: {
+    input?: ModelModality[];
+    output?: ModelModality[];
+  };
+};
+
+export type ModelCapabilityOverrides = Record<ModelSpecifier, ModelCapabilityOverride>;
 
 export type ModelCapabilityOptions = {
   /** Optional overrides that take priority over models.dev. */
@@ -253,33 +257,96 @@ export class ModelCapability {
     return await this.registryPromise;
   }
 
-  async resolve(
+  private cloneCost(cost: ModelCost | undefined): ModelCost | undefined {
+    if (!cost) return undefined;
+    return {
+      input: cost.input,
+      output: cost.output,
+      cache_read: cost.cache_read,
+      cache_write: cost.cache_write,
+      input_audio: cost.input_audio,
+      output_audio: cost.output_audio,
+    };
+  }
+
+  private cloneModalities(
+    modalities: ModelCapabilityInfo["modalities"],
+  ): ModelCapabilityInfo["modalities"] {
+    if (!modalities) return undefined;
+    return {
+      input: [...modalities.input],
+      output: modalities.output ? [...modalities.output] : undefined,
+    };
+  }
+
+  private mergeCostPatch(params: {
+    spec: string;
+    baseCost: ModelCost | undefined;
+    patch: Partial<ModelCost> | undefined;
+  }): ModelCost | undefined {
+    if (!params.patch) {
+      return this.cloneCost(params.baseCost);
+    }
+
+    const mergedInput = params.patch.input ?? params.baseCost?.input;
+    const mergedOutput = params.patch.output ?? params.baseCost?.output;
+    if (mergedInput === undefined || mergedOutput === undefined) {
+      throw new Error(
+        `Invalid capability override '${params.spec}': cost patch requires cost.input and cost.output (directly or via inherit).`,
+      );
+    }
+
+    return {
+      input: mergedInput,
+      output: mergedOutput,
+      cache_read: params.patch.cache_read ?? params.baseCost?.cache_read,
+      cache_write: params.patch.cache_write ?? params.baseCost?.cache_write,
+      input_audio: params.patch.input_audio ?? params.baseCost?.input_audio,
+      output_audio: params.patch.output_audio ?? params.baseCost?.output_audio,
+    };
+  }
+
+  private mergeModalitiesPatch(params: {
+    spec: string;
+    baseModalities: ModelCapabilityInfo["modalities"];
+    patch: ModelCapabilityOverride["modalities"] | undefined;
+  }): ModelCapabilityInfo["modalities"] {
+    if (!params.patch) {
+      return this.cloneModalities(params.baseModalities);
+    }
+
+    const mergedInput = params.patch.input ?? params.baseModalities?.input;
+    const mergedOutput = params.patch.output ?? params.baseModalities?.output;
+
+    if (!mergedInput) {
+      throw new Error(
+        `Invalid capability override '${params.spec}': modalities.input is required when overriding modalities without inherit/base modalities.`,
+      );
+    }
+
+    return {
+      input: [...mergedInput],
+      output: mergedOutput ? [...mergedOutput] : undefined,
+    };
+  }
+
+  private async resolveFromRegistry(
     spec: ModelSpecifier,
-    options?: { signal?: AbortSignal },
+    options?: {
+      signal?: AbortSignal;
+      bypassForceUnknown?: boolean;
+    },
   ): Promise<ModelCapabilityInfo> {
     const parsed = parseModelSpecifier(spec);
     const provider = this.normalizeProvider(parsed.provider);
     if (
-      this.forceUnknownProviders.has(parsed.provider.trim().toLowerCase()) ||
-      this.forceUnknownProviders.has(provider.toLowerCase())
+      !options?.bypassForceUnknown &&
+      (this.forceUnknownProviders.has(parsed.provider.trim().toLowerCase()) ||
+        this.forceUnknownProviders.has(provider.toLowerCase()))
     ) {
       throw new Error(
         `Model capability lookup intentionally disabled for provider '${parsed.provider}' (spec '${spec}').`,
       );
-    }
-
-    const override = this.overrides[spec];
-    if (override) {
-      return {
-        provider: parsed.provider,
-        model: parsed.model,
-        cost: override.cost,
-        limit: {
-          context: override.limit.context,
-          output: override.limit.output ?? 0,
-        },
-        modalities: override.modalities,
-      };
     }
 
     const registry = await this.loadRegistry(options?.signal);
@@ -318,6 +385,74 @@ export class ModelCapability {
       limit: modelEntry.limit,
       modalities: modelEntry.modalities,
     };
+  }
+
+  private async resolveWithOverrides(
+    spec: ModelSpecifier,
+    options: { signal?: AbortSignal; stack: readonly string[] },
+  ): Promise<ModelCapabilityInfo> {
+    const parsed = parseModelSpecifier(spec);
+    const override = this.overrides[spec];
+    if (!override) {
+      return this.resolveFromRegistry(spec, { signal: options.signal });
+    }
+
+    if (options.stack.includes(spec)) {
+      const chain = [...options.stack, spec].join(" -> ");
+      throw new Error(`Model capability override cycle detected: ${chain}`);
+    }
+
+    let base: ModelCapabilityInfo | null = null;
+    if (override.inherit) {
+      base = await this.resolveWithOverrides(override.inherit, {
+        signal: options.signal,
+        stack: [...options.stack, spec],
+      });
+    }
+
+    const mergedContext = override.limit?.context ?? base?.limit.context;
+    if (mergedContext === undefined) {
+      throw new Error(
+        `Invalid capability override '${spec}': limit.context is required (directly or via inherit).`,
+      );
+    }
+
+    const mergedCost = this.mergeCostPatch({
+      spec,
+      baseCost: base?.cost,
+      patch: override.cost,
+    });
+    const mergedModalities = this.mergeModalitiesPatch({
+      spec,
+      baseModalities: base?.modalities,
+      patch: override.modalities,
+    });
+
+    return {
+      provider: parsed.provider,
+      model: parsed.model,
+      name: base?.name,
+      family: base?.family,
+      env: base?.env,
+      npm: base?.npm,
+      doc: base?.doc,
+      cost: mergedCost,
+      limit: {
+        context: mergedContext,
+        output: override.limit?.output ?? base?.limit.output ?? 0,
+      },
+      modalities: mergedModalities,
+    };
+  }
+
+  async resolve(
+    spec: ModelSpecifier,
+    options?: { signal?: AbortSignal },
+  ): Promise<ModelCapabilityInfo> {
+    return await this.resolveWithOverrides(spec, {
+      signal: options?.signal,
+      stack: [],
+    });
   }
 
   estimateCostUsd(

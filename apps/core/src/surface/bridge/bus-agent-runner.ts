@@ -1775,8 +1775,10 @@ export async function startBusAgentRunner(params: {
       lastTurnEndAt?: number;
     } = {};
     const streamWarnings: CallWarning[] = [];
+    const modelCapabilityConfig = cfg.models.capability;
     const modelCapability = new ModelCapability({
-      forceUnknownProviders: ["openai-compatible"],
+      forceUnknownProviders: modelCapabilityConfig?.forceUnknownProviders ?? ["openai-compatible"],
+      overrides: modelCapabilityConfig?.overrides ?? {},
     });
     let modelCapabilityInfo: ModelCapabilityInfo | null = null;
     let costEstimateStatus: "estimated" | "unavailable" = "unavailable";

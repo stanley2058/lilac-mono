@@ -247,6 +247,85 @@ const discordSurfaceSchema = z
 
 const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
 
+const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
+
+const modelCapabilityCostPatchSchema = z.object({
+  input: z.number().nonnegative().optional(),
+  output: z.number().nonnegative().optional(),
+  cache_read: z.number().nonnegative().optional(),
+  cache_write: z.number().nonnegative().optional(),
+  input_audio: z.number().nonnegative().optional(),
+  output_audio: z.number().nonnegative().optional(),
+});
+
+const modelCapabilityLimitPatchSchema = z.object({
+  context: z.number().int().positive().optional(),
+  output: z.number().int().nonnegative().optional(),
+});
+
+const modelCapabilityModalitiesPatchSchema = z.object({
+  input: z.array(modelCapabilityModalitySchema).optional(),
+  output: z.array(modelCapabilityModalitySchema).optional(),
+});
+
+const modelCapabilityOverrideSchema = z
+  .object({
+    /** Optional base model capability spec to inherit from (provider/model). */
+    inherit: z.string().trim().min(1).optional(),
+    /** Optional partial cost patch merged onto inherited/base cost. */
+    cost: modelCapabilityCostPatchSchema.optional(),
+    /** Optional partial limit patch merged onto inherited/base limits. */
+    limit: modelCapabilityLimitPatchSchema.optional(),
+    /** Optional partial modalities patch merged onto inherited/base modalities. */
+    modalities: modelCapabilityModalitiesPatchSchema.optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (!input.inherit && !input.cost && !input.limit && !input.modalities) {
+      ctx.addIssue({
+        code: "custom",
+        message: "override must set at least one of inherit, cost, limit, or modalities",
+      });
+    }
+
+    if (!input.inherit) {
+      if (input.limit?.context === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["limit", "context"],
+          message: "limit.context is required when inherit is not set",
+        });
+      }
+
+      if (input.cost && (input.cost.input === undefined || input.cost.output === undefined)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["cost"],
+          message: "cost.input and cost.output are required when inherit is not set",
+        });
+      }
+
+      if (input.modalities && input.modalities.input === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["modalities", "input"],
+          message: "modalities.input is required when inherit is not set",
+        });
+      }
+    }
+  });
+
+const modelCapabilitySchema = z
+  .object({
+    /** Providers to always treat as unknown/unresolved capability. */
+    forceUnknownProviders: z.array(z.string().trim().min(1)).default(["openai-compatible"]),
+    /** Optional capability overrides keyed by provider/model spec. */
+    overrides: z.record(z.string().trim().min(1), modelCapabilityOverrideSchema).default({}),
+  })
+  .default({
+    forceUnknownProviders: ["openai-compatible"],
+    overrides: {},
+  });
+
 const toolsSchema = z
   .object({
     web: z
@@ -387,11 +466,17 @@ export const coreConfigSchema = z.object({
         .default({
           model: "openrouter/openai/gpt-4o-mini",
         }),
+
+      capability: modelCapabilitySchema,
     })
     .default({
       def: {},
       main: { model: "openrouter/openai/gpt-4o" },
       fast: { model: "openrouter/openai/gpt-4o-mini" },
+      capability: {
+        forceUnknownProviders: ["openai-compatible"],
+        overrides: {},
+      },
     }),
 
   entity: z
@@ -412,7 +497,7 @@ export const coreConfigSchema = z.object({
 
 type ParsedCoreConfig = z.infer<typeof coreConfigSchema>;
 
-export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface"> & {
+export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface" | "models"> & {
   surface: Omit<ParsedCoreConfig["surface"], "discord"> & {
     discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators" | "experimental"> & {
       workingIndicators?: string[];
@@ -427,6 +512,12 @@ export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface"> & {
     };
   };
   agent: AgentConfig;
+  models: Omit<ParsedCoreConfig["models"], "capability"> & {
+    capability?: {
+      forceUnknownProviders?: ParsedCoreConfig["models"]["capability"]["forceUnknownProviders"];
+      overrides?: ParsedCoreConfig["models"]["capability"]["overrides"];
+    };
+  };
 };
 
 let cached: CoreConfig | null = null;
