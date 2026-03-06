@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { MessageType, type Message } from "discord.js";
 
 import {
+  DiscordAdapter,
   hasExplicitDiscordUserMentionInContent,
   isExplicitDiscordUserMention,
   isRoutableDiscordUserMessage,
+  resolveDiscordSurfaceEditTarget,
   resolveOutputNotificationEnabled,
   resolveEffectiveSessionModelOverride,
 } from "../../../src/surface/discord/discord-adapter";
@@ -182,5 +184,176 @@ describe("resolveOutputNotificationEnabled", () => {
 
   it("forces notifications off when silent=true", () => {
     expect(resolveOutputNotificationEnabled({ configured: true, silent: true })).toBe(false);
+  });
+});
+
+describe("resolveDiscordSurfaceEditTarget", () => {
+  it("uses plain content for non-embed bot messages", () => {
+    expect(
+      resolveDiscordSurfaceEditTarget({
+        authorId: "bot",
+        selfUserId: "bot",
+        embedCount: 0,
+      }),
+    ).toBe("content");
+  });
+
+  it("uses embed description for single-embed bot messages", () => {
+    expect(
+      resolveDiscordSurfaceEditTarget({
+        authorId: "bot",
+        selfUserId: "bot",
+        embedCount: 1,
+      }),
+    ).toBe("embed_description");
+  });
+
+  it("prefers content when single-embed bot messages also have visible content", () => {
+    expect(
+      resolveDiscordSurfaceEditTarget({
+        authorId: "bot",
+        selfUserId: "bot",
+        embedCount: 1,
+        content: "visible content",
+      }),
+    ).toBe("content");
+  });
+
+  it("rejects non-bot-authored messages", () => {
+    expect(() =>
+      resolveDiscordSurfaceEditTarget({
+        authorId: "user",
+        selfUserId: "bot",
+        embedCount: 1,
+      }),
+    ).toThrow("authored by the Lilac Discord bot");
+  });
+
+  it("rejects multi-embed messages", () => {
+    expect(() =>
+      resolveDiscordSurfaceEditTarget({
+        authorId: "bot",
+        selfUserId: "bot",
+        embedCount: 2,
+      }),
+    ).toThrow("single embed");
+  });
+});
+
+describe("DiscordAdapter.editMsg", () => {
+  it("replaces only the embed description for single-embed bot messages", async () => {
+    const editCalls: Array<Record<string, unknown>> = [];
+    const message = {
+      author: { id: "bot" },
+      embeds: [
+        {
+          toJSON: () => ({
+            title: "keep-title",
+            description: "old-description",
+            fields: [{ name: "field-1", value: "value-1" }],
+            footer: { text: "keep-footer" },
+          }),
+        },
+      ],
+      edit: async (options: Record<string, unknown>) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+
+    const adapter = new DiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => message,
+          },
+        }),
+      },
+    };
+
+    await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "new-description" },
+    );
+
+    expect(editCalls).toHaveLength(1);
+    expect(editCalls[0]?.content).toBeUndefined();
+
+    const embeds = editCalls[0]?.embeds as Array<{ toJSON(): Record<string, unknown> }> | undefined;
+    expect(embeds).toHaveLength(1);
+
+    const edited = embeds?.[0]?.toJSON();
+    expect(edited?.title).toBe("keep-title");
+    expect(edited?.description).toBe("new-description");
+    expect(edited?.fields).toEqual([{ name: "field-1", value: "value-1" }]);
+    expect(edited?.footer).toEqual({ text: "keep-footer" });
+  });
+
+  it("fails for non-bot-authored messages", async () => {
+    const message = {
+      author: { id: "user" },
+      embeds: [],
+      edit: async () => undefined,
+    } as unknown as Message;
+
+    const adapter = new DiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => message,
+          },
+        }),
+      },
+    };
+
+    await expect(
+      adapter.editMsg(
+        { platform: "discord", channelId: "c1", messageId: "m1" },
+        { text: "updated" },
+      ),
+    ).rejects.toThrow("authored by the Lilac Discord bot");
+  });
+
+  it("edits content when a bot message has visible content plus one embed", async () => {
+    const editCalls: Array<Record<string, unknown>> = [];
+    const message = {
+      author: { id: "bot" },
+      content: "old content",
+      embeds: [
+        {
+          toJSON: () => ({
+            title: "preview-title",
+            description: "preview-description",
+          }),
+        },
+      ],
+      edit: async (options: Record<string, unknown>) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+
+    const adapter = new DiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => message,
+          },
+        }),
+      },
+    };
+
+    await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "new content" },
+    );
+
+    expect(editCalls).toHaveLength(1);
+    expect(editCalls[0]?.content).toBe("new content");
+    expect(editCalls[0]?.embeds).toBeUndefined();
   });
 });

@@ -4,6 +4,7 @@ import {
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
   Client,
+  EmbedBuilder,
   type GuildMember,
   type CacheType,
   type ChatInputCommandInteraction,
@@ -117,6 +118,35 @@ export function resolveOutputNotificationEnabled(input: {
   if (input.silent === true) return false;
   if (typeof input.configured === "boolean") return input.configured;
   return true;
+}
+
+export function resolveDiscordSurfaceEditTarget(input: {
+  authorId?: string | null;
+  selfUserId: string;
+  embedCount: number;
+  content?: string | null;
+}): "content" | "embed_description" {
+  if (input.authorId !== input.selfUserId) {
+    throw new Error(
+      "surface.messages.edit only supports messages authored by the Lilac Discord bot",
+    );
+  }
+
+  if (typeof input.content === "string" && input.content.trim().length > 0) {
+    return "content";
+  }
+
+  if (input.embedCount <= 0) {
+    return "content";
+  }
+
+  if (input.embedCount === 1) {
+    return "embed_description";
+  }
+
+  throw new Error(
+    "surface.messages.edit only supports Discord messages with plain content or a single embed",
+  );
 }
 
 function getChannelName<T extends { isDMBased?: () => boolean } | { name?: string }>(
@@ -992,6 +1022,9 @@ export class DiscordAdapter implements SurfaceAdapter {
   async editMsg(msgRef: MsgRef, content: ContentOpts): Promise<void> {
     const client = this.mustClient();
     if (msgRef.platform !== "discord") throw new Error("Unsupported platform");
+    if (!client.user) {
+      throw new Error("Discord client user is unavailable");
+    }
 
     const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
@@ -1002,7 +1035,26 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const raw = content.text ?? "";
     const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;
-    await msg.edit({ content: rewritten });
+    const editTarget = resolveDiscordSurfaceEditTarget({
+      authorId: msg.author?.id,
+      selfUserId: client.user.id,
+      embedCount: msg.embeds.length,
+      content: msg.content,
+    });
+
+    if (editTarget === "content") {
+      await msg.edit({ content: rewritten });
+      return;
+    }
+
+    const existingEmbed = msg.embeds[0];
+    if (!existingEmbed) {
+      throw new Error("Discord message embed could not be resolved for editing");
+    }
+
+    const embed = new EmbedBuilder(existingEmbed.toJSON());
+    embed.setDescription(rewritten);
+    await msg.edit({ embeds: [embed] });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {

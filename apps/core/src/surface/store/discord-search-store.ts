@@ -5,6 +5,7 @@ import {
   type SurfaceAdapter,
   type SurfaceBurstCacheInput,
 } from "../adapter";
+import { getDiscordSurfaceDisplayText } from "../discord/discord-surface-display-text";
 import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
 
 const SEARCH_LIMIT_MAX = 100;
@@ -207,7 +208,10 @@ export class DiscordSearchStore {
             message.ref.messageId,
             message.userId,
             message.userName ?? null,
-            message.text,
+            getDiscordSurfaceDisplayText({
+              raw: message.raw,
+              fallbackText: message.text,
+            }),
             message.ts,
             message.editedTs ?? null,
             message.deleted ? 1 : 0,

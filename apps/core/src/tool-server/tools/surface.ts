@@ -24,10 +24,7 @@ import {
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
 import { inferMimeTypeFromFilename, resolveToolPath } from "../../shared/attachment-utils";
-import {
-  buildDiscordRichTextFromContentAndEmbeds,
-  normalizeDiscordEmbeds,
-} from "../../surface/discord/discord-embed-text";
+import { getDiscordSurfaceTextFromRaw } from "../../surface/discord/discord-surface-display-text";
 
 import {
   isGithubIssueTriggerId,
@@ -698,60 +695,6 @@ function getMessageAttachmentMeta(msg: SurfaceMessage): SurfaceMessageAttachment
     return extractDiscordAttachmentMetaFromRaw(msg.raw);
   }
   return [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
-  return value as Record<string, unknown>;
-}
-
-function joinTextBlocks(blocks: readonly string[]): string | undefined {
-  const nonEmpty = blocks.map((b) => b.trim()).filter((b) => b.length > 0);
-  if (nonEmpty.length === 0) return undefined;
-  return nonEmpty.join("\n\n");
-}
-
-function getDiscordSurfaceTextFromRaw(raw: unknown): string | undefined {
-  const top = asRecord(raw);
-  if (!top) return undefined;
-
-  const forwardSnapshot = getForwardSnapshotMessageFromRaw(raw);
-  const topContent = typeof top.content === "string" ? top.content : undefined;
-  const topEmbeds = normalizeDiscordEmbeds(top.embeds);
-
-  const snapshotContent =
-    forwardSnapshot && typeof forwardSnapshot.content === "string"
-      ? forwardSnapshot.content
-      : undefined;
-  const snapshotEmbeds = normalizeDiscordEmbeds(forwardSnapshot?.embeds);
-
-  const topDiscord = asRecord(top.discord);
-  const fallbackContent = typeof topDiscord?.content === "string" ? topDiscord.content : undefined;
-  const fallbackEmbeds = normalizeDiscordEmbeds(topDiscord?.embeds);
-
-  if (forwardSnapshot) {
-    const topRichText = buildDiscordRichTextFromContentAndEmbeds({
-      content: topContent ?? fallbackContent,
-      embeds: topEmbeds.length > 0 ? topEmbeds : fallbackEmbeds,
-      mode: "surface",
-    });
-
-    const snapshotRichText = buildDiscordRichTextFromContentAndEmbeds({
-      content: snapshotContent,
-      embeds: snapshotEmbeds,
-      mode: "surface",
-    });
-
-    return joinTextBlocks([topRichText, snapshotRichText]);
-  }
-
-  const richText = buildDiscordRichTextFromContentAndEmbeds({
-    content: topContent ?? fallbackContent,
-    embeds: topEmbeds.length > 0 ? topEmbeds : fallbackEmbeds,
-    mode: "surface",
-  });
-
-  return richText.length > 0 ? richText : undefined;
 }
 
 function getSurfaceMessageRichText(msg: SurfaceMessage): string {

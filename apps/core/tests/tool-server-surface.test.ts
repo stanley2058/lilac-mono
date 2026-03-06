@@ -1063,6 +1063,116 @@ describe("tool-server surface", () => {
     searchStore.close();
   });
 
+  it("indexes the same discord display text that read returns", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u1",
+            text: "shadow text one",
+            ts: 100,
+            raw: {
+              content: "normal-text",
+              embeds: [
+                {
+                  title: "embed-title",
+                  description: "embed-description",
+                  fields: [{ name: "field-1", value: "value-1" }],
+                  footer: { text: "embed-footer" },
+                },
+              ],
+            },
+          },
+          {
+            ref: { platform: "discord", channelId, messageId: "m2" },
+            session: { platform: "discord", channelId },
+            userId: "u2",
+            text: "shadow text two",
+            ts: 200,
+            raw: {
+              content: "forward-comment",
+              reference: { type: 1, messageId: "orig", channelId: "other" },
+              messageSnapshots: [
+                {
+                  message: {
+                    content: "snapshot-content",
+                    embeds: [
+                      {
+                        title: "snapshot-title",
+                        description: "snapshot-description",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    );
+
+    const searchStore = new DiscordSearchStore(":memory:");
+    const search = new DiscordSearchService({ adapter, store: searchStore });
+    const tool = new Surface({ adapter, config: cfg, discordSearch: search });
+
+    const embedHit = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: channelId,
+      query: "value-1",
+    })) as {
+      hits: Array<{ messageId: string; richText: string }>;
+    };
+
+    const embedRead = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+    })) as {
+      message: { richText: string } | null;
+    };
+
+    expect(embedHit.hits).toHaveLength(1);
+    expect(embedHit.hits[0]?.messageId).toBe("m1");
+    expect(embedHit.hits[0]?.richText).toBe(embedRead.message?.richText);
+
+    const forwardHit = (await tool.call("surface.messages.search", {
+      client: "discord",
+      sessionId: channelId,
+      query: "snapshot-description",
+    })) as {
+      hits: Array<{ messageId: string; richText: string }>;
+    };
+
+    const forwardRead = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m2",
+    })) as {
+      message: { richText: string } | null;
+    };
+
+    expect(forwardHit.hits).toHaveLength(1);
+    expect(forwardHit.hits[0]?.messageId).toBe("m2");
+    expect(forwardHit.hits[0]?.richText).toBe(forwardRead.message?.richText);
+
+    searchStore.close();
+  });
+
   it("errors clearly when sessionId looks like requestId", async () => {
     const channelId = "123";
     const cfg = testConfig({
