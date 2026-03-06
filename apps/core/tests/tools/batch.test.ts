@@ -354,6 +354,40 @@ describe("batch tool", () => {
     expect(lastEnd!.display).toBe("batch (5 tools)");
   });
 
+  it("returns guided child validation errors for empty parameters", async () => {
+    const tools = makeTools(baseDir, {
+      editingMode: "none",
+      includeApplyPatch: false,
+      includeEditFile: false,
+    });
+    const batch = getTool(tools, "batch");
+
+    const res = await batch.execute(
+      {
+        tool_calls: [{ tool: "bash", parameters: {} }],
+      },
+      {
+        toolCallId: "batch-empty-params-1",
+        messages: [],
+        abortSignal: undefined,
+        experimental_context: undefined,
+      },
+    );
+
+    const out = res as {
+      ok: boolean;
+      failed: number;
+      results: Array<{ error?: string; ok: boolean }>;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.failed).toBe(1);
+    expect(out.results[0]?.ok).toBe(false);
+    expect(out.results[0]?.error).toContain("batch child #1 (bash)");
+    expect(out.results[0]?.error).toContain("command");
+    expect(out.results[0]?.error).toContain("Hint: parameters object is empty");
+    expect(out.results[0]?.error).toContain("retry this batch call");
+  });
+
   it("exposes only edit_file in batch schema for non-openai mode", async () => {
     const tools = makeTools(baseDir, {
       editingMode: "edit_file",

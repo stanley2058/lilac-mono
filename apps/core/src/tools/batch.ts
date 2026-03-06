@@ -5,6 +5,10 @@ import { z } from "zod";
 import type { EditingToolMode } from "@stanley2058/lilac-utils";
 import { expandTilde } from "./fs/fs-impl";
 import { parsePatch } from "./apply-patch/apply-patch-core";
+import {
+  formatBatchChildValidationError,
+  formatBatchPreflightMissingFieldError,
+} from "./batch-error-message";
 import { formatToolArgsForDisplay } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
@@ -257,7 +261,11 @@ export function batchTool(params: {
         "Notes:",
         "- All calls start in parallel; ordering is not guaranteed.",
         "- Partial failures do not stop other tool calls.",
+        "- Every child call must include all required parameters for its tool.",
+        "- Do not emit empty parameters objects for tools with required fields.",
         "- If multiple edit calls touch the same file path, the entire batch is rejected.",
+        'Bad example: {"tool_calls":[{"tool":"read_file","parameters":{}},{"tool":"bash","parameters":{}}]}',
+        'Good example: {"tool_calls":[{"tool":"read_file","parameters":{"path":"src/index.ts"}},{"tool":"bash","parameters":{"command":"bun test"}}]}',
       ].join("\n"),
       inputSchema: batchInputSchema,
       outputSchema: batchOutputSchema,
@@ -280,7 +288,15 @@ export function batchTool(params: {
 
           if (activeEditTool === "apply_patch") {
             if (typeof raw["patchText"] !== "string") {
-              throw new Error("batch: apply_patch parameters must include patchText (string)");
+              throw new Error(
+                formatBatchPreflightMissingFieldError({
+                  childIndex: i + 1,
+                  toolName: activeEditTool,
+                  field: "patchText",
+                  expectedType: "string",
+                  parameters: raw,
+                }),
+              );
             }
 
             try {
@@ -295,7 +311,15 @@ export function batchTool(params: {
             }
           } else {
             if (typeof raw["path"] !== "string") {
-              throw new Error("batch: edit_file parameters must include path (string)");
+              throw new Error(
+                formatBatchPreflightMissingFieldError({
+                  childIndex: i + 1,
+                  toolName: activeEditTool,
+                  field: "path",
+                  expectedType: "string",
+                  parameters: raw,
+                }),
+              );
             }
             touched = collectEditFileTouchedPaths({
               path: String(raw["path"]),
@@ -390,7 +414,12 @@ export function batchTool(params: {
                 toolCallId,
                 tool: call.tool,
                 ok: false as const,
-                error: e instanceof Error ? e.message : String(e),
+                error: formatBatchChildValidationError({
+                  childIndex: idx + 1,
+                  toolName: call.tool,
+                  parameters,
+                  error: e,
+                }),
               };
             }
 
