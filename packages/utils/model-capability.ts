@@ -17,6 +17,17 @@ export type ModelCost = {
   input_audio?: number;
   /** USD per 1M output audio. */
   output_audio?: number;
+  /** Optional over-200k context pricing tier from models.dev. */
+  context_over_200k?: {
+    /** USD per 1M input tokens. */
+    input: number;
+    /** USD per 1M output tokens. */
+    output: number;
+    /** USD per 1M cache read tokens (optional). */
+    cache_read?: number;
+    /** USD per 1M cache write tokens (optional). */
+    cache_write?: number;
+  };
 };
 
 export type ModelLimits = {
@@ -236,6 +247,70 @@ export class ModelCapability {
     };
   }
 
+  private resolveModelCost(params: {
+    registry: ModelsDevRegistry;
+    provider: string;
+    model: string;
+    modelEntry: ModelsDevModel;
+  }): ModelCost | undefined {
+    const cost = params.modelEntry.cost;
+    if (!cost) return undefined;
+    if (cost.context_over_200k) return cost;
+
+    const normalizedProvider = this.normalizeProvider(params.provider);
+    if (normalizedProvider !== "openrouter" && normalizedProvider !== "vercel") {
+      return cost;
+    }
+
+    const nested = this.parseNestedModelSpecifier(params.model);
+    if (!nested) return cost;
+
+    const nestedProvider = this.normalizeProvider(nested.provider);
+    const nestedProviderEntry = params.registry[nestedProvider];
+    const nestedModelEntry = this.lookupModelEntry(nestedProviderEntry, nested.model);
+    const nestedTier = nestedModelEntry?.cost?.context_over_200k;
+    if (!nestedTier) return cost;
+
+    return {
+      ...cost,
+      context_over_200k: nestedTier,
+    };
+  }
+
+  private resolveCostForUsage(cost: ModelCost, usage: LanguageModelUsage): ModelCost {
+    const tieredCost = cost.context_over_200k;
+    if (!tieredCost) return cost;
+
+    const effectiveInputContextTokens = this.resolveInputContextTokensForUsage(usage);
+    if (effectiveInputContextTokens <= 200_000) return cost;
+
+    return {
+      ...cost,
+      input: tieredCost.input,
+      output: tieredCost.output,
+      cache_read: tieredCost.cache_read ?? cost.cache_read,
+      cache_write: tieredCost.cache_write ?? cost.cache_write,
+    };
+  }
+
+  private resolveInputContextTokensForUsage(usage: LanguageModelUsage): number {
+    const inputTokens = usage.inputTokens ?? 0;
+    const cacheReadTokens = usage.inputTokenDetails.cacheReadTokens ?? 0;
+    const cacheWriteTokens = usage.inputTokenDetails.cacheWriteTokens ?? 0;
+    const noCacheTokens = usage.inputTokenDetails.noCacheTokens;
+
+    const hasSaneNoCacheTokens =
+      typeof noCacheTokens === "number" &&
+      Number.isFinite(noCacheTokens) &&
+      noCacheTokens >= 0 &&
+      noCacheTokens <= inputTokens;
+    if (hasSaneNoCacheTokens) {
+      return noCacheTokens + cacheReadTokens + cacheWriteTokens;
+    }
+
+    return inputTokens;
+  }
+
   private async loadRegistry(signal?: AbortSignal): Promise<ModelsDevRegistry> {
     if (!this.registryPromise) {
       this.registryPromise = (async () => {
@@ -266,6 +341,14 @@ export class ModelCapability {
       cache_write: cost.cache_write,
       input_audio: cost.input_audio,
       output_audio: cost.output_audio,
+      context_over_200k: cost.context_over_200k
+        ? {
+            input: cost.context_over_200k.input,
+            output: cost.context_over_200k.output,
+            cache_read: cost.context_over_200k.cache_read,
+            cache_write: cost.context_over_200k.cache_write,
+          }
+        : undefined,
     };
   }
 
@@ -303,6 +386,22 @@ export class ModelCapability {
       cache_write: params.patch.cache_write ?? params.baseCost?.cache_write,
       input_audio: params.patch.input_audio ?? params.baseCost?.input_audio,
       output_audio: params.patch.output_audio ?? params.baseCost?.output_audio,
+      context_over_200k:
+        params.patch.context_over_200k !== undefined
+          ? {
+              input: params.patch.context_over_200k.input,
+              output: params.patch.context_over_200k.output,
+              cache_read: params.patch.context_over_200k.cache_read,
+              cache_write: params.patch.context_over_200k.cache_write,
+            }
+          : params.baseCost?.context_over_200k
+            ? {
+                input: params.baseCost.context_over_200k.input,
+                output: params.baseCost.context_over_200k.output,
+                cache_read: params.baseCost.context_over_200k.cache_read,
+                cache_write: params.baseCost.context_over_200k.cache_write,
+              }
+            : undefined,
     };
   }
 
@@ -372,6 +471,12 @@ export class ModelCapability {
     }
 
     const { providerEntry, modelEntry } = lookedUp;
+    const cost = this.resolveModelCost({
+      registry,
+      provider: parsed.provider,
+      model: parsed.model,
+      modelEntry,
+    });
 
     return {
       provider: parsed.provider,
@@ -381,7 +486,7 @@ export class ModelCapability {
       env: providerEntry.env,
       npm: providerEntry.npm,
       doc: providerEntry.doc,
-      cost: modelEntry.cost,
+      cost,
       limit: modelEntry.limit,
       modalities: modelEntry.modalities,
     };
@@ -461,13 +566,15 @@ export class ModelCapability {
   ): number | undefined {
     if (!info.cost) return undefined;
 
+    const resolvedCost = this.resolveCostForUsage(info.cost, usage);
+
     const inputTokens = usage.inputTokens ?? 0;
     const outputTokens = usage.outputTokens ?? 0;
     const cacheReadTokens = usage.inputTokenDetails.cacheReadTokens ?? 0;
     const cacheWriteTokens = usage.inputTokenDetails.cacheWriteTokens ?? 0;
     const noCacheTokens = usage.inputTokenDetails.noCacheTokens;
-    const cacheReadPrice = info.cost.cache_read;
-    const cacheWritePrice = info.cost.cache_write;
+    const cacheReadPrice = resolvedCost.cache_read;
+    const cacheWritePrice = resolvedCost.cache_write;
 
     const hasCacheReadPrice = cacheReadPrice !== undefined;
     const hasCacheWritePrice = cacheWritePrice !== undefined;
@@ -499,8 +606,8 @@ export class ModelCapability {
     }
 
     let total = 0;
-    total += (inputTokensAtBaseRate / 1_000_000) * info.cost.input;
-    total += (outputTokens / 1_000_000) * info.cost.output;
+    total += (inputTokensAtBaseRate / 1_000_000) * resolvedCost.input;
+    total += (outputTokens / 1_000_000) * resolvedCost.output;
 
     if (hasCacheReadPrice) {
       total += (cacheReadTokens / 1_000_000) * cacheReadPrice;

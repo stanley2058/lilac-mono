@@ -207,6 +207,18 @@ models:
     #     modalities:
     #       input: [text]
     #       output: [text]
+    #
+    #   # Inherited override with an explicit over-200k pricing tier patch.
+    #   # Note: this only affects cost estimation; limit.context remains what
+    #   # you set here (or inherit from models.dev).
+    #   "vercel/anthropic/claude-opus-4.6":
+    #     inherit: "vercel/anthropic/claude-opus-4.6"
+    #     cost:
+    #       context_over_200k:
+    #         input: 10
+    #         output: 37.5
+    #         cache_read: 1
+    #         cache_write: 12.5
 
 # Entity aliasing / mention rewriting (Discord only).
 #

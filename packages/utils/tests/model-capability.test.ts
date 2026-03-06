@@ -140,6 +140,73 @@ describe("ModelCapability", () => {
     expect(info.env).toEqual(["OPENAI_API_KEY"]);
   });
 
+  it("inherits over-200k tier pricing for wrapper models when wrapper cost omits it", async () => {
+    const registry = {
+      vercel: {
+        id: "vercel",
+        env: ["AI_GATEWAY_API_KEY"],
+        npm: "@ai-sdk/gateway",
+        name: "AI Gateway",
+        models: {
+          "anthropic/claude-opus-4.6": {
+            id: "anthropic/claude-opus-4.6",
+            name: "Claude Opus 4.6",
+            family: "claude-opus",
+            modalities: { input: ["text"], output: ["text"] },
+            cost: {
+              input: 5,
+              output: 25,
+              cache_read: 0.5,
+              cache_write: 6.25,
+            },
+            limit: { context: 1_000_000, output: 128_000 },
+          },
+        },
+      },
+      anthropic: {
+        id: "anthropic",
+        env: ["ANTHROPIC_API_KEY"],
+        npm: "@ai-sdk/anthropic",
+        name: "Anthropic",
+        models: {
+          "claude-opus-4-6": {
+            id: "claude-opus-4-6",
+            name: "Claude Opus 4.6",
+            family: "claude-opus",
+            modalities: { input: ["text"], output: ["text"] },
+            cost: {
+              input: 5,
+              output: 25,
+              cache_read: 0.5,
+              cache_write: 6.25,
+              context_over_200k: {
+                input: 10,
+                output: 37.5,
+                cache_read: 1,
+                cache_write: 12.5,
+              },
+            },
+            limit: { context: 200_000, output: 128_000 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+    });
+
+    const info = await mc.resolve("vercel/anthropic/claude-opus-4.6");
+    expect(info.limit.context).toBe(1_000_000);
+    expect(info.cost?.input).toBe(5);
+    expect(info.cost?.output).toBe(25);
+    expect(info.cost?.context_over_200k?.input).toBe(10);
+    expect(info.cost?.context_over_200k?.output).toBe(37.5);
+    expect(info.cost?.context_over_200k?.cache_read).toBe(1);
+    expect(info.cost?.context_over_200k?.cache_write).toBe(12.5);
+  });
+
   it("best-effort matches version delimiters when wrapper uses dots and models.dev uses dashes", async () => {
     const registry = {
       vercel: {
@@ -309,6 +376,63 @@ describe("ModelCapability", () => {
     expect(info.modalities).toEqual({ input: ["text"], output: ["text"] });
   });
 
+  it("preserves tiered cost when an override inherits a base model", async () => {
+    const registry = {
+      anthropic: {
+        id: "anthropic",
+        npm: "@ai-sdk/anthropic",
+        name: "Anthropic",
+        models: {
+          "claude-opus-4-6": {
+            id: "claude-opus-4-6",
+            name: "Claude Opus 4.6",
+            family: "claude-opus",
+            modalities: { input: ["text"], output: ["text"] },
+            cost: {
+              input: 5,
+              output: 25,
+              cache_read: 0.5,
+              cache_write: 6.25,
+              context_over_200k: {
+                input: 10,
+                output: 37.5,
+                cache_read: 1,
+                cache_write: 12.5,
+              },
+            },
+            limit: { context: 200_000, output: 128_000 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      overrides: {
+        "custom/opus": {
+          inherit: "anthropic/claude-opus-4-6",
+          limit: { context: 1_000_000 },
+        },
+      },
+    });
+
+    const info = await mc.resolve("custom/opus");
+    expect(info.cost?.context_over_200k?.input).toBe(10);
+    expect(info.cost?.context_over_200k?.output).toBe(37.5);
+
+    const overTierCost = mc.estimateCostUsd(
+      info,
+      makeUsage({
+        inputTokens: 250_000,
+        outputTokens: 1_000,
+        noCacheTokens: 200_000,
+        cacheReadTokens: 50_000,
+      }),
+    );
+    expect(overTierCost).toBeCloseTo(2.0875, 8);
+  });
+
   it("supports inheritance chains across override entries", async () => {
     const registry = {
       openai: {
@@ -416,6 +540,89 @@ describe("ModelCapability", () => {
     );
 
     expect(costUsd).toBeCloseTo(0.23, 8);
+  });
+
+  it("uses over-200k pricing tier when effective input context exceeds 200k", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 5,
+          output: 25,
+          cache_read: 0.5,
+          cache_write: 6.25,
+          context_over_200k: {
+            input: 10,
+            output: 37.5,
+            cache_read: 1,
+            cache_write: 12.5,
+          },
+        },
+      },
+      makeUsage({
+        inputTokens: 250_000,
+        outputTokens: 1_000,
+        noCacheTokens: 200_000,
+        cacheReadTokens: 50_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(2.0875, 8);
+  });
+
+  it("keeps base pricing when effective input context is at or below 200k", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 5,
+          output: 25,
+          cache_read: 0.5,
+          cache_write: 6.25,
+          context_over_200k: {
+            input: 10,
+            output: 37.5,
+            cache_read: 1,
+            cache_write: 12.5,
+          },
+        },
+      },
+      makeUsage({
+        inputTokens: 200_000,
+        outputTokens: 1_000,
+        noCacheTokens: 180_000,
+        cacheReadTokens: 20_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(0.935, 8);
+  });
+
+  it("falls back to inputTokens threshold when noCacheTokens is unavailable", () => {
+    const mc = new ModelCapability();
+    const costUsd = mc.estimateCostUsd(
+      {
+        cost: {
+          input: 5,
+          output: 25,
+          cache_read: 0.5,
+          cache_write: 6.25,
+          context_over_200k: {
+            input: 10,
+            output: 37.5,
+            cache_read: 1,
+            cache_write: 12.5,
+          },
+        },
+      },
+      makeUsage({
+        inputTokens: 210_000,
+        outputTokens: 0,
+        cacheReadTokens: 10_000,
+      }),
+    );
+
+    expect(costUsd).toBeCloseTo(2.01, 8);
   });
 
   it("falls back cache tokens to base input pricing when cache-specific pricing is missing", () => {

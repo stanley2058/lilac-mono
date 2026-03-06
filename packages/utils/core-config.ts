@@ -249,6 +249,13 @@ const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
 
 const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
 
+const modelCapabilityOver200kCostPatchSchema = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cache_read: z.number().nonnegative().optional(),
+  cache_write: z.number().nonnegative().optional(),
+});
+
 const modelCapabilityCostPatchSchema = z.object({
   input: z.number().nonnegative().optional(),
   output: z.number().nonnegative().optional(),
@@ -256,6 +263,7 @@ const modelCapabilityCostPatchSchema = z.object({
   cache_write: z.number().nonnegative().optional(),
   input_audio: z.number().nonnegative().optional(),
   output_audio: z.number().nonnegative().optional(),
+  context_over_200k: modelCapabilityOver200kCostPatchSchema.optional(),
 });
 
 const modelCapabilityLimitPatchSchema = z.object({

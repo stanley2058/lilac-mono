@@ -33,6 +33,37 @@ describe("coreConfigSchema models.capability", () => {
     );
   });
 
+  it("accepts over-200k cost tier in inherited overrides", () => {
+    const parsed = coreConfigSchema.parse({
+      models: {
+        capability: {
+          overrides: {
+            "openai-compatible/new-model": {
+              inherit: "anthropic/claude-opus-4-6",
+              cost: {
+                context_over_200k: {
+                  input: 10,
+                  output: 37.5,
+                  cache_read: 1,
+                  cache_write: 12.5,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      parsed.models.capability.overrides["openai-compatible/new-model"]?.cost?.context_over_200k,
+    ).toEqual({
+      input: 10,
+      output: 37.5,
+      cache_read: 1,
+      cache_write: 12.5,
+    });
+  });
+
   it("accepts full manual overrides without inherit", () => {
     const parsed = coreConfigSchema.parse({
       models: {
