@@ -57,6 +57,11 @@ import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { buildSystemPromptForProfile } from "./bus-agent-runner/subagent-prompt";
 import {
+  extractBatchChildFailureEntries,
+  formatToolLogPreview,
+  summarizeToolFailure,
+} from "./bus-agent-runner/tool-failure-logging";
+import {
   parseBufferedForActiveRequestIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -1770,8 +1775,10 @@ export async function startBusAgentRunner(params: {
       lastTurnEndAt?: number;
     } = {};
     const streamWarnings: CallWarning[] = [];
+    const modelCapabilityConfig = cfg.models.capability;
     const modelCapability = new ModelCapability({
-      forceUnknownProviders: ["openai-compatible"],
+      forceUnknownProviders: modelCapabilityConfig?.forceUnknownProviders ?? ["openai-compatible"],
+      overrides: modelCapabilityConfig?.overrides ?? {},
     });
     let modelCapabilityInfo: ModelCapabilityInfo | null = null;
     let costEstimateStatus: "estimated" | "unavailable" = "unavailable";
@@ -2393,14 +2400,71 @@ export async function startBusAgentRunner(params: {
         if (event.type === "tool_execution_end") {
           const started = toolStartMs.get(event.toolCallId);
           const toolDurationMs = started ? Date.now() - started : undefined;
+          const toolFailure = summarizeToolFailure({
+            toolName: event.toolName,
+            isError: event.isError,
+            result: event.result,
+          });
 
           const ok =
             event.toolName === "batch"
-              ? (getBatchOkFromResult(event.result) ?? !event.isError)
+              ? (getBatchOkFromResult(event.result) ?? toolFailure.ok)
               : event.toolName === "subagent_delegate"
-                ? (getSubagentOkFromResult(event.result) ?? !event.isError)
-                : !event.isError;
+                ? (getSubagentOkFromResult(event.result) ?? toolFailure.ok)
+                : toolFailure.ok;
           const interruptedForRestart = restartAbortRequestIds.has(headers.request_id);
+          const toolFailureError = toolFailure.error ?? "tool failed";
+
+          if (!ok) {
+            logger.warn("tool call failed", {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              durationMs: toolDurationMs,
+              failureKind: toolFailure.failureKind ?? "soft",
+              error: interruptedForRestart ? "server restarted" : toolFailureError,
+              argsPreview: formatToolLogPreview({
+                toolName: event.toolName,
+                value: event.args,
+              }),
+              resultPreview: formatToolLogPreview({
+                toolName: event.toolName,
+                value: event.result,
+              }),
+            });
+
+            if (event.toolName === "batch") {
+              const childFailures = extractBatchChildFailureEntries({
+                args: event.args,
+                result: event.result,
+              });
+
+              for (const child of childFailures) {
+                logger.warn("tool call failed (batch child)", {
+                  requestId: headers.request_id,
+                  sessionId: headers.session_id,
+                  parentToolCallId: event.toolCallId,
+                  parentToolName: event.toolName,
+                  childIndex: child.index,
+                  childToolCallId: child.toolCallId,
+                  childToolName: child.toolName,
+                  durationMs: toolDurationMs,
+                  error: child.error,
+                  childArgsPreview: formatToolLogPreview({
+                    toolName: event.toolName,
+                    value: child.args,
+                    untruncated: true,
+                  }),
+                  childResultPreview: formatToolLogPreview({
+                    toolName: event.toolName,
+                    value: child.result,
+                    untruncated: true,
+                  }),
+                });
+              }
+            }
+          }
 
           logger.debug("tool finished", {
             requestId: headers.request_id,
@@ -2409,6 +2473,7 @@ export async function startBusAgentRunner(params: {
             toolName: event.toolName,
             ok,
             durationMs: toolDurationMs,
+            failureKind: ok ? undefined : (toolFailure.failureKind ?? "soft"),
           });
 
           bus
@@ -2423,11 +2488,7 @@ export async function startBusAgentRunner(params: {
                   ? undefined
                   : interruptedForRestart
                     ? "server restarted"
-                    : event.isError
-                      ? typeof event.result === "string"
-                        ? event.result
-                        : "tool error"
-                      : "batch failed",
+                    : toolFailureError,
               },
               { headers },
             )

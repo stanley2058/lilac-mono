@@ -181,6 +181,45 @@ models:
     # options:
     #   temperature: 0.0
 
+  capability:
+    # Providers to always treat as unresolved when querying models.dev.
+    # This keeps runtime behavior predictable for providers with unstable metadata.
+    forceUnknownProviders: ["openai-compatible"]
+
+    # Optional manual capability overrides keyed by provider/model spec.
+    # Useful when models.dev lags behind newly released models.
+    overrides: {}
+    # overrides:
+    #   # Derive a new model capability from an existing upstream model.
+    #   "openai-compatible/my-new-model":
+    #     inherit: "openai/gpt-4o-mini"
+    #     limit:
+    #       context: 262144
+    #
+    #   # Full manual override (no inherit): limit.context is required.
+    #   "custom/private-model":
+    #     limit:
+    #       context: 131072
+    #       output: 8192
+    #     cost:
+    #       input: 0.6
+    #       output: 2.4
+    #     modalities:
+    #       input: [text]
+    #       output: [text]
+    #
+    #   # Inherited override with an explicit over-200k pricing tier patch.
+    #   # Note: this only affects cost estimation; limit.context remains what
+    #   # you set here (or inherit from models.dev).
+    #   "vercel/anthropic/claude-opus-4.6":
+    #     inherit: "vercel/anthropic/claude-opus-4.6"
+    #     cost:
+    #       context_over_200k:
+    #         input: 10
+    #         output: 37.5
+    #         cache_read: 1
+    #         cache_write: 12.5
+
 # Entity aliasing / mention rewriting (Discord only).
 #
 # This powers two conveniences:

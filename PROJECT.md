@@ -343,7 +343,7 @@ Key sections:
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
-- `models`: model slots (`main`, `fast`) with optional preset aliases.
+- `models`: model slots (`main`, `fast`) with optional preset aliases and capability overrides (`models.capability`).
 - `entity`: optional aliasing/mention rewriting for users/sessions.
 
 ### Environment variables
