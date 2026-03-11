@@ -15462,6 +15462,9 @@ function sessionsDir() {
 function sessionIndexPath() {
   return path2.join(sessionsDir(), "index.json");
 }
+function sessionIndexLockPath() {
+  return path2.join(sessionsDir(), "index.lock");
+}
 function runFilePath(runId) {
   return path2.join(runsDir(), `${runId}.json`);
 }
@@ -15472,10 +15475,43 @@ function assertValidRunId(runId) {
   }
   return trimmed;
 }
+async function atomicWriteFile(filePath, content) {
+  const dirPath = path2.dirname(filePath);
+  const tempPath = path2.join(dirPath, `.${path2.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  await fs2.writeFile(tempPath, content, "utf8");
+  await fs2.rename(tempPath, filePath);
+}
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function withSessionIndexLock(fn) {
+  await fs2.mkdir(sessionsDir(), { recursive: true });
+  const lockPath = sessionIndexLockPath();
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {
+      await fs2.mkdir(lockPath);
+      break;
+    } catch (error48) {
+      const err = error48;
+      if (err.code !== "EEXIST")
+        throw error48;
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for the session index lock.");
+      }
+      await sleep(25);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await fs2.rm(lockPath, { recursive: true, force: true });
+  }
+}
 async function saveRunRecord(run) {
   await fs2.mkdir(runsDir(), { recursive: true });
-  await fs2.writeFile(runFilePath(run.id), `${JSON.stringify(run)}
-`, "utf8");
+  await atomicWriteFile(runFilePath(run.id), `${JSON.stringify(run)}
+`);
 }
 async function loadRunRecord(runId) {
   const safeRunId = assertValidRunId(runId);
@@ -15489,8 +15525,8 @@ async function loadRunRecord(runId) {
 async function saveSessionIndex(entries) {
   await fs2.mkdir(sessionsDir(), { recursive: true });
   const payload = { version: 1, sessions: [...entries] };
-  await fs2.writeFile(sessionIndexPath(), `${JSON.stringify(payload)}
-`, "utf8");
+  await atomicWriteFile(sessionIndexPath(), `${JSON.stringify(payload)}
+`);
 }
 async function loadSessionIndex() {
   try {
@@ -15508,26 +15544,30 @@ async function loadSessionIndex() {
   }
 }
 async function upsertSessionIndexEntries(entries) {
-  const current = await loadSessionIndex();
-  const merged = new Map(current.sessions.map((entry) => [entry.sessionRef, entry]));
-  for (const entry of entries) {
-    const previous = merged.get(entry.sessionRef);
-    merged.set(entry.sessionRef, {
-      ...previous,
-      ...entry,
-      localTitle: entry.localTitle ?? previous?.localTitle
-    });
-  }
-  const next = { version: 1, sessions: [...merged.values()] };
-  await saveSessionIndex(next.sessions);
-  return next;
+  return withSessionIndexLock(async () => {
+    const current = await loadSessionIndex();
+    const merged = new Map(current.sessions.map((entry) => [entry.sessionRef, entry]));
+    for (const entry of entries) {
+      const previous = merged.get(entry.sessionRef);
+      merged.set(entry.sessionRef, {
+        ...previous,
+        ...entry,
+        localTitle: entry.localTitle ?? previous?.localTitle
+      });
+    }
+    const next = { version: 1, sessions: [...merged.values()] };
+    await saveSessionIndex(next.sessions);
+    return next;
+  });
 }
 async function setLocalSessionTitle(sessionRef, localTitle) {
-  const current = await loadSessionIndex();
-  const nextSessions = current.sessions.map((entry) => entry.sessionRef === sessionRef ? { ...entry, localTitle, title: localTitle } : entry);
-  const next = { version: 1, sessions: nextSessions };
-  await saveSessionIndex(next.sessions);
-  return next;
+  return withSessionIndexLock(async () => {
+    const current = await loadSessionIndex();
+    const nextSessions = current.sessions.map((entry) => entry.sessionRef === sessionRef ? { ...entry, localTitle, title: localTitle } : entry);
+    const next = { version: 1, sessions: nextSessions };
+    await saveSessionIndex(next.sessions);
+    return next;
+  });
 }
 
 // session-history.ts
@@ -15755,7 +15795,7 @@ async function collectSessionsForHarness(params) {
         capabilities: client.capabilities()
       }, cached2);
     });
-    await upsertSessionIndexEntries(liveSessions.map((session) => buildIndexEntry(session, session.title)));
+    await upsertSessionIndexEntries(liveSessions.map((session) => buildIndexEntry(session)));
     return {
       sessions: sortSessions(liveSessions.filter((entry) => sessionMatchesSearch(entry, params.search))),
       ...client.authHint() ? { warning: client.authHint() } : {}

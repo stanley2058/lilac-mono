@@ -20,7 +20,7 @@ This repo uses Bun's install layout. Many packages in `apps/*/node_modules` are 
 
 - `apps/core`: `cd apps/core && bun run build:remote-runner` (test suite need this for parity test on remote runner)
 - `apps/tool-bridge`: `cd apps/tool-bridge && bun run build`
-- `apps/opencode-controller`: `cd apps/opencode-controller && bun run build` (`lilac-acp`)
+- `apps/acp-controller`: `cd apps/acp-controller && bun run build` (`lilac-acp`)
 
 ### Testing (Bun)
 

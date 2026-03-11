@@ -23,7 +23,7 @@ async function runBunTest(cwd: string): Promise<{
 
 describe("workspace tests", () => {
   it("runs bun tests in each workspace", async () => {
-    const roots = ["apps/core", "apps/opencode-controller", "packages/utils", "packages/event-bus"];
+    const roots = ["apps/core", "apps/acp-controller", "packages/utils", "packages/event-bus"];
 
     for (const dir of roots) {
       const res = await runBunTest(dir);
