@@ -8,6 +8,7 @@ import {
 } from "../src/surface/store/discord-search-store";
 import type { RequestContext } from "../src/tool-server/types";
 import type { SurfaceAdapter } from "../src/surface/adapter";
+import type { TranscriptStore } from "../src/transcript/transcript-store";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1293,6 +1294,107 @@ describe("tool-server surface", () => {
     expect((res as any).ok).toBe(true);
     expect(adapter.sendCalls.length).toBe(1);
     expect(adapter.sendCalls[0]?.opts?.silent).toBe(true);
+  });
+
+  it("links sent messages back to the request transcript", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const linked: Array<{ requestId: string; created: readonly MsgRef[]; last: MsgRef }> = [];
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest(input) {
+        linked.push(input);
+      },
+      getTranscriptBySurfaceMessage() {
+        return null;
+      },
+      close() {},
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, transcriptStore });
+
+    const res = await tool.call(
+      "surface.messages.send",
+      {
+        sessionId: "ops",
+        text: "hi",
+        client: "discord",
+      },
+      {
+        context: {
+          requestId: "heartbeat:1",
+          sessionId: "__heartbeat__",
+          requestClient: "unknown",
+        } satisfies RequestContext,
+      },
+    );
+
+    expect((res as any).ok).toBe(true);
+    expect(linked).toEqual([
+      {
+        requestId: "heartbeat:1",
+        created: [{ platform: "discord", channelId: "c1", messageId: "sent" }],
+        last: { platform: "discord", channelId: "c1", messageId: "sent" },
+      },
+    ]);
+  });
+
+  it("does not auto-link non-heartbeat sends", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const linked: Array<{ requestId: string; created: readonly MsgRef[]; last: MsgRef }> = [];
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest(input) {
+        linked.push(input);
+      },
+      getTranscriptBySurfaceMessage() {
+        return null;
+      },
+      close() {},
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, transcriptStore });
+
+    await tool.call(
+      "surface.messages.send",
+      {
+        sessionId: "ops",
+        text: "hi",
+        client: "discord",
+      },
+      {
+        context: {
+          requestId: "req:1",
+          sessionId: "c1",
+          requestClient: "discord",
+        } satisfies RequestContext,
+      },
+    );
+
+    expect(linked).toEqual([]);
   });
 
   it("allows guild allowlist when channel is not cached", async () => {

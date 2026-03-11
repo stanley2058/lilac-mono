@@ -39,6 +39,8 @@ export type TranscriptStore = {
 
   getLatestTranscriptBySession?(input: { sessionId: string }): TranscriptSnapshot | null;
 
+  listSurfaceMessagesForRequest?(input: { requestId: string }): MsgRef[];
+
   close(): void;
 };
 
@@ -227,6 +229,35 @@ export class SqliteTranscriptStore implements TranscriptStore {
     } | null;
 
     return this.rowToSnapshot(row);
+  }
+
+  listSurfaceMessagesForRequest(input: { requestId: string }): MsgRef[] {
+    const rows = this.db
+      .query(
+        `
+        SELECT platform, channel_id, message_id
+        FROM surface_message_to_request
+        WHERE request_id = ?
+        ORDER BY created_ts ASC, rowid ASC
+        `,
+      )
+      .all(input.requestId) as Array<{
+      platform: string;
+      channel_id: string;
+      message_id: string;
+    }>;
+
+    const refs: MsgRef[] = [];
+    for (const row of rows) {
+      if (row.platform !== "discord" && row.platform !== "github") continue;
+      refs.push({
+        platform: row.platform,
+        channelId: row.channel_id,
+        messageId: row.message_id,
+      });
+    }
+
+    return refs;
   }
 
   private rowToSnapshot(
