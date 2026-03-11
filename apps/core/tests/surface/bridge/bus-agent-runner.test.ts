@@ -89,7 +89,12 @@ function createInMemoryRawBus(): RawBus {
       if (offset?.type === "begin" || offset?.type === "cursor") {
         const existing = topics.get(topic) ?? [];
         const replay =
-          offset.type === "cursor" ? existing.filter((m) => m.id > offset.cursor) : existing;
+          offset.type === "cursor"
+            ? (() => {
+                const cursorIndex = existing.findIndex((m) => m.id === offset.cursor);
+                return cursorIndex >= 0 ? existing.slice(cursorIndex + 1) : existing;
+              })()
+            : existing;
         for (const m of replay) {
           await handler(m as unknown as Message<TData>, {
             cursor: m.id,
