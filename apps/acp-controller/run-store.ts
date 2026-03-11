@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import {
   promptRunRecordSchema,
@@ -51,7 +52,7 @@ async function atomicWriteFile(filePath: string, content: string): Promise<void>
   const dirPath = path.dirname(filePath);
   const tempPath = path.join(
     dirPath,
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`,
   );
   await fs.writeFile(tempPath, content, "utf8");
   await fs.rename(tempPath, filePath);
