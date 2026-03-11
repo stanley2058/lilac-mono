@@ -4,6 +4,9 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
+import { saveRunRecord } from "../run-store.ts";
+import { createEmptyPermissionCounters } from "../types.ts";
+
 const CONTROLLER_DIR = path.resolve(import.meta.dir, "..");
 const SDK_PATH = path.join(
   CONTROLLER_DIR,
@@ -501,6 +504,55 @@ describe("lilac-acp controller", () => {
     expect(result.parsed.run.history?.at(-1)?.text).toContain(
       "Completed build feature via opencode",
     );
+  });
+
+  it("restarts submitted runs whose background worker disappeared", async () => {
+    await createFakeHarness(tempRoot, {
+      commandName: "opencode",
+      requiresAcpArg: true,
+      harnessId: "opencode",
+      sessions: [],
+    });
+
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = path.join(tempRoot, "state");
+    try {
+      await saveRunRecord({
+        id: "run_11111111-1111-4111-8111-111111111111",
+        status: "submitted",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        directory: "/repo",
+        harnessId: "opencode",
+        targetKind: "new",
+        promptText: "build feature",
+        textPreview: "build feature",
+        compatibilityBin: "lilac-acp",
+        permissions: createEmptyPermissionCounters(),
+        workerPid: 999_999,
+      });
+    } finally {
+      if (previousStateHome === undefined) {
+        delete process.env.XDG_STATE_HOME;
+      } else {
+        process.env.XDG_STATE_HOME = previousStateHome;
+      }
+    }
+
+    const wait = (await runCli(tempRoot, [
+      "prompt",
+      "wait",
+      "--run-id",
+      "run_11111111-1111-4111-8111-111111111111",
+    ])) as {
+      parsed: { ok: boolean; status: string; resultText?: string };
+      exitCode: number;
+    };
+
+    expect(wait.exitCode).toBe(0);
+    expect(wait.parsed.ok).toBe(true);
+    expect(wait.parsed.status).toBe("completed");
+    expect(wait.parsed.resultText).toContain("Completed build feature via opencode");
   });
 
   it("cancels running prompts through the worker", async () => {

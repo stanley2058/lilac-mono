@@ -132,6 +132,20 @@ function isProcessAlive(pid: number | undefined): boolean {
 
 async function refreshRunStatus(run: PromptRunRecord): Promise<PromptRunRecord> {
   if (isTerminalStatus(run.status)) return run;
+
+  if (run.status === "submitted" && !run.cancelRequestedAt && !isProcessAlive(run.workerPid)) {
+    const workerPid = await spawnWorker(run.id);
+    if (workerPid) {
+      const restarted: PromptRunRecord = {
+        ...run,
+        workerPid,
+        updatedAt: Date.now(),
+      };
+      await saveRunRecord(restarted);
+      return restarted;
+    }
+  }
+
   if (run.workerPid && isProcessAlive(run.workerPid)) return run;
   const next: PromptRunRecord = {
     ...run,
