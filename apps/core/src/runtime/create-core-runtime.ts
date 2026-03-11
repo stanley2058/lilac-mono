@@ -26,6 +26,7 @@ import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
 
 import { SqliteTranscriptStore } from "../transcript/transcript-store";
+import { startHeartbeatService } from "../heartbeat/heartbeat-service";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
 import { startWorkflowService } from "../workflow/workflow-service";
@@ -137,6 +138,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let stopBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopAgentRunner: Awaited<ReturnType<typeof startBusAgentRunner>> | null = null;
+  let stopHeartbeat: Awaited<ReturnType<typeof startHeartbeatService>> | null = null;
 
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
@@ -371,6 +373,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           getConfig: () => getCoreConfig(),
           workflowStore,
           discordSearch: discordSearchService ?? undefined,
+          transcriptStore: transcriptStore ?? undefined,
         }),
         logger: createLogger({
           module: "tool-server",
@@ -465,6 +468,15 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         });
       }
 
+      stopHeartbeat = await startHeartbeatService({
+        bus,
+        subscriptionId: subId(subscriptionPrefix, "heartbeat"),
+      });
+
+      logger.info("Heartbeat service started", {
+        subscriptionId: subId(subscriptionPrefix, "heartbeat"),
+      });
+
       runtimeFullyStarted = true;
 
       logger.info(
@@ -519,6 +531,9 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       });
       stopGithubWebhook = null;
 
+      await safe("graceful.heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
+      stopHeartbeat = null;
+
       await safe("graceful.agentRunner.beginDrain", () =>
         agentRunner.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }),
       );
@@ -569,6 +584,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
     // Stop in reverse order (best-effort).
     await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
+    await safe("heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
     await safe(
       "discordSearchIndexer.stop",
       () => stopDiscordSearchIndexer?.stop() ?? Promise.resolve(),
