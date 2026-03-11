@@ -39,6 +39,50 @@ async function hashFile(filePath: string): Promise<string> {
   return Bun.hash(raw).toString(16);
 }
 
+async function buildDirectoryFingerprint(
+  rootDir: string,
+  currentDir = rootDir,
+): Promise<unknown[]> {
+  const dirents = await fs.readdir(currentDir, { withFileTypes: true });
+  const out: unknown[] = [];
+
+  for (const dirent of [...dirents].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (dirent.name.includes(".lilac-")) continue;
+
+    const entryPath = path.join(currentDir, dirent.name);
+    const relativePath = path.relative(rootDir, entryPath);
+
+    if (dirent.isDirectory()) {
+      out.push({
+        type: "dir",
+        path: relativePath,
+        entries: await buildDirectoryFingerprint(rootDir, entryPath),
+      });
+      continue;
+    }
+
+    if (dirent.isFile()) {
+      out.push({
+        type: "file",
+        path: relativePath,
+        mtimeMs: await statMtimeMs(entryPath),
+        hash: await hashFile(entryPath),
+      });
+      continue;
+    }
+
+    if (dirent.isSymbolicLink()) {
+      out.push({
+        type: "symlink",
+        path: relativePath,
+        target: await fs.readlink(entryPath),
+      });
+    }
+  }
+
+  return out;
+}
+
 async function readPackageJson(filePath: string): Promise<PackageJsonWithLilac> {
   let raw = "";
   try {
@@ -190,11 +234,8 @@ export async function buildExternalToolPluginFreshnessKey(params: {
           ? {
               type: entry.type,
               pluginId: entry.pluginId,
-              packageJsonMtimeMs: entry.packageJsonMtimeMs,
-              packageJsonHash: await hashFile(entry.packageJsonPath),
-              entrypointMtimeMs: entry.entrypointMtimeMs,
-              entrypointHash: await hashFile(entry.entrypointPath),
-              entrypointPath: entry.entrypointPath,
+              pluginDir: entry.pluginDir,
+              fingerprint: await buildDirectoryFingerprint(entry.pluginDir),
             }
           : {
               type: entry.type,

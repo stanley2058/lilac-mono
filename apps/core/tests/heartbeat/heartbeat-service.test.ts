@@ -313,6 +313,79 @@ describe("heartbeat service", () => {
     await sub.stop();
   });
 
+  it("treats restored active external requests as busy until lifecycle settles", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const requests: Array<Message<CmdRequestMessageData>> = [];
+    const fakeTimers = createFakeTimers();
+    let nowMs = Date.UTC(2026, 2, 11, 10, 0, 0);
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "hb-test-requests",
+        consumerId: "hb-test-requests",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage) {
+          requests.push(msg);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const cfg = {
+      surface: {
+        heartbeat: {
+          enabled: true,
+          every: "30m",
+          quietAfterActivityMs: 300000,
+          retryBusyMs: 60000,
+        },
+      },
+    } as unknown as CoreConfig;
+
+    const service = await startHeartbeatService({
+      bus,
+      subscriptionId: "hb-test",
+      config: cfg,
+      initialExternalState: {
+        activeRequestIds: ["restored:req"],
+      },
+      now: () => nowMs,
+      timers: fakeTimers.timers,
+    });
+
+    await service.tick("interval");
+
+    expect(requests).toHaveLength(0);
+    expect([...fakeTimers.timeouts.values()].map((entry) => entry.ms)).toEqual([60000]);
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved", ts: nowMs },
+      {
+        headers: {
+          request_id: "restored:req",
+          session_id: "discord-session",
+          request_client: "discord",
+        },
+      },
+    );
+
+    nowMs += 300001;
+    const retry = [...fakeTimers.timeouts.values()][0];
+    retry?.fn();
+    await Promise.resolve();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data.origin).toEqual({ kind: "heartbeat", reason: "retry" });
+
+    await service.stop();
+    await sub.stop();
+  });
+
   it("coalesces concurrent ticks into a single heartbeat request", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const requests: Array<Message<CmdRequestMessageData>> = [];

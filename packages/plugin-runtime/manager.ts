@@ -108,7 +108,6 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
   async init(): Promise<void> {
     if (this.initialized) return;
     const next = await this.loadAll();
-    await this.initLevel2Items(next.level2);
     this.state = next;
     this.initialized = true;
   }
@@ -128,8 +127,9 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
 
   async reload(): Promise<void> {
     const prev = this.state;
-    const next = await this.loadAll();
-    await this.initLevel2Items(next.level2);
+    const next = await this.loadAll({
+      cacheBustToken: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    });
     this.state = next;
     this.initialized = true;
     await this.destroyLevel2Items(prev.level2);
@@ -152,12 +152,15 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
     await this.reload();
   }
 
-  private async loadAll(): Promise<LoadedState<TRuntimeContext, TLevel1, TLevel2>> {
+  private async loadAll(options?: {
+    cacheBustToken?: string;
+  }): Promise<LoadedState<TRuntimeContext, TLevel1, TLevel2>> {
     const disabledPluginIds = new Set(await this.resolveDisabledPluginIds());
     const statuses: ToolPluginStatus[] = [];
     const loaded: LoadedToolPlugin<TLevel1, TLevel2>[] = [];
     const level1: TLevel1[] = [];
     const level2: TLevel2[] = [];
+    const initializedLevel2: TLevel2[] = [];
     const seenPluginIds = new Set<string>();
     const seenLevel1Names = new Map<string, string>();
     const seenLevel2Ids = new Map<string, string>();
@@ -165,115 +168,24 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
       dataDir: this.options.dataDir,
       configPath: this.options.configPath,
     });
+    const moduleCacheBustKey = options?.cacheBustToken
+      ? `${freshnessKey}-${options.cacheBustToken}`
+      : freshnessKey;
 
-    for (const plugin of this.options.builtinPlugins ?? []) {
-      const result = await this.tryLoadPlugin({
-        plugin,
-        source: "builtin",
-        disabledPluginIds,
-        pluginDir: undefined,
-        entrypointPath: undefined,
-      });
-      if (result.kind === "disabled") {
-        statuses.push({
-          pluginId: result.pluginId,
-          source: "builtin",
-          state: "disabled",
-          level1Names: [],
-          level2Ids: [],
-        });
-        continue;
-      }
-      if (result.kind === "skipped") {
-        statuses.push({
-          pluginId: result.pluginId,
-          source: "builtin",
-          state: "skipped",
-          reason: result.reason,
-          level1Names: [],
-          level2Ids: [],
-        });
-        continue;
-      }
-
-      const loadedPlugin = result.loadedPlugin;
-
-      this.assertUniquePluginId(seenPluginIds, loadedPlugin.meta.id, "builtin");
-      const callableIds = await this.registerContributionKeys({
-        loadedPlugin,
-        seenLevel1Names,
-        seenLevel2Ids,
-      });
-
-      loaded.push(loadedPlugin);
-      level1.push(...loadedPlugin.level1);
-      level2.push(...loadedPlugin.level2);
-      statuses.push({
-        pluginId: loadedPlugin.meta.id,
-        source: "builtin",
-        state: "loaded",
-        level1Names: loadedPlugin.level1.map((item) => this.getLevel1Name(item)),
-        level2Ids: callableIds,
-      });
-    }
-
-    for (const discovered of await discoverExternalToolPlugins({ dataDir: this.options.dataDir })) {
-      if (discovered.type === "invalid") {
-        statuses.push({
-          pluginId: discovered.pluginId,
-          source: "external",
-          state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
-          reason: disabledPluginIds.has(discovered.pluginId) ? undefined : discovered.reason,
-          pluginDir: discovered.pluginDir,
-          level1Names: [],
-          level2Ids: [],
-        });
-        continue;
-      }
-
-      if (seenPluginIds.has(discovered.pluginId)) {
-        statuses.push({
-          pluginId: discovered.pluginId,
-          source: "external",
-          state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
-          reason: disabledPluginIds.has(discovered.pluginId)
-            ? undefined
-            : `duplicate plugin id '${discovered.pluginId}'`,
-          pluginDir: discovered.pluginDir,
-          entrypointPath: discovered.entrypointPath,
-          level1Names: [],
-          level2Ids: [],
-        });
-        continue;
-      }
-
-      let loadedPlugin: LoadedToolPlugin<TLevel1, TLevel2> | null = null;
-      try {
-        const plugin = (await loadToolPluginModule({
-          entrypointPath: discovered.entrypointPath,
-          cacheBustKey: freshnessKey,
-        })) as LilacToolPlugin<TRuntimeContext, TLevel1, TLevel2>;
-
-        if (plugin.meta.id !== discovered.pluginId) {
-          throw new Error(
-            `plugin meta.id '${plugin.meta.id}' must match directory name '${discovered.pluginId}'`,
-          );
-        }
-
+    try {
+      for (const plugin of this.options.builtinPlugins ?? []) {
         const result = await this.tryLoadPlugin({
           plugin,
-          source: "external",
+          source: "builtin",
           disabledPluginIds,
-          pluginDir: discovered.pluginDir,
-          entrypointPath: discovered.entrypointPath,
+          pluginDir: undefined,
+          entrypointPath: undefined,
         });
         if (result.kind === "disabled") {
           statuses.push({
-            pluginId: discovered.pluginId,
-            source: "external",
+            pluginId: result.pluginId,
+            source: "builtin",
             state: "disabled",
-            pluginDir: discovered.pluginDir,
-            entrypointPath: discovered.entrypointPath,
             level1Names: [],
             level2Ids: [],
           });
@@ -281,10 +193,63 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
         }
         if (result.kind === "skipped") {
           statuses.push({
-            pluginId: discovered.pluginId,
-            source: "external",
+            pluginId: result.pluginId,
+            source: "builtin",
             state: "skipped",
             reason: result.reason,
+            level1Names: [],
+            level2Ids: [],
+          });
+          continue;
+        }
+
+        const loadedPlugin = result.loadedPlugin;
+
+        this.assertUniquePluginId(seenPluginIds, loadedPlugin.meta.id, "builtin");
+        const callableIds = await this.registerContributionKeys({
+          loadedPlugin,
+          seenLevel1Names,
+          seenLevel2Ids,
+        });
+        await this.initLevel2Items(loadedPlugin.level2);
+        initializedLevel2.push(...loadedPlugin.level2);
+
+        loaded.push(loadedPlugin);
+        level1.push(...loadedPlugin.level1);
+        level2.push(...loadedPlugin.level2);
+        statuses.push({
+          pluginId: loadedPlugin.meta.id,
+          source: "builtin",
+          state: "loaded",
+          level1Names: loadedPlugin.level1.map((item) => this.getLevel1Name(item)),
+          level2Ids: callableIds,
+        });
+      }
+
+      for (const discovered of await discoverExternalToolPlugins({
+        dataDir: this.options.dataDir,
+      })) {
+        if (discovered.type === "invalid") {
+          statuses.push({
+            pluginId: discovered.pluginId,
+            source: "external",
+            state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
+            reason: disabledPluginIds.has(discovered.pluginId) ? undefined : discovered.reason,
+            pluginDir: discovered.pluginDir,
+            level1Names: [],
+            level2Ids: [],
+          });
+          continue;
+        }
+
+        if (seenPluginIds.has(discovered.pluginId)) {
+          statuses.push({
+            pluginId: discovered.pluginId,
+            source: "external",
+            state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
+            reason: disabledPluginIds.has(discovered.pluginId)
+              ? undefined
+              : `duplicate plugin id '${discovered.pluginId}'`,
             pluginDir: discovered.pluginDir,
             entrypointPath: discovered.entrypointPath,
             level1Names: [],
@@ -292,68 +257,122 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
           });
           continue;
         }
-        loadedPlugin = result.loadedPlugin;
-      } catch (error) {
-        statuses.push({
-          pluginId: discovered.pluginId,
-          source: "external",
-          state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
-          reason: disabledPluginIds.has(discovered.pluginId) ? undefined : toErrorMessage(error),
-          pluginDir: discovered.pluginDir,
-          entrypointPath: discovered.entrypointPath,
-          level1Names: [],
-          level2Ids: [],
-        });
-        continue;
+
+        let loadedPlugin: LoadedToolPlugin<TLevel1, TLevel2> | null = null;
+        try {
+          const plugin = (await loadToolPluginModule({
+            entrypointPath: discovered.entrypointPath,
+            pluginDir: discovered.pluginDir,
+            cacheBustKey: moduleCacheBustKey,
+          })) as LilacToolPlugin<TRuntimeContext, TLevel1, TLevel2>;
+
+          if (plugin.meta.id !== discovered.pluginId) {
+            throw new Error(
+              `plugin meta.id '${plugin.meta.id}' must match directory name '${discovered.pluginId}'`,
+            );
+          }
+
+          const result = await this.tryLoadPlugin({
+            plugin,
+            source: "external",
+            disabledPluginIds,
+            pluginDir: discovered.pluginDir,
+            entrypointPath: discovered.entrypointPath,
+          });
+          if (result.kind === "disabled") {
+            statuses.push({
+              pluginId: discovered.pluginId,
+              source: "external",
+              state: "disabled",
+              pluginDir: discovered.pluginDir,
+              entrypointPath: discovered.entrypointPath,
+              level1Names: [],
+              level2Ids: [],
+            });
+            continue;
+          }
+          if (result.kind === "skipped") {
+            statuses.push({
+              pluginId: discovered.pluginId,
+              source: "external",
+              state: "skipped",
+              reason: result.reason,
+              pluginDir: discovered.pluginDir,
+              entrypointPath: discovered.entrypointPath,
+              level1Names: [],
+              level2Ids: [],
+            });
+            continue;
+          }
+          loadedPlugin = result.loadedPlugin;
+        } catch (error) {
+          statuses.push({
+            pluginId: discovered.pluginId,
+            source: "external",
+            state: disabledPluginIds.has(discovered.pluginId) ? "disabled" : "failed",
+            reason: disabledPluginIds.has(discovered.pluginId) ? undefined : toErrorMessage(error),
+            pluginDir: discovered.pluginDir,
+            entrypointPath: discovered.entrypointPath,
+            level1Names: [],
+            level2Ids: [],
+          });
+          continue;
+        }
+
+        if (!loadedPlugin) {
+          continue;
+        }
+
+        try {
+          seenPluginIds.add(loadedPlugin.meta.id);
+          const callableIds = await this.registerContributionKeys({
+            loadedPlugin,
+            seenLevel1Names,
+            seenLevel2Ids,
+          });
+          await this.initLevel2Items(loadedPlugin.level2);
+          initializedLevel2.push(...loadedPlugin.level2);
+
+          loaded.push(loadedPlugin);
+          level1.push(...loadedPlugin.level1);
+          level2.push(...loadedPlugin.level2);
+          statuses.push({
+            pluginId: loadedPlugin.meta.id,
+            source: "external",
+            state: "loaded",
+            pluginDir: loadedPlugin.pluginDir,
+            entrypointPath: loadedPlugin.entrypointPath,
+            level1Names: loadedPlugin.level1.map((item) => this.getLevel1Name(item)),
+            level2Ids: callableIds,
+          });
+        } catch (error) {
+          await this.destroyLoaded([loadedPlugin]);
+          statuses.push({
+            pluginId: loadedPlugin.meta.id,
+            source: "external",
+            state: "failed",
+            reason: toErrorMessage(error),
+            pluginDir: loadedPlugin.pluginDir,
+            entrypointPath: loadedPlugin.entrypointPath,
+            level1Names: [],
+            level2Ids: [],
+          });
+        }
       }
 
-      if (!loadedPlugin) {
-        continue;
-      }
-
-      try {
-        seenPluginIds.add(loadedPlugin.meta.id);
-        const callableIds = await this.registerContributionKeys({
-          loadedPlugin,
-          seenLevel1Names,
-          seenLevel2Ids,
-        });
-
-        loaded.push(loadedPlugin);
-        level1.push(...loadedPlugin.level1);
-        level2.push(...loadedPlugin.level2);
-        statuses.push({
-          pluginId: loadedPlugin.meta.id,
-          source: "external",
-          state: "loaded",
-          pluginDir: loadedPlugin.pluginDir,
-          entrypointPath: loadedPlugin.entrypointPath,
-          level1Names: loadedPlugin.level1.map((item) => this.getLevel1Name(item)),
-          level2Ids: callableIds,
-        });
-      } catch (error) {
-        await this.destroyLoaded([loadedPlugin]);
-        statuses.push({
-          pluginId: loadedPlugin.meta.id,
-          source: "external",
-          state: "failed",
-          reason: toErrorMessage(error),
-          pluginDir: loadedPlugin.pluginDir,
-          entrypointPath: loadedPlugin.entrypointPath,
-          level1Names: [],
-          level2Ids: [],
-        });
-      }
+      return {
+        loaded,
+        level1,
+        level2,
+        statuses,
+        freshnessKey,
+        _runtime: this.options.runtime,
+      };
+    } catch (error) {
+      await this.destroyLevel2Items(initializedLevel2);
+      await this.destroyLoaded(loaded);
+      throw error;
     }
-
-    return {
-      loaded,
-      level1,
-      level2,
-      statuses,
-      freshnessKey,
-      _runtime: this.options.runtime,
-    };
   }
 
   private async tryLoadPlugin(params: {
@@ -498,9 +517,17 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
 
   private async initLevel2Items(items: readonly TLevel2[]): Promise<void> {
     if (!this.options.initLevel2Item) return;
-    await Promise.allSettled(
-      items.map((item) => Promise.resolve(this.options.initLevel2Item?.(item))),
-    );
+
+    const initialized: TLevel2[] = [];
+    try {
+      for (const item of items) {
+        await Promise.resolve(this.options.initLevel2Item?.(item));
+        initialized.push(item);
+      }
+    } catch (error) {
+      await this.destroyLevel2Items(initialized);
+      throw error;
+    }
   }
 
   private async destroyLevel2Items(items: readonly TLevel2[]): Promise<void> {

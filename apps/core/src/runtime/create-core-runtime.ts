@@ -26,6 +26,7 @@ import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
 
 import { SqliteTranscriptStore } from "../transcript/transcript-store";
+import { isHeartbeatSessionId } from "../heartbeat/common";
 import { startHeartbeatService } from "../heartbeat/heartbeat-service";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
@@ -459,6 +460,14 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         reason: "empty" as const,
       };
 
+      const initialHeartbeatExternalState = restartLoad.snapshot
+        ? {
+            activeRequestIds: restartLoad.snapshot.agent
+              .filter((entry) => entry.kind === "active" && !isHeartbeatSessionId(entry.sessionId))
+              .map((entry) => entry.requestId),
+          }
+        : undefined;
+
       if (restartLoad.snapshot) {
         await restoreGracefulSnapshot(restartLoad.snapshot).catch((e: unknown) => {
           logger.error("Failed to restore graceful restart snapshot", e);
@@ -478,6 +487,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopHeartbeat = await startHeartbeatService({
         bus,
         subscriptionId: subId(subscriptionPrefix, "heartbeat"),
+        initialExternalState: initialHeartbeatExternalState,
       });
 
       logger.info("Heartbeat service started", {

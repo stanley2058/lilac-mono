@@ -18,19 +18,58 @@ function isLilacToolPlugin(value: unknown): value is LilacToolPlugin<unknown, un
   return isPluginMeta(value.meta) && typeof value.create === "function";
 }
 
+async function copyDirectoryTree(sourceDir: string, targetDir: string): Promise<void> {
+  await fs.mkdir(targetDir, { recursive: true });
+  const dirents = await fs.readdir(sourceDir, { withFileTypes: true });
+
+  for (const dirent of dirents) {
+    if (dirent.name.includes(".lilac-")) continue;
+
+    const sourcePath = path.join(sourceDir, dirent.name);
+    const targetPath = path.join(targetDir, dirent.name);
+
+    if (dirent.isDirectory()) {
+      await copyDirectoryTree(sourcePath, targetPath);
+      continue;
+    }
+
+    if (dirent.isFile()) {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.copyFile(sourcePath, targetPath);
+      continue;
+    }
+
+    if (dirent.isSymbolicLink()) {
+      const target = await fs.readlink(sourcePath);
+      await fs.symlink(target, targetPath);
+    }
+  }
+}
+
 export async function loadToolPluginModule(params: {
   entrypointPath: string;
+  pluginDir?: string;
   cacheBustKey: string;
 }): Promise<LilacToolPlugin<unknown, unknown, unknown>> {
-  const parsedPath = path.parse(params.entrypointPath);
-  const extension = parsedPath.ext || ".js";
-  const snapshotPath = path.join(
-    parsedPath.dir,
-    `.${parsedPath.name}.lilac-${params.cacheBustKey}${extension}`,
-  );
+  const snapshotPath = await (async () => {
+    if (!params.pluginDir) {
+      const parsedPath = path.parse(params.entrypointPath);
+      const extension = parsedPath.ext || ".js";
+      const nextPath = path.join(
+        parsedPath.dir,
+        `.${parsedPath.name}.lilac-${params.cacheBustKey}${extension}`,
+      );
 
-  const source = await fs.readFile(params.entrypointPath);
-  await fs.writeFile(snapshotPath, source);
+      const source = await fs.readFile(params.entrypointPath);
+      await fs.writeFile(nextPath, source);
+      return nextPath;
+    }
+
+    const snapshotDir = path.join(params.pluginDir, `.lilac-${params.cacheBustKey}`);
+    await fs.rm(snapshotDir, { recursive: true, force: true });
+    await copyDirectoryTree(params.pluginDir, snapshotDir);
+    return path.join(snapshotDir, path.relative(params.pluginDir, params.entrypointPath));
+  })();
 
   const url = pathToFileURL(snapshotPath);
 

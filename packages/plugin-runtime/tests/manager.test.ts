@@ -169,6 +169,68 @@ describe("plugin runtime manager", () => {
     ]);
   });
 
+  it("reloads when a transitive plugin file changes", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-plugin-runtime-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const pluginDir = path.join(dataDir, "plugins", "demo-plugin");
+
+    await writePlugin({
+      dataDir,
+      pluginId: "demo-plugin",
+      entryBody: `import { callableId, toolName, value } from "./dep.js";
+
+export default {
+  meta: { id: "demo-plugin" },
+  create() {
+    return {
+      level1: [{ name: toolName, createTool() { return { execute() { return { ok: true }; } }; }, isEnabled() { return true; } }],
+      level2: [{
+        id: "demo",
+        async init() {},
+        async destroy() {},
+        async list() { return [{ callableId, name: "Demo", description: "Demo", shortInput: [], input: [] }]; },
+        async call() { return { value }; },
+      }],
+    };
+  },
+};`,
+    });
+    await fs.writeFile(
+      path.join(pluginDir, "dist", "dep.js"),
+      `export const toolName = "demo_tool";
+export const callableId = "demo.call";
+export const value = 1;
+`,
+      "utf8",
+    );
+
+    const manager = new ToolPluginManager<Runtime, Level1ToolSpec<Runtime>, ServerTool>({
+      runtime: {},
+      dataDir,
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+    });
+
+    await manager.init();
+    expect(manager.getLevel1Items().map((spec) => spec.name)).toEqual(["demo_tool"]);
+
+    await Bun.sleep(5);
+    await fs.writeFile(
+      path.join(pluginDir, "dist", "dep.js"),
+      `export const toolName = "demo_tool_v2";
+export const callableId = "demo.call.v2";
+export const value = 2;
+`,
+      "utf8",
+    );
+
+    await manager.ensureFresh();
+    expect(manager.getLevel1Items().map((spec) => spec.name)).toEqual(["demo_tool_v2"]);
+    expect((await manager.getLevel2Items()[0]!.list()).map((entry) => entry.callableId)).toEqual([
+      "demo.call.v2",
+    ]);
+  });
+
   it("marks disabled, skipped, and failed plugins in status output", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-plugin-runtime-"));
     const dataDir = path.join(tmpRoot, "data");
@@ -258,6 +320,79 @@ describe("plugin runtime manager", () => {
       "destroy:lifecycle",
       "destroy:lifecycle",
     ]);
+  });
+
+  it("fails startup when a builtin Level 2 init hook fails", async () => {
+    const manager = new ToolPluginManager<Runtime, Level1ToolSpec<Runtime>, ServerTool>({
+      runtime: {},
+      dataDir: "/tmp/unused",
+      builtinPlugins: [
+        {
+          meta: { id: "builtin-base" },
+          create() {
+            return {
+              level2: [createServerTool("builtin.call")],
+            };
+          },
+        },
+      ],
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+      initLevel2Item: (tool) => {
+        throw new Error(`boom:${tool.id}`);
+      },
+    });
+
+    await expect(manager.init()).rejects.toThrow("boom:builtin.call");
+  });
+
+  it("marks external plugins failed when Level 2 init fails", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-plugin-runtime-"));
+    const dataDir = path.join(tmpRoot, "data");
+
+    await writePlugin({
+      dataDir,
+      pluginId: "broken-level2",
+      entryBody: `export default {
+  meta: { id: "broken-level2" },
+  create() {
+    return {
+      level2: [{
+        id: "broken",
+        async init() {},
+        async destroy() {},
+        async list() { return [{ callableId: "broken.call", name: "Broken", description: "Broken", shortInput: [], input: [] }]; },
+        async call() { return { ok: true }; },
+      }],
+    };
+  },
+};`,
+    });
+
+    const manager = new ToolPluginManager<Runtime, Level1ToolSpec<Runtime>, ServerTool>({
+      runtime: {},
+      dataDir,
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+      initLevel2Item: (tool) => {
+        if (tool.id === "broken") {
+          throw new Error("level2 init boom");
+        }
+      },
+    });
+
+    await manager.init();
+
+    expect(manager.getLevel2Items()).toHaveLength(0);
+    expect(manager.getStatuses()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pluginId: "broken-level2",
+          state: "failed",
+          reason: "level2 init boom",
+        }),
+      ]),
+    );
   });
 
   it("rejects duplicate Level 1 and Level 2 contributions from external plugins", async () => {

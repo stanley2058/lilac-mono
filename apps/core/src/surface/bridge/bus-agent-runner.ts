@@ -712,18 +712,32 @@ export function createDeferredSubagentManager(params: {
   const handles = new Map<string, DeferredSubagentHandle>();
   const bufferedCompletions: DeferredSubagentBufferedCompletion[] = [];
   let waiters: Array<() => void> = [];
+  let signalVersion = 0;
 
   const notifyWaiters = () => {
+    signalVersion += 1;
     const current = waiters;
     waiters = [];
     for (const waiter of current) waiter();
   };
 
-  const waitForSignal = async () => {
+  const waitForSignalSince = async (version: number) => {
+    if (signalVersion !== version) return;
+
     await new Promise<void>((resolve) => {
+      if (signalVersion !== version) {
+        resolve();
+        return;
+      }
       waiters.push(resolve);
     });
   };
+
+  const snapshotWaitState = () => ({
+    signalVersion,
+    hasBufferedCompletions: bufferedCompletions.length > 0,
+    hasOutstandingChildren: handles.size > 0,
+  });
 
   const publishStatus = async (update: {
     toolCallId: string;
@@ -993,7 +1007,9 @@ export function createDeferredSubagentManager(params: {
       return bufferedCompletions.length > 0;
     },
 
-    waitForSignal,
+    waitForSignalSince,
+
+    snapshotWaitState,
 
     notifyWaiters,
 
@@ -3289,16 +3305,19 @@ export async function startBusAgentRunner(params: {
           throw new RestartDrainingAbort();
         }
 
-        if (await deferredSubagents.injectBuffered(agent)) {
+        const deferredWaitState = deferredSubagents.snapshotWaitState();
+
+        if (deferredWaitState.hasBufferedCompletions) {
+          await deferredSubagents.injectBuffered(agent);
           await agent.continue();
           continue;
         }
 
-        if (!deferredSubagents.hasOutstandingChildren()) {
+        if (!deferredWaitState.hasOutstandingChildren) {
           break;
         }
 
-        await deferredSubagents.waitForSignal();
+        await deferredSubagents.waitForSignalSince(deferredWaitState.signalVersion);
         if (agent.state.isStreaming) {
           continue;
         }

@@ -32,6 +32,11 @@ export async function startHeartbeatService(params: {
   subscriptionId: string;
   config?: CoreConfig;
   dataDir?: string;
+  initialExternalState?: {
+    activeRequestIds?: readonly string[];
+    lastExternalActivityAt?: number;
+    lastActivityAt?: number;
+  };
   now?: () => number;
   timers?: HeartbeatTimers;
 }) {
@@ -48,10 +53,10 @@ export async function startHeartbeatService(params: {
   let coreConfigReloadHadError = false;
   let lastCoreConfigReloadError: string | null = null;
 
-  const activeExternalRequestIds = new Set<string>();
+  const activeExternalRequestIds = new Set(params.initialExternalState?.activeRequestIds ?? []);
   const outstandingHeartbeatRequestIds = new Set<string>();
-  let lastExternalActivityAt = 0;
-  let lastActivityAt = 0;
+  let lastExternalActivityAt = params.initialExternalState?.lastExternalActivityAt ?? 0;
+  let lastActivityAt = params.initialExternalState?.lastActivityAt ?? lastExternalActivityAt;
   let intervalHandle: TimerHandle | null = null;
   let retryHandle: TimerHandle | null = null;
   let currentIntervalMs: number | null = null;
