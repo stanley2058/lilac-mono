@@ -17,6 +17,8 @@ import type {
 } from "../../surface/types";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import type { RequestContext, ServerTool } from "../types";
+import type { TranscriptStore } from "../../transcript/transcript-store";
+import { isHeartbeatSessionId } from "../../transcript/heartbeat-handoff";
 
 import {
   bestEffortTokenForDiscordChannelId,
@@ -1165,6 +1167,7 @@ export class Surface implements ServerTool {
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
       discordSearch?: DiscordSearchService;
+      transcriptStore?: TranscriptStore;
     },
   ) {}
 
@@ -1435,6 +1438,22 @@ export class Surface implements ServerTool {
 
   private gh(): GithubSurfaceApi {
     return this.params.githubApi ?? defaultGithubApi;
+  }
+
+  private linkSentMessageToTranscript(ref: MsgRef, ctx: RequestContext | undefined): void {
+    const requestId = ctx?.requestId;
+    if (!requestId || !this.params.transcriptStore) return;
+    if (!ctx?.sessionId || !isHeartbeatSessionId(ctx.sessionId)) return;
+
+    try {
+      this.params.transcriptStore.linkSurfaceMessagesToRequest({
+        requestId,
+        created: [ref],
+        last: ref,
+      });
+    } catch {
+      // Best-effort only. Do not fail the send on transcript linkage issues.
+    }
   }
 
   private async listGithubReactions(params: {
@@ -1978,7 +1997,9 @@ export class Surface implements ServerTool {
         body: input.text,
       });
 
-      return { ok: true as const, ref: asGithubMsgRef(sessionId, String(res.id)) };
+      const ref = asGithubMsgRef(sessionId, String(res.id));
+      this.linkSentMessageToTranscript(ref, ctx);
+      return { ok: true as const, ref };
     }
 
     ensureDiscordClient(client);
@@ -2042,6 +2063,8 @@ export class Surface implements ServerTool {
           }
         : undefined,
     );
+
+    this.linkSentMessageToTranscript(ref, ctx);
 
     return { ok: true as const, ref };
   }

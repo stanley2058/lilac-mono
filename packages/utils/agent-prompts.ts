@@ -6,11 +6,21 @@ import { z } from "zod";
 import { findWorkspaceRoot } from "./find-root";
 
 export const DEFAULT_PROMPT_DIRNAME = "prompts";
+export const HEARTBEAT_PROMPT_FILENAME = "HEARTBEAT.md";
+export const HEARTBEAT_PROMPT_DIRNAME = "heartbeat";
 
 export type PromptFile = {
   name: string;
   path: string;
   content: string;
+};
+
+export type HeartbeatPromptPaths = {
+  promptDir: string;
+  heartbeatFilePath: string;
+  heartbeatDir: string;
+  inboxDir: string;
+  archiveDir: string;
 };
 
 export const CORE_PROMPT_FILES = [
@@ -70,10 +80,38 @@ function templatePath(name: CorePromptFileName): string {
   return path.join(import.meta.dir, "prompt-templates", name);
 }
 
+function heartbeatTemplatePath(): string {
+  return path.join(import.meta.dir, "prompt-templates", HEARTBEAT_PROMPT_FILENAME);
+}
+
 export function resolvePromptDir(options?: { dataDir?: string }): string {
   const dataDir =
     options?.dataDir ?? process.env.DATA_DIR ?? path.resolve(findWorkspaceRoot(), "data");
   return path.join(dataDir, DEFAULT_PROMPT_DIRNAME);
+}
+
+export function resolveHeartbeatPromptPaths(options?: { dataDir?: string }): HeartbeatPromptPaths {
+  const promptDir = resolvePromptDir(options);
+  const heartbeatDir = path.join(promptDir, HEARTBEAT_PROMPT_DIRNAME);
+
+  return {
+    promptDir,
+    heartbeatFilePath: path.join(promptDir, HEARTBEAT_PROMPT_FILENAME),
+    heartbeatDir,
+    inboxDir: path.join(heartbeatDir, "inbox"),
+    archiveDir: path.join(heartbeatDir, "archive"),
+  };
+}
+
+async function ensureHeartbeatWorkspace(options?: { dataDir?: string }): Promise<void> {
+  const paths = resolveHeartbeatPromptPaths(options);
+  await safeMkdir(paths.heartbeatDir);
+  await safeMkdir(paths.inboxDir);
+  await safeMkdir(paths.archiveDir);
+
+  if (!(await exists(paths.heartbeatFilePath))) {
+    await Bun.write(paths.heartbeatFilePath, await Bun.file(heartbeatTemplatePath()).text());
+  }
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -175,6 +213,7 @@ export async function ensurePromptWorkspace(options?: {
 }): Promise<EnsureResult> {
   const promptDir = resolvePromptDir({ dataDir: options?.dataDir });
   await safeMkdir(promptDir);
+  await ensureHeartbeatWorkspace({ dataDir: options?.dataDir });
 
   const previousState = await loadPromptTemplateState(promptDir);
 

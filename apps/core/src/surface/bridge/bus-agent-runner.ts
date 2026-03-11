@@ -31,7 +31,9 @@ import {
   type AdapterPlatform,
   type LilacBus,
   type RequestLifecycleState,
+  type RequestOrigin,
   type RequestQueueMode,
+  type RequestRunPolicy,
 } from "@stanley2058/lilac-event-bus";
 import {
   AiSdkPiAgent,
@@ -53,7 +55,18 @@ import {
   type DeferredSubagentRegistration,
 } from "../../tools/subagent";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
+import {
+  buildHeartbeatSessionOverlay,
+  buildOrdinaryHeartbeatOverlay,
+  isHeartbeatAckText,
+  isHeartbeatSessionId,
+} from "../../heartbeat/common";
 
+import {
+  buildHeartbeatHandoffTranscript,
+  extractHeartbeatSurfaceSendHandoffs,
+  HEARTBEAT_HANDOFF_SESSION_ID,
+} from "../../transcript/heartbeat-handoff";
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
@@ -64,6 +77,7 @@ import {
   summarizeToolFailure,
 } from "./bus-agent-runner/tool-failure-logging";
 import {
+  type AgentRunProfile,
   parseBufferedForActiveRequestIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -1444,11 +1458,66 @@ function maybeAppendWarningSummaryToUnclearError(
   return isUnclear ? `${message} Provider warnings: ${warningSummary}` : message;
 }
 
+function buildHeartbeatHandoffRequestId(requestId: string, index: number): string {
+  return `${requestId}:heartbeat-handoff:${index + 1}`;
+}
+
+function persistHeartbeatSurfaceHandoffs(params: {
+  logger: ReturnType<typeof createLogger>;
+  transcriptStore: TranscriptStore;
+  requestId: string;
+  requestClient: AdapterPlatform;
+  sessionId: string;
+  modelLabel: string;
+  responseMessages: readonly ModelMessage[];
+}): void {
+  if (!isHeartbeatSessionId(params.sessionId)) return;
+
+  const refs = params.transcriptStore.listSurfaceMessagesForRequest?.({
+    requestId: params.requestId,
+  });
+  if (!refs || refs.length === 0) return;
+
+  const extracted = extractHeartbeatSurfaceSendHandoffs(params.responseMessages);
+  const fallback = buildHeartbeatHandoffTranscript(params.responseMessages);
+  if (!fallback) return;
+
+  if (extracted.length !== refs.length) {
+    params.logger.warn("heartbeat handoff transcript count mismatch", {
+      requestId: params.requestId,
+      linkedSurfaceMessages: refs.length,
+      detectedSends: extracted.length,
+    });
+  }
+
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i]!;
+    const handoff = extracted[i] ?? fallback;
+    const handoffRequestId = buildHeartbeatHandoffRequestId(params.requestId, i);
+
+    params.transcriptStore.saveRequestTranscript({
+      requestId: handoffRequestId,
+      sessionId: HEARTBEAT_HANDOFF_SESSION_ID,
+      requestClient: params.requestClient,
+      messages: handoff.messages,
+      finalText: handoff.finalText,
+      modelLabel: params.modelLabel,
+    });
+    params.transcriptStore.linkSurfaceMessagesToRequest({
+      requestId: handoffRequestId,
+      created: [ref],
+      last: ref,
+    });
+  }
+}
+
 type Enqueued = {
   requestId: string;
   sessionId: string;
   requestClient: AdapterPlatform;
   queue: RequestQueueMode;
+  runPolicy: RequestRunPolicy;
+  origin?: RequestOrigin;
   messages: ModelMessage[];
   modelOverride?: string;
   raw?: unknown;
@@ -1465,6 +1534,8 @@ export type AgentRunnerRecoveryEntry = {
   sessionId: string;
   requestClient: AdapterPlatform;
   queue: RequestQueueMode;
+  runPolicy?: RequestRunPolicy;
+  origin?: RequestOrigin;
   messages: ModelMessage[];
   modelOverride?: string;
   raw?: unknown;
@@ -1687,6 +1758,64 @@ async function maybeBuildSkillsSectionForPrimary(): Promise<string | null> {
   }
 }
 
+export function buildHeartbeatOverlayForRequest(params: {
+  cfg: Pick<CoreConfig, "surface">;
+  requestId: string;
+  sessionId: string;
+  runProfile: AgentRunProfile;
+  nowMs: number;
+}): string | null {
+  if (params.runProfile !== "primary") return null;
+  if (!params.cfg.surface.heartbeat.enabled) return null;
+
+  if (isHeartbeatSessionId(params.sessionId)) {
+    return buildHeartbeatSessionOverlay({
+      nowMs: params.nowMs,
+      heartbeat: params.cfg.surface.heartbeat,
+    });
+  }
+
+  return buildOrdinaryHeartbeatOverlay({
+    requestId: params.requestId,
+    sessionId: params.sessionId,
+  });
+}
+
+export function buildPersistedHeartbeatMessages(finalText: string): ModelMessage[] {
+  return [{ role: "assistant", content: finalText } satisfies ModelMessage];
+}
+
+export function shouldCancelIdleOnlyGlobalRequest(params: {
+  runPolicy: RequestRunPolicy;
+  sessionId: string;
+  states: ReadonlyMap<string, SessionQueue>;
+}): boolean {
+  if (params.runPolicy !== "idle_only_global") return false;
+
+  for (const [queuedSessionId, state] of params.states) {
+    if (!state.running) continue;
+    if (queuedSessionId === params.sessionId) return true;
+    if (!isHeartbeatSessionId(queuedSessionId)) return true;
+  }
+
+  return false;
+}
+
+export function shouldCancelRunPolicyRequest(params: {
+  runPolicy: RequestRunPolicy;
+  sessionId: string;
+  states: ReadonlyMap<string, SessionQueue>;
+}): boolean {
+  if (params.runPolicy === "idle_only_global") {
+    return shouldCancelIdleOnlyGlobalRequest(params);
+  }
+
+  if (params.runPolicy !== "idle_only_session") return false;
+
+  const state = params.states.get(params.sessionId);
+  return Boolean(state?.running);
+}
+
 type SessionQueue = {
   running: boolean;
   agent: AiSdkPiAgent<ToolSet> | null;
@@ -1697,6 +1826,8 @@ type SessionQueue = {
     sessionId: string;
     requestClient: AdapterPlatform;
     queue: RequestQueueMode;
+    runPolicy: RequestRunPolicy;
+    origin?: RequestOrigin;
     modelOverride?: string;
     raw?: unknown;
     partialText: string;
@@ -1811,6 +1942,8 @@ export async function startBusAgentRunner(params: {
         sessionId,
         requestClient,
         queue: msg.data.queue,
+        runPolicy: msg.data.runPolicy ?? "normal",
+        originKind: msg.data.origin?.kind,
         modelOverride: msg.data.modelOverride,
         messageCount: msg.data.messages.length,
       });
@@ -1824,6 +1957,8 @@ export async function startBusAgentRunner(params: {
         sessionId,
         requestClient,
         queue: msg.data.queue,
+        runPolicy: msg.data.runPolicy ?? "normal",
+        origin: msg.data.origin,
         messages: msg.data.messages,
         modelOverride: msg.data.modelOverride,
         raw: msg.data.raw,
@@ -1864,6 +1999,36 @@ export async function startBusAgentRunner(params: {
           draining,
         });
       };
+
+      if (
+        !requestControl.cancel &&
+        shouldCancelRunPolicyRequest({ runPolicy: entry.runPolicy, sessionId, states: bySession })
+      ) {
+        await publishLifecycle({
+          bus,
+          headers: {
+            request_id: requestId,
+            session_id: sessionId,
+            request_client: requestClient,
+          },
+          state: "cancelled",
+          detail:
+            entry.runPolicy === "idle_only_session"
+              ? "idle_only_session_busy"
+              : "idle_only_global_busy",
+        });
+        logQueueTransition({
+          action: "drop",
+          queueDepthBefore: state.queue.length,
+          queueDepthAfter: state.queue.length,
+          reason:
+            entry.runPolicy === "idle_only_session"
+              ? "idle_only_session_busy"
+              : "idle_only_global_busy",
+        });
+        await ctx.commit();
+        return;
+      }
 
       if (draining) {
         logger.info("dropping request message while draining", {
@@ -2157,6 +2322,8 @@ export async function startBusAgentRunner(params: {
       sessionId: state.activeRun.sessionId,
       requestClient: state.activeRun.requestClient,
       queue: "prompt",
+      runPolicy: state.activeRun.runPolicy,
+      origin: state.activeRun.origin,
       messages: [],
       ...(state.activeRun.modelOverride ? { modelOverride: state.activeRun.modelOverride } : {}),
       raw: state.activeRun.raw,
@@ -2221,6 +2388,8 @@ export async function startBusAgentRunner(params: {
           sessionId: queued.sessionId,
           requestClient: queued.requestClient,
           queue: queued.queue,
+          runPolicy: queued.runPolicy,
+          origin: queued.origin,
           messages: queued.messages,
           ...(queued.modelOverride ? { modelOverride: queued.modelOverride } : {}),
           raw: queued.raw,
@@ -2252,6 +2421,8 @@ export async function startBusAgentRunner(params: {
         sessionId: entry.sessionId,
         requestClient: entry.requestClient,
         queue: entry.queue,
+        runPolicy: entry.runPolicy ?? "normal",
+        origin: entry.origin,
         messages: entry.messages,
         modelOverride: entry.modelOverride,
         raw: entry.raw,
@@ -2316,6 +2487,8 @@ export async function startBusAgentRunner(params: {
       sessionId: next.sessionId,
       requestClient: next.requestClient,
       queue: next.queue,
+      runPolicy: next.runPolicy,
+      origin: next.origin,
       modelOverride: next.modelOverride,
       raw: next.raw,
       partialText: next.recovery?.partialText ?? "",
@@ -2491,8 +2664,21 @@ export async function startBusAgentRunner(params: {
         additionalSessionPrompts,
       );
 
+      const heartbeatOverlay = buildHeartbeatOverlayForRequest({
+        cfg,
+        requestId: next.requestId,
+        sessionId: next.sessionId,
+        runProfile,
+        nowMs: Date.now(),
+      });
+
+      const systemPromptWithHeartbeatOverlay =
+        heartbeatOverlay && heartbeatOverlay.trim().length > 0
+          ? `${systemPromptWithSessionMemo}\n\n${heartbeatOverlay}`
+          : systemPromptWithSessionMemo;
+
       const systemPrompt = maybeAppendResponseCommentaryPrompt({
-        baseSystemPrompt: systemPromptWithSessionMemo,
+        baseSystemPrompt: systemPromptWithHeartbeatOverlay,
         provider: resolved.provider,
         responseCommentary: resolved.responseCommentary,
       });
@@ -3123,8 +3309,10 @@ export async function startBusAgentRunner(params: {
         finalText = "Cancelled.";
       }
 
+      const isHeartbeatAckOnly =
+        isHeartbeatSessionId(headers.session_id) && isHeartbeatAckText(finalText);
       const delivery = resolveReplyDeliveryFromFinalText(finalText);
-      if (!isCancelled && delivery !== "skip" && finalText.length === 0) {
+      if (!isCancelled && delivery !== "skip" && !isHeartbeatAckOnly && finalText.length === 0) {
         throw new Error(
           buildNoAssistantTextError({
             provider: resolved.provider,
@@ -3135,7 +3323,7 @@ export async function startBusAgentRunner(params: {
         );
       }
 
-      const shouldSkipSurfaceReply = delivery === "skip";
+      const shouldSkipSurfaceReply = delivery === "skip" || isHeartbeatAckOnly;
       if (shouldSkipSurfaceReply) {
         logger.info("agent requested skip reply", {
           requestId: headers.request_id,
@@ -3150,8 +3338,13 @@ export async function startBusAgentRunner(params: {
         try {
           const finalMessagesForPersistence = runStats.finalMessages ?? agent.state.messages;
           const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
-          const persistedMessages =
-            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+          const persistedMessages = (() => {
+            if (isHeartbeatSessionId(headers.session_id)) {
+              return buildPersistedHeartbeatMessages(finalText);
+            }
+
+            return runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+          })();
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
@@ -3187,6 +3380,26 @@ export async function startBusAgentRunner(params: {
       const responseMessages = runStats.finalMessages
         ? runStats.finalMessages.slice(responseStartIndex)
         : [];
+
+      if (params.transcriptStore && isHeartbeatSessionId(headers.session_id)) {
+        try {
+          persistHeartbeatSurfaceHandoffs({
+            logger,
+            transcriptStore: params.transcriptStore,
+            requestId: headers.request_id,
+            requestClient: headers.request_client,
+            sessionId: headers.session_id,
+            modelLabel: resolvedModelLabel,
+            responseMessages,
+          });
+        } catch (e) {
+          logger.error(
+            "failed to persist heartbeat handoff transcripts",
+            { requestId: headers.request_id, sessionId: headers.session_id },
+            e,
+          );
+        }
+      }
 
       const icLine = buildInputCompositionLine({
         system: systemPromptToText(agent.state.system),
@@ -3277,8 +3490,13 @@ export async function startBusAgentRunner(params: {
           const finalMessagesForPersistence =
             runStats.finalMessages ?? activeAgent?.state.messages ?? [];
           const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
-          const persistedMessages =
-            runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+          const persistedMessages = (() => {
+            if (isHeartbeatSessionId(headers.session_id)) {
+              return buildPersistedHeartbeatMessages(`Error: ${msg}`);
+            }
+
+            return runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+          })();
 
           params.transcriptStore.saveRequestTranscript({
             requestId: headers.request_id,
@@ -3305,6 +3523,29 @@ export async function startBusAgentRunner(params: {
         );
       });
 
+      if (params.transcriptStore && isHeartbeatSessionId(headers.session_id)) {
+        try {
+          const finalMessagesForPersistence =
+            runStats.finalMessages ?? activeAgent?.state.messages ?? [];
+          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+
+          persistHeartbeatSurfaceHandoffs({
+            logger,
+            transcriptStore: params.transcriptStore,
+            requestId: headers.request_id,
+            requestClient: headers.request_client,
+            sessionId: headers.session_id,
+            modelLabel: resolvedModelLabel,
+            responseMessages,
+          });
+        } catch (err) {
+          logger.error(
+            "failed to persist heartbeat handoff transcripts after error",
+            { requestId: headers.request_id, sessionId: headers.session_id },
+            err,
+          );
+        }
+      }
       await publishLifecycle({ bus, headers, state: "failed", detail: msg });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,

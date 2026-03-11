@@ -370,6 +370,41 @@ const pluginsSchema = z
     config: {},
   });
 
+const hhmmSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u, "expected HH:MM");
+const heartbeatOutputSessionSchema = z
+  .string()
+  .trim()
+  .regex(/^(discord|github)\/.+$/u, "expected <client>/<sessionIdOrAlias>");
+
+const heartbeatSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    every: z.string().trim().min(2).default("30m"),
+    quietAfterActivityMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(5 * 60 * 1000),
+    retryBusyMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
+    defaultOutputSession: heartbeatOutputSessionSchema.optional(),
+    softQuietHours: z
+      .object({
+        start: hhmmSchema,
+        end: hhmmSchema,
+        timezone: z.string().trim().min(1).optional(),
+      })
+      .optional(),
+  })
+  .default({
+    enabled: false,
+    every: "30m",
+    quietAfterActivityMs: 5 * 60 * 1000,
+    retryBusyMs: 60 * 1000,
+  });
 export const coreConfigSchema = z.object({
   tools: toolsSchema,
   plugins: pluginsSchema,
@@ -378,6 +413,7 @@ export const coreConfigSchema = z.object({
     .object({
       router: routerSchema,
       discord: discordSurfaceSchema,
+      heartbeat: heartbeatSchema,
     })
     .default({
       router: {
@@ -401,6 +437,12 @@ export const coreConfigSchema = z.object({
             fallbackMode: "list",
           },
         },
+      },
+      heartbeat: {
+        enabled: false,
+        every: "30m",
+        quietAfterActivityMs: 5 * 60 * 1000,
+        retryBusyMs: 60 * 1000,
       },
     }),
 

@@ -12,7 +12,11 @@ import {
   type RawBus,
   type SubscriptionOptions,
 } from "@stanley2058/lilac-event-bus";
-import { RESPONSE_COMMENTARY_INSTRUCTIONS, createLogger } from "@stanley2058/lilac-utils";
+import {
+  RESPONSE_COMMENTARY_INSTRUCTIONS,
+  createLogger,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 import { AiSdkPiAgent } from "@stanley2058/lilac-agent";
 import type { ModelMessage } from "ai";
 import type { LanguageModel } from "ai";
@@ -20,9 +24,13 @@ import type { LanguageModel } from "ai";
 import {
   appendAdditionalSessionMemoBlock,
   createDeferredSubagentManager,
+  buildHeartbeatOverlayForRequest,
+  buildPersistedHeartbeatMessages,
   mergeToSingleUserMessage,
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
+  shouldCancelRunPolicyRequest,
+  shouldCancelIdleOnlyGlobalRequest,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
@@ -253,6 +261,181 @@ describe("appendAdditionalSessionMemoBlock", () => {
   it("omits the block when combined memo is empty", () => {
     const out = appendAdditionalSessionMemoBlock("Base prompt", ["  ", "\n\n"]);
     expect(out).toBe("Base prompt");
+  });
+});
+
+describe("heartbeat overlays", () => {
+  it("adds ordinary-session request metadata when heartbeat is enabled", () => {
+    const cfg = {
+      surface: {
+        heartbeat: {
+          enabled: true,
+          every: "30m",
+          quietAfterActivityMs: 300000,
+          retryBusyMs: 60000,
+        },
+      },
+    } as unknown as Pick<CoreConfig, "surface">;
+
+    const overlay = buildHeartbeatOverlayForRequest({
+      cfg,
+      requestId: "discord:1:2",
+      sessionId: "chan",
+      runProfile: "primary",
+      nowMs: 0,
+    });
+
+    expect(overlay).toContain("Heartbeat Context");
+    expect(overlay).toContain("sourceSessionId='chan'");
+    expect(overlay).toContain("sourceRequestId='discord:1:2'");
+  });
+
+  it("adds heartbeat quiet-hours context for heartbeat session", () => {
+    const cfg = {
+      surface: {
+        heartbeat: {
+          enabled: true,
+          every: "30m",
+          quietAfterActivityMs: 300000,
+          retryBusyMs: 60000,
+          softQuietHours: {
+            start: "23:00",
+            end: "08:00",
+            timezone: "UTC",
+          },
+        },
+      },
+    } as unknown as Pick<CoreConfig, "surface">;
+
+    const overlay = buildHeartbeatOverlayForRequest({
+      cfg,
+      requestId: "heartbeat:1",
+      sessionId: "__heartbeat__",
+      runProfile: "primary",
+      nowMs: Date.UTC(2026, 2, 11, 23, 30, 0),
+    });
+
+    expect(overlay).toContain("Heartbeat Quiet Hours");
+    expect(overlay).toContain("Current local quiet-hours state: inside");
+  });
+});
+
+describe("buildPersistedHeartbeatMessages", () => {
+  it("stores heartbeat summary as a single assistant message", () => {
+    expect(buildPersistedHeartbeatMessages("summary")).toEqual([
+      { role: "assistant", content: "summary" },
+    ]);
+  });
+});
+
+describe("shouldCancelIdleOnlyGlobalRequest", () => {
+  it("cancels when another non-heartbeat session is running", () => {
+    type IdleOnlyGlobalState =
+      Parameters<typeof shouldCancelIdleOnlyGlobalRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, IdleOnlyGlobalState>([
+      [
+        "discord-session",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "req:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+      [
+        "__heartbeat__",
+        {
+          running: false,
+          agent: null,
+          queue: [],
+          activeRequestId: null,
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelIdleOnlyGlobalRequest({
+        runPolicy: "idle_only_global",
+        sessionId: "__heartbeat__",
+        states,
+      }),
+    ).toBe(true);
+  });
+
+  it("cancels when the heartbeat session is already running", () => {
+    type IdleOnlyGlobalState =
+      Parameters<typeof shouldCancelIdleOnlyGlobalRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, IdleOnlyGlobalState>([
+      [
+        "__heartbeat__",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "heartbeat:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelIdleOnlyGlobalRequest({
+        runPolicy: "idle_only_global",
+        sessionId: "__heartbeat__",
+        states,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("shouldCancelRunPolicyRequest", () => {
+  it("cancels idle_only_session when the session is already running", () => {
+    type RunnerState =
+      Parameters<typeof shouldCancelRunPolicyRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, RunnerState>([
+      [
+        "chan",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "req:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelRunPolicyRequest({
+        runPolicy: "idle_only_session",
+        sessionId: "chan",
+        states,
+      }),
+    ).toBe(true);
   });
 });
 

@@ -322,13 +322,25 @@ export function getDiscordFlags(raw: unknown): {
   };
 }
 
-export type RouterConfigOverride = Omit<CoreConfig, "tools"> & {
+export type RouterConfigOverride = Omit<CoreConfig, "tools" | "surface"> & {
   tools?: CoreConfig["tools"];
+  surface: Omit<CoreConfig["surface"], "heartbeat"> & {
+    heartbeat?: CoreConfig["surface"]["heartbeat"];
+  };
 };
 
 export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig {
   return {
     ...config,
+    surface: {
+      ...config.surface,
+      heartbeat: config.surface.heartbeat ?? {
+        enabled: false,
+        every: "30m",
+        quietAfterActivityMs: 5 * 60 * 1000,
+        retryBusyMs: 60 * 1000,
+      },
+    },
     tools: config.tools ?? {
       web: {
         search: {

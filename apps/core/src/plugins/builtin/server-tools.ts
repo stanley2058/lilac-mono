@@ -111,6 +111,7 @@ export function createBuiltinSurfacePlugin(): CoreToolPlugin {
             config: runtime.config,
             getConfig: runtime.getConfig,
             discordSearch: runtime.discordSearch,
+            transcriptStore: runtime.transcriptStore,
           }),
         ],
       };

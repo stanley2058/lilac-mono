@@ -8,6 +8,7 @@ import type {
 
 import type { SurfaceAdapter } from "../surface/adapter";
 import type { DiscordSearchService } from "../surface/store/discord-search-store";
+import type { TranscriptStore } from "../transcript/transcript-store";
 import type { WorkflowStore } from "../workflow/workflow-store";
 
 export type CoreToolPluginRuntime = {
@@ -17,6 +18,7 @@ export type CoreToolPluginRuntime = {
   getConfig?: () => Promise<CoreConfig>;
   workflowStore?: WorkflowStore;
   discordSearch?: DiscordSearchService;
+  transcriptStore?: TranscriptStore;
 };
 
 export type CoreLevel1ToolSpec = Level1ToolSpec<CoreToolPluginRuntime>;

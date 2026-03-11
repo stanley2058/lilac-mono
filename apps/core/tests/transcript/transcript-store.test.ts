@@ -215,4 +215,37 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
+
+  it("lists linked surface messages by request in creation order", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+
+    const store = new SqliteTranscriptStore(dbPath);
+
+    store.saveRequestTranscript({
+      requestId: "r1",
+      sessionId: "chan",
+      requestClient: "unknown",
+      messages: [{ role: "assistant", content: "first" }],
+      finalText: "first",
+      modelLabel: "test-model",
+    });
+
+    store.linkSurfaceMessagesToRequest({
+      requestId: "r1",
+      created: [
+        { platform: "discord", channelId: "chan", messageId: "m1" },
+        { platform: "discord", channelId: "chan", messageId: "m2" },
+      ],
+      last: { platform: "discord", channelId: "chan", messageId: "m2" },
+    });
+
+    expect(store.listSurfaceMessagesForRequest?.({ requestId: "r1" })).toEqual([
+      { platform: "discord", channelId: "chan", messageId: "m1" },
+      { platform: "discord", channelId: "chan", messageId: "m2" },
+    ]);
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });

@@ -91,6 +91,24 @@ surface:
         # - passthrough: keep original markdown table unchanged
         fallbackMode: list
 
+  heartbeat:
+    # Enable the internal autonomous heartbeat lane.
+    enabled: false
+    # Optional default output destination for proactive heartbeat messages.
+    # Format: <client>/<sessionIdOrAlias>, for example: discord/ops
+    # defaultOutputSession: "discord/ops"
+    # How often heartbeat gets a chance to think.
+    every: "30m"
+    # Suppress heartbeat for this long after any non-heartbeat request activity.
+    quietAfterActivityMs: 300000
+    # Retry suppressed wakes after this delay.
+    retryBusyMs: 60000
+    # Optional quiet-hours hint for heartbeat instructions only.
+    # softQuietHours:
+    #   start: "23:00"
+    #   end: "08:00"
+    #   timezone: "Asia/Taipei"
+
 agent:
   # Optional: include token/model timing stats in final response metadata.
   #
