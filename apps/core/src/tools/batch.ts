@@ -178,7 +178,7 @@ export function batchTool(params: {
   editingMode?: EditingToolMode | "none";
   reportToolStatus?: (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;
@@ -198,7 +198,7 @@ export function batchTool(params: {
 
   const reportSafe = (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;
@@ -362,11 +362,12 @@ export function batchTool(params: {
         }));
         let updateSeq = 0;
 
+        let hasPublishedProgress = false;
         const publishProgress = () => {
           const done = children.filter((c) => c.status === "done").length;
           reportSafe({
             toolCallId: parentId,
-            status: "start",
+            status: hasPublishedProgress ? "update" : "start",
             display: renderBatchDisplay({
               total: children.length,
               done,
@@ -374,6 +375,7 @@ export function batchTool(params: {
               collapsed: false,
             }),
           });
+          hasPublishedProgress = true;
         };
 
         // Best-effort: establish an initial progress line.

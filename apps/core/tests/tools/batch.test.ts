@@ -336,10 +336,10 @@ describe("batch tool", () => {
       },
     );
 
-    // Last "start" update while done=0 should show the newest 3 started.
+    // Last in-progress update while done=0 should show the newest 3 started.
     const lastStart = [...updates]
       .reverse()
-      .find((u) => u.status === "start" && u.display.includes("0/5 done"));
+      .find((u) => u.status !== "end" && u.display.includes("0/5 done"));
     expect(lastStart).toBeTruthy();
     expect(lastStart!.display).toContain("batch (5 tools;");
 

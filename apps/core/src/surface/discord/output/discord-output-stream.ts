@@ -134,6 +134,10 @@ function buildToolLine(update: SurfaceToolStatusUpdate): string {
     return `▶ ${escapedDisplay}`;
   }
 
+  if (update.status === "update") {
+    return `… ${escapedDisplay}`;
+  }
+
   if (update.ok) {
     return `✓ ${escapedDisplay}`;
   }
@@ -723,7 +727,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       }
       case "tool.status": {
         const line = buildToolLine(part.update);
-        if (part.update.status === "start") {
+        if (part.update.status === "start" || part.update.status === "update") {
           this.markTaskProgress(`tool:${part.update.toolCallId}`);
         }
         const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);

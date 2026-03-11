@@ -255,12 +255,12 @@ export type EvtAgentOutputResponseBinaryData = {
   filename?: string;
 };
 
-export type ToolCallStatus = "start" | "end";
+export type ToolCallStatus = "start" | "update" | "end";
 
 export type EvtAgentOutputToolCallData = {
-  /** Correlates start/end tool events within a request. */
+  /** Correlates tool events within a request. */
   toolCallId: string;
-  /** Start/end boundaries for a tool call. */
+  /** Start/update/end boundaries for a tool call. */
   status: ToolCallStatus;
   /** Preformatted label for UI (e.g. `[bash] ls -al`). */
   display: string;
