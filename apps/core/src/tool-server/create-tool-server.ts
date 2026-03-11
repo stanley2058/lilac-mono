@@ -5,6 +5,14 @@ import type { Logger } from "@stanley2058/simple-module-logger";
 import { BridgeFnRequest, BridgeFnResponse, BridgeListResponse } from "./schema";
 import type { RequestContext, ServerTool } from "./types";
 
+type ToolPluginManagerLike = {
+  init(): Promise<void>;
+  destroy(): Promise<void>;
+  reload(): Promise<void>;
+  ensureFresh(): Promise<void>;
+  getLevel2Tools(): readonly ServerTool[];
+};
+
 function safeJsonPreview(value: unknown, maxChars = 2000): string {
   const SENSITIVE_KEYS = new Set([
     "authorization",
@@ -67,7 +75,8 @@ function estimateJsonBytes(value: unknown): number {
 }
 
 export type ToolServerOptions = {
-  tools: ServerTool[];
+  tools?: ServerTool[];
+  pluginManager?: ToolPluginManagerLike;
   app?: Elysia;
   logger?: Logger;
   /** Optional cache to provide request-scoped messages to tools. */
@@ -83,17 +92,29 @@ export function createToolServer(options: ToolServerOptions) {
       module: "tool-server",
     });
 
-  const tools = options.tools;
+  const staticTools = options.tools ?? [];
 
   const callMapping = new Map<string, ServerTool>();
 
+  async function getActiveTools(): Promise<readonly ServerTool[]> {
+    if (options.pluginManager) {
+      await options.pluginManager.ensureFresh();
+      return options.pluginManager.getLevel2Tools();
+    }
+    return staticTools;
+  }
+
   async function refreshToolMapping() {
     callMapping.clear();
-    for (const tool of tools) {
+    for (const tool of await getActiveTools()) {
       for (const { callableId } of await tool.list()) {
         callMapping.set(callableId, tool);
       }
     }
+  }
+
+  async function ensureFreshToolMapping() {
+    await refreshToolMapping();
   }
 
   const app = options.app ?? new Elysia();
@@ -107,17 +128,24 @@ export function createToolServer(options: ToolServerOptions) {
   app.get(
     "/list",
     async () => {
+      await ensureFreshToolMapping();
+      const tools = await getActiveTools();
       const toolDescs = await Promise.allSettled(tools.map((t) => t.list()));
-      const succeeded = toolDescs.filter((t) => t.status === "fulfilled").map((t) => t.value);
+      const succeeded = toolDescs
+        .filter(
+          (result): result is PromiseFulfilledResult<Awaited<ReturnType<ServerTool["list"]>>> =>
+            result.status === "fulfilled",
+        )
+        .map((result) => result.value);
 
       return {
         tools: succeeded.flatMap((s) =>
-          s.map((t) => ({
-            callableId: t.callableId,
-            name: t.name,
-            description: t.description,
-            shortInput: t.shortInput,
-            hidden: t.hidden,
+          s.map((entry: Awaited<ReturnType<ServerTool["list"]>>[number]) => ({
+            callableId: entry.callableId,
+            name: entry.name,
+            description: entry.description,
+            shortInput: entry.shortInput,
+            hidden: entry.hidden,
           })),
         ),
       };
@@ -128,19 +156,27 @@ export function createToolServer(options: ToolServerOptions) {
   );
 
   app.post("/reload", async () => {
-    await Promise.allSettled(tools.map((t) => t.destroy()));
-    await Promise.allSettled(tools.map((t) => t.init()));
+    if (options.pluginManager) {
+      await options.pluginManager.reload();
+    } else {
+      await Promise.allSettled(staticTools.map((t) => t.destroy()));
+      await Promise.allSettled(staticTools.map((t) => t.init()));
+    }
     await refreshToolMapping();
     return { ok: true as const };
   });
 
   app.get("/help/:callableId", async ({ params }) => {
+    await ensureFreshToolMapping();
     const tool = callMapping.get(params.callableId);
     if (!tool) {
       throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
     }
     const desc = await tool.list();
-    const output = desc.find((d) => d.callableId === params.callableId);
+    const output = desc.find(
+      (entry: Awaited<ReturnType<ServerTool["list"]>>[number]) =>
+        entry.callableId === params.callableId,
+    );
     if (!output) return new NotFoundError();
     return output;
   });
@@ -148,6 +184,7 @@ export function createToolServer(options: ToolServerOptions) {
   app.post(
     "/call",
     async ({ body, request, headers }) => {
+      await ensureFreshToolMapping();
       const startedAt = Date.now();
 
       const tool = callMapping.get(body.callableId);
@@ -242,10 +279,14 @@ export function createToolServer(options: ToolServerOptions) {
   return {
     app,
     init: async () => {
-      const initResult = await Promise.allSettled(tools.map((t) => t.init()));
-      for (const result of initResult) {
-        if (result.status === "rejected") {
-          logger.error("tool init failed", result.reason);
+      if (options.pluginManager) {
+        await options.pluginManager.init();
+      } else {
+        const initResult = await Promise.allSettled(staticTools.map((t) => t.init()));
+        for (const result of initResult) {
+          if (result.status === "rejected") {
+            logger.error("tool init failed", result.reason);
+          }
         }
       }
       await refreshToolMapping();
@@ -259,8 +300,14 @@ export function createToolServer(options: ToolServerOptions) {
       logger.info(`Tool server listening on port ${app.server?.hostname}:${app.server?.port}`);
     },
     stop: async () => {
-      await Promise.allSettled(tools.map((t) => t.destroy()));
-      app.stop();
+      if (options.pluginManager) {
+        await options.pluginManager.destroy();
+      } else {
+        await Promise.allSettled(staticTools.map((t) => t.destroy()));
+      }
+      if (started) {
+        app.stop();
+      }
       started = false;
     },
   };

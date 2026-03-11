@@ -360,8 +360,19 @@ const toolsSchema = z
     },
   });
 
+const pluginsSchema = z
+  .object({
+    disabled: z.array(z.string().min(1)).default([]),
+    config: z.record(z.string(), z.unknown()).default({}),
+  })
+  .default({
+    disabled: [],
+    config: {},
+  });
+
 export const coreConfigSchema = z.object({
   tools: toolsSchema,
+  plugins: pluginsSchema,
 
   surface: z
     .object({
@@ -505,7 +516,11 @@ export const coreConfigSchema = z.object({
 
 type ParsedCoreConfig = z.infer<typeof coreConfigSchema>;
 
-export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface" | "models"> & {
+export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "plugins" | "surface" | "models"> & {
+  plugins?: {
+    disabled?: string[];
+    config?: Record<string, unknown>;
+  };
   surface: Omit<ParsedCoreConfig["surface"], "discord"> & {
     discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators" | "experimental"> & {
       workingIndicators?: string[];

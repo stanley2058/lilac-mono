@@ -1,0 +1,19 @@
+{
+  "name": "@stanley2058/lilac-plugin-runtime",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "module": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "dependencies": {
+    "ai": "^6.0.105"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

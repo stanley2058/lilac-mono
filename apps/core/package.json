@@ -24,6 +24,7 @@
     "@octokit/auth-app": "^7.2.2",
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-event-bus": "workspace:*",
+    "@stanley2058/lilac-plugin-runtime": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/simple-module-logger": "^0.0.4",
     "@tavily/core": "^0.6.4",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { asSchema, type ToolSet } from "ai";
+import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import { applyPatchTool } from "../../src/tools/apply-patch";
 import { bashToolWithCwd } from "../../src/tools/bash";
@@ -447,6 +448,113 @@ describe("batch tool", () => {
           },
           {
             toolCallId: "batch-edit-overlap",
+            messages: [],
+            abortSignal: undefined,
+            experimental_context: undefined,
+          },
+        ),
+      ),
+    ).rejects.toThrow(/overlapping paths/i);
+  });
+
+  it("uses plugin metadata to decide batch-allowed tool names", async () => {
+    const tools = {
+      custom_read: {
+        execute: () => ({ ok: true }),
+      } as ExecTool,
+      custom_write: {
+        execute: () => ({ ok: true }),
+      } as ExecTool,
+    } as unknown as ToolSet;
+
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      [
+        "custom_read",
+        {
+          name: "custom_read",
+          supportsBatch: true,
+          createTool: () => tools.custom_read,
+          isEnabled: () => true,
+        },
+      ],
+      [
+        "custom_write",
+        {
+          name: "custom_write",
+          supportsBatch: false,
+          createTool: () => tools.custom_write,
+          isEnabled: () => true,
+        },
+      ],
+    ]);
+
+    Object.assign(
+      tools,
+      batchTool({
+        defaultCwd: baseDir,
+        getTools: () => tools,
+        getToolSpecs: () => specs,
+        editingMode: "none",
+      }),
+    );
+
+    const batch = getTool(tools, "batch") as { inputSchema: unknown } & ExecTool;
+    const schema = asSchema(batch.inputSchema as never) as {
+      jsonSchema: {
+        properties?: { tool_calls?: { items?: { properties?: { tool?: { enum?: string[] } } } } };
+      };
+    };
+    const enumValues =
+      schema.jsonSchema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
+
+    expect(enumValues).toContain("custom_read");
+    expect(enumValues).not.toContain("custom_write");
+  });
+
+  it("uses plugin-provided editTargets to reject overlapping custom edits", async () => {
+    const customEdit = {
+      execute: () => ({ ok: true }),
+    } as ExecTool;
+    const tools = {
+      custom_edit: customEdit as unknown,
+    } as unknown as ToolSet;
+
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      [
+        "custom_edit",
+        {
+          name: "custom_edit",
+          supportsBatch: true,
+          createTool: () => customEdit,
+          isEnabled: () => true,
+          editTargets: () => ["file:///same.txt"],
+        },
+      ],
+    ]);
+
+    Object.assign(
+      tools,
+      batchTool({
+        defaultCwd: baseDir,
+        getTools: () => tools,
+        getToolSpecs: () => specs,
+        editingMode: "none",
+      }),
+    );
+
+    const batch = getTool(tools, "batch");
+
+    await expect(
+      Promise.resolve(
+        batch.execute(
+          {
+            tool_calls: [
+              { tool: "custom_edit", parameters: { target: "a" } },
+              { tool: "custom_edit", parameters: { target: "b" } },
+            ],
+          },
+          {
+            toolCallId: "batch-custom-edit",
             messages: [],
             abortSignal: undefined,
             experimental_context: undefined,
