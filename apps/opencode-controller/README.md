@@ -1,8 +1,12 @@
-# lilac-opencode
+# lilac-acp
 
-Small CLI wrapper around the OpenCode SDK (v2).
+ACP harness controller for local and automation workflows.
 
-This is designed to be invoked locally or via Lilac's `ssh.run` tool.
+It talks to harnesses over ACP, keeps run state on disk, and executes prompt turns in detached worker processes.
+
+`lilac-acp` is the primary CLI.
+
+`lilac-opencode` still exists as a deprecated alias that forwards to `lilac-acp --harness opencode`.
 
 ## Build
 
@@ -15,73 +19,77 @@ bun run build
 
 This writes:
 
-- `dist/client.js` (compiled)
-- `dist/index.js` (executable wrapper)
+- `dist/client.js` (compiled controller)
+- `dist/index.js` (`lilac-acp` entrypoint)
+- `dist/opencode-alias.js` (`lilac-opencode` compatibility alias)
 
 ## Usage
 
-Help/version:
+Show help/version:
 
 ```bash
 bun dist/index.js --help
 bun dist/index.js --version
 ```
 
-List sessions (scoped to a repo directory):
+List launchable harnesses:
 
 ```bash
-bun dist/index.js sessions list --directory /path/to/repo --roots --limit 20
+bun dist/index.js harnesses list
 ```
 
-Fetch a small session snapshot (for agents):
+Search sessions across harnesses:
+
+```bash
+bun dist/index.js sessions list \
+  --directory /path/to/repo \
+  --search "failing tests"
+```
+
+Snapshot a known session:
 
 ```bash
 bun dist/index.js sessions snapshot \
   --directory /path/to/repo \
+  --harness opencode \
   --latest \
   --runs 6 \
   --max-chars 1200
 ```
 
-Submit a prompt (non-blocking), continuing the newest root session in that directory:
+Submit a prompt in a new session on a specific harness:
 
 ```bash
 bun dist/index.js prompt submit \
   --directory /path/to/repo \
-  --text "Fix the failing tests" \
-  --agent build
+  --harness opencode \
+  --text "Fix the failing tests"
 ```
 
-Submit and wait for completion in one command:
+Submit and wait for completion:
 
 ```bash
 bun dist/index.js prompt submit \
   --directory /path/to/repo \
+  --harness opencode \
   --title "lilac:discord:123" \
   --text "Continue where we left off" \
   --wait
 ```
 
-Inspect run progress/result later:
+Inspect or cancel a persisted run:
 
 ```bash
 bun dist/index.js prompt status --run-id run_xxx
 bun dist/index.js prompt result --run-id run_xxx
 bun dist/index.js prompt wait --run-id run_xxx
+bun dist/index.js prompt cancel --run-id run_xxx
 ```
 
-Submit by exact session title (continue-or-create):
-
-```bash
-bun dist/index.js prompt submit \
-  --directory /path/to/repo \
-  --title "lilac:discord:123" \
-  --text "Continue where we left off"
-```
-
-Notes:
+## Notes
 
 - Output is always JSON.
-- `prompt submit` protects against accidental double-submit by default.
-- If prompt text is an exact/similar recent duplicate, submit is blocked unless `--force` is set.
-- Permission prompts are auto-approved and questions auto-rejected while `prompt wait` is running.
+- `--latest` requires `--harness`.
+- `--title` without `--harness` continues only if there is exactly one exact match across all discovered harnesses.
+- New sessions require `--harness` so the controller knows where to create them.
+- Run state is stored under `~/.local/state/lilac-acp-controller`.

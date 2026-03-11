@@ -9,7 +9,7 @@ Lilac is an event-driven agent runtime: a typed Redis Streams event bus + surfac
 
 - `apps/core/`: core runtime (Discord + optional GitHub surfaces, bus wiring, router, agent runner, workflow, tool server)
 - `apps/tool-bridge/`: dev-mode tool server entry + `tools` CLI bundle (builds to `dist/`)
-- `apps/opencode-controller/`: OpenCode SDK wrapper CLI (`lilac-opencode`), builds to `dist/`
+- `apps/opencode-controller/`: ACP harness controller CLI (`lilac-acp`), builds to `dist/`
 - `packages/event-bus/`: typed event spec + Redis Streams transport
 - `packages/agent/`: AI SDK streaming agent wrapper
 - `packages/utils/`: env/config parsing, model providers, prompt + skills utilities
@@ -30,10 +30,10 @@ This monorepo uses Bun workspaces. Install dependencies in the workspace(s) you 
 ## Build / Test / Typecheck
 
 - Build the `tools` CLI: `cd apps/tool-bridge && bun run build`
-- Build the `lilac-opencode` CLI: `cd apps/opencode-controller && bun run build`
+- Build the `lilac-acp` CLI: `cd apps/opencode-controller && bun run build`
 - Run all tests (workspace harness): `bun test`
 - Run workspace tests: `cd apps/core && bun test`
-- Typecheck `lilac-opencode`: `cd apps/opencode-controller && bun run typecheck`
+- Typecheck `lilac-acp`: `cd apps/opencode-controller && bun run typecheck`
 - Typecheck (per workspace): `cd <workspace> && bunx tsc -p tsconfig.json --noEmit`
 - Lint workspaces: `bun run lint`
 - Lint and auto-fix where possible: `bun run lint:fix`
