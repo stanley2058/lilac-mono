@@ -278,7 +278,7 @@ describe("heartbeat overlays", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },
@@ -303,7 +303,7 @@ describe("heartbeat overlays", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
           softQuietHours: {

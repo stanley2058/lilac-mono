@@ -371,6 +371,10 @@ const pluginsSchema = z
   });
 
 const hhmmSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u, "expected HH:MM");
+const cronExpr5Schema = z
+  .string()
+  .trim()
+  .refine((s) => s.split(/\s+/g).filter(Boolean).length === 5, "cron expr must be 5 fields");
 const heartbeatOutputSessionSchema = z
   .string()
   .trim()
@@ -379,7 +383,8 @@ const heartbeatOutputSessionSchema = z
 const heartbeatSchema = z
   .object({
     enabled: z.boolean().default(false),
-    every: z.string().trim().min(2).default("30m"),
+    cron: cronExpr5Schema.default("*/30 * * * *"),
+    every: z.unknown().optional(),
     quietAfterActivityMs: z
       .number()
       .int()
@@ -399,11 +404,30 @@ const heartbeatSchema = z
       })
       .optional(),
   })
+  .superRefine((value, ctx) => {
+    if (value.every !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["every"],
+        message: "surface.heartbeat.every has been removed; use surface.heartbeat.cron",
+      });
+    }
+  })
+  .transform((value) => ({
+    enabled: value.enabled,
+    cron: value.cron,
+    quietAfterActivityMs: value.quietAfterActivityMs,
+    retryBusyMs: value.retryBusyMs,
+    defaultOutputSession: value.defaultOutputSession,
+    softQuietHours: value.softQuietHours,
+  }))
   .default({
     enabled: false,
-    every: "30m",
+    cron: "*/30 * * * *",
     quietAfterActivityMs: 5 * 60 * 1000,
     retryBusyMs: 60 * 1000,
+    defaultOutputSession: undefined,
+    softQuietHours: undefined,
   });
 export const coreConfigSchema = z.object({
   tools: toolsSchema,
@@ -440,9 +464,11 @@ export const coreConfigSchema = z.object({
       },
       heartbeat: {
         enabled: false,
-        every: "30m",
+        cron: "*/30 * * * *",
         quietAfterActivityMs: 5 * 60 * 1000,
         retryBusyMs: 60 * 1000,
+        defaultOutputSession: undefined,
+        softQuietHours: undefined,
       },
     }),
 

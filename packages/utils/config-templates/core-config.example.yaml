@@ -106,8 +106,8 @@ surface:
     # Optional default output destination for proactive heartbeat messages.
     # Format: <client>/<sessionIdOrAlias>, for example: discord/ops
     # defaultOutputSession: "discord/ops"
-    # How often heartbeat gets a chance to think.
-    every: "30m"
+    # When heartbeat gets a chance to think (5-field minute-precision cron).
+    cron: "*/30 * * * *"
     # Suppress heartbeat for this long after any non-heartbeat request activity.
     quietAfterActivityMs: 300000
     # Retry suppressed wakes after this delay.

@@ -70,7 +70,7 @@ Add global config under `surface.heartbeat`:
 surface:
   heartbeat:
     enabled: true
-    every: "30m"
+    cron: "*/30 * * * *"
     quietAfterActivityMs: 300000   # 5 minutes
     retryBusyMs: 60000
     softQuietHours:
@@ -290,7 +290,7 @@ Extend the `Surface` tool wiring to accept `transcriptStore` so tool-sent messag
 
 ## Test cases and scenarios
 
-- heartbeat wakes every `every` interval when no external session is active or recently active
+- heartbeat wakes on the configured `cron` schedule when no external session is active or recently active
 - heartbeat is suppressed while any non-heartbeat request is running
 - heartbeat is suppressed for `quietAfterActivityMs` after the last external activity
 - suppressed wakes retry after `retryBusyMs`

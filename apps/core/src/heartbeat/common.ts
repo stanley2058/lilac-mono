@@ -40,36 +40,6 @@ export function resolveHeartbeatModelOverride(cfg: {
   return undefined;
 }
 
-export function parseHeartbeatDurationMs(spec: string): number {
-  const trimmed = spec.trim();
-  const match = /^(\d+)(ms|s|m|h|d)$/u.exec(trimmed);
-  if (!match) {
-    throw new Error(`Invalid heartbeat duration '${spec}'. Use forms like 30m, 5s, or 1h.`);
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2];
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(`Invalid heartbeat duration '${spec}'. Amount must be > 0.`);
-  }
-
-  switch (unit) {
-    case "ms":
-      return amount;
-    case "s":
-      return amount * 1000;
-    case "m":
-      return amount * 60 * 1000;
-    case "h":
-      return amount * 60 * 60 * 1000;
-    case "d":
-      return amount * 24 * 60 * 60 * 1000;
-    default: {
-      throw new Error(`Unsupported heartbeat duration unit '${unit}'`);
-    }
-  }
-}
-
 export function getHeartbeatQuietState(params: {
   nowMs: number;
   quietHours?: CoreConfig["surface"]["heartbeat"]["softQuietHours"];

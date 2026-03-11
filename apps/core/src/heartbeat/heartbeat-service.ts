@@ -11,9 +11,9 @@ import {
   HEARTBEAT_SESSION_ID,
   type HeartbeatWakeReason,
   isHeartbeatSessionId,
-  parseHeartbeatDurationMs,
   resolveHeartbeatModelOverride,
 } from "./common";
+import { computeNextCronAtMs } from "../workflow/cron";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -22,11 +22,11 @@ function consumerId(prefix: string): string {
 type TimerHandle = ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>;
 
 type HeartbeatTimers = {
-  setInterval(fn: () => void, ms: number): TimerHandle;
-  clearInterval(handle: TimerHandle): void;
   setTimeout(fn: () => void, ms: number): TimerHandle;
   clearTimeout(handle: TimerHandle): void;
 };
+
+const DEFAULT_HEARTBEAT_CRON = "*/30 * * * *";
 
 export async function startHeartbeatService(params: {
   bus: LilacBus;
@@ -44,8 +44,6 @@ export async function startHeartbeatService(params: {
   const logger = createLogger({ module: "heartbeat-service" });
   const now = params.now ?? (() => Date.now());
   const timers: HeartbeatTimers = params.timers ?? {
-    setInterval: (fn, ms) => setInterval(fn, ms),
-    clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   };
@@ -58,9 +56,9 @@ export async function startHeartbeatService(params: {
   const outstandingHeartbeatRequestIds = new Set<string>();
   let lastExternalActivityAt = params.initialExternalState?.lastExternalActivityAt ?? 0;
   let lastActivityAt = params.initialExternalState?.lastActivityAt ?? lastExternalActivityAt;
-  let intervalHandle: TimerHandle | null = null;
+  let scheduledWakeHandle: TimerHandle | null = null;
   let retryHandle: TimerHandle | null = null;
-  let currentIntervalMs: number | null = null;
+  let scheduledWakeAtMs: number | null = null;
   let stopped = false;
   let activeTick: Promise<void> | null = null;
 
@@ -96,30 +94,46 @@ export async function startHeartbeatService(params: {
     retryHandle = null;
   }
 
-  function resolveIntervalMs(): number {
+  function resolveNextScheduledWakeAtMs(baseNowMs: number): number {
+    const currentMs = Math.min(Number.MAX_SAFE_INTEGER, baseNowMs + 1);
+
     try {
-      return parseHeartbeatDurationMs(cfg.surface.heartbeat.every);
+      return computeNextCronAtMs({ expr: cfg.surface.heartbeat.cron }, currentMs);
     } catch (error) {
-      logger.warn("invalid heartbeat cadence; falling back to 30m", {
-        every: cfg.surface.heartbeat.every,
+      logger.warn("invalid heartbeat cron; falling back to */30 * * * *", {
+        cron: cfg.surface.heartbeat.cron,
         error: error instanceof Error ? error.message : String(error),
       });
-      return 30 * 60 * 1000;
+      return computeNextCronAtMs({ expr: DEFAULT_HEARTBEAT_CRON }, currentMs);
     }
   }
 
-  function ensureIntervalTimer(): void {
-    const intervalMs = resolveIntervalMs();
-    if (intervalHandle && currentIntervalMs === intervalMs) return;
+  function clearScheduledWakeTimer(): void {
+    if (!scheduledWakeHandle) return;
+    timers.clearTimeout(scheduledWakeHandle);
+    scheduledWakeHandle = null;
+    scheduledWakeAtMs = null;
+  }
 
-    if (intervalHandle) {
-      timers.clearInterval(intervalHandle);
+  function ensureScheduledWake(baseNowMs: number): void {
+    const nextWakeAtMs = resolveNextScheduledWakeAtMs(baseNowMs);
+    if (scheduledWakeHandle && scheduledWakeAtMs === nextWakeAtMs) return;
+
+    if (scheduledWakeHandle) {
+      timers.clearTimeout(scheduledWakeHandle);
     }
 
-    currentIntervalMs = intervalMs;
-    intervalHandle = timers.setInterval(() => {
-      void tick("interval");
-    }, intervalMs);
+    scheduledWakeAtMs = nextWakeAtMs;
+    scheduledWakeHandle = timers.setTimeout(
+      () => {
+        const callbackNowMs = now();
+        scheduledWakeHandle = null;
+        scheduledWakeAtMs = null;
+        ensureScheduledWake(callbackNowMs);
+        void tick("interval");
+      },
+      Math.max(0, nextWakeAtMs - baseNowMs),
+    );
   }
 
   function scheduleRetry(): void {
@@ -181,7 +195,7 @@ export async function startHeartbeatService(params: {
       await reloadCoreConfigIfNeeded();
       if (stopped) return;
 
-      ensureIntervalTimer();
+      ensureScheduledWake(now());
 
       const heartbeat = cfg.surface.heartbeat;
       if (!heartbeat.enabled) {
@@ -294,7 +308,7 @@ export async function startHeartbeatService(params: {
     },
   );
 
-  ensureIntervalTimer();
+  ensureScheduledWake(now());
 
   return {
     tick,
@@ -303,10 +317,7 @@ export async function startHeartbeatService(params: {
       stopped = true;
 
       clearRetryTimer();
-      if (intervalHandle) {
-        timers.clearInterval(intervalHandle);
-        intervalHandle = null;
-      }
+      clearScheduledWakeTimer();
 
       await lifecycleSub.stop();
       await activeTick;

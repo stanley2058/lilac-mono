@@ -92,7 +92,13 @@ function createFakeTimers() {
       },
       setTimeout(fn: () => void, ms: number) {
         const id = nextId++;
-        timeouts.set(id, { ms, fn });
+        timeouts.set(id, {
+          ms,
+          fn: () => {
+            timeouts.delete(id);
+            fn();
+          },
+        });
         return id as unknown as ReturnType<typeof setTimeout>;
       },
       clearTimeout(handle: ReturnType<typeof setTimeout>) {
@@ -100,6 +106,10 @@ function createFakeTimers() {
       },
     },
   };
+}
+
+function listTimeoutsMs(fakeTimers: ReturnType<typeof createFakeTimers>): number[] {
+  return [...fakeTimers.timeouts.values()].map((entry) => entry.ms).sort((a, b) => a - b);
 }
 
 function createHeartbeatConfig(input?: {
@@ -116,10 +126,10 @@ function createHeartbeatConfig(input?: {
       },
       heartbeat: {
         enabled: true,
+        cron: "*/30 * * * *",
         ...(input?.defaultOutputSession
           ? { defaultOutputSession: input.defaultOutputSession }
           : {}),
-        every: "30m",
         quietAfterActivityMs: 300000,
         retryBusyMs: 60000,
       },
@@ -139,6 +149,22 @@ describe("heartbeat service", () => {
     });
 
     expect(quietState.label).toBe("outside");
+  });
+
+  it("schedules the next heartbeat wake from the cron expression", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const fakeTimers = createFakeTimers();
+    const service = await startHeartbeatService({
+      bus,
+      subscriptionId: "hb-test",
+      config: createHeartbeatConfig(),
+      now: () => Date.UTC(2026, 2, 11, 10, 5, 0),
+      timers: fakeTimers.timers,
+    });
+
+    expect(listTimeoutsMs(fakeTimers)).toEqual([25 * 60 * 1000]);
+
+    await service.stop();
   });
 
   it("publishes an internal heartbeat request when idle", async () => {
@@ -165,7 +191,7 @@ describe("heartbeat service", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },
@@ -228,7 +254,7 @@ describe("heartbeat service", () => {
         heartbeat: {
           enabled: true,
           defaultOutputSession: "discord/ops",
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },
@@ -408,7 +434,7 @@ describe("heartbeat service", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },
@@ -438,7 +464,7 @@ describe("heartbeat service", () => {
     await service.tick("interval");
 
     expect(requests).toHaveLength(0);
-    expect([...fakeTimers.timeouts.values()].map((entry) => entry.ms)).toEqual([60000]);
+    expect(listTimeoutsMs(fakeTimers)).toEqual([60000, 30 * 60 * 1000]);
 
     await bus.publish(
       lilacEventTypes.EvtRequestLifecycleChanged,
@@ -453,7 +479,7 @@ describe("heartbeat service", () => {
     );
 
     nowMs += 300001;
-    const retry = [...fakeTimers.timeouts.values()][0];
+    const retry = [...fakeTimers.timeouts.values()].find((entry) => entry.ms === 60000);
     retry?.fn();
     await Promise.resolve();
 
@@ -493,7 +519,7 @@ describe("heartbeat service", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },
@@ -514,7 +540,7 @@ describe("heartbeat service", () => {
     await service.tick("interval");
 
     expect(requests).toHaveLength(0);
-    expect([...fakeTimers.timeouts.values()].map((entry) => entry.ms)).toEqual([60000]);
+    expect(listTimeoutsMs(fakeTimers)).toEqual([60000, 30 * 60 * 1000]);
 
     await bus.publish(
       lilacEventTypes.EvtRequestLifecycleChanged,
@@ -529,7 +555,7 @@ describe("heartbeat service", () => {
     );
 
     nowMs += 300001;
-    const retry = [...fakeTimers.timeouts.values()][0];
+    const retry = [...fakeTimers.timeouts.values()].find((entry) => entry.ms === 60000);
     retry?.fn();
     await Promise.resolve();
 
@@ -565,7 +591,7 @@ describe("heartbeat service", () => {
       surface: {
         heartbeat: {
           enabled: true,
-          every: "30m",
+          cron: "*/30 * * * *",
           quietAfterActivityMs: 300000,
           retryBusyMs: 60000,
         },

@@ -336,9 +336,11 @@ export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig
       ...config.surface,
       heartbeat: config.surface.heartbeat ?? {
         enabled: false,
-        every: "30m",
+        cron: "*/30 * * * *",
         quietAfterActivityMs: 5 * 60 * 1000,
         retryBusyMs: 60 * 1000,
+        defaultOutputSession: undefined,
+        softQuietHours: undefined,
       },
     },
     tools: config.tools ?? {
