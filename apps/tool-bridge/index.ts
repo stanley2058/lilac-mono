@@ -1,15 +1,17 @@
 import { createLogger, env } from "@stanley2058/lilac-utils";
-import { createDefaultToolServerTools, createToolServer } from "@stanley2058/lilac-core";
+import { createCoreToolPluginManager, createToolServer } from "@stanley2058/lilac-core";
 
 const logger = createLogger({
   module: "tool-bridge",
 });
 
+const pluginManager = createCoreToolPluginManager({
+  runtime: {},
+  dataDir: env.dataDir,
+});
+
 const server = createToolServer({
-  // In dev mode, run without a bus by default.
-  // Bus-backed tools (workflow/attachment) are enabled when the caller injects a bus.
-  // Surface-backed tools require a live adapter + config, which tool-bridge does not create.
-  tools: createDefaultToolServerTools(),
+  pluginManager,
   logger,
 });
 

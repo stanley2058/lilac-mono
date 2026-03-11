@@ -45,12 +45,8 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { applyPatchTool } from "../../tools/apply-patch";
-import { bashToolWithCwd } from "../../tools/bash";
-import { batchTool } from "../../tools/batch";
-import { fsTool } from "../../tools/fs/fs";
-import { subagentTools } from "../../tools/subagent";
-import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
+import type { CoreToolPluginManager } from "../../plugins";
+import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
@@ -1173,6 +1169,7 @@ export async function startBusAgentRunner(params: {
   bus: LilacBus;
   subscriptionId: string;
   config?: CoreConfig;
+  pluginManager: CoreToolPluginManager;
   /** Where core tools operate (fs tool root). */
   cwd?: string;
   transcriptStore?: TranscriptStore;
@@ -1992,59 +1989,42 @@ export async function startBusAgentRunner(params: {
         queuedForSession: state.queue.length,
       });
 
-      const tools: ToolSet = {} as ToolSet;
-      if (runProfile === "explore") {
-        Object.assign(tools, fsTool(cwd));
-      } else {
-        Object.assign(
-          tools,
-          bashToolWithCwd(cwd),
-          fsTool(cwd, {
-            includeEditFile: editingToolMode === "edit_file",
-          }),
-        );
-        if (editingToolMode === "apply_patch") {
-          Object.assign(tools, applyPatchTool({ cwd }));
-        }
-
-        if (subagents.enabled && subagentMeta.depth < subagents.maxDepth) {
-          Object.assign(
-            tools,
-            subagentTools({
-              bus,
-              defaultTimeoutMs: subagents.defaultTimeoutMs,
-              maxTimeoutMs: subagents.maxTimeoutMs,
-              maxDepth: subagents.maxDepth,
-            }),
-          );
-        }
-      }
-
-      Object.assign(
-        tools,
-        batchTool({
-          defaultCwd: cwd,
-          getTools: () => tools,
-          editingMode: runProfile === "explore" ? "none" : editingToolMode,
-          reportToolStatus: (update) => {
-            bus
-              .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
-                headers,
-              })
-              .catch((e: unknown) => {
-                logger.error(
-                  "failed to publish batch tool status",
-                  {
-                    requestId: headers.request_id,
-                    sessionId: headers.session_id,
-                    toolCallId: update.toolCallId,
-                  },
-                  e,
-                );
-              });
-          },
-        }),
-      );
+      const { tools, specs: level1ToolSpecs } = await params.pluginManager.buildLevel1Toolset({
+        cwd,
+        runProfile,
+        editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
+        subagentDepth: subagentMeta.depth,
+        subagentConfig: {
+          enabled: subagents.enabled,
+          defaultTimeoutMs: subagents.defaultTimeoutMs,
+          maxTimeoutMs: subagents.maxTimeoutMs,
+          maxDepth: subagents.maxDepth,
+        },
+        requestContext: {
+          requestId: next.requestId,
+          sessionId: next.sessionId,
+          requestClient: next.requestClient,
+          subagentDepth: subagentMeta.depth,
+          subagentProfile: runProfile,
+        },
+        reportToolStatus: (update) => {
+          bus
+            .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
+              headers,
+            })
+            .catch((e: unknown) => {
+              logger.error(
+                "failed to publish batch tool status",
+                {
+                  requestId: headers.request_id,
+                  sessionId: headers.session_id,
+                  toolCallId: update.toolCallId,
+                },
+                e,
+              );
+            });
+        },
+      });
 
       const agent = new AiSdkPiAgent<ToolSet>({
         system: agentSystem,
@@ -2379,7 +2359,7 @@ export async function startBusAgentRunner(params: {
               {
                 toolCallId: event.toolCallId,
                 status: "start",
-                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
+                display: `${event.toolName}${formatToolArgsForDisplayWithSpecs(event.toolName, event.args, level1ToolSpecs)}`,
               },
               { headers },
             )
@@ -2404,6 +2384,7 @@ export async function startBusAgentRunner(params: {
             toolName: event.toolName,
             isError: event.isError,
             result: event.result,
+            toolSpecs: level1ToolSpecs,
           });
 
           const ok =
@@ -2482,7 +2463,7 @@ export async function startBusAgentRunner(params: {
               {
                 toolCallId: event.toolCallId,
                 status: "end",
-                display: `${event.toolName}${formatToolArgsForDisplay(event.toolName, event.args)}`,
+                display: `${event.toolName}${formatToolArgsForDisplayWithSpecs(event.toolName, event.args, level1ToolSpecs)}`,
                 ok,
                 error: ok
                   ? undefined

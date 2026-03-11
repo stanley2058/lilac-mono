@@ -5,6 +5,10 @@ tools:
     search:
       provider: tavily
 
+plugins:
+  disabled: []
+  config: {}
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:

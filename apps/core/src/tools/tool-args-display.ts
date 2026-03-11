@@ -1,5 +1,6 @@
 import { asSchema } from "ai";
 import { z } from "zod";
+import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import { formatRemoteDisplayPath, parseSshCwdTarget } from "../ssh/ssh-cwd";
 import { bashInputSchema } from "./bash";
@@ -103,7 +104,7 @@ function parseApplyPatchPathsFromPatchText(patchText: string): string[] {
   return out;
 }
 
-type ToolArgsFormatter = (args: unknown) => string;
+export type ToolArgsFormatter = (args: unknown) => string;
 
 const DISPLAY_MAX_LEN = 30;
 const PATH_HEAD_LEN = 14;
@@ -144,7 +145,7 @@ const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
 };
 
-const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
+export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
   bash: (args) => {
     const parsed = safeValidateSync<{ command: string; cwd?: string }>(bashInputSchema, args);
     if (!parsed) return "";
@@ -238,7 +239,29 @@ const TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatter> = {
 };
 
 export function formatToolArgsForDisplay(toolName: string, args: unknown): string {
-  const f = TOOL_ARGS_FORMATTERS[toolName];
+  const f = BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS[toolName];
+  try {
+    return f ? f(args) : "";
+  } catch {
+    return "";
+  }
+}
+
+export function formatToolArgsForDisplayWithSpecs(
+  toolName: string,
+  args: unknown,
+  toolSpecs?: ReadonlyMap<string, Level1ToolSpec<unknown>>,
+): string {
+  const spec = toolSpecs?.get(toolName);
+  if (spec?.formatArgs) {
+    try {
+      return spec.formatArgs(args);
+    } catch {
+      return "";
+    }
+  }
+
+  const f = BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS[toolName];
   if (!f) return "";
   try {
     return f(args);

@@ -34,11 +34,11 @@ import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
 import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
 import { createToolServer } from "../tool-server/create-tool-server";
-import { createDefaultToolServerTools } from "../tool-server/default-tools";
 import {
   createRequestMessageCache,
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
+import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plugins";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
 export type CoreRuntime = {
@@ -142,6 +142,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
   let requestMessageCache: RequestMessageCache | null = null;
   let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
+  let pluginManager: CoreToolPluginManager | null = null;
   let runtimeFullyStarted = false;
   let coreConfigWatcher: FSWatcher | null = null;
   let coreConfigValidationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -364,14 +365,19 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         subscriptionId: subId(subscriptionPrefix, "tool-request-cache"),
       });
 
-      toolServer = createToolServer({
-        tools: createDefaultToolServerTools({
+      pluginManager = createCoreToolPluginManager({
+        runtime: {
           bus,
           adapter,
           getConfig: () => getCoreConfig(),
           workflowStore,
           discordSearch: discordSearchService ?? undefined,
-        }),
+        },
+        dataDir: env.dataDir,
+      });
+
+      toolServer = createToolServer({
+        pluginManager,
         logger: createLogger({
           module: "tool-server",
         }),
@@ -435,6 +441,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopAgentRunner = await startBusAgentRunner({
         bus,
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
+        pluginManager,
         cwd,
         transcriptStore: transcriptStore ?? undefined,
       });
