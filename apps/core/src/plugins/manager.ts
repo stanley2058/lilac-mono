@@ -29,7 +29,7 @@ export type BuildLevel1ToolsetParams = {
   requestContext?: Level1ExecutionRequestContext;
   reportToolStatus?: (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;

@@ -78,7 +78,7 @@ export type Level1ToolBuildContext<TRuntimeContext> = Level1ToolRunContext<TRunt
   getLevel1ToolSpecs(): ReadonlyMap<string, Level1ToolSpec<TRuntimeContext>>;
   reportToolStatus?: (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;

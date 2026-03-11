@@ -57,8 +57,17 @@ describe("executeBash", () => {
       expect(lines[0]).toBe("__unset__");
       expect(lines[1]).toBe("1");
     } finally {
-      process.env.FORCE_COLOR = originalForceColor;
-      process.env.NO_COLOR = originalNoColor;
+      if (originalForceColor === undefined) {
+        delete process.env.FORCE_COLOR;
+      } else {
+        process.env.FORCE_COLOR = originalForceColor;
+      }
+
+      if (originalNoColor === undefined) {
+        delete process.env.NO_COLOR;
+      } else {
+        process.env.NO_COLOR = originalNoColor;
+      }
     }
   });
 
