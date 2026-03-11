@@ -102,6 +102,31 @@ function createFakeTimers() {
   };
 }
 
+function createHeartbeatConfig(input?: {
+  defaultOutputSession?: string;
+  sessionModes?: Record<string, { model?: string }>;
+}): CoreConfig {
+  return {
+    surface: {
+      router: {
+        defaultMode: "mention",
+        sessionModes: input?.sessionModes ?? {},
+        activeDebounceMs: 3000,
+        activeGate: { enabled: false, timeoutMs: 2500 },
+      },
+      heartbeat: {
+        enabled: true,
+        ...(input?.defaultOutputSession
+          ? { defaultOutputSession: input.defaultOutputSession }
+          : {}),
+        every: "30m",
+        quietAfterActivityMs: 300000,
+        retryBusyMs: 60000,
+      },
+    },
+  } as unknown as CoreConfig;
+}
+
 describe("heartbeat service", () => {
   it("falls back gracefully when quiet-hours timezone is invalid", () => {
     const quietState = getHeartbeatQuietState({
@@ -223,6 +248,135 @@ describe("heartbeat service", () => {
     expect(String(requests[0]?.data.messages[0]?.content)).toContain(
       "Default proactive output target: client=discord, session=ops.",
     );
+
+    await service.stop();
+    await sub.stop();
+  });
+
+  it("uses the canonical heartbeat session model override when configured", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const requests: Array<Message<CmdRequestMessageData>> = [];
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "hb-test-requests",
+        consumerId: "hb-test-requests",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage) {
+          requests.push(msg);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const service = await startHeartbeatService({
+      bus,
+      subscriptionId: "hb-test",
+      config: createHeartbeatConfig({
+        sessionModes: {
+          __heartbeat__: {
+            model: "sonnet",
+          },
+        },
+      }),
+      now: () => Date.UTC(2026, 2, 11, 10, 0, 0),
+    });
+
+    await service.tick("interval");
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data.modelOverride).toBe("sonnet");
+
+    await service.stop();
+    await sub.stop();
+  });
+
+  it("uses the heartbeat alias model override when canonical key is absent", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const requests: Array<Message<CmdRequestMessageData>> = [];
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "hb-test-requests",
+        consumerId: "hb-test-requests",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage) {
+          requests.push(msg);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const service = await startHeartbeatService({
+      bus,
+      subscriptionId: "hb-test",
+      config: createHeartbeatConfig({
+        sessionModes: {
+          heartbeat: {
+            model: "haiku",
+          },
+        },
+      }),
+      now: () => Date.UTC(2026, 2, 11, 10, 0, 0),
+    });
+
+    await service.tick("interval");
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data.modelOverride).toBe("haiku");
+
+    await service.stop();
+    await sub.stop();
+  });
+
+  it("prefers the canonical heartbeat key over the alias", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const requests: Array<Message<CmdRequestMessageData>> = [];
+
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "hb-test-requests",
+        consumerId: "hb-test-requests",
+        offset: { type: "begin" },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage) {
+          requests.push(msg);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const service = await startHeartbeatService({
+      bus,
+      subscriptionId: "hb-test",
+      config: createHeartbeatConfig({
+        sessionModes: {
+          __heartbeat__: {
+            model: "sonnet",
+          },
+          heartbeat: {
+            model: "haiku",
+          },
+        },
+      }),
+      now: () => Date.UTC(2026, 2, 11, 10, 0, 0),
+    });
+
+    await service.tick("interval");
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data.modelOverride).toBe("sonnet");
 
     await service.stop();
     await sub.stop();

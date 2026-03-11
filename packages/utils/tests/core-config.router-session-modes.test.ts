@@ -59,4 +59,24 @@ describe("coreConfigSchema surface.router.sessionModes", () => {
 
     expect(parsed.surface.router.sessionModes.chan?.model).toBe("sonnet");
   });
+
+  it("accepts canonical and alias heartbeat session keys", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        router: {
+          sessionModes: {
+            __heartbeat__: {
+              model: "sonnet",
+            },
+            heartbeat: {
+              model: "haiku",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.surface.router.sessionModes.__heartbeat__?.model).toBe("sonnet");
+    expect(parsed.surface.router.sessionModes.heartbeat?.model).toBe("haiku");
+  });
 });

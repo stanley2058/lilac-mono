@@ -4,6 +4,7 @@ import { resolveHeartbeatPromptPaths } from "@stanley2058/lilac-utils";
 
 export const HEARTBEAT_SESSION_ID = "__heartbeat__";
 export const HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK";
+const HEARTBEAT_SESSION_ALIAS = "heartbeat";
 
 export type HeartbeatWakeReason = "interval" | "retry";
 
@@ -20,6 +21,23 @@ export function isHeartbeatSessionId(sessionId: string): boolean {
 
 export function isHeartbeatAckText(finalText: string): boolean {
   return finalText.trim() === HEARTBEAT_OK_TOKEN;
+}
+
+export function resolveHeartbeatModelOverride(cfg: {
+  surface?: {
+    router?: {
+      sessionModes?: Record<string, { model?: string } | undefined>;
+    };
+  };
+}): string | undefined {
+  const sessionModes = cfg.surface?.router?.sessionModes;
+  const direct = sessionModes?.[HEARTBEAT_SESSION_ID]?.model?.trim();
+  if (direct) return direct;
+
+  const alias = sessionModes?.[HEARTBEAT_SESSION_ALIAS]?.model?.trim();
+  if (alias) return alias;
+
+  return undefined;
 }
 
 export function parseHeartbeatDurationMs(spec: string): number {

@@ -12,6 +12,7 @@ import {
   type HeartbeatWakeReason,
   isHeartbeatSessionId,
   parseHeartbeatDurationMs,
+  resolveHeartbeatModelOverride,
 } from "./common";
 
 function consumerId(prefix: string): string {
@@ -132,6 +133,7 @@ export async function startHeartbeatService(params: {
 
   async function publishHeartbeatRequest(reason: HeartbeatWakeReason): Promise<void> {
     const requestId = `heartbeat:${now()}`;
+    const modelOverride = resolveHeartbeatModelOverride(cfg);
     const messages = buildHeartbeatRequestMessages({
       reason,
       nowMs: now(),
@@ -145,6 +147,7 @@ export async function startHeartbeatService(params: {
       runPolicy: "idle_only_global",
       origin: { kind: "heartbeat", reason },
       messages,
+      ...(modelOverride ? { modelOverride } : {}),
     };
 
     outstandingHeartbeatRequestIds.add(requestId);

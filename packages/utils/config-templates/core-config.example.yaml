@@ -18,6 +18,8 @@ surface:
     defaultMode: mention
 
     # Per-session routing mode overrides. Key is the session/channel id.
+    # Reserved internal keys: "__heartbeat__" (canonical) and "heartbeat" (alias)
+    # target the autonomous heartbeat lane.
     sessionModes: {}
     # sessionModes:
     #   "123456789012345678":
@@ -33,6 +35,10 @@ surface:
     #     # additionalPrompts:
     #     #   - "Keep replies concise for this session."
     #     #   - "file:///abs/path/to/session-memo.md"
+    #   "__heartbeat__":
+    #     # Optional: override the internal heartbeat lane model.
+    #     # The convenience alias "heartbeat" is also accepted.
+    #     model: "sonnet"
 
     # Debounce window (ms) for active mode initial prompt batching.
     activeDebounceMs: 3000
@@ -94,6 +100,9 @@ surface:
   heartbeat:
     # Enable the internal autonomous heartbeat lane.
     enabled: false
+    # Optional heartbeat model override lives under:
+    # surface.router.sessionModes."__heartbeat__".model
+    # The alias key "heartbeat" is also accepted.
     # Optional default output destination for proactive heartbeat messages.
     # Format: <client>/<sessionIdOrAlias>, for example: discord/ops
     # defaultOutputSession: "discord/ops"
