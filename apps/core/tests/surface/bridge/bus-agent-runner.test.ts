@@ -85,9 +85,12 @@ function createInMemoryRawBus(): RawBus {
       };
       subs.add(entry);
 
-      if (opts.offset?.type === "begin") {
+      const offset = opts.offset;
+      if (offset?.type === "begin" || offset?.type === "cursor") {
         const existing = topics.get(topic) ?? [];
-        for (const m of existing) {
+        const replay =
+          offset.type === "cursor" ? existing.filter((m) => m.id > offset.cursor) : existing;
+        for (const m of replay) {
           await handler(m as unknown as Message<TData>, {
             cursor: m.id,
             commit: async () => {},
@@ -834,5 +837,127 @@ describe("createDeferredSubagentManager", () => {
     });
 
     await manager.stop();
+  });
+
+  it("does not duplicate restored child text when replay settles before response text", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const parentHeaders = {
+      request_id: "parent-request",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      task: "Map auth flow",
+      timeoutMs: 5_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-1",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-request",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-1",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    await waitFor(() => manager.buildRecoveryState()?.outstanding[0]?.finalText === "ab");
+
+    const recovery = manager.buildRecoveryState();
+    expect(recovery?.outstanding[0]?.finalText).toBe("ab");
+    await manager.stop();
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    const restored = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+    await restored.restore(recovery);
+
+    await waitFor(() => restored.hasBufferedCompletions());
+
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    const injected = await restored.injectBuffered(agent);
+    expect(injected).toBe(true);
+
+    const toolMessage = agent.state.messages[2];
+    expect(toolMessage?.role).toBe("tool");
+    if (toolMessage?.role !== "tool") throw new Error("expected tool message");
+    const toolResult = toolMessage.content[0];
+    expect(toolResult?.type).toBe("tool-result");
+    if (toolResult?.type !== "tool-result") throw new Error("expected tool result");
+    expect(toolResult.output).toEqual({
+      type: "json",
+      value: {
+        ok: true,
+        status: "resolved",
+        profile: "explore",
+        childRequestId: "child-request",
+        childSessionId: "child-session",
+        durationMs: expect.any(Number),
+        finalText: "ab",
+      },
+    });
+
+    await restored.stop();
   });
 });

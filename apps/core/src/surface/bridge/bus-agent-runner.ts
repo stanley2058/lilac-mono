@@ -566,6 +566,8 @@ type DeferredSubagentHandleSnapshot = {
   detail?: string;
   childUpdateSeq: number;
   childTools: ChildToolState[];
+  outCursor?: string;
+  evtCursor?: string;
 };
 
 type DeferredSubagentRecoveryState = {
@@ -584,6 +586,8 @@ type DeferredSubagentHandle = {
   detail?: string;
   childUpdateSeq: number;
   childTools: Map<string, ChildToolState>;
+  outCursor?: string;
+  evtCursor?: string;
   outSub: { stop(): Promise<void> } | null;
   evtSub: { stop(): Promise<void> } | null;
   timeout: ReturnType<typeof setTimeout> | null;
@@ -686,6 +690,8 @@ function buildDeferredSubagentRecoveryState(params: {
     ...(handle.detail ? { detail: handle.detail } : {}),
     childUpdateSeq: handle.childUpdateSeq,
     childTools: Array.from(handle.childTools.values()),
+    ...(handle.outCursor ? { outCursor: handle.outCursor } : {}),
+    ...(handle.evtCursor ? { evtCursor: handle.evtCursor } : {}),
   }));
 
   if (outstanding.length === 0 && params.bufferedCompletions.length === 0) {
@@ -839,6 +845,8 @@ export function createDeferredSubagentManager(params: {
       detail: snapshot.detail,
       childUpdateSeq: snapshot.childUpdateSeq,
       childTools: new Map(snapshot.childTools.map((child) => [child.toolCallId, child])),
+      outCursor: snapshot.outCursor,
+      evtCursor: snapshot.evtCursor,
       outSub: null,
       evtSub: null,
       timeout: null,
@@ -850,13 +858,21 @@ export function createDeferredSubagentManager(params: {
     const subId = `${handle.childRequestId}:${Math.random().toString(16).slice(2)}`;
     handle.outSub = await bus.subscribeTopic(
       outReqTopic(handle.childRequestId),
-      {
-        mode: "fanout",
-        subscriptionId: `deferred-subagent:out:${subId}`,
-        consumerId: `deferred-subagent:out:${subId}`,
-        offset: { type: options?.replayExisting ? "begin" : "now" },
-        batch: { maxWaitMs: 250 },
-      },
+      options?.replayExisting
+        ? {
+            mode: "tail",
+            offset: handle.outCursor
+              ? { type: "cursor", cursor: handle.outCursor }
+              : { type: "begin" },
+            batch: { maxWaitMs: 250 },
+          }
+        : {
+            mode: "fanout",
+            subscriptionId: `deferred-subagent:out:${subId}`,
+            consumerId: `deferred-subagent:out:${subId}`,
+            offset: { type: "now" },
+            batch: { maxWaitMs: 250 },
+          },
       async (msg, subCtx) => {
         if (msg.headers?.request_id !== handle.childRequestId) {
           await subCtx.commit();
@@ -903,19 +919,29 @@ export function createDeferredSubagentManager(params: {
           handle.finalText = msg.data.finalText;
         }
 
+        handle.outCursor = subCtx.cursor;
+
         await subCtx.commit();
       },
     );
 
     handle.evtSub = await bus.subscribeTopic(
       "evt.request",
-      {
-        mode: "fanout",
-        subscriptionId: `deferred-subagent:evt:${subId}`,
-        consumerId: `deferred-subagent:evt:${subId}`,
-        offset: { type: options?.replayExisting ? "begin" : "now" },
-        batch: { maxWaitMs: 250 },
-      },
+      options?.replayExisting
+        ? {
+            mode: "tail",
+            offset: handle.evtCursor
+              ? { type: "cursor", cursor: handle.evtCursor }
+              : { type: "begin" },
+            batch: { maxWaitMs: 250 },
+          }
+        : {
+            mode: "fanout",
+            subscriptionId: `deferred-subagent:evt:${subId}`,
+            consumerId: `deferred-subagent:evt:${subId}`,
+            offset: { type: "now" },
+            batch: { maxWaitMs: 250 },
+          },
       async (msg, subCtx) => {
         if (msg.headers?.request_id !== handle.childRequestId) {
           await subCtx.commit();
@@ -934,6 +960,8 @@ export function createDeferredSubagentManager(params: {
             await settleHandle(handle, "resolved", msg.data.detail);
           }
         }
+
+        handle.evtCursor = subCtx.cursor;
 
         await subCtx.commit();
       },
