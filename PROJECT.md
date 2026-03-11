@@ -37,10 +37,10 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Tool server (no bus, no surface adapter by default): `apps/tool-bridge/index.ts`.
   - Build script: `apps/tool-bridge/build.ts` (produces `dist/index.js`, used as the `tools` binary).
 
-- `apps/opencode-controller/`
-  - OpenCode SDK wrapper CLI (`lilac-opencode`), designed for local and automation/ssh workflows.
-  - Entry/client: `apps/opencode-controller/client.ts`.
-  - Build script: `apps/opencode-controller/build.ts` (produces `dist/index.js`).
+- `apps/acp-controller/`
+  - ACP harness controller CLI (`lilac-acp`), designed for local and automation/ssh workflows.
+  - Entry/client: `apps/acp-controller/client.ts`.
+  - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js` and the deprecated `lilac-opencode` alias).
 
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.
@@ -414,7 +414,7 @@ Shutdown happens in reverse (best-effort).
   - `cd apps/tool-bridge && bun run build`
 
 - Build `lilac-opencode` CLI:
-  - `cd apps/opencode-controller && bun run build`
+  - `cd apps/acp-controller && bun run build`
 
 - Run tests:
   - Root harness: `bun test`

@@ -1,7 +1,7 @@
 # Unified ACP Harness Controller
 
 ## Summary
-- Repurpose [apps/opencode-controller](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/opencode-controller) into a harness-agnostic ACP controller and make ACP the only transport.
+- Repurpose [apps/acp-controller](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/acp-controller) into a harness-agnostic ACP controller and make ACP the only transport.
 - New primary CLI: `lilac-acp`. Keep `lilac-opencode` as a temporary compatibility alias that forwards to `lilac-acp --harness opencode`.
 - Core goal: one controller surface for OpenCode first, with built-in discovery for other ACP harnesses such as Codex/Cursor/Claude wrappers as their launch contracts are verified from the ACP Registry.
 - Preserve the current detached async contract by spawning a per-run background worker, not by polling a vendor SDK server.
@@ -72,7 +72,7 @@
 - OpenCode is the first fully verified harness; Codex/Cursor/Claude launch paths use ACP Registry-backed built-ins and are enabled only where the descriptor is validated on the current OS.
 
 ## Sources
-- Current controller: [apps/opencode-controller/client.ts](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/opencode-controller/client.ts), [apps/opencode-controller/README.md](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/opencode-controller/README.md)
+- Current controller: [apps/acp-controller/client.ts](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/acp-controller/client.ts), [apps/acp-controller/README.md](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/acp-controller/README.md)
 - ACP SDK/docs: https://agentclientprotocol.com/libraries/typescript , https://agentclientprotocol.github.io/typescript-sdk/classes/ClientSideConnection.html
 - ACP protocol: https://agentclientprotocol.com/protocol/session-setup , https://agentclientprotocol.com/protocol/prompt-turn , https://agentclientprotocol.com/protocol/tool-calls
 - ACP Registry: https://agentclientprotocol.com/get-started/registry , https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json
