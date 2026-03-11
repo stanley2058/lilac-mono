@@ -27,6 +27,7 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
+  outReqTopic,
   type AdapterPlatform,
   type LilacBus,
   type RequestLifecycleState,
@@ -49,7 +50,12 @@ import { applyPatchTool } from "../../tools/apply-patch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { batchTool } from "../../tools/batch";
 import { fsTool } from "../../tools/fs/fs";
-import { subagentTools } from "../../tools/subagent";
+import {
+  renderSubagentDisplay,
+  subagentTools,
+  type ChildToolState,
+  type DeferredSubagentRegistration,
+} from "../../tools/subagent";
 import { formatToolArgsForDisplay } from "../../tools/tool-args-display";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
@@ -523,6 +529,538 @@ function getSubagentOkFromResult(result: unknown): boolean | null {
   return typeof v === "boolean" ? v : null;
 }
 
+type DeferredSubagentTerminalStatus = "resolved" | "failed" | "cancelled" | "timeout";
+
+type DeferredSubagentBufferedCompletion = {
+  parentToolCallId: string;
+  profile: DeferredSubagentRegistration["profile"];
+  childRequestId: string;
+  childSessionId: string;
+  status: DeferredSubagentTerminalStatus;
+  ok: boolean;
+  timeoutMs: number;
+  durationMs: number;
+  finalText: string;
+  detail?: string;
+  childTools: ChildToolState[];
+};
+
+type DeferredSubagentHandleSnapshot = {
+  parentToolCallId: string;
+  profile: DeferredSubagentRegistration["profile"];
+  childRequestId: string;
+  childSessionId: string;
+  timeoutMs: number;
+  startedAtMs: number;
+  finalText: string;
+  detail?: string;
+  childUpdateSeq: number;
+  childTools: ChildToolState[];
+};
+
+type DeferredSubagentRecoveryState = {
+  outstanding: DeferredSubagentHandleSnapshot[];
+  bufferedCompletions: DeferredSubagentBufferedCompletion[];
+};
+
+type DeferredSubagentHandle = {
+  parentToolCallId: string;
+  profile: DeferredSubagentRegistration["profile"];
+  childRequestId: string;
+  childSessionId: string;
+  timeoutMs: number;
+  startedAtMs: number;
+  finalText: string;
+  detail?: string;
+  childUpdateSeq: number;
+  childTools: Map<string, ChildToolState>;
+  outSub: { stop(): Promise<void> } | null;
+  evtSub: { stop(): Promise<void> } | null;
+  timeout: ReturnType<typeof setTimeout> | null;
+  settled: boolean;
+};
+
+function isDeferredSubagentAcceptedResult(result: unknown): result is {
+  ok: true;
+  mode: "deferred";
+  status: "accepted";
+  childRequestId: string;
+  childSessionId: string;
+  timeoutMs: number;
+} {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  return (
+    (result as Record<string, unknown>)["ok"] === true &&
+    (result as Record<string, unknown>)["mode"] === "deferred" &&
+    (result as Record<string, unknown>)["status"] === "accepted" &&
+    typeof (result as Record<string, unknown>)["childRequestId"] === "string" &&
+    typeof (result as Record<string, unknown>)["childSessionId"] === "string"
+  );
+}
+
+function buildSubagentResultToolCallId(childRequestId: string): string {
+  return `subagent_result:${childRequestId}`;
+}
+
+function buildDeferredSubagentResultMessages(
+  completion: DeferredSubagentBufferedCompletion,
+): ModelMessage[] {
+  const toolCallId = buildSubagentResultToolCallId(completion.childRequestId);
+  const payload = {
+    ok: completion.ok,
+    status: completion.status,
+    profile: completion.profile,
+    childRequestId: completion.childRequestId,
+    childSessionId: completion.childSessionId,
+    durationMs: completion.durationMs,
+    finalText: completion.finalText,
+    ...(completion.detail ? { detail: completion.detail } : {}),
+  };
+
+  return [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId,
+          toolName: "subagent_result",
+          input: {
+            profile: completion.profile,
+            childRequestId: completion.childRequestId,
+            childSessionId: completion.childSessionId,
+            status: completion.status,
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId,
+          toolName: "subagent_result",
+          output: {
+            type: "json",
+            value: payload,
+          },
+        },
+      ],
+    },
+  ];
+}
+
+function buildDeferredSubagentDisplay(completion: {
+  profile: DeferredSubagentRegistration["profile"];
+  childTools: readonly ChildToolState[];
+}): string {
+  return renderSubagentDisplay({
+    profile: completion.profile,
+    children: new Map(completion.childTools.map((child) => [child.toolCallId, child])),
+  });
+}
+
+function buildDeferredSubagentRecoveryState(params: {
+  handles: Iterable<DeferredSubagentHandle>;
+  bufferedCompletions: readonly DeferredSubagentBufferedCompletion[];
+}): DeferredSubagentRecoveryState | undefined {
+  const outstanding = Array.from(params.handles, (handle) => ({
+    parentToolCallId: handle.parentToolCallId,
+    profile: handle.profile,
+    childRequestId: handle.childRequestId,
+    childSessionId: handle.childSessionId,
+    timeoutMs: handle.timeoutMs,
+    startedAtMs: handle.startedAtMs,
+    finalText: handle.finalText,
+    ...(handle.detail ? { detail: handle.detail } : {}),
+    childUpdateSeq: handle.childUpdateSeq,
+    childTools: Array.from(handle.childTools.values()),
+  }));
+
+  if (outstanding.length === 0 && params.bufferedCompletions.length === 0) {
+    return undefined;
+  }
+
+  return {
+    outstanding,
+    bufferedCompletions: [...params.bufferedCompletions],
+  };
+}
+
+export function createDeferredSubagentManager(params: {
+  bus: LilacBus;
+  logger: ReturnType<typeof createLogger>;
+  parentHeaders: {
+    request_id: string;
+    session_id: string;
+    request_client: AdapterPlatform;
+    router_session_mode?: "mention" | "active";
+  };
+}) {
+  const { bus, logger, parentHeaders } = params;
+  const handles = new Map<string, DeferredSubagentHandle>();
+  const bufferedCompletions: DeferredSubagentBufferedCompletion[] = [];
+  let waiters: Array<() => void> = [];
+
+  const notifyWaiters = () => {
+    const current = waiters;
+    waiters = [];
+    for (const waiter of current) waiter();
+  };
+
+  const waitForSignal = async () => {
+    await new Promise<void>((resolve) => {
+      waiters.push(resolve);
+    });
+  };
+
+  const publishStatus = async (update: {
+    toolCallId: string;
+    status: "update" | "end";
+    display: string;
+    ok?: boolean;
+    error?: string;
+  }) => {
+    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
+      headers: parentHeaders,
+    });
+  };
+
+  const stopHandle = async (handle: DeferredSubagentHandle) => {
+    if (handle.timeout) {
+      clearTimeout(handle.timeout);
+      handle.timeout = null;
+    }
+    await Promise.all([handle.outSub?.stop(), handle.evtSub?.stop()]);
+    handle.outSub = null;
+    handle.evtSub = null;
+  };
+
+  const cancelChild = async (handle: DeferredSubagentHandle, detail: string) => {
+    logger.warn("deferred subagent cancel requested", {
+      requestId: parentHeaders.request_id,
+      sessionId: parentHeaders.session_id,
+      parentToolCallId: handle.parentToolCallId,
+      childRequestId: handle.childRequestId,
+      detail,
+    });
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "interrupt",
+        messages: [],
+        raw: {
+          cancel: true,
+          requiresActive: true,
+          subagent: {
+            profile: handle.profile,
+            parentRequestId: parentHeaders.request_id,
+            parentToolCallId: handle.parentToolCallId,
+          },
+        },
+      },
+      {
+        headers: {
+          request_id: handle.childRequestId,
+          session_id: handle.childSessionId,
+          request_client: "unknown",
+        },
+      },
+    );
+  };
+
+  const settleHandle = async (
+    handle: DeferredSubagentHandle,
+    status: DeferredSubagentTerminalStatus,
+    detail?: string,
+  ) => {
+    if (handle.settled) return;
+    handle.settled = true;
+    handle.detail = detail ?? handle.detail;
+
+    const completion: DeferredSubagentBufferedCompletion = {
+      parentToolCallId: handle.parentToolCallId,
+      profile: handle.profile,
+      childRequestId: handle.childRequestId,
+      childSessionId: handle.childSessionId,
+      status,
+      ok: status === "resolved",
+      timeoutMs: handle.timeoutMs,
+      durationMs: Math.max(0, Date.now() - handle.startedAtMs),
+      finalText: handle.finalText,
+      ...(handle.detail ? { detail: handle.detail } : {}),
+      childTools: Array.from(handle.childTools.values()),
+    };
+
+    bufferedCompletions.push(completion);
+    handles.delete(handle.childRequestId);
+    await stopHandle(handle);
+    notifyWaiters();
+  };
+
+  const restoreOutstandingHandle = async (
+    snapshot: DeferredSubagentHandleSnapshot,
+    options?: { replayExisting?: boolean },
+  ) => {
+    const handle: DeferredSubagentHandle = {
+      parentToolCallId: snapshot.parentToolCallId,
+      profile: snapshot.profile,
+      childRequestId: snapshot.childRequestId,
+      childSessionId: snapshot.childSessionId,
+      timeoutMs: snapshot.timeoutMs,
+      startedAtMs: snapshot.startedAtMs,
+      finalText: snapshot.finalText,
+      detail: snapshot.detail,
+      childUpdateSeq: snapshot.childUpdateSeq,
+      childTools: new Map(snapshot.childTools.map((child) => [child.toolCallId, child])),
+      outSub: null,
+      evtSub: null,
+      timeout: null,
+      settled: false,
+    };
+
+    handles.set(handle.childRequestId, handle);
+
+    const subId = `${handle.childRequestId}:${Math.random().toString(16).slice(2)}`;
+    handle.outSub = await bus.subscribeTopic(
+      outReqTopic(handle.childRequestId),
+      {
+        mode: "fanout",
+        subscriptionId: `deferred-subagent:out:${subId}`,
+        consumerId: `deferred-subagent:out:${subId}`,
+        offset: { type: options?.replayExisting ? "begin" : "now" },
+        batch: { maxWaitMs: 250 },
+      },
+      async (msg, subCtx) => {
+        if (msg.headers?.request_id !== handle.childRequestId) {
+          await subCtx.commit();
+          return;
+        }
+
+        if (msg.type === lilacEventTypes.EvtAgentOutputDeltaText) {
+          handle.finalText += msg.data.delta;
+        }
+
+        if (msg.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          const existing = handle.childTools.get(msg.data.toolCallId);
+          const next: ChildToolState = {
+            toolCallId: msg.data.toolCallId,
+            status: msg.data.status === "end" ? "done" : "running",
+            ok: msg.data.status === "end" ? msg.data.ok === true : (existing?.ok ?? null),
+            display: msg.data.display,
+            updatedSeq: ++handle.childUpdateSeq,
+          };
+          handle.childTools.set(next.toolCallId, next);
+
+          await publishStatus({
+            toolCallId: handle.parentToolCallId,
+            status: "update",
+            display: renderSubagentDisplay({
+              profile: handle.profile,
+              children: handle.childTools,
+            }),
+          }).catch((e: unknown) => {
+            logger.warn(
+              "deferred subagent progress publish failed",
+              {
+                requestId: parentHeaders.request_id,
+                sessionId: parentHeaders.session_id,
+                parentToolCallId: handle.parentToolCallId,
+                childRequestId: handle.childRequestId,
+              },
+              e,
+            );
+          });
+        }
+
+        if (msg.type === lilacEventTypes.EvtAgentOutputResponseText) {
+          handle.finalText = msg.data.finalText;
+        }
+
+        await subCtx.commit();
+      },
+    );
+
+    handle.evtSub = await bus.subscribeTopic(
+      "evt.request",
+      {
+        mode: "fanout",
+        subscriptionId: `deferred-subagent:evt:${subId}`,
+        consumerId: `deferred-subagent:evt:${subId}`,
+        offset: { type: options?.replayExisting ? "begin" : "now" },
+        batch: { maxWaitMs: 250 },
+      },
+      async (msg, subCtx) => {
+        if (msg.headers?.request_id !== handle.childRequestId) {
+          await subCtx.commit();
+          return;
+        }
+
+        if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
+          handle.detail = msg.data.detail ?? handle.detail;
+          if (msg.data.state === "failed") {
+            await settleHandle(handle, "failed", msg.data.detail);
+          }
+          if (msg.data.state === "cancelled") {
+            await settleHandle(handle, "cancelled", msg.data.detail);
+          }
+          if (msg.data.state === "resolved") {
+            await settleHandle(handle, "resolved", msg.data.detail);
+          }
+        }
+
+        await subCtx.commit();
+      },
+    );
+
+    const elapsedMs = Math.max(0, Date.now() - handle.startedAtMs);
+    const remainingMs = Math.max(1, handle.timeoutMs - elapsedMs);
+    handle.timeout = setTimeout(() => {
+      void cancelChild(handle, `timed out after ${handle.timeoutMs}ms`).catch(() => undefined);
+      void settleHandle(handle, "timeout", `timed out after ${handle.timeoutMs}ms`);
+    }, remainingMs);
+  };
+
+  return {
+    async register(registration: DeferredSubagentRegistration) {
+      await restoreOutstandingHandle({
+        parentToolCallId: registration.parentToolCallId,
+        profile: registration.profile,
+        childRequestId: registration.childRequestId,
+        childSessionId: registration.childSessionId,
+        timeoutMs: registration.timeoutMs,
+        startedAtMs: Date.now(),
+        finalText: "",
+        childUpdateSeq: 0,
+        childTools: [],
+      });
+
+      try {
+        await bus.publish(
+          lilacEventTypes.CmdRequestMessage,
+          {
+            queue: "prompt",
+            messages: registration.initialMessages,
+            raw: {
+              subagent: {
+                profile: registration.profile,
+                depth: registration.depth,
+                parentRequestId: registration.parentRequestId,
+                parentToolCallId: registration.parentToolCallId,
+              },
+            },
+          },
+          { headers: registration.childHeaders },
+        );
+      } catch (e) {
+        const handle = handles.get(registration.childRequestId);
+        if (handle) {
+          handles.delete(registration.childRequestId);
+          await stopHandle(handle);
+        }
+        throw e;
+      }
+    },
+
+    async restore(recovery: DeferredSubagentRecoveryState | undefined) {
+      if (!recovery) return;
+      bufferedCompletions.push(...recovery.bufferedCompletions);
+      for (const outstanding of recovery.outstanding) {
+        await restoreOutstandingHandle(outstanding, { replayExisting: true });
+      }
+      if (recovery.bufferedCompletions.length > 0 || recovery.outstanding.length > 0) {
+        notifyWaiters();
+      }
+    },
+
+    hasOutstandingChildren() {
+      return handles.size > 0;
+    },
+
+    hasBufferedCompletions() {
+      return bufferedCompletions.length > 0;
+    },
+
+    waitForSignal,
+
+    notifyWaiters,
+
+    buildRecoveryState() {
+      return buildDeferredSubagentRecoveryState({
+        handles: handles.values(),
+        bufferedCompletions,
+      });
+    },
+
+    async injectBuffered(agent: AiSdkPiAgent<ToolSet>) {
+      if (bufferedCompletions.length === 0) return false;
+      const completions = bufferedCompletions.splice(0, bufferedCompletions.length);
+      const messages = completions.flatMap((completion) =>
+        buildDeferredSubagentResultMessages(completion),
+      );
+      agent.appendMessages(messages);
+
+      for (const completion of completions) {
+        await publishStatus({
+          toolCallId: completion.parentToolCallId,
+          status: "end",
+          display: buildDeferredSubagentDisplay(completion),
+          ok: completion.ok,
+          error: completion.ok ? undefined : (completion.detail ?? `subagent ${completion.status}`),
+        }).catch((e: unknown) => {
+          logger.warn(
+            "deferred subagent completion publish failed",
+            {
+              requestId: parentHeaders.request_id,
+              sessionId: parentHeaders.session_id,
+              parentToolCallId: completion.parentToolCallId,
+              childRequestId: completion.childRequestId,
+            },
+            e,
+          );
+        });
+      }
+
+      return true;
+    },
+
+    async cancelAll(detail: string) {
+      const active = [...handles.values()];
+      handles.clear();
+
+      await Promise.all(
+        active.map(async (handle) => {
+          await cancelChild(handle, detail).catch(() => undefined);
+          await publishStatus({
+            toolCallId: handle.parentToolCallId,
+            status: "end",
+            display: renderSubagentDisplay({
+              profile: handle.profile,
+              children: handle.childTools,
+            }),
+            ok: false,
+            error: detail,
+          }).catch(() => undefined);
+          await stopHandle(handle);
+        }),
+      );
+
+      bufferedCompletions.length = 0;
+      notifyWaiters();
+    },
+
+    async stop() {
+      const active = [...handles.values()];
+      handles.clear();
+      bufferedCompletions.length = 0;
+      await Promise.all(active.map((handle) => stopHandle(handle)));
+      notifyWaiters();
+    },
+  };
+}
+
 function getToolDefsText(tools: ToolsLike | null): string {
   if (!tools) return "";
   const entries = Object.entries(tools);
@@ -921,6 +1459,7 @@ type Enqueued = {
   recovery?: {
     checkpointMessages: ModelMessage[];
     partialText: string;
+    deferredSubagents?: DeferredSubagentRecoveryState;
   };
 };
 
@@ -936,6 +1475,7 @@ export type AgentRunnerRecoveryEntry = {
   recovery?: {
     checkpointMessages: ModelMessage[];
     partialText: string;
+    deferredSubagents?: DeferredSubagentRecoveryState;
   };
 };
 
@@ -1164,6 +1704,7 @@ type SessionQueue = {
     modelOverride?: string;
     raw?: unknown;
     partialText: string;
+    deferred: ReturnType<typeof createDeferredSubagentManager>;
   } | null;
   /** Track toolCallIds whose outputs are compacted in the model-facing view. */
   compactedToolCallIds: Set<string>;
@@ -1434,7 +1975,12 @@ export async function startBusAgentRunner(params: {
             requestId: state.activeRequestId,
             requestClient: state.activeRun?.requestClient ?? entry.requestClient,
           };
-          await applyToRunningAgent(state.agent, activeCancelEntry, cancelledByRequestId);
+          await applyToRunningAgent(
+            state.agent,
+            activeCancelEntry,
+            cancelledByRequestId,
+            state.activeRun,
+          );
           logQueueTransition({
             action: "apply_to_active",
             queueDepthBefore: state.queue.length,
@@ -1511,7 +2057,12 @@ export async function startBusAgentRunner(params: {
                 } satisfies Enqueued)
               : entry;
 
-          await applyToRunningAgent(state.agent, mergedEntry, cancelledByRequestId);
+          await applyToRunningAgent(
+            state.agent,
+            mergedEntry,
+            cancelledByRequestId,
+            state.activeRun,
+          );
 
           if (bufferedPrompts.length > 0) {
             const absorbMode: "steer" | "interrupt" =
@@ -1615,6 +2166,7 @@ export async function startBusAgentRunner(params: {
       recovery: {
         checkpointMessages,
         partialText: state.activeRun.partialText,
+        deferredSubagents: state.activeRun.deferred.buildRecoveryState(),
       },
     };
   }
@@ -1740,15 +2292,6 @@ export async function startBusAgentRunner(params: {
 
     state.running = true;
     state.activeRequestId = next.requestId;
-    state.activeRun = {
-      requestId: next.requestId,
-      sessionId: next.sessionId,
-      requestClient: next.requestClient,
-      queue: next.queue,
-      modelOverride: next.modelOverride,
-      raw: next.raw,
-      partialText: next.recovery?.partialText ?? "",
-    };
 
     const runStartedAt = Date.now();
 
@@ -1763,6 +2306,23 @@ export async function startBusAgentRunner(params: {
       session_id: next.sessionId,
       request_client: next.requestClient,
       ...(routerSessionMode ? { router_session_mode: routerSessionMode } : {}),
+    };
+
+    const deferredSubagents = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders: headers,
+    });
+
+    state.activeRun = {
+      requestId: next.requestId,
+      sessionId: next.sessionId,
+      requestClient: next.requestClient,
+      queue: next.queue,
+      modelOverride: next.modelOverride,
+      raw: next.raw,
+      partialText: next.recovery?.partialText ?? "",
+      deferred: deferredSubagents,
     };
 
     let initialMessages: ModelMessage[] = [];
@@ -2015,6 +2575,9 @@ export async function startBusAgentRunner(params: {
               defaultTimeoutMs: subagents.defaultTimeoutMs,
               maxTimeoutMs: subagents.maxTimeoutMs,
               maxDepth: subagents.maxDepth,
+              onDeferredDelegate: async (registration) => {
+                await deferredSubagents.register(registration);
+              },
             }),
           );
         }
@@ -2131,6 +2694,8 @@ export async function startBusAgentRunner(params: {
       });
 
       state.agent = agent;
+
+      await deferredSubagents.restore(next.recovery?.deferredSubagents);
 
       let finalText = "";
       let lastTextPartId: string | null = null;
@@ -2405,6 +2970,9 @@ export async function startBusAgentRunner(params: {
             isError: event.isError,
             result: event.result,
           });
+          const deferredAccepted =
+            event.toolName === "subagent_delegate" &&
+            isDeferredSubagentAcceptedResult(event.result);
 
           const ok =
             event.toolName === "batch"
@@ -2472,9 +3040,14 @@ export async function startBusAgentRunner(params: {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
             ok,
+            deferredAccepted,
             durationMs: toolDurationMs,
             failureKind: ok ? undefined : (toolFailure.failureKind ?? "soft"),
           });
+
+          if (deferredAccepted) {
+            return;
+          }
 
           bus
             .publish(
@@ -2540,10 +3113,26 @@ export async function startBusAgentRunner(params: {
 
       await agent.prompt(initialMessages);
 
-      await agent.waitForIdle();
+      while (true) {
+        await agent.waitForIdle();
 
-      if (restartAbortRequestIds.delete(headers.request_id)) {
-        throw new RestartDrainingAbort();
+        if (restartAbortRequestIds.delete(headers.request_id)) {
+          throw new RestartDrainingAbort();
+        }
+
+        if (await deferredSubagents.injectBuffered(agent)) {
+          await agent.continue();
+          continue;
+        }
+
+        if (!deferredSubagents.hasOutstandingChildren()) {
+          break;
+        }
+
+        await deferredSubagents.waitForSignal();
+        if (agent.state.isStreaming) {
+          continue;
+        }
       }
 
       const isCancelled = cancelledByRequestId.has(headers.request_id);
@@ -2725,6 +3314,14 @@ export async function startBusAgentRunner(params: {
         }
       }
 
+      await deferredSubagents.cancelAll(`parent run failed: ${msg}`).catch((err: unknown) => {
+        logger.warn(
+          "failed to cancel deferred subagents after parent failure",
+          { requestId: headers.request_id, sessionId: headers.session_id },
+          err,
+        );
+      });
+
       await publishLifecycle({ bus, headers, state: "failed", detail: msg });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
@@ -2744,6 +3341,7 @@ export async function startBusAgentRunner(params: {
     } finally {
       unsubscribe();
       unsubscribeCompaction();
+      await deferredSubagents.stop();
       state.agent = null;
       state.activeRequestId = null;
       state.activeRun = null;
@@ -2830,8 +3428,25 @@ async function applyToRunningAgent(
   agent: AiSdkPiAgent<ToolSet>,
   entry: Enqueued,
   cancelledByRequestId: Set<string>,
+  activeRun: SessionQueue["activeRun"],
 ) {
   const merged = mergeToSingleUserMessage(entry.messages);
+  const deferred = activeRun?.deferred;
+  const queueWhileIdle = (mode: "followUp" | "steer") => {
+    if (mode === "steer") {
+      agent.steer(merged);
+    } else {
+      agent.followUp(merged);
+    }
+    deferred?.notifyWaiters();
+  };
+
+  const promptWhileIdle = () => {
+    void agent.prompt(merged).catch(() => {
+      deferred?.notifyWaiters();
+    });
+    deferred?.notifyWaiters();
+  };
 
   const cancel = (() => {
     const raw = entry.raw;
@@ -2840,27 +3455,77 @@ async function applyToRunningAgent(
     return v === true;
   })();
 
+  const hasBufferedCompletions = deferred?.hasBufferedCompletions() ?? false;
+
+  if (!agent.state.isStreaming) {
+    switch (entry.queue) {
+      case "steer": {
+        if (hasBufferedCompletions) {
+          queueWhileIdle("steer");
+          return;
+        }
+        promptWhileIdle();
+        return;
+      }
+      case "followUp":
+      case "prompt": {
+        if (hasBufferedCompletions) {
+          queueWhileIdle("followUp");
+          return;
+        }
+        promptWhileIdle();
+        return;
+      }
+      case "interrupt": {
+        if (cancel) {
+          cancelledByRequestId.add(entry.requestId);
+          await deferred?.cancelAll("parent request aborted");
+          agent.abort();
+          deferred?.notifyWaiters();
+          return;
+        }
+        if (hasBufferedCompletions) {
+          queueWhileIdle("steer");
+          return;
+        }
+        await agent.interrupt(merged);
+        deferred?.notifyWaiters();
+        return;
+      }
+      default: {
+        const _exhaustive: never = entry.queue;
+        return _exhaustive;
+      }
+    }
+  }
+
   switch (entry.queue) {
     case "steer": {
       agent.steer(merged);
+      deferred?.notifyWaiters();
       return;
     }
     case "followUp": {
       agent.followUp(merged);
+      deferred?.notifyWaiters();
       return;
     }
     case "interrupt": {
       if (cancel) {
         cancelledByRequestId.add(entry.requestId);
+        await deferred?.cancelAll("parent request aborted");
         agent.abort();
+        deferred?.notifyWaiters();
         return;
       }
       await agent.interrupt(merged);
+      deferred?.notifyWaiters();
       return;
     }
     case "prompt": {
       // Cannot prompt while streaming; treat as followUp.
       agent.followUp(merged);
+      deferred?.notifyWaiters();
       return;
     }
     default: {
