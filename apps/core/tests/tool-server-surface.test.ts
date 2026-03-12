@@ -191,6 +191,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -218,7 +219,7 @@ describe("tool-server surface", () => {
     expect(res).toEqual([{ emoji: "👍", count: 2 }]);
   });
 
-  it("filters sessions list by allowlist and includes token", async () => {
+  it("filters sessions list by allowlist and includes alias", async () => {
     const cfg = testConfig({
       surface: {
         discord: {
@@ -254,7 +255,40 @@ describe("tool-server surface", () => {
 
     expect(sessions.length).toBe(1);
     expect(sessions[0].channelId).toBe("c1");
-    expect(sessions[0].token).toBe("ops");
+    expect(sessions[0].alias).toBe("ops");
+  });
+
+  it("includes alias in surface.help context when request session is aliased", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg });
+
+    const out = (await tool.call(
+      "surface.help",
+      {},
+      {
+        context: {
+          requestClient: "discord",
+          sessionId: "c1",
+        } satisfies RequestContext,
+      },
+    )) as {
+      context: { sessionId: string | null; alias?: string };
+    };
+
+    expect(out.context.sessionId).toBe("c1");
+    expect(out.context.alias).toBe("ops");
   });
 
   it("lists session participants", async () => {
@@ -268,6 +302,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -296,10 +331,11 @@ describe("tool-server surface", () => {
       client: "discord",
       sessionId: channelId,
     })) as {
-      meta: { source: string; count: number };
+      meta: { source: string; count: number; session: { alias?: string } };
       participants: Array<{ userId: string; status?: string }>;
     };
 
+    expect(out.meta.session.alias).toBe("ops");
     expect(out.meta.source).toBe("thread_members");
     expect(out.meta.count).toBe(1);
     expect(out.participants[0]?.userId).toBe("u1");
@@ -317,6 +353,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -365,6 +402,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -389,10 +427,11 @@ describe("tool-server surface", () => {
     };
 
     const res = (await tool.call("surface.messages.list", {}, { context: ctx })) as {
-      meta: { order: string };
+      meta: { order: string; session: { alias?: string } };
       messages: Array<{ messageId: string }>;
     };
 
+    expect(res.meta.session.alias).toBe("ops");
     expect(res.meta.order).toBe("ts_desc");
     expect(res.messages.length).toBe(1);
     expect(res.messages[0]?.messageId).toBe("m1");
@@ -414,6 +453,11 @@ describe("tool-server surface", () => {
       entity: {
         users: {
           alice: { discord: "u1" },
+        },
+        sessions: {
+          discord: {
+            ops: c1,
+          },
         },
       },
     });
@@ -473,7 +517,7 @@ describe("tool-server surface", () => {
       query: "deploy",
     })) as {
       meta: {
-        session: { channelId: string };
+        session: { channelId: string; alias?: string };
         order: string;
       };
       hits: Array<{
@@ -489,6 +533,7 @@ describe("tool-server surface", () => {
     };
 
     expect(first.meta.session.channelId).toBe(c1);
+    expect(first.meta.session.alias).toBe("ops");
     expect(first.meta.order).toBe("relevance");
     expect(first.hits.length).toBe(1);
     expect(first.hits[0]?.messageId).toBe("m1");
@@ -529,6 +574,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -570,6 +616,7 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
+      entity: { sessions: { discord: { ops: channelId } } },
     });
 
     const adapter = new FakeAdapter(
@@ -597,6 +644,7 @@ describe("tool-server surface", () => {
       sessionId: channelId,
       messageId: "m1",
     })) as {
+      meta: { session: { alias?: string } };
       message: {
         raw?: unknown;
         hasAttachments?: boolean;
@@ -605,6 +653,7 @@ describe("tool-server surface", () => {
       } | null;
     };
 
+    expect(base.meta.session.alias).toBe("ops");
     expect(base.message).not.toBeNull();
     expect("raw" in (base.message ?? {})).toBe(false);
     expect(base.message?.hasAttachments).toBe(true);
@@ -1259,6 +1308,7 @@ describe("tool-server surface", () => {
     });
 
     expect((res as any).ok).toBe(true);
+    expect((res as any).session?.alias).toBe("ops");
     expect(adapter.sendCalls.length).toBe(1);
     expect(adapter.sendCalls[0]!.sessionRef.channelId).toBe("c1");
 

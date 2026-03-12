@@ -55,7 +55,7 @@ export function resolveDiscordSessionId(input: { sessionId: string; cfg: CoreCon
   );
 }
 
-export function bestEffortTokenForDiscordChannelId(input: {
+export function bestEffortAliasForDiscordChannelId(input: {
   channelId: string;
   cfg: CoreConfig;
 }): string | undefined {

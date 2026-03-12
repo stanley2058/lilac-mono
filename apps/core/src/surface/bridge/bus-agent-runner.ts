@@ -19,6 +19,7 @@ import {
   getCoreConfig,
   ModelCapability,
   RESPONSE_COMMENTARY_INSTRUCTIONS,
+  resolveCoreConfigPath,
   createLogger,
   resolveEditingToolMode,
   type JSONObject,
@@ -1688,6 +1689,86 @@ const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   },
 };
 
+const DEFAULT_PROMPT_USER_ALIAS_LIMIT = 25;
+const DEFAULT_PROMPT_SESSION_ALIAS_LIMIT = 25;
+
+function compareAliasKeys(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base" }) || a.localeCompare(b);
+}
+
+function formatPromptAliasEntries(params: {
+  aliases: readonly string[];
+  prefix: "@" | "#";
+  limit: number;
+}): { entries: string[]; truncated: boolean } {
+  const sorted = [...params.aliases].sort(compareAliasKeys);
+  const limit = Math.max(0, Math.trunc(params.limit));
+  const shown = sorted.slice(0, limit).map((alias) => `${params.prefix}${alias}`);
+  return {
+    entries: shown,
+    truncated: sorted.length > shown.length,
+  };
+}
+
+export function appendConfiguredAliasPromptBlock(params: {
+  baseSystemPrompt: string;
+  cfg: Pick<CoreConfig, "entity">;
+  coreConfigPath?: string;
+  maxUserAliases?: number;
+  maxSessionAliases?: number;
+}): string {
+  const users = Object.keys(params.cfg.entity?.users ?? {});
+  const sessions = Object.keys(params.cfg.entity?.sessions?.discord ?? {});
+
+  if (users.length === 0 && sessions.length === 0) {
+    return params.baseSystemPrompt;
+  }
+
+  const userSection = formatPromptAliasEntries({
+    aliases: users,
+    prefix: "@",
+    limit: params.maxUserAliases ?? DEFAULT_PROMPT_USER_ALIAS_LIMIT,
+  });
+  const sessionSection = formatPromptAliasEntries({
+    aliases: sessions,
+    prefix: "#",
+    limit: params.maxSessionAliases ?? DEFAULT_PROMPT_SESSION_ALIAS_LIMIT,
+  });
+
+  const lines = [
+    "Configured Aliases (Discord):",
+    "Prefer these human-friendly aliases over raw numeric Discord IDs when possible.",
+  ];
+
+  if (userSection.entries.length > 0) {
+    lines.push("Users:");
+    lines.push(...userSection.entries.map((entry) => `- ${entry}`));
+  }
+
+  if (sessionSection.entries.length > 0) {
+    lines.push("Sessions:");
+    lines.push(...sessionSection.entries.map((entry) => `- ${entry}`));
+  }
+
+  if (userSection.truncated || sessionSection.truncated) {
+    lines.push(
+      `If you need the full alias list, read ${params.coreConfigPath ?? "core-config.yaml"} and inspect entity.users / entity.sessions.discord.`,
+    );
+  }
+
+  const block = lines.join("\n").trim();
+  if (block.length === 0) {
+    return params.baseSystemPrompt;
+  }
+
+  const base = params.baseSystemPrompt.trimEnd();
+  if (base.length === 0) {
+    return block;
+  }
+
+  return `${base}\n\n${block}`;
+}
+
 export type SessionAdditionalPromptWarning = {
   reason: "invalid_file_url" | "read_failed";
   value: string;
@@ -2686,6 +2767,12 @@ export async function startBusAgentRunner(params: {
         skillsSection: runProfile === "explore" ? null : await maybeBuildSkillsSectionForPrimary(),
       });
 
+      const baseSystemPromptWithAliases = appendConfiguredAliasPromptBlock({
+        baseSystemPrompt,
+        cfg,
+        coreConfigPath: resolveCoreConfigPath(),
+      });
+
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
 
       const additionalSessionPrompts = await resolveSessionAdditionalPrompts({
@@ -2704,7 +2791,7 @@ export async function startBusAgentRunner(params: {
       });
 
       const systemPromptWithSessionMemo = appendAdditionalSessionMemoBlock(
-        baseSystemPrompt,
+        baseSystemPromptWithAliases,
         additionalSessionPrompts,
       );
 

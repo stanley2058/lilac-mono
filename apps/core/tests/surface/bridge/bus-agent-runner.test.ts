@@ -22,6 +22,7 @@ import type { ModelMessage } from "ai";
 import type { LanguageModel } from "ai";
 
 import {
+  appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   createDeferredSubagentManager,
   buildHeartbeatOverlayForRequest,
@@ -269,6 +270,81 @@ describe("appendAdditionalSessionMemoBlock", () => {
   it("omits the block when combined memo is empty", () => {
     const out = appendAdditionalSessionMemoBlock("Base prompt", ["  ", "\n\n"]);
     expect(out).toBe("Base prompt");
+  });
+});
+
+describe("appendConfiguredAliasPromptBlock", () => {
+  it("appends sorted user and session aliases", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "Base prompt",
+      cfg: {
+        entity: {
+          users: {
+            Stanley: { discord: "u1" },
+            alice: { discord: "u2" },
+          },
+          sessions: {
+            discord: {
+              ops: "c1",
+              Deployments: "c2",
+            },
+          },
+        },
+      } as Pick<CoreConfig, "entity">,
+      coreConfigPath: "/tmp/core-config.yaml",
+    });
+
+    expect(out).toContain("Configured Aliases (Discord):");
+    expect(out).toContain("- @alice");
+    expect(out).toContain("- @Stanley");
+    expect(out).toContain("- #Deployments");
+    expect(out).toContain("- #ops");
+    expect(out).not.toContain("read /tmp/core-config.yaml");
+  });
+
+  it("points to core-config when alias sections are truncated", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "",
+      cfg: {
+        entity: {
+          users: {
+            alice: { discord: "u1" },
+            bob: { discord: "u2" },
+          },
+          sessions: {
+            discord: {
+              dev: "c1",
+              ops: "c2",
+            },
+          },
+        },
+      } as Pick<CoreConfig, "entity">,
+      coreConfigPath: "/tmp/core-config.yaml",
+      maxUserAliases: 1,
+      maxSessionAliases: 1,
+    });
+
+    expect(out).toContain("- @alice");
+    expect(out).not.toContain("- @bob");
+    expect(out).toContain("- #dev");
+    expect(out).not.toContain("- #ops");
+    expect(out).toContain("read /tmp/core-config.yaml");
+  });
+
+  it("handles configs with user aliases but no session aliases", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "Base prompt",
+      cfg: {
+        entity: {
+          users: {
+            alice: { discord: "u1" },
+          },
+        },
+      } as unknown as Pick<CoreConfig, "entity">,
+    });
+
+    expect(out).toContain("- @alice");
+    expect(out).not.toContain("Sessions:");
   });
 });
 
