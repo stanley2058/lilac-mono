@@ -2,6 +2,8 @@ import type { ModelMessage } from "ai";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { resolveHeartbeatPromptPaths } from "@stanley2058/lilac-utils";
 
+import { matchesMagicToken } from "../shared/magic-token";
+
 export const HEARTBEAT_SESSION_ID = "__heartbeat__";
 export const HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK";
 const HEARTBEAT_SESSION_ALIAS = "heartbeat";
@@ -20,7 +22,7 @@ export function isHeartbeatSessionId(sessionId: string): boolean {
 }
 
 export function isHeartbeatAckText(finalText: string): boolean {
-  return finalText.trim() === HEARTBEAT_OK_TOKEN;
+  return matchesMagicToken(finalText, HEARTBEAT_OK_TOKEN);
 }
 
 export function resolveHeartbeatModelOverride(cfg: {
