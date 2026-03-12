@@ -9,11 +9,10 @@
     "url": "git+https://github.com/stanley2058/lilac-mono.git"
   },
   "bin": {
-    "lilac-acp": "dist/index.js",
-    "lilac-opencode": "dist/opencode-alias.js"
+    "lilac-acp": "dist/index.js"
   },
   "scripts": {
-    "build": "bun build.ts && chmod +x dist/index.js dist/opencode-alias.js",
+    "build": "bun build.ts && chmod +x dist/index.js",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

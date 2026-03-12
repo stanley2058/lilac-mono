@@ -2,7 +2,7 @@
 
 ## Summary
 - Repurpose [apps/acp-controller](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/acp-controller) into a harness-agnostic ACP controller and make ACP the only transport.
-- New primary CLI: `lilac-acp`. Keep `lilac-opencode` as a temporary compatibility alias that forwards to `lilac-acp --harness opencode`.
+- Ship a single CLI surface: `lilac-acp`.
 - Core goal: one controller surface for OpenCode first, with built-in discovery for other ACP harnesses such as Codex/Cursor/Claude wrappers as their launch contracts are verified from the ACP Registry.
 - Preserve the current detached async contract by spawning a per-run background worker, not by polling a vendor SDK server.
 
@@ -50,12 +50,15 @@
 ## Public Interface Changes
 - New command: `harnesses list`
 - New flag: `--harness <id|any>`
+- New flag: `--output <json|human>`
 - New canonical IDs:
   - `sessionRef = <harnessId>::<remoteSessionId>`
   - `run` records include `workerPid`
-- JSON changes:
+- Output changes:
+  - JSON remains the default for automation
+  - human-readable output is available with `--output human`
   - all session/search/run outputs include `harnessId`
-  - `snapshot.plan` is the generic field; `snapshot.todo` becomes optional compatibility data
+  - `snapshot.plan` is the generic field
 
 ## Tests And Scenarios
 - Cross-harness search merges OpenCode/Codex/Cursor/Claude results and preserves source harness metadata.

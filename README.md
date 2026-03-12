@@ -9,7 +9,7 @@ Lilac is an event-driven agent runtime: a typed Redis Streams event bus + surfac
 
 - `apps/core/`: core runtime (Discord + optional GitHub surfaces, bus wiring, router, agent runner, workflow, tool server)
 - `apps/tool-bridge/`: dev-mode tool server entry + `tools` CLI bundle (builds to `dist/`)
-- `apps/acp-controller/`: ACP harness controller CLI (`lilac-acp`), builds to `dist/`
+- `apps/acp-controller/`: ACP harness controller CLI (`lilac-acp`) with JSON and human output modes, builds to `dist/`
 - `packages/event-bus/`: typed event spec + Redis Streams transport
 - `packages/agent/`: AI SDK streaming agent wrapper
 - `packages/utils/`: env/config parsing, model providers, prompt + skills utilities

@@ -38,9 +38,9 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Build script: `apps/tool-bridge/build.ts` (produces `dist/index.js`, used as the `tools` binary).
 
 - `apps/acp-controller/`
-  - ACP harness controller CLI (`lilac-acp`), designed for local and automation/ssh workflows.
+  - ACP harness controller CLI (`lilac-acp`) with JSON and human output modes, designed for local and automation/ssh workflows.
   - Entry/client: `apps/acp-controller/client.ts`.
-  - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js` and the deprecated `lilac-opencode` alias).
+  - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js`).
 
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.
@@ -420,7 +420,7 @@ Shutdown happens in reverse (best-effort).
 - Build `tools` CLI:
   - `cd apps/tool-bridge && bun run build`
 
-- Build `lilac-opencode` CLI:
+- Build `lilac-acp` CLI:
   - `cd apps/acp-controller && bun run build`
 
 - Run tests:

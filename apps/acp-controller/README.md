@@ -2,11 +2,9 @@
 
 ACP harness controller for local and automation workflows.
 
-It talks to harnesses over ACP, keeps run state on disk, and executes prompt turns in detached worker processes.
+It talks to ACP harnesses, keeps run state on disk, and executes prompt turns in detached worker processes.
 
-`lilac-acp` is the primary CLI.
-
-`lilac-opencode` still exists as a deprecated alias that forwards to `lilac-acp --harness opencode`.
+`lilac-acp` is a multi-harness CLI. Use `--harness <id>` when you want a specific ACP backend such as OpenCode, Codex, Claude, or Cursor.
 
 ## Build
 
@@ -21,35 +19,34 @@ This writes:
 
 - `dist/client.js` (compiled controller)
 - `dist/index.js` (`lilac-acp` entrypoint)
-- `dist/opencode-alias.js` (`lilac-opencode` compatibility alias)
 
 ## Usage
 
-Show help/version:
+Show help or version:
 
 ```bash
-bun dist/index.js --help
-bun dist/index.js --version
+lilac-acp --help
+lilac-acp --version
 ```
 
 List launchable harnesses:
 
 ```bash
-bun dist/index.js harnesses list
+lilac-acp harnesses list
 ```
 
-Search sessions across harnesses:
+Search sessions across all discovered harnesses:
 
 ```bash
-bun dist/index.js sessions list \
+lilac-acp sessions list \
   --directory /path/to/repo \
   --search "failing tests"
 ```
 
-Snapshot a known session:
+Snapshot the latest OpenCode session:
 
 ```bash
-bun dist/index.js sessions snapshot \
+lilac-acp sessions snapshot \
   --directory /path/to/repo \
   --harness opencode \
   --latest \
@@ -57,21 +54,21 @@ bun dist/index.js sessions snapshot \
   --max-chars 1200
 ```
 
-Submit a prompt in a new session on a specific harness:
+Submit a prompt in a new OpenCode session:
 
 ```bash
-bun dist/index.js prompt submit \
+lilac-acp prompt submit \
   --directory /path/to/repo \
   --harness opencode \
   --text "Fix the failing tests"
 ```
 
-Submit and wait for completion:
+Submit and wait on a specific harness:
 
 ```bash
-bun dist/index.js prompt submit \
+lilac-acp prompt submit \
   --directory /path/to/repo \
-  --harness opencode \
+  --harness codex-acp \
   --title "lilac:discord:123" \
   --text "Continue where we left off" \
   --wait
@@ -80,15 +77,24 @@ bun dist/index.js prompt submit \
 Inspect or cancel a persisted run:
 
 ```bash
-bun dist/index.js prompt status --run-id run_xxx
-bun dist/index.js prompt result --run-id run_xxx
-bun dist/index.js prompt wait --run-id run_xxx
-bun dist/index.js prompt cancel --run-id run_xxx
+lilac-acp prompt status --run-id run_xxx
+lilac-acp prompt result --run-id run_xxx
+lilac-acp prompt wait --run-id run_xxx
+lilac-acp prompt cancel --run-id run_xxx
+```
+
+## Output
+
+- Default output is JSON for scripting.
+- Use `--output human` for readable terminal output.
+
+```bash
+lilac-acp sessions list --directory /path/to/repo --output human
+lilac-acp prompt wait --run-id run_xxx --output human
 ```
 
 ## Notes
 
-- Output is always JSON.
 - `--latest` requires `--harness`.
 - `--title` without `--harness` continues only if there is exactly one exact match across all discovered harnesses.
 - New sessions require `--harness` so the controller knows where to create them.

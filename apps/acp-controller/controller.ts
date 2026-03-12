@@ -32,6 +32,7 @@ import {
 declare const PACKAGE_VERSION: string;
 
 type OutputWriter = (value: unknown) => void;
+type OutputMode = "json" | "human";
 
 type ListedSession = {
   harnessId: string;
@@ -45,6 +46,294 @@ type ListedSession = {
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function printText(text: string): void {
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function getRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function formatCommand(command: string | undefined, args: readonly string[]): string | undefined {
+  if (!command) return undefined;
+  return [command, ...args].join(" ");
+}
+
+function toListedSession(value: unknown): ListedSession | null {
+  if (!isRecord(value)) return null;
+  const harnessId = getString(value.harnessId);
+  const sessionId = getString(value.sessionId);
+  const sessionRef = getString(value.sessionRef);
+  const cwd = getString(value.cwd);
+  if (!harnessId || !sessionId || !sessionRef || !cwd) return null;
+  return {
+    harnessId,
+    sessionId,
+    sessionRef,
+    cwd,
+    title: getString(value.title),
+    updatedAt: getString(value.updatedAt),
+    capabilities: getStringArray(value.capabilities),
+  };
+}
+
+function formatSessionEntries(sessions: readonly ListedSession[]): string[] {
+  if (sessions.length === 0) return ["No sessions found."];
+
+  const lines: string[] = [];
+  for (const session of sessions) {
+    lines.push(`- ${session.title ?? session.sessionRef}`);
+    lines.push(`  session: ${session.sessionRef}`);
+    lines.push(`  harness: ${session.harnessId}`);
+    lines.push(`  cwd: ${session.cwd}`);
+    if (session.updatedAt) lines.push(`  updated: ${session.updatedAt}`);
+    if (session.capabilities.length > 0) {
+      lines.push(`  capabilities: ${session.capabilities.join(", ")}`);
+    }
+  }
+  return lines;
+}
+
+function formatWarnings(warnings: readonly string[]): string[] {
+  if (warnings.length === 0) return [];
+  return ["Warnings:", ...warnings.map((warning) => `- ${warning}`)];
+}
+
+function formatCandidates(value: unknown): string[] {
+  const candidates = getRecordArray(value)
+    .map((entry) => toListedSession(entry))
+    .filter((entry): entry is ListedSession => entry !== null);
+  if (candidates.length === 0) return [];
+  return ["Candidates:", ...formatSessionEntries(candidates)];
+}
+
+function formatHarnessesOutput(value: Record<string, unknown>): string {
+  const harnesses = getRecordArray(value.harnesses);
+  if (harnesses.length === 0) return "No harnesses found.";
+
+  const lines = [`Harnesses (${harnesses.length})`];
+  for (const harness of harnesses) {
+    const id = getString(harness.id) ?? "unknown";
+    const title = getString(harness.title) ?? id;
+    const launchable = getBoolean(harness.launchable) ?? false;
+    lines.push(`- ${title} (${id}) ${launchable ? "[available]" : "[unavailable]"}`);
+
+    const description = getString(harness.description);
+    if (description) lines.push(`  ${description}`);
+
+    const command = formatCommand(getString(harness.command), getStringArray(harness.args));
+    if (command) lines.push(`  command: ${command}`);
+
+    const installHint = getString(harness.installHint);
+    if (installHint && !launchable) lines.push(`  install: ${installHint}`);
+  }
+  return lines.join("\n");
+}
+
+function formatSessionsOutput(value: Record<string, unknown>): string {
+  const ok = getBoolean(value.ok);
+  const error = getString(value.error);
+  const sessions = getRecordArray(value.sessions)
+    .map((entry) => toListedSession(entry))
+    .filter((entry): entry is ListedSession => entry !== null);
+  const warnings = getStringArray(value.warnings);
+
+  const lines: string[] = [];
+  if (ok === false && error) lines.push(`Error: ${error}`, "");
+  lines.push(`Sessions (${sessions.length})`, ...formatSessionEntries(sessions));
+
+  const candidateLines = formatCandidates(value.candidates);
+  if (candidateLines.length > 0) lines.push("", ...candidateLines);
+
+  const warningLines = formatWarnings(warnings);
+  if (warningLines.length > 0) lines.push("", ...warningLines);
+  return lines.join("\n");
+}
+
+function formatSnapshotPlan(value: unknown): string[] {
+  const entries = getRecordArray(value);
+  if (entries.length === 0) return ["Plan: none"];
+
+  return [
+    "Plan:",
+    ...entries.map((entry) => {
+      const content = getString(entry.content) ?? "(missing content)";
+      const status = getString(entry.status) ?? "unknown";
+      const priority = getString(entry.priority) ?? "unknown";
+      return `- [${status}/${priority}] ${content}`;
+    }),
+  ];
+}
+
+function formatRecentRuns(value: unknown): string[] {
+  if (!isRecord(value)) return ["Recent turns: none"];
+  const runs = getRecordArray(value.runs);
+  if (runs.length === 0) return ["Recent turns: none"];
+
+  const lines = ["Recent turns:"];
+  for (const run of runs) {
+    const user = isRecord(run.user) ? getString(run.user.text) : undefined;
+    const assistant = isRecord(run.assistant) ? getString(run.assistant.text) : undefined;
+    lines.push(`- User: ${user ?? ""}`);
+    lines.push(`  Assistant: ${assistant ?? "(no assistant reply)"}`);
+  }
+  return lines;
+}
+
+function formatSnapshotOutput(value: Record<string, unknown>): string {
+  const ok = getBoolean(value.ok);
+  const error = getString(value.error);
+  const session = isRecord(value.session) ? value.session : undefined;
+  const meta = isRecord(value.meta) ? value.meta : undefined;
+  const lines: string[] = [];
+
+  if (ok === false && error) {
+    lines.push(`Error: ${error}`);
+    const sessionRef = getString(value.sessionRef);
+    if (sessionRef) lines.push(`Session: ${sessionRef}`);
+    return lines.join("\n");
+  }
+
+  const title = session ? getString(session.title) : undefined;
+  const sessionRef = getString(value.sessionRef);
+  const sessionId = getString(value.sessionId);
+  lines.push(title ? `Session snapshot: ${title}` : "Session snapshot");
+  if (sessionRef) lines.push(`Session: ${sessionRef}`);
+  else if (sessionId) lines.push(`Session ID: ${sessionId}`);
+
+  const harnessId = getString(value.harnessId) ?? (meta ? getString(meta.harnessId) : undefined);
+  if (harnessId) lines.push(`Harness: ${harnessId}`);
+
+  const cwd = session ? getString(session.cwd) : undefined;
+  if (cwd) lines.push(`Directory: ${cwd}`);
+
+  const updatedAt = session ? getString(session.updatedAt) : undefined;
+  if (updatedAt) lines.push(`Updated: ${updatedAt}`);
+
+  const capabilities = meta ? getStringArray(meta.capabilities) : [];
+  if (capabilities.length > 0) lines.push(`Capabilities: ${capabilities.join(", ")}`);
+
+  lines.push("", ...formatSnapshotPlan(value.plan), "", ...formatRecentRuns(value.recent));
+  return lines.join("\n");
+}
+
+function formatRunOutput(value: Record<string, unknown>): string {
+  const runId = getString(value.runId) ?? "unknown";
+  const status = getString(value.status);
+  const error = getString(value.error);
+  const resultText = getString(value.resultText);
+  const harnessId = getString(value.harnessId);
+  const sessionRef = getString(value.sessionRef);
+  const workerPid =
+    getNumber(value.workerPid) ??
+    (isRecord(value.run) ? getNumber(value.run.workerPid) : undefined);
+  const signalled = getBoolean(value.signalled);
+
+  const lines: string[] = [];
+  if (status) {
+    lines.push(`Run ${runId}: ${status}`);
+  } else {
+    lines.push(`Run ${runId}`);
+  }
+
+  if (harnessId) lines.push(`Harness: ${harnessId}`);
+  if (sessionRef) lines.push(`Session: ${sessionRef}`);
+  if (workerPid !== undefined) lines.push(`Worker PID: ${workerPid}`);
+  if (signalled !== undefined) lines.push(`Signal sent: ${signalled ? "yes" : "no"}`);
+  if (error) lines.push(`Error: ${error}`);
+  if (resultText) lines.push("", resultText);
+
+  const candidateLines = formatCandidates(value.candidates);
+  if (candidateLines.length > 0) lines.push("", ...candidateLines);
+
+  return lines.join("\n").trim();
+}
+
+function formatHelpOutput(value: Record<string, unknown>): string {
+  const helpText = getString(value.help) ?? "";
+  const error = getString(value.error);
+  const version = getString(value.version);
+  const lines: string[] = [];
+  if (error) lines.push(`Error: ${error}`, "");
+  lines.push(helpText);
+  if (version) lines.push("", `Version: ${version}`);
+  return lines.join("\n");
+}
+
+function formatHumanOutput(value: unknown, commandName: string): string {
+  if (!isRecord(value)) {
+    return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  }
+
+  if (typeof value.help === "string") return formatHelpOutput(value);
+  if (Array.isArray(value.harnesses)) return formatHarnessesOutput(value);
+  if (Array.isArray(value.sessions)) return formatSessionsOutput(value);
+  if (isRecord(value.session) && isRecord(value.recent)) return formatSnapshotOutput(value);
+  if (typeof value.runId === "string") return formatRunOutput(value);
+
+  const version = getString(value.version);
+  if (version && Object.keys(value).every((key) => key === "ok" || key === "version")) {
+    return `${commandName} ${version}`;
+  }
+
+  const error = getString(value.error);
+  if (error) {
+    const lines = [`Error: ${error}`];
+    const candidateLines = formatCandidates(value.candidates);
+    if (candidateLines.length > 0) lines.push("", ...candidateLines);
+    return lines.join("\n");
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
+function createOutputWriter(mode: OutputMode, commandName: string): OutputWriter {
+  if (mode === "json") return printJson;
+  return (value: unknown) => {
+    printText(formatHumanOutput(value, commandName));
+  };
+}
+
+function stripGlobalFlags(args: readonly string[]): string[] {
+  const stripped: string[] = [];
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--output") {
+      index++;
+      continue;
+    }
+    if (arg.startsWith("--output=")) {
+      continue;
+    }
+    stripped.push(arg);
+  }
+
+  return stripped;
 }
 
 function errorMessage(error: unknown): string {
@@ -425,14 +714,13 @@ function help(commandName: string): string {
     `  ${commandName} prompt wait --run-id <id> [--timeout-ms <n>] [--poll-ms <n>]`,
     `  ${commandName} prompt cancel --run-id <id>`,
     "",
+    "Global options:",
+    "  --output <json|human>   Output format (default: json).",
+    "",
     "Notes:",
-    "  - Output is always JSON.",
     "  - --latest requires --harness.",
     "  - --title without --harness continues only when exactly one exact match exists.",
     "  - New sessions require --harness so the controller knows where to create them.",
-    ...(commandName === "lilac-opencode"
-      ? ["  - lilac-opencode is a deprecated alias for lilac-acp --harness opencode."]
-      : []),
   ].join("\n");
 }
 
@@ -581,7 +869,6 @@ async function runPromptSubmit(params: {
   timeoutMs: number;
   pollMs: number;
   version: string;
-  compatibilityBin: "lilac-acp" | "lilac-opencode";
   write: OutputWriter;
 }): Promise<number> {
   const target = await resolveExistingSessionTarget({
@@ -628,7 +915,6 @@ async function runPromptSubmit(params: {
     ...(target.requestedTitle ? { requestedTitle: target.requestedTitle } : {}),
     promptText: params.text,
     textPreview: textPreview(params.text, 240),
-    compatibilityBin: params.compatibilityBin,
     ...(params.requestedMode ? { requestedMode: params.requestedMode } : {}),
     ...(params.requestedModel ? { requestedModel: params.requestedModel } : {}),
     permissions: createEmptyPermissionCounters(),
@@ -989,23 +1275,33 @@ export async function main(
   argv: readonly string[],
   options?: { write?: OutputWriter },
 ): Promise<number> {
-  const commandName =
-    process.env.LILAC_ACP_COMPAT_BIN === "lilac-opencode" ? "lilac-opencode" : "lilac-acp";
-  const write = options?.write ?? printJson;
+  const commandName = "lilac-acp";
   const packageVersion = typeof PACKAGE_VERSION === "string" ? PACKAGE_VERSION : "0.0.0";
+  const globalFlags = parseFlags(argv).flags;
+  const cleanArgv = stripGlobalFlags(argv);
+  const outputFlag = getStringFlag(globalFlags, "output");
+  if (outputFlag && outputFlag !== "json" && outputFlag !== "human") {
+    printJson({
+      ok: false,
+      error: `Invalid --output value '${outputFlag}' (expected json|human).`,
+    });
+    return 1;
+  }
+  const outputMode: OutputMode = outputFlag === "human" ? "human" : "json";
+  const write = options?.write ?? createOutputWriter(outputMode, commandName);
 
-  if (argv.length === 0 || argv[0] === "help" || argv.includes("--help")) {
+  if (cleanArgv.length === 0 || cleanArgv[0] === "help" || cleanArgv.includes("--help")) {
     write({ ok: true, help: help(commandName), version: packageVersion });
     return 0;
   }
 
-  if (argv[0] === "--version" || argv[0] === "-v") {
+  if (cleanArgv[0] === "--version" || cleanArgv[0] === "-v") {
     write({ ok: true, version: packageVersion });
     return 0;
   }
 
-  if (argv[0] === "_worker") {
-    const { flags, positionals } = parseFlags(argv.slice(1));
+  if (cleanArgv[0] === "_worker") {
+    const { flags, positionals } = parseFlags(cleanArgv.slice(1));
     if ((positionals[0] ?? "") !== "run") {
       write({ ok: false, error: "Unknown worker subcommand." });
       return 1;
@@ -1018,10 +1314,10 @@ export async function main(
     return runWorkerProcess(runId, packageVersion);
   }
 
-  const command = argv[0] ?? "";
+  const command = cleanArgv[0] ?? "";
 
   if (command === "harnesses") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "list";
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "list";
     if (subcommand !== "list") {
       write({
         ok: false,
@@ -1034,8 +1330,9 @@ export async function main(
   }
 
   if (command === "sessions") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "list";
-    const rest = subcommand === "list" || subcommand === "snapshot" ? argv.slice(2) : argv.slice(1);
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "list";
+    const rest =
+      subcommand === "list" || subcommand === "snapshot" ? cleanArgv.slice(2) : cleanArgv.slice(1);
     const { flags } = parseFlags(rest);
     const directory = getStringFlag(flags, "directory") ?? process.cwd();
     const harnessId = getStringFlag(flags, "harness");
@@ -1074,9 +1371,11 @@ export async function main(
   }
 
   if (command === "prompt") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "submit";
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "submit";
     const rest =
-      subcommand === "submit" && argv[1]?.startsWith("--") ? argv.slice(1) : argv.slice(2);
+      subcommand === "submit" && cleanArgv[1]?.startsWith("--")
+        ? cleanArgv.slice(1)
+        : cleanArgv.slice(2);
     const { flags } = parseFlags(rest);
 
     if (!new Set(["submit", "status", "result", "wait", "cancel"]).has(subcommand)) {
@@ -1154,7 +1453,6 @@ export async function main(
       timeoutMs: getIntFlag(flags, "timeout-ms", 20 * 60 * 1000),
       pollMs: getIntFlag(flags, "poll-ms", 1000),
       version: packageVersion,
-      compatibilityBin: commandName,
       write,
     });
   }

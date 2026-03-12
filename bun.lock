@@ -16,7 +16,6 @@
       "version": "0.0.5",
       "bin": {
         "lilac-acp": "dist/index.js",
-        "lilac-opencode": "dist/opencode-alias.js",
       },
       "dependencies": {
         "@agentclientprotocol/sdk": "^0.16.0",

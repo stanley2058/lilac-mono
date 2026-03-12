@@ -274,7 +274,7 @@ async function createFakeHarness(root: string, config: FakeHarnessConfig): Promi
   await fs.chmod(scriptPath, 0o755);
 }
 
-async function runCli(
+async function runCliJson(
   root: string,
   args: string[],
 ): Promise<{ parsed: unknown; exitCode: number }> {
@@ -299,6 +299,33 @@ async function runCli(
     throw new Error(`Unexpected stderr: ${stderr}`);
   }
   return { parsed: JSON.parse(stdout), exitCode };
+}
+
+async function runCliText(
+  root: string,
+  args: string[],
+): Promise<{ stdout: string; exitCode: number }> {
+  const env = {
+    ...process.env,
+    PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
+    XDG_STATE_HOME: path.join(root, "state"),
+  };
+  const proc = Bun.spawn(["bun", CLI_ENTRY, ...args], {
+    cwd: CONTROLLER_DIR,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (stderr.trim().length > 0) {
+    throw new Error(`Unexpected stderr: ${stderr}`);
+  }
+  return { stdout: stdout.trimEnd(), exitCode };
 }
 
 beforeEach(async () => {
@@ -342,7 +369,7 @@ describe("lilac-acp controller", () => {
       ],
     });
 
-    const result = (await runCli(tempRoot, [
+    const result = (await runCliJson(tempRoot, [
       "sessions",
       "list",
       "--directory",
@@ -390,7 +417,7 @@ describe("lilac-acp controller", () => {
       ],
     });
 
-    const result = (await runCli(tempRoot, [
+    const result = (await runCliJson(tempRoot, [
       "prompt",
       "submit",
       "--directory",
@@ -427,7 +454,7 @@ describe("lilac-acp controller", () => {
       ],
     });
 
-    const first = (await runCli(tempRoot, [
+    const first = (await runCliJson(tempRoot, [
       "sessions",
       "list",
       "--directory",
@@ -449,7 +476,7 @@ describe("lilac-acp controller", () => {
     };
     await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
 
-    const second = (await runCli(tempRoot, [
+    const second = (await runCliJson(tempRoot, [
       "sessions",
       "list",
       "--directory",
@@ -469,7 +496,7 @@ describe("lilac-acp controller", () => {
       sessions: [],
     });
 
-    const submit = (await runCli(tempRoot, [
+    const submit = (await runCliJson(tempRoot, [
       "prompt",
       "submit",
       "--directory",
@@ -482,7 +509,12 @@ describe("lilac-acp controller", () => {
 
     expect(submit.exitCode).toBe(0);
 
-    const wait = (await runCli(tempRoot, ["prompt", "wait", "--run-id", submit.parsed.runId])) as {
+    const wait = (await runCliJson(tempRoot, [
+      "prompt",
+      "wait",
+      "--run-id",
+      submit.parsed.runId,
+    ])) as {
       parsed: { ok: boolean; status: string; resultText?: string };
       exitCode: number;
     };
@@ -491,7 +523,7 @@ describe("lilac-acp controller", () => {
     expect(wait.parsed.status).toBe("completed");
     expect(wait.parsed.resultText).toContain("Completed build feature via opencode");
 
-    const result = (await runCli(tempRoot, [
+    const result = (await runCliJson(tempRoot, [
       "prompt",
       "result",
       "--run-id",
@@ -527,7 +559,6 @@ describe("lilac-acp controller", () => {
         targetKind: "new",
         promptText: "build feature",
         textPreview: "build feature",
-        compatibilityBin: "lilac-acp",
         permissions: createEmptyPermissionCounters(),
         workerPid: 999_999,
       });
@@ -539,7 +570,7 @@ describe("lilac-acp controller", () => {
       }
     }
 
-    const wait = (await runCli(tempRoot, [
+    const wait = (await runCliJson(tempRoot, [
       "prompt",
       "wait",
       "--run-id",
@@ -563,7 +594,7 @@ describe("lilac-acp controller", () => {
       sessions: [],
     });
 
-    const submit = (await runCli(tempRoot, [
+    const submit = (await runCliJson(tempRoot, [
       "prompt",
       "submit",
       "--directory",
@@ -576,7 +607,7 @@ describe("lilac-acp controller", () => {
 
     expect(submit.exitCode).toBe(0);
 
-    const cancel = (await runCli(tempRoot, [
+    const cancel = (await runCliJson(tempRoot, [
       "prompt",
       "cancel",
       "--run-id",
@@ -588,12 +619,128 @@ describe("lilac-acp controller", () => {
     expect(cancel.exitCode).toBe(0);
     expect(cancel.parsed.ok).toBe(true);
 
-    const wait = (await runCli(tempRoot, ["prompt", "wait", "--run-id", submit.parsed.runId])) as {
+    const wait = (await runCliJson(tempRoot, [
+      "prompt",
+      "wait",
+      "--run-id",
+      submit.parsed.runId,
+    ])) as {
       parsed: { ok: boolean; status: string };
       exitCode: number;
     };
     expect(wait.exitCode).toBe(1);
     expect(wait.parsed.ok).toBe(false);
     expect(wait.parsed.status).toBe("cancelled");
+  });
+
+  it("renders sessions in human output mode", async () => {
+    await createFakeHarness(tempRoot, {
+      commandName: "opencode",
+      requiresAcpArg: true,
+      harnessId: "opencode",
+      sessions: [
+        {
+          sessionId: "sess_opencode_1",
+          cwd: "/repo",
+          title: "shared exact title",
+          updatedAt: "2026-03-11T00:00:00.000Z",
+          history: [],
+        },
+      ],
+    });
+
+    const result = await runCliText(tempRoot, [
+      "sessions",
+      "list",
+      "--directory",
+      "/repo",
+      "--output",
+      "human",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Sessions (1)");
+    expect(result.stdout).toContain("shared exact title");
+    expect(result.stdout).toContain("session: opencode::sess_opencode_1");
+  });
+
+  it("renders prompt results in human output mode", async () => {
+    await createFakeHarness(tempRoot, {
+      commandName: "opencode",
+      requiresAcpArg: true,
+      harnessId: "opencode",
+      sessions: [],
+    });
+
+    const submit = (await runCliJson(tempRoot, [
+      "prompt",
+      "submit",
+      "--directory",
+      "/repo",
+      "--harness",
+      "opencode",
+      "--text",
+      "build feature",
+    ])) as { parsed: { runId: string }; exitCode: number };
+
+    expect(submit.exitCode).toBe(0);
+
+    const result = await runCliText(tempRoot, [
+      "prompt",
+      "wait",
+      "--run-id",
+      submit.parsed.runId,
+      "--output",
+      "human",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`Run ${submit.parsed.runId}: completed`);
+    expect(result.stdout).toContain("Harness: opencode");
+    expect(result.stdout).toContain("Completed build feature via opencode");
+  });
+
+  it("shows help in human output mode", async () => {
+    const result = await runCliText(tempRoot, ["--help", "--output", "human"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("lilac-acp (ACP harness controller)");
+    expect(result.stdout).toContain("--output <json|human>");
+  });
+
+  it("accepts global output flags before commands and subcommands", async () => {
+    await createFakeHarness(tempRoot, {
+      commandName: "opencode",
+      requiresAcpArg: true,
+      harnessId: "opencode",
+      sessions: [
+        {
+          sessionId: "sess_opencode_1",
+          cwd: "/repo",
+          title: "shared exact title",
+          updatedAt: "2026-03-11T00:00:00.000Z",
+          history: [],
+        },
+      ],
+    });
+
+    const version = await runCliText(tempRoot, ["--output", "human", "--version"]);
+    expect(version.exitCode).toBe(0);
+    expect(version.stdout).toContain("lilac-acp ");
+
+    const snapshot = await runCliText(tempRoot, [
+      "sessions",
+      "--output",
+      "human",
+      "snapshot",
+      "--directory",
+      "/repo",
+      "--harness",
+      "opencode",
+      "--latest",
+    ]);
+    expect(snapshot.exitCode).toBe(0);
+    expect(snapshot.stdout).toContain("Session snapshot");
+    expect(snapshot.stdout).toContain("Harness: opencode");
   });
 });

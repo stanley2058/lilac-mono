@@ -16,15 +16,3 @@ await Bun.build({
 // Keep a stable executable entrypoint (committed, not generated).
 // This mirrors apps/tool-bridge/dist/index.js.
 await Bun.write("./dist/index.js", ["#!/usr/bin/env bun", 'import "./client.js";', ""].join("\n"));
-
-await Bun.write(
-  "./dist/opencode-alias.js",
-  [
-    "#!/usr/bin/env bun",
-    'process.env.LILAC_ACP_COMPAT_BIN = "lilac-opencode";',
-    'process.env.LILAC_ACP_ENTRYPOINT = new URL("./index.js", import.meta.url).pathname;',
-    'process.argv.push("--harness", "opencode");',
-    'import "./client.js";',
-    "",
-  ].join("\n"),
-);

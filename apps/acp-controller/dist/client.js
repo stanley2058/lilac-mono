@@ -15,7 +15,7 @@ var __export = (target, all) => {
 
 // controller.ts
 import { spawn as spawn2 } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // cli-flags.ts
 function toInt(value) {
@@ -15355,6 +15355,7 @@ async function listResolvedHarnesses() {
 import fs2 from "node:fs/promises";
 import os from "node:os";
 import path2 from "node:path";
+import { randomUUID } from "node:crypto";
 
 // types.ts
 var runStatusSchema = exports_external.enum(["submitted", "running", "completed", "failed", "cancelled"]);
@@ -15397,7 +15398,6 @@ var promptRunRecordSchema = exports_external.object({
   userMessageId: exports_external.string().uuid().optional(),
   requestedMode: exports_external.string().min(1).optional(),
   requestedModel: exports_external.string().min(1).optional(),
-  compatibilityBin: exports_external.enum(["lilac-acp", "lilac-opencode"]),
   session: sessionSummarySchema.optional(),
   plan: exports_external.array(sessionPlanEntrySchema).optional(),
   history: exports_external.array(historyMessageSchema).optional(),
@@ -15477,7 +15477,7 @@ function assertValidRunId(runId) {
 }
 async function atomicWriteFile(filePath, content) {
   const dirPath = path2.dirname(filePath);
-  const tempPath = path2.join(dirPath, `.${path2.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  const tempPath = path2.join(dirPath, `.${path2.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
   await fs2.writeFile(tempPath, content, "utf8");
   await fs2.rename(tempPath, filePath);
 }
@@ -15669,6 +15669,286 @@ function printJson(value) {
   process.stdout.write(`${JSON.stringify(value)}
 `);
 }
+function printText(text) {
+  process.stdout.write(text.endsWith(`
+`) ? text : `${text}
+`);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function getString(value) {
+  return typeof value === "string" ? value : undefined;
+}
+function getNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+function getBoolean(value) {
+  return typeof value === "boolean" ? value : undefined;
+}
+function getRecordArray(value) {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+function getStringArray(value) {
+  return Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : [];
+}
+function formatCommand(command, args) {
+  if (!command)
+    return;
+  return [command, ...args].join(" ");
+}
+function toListedSession(value) {
+  if (!isRecord(value))
+    return null;
+  const harnessId = getString(value.harnessId);
+  const sessionId = getString(value.sessionId);
+  const sessionRef = getString(value.sessionRef);
+  const cwd = getString(value.cwd);
+  if (!harnessId || !sessionId || !sessionRef || !cwd)
+    return null;
+  return {
+    harnessId,
+    sessionId,
+    sessionRef,
+    cwd,
+    title: getString(value.title),
+    updatedAt: getString(value.updatedAt),
+    capabilities: getStringArray(value.capabilities)
+  };
+}
+function formatSessionEntries(sessions) {
+  if (sessions.length === 0)
+    return ["No sessions found."];
+  const lines = [];
+  for (const session of sessions) {
+    lines.push(`- ${session.title ?? session.sessionRef}`);
+    lines.push(`  session: ${session.sessionRef}`);
+    lines.push(`  harness: ${session.harnessId}`);
+    lines.push(`  cwd: ${session.cwd}`);
+    if (session.updatedAt)
+      lines.push(`  updated: ${session.updatedAt}`);
+    if (session.capabilities.length > 0) {
+      lines.push(`  capabilities: ${session.capabilities.join(", ")}`);
+    }
+  }
+  return lines;
+}
+function formatWarnings(warnings) {
+  if (warnings.length === 0)
+    return [];
+  return ["Warnings:", ...warnings.map((warning) => `- ${warning}`)];
+}
+function formatCandidates(value) {
+  const candidates = getRecordArray(value).map((entry) => toListedSession(entry)).filter((entry) => entry !== null);
+  if (candidates.length === 0)
+    return [];
+  return ["Candidates:", ...formatSessionEntries(candidates)];
+}
+function formatHarnessesOutput(value) {
+  const harnesses = getRecordArray(value.harnesses);
+  if (harnesses.length === 0)
+    return "No harnesses found.";
+  const lines = [`Harnesses (${harnesses.length})`];
+  for (const harness of harnesses) {
+    const id = getString(harness.id) ?? "unknown";
+    const title = getString(harness.title) ?? id;
+    const launchable = getBoolean(harness.launchable) ?? false;
+    lines.push(`- ${title} (${id}) ${launchable ? "[available]" : "[unavailable]"}`);
+    const description = getString(harness.description);
+    if (description)
+      lines.push(`  ${description}`);
+    const command = formatCommand(getString(harness.command), getStringArray(harness.args));
+    if (command)
+      lines.push(`  command: ${command}`);
+    const installHint = getString(harness.installHint);
+    if (installHint && !launchable)
+      lines.push(`  install: ${installHint}`);
+  }
+  return lines.join(`
+`);
+}
+function formatSessionsOutput(value) {
+  const ok = getBoolean(value.ok);
+  const error48 = getString(value.error);
+  const sessions = getRecordArray(value.sessions).map((entry) => toListedSession(entry)).filter((entry) => entry !== null);
+  const warnings = getStringArray(value.warnings);
+  const lines = [];
+  if (ok === false && error48)
+    lines.push(`Error: ${error48}`, "");
+  lines.push(`Sessions (${sessions.length})`, ...formatSessionEntries(sessions));
+  const candidateLines = formatCandidates(value.candidates);
+  if (candidateLines.length > 0)
+    lines.push("", ...candidateLines);
+  const warningLines = formatWarnings(warnings);
+  if (warningLines.length > 0)
+    lines.push("", ...warningLines);
+  return lines.join(`
+`);
+}
+function formatSnapshotPlan(value) {
+  const entries = getRecordArray(value);
+  if (entries.length === 0)
+    return ["Plan: none"];
+  return [
+    "Plan:",
+    ...entries.map((entry) => {
+      const content = getString(entry.content) ?? "(missing content)";
+      const status = getString(entry.status) ?? "unknown";
+      const priority = getString(entry.priority) ?? "unknown";
+      return `- [${status}/${priority}] ${content}`;
+    })
+  ];
+}
+function formatRecentRuns(value) {
+  if (!isRecord(value))
+    return ["Recent turns: none"];
+  const runs = getRecordArray(value.runs);
+  if (runs.length === 0)
+    return ["Recent turns: none"];
+  const lines = ["Recent turns:"];
+  for (const run of runs) {
+    const user = isRecord(run.user) ? getString(run.user.text) : undefined;
+    const assistant = isRecord(run.assistant) ? getString(run.assistant.text) : undefined;
+    lines.push(`- User: ${user ?? ""}`);
+    lines.push(`  Assistant: ${assistant ?? "(no assistant reply)"}`);
+  }
+  return lines;
+}
+function formatSnapshotOutput(value) {
+  const ok = getBoolean(value.ok);
+  const error48 = getString(value.error);
+  const session = isRecord(value.session) ? value.session : undefined;
+  const meta3 = isRecord(value.meta) ? value.meta : undefined;
+  const lines = [];
+  if (ok === false && error48) {
+    lines.push(`Error: ${error48}`);
+    const sessionRef2 = getString(value.sessionRef);
+    if (sessionRef2)
+      lines.push(`Session: ${sessionRef2}`);
+    return lines.join(`
+`);
+  }
+  const title = session ? getString(session.title) : undefined;
+  const sessionRef = getString(value.sessionRef);
+  const sessionId = getString(value.sessionId);
+  lines.push(title ? `Session snapshot: ${title}` : "Session snapshot");
+  if (sessionRef)
+    lines.push(`Session: ${sessionRef}`);
+  else if (sessionId)
+    lines.push(`Session ID: ${sessionId}`);
+  const harnessId = getString(value.harnessId) ?? (meta3 ? getString(meta3.harnessId) : undefined);
+  if (harnessId)
+    lines.push(`Harness: ${harnessId}`);
+  const cwd = session ? getString(session.cwd) : undefined;
+  if (cwd)
+    lines.push(`Directory: ${cwd}`);
+  const updatedAt = session ? getString(session.updatedAt) : undefined;
+  if (updatedAt)
+    lines.push(`Updated: ${updatedAt}`);
+  const capabilities = meta3 ? getStringArray(meta3.capabilities) : [];
+  if (capabilities.length > 0)
+    lines.push(`Capabilities: ${capabilities.join(", ")}`);
+  lines.push("", ...formatSnapshotPlan(value.plan), "", ...formatRecentRuns(value.recent));
+  return lines.join(`
+`);
+}
+function formatRunOutput(value) {
+  const runId = getString(value.runId) ?? "unknown";
+  const status = getString(value.status);
+  const error48 = getString(value.error);
+  const resultText = getString(value.resultText);
+  const harnessId = getString(value.harnessId);
+  const sessionRef = getString(value.sessionRef);
+  const workerPid = getNumber(value.workerPid) ?? (isRecord(value.run) ? getNumber(value.run.workerPid) : undefined);
+  const signalled = getBoolean(value.signalled);
+  const lines = [];
+  if (status) {
+    lines.push(`Run ${runId}: ${status}`);
+  } else {
+    lines.push(`Run ${runId}`);
+  }
+  if (harnessId)
+    lines.push(`Harness: ${harnessId}`);
+  if (sessionRef)
+    lines.push(`Session: ${sessionRef}`);
+  if (workerPid !== undefined)
+    lines.push(`Worker PID: ${workerPid}`);
+  if (signalled !== undefined)
+    lines.push(`Signal sent: ${signalled ? "yes" : "no"}`);
+  if (error48)
+    lines.push(`Error: ${error48}`);
+  if (resultText)
+    lines.push("", resultText);
+  const candidateLines = formatCandidates(value.candidates);
+  if (candidateLines.length > 0)
+    lines.push("", ...candidateLines);
+  return lines.join(`
+`).trim();
+}
+function formatHelpOutput(value) {
+  const helpText = getString(value.help) ?? "";
+  const error48 = getString(value.error);
+  const version2 = getString(value.version);
+  const lines = [];
+  if (error48)
+    lines.push(`Error: ${error48}`, "");
+  lines.push(helpText);
+  if (version2)
+    lines.push("", `Version: ${version2}`);
+  return lines.join(`
+`);
+}
+function formatHumanOutput(value, commandName) {
+  if (!isRecord(value)) {
+    return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  }
+  if (typeof value.help === "string")
+    return formatHelpOutput(value);
+  if (Array.isArray(value.harnesses))
+    return formatHarnessesOutput(value);
+  if (Array.isArray(value.sessions))
+    return formatSessionsOutput(value);
+  if (isRecord(value.session) && isRecord(value.recent))
+    return formatSnapshotOutput(value);
+  if (typeof value.runId === "string")
+    return formatRunOutput(value);
+  const version2 = getString(value.version);
+  if (version2 && Object.keys(value).every((key) => key === "ok" || key === "version")) {
+    return `${commandName} ${version2}`;
+  }
+  const error48 = getString(value.error);
+  if (error48) {
+    const lines = [`Error: ${error48}`];
+    const candidateLines = formatCandidates(value.candidates);
+    if (candidateLines.length > 0)
+      lines.push("", ...candidateLines);
+    return lines.join(`
+`);
+  }
+  return JSON.stringify(value, null, 2);
+}
+function createOutputWriter(mode, commandName) {
+  if (mode === "json")
+    return printJson;
+  return (value) => {
+    printText(formatHumanOutput(value, commandName));
+  };
+}
+function stripGlobalFlags(args) {
+  const stripped = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--output") {
+      index++;
+      continue;
+    }
+    if (arg.startsWith("--output=")) {
+      continue;
+    }
+    stripped.push(arg);
+  }
+  return stripped;
+}
 function errorMessage2(error48) {
   if (error48 instanceof Error)
     return error48.message;
@@ -15744,6 +16024,18 @@ function isProcessAlive(pid) {
 async function refreshRunStatus(run) {
   if (isTerminalStatus(run.status))
     return run;
+  if (run.status === "submitted" && !run.cancelRequestedAt && !isProcessAlive(run.workerPid)) {
+    const workerPid = await spawnWorker(run.id);
+    if (workerPid) {
+      const restarted = {
+        ...run,
+        workerPid,
+        updatedAt: Date.now()
+      };
+      await saveRunRecord(restarted);
+      return restarted;
+    }
+  }
   if (run.workerPid && isProcessAlive(run.workerPid))
     return run;
   const next = {
@@ -15960,12 +16252,13 @@ function help(commandName) {
     `  ${commandName} prompt wait --run-id <id> [--timeout-ms <n>] [--poll-ms <n>]`,
     `  ${commandName} prompt cancel --run-id <id>`,
     "",
+    "Global options:",
+    "  --output <json|human>   Output format (default: json).",
+    "",
     "Notes:",
-    "  - Output is always JSON.",
     "  - --latest requires --harness.",
     "  - --title without --harness continues only when exactly one exact match exists.",
-    "  - New sessions require --harness so the controller knows where to create them.",
-    ...commandName === "lilac-opencode" ? ["  - lilac-opencode is a deprecated alias for lilac-acp --harness opencode."] : []
+    "  - New sessions require --harness so the controller knows where to create them."
   ].join(`
 `);
 }
@@ -16099,7 +16392,7 @@ async function runPromptSubmit(params) {
     });
     return 1;
   }
-  const runId = `run_${randomUUID()}`;
+  const runId = `run_${randomUUID2()}`;
   const run = {
     id: runId,
     status: "submitted",
@@ -16113,7 +16406,6 @@ async function runPromptSubmit(params) {
     ...target.requestedTitle ? { requestedTitle: target.requestedTitle } : {},
     promptText: params.text,
     textPreview: textPreview(params.text, 240),
-    compatibilityBin: params.compatibilityBin,
     ...params.requestedMode ? { requestedMode: params.requestedMode } : {},
     ...params.requestedModel ? { requestedModel: params.requestedModel } : {},
     permissions: createEmptyPermissionCounters()
@@ -16368,7 +16660,7 @@ async function runWorkerProcess(runId, version2) {
       capabilities: client.capabilities()
     };
     run.status = "running";
-    run.userMessageId = randomUUID();
+    run.userMessageId = randomUUID2();
     run.updatedAt = Date.now();
     await saveRunRecord(run);
     const refreshedRun = await loadRunRecord(run.id);
@@ -16418,19 +16710,30 @@ async function runWorkerProcess(runId, version2) {
   }
 }
 async function main(argv, options) {
-  const commandName = process.env.LILAC_ACP_COMPAT_BIN === "lilac-opencode" ? "lilac-opencode" : "lilac-acp";
-  const write = options?.write ?? printJson;
+  const commandName = "lilac-acp";
   const packageVersion = "0.0.5";
-  if (argv.length === 0 || argv[0] === "help" || argv.includes("--help")) {
+  const globalFlags = parseFlags(argv).flags;
+  const cleanArgv = stripGlobalFlags(argv);
+  const outputFlag = getStringFlag(globalFlags, "output");
+  if (outputFlag && outputFlag !== "json" && outputFlag !== "human") {
+    printJson({
+      ok: false,
+      error: `Invalid --output value '${outputFlag}' (expected json|human).`
+    });
+    return 1;
+  }
+  const outputMode = outputFlag === "human" ? "human" : "json";
+  const write = options?.write ?? createOutputWriter(outputMode, commandName);
+  if (cleanArgv.length === 0 || cleanArgv[0] === "help" || cleanArgv.includes("--help")) {
     write({ ok: true, help: help(commandName), version: packageVersion });
     return 0;
   }
-  if (argv[0] === "--version" || argv[0] === "-v") {
+  if (cleanArgv[0] === "--version" || cleanArgv[0] === "-v") {
     write({ ok: true, version: packageVersion });
     return 0;
   }
-  if (argv[0] === "_worker") {
-    const { flags, positionals } = parseFlags(argv.slice(1));
+  if (cleanArgv[0] === "_worker") {
+    const { flags, positionals } = parseFlags(cleanArgv.slice(1));
     if ((positionals[0] ?? "") !== "run") {
       write({ ok: false, error: "Unknown worker subcommand." });
       return 1;
@@ -16442,9 +16745,9 @@ async function main(argv, options) {
     }
     return runWorkerProcess(runId, packageVersion);
   }
-  const command = argv[0] ?? "";
+  const command = cleanArgv[0] ?? "";
   if (command === "harnesses") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "list";
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "list";
     if (subcommand !== "list") {
       write({
         ok: false,
@@ -16456,8 +16759,8 @@ async function main(argv, options) {
     return runHarnessesList(packageVersion, write);
   }
   if (command === "sessions") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "list";
-    const rest = subcommand === "list" || subcommand === "snapshot" ? argv.slice(2) : argv.slice(1);
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "list";
+    const rest = subcommand === "list" || subcommand === "snapshot" ? cleanArgv.slice(2) : cleanArgv.slice(1);
     const { flags } = parseFlags(rest);
     const directory = getStringFlag(flags, "directory") ?? process.cwd();
     const harnessId = getStringFlag(flags, "harness");
@@ -16492,8 +16795,8 @@ async function main(argv, options) {
     });
   }
   if (command === "prompt") {
-    const subcommand = argv[1] && !argv[1]?.startsWith("--") ? argv[1] : "submit";
-    const rest = subcommand === "submit" && argv[1]?.startsWith("--") ? argv.slice(1) : argv.slice(2);
+    const subcommand = cleanArgv[1] && !cleanArgv[1]?.startsWith("--") ? cleanArgv[1] : "submit";
+    const rest = subcommand === "submit" && cleanArgv[1]?.startsWith("--") ? cleanArgv.slice(1) : cleanArgv.slice(2);
     const { flags } = parseFlags(rest);
     if (!new Set(["submit", "status", "result", "wait", "cancel"]).has(subcommand)) {
       write({
@@ -16563,7 +16866,6 @@ async function main(argv, options) {
       timeoutMs: getIntFlag(flags, "timeout-ms", 20 * 60 * 1000),
       pollMs: getIntFlag(flags, "poll-ms", 1000),
       version: packageVersion,
-      compatibilityBin: commandName,
       write
     });
   }

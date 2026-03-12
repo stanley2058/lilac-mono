@@ -55,7 +55,6 @@ export const promptRunRecordSchema = z.object({
   userMessageId: z.string().uuid().optional(),
   requestedMode: z.string().min(1).optional(),
   requestedModel: z.string().min(1).optional(),
-  compatibilityBin: z.enum(["lilac-acp", "lilac-opencode"]),
   session: sessionSummarySchema.optional(),
   plan: z.array(sessionPlanEntrySchema).optional(),
   history: z.array(historyMessageSchema).optional(),
