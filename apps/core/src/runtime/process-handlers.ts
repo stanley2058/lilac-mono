@@ -8,6 +8,8 @@ export type ProcessHandlerParams = {
   logger: Logger;
   stop: () => Promise<void>;
   recordUnhandledRejection?: (reason: unknown, promise: Promise<unknown>) => void;
+  getExitCode?: () => number | undefined;
+  setExitCode?: (code: number) => void;
   exit?: ProcessExitFn;
   exitTimeoutMs?: number;
 };
@@ -22,6 +24,12 @@ const DEFAULT_EXIT_TIMEOUT_MS = 5_000;
 
 export function createProcessHandlers(params: ProcessHandlerParams): ProcessHandlers {
   const exit = params.exit ?? ((code: number) => process.exit(code));
+  const getExitCode = params.getExitCode ?? (() => process.exitCode);
+  const setExitCode =
+    params.setExitCode ??
+    ((code: number) => {
+      process.exitCode = code;
+    });
   const exitTimeoutMs = params.exitTimeoutMs ?? DEFAULT_EXIT_TIMEOUT_MS;
 
   let shuttingDown = false;
@@ -55,16 +63,17 @@ export function createProcessHandlers(params: ProcessHandlerParams): ProcessHand
       await params.stop();
     } catch (e) {
       params.logger.error("Shutdown failed", e);
-      process.exitCode = 1;
+      setExitCode(1);
     } finally {
       clearForceExitTimer();
-      const exitCode = typeof process.exitCode === "number" ? process.exitCode : 0;
+      const currentExitCode = getExitCode();
+      const exitCode = typeof currentExitCode === "number" ? currentExitCode : 0;
       exit(exitCode);
     }
   }
 
   async function handleFatal(trigger: string, error: unknown): Promise<void> {
-    process.exitCode = 1;
+    setExitCode(1);
     if (fatalShutdownStarted || shuttingDown) {
       params.logger.error(
         "Fatal process error during shutdown; exiting immediately",

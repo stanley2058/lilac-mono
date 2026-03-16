@@ -9,16 +9,29 @@ function createLoggerStub() {
   });
 }
 
+function createExitCodeHooks() {
+  let exitCode: number | undefined;
+  return {
+    getExitCode: () => exitCode,
+    setExitCode: (code: number) => {
+      exitCode = code;
+    },
+  };
+}
+
 describe("createProcessHandlers", () => {
   it("logs unhandled rejections without exiting", () => {
     const seen: unknown[] = [];
     const exitCalls: number[] = [];
+    const exitCodeHooks = createExitCodeHooks();
     const handlers = createProcessHandlers({
       logger: createLoggerStub(),
       stop: async () => {},
       recordUnhandledRejection: (reason) => {
         seen.push(reason);
       },
+      getExitCode: exitCodeHooks.getExitCode,
+      setExitCode: exitCodeHooks.setExitCode,
       exit: ((code: number) => {
         exitCalls.push(code);
         return undefined as never;
@@ -34,11 +47,14 @@ describe("createProcessHandlers", () => {
   it("treats uncaught exceptions as fatal and exits after stop", async () => {
     const exitCalls: number[] = [];
     let stopCalls = 0;
+    const exitCodeHooks = createExitCodeHooks();
     const handlers = createProcessHandlers({
       logger: createLoggerStub(),
       stop: async () => {
         stopCalls += 1;
       },
+      getExitCode: exitCodeHooks.getExitCode,
+      setExitCode: exitCodeHooks.setExitCode,
       exit: ((code: number) => {
         exitCalls.push(code);
         return undefined as never;
@@ -55,6 +71,7 @@ describe("createProcessHandlers", () => {
   it("exits immediately on a second fatal error during shutdown", async () => {
     const exitCalls: number[] = [];
     let resolveStop!: () => void;
+    const exitCodeHooks = createExitCodeHooks();
     const stopPromise = new Promise<void>((resolve) => {
       resolveStop = () => resolve();
     });
@@ -63,6 +80,8 @@ describe("createProcessHandlers", () => {
       stop: async () => {
         await stopPromise;
       },
+      getExitCode: exitCodeHooks.getExitCode,
+      setExitCode: exitCodeHooks.setExitCode,
       exit: ((code: number) => {
         exitCalls.push(code);
         return undefined as never;
