@@ -26,6 +26,8 @@ import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
 
 import { SqliteTranscriptStore } from "../transcript/transcript-store";
+import { isHeartbeatSessionId } from "../heartbeat/common";
+import { startHeartbeatService } from "../heartbeat/heartbeat-service";
 
 import { SqliteWorkflowStore } from "../workflow/workflow-store";
 import { startWorkflowService } from "../workflow/workflow-service";
@@ -34,11 +36,11 @@ import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
 import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
 import { createToolServer } from "../tool-server/create-tool-server";
-import { createDefaultToolServerTools } from "../tool-server/default-tools";
 import {
   createRequestMessageCache,
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
+import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plugins";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
 export type CoreRuntime = {
@@ -137,11 +139,13 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let stopBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopAgentRunner: Awaited<ReturnType<typeof startBusAgentRunner>> | null = null;
+  let stopHeartbeat: Awaited<ReturnType<typeof startHeartbeatService>> | null = null;
 
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
   let requestMessageCache: RequestMessageCache | null = null;
   let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
+  let pluginManager: CoreToolPluginManager | null = null;
   let runtimeFullyStarted = false;
   let coreConfigWatcher: FSWatcher | null = null;
   let coreConfigValidationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -364,14 +368,20 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         subscriptionId: subId(subscriptionPrefix, "tool-request-cache"),
       });
 
-      toolServer = createToolServer({
-        tools: createDefaultToolServerTools({
+      pluginManager = createCoreToolPluginManager({
+        runtime: {
           bus,
           adapter,
           getConfig: () => getCoreConfig(),
           workflowStore,
           discordSearch: discordSearchService ?? undefined,
-        }),
+          transcriptStore: transcriptStore ?? undefined,
+        },
+        dataDir: env.dataDir,
+      });
+
+      toolServer = createToolServer({
+        pluginManager,
         logger: createLogger({
           module: "tool-server",
         }),
@@ -435,6 +445,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopAgentRunner = await startBusAgentRunner({
         bus,
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
+        pluginManager,
         cwd,
         transcriptStore: transcriptStore ?? undefined,
       });
@@ -448,6 +459,14 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         snapshot: null,
         reason: "empty" as const,
       };
+
+      const initialHeartbeatExternalState = restartLoad.snapshot
+        ? {
+            activeRequestIds: restartLoad.snapshot.agent
+              .filter((entry) => entry.kind === "active" && !isHeartbeatSessionId(entry.sessionId))
+              .map((entry) => entry.requestId),
+          }
+        : undefined;
 
       if (restartLoad.snapshot) {
         await restoreGracefulSnapshot(restartLoad.snapshot).catch((e: unknown) => {
@@ -464,6 +483,16 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           reason: restartLoad.reason,
         });
       }
+
+      stopHeartbeat = await startHeartbeatService({
+        bus,
+        subscriptionId: subId(subscriptionPrefix, "heartbeat"),
+        initialExternalState: initialHeartbeatExternalState,
+      });
+
+      logger.info("Heartbeat service started", {
+        subscriptionId: subId(subscriptionPrefix, "heartbeat"),
+      });
 
       runtimeFullyStarted = true;
 
@@ -519,6 +548,9 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       });
       stopGithubWebhook = null;
 
+      await safe("graceful.heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
+      stopHeartbeat = null;
+
       await safe("graceful.agentRunner.beginDrain", () =>
         agentRunner.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }),
       );
@@ -569,6 +601,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
     // Stop in reverse order (best-effort).
     await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
+    await safe("heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
     await safe(
       "discordSearchIndexer.stop",
       () => stopDiscordSearchIndexer?.stop() ?? Promise.resolve(),

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
-import { formatToolArgsForDisplay } from "../../src/tools/tool-args-display";
+import {
+  formatToolArgsForDisplay,
+  formatToolArgsForDisplayWithSpecs,
+} from "../../src/tools/tool-args-display";
 
 describe("formatToolArgsForDisplay", () => {
   it("formats bash command and truncates to 30 chars including ellipsis", () => {
@@ -124,5 +128,23 @@ describe("formatToolArgsForDisplay", () => {
     expect(formatToolArgsForDisplay("read_file", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("apply_patch", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("edit_file", { nope: true })).toBe("");
+  });
+
+  it("prefers plugin metadata formatter when provided", () => {
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      [
+        "custom_tool",
+        {
+          name: "custom_tool",
+          createTool: () => ({}),
+          isEnabled: () => true,
+          formatArgs: () => " custom-display",
+        },
+      ],
+    ]);
+
+    expect(formatToolArgsForDisplayWithSpecs("custom_tool", { anything: true }, specs)).toBe(
+      " custom-display",
+    );
   });
 });

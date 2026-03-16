@@ -3,13 +3,14 @@ import path from "node:path";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { EditingToolMode } from "@stanley2058/lilac-utils";
+import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 import { expandTilde } from "./fs/fs-impl";
 import { parsePatch } from "./apply-patch/apply-patch-core";
 import {
   formatBatchChildValidationError,
   formatBatchPreflightMissingFieldError,
 } from "./batch-error-message";
-import { formatToolArgsForDisplay } from "./tool-args-display";
+import { formatToolArgsForDisplayWithSpecs } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
@@ -137,7 +138,10 @@ function resolveTouchedPathKey(cwd: string, p: string): string {
   return `ssh://${target.host}${suffix}`;
 }
 
-function collectApplyPatchTouchedPaths(params: { patchText: string; cwd: string }): Set<string> {
+export function collectApplyPatchTouchedPaths(params: {
+  patchText: string;
+  cwd: string;
+}): Set<string> {
   const hunks = parsePatch(params.patchText);
   const out = new Set<string>();
   for (const hunk of hunks) {
@@ -162,8 +166,28 @@ function collectApplyPatchTouchedPaths(params: { patchText: string; cwd: string 
   return out;
 }
 
-function collectEditFileTouchedPaths(params: { path: string; cwd: string }): Set<string> {
+export function collectEditFileTouchedPaths(params: { path: string; cwd: string }): Set<string> {
   return new Set([resolveTouchedPathKey(params.cwd, params.path)]);
+}
+
+function normalizeToolSpecs(
+  toolSpecs?: ReadonlyMap<string, Level1ToolSpec<unknown>>,
+): ReadonlyMap<string, Level1ToolSpec<unknown>> | undefined {
+  if (!toolSpecs || toolSpecs.size === 0) return undefined;
+  return toolSpecs;
+}
+
+function resolveAllowedToolNamesFromSpecs(
+  toolSpecs?: ReadonlyMap<string, Level1ToolSpec<unknown>>,
+): [string, ...string[]] | null {
+  const normalized = normalizeToolSpecs(toolSpecs);
+  if (!normalized) return null;
+
+  const names = [...normalized.values()]
+    .filter((spec) => spec.supportsBatch === true)
+    .map((spec) => spec.name) as string[];
+  if (names.length === 0) return null;
+  return names as [string, ...string[]];
 }
 
 function toolSetLookup(tools: ToolSet, name: string): ToolLike | undefined {
@@ -175,10 +199,11 @@ function toolSetLookup(tools: ToolSet, name: string): ToolLike | undefined {
 export function batchTool(params: {
   defaultCwd: string;
   getTools: () => ToolSet;
+  getToolSpecs?: () => ReadonlyMap<string, Level1ToolSpec<unknown>>;
   editingMode?: EditingToolMode | "none";
   reportToolStatus?: (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;
@@ -186,10 +211,10 @@ export function batchTool(params: {
 }) {
   const { defaultCwd, getTools, reportToolStatus } = params;
   const editingMode = params.editingMode ?? "apply_patch";
-  const allowedToolNames = ALLOWED_TOOL_NAMES_BY_MODE[editingMode] as unknown as [
-    string,
-    ...string[],
-  ];
+  const toolSpecs = normalizeToolSpecs(params.getToolSpecs?.());
+  const allowedToolNames =
+    resolveAllowedToolNamesFromSpecs(toolSpecs) ??
+    (ALLOWED_TOOL_NAMES_BY_MODE[editingMode] as unknown as [string, ...string[]]);
   const batchInputSchema = makeBatchInputSchema(allowedToolNames);
   const editCallDescription =
     editingMode === "none"
@@ -198,7 +223,7 @@ export function batchTool(params: {
 
   const reportSafe = (update: {
     toolCallId: string;
-    status: "start" | "end";
+    status: "start" | "update" | "end";
     display: string;
     ok?: boolean;
     error?: string;
@@ -245,7 +270,7 @@ export function batchTool(params: {
     if (recent.length === 0) return header;
 
     const lines = recent.map((c, idx) => {
-      const args = formatToolArgsForDisplay(c.tool, c.args);
+      const args = formatToolArgsForDisplayWithSpecs(c.tool, c.args, toolSpecs);
       const branch = idx === recent.length - 1 ? "└─" : "├─";
       return `${branch} ${iconForChild(c)} ${c.tool}${args}`;
     });
@@ -280,13 +305,22 @@ export function batchTool(params: {
         const conflicts: string[] = [];
         for (let i = 0; i < calls.length; i++) {
           const call = calls[i]!;
-          if (!activeEditTool || call.tool !== activeEditTool) continue;
+          const spec = toolSpecs?.get(call.tool);
+          const shouldPreflight =
+            Boolean(spec?.editTargets) || (activeEditTool !== null && call.tool === activeEditTool);
+          if (!shouldPreflight) continue;
           const raw = call.parameters as Record<string, unknown>;
           const cwd = typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
 
           let touched: Set<string>;
 
-          if (activeEditTool === "apply_patch") {
+          if (spec?.editTargets) {
+            try {
+              touched = new Set(await spec.editTargets(raw, { cwd }));
+            } catch {
+              continue;
+            }
+          } else if (activeEditTool === "apply_patch") {
             if (typeof raw["patchText"] !== "string") {
               throw new Error(
                 formatBatchPreflightMissingFieldError({
@@ -305,8 +339,6 @@ export function batchTool(params: {
                 cwd,
               });
             } catch {
-              // If the patch is invalid we can't preflight touched paths.
-              // Let the apply_patch tool handle the error for this call.
               continue;
             }
           } else {
@@ -314,7 +346,7 @@ export function batchTool(params: {
               throw new Error(
                 formatBatchPreflightMissingFieldError({
                   childIndex: i + 1,
-                  toolName: activeEditTool,
+                  toolName: call.tool,
                   field: "path",
                   expectedType: "string",
                   parameters: raw,
@@ -362,11 +394,12 @@ export function batchTool(params: {
         }));
         let updateSeq = 0;
 
+        let hasPublishedProgress = false;
         const publishProgress = () => {
           const done = children.filter((c) => c.status === "done").length;
           reportSafe({
             toolCallId: parentId,
-            status: "start",
+            status: hasPublishedProgress ? "update" : "start",
             display: renderBatchDisplay({
               total: children.length,
               done,
@@ -374,6 +407,7 @@ export function batchTool(params: {
               collapsed: false,
             }),
           });
+          hasPublishedProgress = true;
         };
 
         // Best-effort: establish an initial progress line.

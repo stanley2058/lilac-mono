@@ -3,18 +3,138 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { RESPONSE_COMMENTARY_INSTRUCTIONS } from "@stanley2058/lilac-utils";
+import {
+  createLilacBus,
+  lilacEventTypes,
+  type HandleContext,
+  type Message,
+  type PublishOptions,
+  type RawBus,
+  type SubscriptionOptions,
+} from "@stanley2058/lilac-event-bus";
+import {
+  RESPONSE_COMMENTARY_INSTRUCTIONS,
+  createLogger,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
+import { AiSdkPiAgent } from "@stanley2058/lilac-agent";
 import type { ModelMessage } from "ai";
+import type { LanguageModel } from "ai";
 
 import {
+  appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
+  createDeferredSubagentManager,
+  buildHeartbeatOverlayForRequest,
+  buildPersistedHeartbeatMessages,
   mergeToSingleUserMessage,
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
+  shouldCancelRunPolicyRequest,
+  shouldCancelIdleOnlyGlobalRequest,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
+
+function fakeModel(): LanguageModel {
+  return {} as LanguageModel;
+}
+
+function createInMemoryRawBus(): RawBus {
+  const topics = new Map<string, Array<Message<unknown>>>();
+  const subs = new Set<{
+    topic: string;
+    opts: SubscriptionOptions;
+    handler: (msg: Message<unknown>, ctx: HandleContext) => Promise<void>;
+  }>();
+
+  return {
+    publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const stored: Message<unknown> = {
+        topic: opts.topic,
+        id,
+        type: opts.type,
+        ts: Date.now(),
+        key: opts.key,
+        headers: opts.headers,
+        data: msg.data as unknown,
+      };
+
+      const list = topics.get(opts.topic) ?? [];
+      list.push(stored);
+      topics.set(opts.topic, list);
+
+      for (const s of subs) {
+        if (s.topic !== opts.topic) continue;
+        await s.handler(stored, { cursor: id, commit: async () => {} });
+      }
+
+      return { id, cursor: id };
+    },
+
+    subscribe: async <TData>(
+      topic: string,
+      opts: SubscriptionOptions,
+      handler: (msg: Message<TData>, ctx: HandleContext) => Promise<void>,
+    ) => {
+      const entry = {
+        topic,
+        opts,
+        handler: handler as unknown as (msg: Message<unknown>, ctx: HandleContext) => Promise<void>,
+      };
+      subs.add(entry);
+
+      const offset = opts.offset;
+      if (offset?.type === "begin" || offset?.type === "cursor") {
+        const existing = topics.get(topic) ?? [];
+        const replay =
+          offset.type === "cursor"
+            ? (() => {
+                const cursorIndex = existing.findIndex((m) => m.id === offset.cursor);
+                return cursorIndex >= 0 ? existing.slice(cursorIndex + 1) : existing;
+              })()
+            : existing;
+        for (const m of replay) {
+          await handler(m as unknown as Message<TData>, {
+            cursor: m.id,
+            commit: async () => {},
+          });
+        }
+      }
+
+      return {
+        stop: async () => {
+          subs.delete(entry);
+        },
+      };
+    },
+
+    fetch: async <TData>(topic: string) => {
+      const existing = topics.get(topic) ?? [];
+      return {
+        messages: existing.map((m) => ({
+          msg: m as unknown as Message<TData>,
+          cursor: m.id,
+        })),
+        next: existing.length > 0 ? existing[existing.length - 1]?.id : undefined,
+      };
+    },
+
+    close: async () => {},
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 100): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error("timed out waiting for condition");
+    }
+    await Bun.sleep(1);
+  }
+}
 
 describe("toOpenAIPromptCacheKey", () => {
   it("returns the session id when it fits provider limits", () => {
@@ -150,6 +270,256 @@ describe("appendAdditionalSessionMemoBlock", () => {
   it("omits the block when combined memo is empty", () => {
     const out = appendAdditionalSessionMemoBlock("Base prompt", ["  ", "\n\n"]);
     expect(out).toBe("Base prompt");
+  });
+});
+
+describe("appendConfiguredAliasPromptBlock", () => {
+  it("appends sorted user and session aliases with ids and comments", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "Base prompt",
+      cfg: {
+        entity: {
+          users: {
+            Stanley: { discord: "u1", comment: "Primary operator" },
+            alice: { discord: "u2" },
+          },
+          sessions: {
+            discord: {
+              ops: { discord: "c1", comment: "Deploy coordination" },
+              Deployments: "c2",
+            },
+          },
+        },
+      } as Pick<CoreConfig, "entity">,
+      coreConfigPath: "/tmp/core-config.yaml",
+    });
+
+    expect(out).toContain("Configured Aliases (Discord):");
+    expect(out).toContain("- @alice (discord, u2)");
+    expect(out).toContain("- @Stanley (discord, u1): Primary operator");
+    expect(out).toContain("- #Deployments (discord, c2)");
+    expect(out).toContain("- #ops (discord, c1): Deploy coordination");
+    expect(out).not.toContain("read /tmp/core-config.yaml");
+  });
+
+  it("points to core-config when alias sections are truncated", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "",
+      cfg: {
+        entity: {
+          users: {
+            alice: { discord: "u1" },
+            bob: { discord: "u2" },
+          },
+          sessions: {
+            discord: {
+              dev: "c1",
+              ops: "c2",
+            },
+          },
+        },
+      } as Pick<CoreConfig, "entity">,
+      coreConfigPath: "/tmp/core-config.yaml",
+      maxUserAliases: 1,
+      maxSessionAliases: 1,
+    });
+
+    expect(out).toContain("- @alice (discord, u1)");
+    expect(out).not.toContain("- @bob (discord, u2)");
+    expect(out).toContain("- #dev (discord, c1)");
+    expect(out).not.toContain("- #ops (discord, c2)");
+    expect(out).toContain("read /tmp/core-config.yaml");
+  });
+
+  it("handles configs with user aliases but no session aliases", () => {
+    const out = appendConfiguredAliasPromptBlock({
+      baseSystemPrompt: "Base prompt",
+      cfg: {
+        entity: {
+          users: {
+            alice: { discord: "u1" },
+          },
+        },
+      } as unknown as Pick<CoreConfig, "entity">,
+    });
+
+    expect(out).toContain("- @alice (discord, u1)");
+    expect(out).not.toContain("Sessions:");
+  });
+});
+
+describe("heartbeat overlays", () => {
+  it("adds ordinary-session request metadata when heartbeat is enabled", () => {
+    const cfg = {
+      surface: {
+        heartbeat: {
+          enabled: true,
+          cron: "*/30 * * * *",
+          quietAfterActivityMs: 300000,
+          retryBusyMs: 60000,
+        },
+      },
+    } as unknown as Pick<CoreConfig, "surface">;
+
+    const overlay = buildHeartbeatOverlayForRequest({
+      cfg,
+      requestId: "discord:1:2",
+      sessionId: "chan",
+      runProfile: "primary",
+      nowMs: 0,
+    });
+
+    expect(overlay).toContain("Heartbeat Context");
+    expect(overlay).toContain("sourceSessionId='chan'");
+    expect(overlay).toContain("sourceRequestId='discord:1:2'");
+  });
+
+  it("adds heartbeat quiet-hours context for heartbeat session", () => {
+    const cfg = {
+      surface: {
+        heartbeat: {
+          enabled: true,
+          cron: "*/30 * * * *",
+          quietAfterActivityMs: 300000,
+          retryBusyMs: 60000,
+          softQuietHours: {
+            start: "23:00",
+            end: "08:00",
+            timezone: "UTC",
+          },
+        },
+      },
+    } as unknown as Pick<CoreConfig, "surface">;
+
+    const overlay = buildHeartbeatOverlayForRequest({
+      cfg,
+      requestId: "heartbeat:1",
+      sessionId: "__heartbeat__",
+      runProfile: "primary",
+      nowMs: Date.UTC(2026, 2, 11, 23, 30, 0),
+    });
+
+    expect(overlay).toContain("Heartbeat Quiet Hours");
+    expect(overlay).toContain("Current local quiet-hours state: inside");
+  });
+});
+
+describe("buildPersistedHeartbeatMessages", () => {
+  it("stores heartbeat summary as a single assistant message", () => {
+    expect(buildPersistedHeartbeatMessages("summary")).toEqual([
+      { role: "assistant", content: "summary" },
+    ]);
+  });
+});
+
+describe("shouldCancelIdleOnlyGlobalRequest", () => {
+  it("cancels when another non-heartbeat session is running", () => {
+    type IdleOnlyGlobalState =
+      Parameters<typeof shouldCancelIdleOnlyGlobalRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, IdleOnlyGlobalState>([
+      [
+        "discord-session",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "req:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+      [
+        "__heartbeat__",
+        {
+          running: false,
+          agent: null,
+          queue: [],
+          activeRequestId: null,
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelIdleOnlyGlobalRequest({
+        runPolicy: "idle_only_global",
+        sessionId: "__heartbeat__",
+        states,
+      }),
+    ).toBe(true);
+  });
+
+  it("cancels when the heartbeat session is already running", () => {
+    type IdleOnlyGlobalState =
+      Parameters<typeof shouldCancelIdleOnlyGlobalRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, IdleOnlyGlobalState>([
+      [
+        "__heartbeat__",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "heartbeat:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelIdleOnlyGlobalRequest({
+        runPolicy: "idle_only_global",
+        sessionId: "__heartbeat__",
+        states,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("shouldCancelRunPolicyRequest", () => {
+  it("cancels idle_only_session when the session is already running", () => {
+    type RunnerState =
+      Parameters<typeof shouldCancelRunPolicyRequest>[0]["states"] extends ReadonlyMap<
+        string,
+        infer T
+      >
+        ? T
+        : never;
+
+    const states = new Map<string, RunnerState>([
+      [
+        "chan",
+        {
+          running: true,
+          agent: null,
+          queue: [],
+          activeRequestId: "req:1",
+          activeRun: null,
+          compactedToolCallIds: new Set<string>(),
+        },
+      ],
+    ]);
+
+    expect(
+      shouldCancelRunPolicyRequest({
+        runPolicy: "idle_only_session",
+        sessionId: "chan",
+        states,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -335,5 +705,340 @@ describe("mergeToSingleUserMessage", () => {
     expect(Array.isArray(out.content) && out.content.some((part) => part.type === "image")).toBe(
       true,
     );
+  });
+});
+
+describe("createDeferredSubagentManager", () => {
+  it("replays child completion that happened before restore reattach", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const parentHeaders = {
+      request_id: "parent-request",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      task: "Map auth flow",
+      timeoutMs: 5_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-1",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-request",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-1",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+    });
+
+    const recovery = manager.buildRecoveryState();
+    expect(recovery).toBeDefined();
+    await manager.stop();
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "done after restart" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    const restored = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+    await restored.restore(recovery);
+
+    await waitFor(() => restored.hasBufferedCompletions());
+
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    const injected = await restored.injectBuffered(agent);
+    expect(injected).toBe(true);
+    expect(agent.state.messages).toHaveLength(3);
+
+    const toolMessage = agent.state.messages[2];
+    expect(toolMessage?.role).toBe("tool");
+    if (toolMessage?.role !== "tool") throw new Error("expected tool message");
+    const toolResult = toolMessage.content[0];
+    expect(toolResult?.type).toBe("tool-result");
+    if (toolResult?.type !== "tool-result") throw new Error("expected tool result");
+    expect(toolResult.output).toEqual({
+      type: "json",
+      value: {
+        ok: true,
+        status: "resolved",
+        profile: "explore",
+        childRequestId: "child-request",
+        childSessionId: "child-session",
+        durationMs: expect.any(Number),
+        finalText: "done after restart",
+      },
+    });
+
+    await restored.stop();
+  });
+
+  it("does not miss a child completion that lands before the parent starts waiting", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const parentHeaders = {
+      request_id: "parent-request",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      task: "Map auth flow",
+      timeoutMs: 5_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-1",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-request",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-1",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+    });
+
+    const waitState = manager.snapshotWaitState();
+    expect(waitState.hasOutstandingChildren).toBe(true);
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "done before wait registered" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    await waitFor(() => manager.hasBufferedCompletions());
+    await manager.waitForSignalSince(waitState.signalVersion);
+
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    const injected = await manager.injectBuffered(agent);
+    expect(injected).toBe(true);
+    expect(manager.hasOutstandingChildren()).toBe(false);
+
+    const toolMessage = agent.state.messages[2];
+    expect(toolMessage?.role).toBe("tool");
+    if (toolMessage?.role !== "tool") throw new Error("expected tool message");
+    const toolResult = toolMessage.content[0];
+    expect(toolResult?.type).toBe("tool-result");
+    if (toolResult?.type !== "tool-result") throw new Error("expected tool result");
+    expect(toolResult.output).toEqual({
+      type: "json",
+      value: {
+        ok: true,
+        status: "resolved",
+        profile: "explore",
+        childRequestId: "child-request",
+        childSessionId: "child-session",
+        durationMs: expect.any(Number),
+        finalText: "done before wait registered",
+      },
+    });
+
+    await manager.stop();
+  });
+
+  it("does not duplicate restored child text when replay settles before response text", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const parentHeaders = {
+      request_id: "parent-request",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      task: "Map auth flow",
+      timeoutMs: 5_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-1",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-request",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-1",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "a" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "b" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    await waitFor(() => manager.buildRecoveryState()?.outstanding[0]?.finalText === "ab");
+
+    const recovery = manager.buildRecoveryState();
+    expect(recovery?.outstanding[0]?.finalText).toBe("ab");
+    await manager.stop();
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved" },
+      {
+        headers: {
+          request_id: "child-request",
+          session_id: "child-session",
+          request_client: "unknown",
+        },
+      },
+    );
+
+    const restored = createDeferredSubagentManager({
+      bus,
+      logger,
+      parentHeaders,
+    });
+    await restored.restore(recovery);
+
+    await waitFor(() => restored.hasBufferedCompletions());
+
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    const injected = await restored.injectBuffered(agent);
+    expect(injected).toBe(true);
+
+    const toolMessage = agent.state.messages[2];
+    expect(toolMessage?.role).toBe("tool");
+    if (toolMessage?.role !== "tool") throw new Error("expected tool message");
+    const toolResult = toolMessage.content[0];
+    expect(toolResult?.type).toBe("tool-result");
+    if (toolResult?.type !== "tool-result") throw new Error("expected tool result");
+    expect(toolResult.output).toEqual({
+      type: "json",
+      value: {
+        ok: true,
+        status: "resolved",
+        profile: "explore",
+        childRequestId: "child-request",
+        childSessionId: "child-session",
+        durationMs: expect.any(Number),
+        finalText: "ab",
+      },
+    });
+
+    await restored.stop();
   });
 });

@@ -1,4 +1,5 @@
 export * from "./surface";
+export * from "./plugins";
 export * from "./tool-server";
 export * from "./workflow/workflow-service";
 export * from "./workflow/workflow-store";

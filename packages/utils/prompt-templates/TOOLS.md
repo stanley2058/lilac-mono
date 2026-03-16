@@ -30,6 +30,8 @@ These tools: `bash`, `read_file`, `glob`, `grep`, `apply_patch` supports SSH-sty
   - `<host>` must be a configured SSH host alias from the server's SSH config (see `ssh.hosts`).
   - `<path>` may be absolute (`/repo`), tilde (`~/repo`), or relative (`repo` which anchors to `~/repo`).
 - When reading remote files, paths may be returned as `ssh://<host>/<path>` to avoid confusion with local paths.
+- Prefer first class tool support over the `ssh.run` tool or direct `ssh` invocation.
+  - Fallback to them only if you are doing non-trivial operations where the built-in `cwd` fails.
 
 ## `tools` CLI
 

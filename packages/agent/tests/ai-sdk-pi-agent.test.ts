@@ -23,4 +23,41 @@ describe("AiSdkPiAgent model spec tracking", () => {
     agent.setModel(fakeModel());
     expect(agent.state.modelSpecifier).toBeUndefined();
   });
+
+  it("appends messages while idle", () => {
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    agent.appendMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "subagent_result",
+            input: { childRequestId: "child-1", status: "resolved" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "subagent_result",
+            output: { type: "json", value: { ok: true } },
+          },
+        ],
+      },
+    ]);
+
+    expect(agent.state.messages).toHaveLength(3);
+    expect(agent.state.messages[1]?.role).toBe("assistant");
+    expect(agent.state.messages[2]?.role).toBe("tool");
+  });
 });

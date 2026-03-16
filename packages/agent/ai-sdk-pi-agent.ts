@@ -669,6 +669,19 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     });
   }
 
+  /** Append messages to the existing transcript while idle. */
+  appendMessages(messages: ModelMessage[]) {
+    if (this.state.streamMessage || this.state.pendingToolCalls.size > 0) {
+      throw new Error(
+        "Cannot append messages during a turn. Wait for the current model/tool step to finish.",
+      );
+    }
+
+    for (const message of messages) {
+      this.appendMessage(message);
+    }
+  }
+
   /** Clear the transcript. */
   clearMessages() {
     this.replaceMessages([], { reason: "replace" });

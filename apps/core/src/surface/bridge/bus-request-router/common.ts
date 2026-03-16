@@ -1,5 +1,5 @@
 import type { EvtAdapterMessageCreatedData } from "@stanley2058/lilac-event-bus";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import type { MsgRef } from "../../types";
 
@@ -57,7 +57,8 @@ export function resolveBotMentionNames(input: { cfg: CoreConfig; botUserId?: str
   if (input.botUserId) {
     const users = input.cfg.entity?.users ?? {};
     for (const [alias, rec] of Object.entries(users)) {
-      if (rec.discord !== input.botUserId) continue;
+      const resolved = getDiscordUserAliasValue(rec);
+      if (!resolved || resolved.discordId !== input.botUserId) continue;
       addName(alias);
     }
   }
@@ -287,8 +288,10 @@ export function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> 
   const users = cfg.entity?.users ?? {};
 
   for (const [alias, rec] of Object.entries(users)) {
-    if (!out.has(rec.discord)) {
-      out.set(rec.discord, alias);
+    const resolved = getDiscordUserAliasValue(rec);
+    if (!resolved) continue;
+    if (!out.has(resolved.discordId)) {
+      out.set(resolved.discordId, alias);
     }
   }
 
@@ -322,13 +325,27 @@ export function getDiscordFlags(raw: unknown): {
   };
 }
 
-export type RouterConfigOverride = Omit<CoreConfig, "tools"> & {
+export type RouterConfigOverride = Omit<CoreConfig, "tools" | "surface"> & {
   tools?: CoreConfig["tools"];
+  surface: Omit<CoreConfig["surface"], "heartbeat"> & {
+    heartbeat?: CoreConfig["surface"]["heartbeat"];
+  };
 };
 
 export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig {
   return {
     ...config,
+    surface: {
+      ...config.surface,
+      heartbeat: config.surface.heartbeat ?? {
+        enabled: false,
+        cron: "*/30 * * * *",
+        quietAfterActivityMs: 5 * 60 * 1000,
+        retryBusyMs: 60 * 1000,
+        defaultOutputSession: undefined,
+        softQuietHours: undefined,
+      },
+    },
     tools: config.tools ?? {
       web: {
         search: {

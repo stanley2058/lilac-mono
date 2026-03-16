@@ -5,6 +5,10 @@ tools:
     search:
       provider: tavily
 
+plugins:
+  disabled: []
+  config: {}
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:
@@ -14,6 +18,8 @@ surface:
     defaultMode: mention
 
     # Per-session routing mode overrides. Key is the session/channel id.
+    # Reserved internal keys: "__heartbeat__" (canonical) and "heartbeat" (alias)
+    # target the autonomous heartbeat lane.
     sessionModes: {}
     # sessionModes:
     #   "123456789012345678":
@@ -29,6 +35,10 @@ surface:
     #     # additionalPrompts:
     #     #   - "Keep replies concise for this session."
     #     #   - "file:///abs/path/to/session-memo.md"
+    #   "__heartbeat__":
+    #     # Optional: override the internal heartbeat lane model.
+    #     # The convenience alias "heartbeat" is also accepted.
+    #     model: "sonnet"
 
     # Debounce window (ms) for active mode initial prompt batching.
     activeDebounceMs: 3000
@@ -86,6 +96,27 @@ surface:
         # - list: render a wrapped row/key-value list in a text codeblock
         # - passthrough: keep original markdown table unchanged
         fallbackMode: list
+
+  heartbeat:
+    # Enable the internal autonomous heartbeat lane.
+    enabled: false
+    # Optional heartbeat model override lives under:
+    # surface.router.sessionModes."__heartbeat__".model
+    # The alias key "heartbeat" is also accepted.
+    # Optional default output destination for proactive heartbeat messages.
+    # Format: <client>/<sessionIdOrAlias>, for example: discord/ops
+    # defaultOutputSession: "discord/ops"
+    # When heartbeat gets a chance to think (5-field minute-precision cron).
+    cron: "*/30 * * * *"
+    # Suppress heartbeat for this long after any non-heartbeat request activity.
+    quietAfterActivityMs: 300000
+    # Retry suppressed wakes after this delay.
+    retryBusyMs: 60000
+    # Optional quiet-hours hint for heartbeat instructions only.
+    # softQuietHours:
+    #   start: "23:00"
+    #   end: "08:00"
+    #   timezone: "Asia/Taipei"
 
 agent:
   # Optional: include token/model timing stats in final response metadata.
@@ -229,11 +260,16 @@ models:
 # Notes:
 # - Matches are case-insensitive; the canonical casing is preserved from config.
 # - Tokens are sanitized (whitespace -> '_' and leading @/# stripped).
+# - Optional comments are injected into the system prompt alongside alias + raw id.
 # entity:
 #   users:
 #     Stanley:
 #       discord: "123456789012345678"
+#       comment: "Primary operator"
 #
 #   sessions:
 #     discord:
-#       ops: "234567890123456789"
+#       ops:
+#         discord: "234567890123456789"
+#         comment: "Deploy coordination"
+#       general: "345678901234567890"

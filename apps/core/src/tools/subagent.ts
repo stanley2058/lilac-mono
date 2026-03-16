@@ -10,34 +10,68 @@ import { createLogger } from "@stanley2058/lilac-utils";
 import { requireRequestContext } from "../shared/req-context";
 
 const subagentProfileSchema = z.enum(["explore", "general", "self"]);
+const subagentModeSchema = z.enum(["deferred", "sync"]);
 
-const subagentDelegateInputSchema = z.object({
-  profile: subagentProfileSchema
-    .default("explore")
-    .describe("Subagent profile to run (explore, general, self)."),
-  task: z.string().min(1).describe("Objective for the subagent."),
-  sessionId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional existing subagent session id to continue. Must belong to the current parent session.",
-    ),
-  timeoutMs: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe(
-      "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
-    ),
+const subagentDelegateInputSchema = z
+  .object({
+    profile: subagentProfileSchema
+      .default("explore")
+      .describe("Subagent profile to run (explore, general, self)."),
+    task: z.string().min(1).describe("Objective for the subagent."),
+    mode: subagentModeSchema
+      .default("deferred")
+      .describe(
+        "Delegation mode. Use deferred by default for parallelizable work; use sync only when the child result is immediately required before any meaningful next step.",
+      ),
+    blockingReason: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Required when mode is "sync". Explain why the child result is immediately required before continuing.',
+      ),
+    sessionId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Optional existing subagent session id to continue. Must belong to the current parent session.",
+      ),
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
+      ),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode === "sync" && !value.blockingReason?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["blockingReason"],
+        message: 'blockingReason is required when mode is "sync"',
+      });
+    }
+  });
+
+const subagentTerminalStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
+
+const subagentDelegateDeferredOutputSchema = z.object({
+  ok: z.literal(true),
+  mode: z.literal("deferred"),
+  status: z.literal("accepted"),
+  profile: subagentProfileSchema,
+  childRequestId: z.string(),
+  childSessionId: z.string(),
+  timeoutMs: z.number().int().positive(),
 });
 
-const subagentStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
-
-const subagentDelegateOutputSchema = z.object({
+const subagentDelegateSyncOutputSchema = z.object({
   ok: z.boolean(),
-  status: subagentStatusSchema,
+  mode: z.literal("sync"),
+  status: subagentTerminalStatusSchema,
   profile: subagentProfileSchema,
   childRequestId: z.string(),
   childSessionId: z.string(),
@@ -47,14 +81,20 @@ const subagentDelegateOutputSchema = z.object({
   detail: z.string().optional(),
 });
 
-type SubagentDelegateInput = z.infer<typeof subagentDelegateInputSchema>;
-type SubagentDelegateOutput = z.infer<typeof subagentDelegateOutputSchema>;
-type SubagentStatus = z.infer<typeof subagentStatusSchema>;
-type SubagentProfile = z.infer<typeof subagentProfileSchema>;
+const subagentDelegateOutputSchema = z.discriminatedUnion("mode", [
+  subagentDelegateDeferredOutputSchema,
+  subagentDelegateSyncOutputSchema,
+]);
+
+type SubagentDelegateInput = z.input<typeof subagentDelegateInputSchema>;
+export type SubagentDelegateOutput = z.output<typeof subagentDelegateOutputSchema>;
+type SubagentTerminalStatus = z.infer<typeof subagentTerminalStatusSchema>;
+export type SubagentProfile = z.infer<typeof subagentProfileSchema>;
+export type SubagentMode = z.infer<typeof subagentModeSchema>;
 
 type ChildToolStatus = "running" | "done";
 
-type ChildToolState = {
+export type ChildToolState = {
   toolCallId: string;
   status: ChildToolStatus;
   ok: boolean | null;
@@ -147,7 +187,7 @@ function childToolIcon(state: ChildToolState): string {
   return "x";
 }
 
-function renderSubagentDisplay(params: {
+export function renderSubagentDisplay(params: {
   profile: SubagentProfile;
   children: ReadonlyMap<string, ChildToolState>;
 }): string {
@@ -175,18 +215,47 @@ function renderSubagentDisplay(params: {
   return [header, ...lines].join("\n");
 }
 
-function buildDelegatedTaskPrompt(task: string): ModelMessage {
+export function buildDelegatedTaskPrompt(task: string): ModelMessage {
   return {
     role: "user",
     content: task,
   };
 }
 
+export type DeferredSubagentRegistration = {
+  profile: SubagentProfile;
+  task: string;
+  timeoutMs: number;
+  depth: number;
+  parentRequestId: string;
+  parentSessionId: string;
+  parentRequestClient: string;
+  parentToolCallId: string;
+  childRequestId: string;
+  childSessionId: string;
+  parentHeaders: {
+    request_id: string;
+    session_id: string;
+    request_client: AdapterPlatform;
+  };
+  childHeaders: {
+    request_id: string;
+    session_id: string;
+    request_client: "unknown";
+    parent_request_id: string;
+    parent_tool_call_id: string;
+    subagent_profile: SubagentProfile;
+    subagent_depth: string;
+  };
+  initialMessages: ModelMessage[];
+};
+
 export function subagentTools(params: {
   bus: LilacBus;
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
   maxDepth: number;
+  onDeferredDelegate?: (registration: DeferredSubagentRegistration) => Promise<void>;
 }) {
   const { bus } = params;
   const logger = createLogger({
@@ -195,8 +264,13 @@ export function subagentTools(params: {
 
   return {
     subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
-      description:
-        "Delegate to a subagent profile (explore, general, self) and return its final response.",
+      description: [
+        "Delegate work to a subagent profile (explore, general, self).",
+        "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
+        'Use sync only when the child result is immediately required before any meaningful next step. When mode is "sync", blockingReason is required.',
+        "Prefer deferred for: repository exploration, independent evidence gathering, parallel investigations, or work whose result can be incorporated later.",
+        "Prefer sync for: child answers that determine the next edit or decision, child results needed before responding, or the one blocking computation.",
+      ].join("\n"),
       inputSchema: subagentDelegateInputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input, { abortSignal, experimental_context, toolCallId }) => {
@@ -204,6 +278,13 @@ export function subagentTools(params: {
           experimental_context,
           "subagent_delegate",
         ) as RequestContextLike;
+        const profile = input.profile ?? "explore";
+        const mode = input.mode ?? "deferred";
+        const blockingReason = input.blockingReason?.trim() || undefined;
+
+        if (mode === "sync" && !blockingReason) {
+          throw new Error('blockingReason is required when mode is "sync"');
+        }
 
         const depth = parseDepth(experimental_context);
 
@@ -212,7 +293,7 @@ export function subagentTools(params: {
           throw new Error(`subagent_delegate is disabled in ${currentRunProfile} subagent runs`);
         }
 
-        if (currentRunProfile === "self" && input.profile === "self") {
+        if (currentRunProfile === "self" && profile === "self") {
           throw new Error("self subagent cannot delegate to self profile");
         }
 
@@ -242,7 +323,7 @@ export function subagentTools(params: {
           request_client: "unknown" as const,
           parent_request_id: ctx.requestId,
           parent_tool_call_id: toolCallId,
-          subagent_profile: input.profile,
+          subagent_profile: profile,
           subagent_depth: String(depth + 1),
         };
 
@@ -256,15 +337,60 @@ export function subagentTools(params: {
           requestId: ctx.requestId,
           sessionId: ctx.sessionId,
           parentToolCallId: toolCallId,
-          profile: input.profile,
+          mode,
+          profile,
           parentDepth: depth,
           childDepth: depth + 1,
           continuedSessionId: continuedSessionId ?? null,
           timeoutMs,
+          blockingReason: mode === "sync" ? blockingReason : undefined,
           task: truncateEnd(input.task.replace(/\s+/g, " ").trim(), 240),
         });
 
         const subId = `${childRequestId}:${Math.random().toString(16).slice(2)}`;
+
+        if (mode === "deferred") {
+          if (!params.onDeferredDelegate) {
+            throw new Error("subagent deferred delegation is unavailable in this runtime");
+          }
+
+          await params.onDeferredDelegate({
+            profile,
+            task: input.task,
+            timeoutMs,
+            depth: depth + 1,
+            parentRequestId: ctx.requestId,
+            parentSessionId: ctx.sessionId,
+            parentRequestClient: ctx.requestClient,
+            parentToolCallId: toolCallId,
+            childRequestId,
+            childSessionId,
+            parentHeaders,
+            childHeaders,
+            initialMessages: [buildDelegatedTaskPrompt(input.task)],
+          });
+
+          logger.info("subagent delegate accepted", {
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            parentToolCallId: toolCallId,
+            childRequestId,
+            childSessionId,
+            profile: input.profile,
+            mode: "deferred",
+            timeoutMs,
+          });
+
+          return {
+            ok: true,
+            mode: "deferred",
+            status: "accepted",
+            profile,
+            childRequestId,
+            childSessionId,
+            timeoutMs,
+          };
+        }
 
         let lifecycleDetail: string | undefined;
         let finalText = "";
@@ -273,7 +399,7 @@ export function subagentTools(params: {
 
         const publishSubagentProgress = async () => {
           const display = renderSubagentDisplay({
-            profile: input.profile,
+            profile,
             children: childTools,
           });
 
@@ -281,24 +407,26 @@ export function subagentTools(params: {
             lilacEventTypes.EvtAgentOutputToolCall,
             {
               toolCallId,
-              status: "start",
+              status: "update",
               display,
             },
             { headers: parentHeaders },
           );
         };
 
-        let settleFn: ((value: { status: SubagentStatus; detail?: string }) => void) | null = null;
+        let settleFn:
+          | ((value: { status: SubagentTerminalStatus; detail?: string }) => void)
+          | null = null;
 
         const settled = new Promise<{
-          status: SubagentStatus;
+          status: SubagentTerminalStatus;
           detail?: string;
         }>((resolve) => {
           settleFn = resolve;
         });
 
         let isSettled = false;
-        const settle = (value: { status: SubagentStatus; detail?: string }) => {
+        const settle = (value: { status: SubagentTerminalStatus; detail?: string }) => {
           if (isSettled) return;
           isSettled = true;
           settleFn?.(value);
@@ -436,7 +564,7 @@ export function subagentTools(params: {
                 cancel: true,
                 requiresActive: true,
                 subagent: {
-                  profile: input.profile,
+                  profile,
                   depth: depth + 1,
                   parentRequestId: ctx.requestId,
                   parentToolCallId: toolCallId,
@@ -467,7 +595,7 @@ export function subagentTools(params: {
               messages: [buildDelegatedTaskPrompt(input.task)],
               raw: {
                 subagent: {
-                  profile: input.profile,
+                  profile,
                   depth: depth + 1,
                   parentRequestId: ctx.requestId,
                   parentToolCallId: toolCallId,
@@ -495,7 +623,7 @@ export function subagentTools(params: {
             parentToolCallId: toolCallId,
             childRequestId,
             childSessionId,
-            profile: input.profile,
+            profile,
             status,
             ok,
             durationMs,
@@ -507,8 +635,9 @@ export function subagentTools(params: {
 
           return {
             ok,
+            mode: "sync",
             status,
-            profile: input.profile,
+            profile,
             childRequestId,
             childSessionId,
             timeoutMs,
@@ -525,7 +654,7 @@ export function subagentTools(params: {
               parentToolCallId: toolCallId,
               childRequestId,
               childSessionId,
-              profile: input.profile,
+              profile,
               timeoutMs,
             },
             e,

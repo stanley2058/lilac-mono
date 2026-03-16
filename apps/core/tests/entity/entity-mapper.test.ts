@@ -13,10 +13,14 @@ function buildCfg(): CoreConfig {
     agent: { ...base.agent, systemPrompt: "" },
     entity: {
       users: {
-        Stanley: { discord: "123" },
+        Stanley: { discord: "123", comment: "Primary operator" },
         Alice: { discord: "456" },
       },
-      sessions: { discord: {} },
+      sessions: {
+        discord: {
+          ops: { discord: "789", comment: "Deploy coordination" },
+        },
+      },
     },
   };
 }
@@ -45,6 +49,13 @@ describe("createDiscordEntityMapper.rewriteOutgoingText", () => {
 
     expect(mapper.rewriteOutgoingText("`@Stanley`")).toBe("`@Stanley`");
     expect(mapper.rewriteOutgoingText("```\n@Stanley\n```")).toBe("```\n@Stanley\n```");
+  });
+  it("rewrites config-backed #channel aliases with object-form config", () => {
+    const cfg = buildCfg();
+    const store = new DiscordSurfaceStore(":memory:");
+    const mapper = createDiscordEntityMapper({ cfg, store });
+
+    expect(mapper.rewriteOutgoingText("ship it in #ops")).toBe("ship it in <#789>");
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import {
   extractBatchChildFailureEntries,
@@ -52,6 +53,29 @@ describe("summarizeToolFailure", () => {
     expect(res.ok).toBe(false);
     expect(res.failureKind).toBe("hard");
     expect(res.error).toBe("validation failed");
+  });
+
+  it("prefers plugin-provided failure summarizer when available", () => {
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      [
+        "custom_tool",
+        {
+          name: "custom_tool",
+          createTool: () => ({}),
+          isEnabled: () => true,
+          summarizeFailure: () => ({ ok: false, failureKind: "soft", error: "custom failure" }),
+        },
+      ],
+    ]);
+
+    const res = summarizeToolFailure({
+      toolName: "custom_tool",
+      isError: false,
+      result: { nope: true },
+      toolSpecs: specs,
+    });
+
+    expect(res).toEqual({ ok: false, failureKind: "soft", error: "custom failure" });
   });
 });
 

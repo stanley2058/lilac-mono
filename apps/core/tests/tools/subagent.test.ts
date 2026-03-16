@@ -114,6 +114,88 @@ function createInMemoryRawBus(): RawBus {
 }
 
 describe("subagent_delegate tool", () => {
+  it("returns an accepted handle by default in deferred mode", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const launches: Array<{ childRequestId: string; childSessionId: string; task: string }> = [];
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+      onDeferredDelegate: async (registration) => {
+        launches.push({
+          childRequestId: registration.childRequestId,
+          childSessionId: registration.childSessionId,
+          task: registration.task,
+        });
+      },
+    });
+
+    const res = await resolveExecuteResult(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Map auth flow" },
+        {
+          toolCallId: "tool-deferred-1",
+          messages: [],
+          experimental_context: {
+            requestId: "r:deferred-1",
+            sessionId: "s:deferred-1",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      mode: "deferred",
+      status: "accepted",
+      profile: "explore",
+      childRequestId: res.childRequestId,
+      childSessionId: res.childSessionId,
+      timeoutMs: 2_000,
+    });
+    expect(launches).toEqual([
+      {
+        childRequestId: res.childRequestId,
+        childSessionId: res.childSessionId,
+        task: "Map auth flow",
+      },
+    ]);
+  });
+
+  it("requires blockingReason for sync mode", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+    });
+
+    await expect(
+      tools.subagent_delegate.execute!(
+        { profile: "explore", task: "Map auth flow", mode: "sync" },
+        {
+          toolCallId: "tool-sync-validation",
+          messages: [],
+          experimental_context: {
+            requestId: "r:sync-validation",
+            sessionId: "s:sync-validation",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    ).rejects.toThrow(/blockingReason is required/i);
+  });
+
   it("delegates to child request and returns child final text", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -214,7 +296,12 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        {
+          profile: "explore",
+          task: "Map auth flow",
+          mode: "sync",
+          blockingReason: "need child result immediately",
+        },
         {
           toolCallId: "tool-1",
           messages: [],
@@ -228,6 +315,8 @@ describe("subagent_delegate tool", () => {
       ),
     );
 
+    expect(res.mode).toBe("sync");
+    if (res.mode !== "sync") throw new Error("expected sync subagent result");
     expect(res.ok).toBe(true);
     expect(res.status).toBe("resolved");
     expect(res.profile).toBe("explore");
@@ -318,7 +407,12 @@ describe("subagent_delegate tool", () => {
     for (const profile of profiles) {
       const res = await resolveExecuteResult(
         tools.subagent_delegate.execute!(
-          { profile, task: "Do delegated work" },
+          {
+            profile,
+            task: "Do delegated work",
+            mode: "sync",
+            blockingReason: "need child result immediately",
+          },
           {
             toolCallId: `tool-${profile}`,
             messages: [],
@@ -332,6 +426,8 @@ describe("subagent_delegate tool", () => {
         ),
       );
 
+      expect(res.mode).toBe("sync");
+      if (res.mode !== "sync") throw new Error("expected sync subagent result");
       expect(res.ok).toBe(true);
       expect(res.status).toBe("resolved");
       expect(res.profile).toBe(profile);
@@ -418,7 +514,13 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Continue prior work", sessionId: continuedSessionId },
+        {
+          profile: "explore",
+          task: "Continue prior work",
+          mode: "sync",
+          blockingReason: "need child result immediately",
+          sessionId: continuedSessionId,
+        },
         {
           toolCallId: "tool-continued-session",
           messages: [],
@@ -628,7 +730,12 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        {
+          profile: "explore",
+          task: "Map auth flow",
+          mode: "sync",
+          blockingReason: "need child result immediately",
+        },
         {
           toolCallId: "tool-self-explore",
           messages: [],
@@ -643,6 +750,8 @@ describe("subagent_delegate tool", () => {
       ),
     );
 
+    expect(res.mode).toBe("sync");
+    if (res.mode !== "sync") throw new Error("expected sync subagent result");
     expect(res.status).toBe("resolved");
     expect(res.finalText).toBe("self->explore ok");
     expect(res.profile).toBe("explore");
@@ -720,7 +829,13 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow", timeoutMs: 999_999 },
+        {
+          profile: "explore",
+          task: "Map auth flow",
+          mode: "sync",
+          blockingReason: "need child result immediately",
+          timeoutMs: 999_999,
+        },
         {
           toolCallId: "tool-3",
           messages: [],
@@ -751,7 +866,7 @@ describe("subagent_delegate tool", () => {
 
     const parentRequestId = "r:4";
     const parentToolCallId = "tool-4";
-    const parentUpdates: Array<{ status: "start" | "end"; display: string }> = [];
+    const parentUpdates: Array<{ status: "start" | "update" | "end"; display: string }> = [];
 
     await bus.subscribeTopic(
       outReqTopic(parentRequestId),
@@ -874,7 +989,12 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        {
+          profile: "explore",
+          task: "Map auth flow",
+          mode: "sync",
+          blockingReason: "need child result immediately",
+        },
         {
           toolCallId: parentToolCallId,
           messages: [],

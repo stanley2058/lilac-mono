@@ -1,9 +1,64 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ToolPluginManager, type Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import { createToolServer } from "../src/tool-server/create-tool-server";
 import type { ServerTool } from "../src/tool-server/types";
 
+async function writePluginServerTool(params: {
+  dataDir: string;
+  pluginId: string;
+  callableId: string;
+  value: string;
+}): Promise<void> {
+  const pluginDir = path.join(params.dataDir, "plugins", params.pluginId, "dist");
+  await fs.mkdir(pluginDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pluginDir, "..", "package.json"),
+    JSON.stringify(
+      {
+        name: params.pluginId,
+        version: "0.0.1",
+        lilac: {
+          plugin: "./dist/index.js",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(pluginDir, "index.js"),
+    `export default {
+  meta: { id: "${params.pluginId}" },
+  create() {
+    return {
+      level2: [{
+        id: "${params.pluginId}",
+        async init() {},
+        async destroy() {},
+        async list() { return [{ callableId: "${params.callableId}", name: "${params.callableId}", description: "${params.callableId}", shortInput: [], input: [] }]; },
+        async call() { return { value: "${params.value}" }; },
+      }],
+    };
+  },
+};`,
+    "utf8",
+  );
+}
+
 describe("createToolServer", () => {
+  let tmpRoot: string | null = null;
+
+  afterEach(async () => {
+    if (!tmpRoot) return;
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+    tmpRoot = null;
+  });
+
   it("passes x-lilac request context and cached messages to tool.call", async () => {
     const seenCalls: Array<{
       callableId: string;
@@ -85,5 +140,169 @@ describe("createToolServer", () => {
     expect(captured.requestClient).toBe("discord");
     expect(captured.cwd).toBe("/tmp/work");
     expect(captured.messages).toEqual(cachedMessages);
+  });
+
+  it("supports plugin-backed list/call/reload flows", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
+    const dataDir = path.join(tmpRoot, "data");
+
+    await writePluginServerTool({
+      dataDir,
+      pluginId: "echo-plugin",
+      callableId: "echo.call",
+      value: "one",
+    });
+
+    const pluginManager = new ToolPluginManager<
+      Record<string, never>,
+      Level1ToolSpec<Record<string, never>>,
+      ServerTool
+    >({
+      runtime: {},
+      dataDir,
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+    });
+
+    const server = createToolServer({
+      pluginManager,
+    });
+
+    await server.init();
+
+    const firstList = await server.app.handle(new Request("http://localhost/list"));
+    expect(firstList.status).toBe(200);
+    expect(await firstList.json()).toEqual({
+      tools: [
+        {
+          callableId: "echo.call",
+          name: "echo.call",
+          description: "echo.call",
+          shortInput: [],
+          hidden: undefined,
+        },
+      ],
+    });
+
+    const firstCall = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "echo.call", input: {} }),
+      }),
+    );
+    expect(await firstCall.json()).toEqual({ isError: false, output: { value: "one" } });
+
+    await Bun.sleep(5);
+    await writePluginServerTool({
+      dataDir,
+      pluginId: "echo-plugin",
+      callableId: "echo.call.v2",
+      value: "two",
+    });
+
+    const reload = await server.app.handle(
+      new Request("http://localhost/reload", {
+        method: "POST",
+      }),
+    );
+    expect(await reload.json()).toEqual({ ok: true });
+
+    const secondList = await server.app.handle(new Request("http://localhost/list"));
+    expect(await secondList.json()).toEqual({
+      tools: [
+        {
+          callableId: "echo.call.v2",
+          name: "echo.call.v2",
+          description: "echo.call.v2",
+          shortInput: [],
+          hidden: undefined,
+        },
+      ],
+    });
+
+    const secondCall = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "echo.call.v2", input: {} }),
+      }),
+    );
+    expect(await secondCall.json()).toEqual({ isError: false, output: { value: "two" } });
+
+    await server.stop();
+  });
+
+  it("refreshes plugin-backed call mapping on list/help/call without explicit reload", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
+    const dataDir = path.join(tmpRoot, "data");
+
+    await writePluginServerTool({
+      dataDir,
+      pluginId: "fresh-plugin",
+      callableId: "fresh.call",
+      value: "one",
+    });
+
+    const pluginManager = new ToolPluginManager<
+      Record<string, never>,
+      Level1ToolSpec<Record<string, never>>,
+      ServerTool
+    >({
+      runtime: {},
+      dataDir,
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+      initLevel2Item: async (tool) => {
+        await tool.init();
+      },
+      destroyLevel2Item: async (tool) => {
+        await tool.destroy();
+      },
+    });
+
+    const server = createToolServer({ pluginManager });
+    await server.init();
+
+    await Bun.sleep(5);
+    await writePluginServerTool({
+      dataDir,
+      pluginId: "fresh-plugin",
+      callableId: "fresh.call.v2",
+      value: "two",
+    });
+
+    const listRes = await server.app.handle(new Request("http://localhost/list"));
+    expect(await listRes.json()).toEqual({
+      tools: [
+        {
+          callableId: "fresh.call.v2",
+          name: "fresh.call.v2",
+          description: "fresh.call.v2",
+          shortInput: [],
+          hidden: undefined,
+        },
+      ],
+    });
+
+    const helpRes = await server.app.handle(new Request("http://localhost/help/fresh.call.v2"));
+    expect(helpRes.status).toBe(200);
+
+    const callRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "fresh.call.v2", input: {} }),
+      }),
+    );
+    expect(await callRes.json()).toEqual({ isError: false, output: { value: "two" } });
+
+    await server.stop();
   });
 });
