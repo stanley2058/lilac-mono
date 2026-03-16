@@ -122,10 +122,7 @@ function createDeadlineSignal(timeoutMs: number): {
   };
 }
 
-function timeoutForTool(
-  tool: ServerTool,
-  options?: ToolCallTimeoutOptions,
-): number {
+function timeoutForTool(tool: ServerTool, options?: ToolCallTimeoutOptions): number {
   return options?.perToolMs?.[tool.id] ?? options?.defaultTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
 }
 
@@ -317,7 +314,6 @@ export function createToolServer(options: ToolServerOptions) {
           });
         }
 
-        let timedOut = false;
         const callResult = tool
           .call(body.callableId, body.input, {
             signal: combinedSignal,
@@ -350,7 +346,6 @@ export function createToolServer(options: ToolServerOptions) {
         const result = await Promise.race([callResult, timeoutResult]);
 
         if (result.kind === "timeout") {
-          timedOut = true;
           healthState.endToolCall(callToken, {
             settled: false,
             timedOut: true,

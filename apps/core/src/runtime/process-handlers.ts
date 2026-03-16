@@ -66,7 +66,11 @@ export function createProcessHandlers(params: ProcessHandlerParams): ProcessHand
   async function handleFatal(trigger: string, error: unknown): Promise<void> {
     process.exitCode = 1;
     if (fatalShutdownStarted || shuttingDown) {
-      params.logger.error("Fatal process error during shutdown; exiting immediately", { trigger }, error);
+      params.logger.error(
+        "Fatal process error during shutdown; exiting immediately",
+        { trigger },
+        error,
+      );
       clearForceExitTimer();
       exit(1);
     }

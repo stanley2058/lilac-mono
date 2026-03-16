@@ -36,7 +36,11 @@ import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
 import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
 import { createToolServer } from "../tool-server/create-tool-server";
-import type { ToolServerHealthCheck, ToolServerHealthProviderResult, ToolServerHealthSnapshot } from "../tool-server/create-tool-server";
+import type {
+  ToolServerHealthCheck,
+  ToolServerHealthProviderResult,
+  ToolServerHealthSnapshot,
+} from "../tool-server/create-tool-server";
 import {
   createRequestMessageCache,
   type RequestMessageCache,
@@ -223,9 +227,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     checks.push({
       name: "discord.connection",
       ok:
-        !runtimeFullyStarted ||
-        discord.isReady ||
-        disconnectedForMs < DISCORD_DISCONNECT_GRACE_MS,
+        !runtimeFullyStarted || discord.isReady || disconnectedForMs < DISCORD_DISCONNECT_GRACE_MS,
       impact: "live",
       reason:
         !runtimeFullyStarted || discord.isReady || disconnectedForMs < DISCORD_DISCONNECT_GRACE_MS

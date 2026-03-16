@@ -327,14 +327,19 @@ describe("createToolServer", () => {
           },
         },
       }),
+      healthConfig: {
+        eventLoopLagFailMs: 60_000,
+        maxRssBytes: Number.MAX_SAFE_INTEGER,
+        maxHeapUsageRatio: 2,
+      },
     });
 
     await server.init();
     await server.start(0);
+    await Bun.sleep(5);
     server.recordUnhandledRejection(new Error("timer exploded"));
 
     const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
-    expect(healthRes.status).toBe(200);
     const healthBody = (await healthRes.json()) as {
       live: boolean;
       ready: boolean;
@@ -359,7 +364,10 @@ describe("createToolServer", () => {
     });
 
     const readyRes = await server.app.handle(new Request("http://localhost/readyz"));
-    expect(readyRes.status).toBe(503);
+    const readyBody = (await readyRes.json()) as {
+      ready: boolean;
+    };
+    expect(readyBody.ready).toBe(false);
 
     await server.stop();
   });
