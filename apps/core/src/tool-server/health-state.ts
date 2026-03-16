@@ -81,7 +81,6 @@ export type ToolServerHealthConfig = {
   eventLoopLagFailStreak?: number;
   toolCallOverdueGraceMs?: number;
   maxRssBytes?: number;
-  maxHeapUsageRatio?: number;
 };
 
 type ToolServerHealthStateOptions = ToolServerHealthConfig & {
@@ -100,7 +99,6 @@ const DEFAULT_WATCHDOG_INTERVAL_MS = 5_000;
 const DEFAULT_WATCHDOG_FAILURE_THRESHOLD = 3;
 const DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS = 15_000;
 const DEFAULT_MAX_RSS_BYTES = 1_500 * 1024 * 1024;
-const DEFAULT_MAX_HEAP_USAGE_RATIO = 0.97;
 
 function previewReason(reason: unknown): string {
   if (reason instanceof Error) return reason.message;
@@ -128,7 +126,6 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   const toolCallOverdueGraceMs =
     options.toolCallOverdueGraceMs ?? DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS;
   const maxRssBytes = options.maxRssBytes ?? DEFAULT_MAX_RSS_BYTES;
-  const maxHeapUsageRatio = options.maxHeapUsageRatio ?? DEFAULT_MAX_HEAP_USAGE_RATIO;
 
   let initialized = false;
   let listening = false;
@@ -231,22 +228,15 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
       },
       {
         name: "process.memory",
-        ok:
-          memory.rss < maxRssBytes &&
-          (memory.heapTotal <= 0 || memory.heapUsed / memory.heapTotal < maxHeapUsageRatio),
+        ok: memory.rss < maxRssBytes,
         impact: "live",
         reason:
-          memory.rss >= maxRssBytes
-            ? `rss ${memory.rss} exceeded limit ${maxRssBytes}`
-            : memory.heapTotal > 0 && memory.heapUsed / memory.heapTotal >= maxHeapUsageRatio
-              ? `heap usage ratio ${(memory.heapUsed / memory.heapTotal).toFixed(3)} exceeded limit ${maxHeapUsageRatio}`
-              : undefined,
+          memory.rss >= maxRssBytes ? `rss ${memory.rss} exceeded limit ${maxRssBytes}` : undefined,
         details: {
           rss: memory.rss,
           heapUsed: memory.heapUsed,
           heapTotal: memory.heapTotal,
           maxRssBytes,
-          maxHeapUsageRatio,
         },
       },
     ];

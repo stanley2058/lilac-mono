@@ -10,6 +10,12 @@ import {
 } from "../src/tool-server/create-tool-server";
 import type { ServerTool } from "../src/tool-server/types";
 
+const originalMemoryUsage = process.memoryUsage;
+
+function setMockMemoryUsage(memory: ReturnType<typeof process.memoryUsage>) {
+  process.memoryUsage = (() => memory) as typeof process.memoryUsage;
+}
+
 async function writePluginServerTool(params: {
   dataDir: string;
   pluginId: string;
@@ -57,6 +63,7 @@ describe("createToolServer", () => {
   let tmpRoot: string | null = null;
 
   afterEach(async () => {
+    process.memoryUsage = originalMemoryUsage;
     if (!tmpRoot) return;
     await fs.rm(tmpRoot, { recursive: true, force: true });
     tmpRoot = null;
@@ -330,7 +337,6 @@ describe("createToolServer", () => {
       healthConfig: {
         eventLoopLagFailMs: 60_000,
         maxRssBytes: Number.MAX_SAFE_INTEGER,
-        maxHeapUsageRatio: 2,
       },
     });
 
@@ -372,6 +378,75 @@ describe("createToolServer", () => {
     await server.stop();
   });
 
+  it("ignores heap accounting and only uses rss for memory health", async () => {
+    setMockMemoryUsage({
+      rss: 300 * 1024 * 1024,
+      heapUsed: 90 * 1024 * 1024,
+      heapTotal: 70 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+    });
+
+    const server = createToolServer({
+      tools: [],
+      healthConfig: {
+        eventLoopLagFailMs: 60_000,
+        maxRssBytes: Number.MAX_SAFE_INTEGER,
+      },
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
+    expect(healthRes.status).toBe(200);
+    const healthBody = (await healthRes.json()) as {
+      checks: Array<{ name: string; ok: boolean; details?: Record<string, unknown> }>;
+    };
+    const memoryCheck = healthBody.checks.find((check) => check.name === "process.memory");
+    expect(memoryCheck?.ok).toBe(true);
+    expect(memoryCheck?.details).toMatchObject({
+      rss: 300 * 1024 * 1024,
+      heapUsed: 90 * 1024 * 1024,
+      heapTotal: 70 * 1024 * 1024,
+    });
+
+    await server.stop();
+  });
+
+  it("fails health when rss exceeds the limit", async () => {
+    setMockMemoryUsage({
+      rss: 300 * 1024 * 1024,
+      heapUsed: 98 * 1024 * 1024,
+      heapTotal: 100 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+    });
+
+    const server = createToolServer({
+      tools: [],
+      healthConfig: {
+        eventLoopLagFailMs: 60_000,
+        maxRssBytes: 256 * 1024 * 1024,
+      },
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
+    expect(healthRes.status).toBe(503);
+    const healthBody = (await healthRes.json()) as {
+      checks: Array<{ name: string; ok: boolean; reason?: string }>;
+    };
+    expect(healthBody.checks.find((check) => check.name === "process.memory")).toMatchObject({
+      ok: false,
+      reason: `rss ${300 * 1024 * 1024} exceeded limit ${256 * 1024 * 1024}`,
+    });
+
+    await server.stop();
+  });
+
   it("times out tool calls and marks wedged calls unhealthy", async () => {
     const tool: ServerTool = {
       id: "hang",
@@ -401,7 +476,6 @@ describe("createToolServer", () => {
       healthConfig: {
         eventLoopLagFailMs: 60_000,
         maxRssBytes: Number.MAX_SAFE_INTEGER,
-        maxHeapUsageRatio: 2,
         toolCallOverdueGraceMs: 10,
       },
     });
@@ -468,7 +542,6 @@ describe("createToolServer", () => {
       healthConfig: {
         eventLoopLagFailMs: 60_000,
         maxRssBytes: Number.MAX_SAFE_INTEGER,
-        maxHeapUsageRatio: 2,
         toolCallOverdueGraceMs: 10,
       },
     });
