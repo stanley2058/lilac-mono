@@ -274,18 +274,18 @@ describe("appendAdditionalSessionMemoBlock", () => {
 });
 
 describe("appendConfiguredAliasPromptBlock", () => {
-  it("appends sorted user and session aliases", () => {
+  it("appends sorted user and session aliases with ids and comments", () => {
     const out = appendConfiguredAliasPromptBlock({
       baseSystemPrompt: "Base prompt",
       cfg: {
         entity: {
           users: {
-            Stanley: { discord: "u1" },
+            Stanley: { discord: "u1", comment: "Primary operator" },
             alice: { discord: "u2" },
           },
           sessions: {
             discord: {
-              ops: "c1",
+              ops: { discord: "c1", comment: "Deploy coordination" },
               Deployments: "c2",
             },
           },
@@ -295,10 +295,10 @@ describe("appendConfiguredAliasPromptBlock", () => {
     });
 
     expect(out).toContain("Configured Aliases (Discord):");
-    expect(out).toContain("- @alice");
-    expect(out).toContain("- @Stanley");
-    expect(out).toContain("- #Deployments");
-    expect(out).toContain("- #ops");
+    expect(out).toContain("- @alice (discord, u2)");
+    expect(out).toContain("- @Stanley (discord, u1): Primary operator");
+    expect(out).toContain("- #Deployments (discord, c2)");
+    expect(out).toContain("- #ops (discord, c1): Deploy coordination");
     expect(out).not.toContain("read /tmp/core-config.yaml");
   });
 
@@ -324,10 +324,10 @@ describe("appendConfiguredAliasPromptBlock", () => {
       maxSessionAliases: 1,
     });
 
-    expect(out).toContain("- @alice");
-    expect(out).not.toContain("- @bob");
-    expect(out).toContain("- #dev");
-    expect(out).not.toContain("- #ops");
+    expect(out).toContain("- @alice (discord, u1)");
+    expect(out).not.toContain("- @bob (discord, u2)");
+    expect(out).toContain("- #dev (discord, c1)");
+    expect(out).not.toContain("- #ops (discord, c2)");
     expect(out).toContain("read /tmp/core-config.yaml");
   });
 
@@ -343,7 +343,7 @@ describe("appendConfiguredAliasPromptBlock", () => {
       } as unknown as Pick<CoreConfig, "entity">,
     });
 
-    expect(out).toContain("- @alice");
+    expect(out).toContain("- @alice (discord, u1)");
     expect(out).not.toContain("Sessions:");
   });
 });

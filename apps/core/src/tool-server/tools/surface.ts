@@ -2,8 +2,9 @@ import { z } from "zod";
 import fs from "node:fs/promises";
 import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type/core";
+import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
+
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { hasCacheBurstProvider, type SurfaceAdapter } from "../../surface/adapter";
 import type {
   MsgRef,
@@ -425,7 +426,9 @@ function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
   const users = cfg.entity?.users ?? {};
 
   for (const [alias, rec] of Object.entries(users)) {
-    const userId = rec.discord;
+    const resolved = getDiscordUserAliasValue(rec);
+    if (!resolved) continue;
+    const userId = resolved.discordId;
     if (!out.has(userId)) {
       out.set(userId, alias);
     }
@@ -1411,7 +1414,11 @@ export class Surface implements ServerTool {
                 {
                   format: "dev-chat",
                   meaning:
-                    "Configured session alias (cfg.entity.sessions.discord maps alias -> channelId)",
+                    "Configured session alias (cfg.entity.sessions.discord maps alias -> channelId or { discord, comment })",
+                },
+                {
+                  format: "#dev-chat",
+                  meaning: "Configured session alias with optional leading # prefix",
                 },
               ],
               notes: [

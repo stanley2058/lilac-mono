@@ -1,4 +1,8 @@
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  getDiscordSessionAliasValue,
+  getDiscordUserAliasValue,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 
 import type { DiscordSurfaceStore } from "../surface/store/discord-surface-store";
 
@@ -76,7 +80,9 @@ function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
   const users = cfg.entity?.users ?? {};
 
   for (const [canonical, rec] of Object.entries(users)) {
-    const userId = rec.discord;
+    const resolved = getDiscordUserAliasValue(rec);
+    if (!resolved) continue;
+    const userId = resolved.discordId;
     userByUsernameLc.set(canonical.toLowerCase(), { canonical, userId });
     userById.set(userId, { canonical, userId });
   }
@@ -86,7 +92,10 @@ function buildDiscordEntityConfig(cfg: CoreConfig): DiscordEntityConfig {
 
   const tokens = cfg.entity?.sessions.discord ?? {};
 
-  for (const [token, channelId] of Object.entries(tokens)) {
+  for (const [token, rec] of Object.entries(tokens)) {
+    const resolved = getDiscordSessionAliasValue(rec);
+    if (!resolved) continue;
+    const channelId = resolved.discordId;
     channelIdByTokenLc.set(token.toLowerCase(), {
       canonical: token,
       channelId,

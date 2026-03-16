@@ -16,6 +16,8 @@ import {
   env,
   findWorkspaceRoot,
   formatAvailableSkillsSection,
+  getDiscordSessionAliasValue,
+  getDiscordUserAliasValue,
   getCoreConfig,
   ModelCapability,
   RESPONSE_COMMENTARY_INSTRUCTIONS,
@@ -1696,14 +1698,23 @@ function compareAliasKeys(a: string, b: string): number {
   return a.localeCompare(b, undefined, { sensitivity: "base" }) || a.localeCompare(b);
 }
 
-function formatPromptAliasEntries(params: {
-  aliases: readonly string[];
+type PromptAliasEntry = {
+  alias: string;
   prefix: "@" | "#";
+  discordId: string;
+  comment?: string;
+};
+
+function formatPromptAliasEntries(params: {
+  aliases: readonly PromptAliasEntry[];
   limit: number;
 }): { entries: string[]; truncated: boolean } {
-  const sorted = [...params.aliases].sort(compareAliasKeys);
+  const sorted = [...params.aliases].sort((a, b) => compareAliasKeys(a.alias, b.alias));
   const limit = Math.max(0, Math.trunc(params.limit));
-  const shown = sorted.slice(0, limit).map((alias) => `${params.prefix}${alias}`);
+  const shown = sorted.slice(0, limit).map((entry) => {
+    const rendered = `${entry.prefix}${entry.alias} (discord, ${entry.discordId})`;
+    return entry.comment ? `${rendered}: ${entry.comment}` : rendered;
+  });
   return {
     entries: shown,
     truncated: sorted.length > shown.length,
@@ -1717,8 +1728,32 @@ export function appendConfiguredAliasPromptBlock(params: {
   maxUserAliases?: number;
   maxSessionAliases?: number;
 }): string {
-  const users = Object.keys(params.cfg.entity?.users ?? {});
-  const sessions = Object.keys(params.cfg.entity?.sessions?.discord ?? {});
+  const users = Object.entries(params.cfg.entity?.users ?? {}).flatMap(([alias, value]) => {
+    const resolved = getDiscordUserAliasValue(value);
+    if (!resolved) return [];
+    return [
+      {
+        alias,
+        prefix: "@" as const,
+        discordId: resolved.discordId,
+        comment: resolved.comment,
+      },
+    ];
+  });
+  const sessions = Object.entries(params.cfg.entity?.sessions?.discord ?? {}).flatMap(
+    ([alias, value]) => {
+      const resolved = getDiscordSessionAliasValue(value);
+      if (!resolved) return [];
+      return [
+        {
+          alias,
+          prefix: "#" as const,
+          discordId: resolved.discordId,
+          comment: resolved.comment,
+        },
+      ];
+    },
+  );
 
   if (users.length === 0 && sessions.length === 0) {
     return params.baseSystemPrompt;
@@ -1726,12 +1761,10 @@ export function appendConfiguredAliasPromptBlock(params: {
 
   const userSection = formatPromptAliasEntries({
     aliases: users,
-    prefix: "@",
     limit: params.maxUserAliases ?? DEFAULT_PROMPT_USER_ALIAS_LIMIT,
   });
   const sessionSection = formatPromptAliasEntries({
     aliases: sessions,
-    prefix: "#",
     limit: params.maxSessionAliases ?? DEFAULT_PROMPT_SESSION_ALIAS_LIMIT,
   });
 

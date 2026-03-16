@@ -80,3 +80,37 @@ describe("coreConfigSchema surface.router.sessionModes", () => {
     expect(parsed.surface.router.sessionModes.heartbeat?.model).toBe("haiku");
   });
 });
+
+describe("coreConfigSchema entity aliases", () => {
+  it("accepts optional alias comments and legacy session strings", () => {
+    const parsed = coreConfigSchema.parse({
+      entity: {
+        users: {
+          alice: {
+            discord: "u1",
+            comment: "Primary operator",
+          },
+        },
+        sessions: {
+          discord: {
+            ops: {
+              discord: "c1",
+              comment: "Deploy coordination",
+            },
+            general: "c2",
+          },
+        },
+      },
+    });
+
+    expect(parsed.entity?.users.alice).toEqual({
+      discord: "u1",
+      comment: "Primary operator",
+    });
+    expect(parsed.entity?.sessions.discord.ops).toEqual({
+      discord: "c1",
+      comment: "Deploy coordination",
+    });
+    expect(parsed.entity?.sessions.discord.general).toBe("c2");
+  });
+});

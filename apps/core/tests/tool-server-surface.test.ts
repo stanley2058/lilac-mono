@@ -229,7 +229,13 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
-      entity: { sessions: { discord: { ops: "c1" } } },
+      entity: {
+        sessions: {
+          discord: {
+            ops: { discord: "c1", comment: "Deploy coordination" },
+          },
+        },
+      },
     });
 
     const adapter = new FakeAdapter(
@@ -268,7 +274,13 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
-      entity: { sessions: { discord: { ops: "c1" } } },
+      entity: {
+        sessions: {
+          discord: {
+            ops: { discord: "c1", comment: "Deploy coordination" },
+          },
+        },
+      },
     });
 
     const adapter = new FakeAdapter([], {});
@@ -1293,7 +1305,13 @@ describe("tool-server surface", () => {
           botName: "lilac",
         },
       },
-      entity: { sessions: { discord: { ops: "c1" } } },
+      entity: {
+        sessions: {
+          discord: {
+            ops: { discord: "c1", comment: "Deploy coordination" },
+          },
+        },
+      },
     });
 
     const adapter = new FakeAdapter([], {});

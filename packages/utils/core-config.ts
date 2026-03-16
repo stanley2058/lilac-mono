@@ -62,6 +62,18 @@ type AgentConfig = {
   };
 };
 
+export type DiscordUserAliasConfig = {
+  discord: string;
+  comment?: string;
+};
+
+export type DiscordSessionAliasConfig =
+  | string
+  | {
+      discord: string;
+      comment?: string;
+    };
+
 const statsForNerdsSchema = z
   .union([
     z.boolean(),
@@ -72,6 +84,21 @@ const statsForNerdsSchema = z
   .default(false);
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("simple");
+
+const discordAliasCommentSchema = z.string().trim().min(1).optional();
+
+const discordUserAliasSchema = z.object({
+  discord: z.string().min(1),
+  comment: discordAliasCommentSchema,
+});
+
+const discordSessionAliasSchema = z.union([
+  z.string().min(1),
+  z.object({
+    discord: z.string().min(1),
+    comment: discordAliasCommentSchema,
+  }),
+]);
 
 const subagentProfileSchema = z
   .object({
@@ -568,11 +595,11 @@ export const coreConfigSchema = z.object({
 
   entity: z
     .object({
-      users: z.record(z.string().min(1), z.object({ discord: z.string().min(1) })).default({}),
+      users: z.record(z.string().min(1), discordUserAliasSchema).default({}),
 
       sessions: z
         .object({
-          discord: z.record(z.string().min(1), z.string().min(1)).default({}),
+          discord: z.record(z.string().min(1), discordSessionAliasSchema).default({}),
         })
         .default({ discord: {} }),
     })
@@ -610,6 +637,31 @@ export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "plugins" | "surface" 
     };
   };
 };
+
+export function getDiscordUserAliasValue(alias: DiscordUserAliasConfig | undefined): {
+  discordId: string;
+  comment?: string;
+} | null {
+  if (!alias) return null;
+  return {
+    discordId: alias.discord,
+    comment: alias.comment,
+  };
+}
+
+export function getDiscordSessionAliasValue(alias: DiscordSessionAliasConfig | undefined): {
+  discordId: string;
+  comment?: string;
+} | null {
+  if (!alias) return null;
+  if (typeof alias === "string") {
+    return { discordId: alias };
+  }
+  return {
+    discordId: alias.discord,
+    comment: alias.comment,
+  };
+}
 
 let cached: CoreConfig | null = null;
 let cachedMtimeMs: number | null = null;

@@ -260,11 +260,16 @@ models:
 # Notes:
 # - Matches are case-insensitive; the canonical casing is preserved from config.
 # - Tokens are sanitized (whitespace -> '_' and leading @/# stripped).
+# - Optional comments are injected into the system prompt alongside alias + raw id.
 # entity:
 #   users:
 #     Stanley:
 #       discord: "123456789012345678"
+#       comment: "Primary operator"
 #
 #   sessions:
 #     discord:
-#       ops: "234567890123456789"
+#       ops:
+#         discord: "234567890123456789"
+#         comment: "Deploy coordination"
+#       general: "345678901234567890"
