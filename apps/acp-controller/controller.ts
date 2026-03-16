@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 
 import type { PromptResponse } from "@agentclientprotocol/sdk";
 
@@ -409,20 +410,38 @@ function isTerminalStatus(status: PromptRunRecord["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-function isProcessAlive(pid: number | undefined): boolean {
+async function isProcessAlive(pid: number | undefined): Promise<boolean> {
   if (!pid) return false;
+
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+
+  // `kill(pid, 0)` returns success for zombie processes on Linux. Treat zombies as not alive
+  // so that wait/cancel flows do not hang on defunct detached workers.
+  if (process.platform === "linux") {
+    try {
+      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const match = stat.match(/\)\s+([A-Z])\s/);
+      if (match?.[1] === "Z") {
+        return false;
+      }
+    } catch {
+      // Ignore /proc read failures and fall back to the kill(0) check.
+    }
+  }
+
+  return true;
 }
 
 async function refreshRunStatus(run: PromptRunRecord): Promise<PromptRunRecord> {
   if (isTerminalStatus(run.status)) return run;
 
-  if (run.status === "submitted" && !run.cancelRequestedAt && !isProcessAlive(run.workerPid)) {
+  const workerAlive = await isProcessAlive(run.workerPid);
+
+  if (run.status === "submitted" && !run.cancelRequestedAt && !workerAlive) {
     const workerPid = await spawnWorker(run.id);
     if (workerPid) {
       const restarted: PromptRunRecord = {
@@ -435,7 +454,7 @@ async function refreshRunStatus(run: PromptRunRecord): Promise<PromptRunRecord> 
     }
   }
 
-  if (run.workerPid && isProcessAlive(run.workerPid)) return run;
+  if (run.workerPid && workerAlive) return run;
   const next: PromptRunRecord = {
     ...run,
     status: run.cancelRequestedAt ? "cancelled" : "failed",
@@ -1052,7 +1071,7 @@ async function runPromptCancel(params: { runId: string; write: OutputWriter }): 
     };
     await saveRunRecord(next);
 
-    if (!run.workerPid || !isProcessAlive(run.workerPid)) {
+    if (!run.workerPid || !(await isProcessAlive(run.workerPid))) {
       params.write({
         ok: true,
         runId: params.runId,
@@ -1151,9 +1170,10 @@ async function runWorkerProcess(runId: string, version: string): Promise<number>
   try {
     const onTerminate = () => {
       cancellationRequested = true;
-      if (remoteSessionId) {
-        void client.cancel(remoteSessionId).catch(() => {});
-      }
+      // Ensure the worker does not hang indefinitely on in-flight harness requests.
+      // (Prompt cancel is best-effort; when the harness or transport misbehaves we still
+      // want the worker to settle and persist a terminal run state.)
+      void client.close();
     };
     process.on("SIGTERM", onTerminate);
     process.on("SIGINT", onTerminate);
