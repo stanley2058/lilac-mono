@@ -46,6 +46,7 @@ import {
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
 import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plugins";
+import { handleCoreConfigWatchEvent } from "./core-config-watch";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
 export type CoreRuntime = {
@@ -336,19 +337,19 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     const configFileName = path.basename(configPath);
 
     try {
-      let cfgContent = await fs.readFile(configPath, "utf8");
-      coreConfigWatcher = watch(configDir, async (eventType, filename) => {
-        const current = await fs.readFile(configPath, "utf8");
-        if (current === cfgContent) return;
-        cfgContent = current;
-
-        logger.debug("core-config file change detected", {
+      const watchState = {
+        lastContent: await fs.readFile(configPath, "utf8"),
+      };
+      coreConfigWatcher = watch(configDir, (eventType, filename) => {
+        void handleCoreConfigWatchEvent({
+          configPath,
+          configFileName,
           eventType,
-          changed: filename ?? configFileName,
-          path: configPath,
+          filename,
+          state: watchState,
+          logger,
+          scheduleValidation: scheduleCoreConfigValidation,
         });
-
-        scheduleCoreConfigValidation("watch");
       });
 
       coreConfigWatcher.on("error", (e: unknown) => {
