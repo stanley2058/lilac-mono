@@ -1,55 +1,54 @@
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import { createCoreRuntime } from "./create-core-runtime";
+import { createProcessHandlers } from "./process-handlers";
 
 const logger = createLogger({
   module: "core-main",
 });
 
-process.on("unhandledRejection", (reason) => {
-  logger.error("Unhandled promise rejection", reason);
-  process.exitCode = 1;
+let runtime: Awaited<ReturnType<typeof createCoreRuntime>> | null = null;
+const handlers = createProcessHandlers({
+  logger,
+  stop: async () => {
+    await runtime?.stop();
+  },
+  recordUnhandledRejection: (reason) => {
+    runtime?.recordUnhandledRejection(reason);
+  },
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  handlers.handleUnhandledRejection(reason, promise);
 });
 
 process.on("uncaughtException", (error) => {
-  logger.error("Uncaught exception", error);
-  process.exitCode = 1;
+  handlers.handleUncaughtException(error);
 });
 
-let runtime: Awaited<ReturnType<typeof createCoreRuntime>> | null = null;
-
 try {
-  runtime = await createCoreRuntime();
+  runtime = await createCoreRuntime({
+    onUnhealthy: async (snapshot) => {
+      logger.error("Core runtime unhealthy; exiting", {
+        checks: snapshot.checks.filter((check) => !check.ok),
+      });
+      handlers.handleUncaughtException(new Error("runtime watchdog detected unhealthy state"));
+    },
+  });
   await runtime.start();
 } catch (e) {
   logger.error("Failed to start core runtime", e);
   process.exit(1);
 }
 
-let shuttingDown = false;
-async function shutdown(signal: string) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  logger.info(`Received ${signal}, shutting down...`);
-  try {
-    await runtime?.stop();
-  } catch (e) {
-    logger.error("Shutdown failed", e);
-    process.exitCode = 1;
-  } finally {
-    process.exit(process.exitCode ?? 0);
-  }
-}
-
 process.on("SIGINT", () => {
-  shutdown("SIGINT").catch((e) => {
+  handlers.handleSignal("SIGINT").catch((e) => {
     logger.error("Shutdown handler failed", e);
   });
 });
 
 process.on("SIGTERM", () => {
-  shutdown("SIGTERM").catch((e) => {
+  handlers.handleSignal("SIGTERM").catch((e) => {
     logger.error("Shutdown handler failed", e);
   });
 });

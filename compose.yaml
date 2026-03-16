@@ -34,6 +34,12 @@ services:
       - ./data:/data
       - ./home/agents:/home/lilac/.agents
       - ./home/.ssh:/home/lilac/.ssh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${LL_TOOL_SERVER_PORT:-8080}/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   redis:

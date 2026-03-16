@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { ToolPluginManager, type Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
-import { createToolServer } from "../src/tool-server/create-tool-server";
+import {
+  createToolServer,
+  type ToolServerHealthSnapshot,
+} from "../src/tool-server/create-tool-server";
 import type { ServerTool } from "../src/tool-server/types";
 
 async function writePluginServerTool(params: {
@@ -302,6 +305,163 @@ describe("createToolServer", () => {
       }),
     );
     expect(await callRes.json()).toEqual({ isError: false, output: { value: "two" } });
+
+    await server.stop();
+  });
+
+  it("reports live and ready health separately", async () => {
+    const server = createToolServer({
+      tools: [],
+      healthProvider: () => ({
+        checks: [
+          {
+            name: "runtime.ready",
+            ok: false,
+            impact: "ready",
+            reason: "warming up",
+          },
+        ],
+        info: {
+          runtime: {
+            state: "warming",
+          },
+        },
+      }),
+    });
+
+    await server.init();
+    await server.start(0);
+    server.recordUnhandledRejection(new Error("timer exploded"));
+
+    const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
+    expect(healthRes.status).toBe(200);
+    const healthBody = (await healthRes.json()) as {
+      live: boolean;
+      ready: boolean;
+      info: {
+        external?: Record<string, unknown>;
+        unhandledRejection?: {
+          count: number;
+          lastReason: string;
+        };
+      };
+    };
+    expect(healthBody.live).toBe(true);
+    expect(healthBody.ready).toBe(false);
+    expect(healthBody.info.external).toEqual({
+      runtime: {
+        state: "warming",
+      },
+    });
+    expect(healthBody.info.unhandledRejection).toMatchObject({
+      count: 1,
+      lastReason: "timer exploded",
+    });
+
+    const readyRes = await server.app.handle(new Request("http://localhost/readyz"));
+    expect(readyRes.status).toBe(503);
+
+    await server.stop();
+  });
+
+  it("times out tool calls and marks wedged calls unhealthy", async () => {
+    const tool: ServerTool = {
+      id: "hang",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "hang.forever",
+            name: "Hang Forever",
+            description: "never resolves",
+            shortInput: [],
+            input: [],
+          },
+        ];
+      },
+      async call() {
+        return await new Promise(() => {});
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+      toolCallTimeouts: {
+        defaultTimeoutMs: 20,
+      },
+      healthConfig: {
+        toolCallOverdueGraceMs: 10,
+      },
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const callRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "hang.forever",
+          input: {},
+        }),
+      }),
+    );
+    expect(callRes.status).toBe(200);
+    expect(await callRes.json()).toEqual({
+      isError: true,
+      output: "Tool call timed out after 20ms",
+    });
+
+    await Bun.sleep(20);
+
+    const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
+    expect(healthRes.status).toBe(503);
+    const healthBody = (await healthRes.json()) as {
+      checks: Array<{ name: string; ok: boolean }>;
+    };
+    expect(healthBody.checks.find((check) => check.name === "tool-calls.overdue")?.ok).toBe(false);
+
+    await server.stop();
+  });
+
+  it("invokes the unhealthy watchdog after repeated live failures", async () => {
+    const unhealthySnapshots: ToolServerHealthSnapshot[] = [];
+    const server = createToolServer({
+      tools: [],
+      healthProvider: () => ({
+        checks: [
+          {
+            name: "runtime.redis",
+            ok: false,
+            impact: "live",
+            reason: "redis ping failed",
+          },
+        ],
+      }),
+      onUnhealthy: async (snapshot) => {
+        unhealthySnapshots.push(snapshot);
+      },
+      healthConfig: {
+        watchdogIntervalMs: 10,
+        watchdogFailureThreshold: 2,
+      },
+    });
+
+    await server.init();
+    await server.start(0);
+
+    await Bun.sleep(40);
+
+    expect(unhealthySnapshots).toHaveLength(1);
+    expect(
+      unhealthySnapshots[0]?.checks.find(
+        (check: ToolServerHealthSnapshot["checks"][number]) => check.name === "runtime.redis",
+      )?.ok,
+    ).toBe(false);
 
     await server.stop();
   });
