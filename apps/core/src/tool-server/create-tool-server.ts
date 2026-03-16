@@ -314,12 +314,14 @@ export function createToolServer(options: ToolServerOptions) {
           });
         }
 
-        const callResult = tool
-          .call(body.callableId, body.input, {
-            signal: combinedSignal,
-            context: ctx,
-            messages,
-          })
+        const callResult = Promise.resolve()
+          .then(() =>
+            tool.call(body.callableId, body.input, {
+              signal: combinedSignal,
+              context: ctx,
+              messages,
+            }),
+          )
           .then(
             (output) => ({ kind: "success" as const, output }),
             (error) => ({ kind: "error" as const, error }),

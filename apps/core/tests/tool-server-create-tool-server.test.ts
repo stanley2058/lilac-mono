@@ -399,6 +399,9 @@ describe("createToolServer", () => {
         defaultTimeoutMs: 20,
       },
       healthConfig: {
+        eventLoopLagFailMs: 60_000,
+        maxRssBytes: Number.MAX_SAFE_INTEGER,
+        maxHeapUsageRatio: 2,
         toolCallOverdueGraceMs: 10,
       },
     });
@@ -432,6 +435,77 @@ describe("createToolServer", () => {
       checks: Array<{ name: string; ok: boolean }>;
     };
     expect(healthBody.checks.find((check) => check.name === "tool-calls.overdue")?.ok).toBe(false);
+
+    await server.stop();
+  });
+
+  it("does not leak active tool calls when tool.call throws synchronously", async () => {
+    const tool: ServerTool = {
+      id: "sync-throw",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "sync-throw.fail",
+            name: "Sync Throw",
+            description: "throws before returning a promise",
+            shortInput: [],
+            input: [],
+          },
+        ];
+      },
+      call() {
+        throw new Error("sync boom");
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+      toolCallTimeouts: {
+        defaultTimeoutMs: 20,
+      },
+      healthConfig: {
+        eventLoopLagFailMs: 60_000,
+        maxRssBytes: Number.MAX_SAFE_INTEGER,
+        maxHeapUsageRatio: 2,
+        toolCallOverdueGraceMs: 10,
+      },
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const callRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "sync-throw.fail",
+          input: {},
+        }),
+      }),
+    );
+    expect(await callRes.json()).toEqual({
+      isError: true,
+      output: "sync boom",
+    });
+
+    await Bun.sleep(40);
+
+    const healthRes = await server.app.handle(new Request("http://localhost/healthz"));
+    const healthBody = (await healthRes.json()) as {
+      checks: Array<{ name: string; ok: boolean }>;
+      info: {
+        toolServer: {
+          activeCalls: unknown[];
+        };
+      };
+    };
+    expect(healthBody.checks.find((check) => check.name === "tool-calls.overdue")?.ok).toBe(true);
+    expect(healthBody.info.toolServer.activeCalls).toEqual([]);
 
     await server.stop();
   });

@@ -240,7 +240,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       },
     });
 
-    const gatewayStaleForMs = discord.lastGatewayPingAt ? now - discord.lastGatewayPingAt : null;
+    const gatewayStaleForMs = discord.lastGatewayEventAt ? now - discord.lastGatewayEventAt : null;
     checks.push({
       name: "discord.gateway",
       ok:
@@ -255,7 +255,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           ? undefined
           : `discord gateway heartbeat/ping is stale (${gatewayStaleForMs ?? "unknown"}ms)`,
       details: {
-        lastGatewayPingAt: discord.lastGatewayPingAt,
+        lastGatewayEventAt: discord.lastGatewayEventAt,
         gatewayPingMs: discord.gatewayPingMs,
         staleForMs: gatewayStaleForMs,
         thresholdMs: DISCORD_GATEWAY_STALE_MS,

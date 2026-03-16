@@ -581,7 +581,6 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private self: SurfaceSelf | null = null;
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
-  private gatewayMonitorTimer: ReturnType<typeof setInterval> | null = null;
   private healthState: DiscordAdapterHealthSnapshot = {
     connectionState: "idle",
     isReady: false,
@@ -665,12 +664,6 @@ export class DiscordAdapter implements SurfaceAdapter {
         lastDisconnectCode: undefined,
       };
       this.refreshGatewayPing(client);
-      if (!this.gatewayMonitorTimer) {
-        this.gatewayMonitorTimer = setInterval(() => {
-          this.refreshGatewayPing(client);
-        }, 15_000);
-        this.gatewayMonitorTimer.unref?.();
-      }
 
       const applicationId = client.application?.id ?? user.id;
       this.logger.info(
@@ -782,6 +775,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       };
     });
 
+    client.on("raw", () => {
+      this.noteGatewayEvent("raw");
+      this.refreshGatewayPing(client);
+    });
+
     client.on("messageCreate", async (msg) => {
       await this.onMessageCreate(msg);
     });
@@ -837,11 +835,6 @@ export class DiscordAdapter implements SurfaceAdapter {
       clearInterval(this.presenceTimer);
       this.presenceTimer = null;
     }
-    if (this.gatewayMonitorTimer) {
-      clearInterval(this.gatewayMonitorTimer);
-      this.gatewayMonitorTimer = null;
-    }
-
     const c = this.client;
     this.client = null;
 
@@ -1745,6 +1738,9 @@ export class DiscordAdapter implements SurfaceAdapter {
       ...this.healthState,
       lastGatewayEventAt: Date.now(),
     };
+    if (this.client) {
+      this.refreshGatewayPing(this.client);
+    }
   }
 
   private refreshGatewayPing(client: Client) {
