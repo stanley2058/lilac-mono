@@ -3,6 +3,7 @@ import type { Logger } from "@stanley2058/simple-module-logger";
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import Exa from "exa-js";
 import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
@@ -15,17 +16,18 @@ import {
   createDefaultWebSearchProviders,
   resolveWebSearchProvider,
   webSearchInputSchema,
+  type WebSearchProviderId,
   type WebSearchProvider,
 } from "./web-search";
 
+const getPageModeSchema = z.enum(["auto", "fetch", "browser", "extract"]);
+
 const getPageSchema = z.object({
   url: z.string().describe("URL to fetch"),
-  mode: z
-    .enum(["fetch", "browser", "tavily"])
+  mode: getPageModeSchema
     .optional()
-    .default("fetch")
     .describe(
-      "Mode to use for fetching the page; `fetch`: simple & fast; `browser`: renders dynamic content; `tavily`: best request w/ usage limits",
+      "Mode to use for fetching the page; `auto`: smart fallback flow; `fetch`: direct HTTP fetch; `browser`: render with a browser; `extract`: use the configured extract provider.",
     ),
   format: z
     .union([z.literal("markdown"), z.literal("text"), z.literal("html")])
@@ -52,12 +54,60 @@ const getPageSchema = z.object({
 const MAX_FETCH_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
 const MAX_FULL_DOM_PARSE_BYTES = 750 * 1024;
+const EXA_MAX_EXTRACT_CHARACTERS = 50_000;
+const MIN_EXTRACT_USEFUL_CHARACTERS = 200;
+const STRONG_EXTRACT_CHARACTERS = 600;
+const TAVILY_MAX_TIMEOUT_SECONDS = 60;
 const SUPPORTED_TEXT_MEDIA_TYPES = new Set([
   "text/html",
   "text/plain",
   "text/markdown",
   "application/xhtml+xml",
 ]);
+const WEAK_CONTENT_PATTERNS = [
+  /enable javascript/i,
+  /javascript (is )?required/i,
+  /please wait/i,
+  /loading/i,
+  /sign in/i,
+  /log in/i,
+  /cookie/i,
+  /privacy policy/i,
+  /terms of service/i,
+] as const;
+const SPA_SHELL_MARKERS = [
+  "__next",
+  "__nuxt",
+  "data-reactroot",
+  'id="root"',
+  'id="app"',
+  "webpack",
+  "hydration",
+] as const;
+
+type GetPageMode = z.infer<typeof getPageModeSchema>;
+type GetPageInput = z.infer<typeof getPageSchema>;
+type ParsedPageContent = {
+  url: string;
+  title: string;
+  markdown: string;
+  text: string;
+  raw: string;
+};
+type PageContentSuccess = {
+  isError: false;
+  content: ParsedPageContent;
+  sourceTruncated?: boolean;
+  rawHtml?: string;
+};
+type PageContentError = {
+  isError: true;
+  error: string;
+  status?: number;
+  contentType?: string | null;
+  contentLength?: number | null;
+};
+type PageContentResult = PageContentSuccess | PageContentError;
 
 function createAbortError(): Error {
   const error = new Error("request aborted");
@@ -91,6 +141,138 @@ function contentLengthFromHeaders(headers: Headers): number | null {
 
 function checkSignal(signal?: AbortSignal) {
   if (signal?.aborted) throw createAbortError();
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function withAbortSignal<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+  checkSignal(signal);
+
+  const pending = run();
+  if (!signal) {
+    return pending;
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(createAbortError());
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    pending.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function buildTextContent(input: {
+  url: string;
+  title?: string | null;
+  text: string;
+  markdown?: string;
+  raw?: string;
+}): ParsedPageContent {
+  const text = input.text.trim();
+  const markdown = input.markdown ?? text;
+  return {
+    url: input.url,
+    title: input.title?.trim() || input.url,
+    markdown,
+    text,
+    raw: input.raw ?? markdown,
+  };
+}
+
+function countUniqueWords(text: string): number {
+  return new Set(text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).size;
+}
+
+function countSubstantiveParagraphs(markdown: string): number {
+  return markdown
+    .split(/\n{2,}/)
+    .map((paragraph) => normalizeWhitespace(paragraph.replace(/[#>*`\-_[\]()]/g, " ")))
+    .filter((paragraph) => paragraph.length >= 80).length;
+}
+
+function assessExtractedContent(params: { content: ParsedPageContent; rawHtml?: string }): {
+  isWeak: boolean;
+  reasons: readonly string[];
+} {
+  const text = normalizeWhitespace(params.content.text);
+  const uniqueWordCount = countUniqueWords(text);
+  const paragraphCount = countSubstantiveParagraphs(params.content.markdown);
+  const boilerplateHits = WEAK_CONTENT_PATTERNS.filter((pattern) => pattern.test(text)).length;
+  const normalizedHtml = params.rawHtml?.toLowerCase() ?? "";
+  const hasSpaShell = SPA_SHELL_MARKERS.some((marker) => normalizedHtml.includes(marker));
+  const reasons: string[] = [];
+
+  if (text.length === 0) {
+    reasons.push("empty text");
+  }
+  if (text.length < MIN_EXTRACT_USEFUL_CHARACTERS) {
+    reasons.push("too short");
+  }
+  if (uniqueWordCount < 40) {
+    reasons.push("low vocabulary");
+  }
+  if (paragraphCount === 0) {
+    reasons.push("no substantive paragraphs");
+  }
+  if (boilerplateHits > 0) {
+    reasons.push("boilerplate text");
+  }
+  if (hasSpaShell && text.length < STRONG_EXTRACT_CHARACTERS) {
+    reasons.push("spa shell");
+  }
+  if (text.length > 0 && normalizeWhitespace(params.content.title) === text) {
+    reasons.push("title only");
+  }
+
+  const suspicious = boilerplateHits > 0 || hasSpaShell || paragraphCount === 0;
+  const isWeak =
+    text.length === 0 ||
+    text.length < 120 ||
+    (text.length < MIN_EXTRACT_USEFUL_CHARACTERS && suspicious) ||
+    (text.length < STRONG_EXTRACT_CHARACTERS && reasons.length >= 3);
+
+  return {
+    isWeak,
+    reasons,
+  };
+}
+
+function toTavilyTimeoutSeconds(timeoutMs: number): number {
+  return Math.max(1, Math.min(TAVILY_MAX_TIMEOUT_SECONDS, Math.ceil(timeoutMs / 1000)));
+}
+
+function buildExaExtractCharacterBudget(input: GetPageInput): {
+  requestedCharacters: number;
+  truncatedByBudget: boolean;
+} {
+  const desiredCharacters = Math.max(
+    1,
+    (input.startOffset ?? 0) + (input.maxCharacters ?? 200_000),
+  );
+  const requestedCharacters = Math.min(desiredCharacters, EXA_MAX_EXTRACT_CHARACTERS);
+
+  return {
+    requestedCharacters,
+    truncatedByBudget: desiredCharacters > requestedCharacters,
+  };
 }
 
 async function readResponseTextWithLimit(params: {
@@ -185,9 +367,11 @@ export class Web implements ServerTool {
   id = "web";
 
   private tavily: TavilyClient | null = null;
+  private exa: Exa | null = null;
   private webSearchProvider: WebSearchProvider | null = null;
   private webSearchProviderError: string | null = null;
   private webSearchProviderKey: string | null = null;
+  private webFetchDefaultMode: GetPageMode = "auto";
   private turndown = new TurndownService();
   private browserContext: { browser: Browser; context: BrowserContext } | null = null;
   private browserInit: Promise<{
@@ -202,22 +386,31 @@ export class Web implements ServerTool {
     });
   }
 
-  private async loadWebSearchProviderFromCoreConfig(): Promise<string | undefined> {
+  private async loadWebToolConfigFromCoreConfig(): Promise<{
+    extractProvider: WebSearchProviderId;
+    fetchMode: GetPageMode;
+  }> {
     const cfg = await getCoreConfig();
-    return cfg.tools.web.search.provider;
+    return {
+      extractProvider: cfg.tools.web.extract.provider,
+      fetchMode: cfg.tools.web.fetch.mode,
+    };
   }
 
-  private async refreshWebSearchProvider(): Promise<void> {
-    let providerFromConfig: string | undefined;
+  private async refreshWebConfig(): Promise<void> {
+    let extractProviderFromConfig: string | undefined;
+    let fetchModeFromConfig: GetPageMode = "auto";
     try {
-      providerFromConfig = await this.loadWebSearchProviderFromCoreConfig();
+      const config = await this.loadWebToolConfigFromCoreConfig();
+      extractProviderFromConfig = config.extractProvider;
+      fetchModeFromConfig = config.fetchMode;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.logger.logError(`Failed to read core-config.yaml for web.search provider: ${msg}`);
-      providerFromConfig = undefined;
+      this.logger.logError(`Failed to read core-config.yaml for web tool config: ${msg}`);
+      extractProviderFromConfig = undefined;
     }
 
-    const normalizedRequested = providerFromConfig?.trim().toLowerCase() ?? "";
+    const normalizedRequested = extractProviderFromConfig?.trim().toLowerCase() ?? "";
 
     const exaBaseUrl = env.tools.web.exa.baseUrl;
     const exaApiKey = env.tools.web.exa.apiKey;
@@ -226,6 +419,7 @@ export class Web implements ServerTool {
 
     const nextKey = JSON.stringify({
       requested: normalizedRequested || null,
+      fetchMode: fetchModeFromConfig,
       exaBaseUrl: exaBaseUrl ?? null,
       hasExaApiKey: Boolean(exaApiKey),
       hasTavilyApiKey: Boolean(tavilyApiKey),
@@ -235,6 +429,7 @@ export class Web implements ServerTool {
     this.webSearchProviderKey = nextKey;
 
     const prevId = this.webSearchProvider?.id ?? null;
+    const prevFetchMode = this.webFetchDefaultMode;
 
     const providers = createDefaultWebSearchProviders({
       exa: {
@@ -246,38 +441,60 @@ export class Web implements ServerTool {
     });
 
     const resolved = resolveWebSearchProvider({
-      requested: providerFromConfig,
+      requested: extractProviderFromConfig,
       providers,
     });
 
     this.webSearchProvider = resolved.provider;
     this.webSearchProviderError = resolved.error;
+    this.webFetchDefaultMode = fetchModeFromConfig;
 
     const nextId = this.webSearchProvider?.id ?? null;
     if (resolved.warning) {
       this.logger.logInfo(resolved.warning);
     }
     if (nextId && nextId !== prevId) {
-      this.logger.logInfo(`web.search provider: ${nextId}`);
+      this.logger.logInfo(`web.extract provider: ${nextId}`);
+    }
+    if (prevFetchMode !== this.webFetchDefaultMode) {
+      this.logger.logInfo(`web.fetch mode: ${this.webFetchDefaultMode}`);
     }
     if (!nextId && this.webSearchProviderError) {
       this.logger.logError(this.webSearchProviderError);
     }
   }
 
-  async init() {
-    if (!env.tools.web.tavilyApiKey) {
-      this.logger.logError(
-        "Tavily API key not configured (missing env var TAVILY_API_KEY). fetch(mode=tavily) will fall back to browser mode.",
-      );
-    } else {
-      this.tavily = tavily({
-        apiKey: env.tools.web.tavilyApiKey,
-        apiBaseURL: env.tools.web.tavilyApiBaseUrl,
-      });
+  private getTavilyClient(): TavilyClient {
+    if (this.tavily) return this.tavily;
+
+    const apiKey = env.tools.web.tavilyApiKey;
+    if (!apiKey) {
+      throw new Error("TAVILY_API_KEY is not configured.");
     }
 
-    await this.refreshWebSearchProvider();
+    const apiBaseUrlRaw = env.tools.web.tavilyApiBaseUrl?.trim();
+    this.tavily = tavily({
+      apiKey,
+      apiBaseURL: apiBaseUrlRaw ? normalizeBaseUrl(apiBaseUrlRaw) : undefined,
+    });
+    return this.tavily;
+  }
+
+  private getExaClient(): Exa {
+    if (this.exa) return this.exa;
+
+    const apiKey = env.tools.web.exa.apiKey;
+    if (!apiKey) {
+      throw new Error("EXA_API_KEY is not configured.");
+    }
+
+    const baseUrlRaw = env.tools.web.exa.baseUrl?.trim();
+    this.exa = baseUrlRaw ? new Exa(apiKey, normalizeBaseUrl(baseUrlRaw)) : new Exa(apiKey);
+    return this.exa;
+  }
+
+  async init() {
+    await this.refreshWebConfig();
 
     this.logger.logInfo("Web extension initialized");
   }
@@ -330,46 +547,22 @@ export class Web implements ServerTool {
     },
   ) {
     const input = getPageSchema.parse(rawInput);
+    await this.refreshWebConfig();
+
+    const mode = input.mode ?? this.webFetchDefaultMode;
     try {
-      switch (input.mode) {
+      switch (mode) {
+        case "auto": {
+          return await this.getPageAuto({ ...input, mode }, opts);
+        }
         case "fetch": {
-          return await this.getPageRaw(input, opts);
+          return await this.getPageFetch({ ...input, mode }, opts);
         }
         case "browser": {
-          return await this.getPage(input, opts);
+          return await this.getPageBrowser({ ...input, mode }, opts);
         }
-        case "tavily": {
-          checkSignal(opts?.signal);
-          if (!this.tavily) {
-            this.logger.logError(
-              "Tavily API key not configured (missing env var TAVILY_API_KEY). Falling back to browser mode.",
-            );
-            return await this.getPage({ ...input, mode: "browser" }, opts);
-          }
-          const resp = await this.tavily.extract([input.url], {
-            extractDepth: "advanced",
-            format: input.format === "markdown" ? "markdown" : "text",
-            timeout: input.timeout,
-          });
-
-          const response = resp.results[0];
-
-          if (!response) {
-            return {
-              isError: true,
-              error: "No results",
-            } as const;
-          }
-
-          const offset = input.startOffset ?? 0;
-          const maxCharacters = input.maxCharacters ?? 200_000;
-          return {
-            isError: false,
-            title: "title" in response ? response.title : response.url,
-            content: response.rawContent.slice(offset, offset + maxCharacters),
-            length: response.rawContent.length,
-            rearTruncated: response.rawContent.length > offset + maxCharacters,
-          };
+        case "extract": {
+          return await this.getPageExtract({ ...input, mode }, opts);
         }
       }
     } catch (e) {
@@ -388,7 +581,7 @@ export class Web implements ServerTool {
   ) {
     const input = webSearchInputSchema.parse(rawInput);
 
-    await this.refreshWebSearchProvider();
+    await this.refreshWebConfig();
 
     if (!this.webSearchProvider) {
       return {
@@ -496,19 +689,12 @@ export class Web implements ServerTool {
     return { browser, context };
   }
 
-  private async getPageRaw(
-    {
-      url,
-      format = "markdown",
-      startOffset = 0,
-      maxCharacters = 200_000,
-      timeout = 10_000,
-      preprocessor = "none",
-    }: z.infer<typeof getPageSchema>,
+  private async fetchPageContent(
+    { url, format = "markdown", timeout = 10_000, preprocessor = "none" }: GetPageInput,
     opts?: {
       signal?: AbortSignal;
     },
-  ) {
+  ): Promise<PageContentResult> {
     let acceptHeader = "text/markdown, text/html;q=0.8, */*;q=0.1";
     switch (format) {
       case "markdown":
@@ -573,19 +759,17 @@ export class Web implements ServerTool {
     });
 
     if (mediaType === "text/markdown" || mediaType === "text/plain") {
-      return this.toOutputFormat({
-        content: {
-          markdown: body.text,
-          raw: body.text,
-          text: body.text,
+      return {
+        isError: false,
+        content: buildTextContent({
           url,
           title: url,
-        },
-        format,
-        startOffset,
-        maxCharacters,
+          text: body.text,
+          markdown: body.text,
+          raw: body.text,
+        }),
         sourceTruncated: body.truncated,
-      });
+      };
     }
 
     checkSignal(requestSignal);
@@ -604,28 +788,20 @@ export class Web implements ServerTool {
           text: body.text,
           raw: body.text,
         };
-    return this.toOutputFormat({
+    return {
+      isError: false,
       content,
-      format,
-      startOffset,
-      maxCharacters,
       sourceTruncated: body.truncated,
-    });
+      rawHtml: isHtmlMediaType(mediaType) ? body.text : undefined,
+    };
   }
 
-  private async getPage(
-    {
-      url,
-      format = "markdown",
-      startOffset = 0,
-      maxCharacters = 200_000,
-      timeout = 10_000,
-      preprocessor = "none",
-    }: z.infer<typeof getPageSchema>,
+  private async renderPageContent(
+    { url, timeout = 10_000, preprocessor = "none" }: GetPageInput,
     opts?: {
       signal?: AbortSignal;
     },
-  ) {
+  ): Promise<PageContentResult> {
     const timeoutSignal = AbortSignal.timeout(timeout);
     const signal = AbortSignal.any([timeoutSignal, ...(opts?.signal ? [opts.signal] : [])]);
     checkSignal(signal);
@@ -654,16 +830,333 @@ export class Web implements ServerTool {
               preprocessor,
               signal,
             });
-      return this.toOutputFormat({
+      return {
+        isError: false,
         content,
-        format,
-        startOffset,
-        maxCharacters,
-      });
+        rawHtml: html,
+      };
     } finally {
       signal.removeEventListener("abort", onAbort);
       await page.close().catch(() => null);
     }
+  }
+
+  private async extractPageContent(
+    input: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ): Promise<PageContentResult> {
+    const { url, format = "markdown", timeout = 10_000 } = input;
+
+    if (format === "html") {
+      return {
+        isError: true,
+        error: "extract mode does not support format=html",
+      };
+    }
+
+    if (!this.webSearchProvider) {
+      return {
+        isError: true,
+        error: this.webSearchProviderError ?? "web.extract is unavailable: no provider configured.",
+      };
+    }
+
+    switch (this.webSearchProvider.id) {
+      case "tavily": {
+        const client = this.getTavilyClient();
+        const response = await withAbortSignal(opts?.signal, () =>
+          client.extract([url], {
+            extractDepth: "advanced",
+            format: format === "text" ? "text" : "markdown",
+            timeout: toTavilyTimeoutSeconds(timeout),
+          }),
+        );
+
+        const result = response.results[0];
+        if (!result) {
+          return {
+            isError: true,
+            error: "No extracted content returned.",
+          };
+        }
+
+        return {
+          isError: false,
+          content: buildTextContent({
+            url: result.url,
+            title:
+              "title" in result && typeof result.title === "string" ? result.title : result.url,
+            text: result.rawContent,
+            markdown: result.rawContent,
+            raw: result.rawContent,
+          }),
+        };
+      }
+      case "exa": {
+        const client = this.getExaClient();
+        const timeoutSignal = AbortSignal.timeout(timeout);
+        const signal = AbortSignal.any([timeoutSignal, ...(opts?.signal ? [opts.signal] : [])]);
+        const exaBudget = buildExaExtractCharacterBudget(input);
+
+        const response = await withAbortSignal(signal, () =>
+          client.getContents([url], {
+            text: {
+              maxCharacters: exaBudget.requestedCharacters,
+            },
+          }),
+        );
+
+        const result = response.results[0];
+        if (!result) {
+          return {
+            isError: true,
+            error: "No extracted content returned.",
+          };
+        }
+
+        const text = "text" in result && typeof result.text === "string" ? result.text : "";
+        return {
+          isError: false,
+          sourceTruncated:
+            exaBudget.truncatedByBudget || text.length >= exaBudget.requestedCharacters,
+          content: buildTextContent({
+            url: result.url,
+            title: typeof result.title === "string" ? result.title : result.url,
+            text,
+            markdown: text,
+            raw: text,
+          }),
+        };
+      }
+      default: {
+        return {
+          isError: true,
+          error: `web.extract provider '${this.webSearchProvider.id}' is not supported.`,
+        };
+      }
+    }
+  }
+
+  private async getPageFetch(
+    { format = "markdown", startOffset = 0, maxCharacters = 200_000, ...rest }: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const result = await this.fetchPageContent({ ...rest, format }, opts);
+    if (result.isError) return result;
+
+    return this.toOutputFormat({
+      content: result.content,
+      format,
+      startOffset,
+      maxCharacters,
+      sourceTruncated: result.sourceTruncated,
+    });
+  }
+
+  private async getPageBrowser(
+    { format = "markdown", startOffset = 0, maxCharacters = 200_000, ...rest }: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const result = await this.renderPageContent({ ...rest, format }, opts);
+    if (result.isError) return result;
+
+    return this.toOutputFormat({
+      content: result.content,
+      format,
+      startOffset,
+      maxCharacters,
+      sourceTruncated: result.sourceTruncated,
+    });
+  }
+
+  private async getPageExtract(
+    { format = "markdown", ...rest }: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    if (format === "html") {
+      this.logger.logInfo(
+        "web.fetch mode=extract does not support html; falling back to browser mode.",
+      );
+      return await this.getPageBrowser({ ...rest, format, mode: "browser" }, opts);
+    }
+
+    const result = await this.extractPageContent({ ...rest, format }, opts);
+    if (result.isError) {
+      this.logger.logError(`${result.error} Falling back to browser mode.`);
+      return await this.getPageBrowser({ ...rest, format, mode: "browser" }, opts);
+    }
+
+    return this.toOutputFormat({
+      content: result.content,
+      format,
+      startOffset: rest.startOffset ?? 0,
+      maxCharacters: rest.maxCharacters ?? 200_000,
+      sourceTruncated: result.sourceTruncated,
+    });
+  }
+
+  private async getPageAuto(
+    {
+      url,
+      format = "markdown",
+      startOffset = 0,
+      maxCharacters = 200_000,
+      timeout = 10_000,
+    }: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const autoPreprocessor = "readability" as const;
+
+    const fetchResult = await this.fetchPageContent(
+      {
+        url,
+        format,
+        timeout,
+        preprocessor: autoPreprocessor,
+      },
+      opts,
+    );
+
+    if (!fetchResult.isError) {
+      const fetchAssessment = fetchResult.rawHtml
+        ? assessExtractedContent({
+            content: fetchResult.content,
+            rawHtml: fetchResult.rawHtml,
+          })
+        : { isWeak: false, reasons: [] as const };
+
+      if (!fetchResult.rawHtml || !fetchAssessment.isWeak) {
+        return this.toOutputFormat({
+          content: fetchResult.content,
+          format,
+          startOffset,
+          maxCharacters,
+          sourceTruncated: fetchResult.sourceTruncated,
+        });
+      }
+
+      this.logger.logDebug(
+        `web.fetch auto escalating to browser after weak fetch extraction: ${fetchAssessment.reasons.join(", ")}`,
+      );
+    }
+
+    const browserResult = await this.renderPageContent(
+      {
+        url,
+        format,
+        timeout,
+        preprocessor: autoPreprocessor,
+      },
+      opts,
+    );
+
+    let browserParsedFallbackContent: ParsedPageContent | null = null;
+    let browserWholePageFallbackContent: ParsedPageContent | null = null;
+    let browserRawFallbackContent: ParsedPageContent | null = null;
+    if (!browserResult.isError) {
+      browserParsedFallbackContent = browserResult.content;
+      if (browserResult.rawHtml) {
+        browserWholePageFallbackContent = await this.parsePage(browserResult.rawHtml, url, {
+          preprocessor: "none",
+          signal: opts?.signal,
+        });
+      }
+      browserRawFallbackContent = browserResult.rawHtml
+        ? buildSimpleHtmlContent(browserResult.rawHtml, url)
+        : browserResult.content;
+      const browserAssessment = assessExtractedContent({
+        content: browserResult.content,
+        rawHtml: browserResult.rawHtml,
+      });
+
+      if (!browserAssessment.isWeak) {
+        return this.toOutputFormat({
+          content: browserResult.content,
+          format,
+          startOffset,
+          maxCharacters,
+          sourceTruncated: browserResult.sourceTruncated,
+        });
+      }
+
+      this.logger.logDebug(
+        `web.fetch auto escalating to extract after weak browser extraction: ${browserAssessment.reasons.join(", ")}`,
+      );
+    }
+
+    if (format !== "html") {
+      const extractResult = await this.extractPageContent(
+        {
+          url,
+          format,
+          preprocessor: "none",
+          timeout,
+        },
+        opts,
+      );
+
+      if (!extractResult.isError && normalizeWhitespace(extractResult.content.text).length > 0) {
+        return this.toOutputFormat({
+          content: extractResult.content,
+          format,
+          startOffset,
+          maxCharacters,
+          sourceTruncated: extractResult.sourceTruncated,
+        });
+      }
+
+      const preferredBrowserFallback =
+        browserWholePageFallbackContent &&
+        normalizeWhitespace(browserWholePageFallbackContent.text).length >
+          normalizeWhitespace(browserParsedFallbackContent?.text ?? "").length
+          ? browserWholePageFallbackContent
+          : browserParsedFallbackContent;
+
+      if (
+        preferredBrowserFallback &&
+        normalizeWhitespace(preferredBrowserFallback.text).length > 0
+      ) {
+        return this.toOutputFormat({
+          content: preferredBrowserFallback,
+          format,
+          startOffset,
+          maxCharacters,
+          sourceTruncated: browserResult.isError ? false : browserResult.sourceTruncated,
+        });
+      }
+    }
+
+    if (browserRawFallbackContent) {
+      return this.toOutputFormat({
+        content: browserRawFallbackContent,
+        format,
+        startOffset,
+        maxCharacters,
+        sourceTruncated: browserResult.isError ? false : browserResult.sourceTruncated,
+      });
+    }
+
+    if (!fetchResult.isError) {
+      return this.toOutputFormat({
+        content: fetchResult.content,
+        format,
+        startOffset,
+        maxCharacters,
+        sourceTruncated: fetchResult.sourceTruncated,
+      });
+    }
+
+    return browserResult.isError ? browserResult : fetchResult;
   }
 
   private async fastAutoScroll(page: Page, { step = 1920, maxScrolls = 5, idleMs = 100 } = {}) {
@@ -707,7 +1200,7 @@ export class Web implements ServerTool {
     maxCharacters,
     sourceTruncated = false,
   }: {
-    content: Awaited<ReturnType<typeof Web.prototype.parsePage>>;
+    content: ParsedPageContent;
     format: z.infer<typeof getPageSchema>["format"];
     startOffset: number;
     maxCharacters: number;
@@ -757,7 +1250,7 @@ export class Web implements ServerTool {
       preprocessor: z.infer<typeof getPageSchema>["preprocessor"];
       signal?: AbortSignal;
     },
-  ) {
+  ): Promise<ParsedPageContent> {
     checkSignal(signal);
     const dom = new JSDOM(html, { url });
 

@@ -272,7 +272,55 @@ const discordSurfaceSchema = z
     },
   });
 
-const webSearchProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
+const webExtractProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
+const webFetchModeSchema = z.enum(["auto", "fetch", "browser", "extract"]).default("auto");
+
+const webExtractConfigSchema = z
+  .preprocess(
+    (value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return value;
+      }
+
+      const webConfig = value as {
+        extract?: unknown;
+        search?: unknown;
+      };
+
+      if (webConfig.extract !== undefined || webConfig.search === undefined) {
+        return value;
+      }
+
+      return {
+        ...webConfig,
+        extract: webConfig.search,
+      };
+    },
+    z.object({
+      extract: z
+        .object({
+          provider: webExtractProviderSchema,
+        })
+        .default({
+          provider: "tavily",
+        }),
+      fetch: z
+        .object({
+          mode: webFetchModeSchema,
+        })
+        .default({
+          mode: "auto",
+        }),
+    }),
+  )
+  .default({
+    extract: {
+      provider: "tavily",
+    },
+    fetch: {
+      mode: "auto",
+    },
+  });
 
 const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
 
@@ -363,26 +411,15 @@ const modelCapabilitySchema = z
 
 const toolsSchema = z
   .object({
-    web: z
-      .object({
-        search: z
-          .object({
-            provider: webSearchProviderSchema,
-          })
-          .default({
-            provider: "tavily",
-          }),
-      })
-      .default({
-        search: {
-          provider: "tavily",
-        },
-      }),
+    web: webExtractConfigSchema,
   })
   .default({
     web: {
-      search: {
+      extract: {
         provider: "tavily",
+      },
+      fetch: {
+        mode: "auto",
       },
     },
   });

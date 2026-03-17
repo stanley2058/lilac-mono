@@ -348,8 +348,11 @@ export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig
     },
     tools: config.tools ?? {
       web: {
-        search: {
+        extract: {
           provider: "tavily",
+        },
+        fetch: {
+          mode: "auto",
         },
       },
     },
