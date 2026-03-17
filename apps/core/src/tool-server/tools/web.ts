@@ -363,9 +363,13 @@ export class Web implements ServerTool {
 
           const offset = input.startOffset ?? 0;
           const maxCharacters = input.maxCharacters ?? 200_000;
+          const title =
+            "title" in response && typeof response.title === "string"
+              ? response.title
+              : response.url;
           return {
             isError: false,
-            title: "title" in response ? response.title : response.url,
+            title,
             content: response.rawContent.slice(offset, offset + maxCharacters),
             length: response.rawContent.length,
             rearTruncated: response.rawContent.length > offset + maxCharacters,

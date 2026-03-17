@@ -85,6 +85,21 @@ describe("web-search (exa)", () => {
     expect(webSearchInputSchema.parse({ query: "x", maxResults: 3.9 }).maxResults).toBe(3);
   });
 
+  it("accepts Exa search tiers in schema", () => {
+    expect(webSearchInputSchema.parse({ query: "x", searchDepth: "auto" }).searchDepth).toBe(
+      "auto",
+    );
+    expect(webSearchInputSchema.parse({ query: "x", searchDepth: "deep" }).searchDepth).toBe(
+      "deep",
+    );
+    expect(webSearchInputSchema.parse({ query: "x", searchDepth: "fast" }).searchDepth).toBe(
+      "fast",
+    );
+    expect(webSearchInputSchema.parse({ query: "x", searchDepth: "instant" }).searchDepth).toBe(
+      "instant",
+    );
+  });
+
   it("sends the expected Exa request payload (clamp + topic + searchDepth + date filters)", async () => {
     type CapturedRequest = {
       pathname: string;
@@ -144,7 +159,7 @@ describe("web-search (exa)", () => {
       const input = webSearchInputSchema.parse({
         query: "hello",
         topic: "finance",
-        searchDepth: "advanced",
+        searchDepth: "deep",
         maxResults: 999.9,
         startDate: "2020-01-01",
         endDate: "2020-01-31",
@@ -188,20 +203,159 @@ describe("web-search (exa)", () => {
         throw new Error("expected request contents to be a JSON object");
       }
 
+      const highlights = contents.highlights;
+      expect(isRecord(highlights)).toBe(true);
+      if (!isRecord(highlights)) {
+        throw new Error("expected request contents.highlights to be a JSON object");
+      }
+      expect(highlights.query).toBe("hello");
+      expect(highlights.maxCharacters).toBe(4000);
+
       const text = contents.text;
       expect(isRecord(text)).toBe(true);
       if (!isRecord(text)) {
         throw new Error("expected request contents.text to be a JSON object");
       }
-      expect(text.maxCharacters).toBe(1000);
-      expect(contents.highlights).toBe(true);
+      expect(text.maxCharacters).toBe(4000);
 
-      const summary = contents.summary;
-      expect(isRecord(summary)).toBe(true);
-      if (!isRecord(summary)) {
-        throw new Error("expected request contents.summary to be a JSON object");
+      expect(contents.summary).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("maps search depths to Exa auto, fast, and instant modes", async () => {
+    type CapturedRequest = {
+      body: unknown;
+    };
+
+    const requests: CapturedRequest[] = [];
+
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const text = await req.text();
+        requests.push({
+          body: JSON.parse(text) as unknown,
+        });
+
+        return new Response(JSON.stringify({ results: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    try {
+      const provider = new ExaWebSearchProvider({
+        apiKey: "exa-test-key",
+        baseUrl: `http://127.0.0.1:${server.port}`,
+      });
+
+      await provider.search(webSearchInputSchema.parse({ query: "hello", searchDepth: "auto" }));
+      await provider.search(webSearchInputSchema.parse({ query: "hello", searchDepth: "fast" }));
+      await provider.search(webSearchInputSchema.parse({ query: "hello", searchDepth: "instant" }));
+
+      expect(requests.length).toBe(3);
+
+      expect(isRecord(requests[0]?.body)).toBe(true);
+      expect(isRecord(requests[1]?.body)).toBe(true);
+      expect(isRecord(requests[2]?.body)).toBe(true);
+
+      if (
+        !isRecord(requests[0]?.body) ||
+        !isRecord(requests[1]?.body) ||
+        !isRecord(requests[2]?.body)
+      ) {
+        throw new Error("expected Exa request bodies to be JSON objects");
       }
-      expect(summary.query).toBe("hello");
+
+      expect(requests[0].body.type).toBe("auto");
+      expect(requests[1].body.type).toBe("fast");
+      expect(requests[2].body.type).toBe("instant");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("maps Exa search tiers to Tavily search depths and clamps max results to 20", async () => {
+    type CapturedRequest = {
+      pathname: string;
+      method: string;
+      body: unknown;
+    };
+
+    const requests: CapturedRequest[] = [];
+
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const url = new URL(req.url);
+        const text = await req.text();
+
+        requests.push({
+          pathname: url.pathname,
+          method: req.method,
+          body: JSON.parse(text) as unknown,
+        });
+
+        return new Response(
+          JSON.stringify({
+            query: "hello",
+            results: [
+              {
+                url: "https://example.com",
+                title: "Example",
+                content: "snippet",
+                score: 0.5,
+              },
+            ],
+            images: [],
+            responseTime: 0.01,
+            requestId: "req_123",
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    try {
+      const provider = new TavilyWebSearchProvider({
+        apiKey: "tavily-test-key",
+        apiBaseUrl: `http://127.0.0.1:${server.port}`,
+      });
+
+      const input = webSearchInputSchema.parse({
+        query: "hello",
+        searchDepth: "instant",
+        maxResults: 999.9,
+      });
+
+      const results = await provider.search(input);
+
+      expect(results).toEqual([
+        {
+          url: "https://example.com",
+          title: "Example",
+          content: "snippet",
+          score: 0.5,
+        },
+      ]);
+
+      expect(requests.length).toBe(1);
+      const req = requests[0]!;
+
+      expect(req.pathname).toBe("/search");
+      expect(req.method).toBe("POST");
+
+      expect(isRecord(req.body)).toBe(true);
+      if (!isRecord(req.body)) {
+        throw new Error("expected Tavily request body to be a JSON object");
+      }
+
+      expect(req.body.search_depth).toBe("ultra-fast");
+      expect(req.body.max_results).toBe(20);
     } finally {
       await server.stop();
     }

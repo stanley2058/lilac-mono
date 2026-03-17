@@ -39,7 +39,7 @@
         "@stanley2058/lilac-plugin-runtime": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.4",
-        "@tavily/core": "^0.6.4",
+        "@tavily/core": "^0.7.2",
         "@types/jsdom": "^27.0.0",
         "@types/turndown": "^5.0.6",
         "ai": "^6.0.105",
@@ -344,7 +344,7 @@
 
     "@stanley2058/simple-module-logger": ["@stanley2058/simple-module-logger@0.0.4", "", {}, "sha512-fsovKnanqDc2vFroFfdKItu/t28KL8qk10YGzFEuBS4yVFceKD6DNY4LTRvsnGixxtVPV1CBm7QrbPEzHhKcow=="],
 
-    "@tavily/core": ["@tavily/core@0.6.4", "", { "dependencies": { "axios": "^1.7.7", "https-proxy-agent": "^7.0.6", "js-tiktoken": "^1.0.14" } }, "sha512-PppC0p2SwkoImLiYFT/uqDyWKPivpVsIM16HUf1Apmtbqg1YhI7Yg5Hq6eYSojC6COVCGXE4CotBnWqUmrai+A=="],
+    "@tavily/core": ["@tavily/core@0.7.2", "", { "dependencies": { "axios": "^1.7.7", "https-proxy-agent": "^7.0.6", "js-tiktoken": "^1.0.14" } }, "sha512-N9xfw9miPD1jyVKYTMWV1hQvWPNjATT9Hffr6tv7VMHzwOPOeBwfX/R25ZE2F7meTyq6xSeGxclWnLVH2xHqFA=="],
 
     "@tokenizer/inflate": ["@tokenizer/inflate@0.4.1", "", { "dependencies": { "debug": "^4.4.3", "token-types": "^6.1.1" } }, "sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA=="],
 
