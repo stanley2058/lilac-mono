@@ -49,6 +49,138 @@ const getPageSchema = z.object({
     ),
 });
 
+const MAX_FETCH_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
+const MAX_FULL_DOM_PARSE_BYTES = 750 * 1024;
+const SUPPORTED_TEXT_MEDIA_TYPES = new Set([
+  "text/html",
+  "text/plain",
+  "text/markdown",
+  "application/xhtml+xml",
+]);
+
+function createAbortError(): Error {
+  const error = new Error("request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function parseMediaType(contentType: string | null): string | null {
+  if (!contentType) return null;
+  const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
+  return mediaType && mediaType.length > 0 ? mediaType : null;
+}
+
+function isTextMediaType(mediaType: string | null): boolean {
+  if (!mediaType) return false;
+  if (SUPPORTED_TEXT_MEDIA_TYPES.has(mediaType)) return true;
+  return mediaType.startsWith("text/");
+}
+
+function isHtmlMediaType(mediaType: string | null): boolean {
+  return mediaType === "text/html" || mediaType === "application/xhtml+xml";
+}
+
+function contentLengthFromHeaders(headers: Headers): number | null {
+  const raw = headers.get("content-length");
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function checkSignal(signal?: AbortSignal) {
+  if (signal?.aborted) throw createAbortError();
+}
+
+async function readResponseTextWithLimit(params: {
+  res: Response;
+  maxBytes: number;
+  signal?: AbortSignal;
+}): Promise<{ text: string; bytesRead: number; truncated: boolean }> {
+  checkSignal(params.signal);
+
+  const contentLength = contentLengthFromHeaders(params.res.headers);
+  if (contentLength !== null && contentLength > params.maxBytes) {
+    throw new Error(`response too large (${contentLength} bytes > ${params.maxBytes} byte limit)`);
+  }
+
+  if (!params.res.body) {
+    const fallback = await params.res.text();
+    const bytes = Buffer.byteLength(fallback, "utf8");
+    if (bytes > params.maxBytes) {
+      return {
+        text: fallback.slice(0, params.maxBytes),
+        bytesRead: params.maxBytes,
+        truncated: true,
+      };
+    }
+    return { text: fallback, bytesRead: bytes, truncated: false };
+  }
+
+  const reader = params.res.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = "";
+  let truncated = false;
+
+  const onAbort = () => {
+    void reader.cancel(createAbortError()).catch(() => null);
+  };
+  params.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    while (true) {
+      checkSignal(params.signal);
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const value = chunk.value;
+      bytesRead += value.byteLength;
+      if (bytesRead > params.maxBytes) {
+        truncated = true;
+        const allowedBytes = value.byteLength - (bytesRead - params.maxBytes);
+        if (allowedBytes > 0) {
+          text += decoder.decode(value.subarray(0, allowedBytes), { stream: true });
+        }
+        await reader.cancel("response byte limit reached").catch(() => null);
+        break;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { text, bytesRead: Math.min(bytesRead, params.maxBytes), truncated };
+  } finally {
+    params.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+function extractTitleFromHtml(html: string, url: string): string {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = match?.[1]?.replace(/\s+/g, " ").trim();
+  return title && title.length > 0 ? title : url;
+}
+
+function simpleHtmlToText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildSimpleHtmlContent(html: string, url: string) {
+  const text = simpleHtmlToText(html);
+  return {
+    url,
+    title: extractTitleFromHtml(html, url),
+    markdown: text,
+    text,
+    raw: html,
+  };
+}
+
 export class Web implements ServerTool {
   id = "web";
 
@@ -186,27 +318,33 @@ export class Web implements ServerTool {
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
-    if (callableId === "fetch") return this.callFetch(rawInput);
+    if (callableId === "fetch") return this.callFetch(rawInput, opts);
     if (callableId === "search") return this.callSearch(rawInput, opts);
     throw new Error("Invalid callable ID");
   }
 
-  private async callFetch(rawInput: unknown) {
+  private async callFetch(
+    rawInput: unknown,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
     const input = getPageSchema.parse(rawInput);
     try {
       switch (input.mode) {
         case "fetch": {
-          return await this.getPageRaw(input);
+          return await this.getPageRaw(input, opts);
         }
         case "browser": {
-          return await this.getPage(input);
+          return await this.getPage(input, opts);
         }
         case "tavily": {
+          checkSignal(opts?.signal);
           if (!this.tavily) {
             this.logger.logError(
               "Tavily API key not configured (missing env var TAVILY_API_KEY). Falling back to browser mode.",
             );
-            return await this.getPage({ ...input, mode: "browser" });
+            return await this.getPage({ ...input, mode: "browser" }, opts);
           }
           const resp = await this.tavily.extract([input.url], {
             extractDepth: "advanced",
@@ -358,14 +496,19 @@ export class Web implements ServerTool {
     return { browser, context };
   }
 
-  private async getPageRaw({
-    url,
-    format = "markdown",
-    startOffset = 0,
-    maxCharacters = 200_000,
-    timeout = 10_000,
-    preprocessor = "none",
-  }: z.infer<typeof getPageSchema>) {
+  private async getPageRaw(
+    {
+      url,
+      format = "markdown",
+      startOffset = 0,
+      maxCharacters = 200_000,
+      timeout = 10_000,
+      preprocessor = "none",
+    }: z.infer<typeof getPageSchema>,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
     let acceptHeader = "text/markdown, text/html;q=0.8, */*;q=0.1";
     switch (format) {
       case "markdown":
@@ -379,70 +522,138 @@ export class Web implements ServerTool {
         break;
     }
 
+    const requestSignal = opts?.signal;
     const timeoutSignal = AbortSignal.timeout(timeout);
+    const signal = AbortSignal.any([timeoutSignal, ...(requestSignal ? [requestSignal] : [])]);
     const res = await fetch(url, {
       headers: {
         Accept: acceptHeader,
       },
-      signal: timeoutSignal,
+      signal,
     });
 
-    if (timeoutSignal.aborted) {
+    if (timeoutSignal.aborted && !requestSignal?.aborted) {
       return {
         isError: true,
         error: "timeout fetching page",
       } as const;
     }
 
+    checkSignal(requestSignal);
+
     if (!res.ok) {
+      const errorBody = await readResponseTextWithLimit({
+        res,
+        maxBytes: MAX_ERROR_RESPONSE_BYTES,
+        signal: requestSignal,
+      });
       return {
         isError: true,
-        error: await res.text(),
+        error: errorBody.truncated
+          ? `${errorBody.text}\n\n[truncated after ${errorBody.bytesRead} bytes]`
+          : errorBody.text,
         status: res.status,
       } as const;
     }
 
-    const contentType = res.headers.get("content-type");
-    const text = await res.text();
-    if (contentType === "text/markdown" || contentType === "text/plain") {
+    const mediaType = parseMediaType(res.headers.get("content-type"));
+    if (!isTextMediaType(mediaType)) {
+      return {
+        isError: true,
+        error: `Unsupported content-type for text extraction: ${mediaType ?? "unknown"}`,
+        contentType: mediaType,
+        contentLength: contentLengthFromHeaders(res.headers),
+      } as const;
+    }
+
+    const body = await readResponseTextWithLimit({
+      res,
+      maxBytes: MAX_FETCH_RESPONSE_BYTES,
+      signal: requestSignal,
+    });
+
+    if (mediaType === "text/markdown" || mediaType === "text/plain") {
       return this.toOutputFormat({
         content: {
-          markdown: text,
-          raw: text,
-          text,
+          markdown: body.text,
+          raw: body.text,
+          text: body.text,
           url,
           title: url,
         },
         format,
         startOffset,
         maxCharacters,
+        sourceTruncated: body.truncated,
       });
     }
 
-    const content = await this.parsePage(text, url, { preprocessor });
-    return this.toOutputFormat({ content, format, startOffset, maxCharacters });
+    checkSignal(requestSignal);
+
+    const content = isHtmlMediaType(mediaType)
+      ? body.bytesRead > MAX_FULL_DOM_PARSE_BYTES
+        ? buildSimpleHtmlContent(body.text, url)
+        : await this.parsePage(body.text, url, {
+            preprocessor,
+            signal: requestSignal,
+          })
+      : {
+          url,
+          title: url,
+          markdown: body.text,
+          text: body.text,
+          raw: body.text,
+        };
+    return this.toOutputFormat({
+      content,
+      format,
+      startOffset,
+      maxCharacters,
+      sourceTruncated: body.truncated,
+    });
   }
 
-  private async getPage({
-    url,
-    format = "markdown",
-    startOffset = 0,
-    maxCharacters = 200_000,
-    timeout = 10_000,
-    preprocessor = "none",
-  }: z.infer<typeof getPageSchema>) {
+  private async getPage(
+    {
+      url,
+      format = "markdown",
+      startOffset = 0,
+      maxCharacters = 200_000,
+      timeout = 10_000,
+      preprocessor = "none",
+    }: z.infer<typeof getPageSchema>,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const timeoutSignal = AbortSignal.timeout(timeout);
+    const signal = AbortSignal.any([timeoutSignal, ...(opts?.signal ? [opts.signal] : [])]);
+    checkSignal(signal);
     const { context } = await this.ensureBrowserContext();
 
     this.logger.logDebug("Launching in new page...");
     const page = await context.newPage();
+    const onAbort = () => {
+      void page.close().catch(() => null);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
+      checkSignal(signal);
       this.logger.logDebug("Navigating to page:", url);
       await page.goto(url, { waitUntil: "domcontentloaded", timeout });
+      checkSignal(signal);
       await this.fastAutoScroll(page);
 
       this.logger.logDebug("Getting page content...");
       const html = await page.content();
-      const content = await this.parsePage(html, url, { preprocessor });
+      checkSignal(signal);
+      const content =
+        Buffer.byteLength(html, "utf8") > MAX_FULL_DOM_PARSE_BYTES
+          ? buildSimpleHtmlContent(html, url)
+          : await this.parsePage(html, url, {
+              preprocessor,
+              signal,
+            });
       return this.toOutputFormat({
         content,
         format,
@@ -450,7 +661,8 @@ export class Web implements ServerTool {
         maxCharacters,
       });
     } finally {
-      await page.close();
+      signal.removeEventListener("abort", onAbort);
+      await page.close().catch(() => null);
     }
   }
 
@@ -493,11 +705,13 @@ export class Web implements ServerTool {
     format,
     startOffset,
     maxCharacters,
+    sourceTruncated = false,
   }: {
     content: Awaited<ReturnType<typeof Web.prototype.parsePage>>;
     format: z.infer<typeof getPageSchema>["format"];
     startOffset: number;
     maxCharacters: number;
+    sourceTruncated?: boolean;
   }) {
     switch (format) {
       case "markdown": {
@@ -507,6 +721,7 @@ export class Web implements ServerTool {
           content: content.markdown.slice(startOffset, startOffset + maxCharacters),
           length: content.markdown.length,
           rearTruncated: content.markdown.length > startOffset + maxCharacters,
+          sourceTruncated,
         } as const;
       }
       case "text": {
@@ -516,6 +731,7 @@ export class Web implements ServerTool {
           content: content.text.slice(startOffset, startOffset + maxCharacters),
           length: content.text.length,
           rearTruncated: content.text.length > startOffset + maxCharacters,
+          sourceTruncated,
         } as const;
       }
       case "html": {
@@ -525,6 +741,7 @@ export class Web implements ServerTool {
           content: content.raw.slice(startOffset, startOffset + maxCharacters),
           length: content.raw.length,
           rearTruncated: content.raw.length > startOffset + maxCharacters,
+          sourceTruncated,
         } as const;
       }
     }
@@ -533,11 +750,19 @@ export class Web implements ServerTool {
   private async parsePage(
     html: string,
     url: string,
-    { preprocessor }: { preprocessor: z.infer<typeof getPageSchema>["preprocessor"] },
+    {
+      preprocessor,
+      signal,
+    }: {
+      preprocessor: z.infer<typeof getPageSchema>["preprocessor"];
+      signal?: AbortSignal;
+    },
   ) {
+    checkSignal(signal);
     const dom = new JSDOM(html, { url });
 
     if (preprocessor === "readability") {
+      checkSignal(signal);
       const reader = new Readability(dom.window.document);
       const article = reader.parse();
 
@@ -554,6 +779,7 @@ export class Web implements ServerTool {
     }
 
     // Fallback: whole document body
+    checkSignal(signal);
     const body = dom.window.document.body?.innerHTML ?? "";
     const fallbackMarkdown = this.turndown.turndown(body);
     return {

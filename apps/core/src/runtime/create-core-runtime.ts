@@ -36,16 +36,23 @@ import { createWorkflowStoreQueries } from "../workflow/workflow-store-queries";
 import { shouldSuppressRouterForWorkflowReply } from "../workflow/should-suppress-router-message";
 
 import { createToolServer } from "../tool-server/create-tool-server";
+import type {
+  ToolServerHealthCheck,
+  ToolServerHealthProviderResult,
+  ToolServerHealthSnapshot,
+} from "../tool-server/create-tool-server";
 import {
   createRequestMessageCache,
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
 import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plugins";
+import { handleCoreConfigWatchEvent } from "./core-config-watch";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
 export type CoreRuntime = {
   start(): Promise<void>;
   stop(): Promise<void>;
+  recordUnhandledRejection(reason: unknown): void;
 };
 
 export type CoreRuntimeOptions = {
@@ -56,6 +63,7 @@ export type CoreRuntimeOptions = {
   subscriptionPrefix?: string;
   /** Override log level. Default: LOG_LEVEL env or "info". */
   logLevel?: LogLevel;
+  onUnhealthy?: (snapshot: ToolServerHealthSnapshot) => void | Promise<void>;
 };
 
 function subId(prefix: string, name: string): string {
@@ -156,12 +164,126 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     init(): Promise<void>;
     start(port: number): Promise<void>;
     stop(): Promise<void>;
+    recordUnhandledRejection(reason: unknown): void;
   } | null = null;
 
   // How long shutdown waits for active runs/relays before forcing snapshot + exit.
   const GRACEFUL_DRAIN_DEADLINE_MS = 3_000;
   // How long a saved snapshot remains valid for restore on next boot.
   const GRACEFUL_SNAPSHOT_TTL_MS = 120_000;
+  const REDIS_HEALTH_TIMEOUT_MS = 1_000;
+  const DISCORD_DISCONNECT_GRACE_MS = 60_000;
+  const DISCORD_GATEWAY_STALE_MS = 60_000;
+
+  async function probeRedisHealth(): Promise<{
+    ok: boolean;
+    durationMs: number;
+    error?: string;
+  }> {
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`redis ping timed out after ${REDIS_HEALTH_TIMEOUT_MS}ms`));
+        }, REDIS_HEALTH_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      await Promise.race([redis.ping(), timeout]);
+      if (timer) clearTimeout(timer);
+      return {
+        ok: true,
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (e) {
+      if (timer) clearTimeout(timer);
+      return {
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
+
+  async function getRuntimeHealthReport(): Promise<ToolServerHealthProviderResult> {
+    const now = Date.now();
+    const checks: ToolServerHealthCheck[] = [
+      {
+        name: "runtime.started",
+        ok: runtimeFullyStarted,
+        impact: "ready",
+        reason: runtimeFullyStarted ? undefined : "core runtime has not completed startup",
+      },
+    ];
+
+    const discord = adapter.getHealthSnapshot();
+    const disconnectedForMs = discord.lastDisconnectAt ? now - discord.lastDisconnectAt : 0;
+    checks.push({
+      name: "discord.ready",
+      ok: !runtimeFullyStarted || discord.isReady,
+      impact: "ready",
+      reason: !runtimeFullyStarted || discord.isReady ? undefined : "discord gateway is not ready",
+      details: discord,
+    });
+    checks.push({
+      name: "discord.connection",
+      ok:
+        !runtimeFullyStarted || discord.isReady || disconnectedForMs < DISCORD_DISCONNECT_GRACE_MS,
+      impact: "live",
+      reason:
+        !runtimeFullyStarted || discord.isReady || disconnectedForMs < DISCORD_DISCONNECT_GRACE_MS
+          ? undefined
+          : `discord gateway disconnected for ${disconnectedForMs}ms`,
+      details: {
+        connectionState: discord.connectionState,
+        disconnectedForMs,
+        thresholdMs: DISCORD_DISCONNECT_GRACE_MS,
+      },
+    });
+
+    const gatewayStaleForMs = discord.lastGatewayEventAt ? now - discord.lastGatewayEventAt : null;
+    checks.push({
+      name: "discord.gateway",
+      ok:
+        !runtimeFullyStarted ||
+        !discord.isReady ||
+        (gatewayStaleForMs !== null && gatewayStaleForMs < DISCORD_GATEWAY_STALE_MS),
+      impact: "live",
+      reason:
+        !runtimeFullyStarted ||
+        !discord.isReady ||
+        (gatewayStaleForMs !== null && gatewayStaleForMs < DISCORD_GATEWAY_STALE_MS)
+          ? undefined
+          : `discord gateway heartbeat/ping is stale (${gatewayStaleForMs ?? "unknown"}ms)`,
+      details: {
+        lastGatewayEventAt: discord.lastGatewayEventAt,
+        gatewayPingMs: discord.gatewayPingMs,
+        staleForMs: gatewayStaleForMs,
+        thresholdMs: DISCORD_GATEWAY_STALE_MS,
+      },
+    });
+
+    const redisHealth = await probeRedisHealth();
+    checks.push({
+      name: "redis.ping",
+      ok: redisHealth.ok,
+      impact: "live",
+      reason: redisHealth.ok ? undefined : redisHealth.error,
+      details: redisHealth,
+    });
+
+    return {
+      checks,
+      info: {
+        runtime: {
+          started,
+          runtimeFullyStarted,
+        },
+        discord,
+        redis: redisHealth,
+      },
+    };
+  }
 
   async function validateCoreConfigOnChange(reason: "watch"): Promise<void> {
     const configPath = resolveCoreConfigPath();
@@ -215,19 +337,19 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     const configFileName = path.basename(configPath);
 
     try {
-      let cfgContent = await fs.readFile(configPath, "utf8");
-      coreConfigWatcher = watch(configDir, async (eventType, filename) => {
-        const current = await fs.readFile(configPath, "utf8");
-        if (current === cfgContent) return;
-        cfgContent = current;
-
-        logger.debug("core-config file change detected", {
+      const watchState = {
+        lastContent: await fs.readFile(configPath, "utf8"),
+      };
+      coreConfigWatcher = watch(configDir, (eventType, filename) => {
+        void handleCoreConfigWatchEvent({
+          configPath,
+          configFileName,
           eventType,
-          changed: filename ?? configFileName,
-          path: configPath,
+          filename,
+          state: watchState,
+          logger,
+          scheduleValidation: scheduleCoreConfigValidation,
         });
-
-        scheduleCoreConfigValidation("watch");
       });
 
       coreConfigWatcher.on("error", (e: unknown) => {
@@ -385,6 +507,8 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         logger: createLogger({
           module: "tool-server",
         }),
+        healthProvider: getRuntimeHealthReport,
+        onUnhealthy: opts.onUnhealthy,
         requestMessageCache: {
           get: requestMessageCache.get,
         },
@@ -650,5 +774,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     logger.info("Core runtime stopped");
   }
 
-  return { start, stop };
+  return {
+    start,
+    stop,
+    recordUnhandledRejection(reason: unknown) {
+      toolServer?.recordUnhandledRejection(reason);
+    },
+  };
 }

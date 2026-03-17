@@ -3,6 +3,13 @@ import { createLogger } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
 import { BridgeFnRequest, BridgeFnResponse, BridgeListResponse } from "./schema";
+import {
+  createToolServerHealthState,
+  type ToolServerHealthCheck,
+  type ToolServerHealthConfig,
+  type ToolServerHealthProviderResult,
+  type ToolServerHealthSnapshot,
+} from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
 
 type ToolPluginManagerLike = {
@@ -11,6 +18,12 @@ type ToolPluginManagerLike = {
   reload(): Promise<void>;
   ensureFresh(): Promise<void>;
   getLevel2Tools(): readonly ServerTool[];
+  getStatuses?(): readonly unknown[];
+};
+
+type ToolCallTimeoutOptions = {
+  defaultTimeoutMs?: number;
+  perToolMs?: Record<string, number>;
 };
 
 function safeJsonPreview(value: unknown, maxChars = 2000): string {
@@ -79,11 +92,44 @@ export type ToolServerOptions = {
   pluginManager?: ToolPluginManagerLike;
   app?: Elysia;
   logger?: Logger;
+  toolCallTimeouts?: ToolCallTimeoutOptions;
+  healthConfig?: ToolServerHealthConfig;
+  healthProvider?: () => ToolServerHealthProviderResult | Promise<ToolServerHealthProviderResult>;
+  onUnhealthy?: (snapshot: ToolServerHealthSnapshot) => void | Promise<void>;
   /** Optional cache to provide request-scoped messages to tools. */
   requestMessageCache?: {
     get(requestId: string): readonly unknown[] | undefined;
   };
 };
+
+const DEFAULT_TOOL_CALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function createDeadlineSignal(timeoutMs: number): {
+  signal: AbortSignal;
+  cancel(): void;
+} {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`tool call exceeded deadline (${timeoutMs}ms)`));
+  }, timeoutMs);
+  timer.unref?.();
+
+  return {
+    signal: controller.signal,
+    cancel() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+function timeoutForTool(tool: ServerTool, options?: ToolCallTimeoutOptions): number {
+  return options?.perToolMs?.[tool.id] ?? options?.defaultTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
+}
+
+function getVersion(): string {
+  const pkgVersion = process.env.npm_package_version?.trim();
+  return pkgVersion && pkgVersion.length > 0 ? pkgVersion : "dev";
+}
 
 export function createToolServer(options: ToolServerOptions) {
   const logger =
@@ -93,8 +139,16 @@ export function createToolServer(options: ToolServerOptions) {
     });
 
   const staticTools = options.tools ?? [];
+  const serverStartedAt = Date.now();
 
   const callMapping = new Map<string, ServerTool>();
+  const healthState = createToolServerHealthState({
+    logger,
+    pluginManager: options.pluginManager,
+    externalHealthProvider: options.healthProvider,
+    onUnhealthy: options.onUnhealthy,
+    ...options.healthConfig,
+  });
 
   async function getActiveTools(): Promise<readonly ServerTool[]> {
     if (options.pluginManager) {
@@ -123,7 +177,30 @@ export function createToolServer(options: ToolServerOptions) {
     logger.error("tool-server error", { code }, error);
   });
 
-  app.get("/health", async () => ({ ok: true as const }));
+  app.get("/health", async ({ set }) => {
+    const snapshot = await healthState.getSnapshot();
+    if (!snapshot.live) set.status = 503;
+    return snapshot;
+  });
+
+  app.get("/healthz", async ({ set }) => {
+    const snapshot = await healthState.getSnapshot();
+    if (!snapshot.live) set.status = 503;
+    return snapshot;
+  });
+
+  app.get("/readyz", async ({ set }) => {
+    const snapshot = await healthState.getSnapshot();
+    if (!snapshot.ready) set.status = 503;
+    return snapshot;
+  });
+
+  app.get("/versionz", async () => ({
+    ok: true as const,
+    version: getVersion(),
+    startedAt: serverStartedAt,
+    pid: process.pid,
+  }));
 
   app.get(
     "/list",
@@ -194,6 +271,16 @@ export function createToolServer(options: ToolServerOptions) {
 
       const ctx = parseRequestContext(headers);
       const inputBytes = estimateJsonBytes(body.input);
+      const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
+      const deadlineAt = Date.now() + timeoutMs;
+      const timeoutSignal = createDeadlineSignal(timeoutMs);
+      const combinedSignal = AbortSignal.any([request.signal, timeoutSignal.signal]);
+      const callToken = healthState.beginToolCall({
+        toolId: tool.id,
+        callableId: body.callableId,
+        deadlineAt,
+        requestId: ctx.requestId,
+      });
 
       logger.debug("tool call", {
         callableId: body.callableId,
@@ -202,6 +289,7 @@ export function createToolServer(options: ToolServerOptions) {
         requestClient: ctx.requestClient,
         cwd: ctx.cwd,
         inputBytes,
+        timeoutMs,
       });
 
       logger.debug("tool call input", {
@@ -226,11 +314,66 @@ export function createToolServer(options: ToolServerOptions) {
           });
         }
 
-        const output = await tool.call(body.callableId, body.input, {
-          signal: request.signal,
-          context: ctx,
-          messages,
+        const callResult = Promise.resolve()
+          .then(() =>
+            tool.call(body.callableId, body.input, {
+              signal: combinedSignal,
+              context: ctx,
+              messages,
+            }),
+          )
+          .then(
+            (output) => ({ kind: "success" as const, output }),
+            (error) => ({ kind: "error" as const, error }),
+          )
+          .finally(() => {
+            healthState.endToolCall(callToken, {
+              settled: true,
+            });
+          })
+          .finally(() => {
+            timeoutSignal.cancel();
+          });
+
+        const timeoutResult = new Promise<{ kind: "timeout" }>((resolve) => {
+          timeoutSignal.signal.addEventListener(
+            "abort",
+            () => {
+              resolve({ kind: "timeout" });
+            },
+            { once: true },
+          );
         });
+
+        const result = await Promise.race([callResult, timeoutResult]);
+
+        if (result.kind === "timeout") {
+          healthState.endToolCall(callToken, {
+            settled: false,
+            timedOut: true,
+            failed: true,
+            cancelled: true,
+          });
+          logger.error("tool.call.result", {
+            callableId: body.callableId,
+            requestId: ctx.requestId,
+            sessionId: ctx.sessionId,
+            requestClient: ctx.requestClient,
+            inputBytes,
+            durationMs: Date.now() - startedAt,
+            ok: false,
+            timeoutMs,
+            timedOut: true,
+          });
+          return {
+            isError: true,
+            output: `Tool call timed out after ${timeoutMs}ms`,
+          };
+        }
+
+        if (result.kind === "error") {
+          throw result.error;
+        }
 
         logger.info("tool.call.result", {
           callableId: body.callableId,
@@ -240,10 +383,23 @@ export function createToolServer(options: ToolServerOptions) {
           hasMessagesContext: Array.isArray(messages) && messages.length > 0,
           inputBytes,
           durationMs: Date.now() - startedAt,
+          timeoutMs,
           ok: true,
         });
-        return { isError: false, output };
+        return { isError: false, output: result.output };
       } catch (e) {
+        if (request.signal.aborted) {
+          healthState.endToolCall(callToken, {
+            settled: false,
+            cancelled: true,
+          });
+        } else if (!timeoutSignal.signal.aborted) {
+          healthState.endToolCall(callToken, {
+            settled: false,
+            failed: true,
+            cancelled: combinedSignal.aborted,
+          });
+        }
         logger.error(
           "tool.call.result",
           {
@@ -253,9 +409,10 @@ export function createToolServer(options: ToolServerOptions) {
             requestClient: ctx.requestClient,
             inputBytes,
             durationMs: Date.now() - startedAt,
+            timeoutMs,
             ok: false,
             errorClass: e instanceof Error ? e.name : "unknown",
-            cancelled: request.signal.aborted,
+            cancelled: combinedSignal.aborted,
           },
           e,
         );
@@ -290,16 +447,22 @@ export function createToolServer(options: ToolServerOptions) {
         }
       }
       await refreshToolMapping();
+      healthState.markInitialized(true);
     },
     start: async (port: number) => {
       if (started) return;
       started = true;
+      healthState.startMonitoring();
 
       // Elysia listen is sync-ish, but server becomes available shortly after.
       app.listen(port);
+      healthState.markListening(true);
       logger.info(`Tool server listening on port ${app.server?.hostname}:${app.server?.port}`);
     },
     stop: async () => {
+      healthState.markListening(false);
+      healthState.markInitialized(false);
+      healthState.stopMonitoring();
       if (options.pluginManager) {
         await options.pluginManager.destroy();
       } else {
@@ -310,5 +473,16 @@ export function createToolServer(options: ToolServerOptions) {
       }
       started = false;
     },
+    getHealthSnapshot: async () => await healthState.getSnapshot(),
+    recordUnhandledRejection: (reason: unknown) => {
+      healthState.recordUnhandledRejection(reason);
+    },
   };
 }
+
+export type {
+  ToolServerHealthCheck,
+  ToolServerHealthConfig,
+  ToolServerHealthProviderResult,
+  ToolServerHealthSnapshot,
+};
