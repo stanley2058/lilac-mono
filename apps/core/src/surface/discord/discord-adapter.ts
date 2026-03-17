@@ -134,6 +134,20 @@ export function resolveOutputNotificationEnabled(input: {
   return true;
 }
 
+function getLatestGatewayPingAt(client: Client): number | undefined {
+  let latestGatewayPingAt: number | undefined;
+  for (const shard of client.ws.shards.values()) {
+    if (!Number.isFinite(shard.lastPingTimestamp) || shard.lastPingTimestamp < 0) {
+      continue;
+    }
+    latestGatewayPingAt =
+      latestGatewayPingAt === undefined
+        ? shard.lastPingTimestamp
+        : Math.max(latestGatewayPingAt, shard.lastPingTimestamp);
+  }
+  return latestGatewayPingAt;
+}
+
 export function resolveDiscordSurfaceEditTarget(input: {
   authorId?: string | null;
   selfUserId: string;
@@ -858,6 +872,9 @@ export class DiscordAdapter implements SurfaceAdapter {
   }
 
   getHealthSnapshot(): DiscordAdapterHealthSnapshot {
+    if (this.client) {
+      this.refreshGatewayPing(this.client);
+    }
     return { ...this.healthState };
   }
 
@@ -1745,11 +1762,12 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private refreshGatewayPing(client: Client) {
     const ping = client.ws.ping;
-    if (!Number.isFinite(ping) || ping < 0) return;
+    const lastGatewayPingAt = getLatestGatewayPingAt(client);
+    if ((!Number.isFinite(ping) || ping < 0) && lastGatewayPingAt === undefined) return;
     this.healthState = {
       ...this.healthState,
-      gatewayPingMs: ping,
-      lastGatewayPingAt: Date.now(),
+      ...(Number.isFinite(ping) && ping >= 0 ? { gatewayPingMs: ping } : {}),
+      ...(lastGatewayPingAt !== undefined ? { lastGatewayPingAt } : {}),
     };
   }
 

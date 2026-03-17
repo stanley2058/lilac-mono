@@ -241,24 +241,32 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       },
     });
 
-    const gatewayStaleForMs = discord.lastGatewayEventAt ? now - discord.lastGatewayEventAt : null;
+    const gatewayEventStaleForMs = discord.lastGatewayEventAt
+      ? now - discord.lastGatewayEventAt
+      : null;
+    const gatewayPingStaleForMs = discord.lastGatewayPingAt
+      ? now - discord.lastGatewayPingAt
+      : null;
+    const gatewayEventFresh =
+      gatewayEventStaleForMs !== null && gatewayEventStaleForMs < DISCORD_GATEWAY_STALE_MS;
+    const gatewayPingFresh =
+      Number.isFinite(discord.gatewayPingMs) &&
+      gatewayPingStaleForMs !== null &&
+      gatewayPingStaleForMs < DISCORD_GATEWAY_STALE_MS;
     checks.push({
       name: "discord.gateway",
-      ok:
-        !runtimeFullyStarted ||
-        !discord.isReady ||
-        (gatewayStaleForMs !== null && gatewayStaleForMs < DISCORD_GATEWAY_STALE_MS),
+      ok: !runtimeFullyStarted || !discord.isReady || gatewayEventFresh || gatewayPingFresh,
       impact: "live",
       reason:
-        !runtimeFullyStarted ||
-        !discord.isReady ||
-        (gatewayStaleForMs !== null && gatewayStaleForMs < DISCORD_GATEWAY_STALE_MS)
+        !runtimeFullyStarted || !discord.isReady || gatewayEventFresh || gatewayPingFresh
           ? undefined
-          : `discord gateway heartbeat/ping is stale (${gatewayStaleForMs ?? "unknown"}ms)`,
+          : `discord gateway dispatches and heartbeat acknowledgements are stale (event=${gatewayEventStaleForMs ?? "unknown"}ms, ping=${gatewayPingStaleForMs ?? "unknown"}ms)`,
       details: {
         lastGatewayEventAt: discord.lastGatewayEventAt,
+        lastGatewayPingAt: discord.lastGatewayPingAt,
         gatewayPingMs: discord.gatewayPingMs,
-        staleForMs: gatewayStaleForMs,
+        eventStaleForMs: gatewayEventStaleForMs,
+        pingStaleForMs: gatewayPingStaleForMs,
         thresholdMs: DISCORD_GATEWAY_STALE_MS,
       },
     });
