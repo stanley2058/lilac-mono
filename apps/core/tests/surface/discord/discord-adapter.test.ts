@@ -240,6 +240,35 @@ describe("resolveDiscordSurfaceEditTarget", () => {
   });
 });
 
+describe("DiscordAdapter.getHealthSnapshot", () => {
+  it("samples current gateway ping state from discord.js shards", () => {
+    const adapter = new DiscordAdapter();
+    const adapterWithClient = adapter as unknown as {
+      client: {
+        ws: {
+          ping: number;
+          shards: Map<number, { lastPingTimestamp: number }>;
+        };
+      } | null;
+    };
+
+    adapterWithClient.client = {
+      ws: {
+        ping: 123,
+        shards: new Map<number, { lastPingTimestamp: number }>([
+          [0, { lastPingTimestamp: 1_000 }],
+          [1, { lastPingTimestamp: 2_000 }],
+        ]),
+      },
+    };
+
+    const snapshot = adapter.getHealthSnapshot();
+
+    expect(snapshot.gatewayPingMs).toBe(123);
+    expect(snapshot.lastGatewayPingAt).toBe(2_000);
+  });
+});
+
 describe("DiscordAdapter.editMsg", () => {
   it("replaces only the embed description for single-embed bot messages", async () => {
     const editCalls: Array<Record<string, unknown>> = [];
