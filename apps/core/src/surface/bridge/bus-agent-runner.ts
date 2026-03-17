@@ -3023,6 +3023,50 @@ export async function startBusAgentRunner(params: {
             maxAttempts,
           });
         },
+        onCompactionStart: ({ spec, reason, messageCountBefore, estimatedInputTokens, budget }) => {
+          logger.info("auto-compaction start", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            subagentDepth: subagentMeta.depth,
+            modelSpec: spec,
+            reason,
+            messageCountBefore,
+            estimatedInputTokens,
+            inputBudget: budget.inputBudget,
+            safeInputBudget: budget.safeInputBudget,
+            reservedOutputTokens: budget.reservedOutputTokens,
+          });
+        },
+        onCompactionEnd: ({
+          spec,
+          reason,
+          messageCountBefore,
+          messageCountAfter,
+          estimatedInputTokens,
+          estimatedOutputTokens,
+          durationMs,
+          status,
+          error,
+        }) => {
+          const payload = {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            subagentDepth: subagentMeta.depth,
+            modelSpec: spec,
+            reason,
+            status,
+            durationMs,
+            messageCountBefore,
+            messageCountAfter,
+            estimatedInputTokens,
+            estimatedOutputTokens,
+          };
+          if (status === "completed") {
+            logger.info("auto-compaction end", payload);
+            return;
+          }
+          logger.warn("auto-compaction end", payload, error);
+        },
       });
 
       state.agent = agent;

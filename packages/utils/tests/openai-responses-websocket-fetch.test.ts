@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createOpenAI } from "@ai-sdk/openai";
+import { streamText } from "ai";
 
 import { createOpenAIResponsesWebSocketFetch } from "../openai-responses-websocket-fetch";
 
@@ -127,6 +129,15 @@ function chunkedEventStreamResponse(chunks: readonly string[]): Response {
       "content-type": "text/event-stream",
     },
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 describe("createOpenAIResponsesWebSocketFetch", () => {
@@ -301,6 +312,51 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(text).toContain('"code":"model_not_found"');
     expect(text).not.toContain('"type":"response.failed"');
     expect(text).toContain("[DONE]");
+  });
+
+  it("lets AI SDK consumers observe websocket terminal errors without hanging", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const openai = createOpenAI({ apiKey: "test-token", fetch: wsFetch });
+
+    const result = streamText({
+      model: openai.responses("gpt-5-mini"),
+      prompt: "hi",
+    });
+
+    const partsPromise = withTimeout(
+      (async () => {
+        const parts: Array<{ type: string }> = [];
+        for await (const part of result.fullStream) {
+          parts.push({ type: part.type });
+        }
+        return parts;
+      })(),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "error",
+        sequence_number: 0,
+        error: {
+          type: "invalid_request_error",
+          code: "response_error",
+          message: "Instructions are required",
+          param: null,
+        },
+      }),
+    );
+
+    const parts = await partsPromise;
+    expect(parts.some((part) => part.type === "error")).toBe(true);
   });
 
   it("normalizes SSE response.done events", async () => {
