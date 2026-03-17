@@ -20,6 +20,10 @@ function startServer(handler: (req: Request) => Response | Promise<Response>) {
   return server;
 }
 
+function stubWeb(tool: Web, stub: Record<string, unknown>): void {
+  Object.assign(tool as unknown as Record<string, unknown>, stub);
+}
+
 describe("web tool fetch", () => {
   it("propagates abort signals through fetch mode", async () => {
     const server = startServer(async () => {
@@ -120,6 +124,254 @@ describe("web tool fetch", () => {
       isError: false,
       title: "Large Page",
       content: expect.stringContaining("Important content"),
+    });
+  });
+
+  it("auto returns direct markdown from fetch without extra fallbacks", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webFetchDefaultMode: "auto",
+      fetchPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Example",
+          markdown: "# Hello",
+          text: "# Hello",
+          raw: "# Hello",
+        },
+        sourceTruncated: false,
+      }),
+      renderPageContent: async () => {
+        throw new Error("browser fallback should not run");
+      },
+      extractPageContent: async () => {
+        throw new Error("extract fallback should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "auto",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Example",
+      content: "# Hello",
+    });
+  });
+
+  it("auto escalates from weak fetched html to browser rendering", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webFetchDefaultMode: "auto",
+      fetchPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Example",
+          markdown: "Loading...",
+          text: "Loading...",
+          raw: '<div id="__next">Loading...</div>',
+        },
+        rawHtml:
+          '<html><body><div id="__next">Loading...</div><script>webpack</script></body></html>',
+        sourceTruncated: false,
+      }),
+      renderPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Rendered Example",
+          markdown:
+            "Rendered article with useful details and enough substance to keep. It has several sentences and useful context for an agent.\n\nA second paragraph adds even more concrete information so the auto flow treats the rendered page as strong content.",
+          text: "Rendered article with useful details and enough substance to keep. It has several sentences and useful context for an agent. A second paragraph adds even more concrete information so the auto flow treats the rendered page as strong content.",
+          raw: "<article><p>Rendered article with useful details and enough substance to keep. It has several sentences and useful context for an agent.</p><p>A second paragraph adds even more concrete information so the auto flow treats the rendered page as strong content.</p></article>",
+        },
+        rawHtml:
+          "<html><body><article><p>Rendered article with useful details and enough substance to keep. It has several sentences and useful context for an agent.</p><p>A second paragraph adds even more concrete information so the auto flow treats the rendered page as strong content.</p></article></body></html>",
+      }),
+      extractPageContent: async () => {
+        throw new Error("extract fallback should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "auto",
+        format: "text",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Rendered Example",
+      content: expect.stringContaining("Rendered article"),
+    });
+  });
+
+  it("auto escalates to extract after weak browser rendering", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webFetchDefaultMode: "auto",
+      fetchPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Example",
+          markdown: "Loading...",
+          text: "Loading...",
+          raw: '<div id="__next">Loading...</div>',
+        },
+        rawHtml: '<html><body><div id="__next">Loading...</div></body></html>',
+      }),
+      renderPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Rendered Example",
+          markdown: "Sign in",
+          text: "Sign in",
+          raw: "<main>Sign in</main>",
+        },
+        rawHtml: "<html><body><main>Sign in</main></body></html>",
+      }),
+      extractPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Extracted Example",
+          markdown: "Useful extracted content from the provider.",
+          text: "Useful extracted content from the provider.",
+          raw: "Useful extracted content from the provider.",
+        },
+      }),
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "auto",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Extracted Example",
+      content: "Useful extracted content from the provider.",
+    });
+  });
+
+  it("uses configured fetch mode when mode is omitted", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async function (this: Record<string, unknown>) {
+        this.webFetchDefaultMode = "extract";
+      },
+      getPageExtract: async () => ({
+        isError: false,
+        title: "Configured Extract",
+        content: "Configured extract content",
+        length: 24,
+        rearTruncated: false,
+        sourceTruncated: false,
+      }),
+      getPageAuto: async () => {
+        throw new Error("auto mode should not run");
+      },
+      getPageFetch: async () => {
+        throw new Error("fetch mode should not run");
+      },
+      getPageBrowser: async () => {
+        throw new Error("browser mode should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Configured Extract",
+      content: "Configured extract content",
+    });
+  });
+
+  it("preserves sourceTruncated for Exa extract when content is capped by budget", async () => {
+    const tool = new Web();
+    const extractedText = "x".repeat(50_000);
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProvider: {
+        id: "exa",
+        isConfigured: () => true,
+        search: async () => [],
+      },
+      getExaClient: () => ({
+        getContents: async () => ({
+          results: [
+            {
+              url: "https://example.com",
+              title: "Example",
+              text: extractedText,
+            },
+          ],
+        }),
+      }),
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "extract",
+        maxCharacters: 60_000,
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Example",
+      length: 50_000,
+      sourceTruncated: true,
+    });
+  });
+
+  it("applies timeout to Exa extract mode", async () => {
+    const tool = new Web();
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProvider: {
+        id: "exa",
+        isConfigured: () => true,
+        search: async () => [],
+      },
+      getExaClient: () => ({
+        getContents: async () => {
+          await Bun.sleep(50);
+          return {
+            results: [
+              {
+                url: "https://example.com",
+                title: "Example",
+                text: "slow",
+              },
+            ],
+          };
+        },
+      }),
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "extract",
+        timeout: 10,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      error: expect.stringMatching(/abort/i),
     });
   });
 });
