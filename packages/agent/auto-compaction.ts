@@ -8,7 +8,7 @@ import type {
 } from "./ai-sdk-pi-agent";
 import { AiSdkPiAgent } from "./ai-sdk-pi-agent";
 import { isLikelyContextOverflowError } from "./context-overflow";
-import { ModelCapability, type ModelSpecifier } from "@stanley2058/lilac-utils";
+import { ModelCapability, type JSONObject, type ModelSpecifier } from "@stanley2058/lilac-utils";
 
 function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -633,12 +633,14 @@ async function summarizePrompt(options: {
   model: LanguageModel;
   system: string;
   prompt: string;
+  providerOptions?: { [x: string]: JSONObject };
   abortSignal?: AbortSignal;
 }): Promise<string> {
   const res = streamText({
     model: options.model,
     system: options.system,
     messages: [{ role: "user", content: options.prompt }],
+    providerOptions: options.providerOptions,
     abortSignal: options.abortSignal,
   });
 
@@ -776,6 +778,28 @@ type ResolvedContextWindow =
     };
 
 type CompactionScheduleReason = "threshold" | "overflow";
+
+type AutoCompactionObservedBudget = {
+  inputBudget: number;
+  safeInputBudget: number;
+  reservedOutputTokens: number;
+};
+
+type AutoCompactionStartEvent = {
+  spec: ModelSpecifier;
+  reason: CompactionScheduleReason;
+  messageCountBefore: number;
+  estimatedInputTokens: number;
+  budget: AutoCompactionObservedBudget;
+};
+
+type AutoCompactionEndEvent = AutoCompactionStartEvent & {
+  durationMs: number;
+  messageCountAfter?: number;
+  estimatedOutputTokens?: number;
+  status: "completed" | "failed";
+  error?: unknown;
+};
 
 function reconcilePendingCompactionReason(params: {
   pendingReason: CompactionScheduleReason | null;
@@ -1054,6 +1078,12 @@ export type AutoCompactionOptions = {
     attempts: number;
     maxAttempts: number;
   }) => void;
+
+  /** Optional hook for observability when compaction starts. */
+  onCompactionStart?: (params: AutoCompactionStartEvent) => void;
+
+  /** Optional hook for observability when compaction completes or fails. */
+  onCompactionEnd?: (params: AutoCompactionEndEvent) => void;
 };
 
 async function resolveContextLimit(params: {
@@ -1349,8 +1379,24 @@ export async function attachAutoCompaction(
     });
     if (!activeBudget) return maybeTransformed;
 
+    const compactionReason = pendingCompactionReason;
+    const estimatedInputTokens = estimateMessagesTokens(compactableMessages);
+    const compactionStart = Date.now();
+    const compactionEventBase: AutoCompactionStartEvent = {
+      spec: latestCapability.spec,
+      reason: compactionReason,
+      messageCountBefore: compactableMessages.length,
+      estimatedInputTokens,
+      budget: {
+        inputBudget: activeBudget.inputBudget,
+        safeInputBudget: activeBudget.safeInputBudget,
+        reservedOutputTokens: activeBudget.reservedOutputTokens,
+      },
+    };
+
     inCompaction = true;
     try {
+      options.onCompactionStart?.(compactionEventBase);
       queuedAutoContinue = false;
 
       const modelToUse = summaryModel === "current" ? agent.state.model : summaryModel;
@@ -1411,6 +1457,7 @@ export async function attachAutoCompaction(
                   model: modelToUse,
                   system: summarySystem,
                   prompt,
+                  providerOptions: agent.state.providerOptions,
                   abortSignal,
                 });
               },
@@ -1446,6 +1493,7 @@ export async function attachAutoCompaction(
                   model: modelToUse,
                   system: summarySystem,
                   prompt,
+                  providerOptions: agent.state.providerOptions,
                   abortSignal,
                 });
               },
@@ -1542,9 +1590,24 @@ export async function attachAutoCompaction(
       }
 
       const outbound = cloneMessages(compacted);
+      options.onCompactionEnd?.({
+        ...compactionEventBase,
+        durationMs: Math.max(0, Date.now() - compactionStart),
+        messageCountAfter: compacted.length,
+        estimatedOutputTokens: estimateMessagesTokens(compacted),
+        status: "completed",
+      });
       return options.baseTransformMessages
         ? await options.baseTransformMessages(outbound, context)
         : outbound;
+    } catch (error) {
+      options.onCompactionEnd?.({
+        ...compactionEventBase,
+        durationMs: Math.max(0, Date.now() - compactionStart),
+        status: "failed",
+        error,
+      });
+      throw error;
     } finally {
       inCompaction = false;
     }

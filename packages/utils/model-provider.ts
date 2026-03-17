@@ -6,6 +6,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
 import { createGateway } from "ai";
+import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import { env } from "./env";
 import {
   OAUTH_DUMMY_KEY,
@@ -27,6 +28,55 @@ export type Providers =
   | "groq"
   | "vercel"
   | (string & {});
+
+function decodeCodexRequestBody(body: unknown): string | undefined {
+  if (typeof body === "string") return body;
+  if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+  if (body instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(body));
+  return undefined;
+}
+
+export function normalizeCodexResponsesRequestRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...record };
+
+  // Codex backend rejects requests unless store is explicitly false.
+  if (normalized.store !== false) normalized.store = false;
+
+  const instructions = normalized.instructions;
+  if (typeof instructions !== "string" || instructions.trim().length === 0) {
+    normalized.instructions = CODEX_BASE_INSTRUCTIONS;
+  }
+
+  // Codex does not persist response items when store=false.
+  // Strip optional per-item `id` fields to avoid replaying rs_* item references.
+  // Keep ids on item types that require them.
+  const input = normalized.input;
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      if (!item || typeof item !== "object" || !("id" in item)) continue;
+      const entry = item as Record<string, unknown>;
+      const type = typeof entry.type === "string" ? entry.type : undefined;
+
+      // item_reference.id is required.
+      if (type === "item_reference") continue;
+      // These tool call item types require id.
+      if (type === "local_shell_call" || type === "shell_call" || type === "computer_call") {
+        continue;
+      }
+
+      delete entry.id;
+    }
+  }
+
+  // Ensure we don't try to thread via Responses replay.
+  if ("previous_response_id" in normalized) {
+    delete normalized.previous_response_id;
+  }
+
+  return normalized;
+}
 
 export function getModelProviders() {
   let codexRefreshInFlight: Promise<void> | null = null;
@@ -205,64 +255,25 @@ export function getModelProviders() {
         // Helpful for server-side routing; Codex CLI always sends this.
         headers.set("originator", "lilac");
 
-        // Codex backend expects a stable allowlisted `instructions` string.
-        // App-level providerOptions mapping provides it; do not set it here.
-
         let body = init?.body;
         // Codex backend requires `store` explicitly set to false.
-        // The OpenAI Responses API defaults may omit it, causing a 400.
+        // It also expects a stable allowlisted `instructions` string.
+        // Harden the transport path so fallback/full-request websocket payloads
+        // still satisfy backend requirements even if upstream omitted them.
         if (
           url.origin === "https://chatgpt.com" &&
           url.pathname.endsWith("/backend-api/codex/responses") &&
           body !== null &&
           body !== undefined
         ) {
-          const decodeBody = (b: unknown): string | undefined => {
-            if (typeof b === "string") return b;
-            if (b instanceof Uint8Array) return new TextDecoder().decode(b);
-            if (b instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(b));
-            return undefined;
-          };
-
-          const encoded = decodeBody(body);
+          const encoded = decodeCodexRequestBody(body);
           if (encoded !== undefined) {
             try {
               const parsed = JSON.parse(encoded) as unknown;
               if (parsed && typeof parsed === "object") {
-                const record = parsed as Record<string, unknown>;
-                // Codex backend rejects requests unless store is explicitly false.
-                if (record.store !== false) record.store = false;
-
-                // Codex does not persist response items when store=false.
-                // Strip optional per-item `id` fields to avoid replaying rs_* item references.
-                // Keep ids on item types that require them.
-                const input = record.input;
-                if (Array.isArray(input)) {
-                  for (const item of input) {
-                    if (!item || typeof item !== "object" || !("id" in item)) continue;
-                    const r = item as Record<string, unknown>;
-                    const type = typeof r.type === "string" ? r.type : undefined;
-
-                    // item_reference.id is required.
-                    if (type === "item_reference") continue;
-                    // These tool call item types require id.
-                    if (
-                      type === "local_shell_call" ||
-                      type === "shell_call" ||
-                      type === "computer_call"
-                    ) {
-                      continue;
-                    }
-
-                    delete r.id;
-                  }
-                }
-
-                // Ensure we don't try to thread via Responses replay.
-                if ("previous_response_id" in record) {
-                  delete record.previous_response_id;
-                }
-                body = JSON.stringify(record);
+                body = JSON.stringify(
+                  normalizeCodexResponsesRequestRecord(parsed as Record<string, unknown>),
+                );
               }
             } catch {
               // Ignore non-JSON bodies.
