@@ -263,6 +263,54 @@ describe("web tool fetch", () => {
     });
   });
 
+  it("auto prefers parsed browser content when extract is unavailable", async () => {
+    const tool = new Web();
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webFetchDefaultMode: "auto",
+      fetchPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Example",
+          markdown: "Loading...",
+          text: "Loading...",
+          raw: '<div id="__next">Loading...</div>',
+        },
+        rawHtml: '<html><body><div id="__next">Loading...</div></body></html>',
+      }),
+      renderPageContent: async () => ({
+        isError: false,
+        content: {
+          url: "https://example.com",
+          title: "Rendered Example",
+          markdown:
+            "![icon](data:image/svg+xml;base64,abc)\n\nPlay the kana quiz and review your progress.",
+          text: "Play the kana quiz and review your progress.",
+          raw: '<main><img src="data:image/svg+xml;base64,abc"><p>Play the kana quiz and review your progress.</p></main>',
+        },
+        rawHtml:
+          '<html><body><main><img src="data:image/svg+xml;base64,abc"><p>Play the kana quiz and review your progress.</p></main></body></html>',
+      }),
+      extractPageContent: async () => ({
+        isError: true,
+        error: "web.extract is unavailable: no provider configured.",
+      }),
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "auto",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Rendered Example",
+      content: expect.stringContaining("Play the kana quiz"),
+    });
+  });
+
   it("uses configured fetch mode when mode is omitted", async () => {
     const tool = new Web();
     stubWeb(tool, {

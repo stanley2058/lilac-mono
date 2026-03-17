@@ -1060,9 +1060,18 @@ export class Web implements ServerTool {
       opts,
     );
 
-    let browserFallbackContent: ParsedPageContent | null = null;
+    let browserParsedFallbackContent: ParsedPageContent | null = null;
+    let browserWholePageFallbackContent: ParsedPageContent | null = null;
+    let browserRawFallbackContent: ParsedPageContent | null = null;
     if (!browserResult.isError) {
-      browserFallbackContent = browserResult.rawHtml
+      browserParsedFallbackContent = browserResult.content;
+      if (browserResult.rawHtml) {
+        browserWholePageFallbackContent = await this.parsePage(browserResult.rawHtml, url, {
+          preprocessor: "none",
+          signal: opts?.signal,
+        });
+      }
+      browserRawFallbackContent = browserResult.rawHtml
         ? buildSimpleHtmlContent(browserResult.rawHtml, url)
         : browserResult.content;
       const browserAssessment = assessExtractedContent({
@@ -1105,11 +1114,31 @@ export class Web implements ServerTool {
           sourceTruncated: extractResult.sourceTruncated,
         });
       }
+
+      const preferredBrowserFallback =
+        browserWholePageFallbackContent &&
+        normalizeWhitespace(browserWholePageFallbackContent.text).length >
+          normalizeWhitespace(browserParsedFallbackContent?.text ?? "").length
+          ? browserWholePageFallbackContent
+          : browserParsedFallbackContent;
+
+      if (
+        preferredBrowserFallback &&
+        normalizeWhitespace(preferredBrowserFallback.text).length > 0
+      ) {
+        return this.toOutputFormat({
+          content: preferredBrowserFallback,
+          format,
+          startOffset,
+          maxCharacters,
+          sourceTruncated: browserResult.isError ? false : browserResult.sourceTruncated,
+        });
+      }
     }
 
-    if (browserFallbackContent) {
+    if (browserRawFallbackContent) {
       return this.toOutputFormat({
-        content: browserFallbackContent,
+        content: browserRawFallbackContent,
         format,
         startOffset,
         maxCharacters,
