@@ -36,6 +36,12 @@ export function getModelProviders() {
 
   const openaiResponsesFetch = createOpenAIResponsesWebSocketFetch({
     mode: env.providers.openai.responsesTransport,
+    onTransportSelected: (details) => {
+      logger.info("responses transport selected", {
+        provider: "openai",
+        ...details,
+      });
+    },
     onAutoFallback: (details) => {
       logger.warn("responses transport fallback to sse", {
         provider: "openai",
@@ -54,6 +60,12 @@ export function getModelProviders() {
         ...event,
         type: "response.completed",
       };
+    },
+    onTransportSelected: (details) => {
+      logger.info("responses transport selected", {
+        provider: "codex",
+        ...details,
+      });
     },
     onAutoFallback: (details) => {
       logger.warn("responses transport fallback to sse", {
