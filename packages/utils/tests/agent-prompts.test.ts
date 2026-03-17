@@ -8,6 +8,8 @@ import {
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
   DEFAULT_PROMPT_DIRNAME,
+  HEARTBEAT_PROMPT_DIRNAME,
+  HEARTBEAT_PROMPT_FILENAME,
   PROMPT_TEMPLATE_STATE_FILENAME,
   ensurePromptWorkspace,
 } from "../agent-prompts";
@@ -75,6 +77,38 @@ describe("agent prompts", () => {
 
       // On first run, all should be created.
       expect(result.ensured.every((e) => e.created)).toBe(true);
+    });
+  });
+
+  it("seeds heartbeat workspace artifacts", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await ensurePromptWorkspace({ dataDir });
+
+      expect(
+        await Bun.file(
+          path.join(dataDir, DEFAULT_PROMPT_DIRNAME, HEARTBEAT_PROMPT_FILENAME),
+        ).exists(),
+      ).toBe(true);
+      const heartbeatText = await Bun.file(
+        path.join(dataDir, DEFAULT_PROMPT_DIRNAME, HEARTBEAT_PROMPT_FILENAME),
+      ).text();
+      expect(heartbeatText).toContain("## Ownership");
+      expect(heartbeatText).toContain("heartbeat/inbox/");
+      expect(heartbeatText).toContain("HEARTBEAT_OK");
+      expect(
+        (
+          await Bun.file(
+            path.join(dataDir, DEFAULT_PROMPT_DIRNAME, HEARTBEAT_PROMPT_DIRNAME, "inbox"),
+          ).stat()
+        ).isDirectory(),
+      ).toBe(true);
+      expect(
+        (
+          await Bun.file(
+            path.join(dataDir, DEFAULT_PROMPT_DIRNAME, HEARTBEAT_PROMPT_DIRNAME, "archive"),
+          ).stat()
+        ).isDirectory(),
+      ).toBe(true);
     });
   });
 

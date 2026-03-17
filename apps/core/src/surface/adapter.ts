@@ -15,7 +15,7 @@ import type { AdapterEvent } from "./events";
 export type SurfaceToolStatusUpdate = {
   toolCallId: string;
   display: string;
-  status: "start" | "end";
+  status: "start" | "update" | "end";
   ok?: boolean;
   error?: string;
 };

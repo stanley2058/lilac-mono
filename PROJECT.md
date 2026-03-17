@@ -37,10 +37,10 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Tool server (no bus, no surface adapter by default): `apps/tool-bridge/index.ts`.
   - Build script: `apps/tool-bridge/build.ts` (produces `dist/index.js`, used as the `tools` binary).
 
-- `apps/opencode-controller/`
-  - OpenCode SDK wrapper CLI (`lilac-opencode`), designed for local and automation/ssh workflows.
-  - Entry/client: `apps/opencode-controller/client.ts`.
-  - Build script: `apps/opencode-controller/build.ts` (produces `dist/index.js`).
+- `apps/acp-controller/`
+  - ACP harness controller CLI (`lilac-acp`) with JSON and human output modes, designed for local and automation/ssh workflows.
+  - Entry/client: `apps/acp-controller/client.ts`.
+  - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js`).
 
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.
@@ -248,8 +248,9 @@ This is how you can “send a DM, wait for reply, then pick up where you left of
 There are three tool “levels”. They all serve the agent; higher levels are usually only used when the agent needs richer capabilities or a more stable interface.
 
 1. Level 1: direct AI SDK tools (agent-local)
-   - Used inside `apps/core/src/surface/bridge/bus-agent-runner.ts` via AI SDK tool calling.
-   - Implementations: `apps/core/src/tools/*`.
+   - Loaded through the shared plugin runtime in `apps/core/src/plugins/manager.ts` and used inside `apps/core/src/surface/bridge/bus-agent-runner.ts` via AI SDK tool calling.
+   - Built-in implementations still live under `apps/core/src/tools/*`, but are exposed through built-in plugins in `apps/core/src/plugins/builtin/*`.
+   - External plugins are discovered from `DATA_DIR/plugins/*`.
    - Key ones:
       - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
         - Child env always includes request context vars (`LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`) and VCS vars (`GIT_CONFIG_GLOBAL`, `GNUPGHOME`, with color forced off via `NO_COLOR=1`).
@@ -272,9 +273,11 @@ There are three tool “levels”. They all serve the agent; higher levels are u
      - `POST /call` invoke by `callableId`
      - `POST /reload` re-init tools and refresh callable mapping
    - Tool definitions live in `apps/core/src/tool-server/tools/*`.
-   - Default registration: `apps/core/src/tool-server/default-tools.ts`.
+   - Registration now goes through the same shared plugin runtime used by Level 1 (`apps/core/src/plugins/manager.ts`).
+   - Built-in Level 2 plugins live in `apps/core/src/plugins/builtin/*`; external plugins are discovered from `DATA_DIR/plugins/*`.
    - The tool server uses request context headers (`x-lilac-request-id`, etc.) and an optional request-message cache (`apps/core/src/tool-server/request-message-cache.ts`) for request-scoped behavior.
    - `apps/tool-bridge/client.ts` provides a human-friendly `tools` CLI that calls the tool server; the agent can also invoke it through Level-1 `bash`.
+   - Capability-bound plugins skip cleanly in dev mode when required services are absent.
 
 3. Level 3: skills
    - Skills are on-disk bundles: a directory containing a required `SKILL.md` (YAML frontmatter + instructions) and optional helpers/resources.
@@ -309,6 +312,7 @@ Expected contents over time:
 - `data.sqlite3` (default SQLite DB for workflow store; override via `SQLITE_URL`)
 - `graceful-restart.db` (in-flight relay/agent recovery snapshots)
 - `skills/` (skill bundles installed/seeded for discovery)
+- `plugins/` (external Level 1 / Level 2 tool plugins)
 - `secret/` (persisted secrets, e.g. GitHub App credentials, GPG home)
 - `workspace/` (default working directory for bash/fs tools in the core runtime)
 
@@ -343,6 +347,8 @@ Key sections:
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
+- `plugins.disabled`: plugin ids to disable without uninstalling them.
+- `plugins.config`: opaque per-plugin config passed through to plugin code.
 - `models`: model slots (`main`, `fast`) with optional preset aliases and capability overrides (`models.capability`).
 - `entity`: optional aliasing/mention rewriting for users/sessions.
 
@@ -391,7 +397,8 @@ Shutdown happens in reverse (best-effort).
 - Change request routing behavior: `apps/core/src/surface/bridge/bus-request-router.ts` and config schema in `packages/utils/core-config.ts`.
 - Change agent execution behavior (steer/follow-up/interrupt semantics): `packages/agent/ai-sdk-pi-agent.ts`.
 - Change which local tools the LLM can call: `apps/core/src/surface/bridge/bus-agent-runner.ts`.
-- Add a new HTTP tool: implement `ServerTool` in `apps/core/src/tool-server/tools/*` and register it in `apps/core/src/tool-server/default-tools.ts`.
+- Add a new HTTP tool: implement `ServerTool` in `apps/core/src/tool-server/tools/*` and expose it from a built-in plugin in `apps/core/src/plugins/builtin/*`.
+- Add a new external plugin or change the shared plugin contract: `packages/plugin-runtime/*` and `PLUGIN_AUTHORING.md`.
 - Change how tool invocations are served/logged: `apps/core/src/tool-server/create-tool-server.ts`.
 - Change Discord ingestion/persistence/output rendering: `apps/core/src/surface/discord/discord-adapter.ts` and `apps/core/src/surface/discord/output/*`.
 - Modify workflow behavior or add a new task kind: `apps/core/src/workflow/*`.
@@ -413,8 +420,8 @@ Shutdown happens in reverse (best-effort).
 - Build `tools` CLI:
   - `cd apps/tool-bridge && bun run build`
 
-- Build `lilac-opencode` CLI:
-  - `cd apps/opencode-controller && bun run build`
+- Build `lilac-acp` CLI:
+  - `cd apps/acp-controller && bun run build`
 
 - Run tests:
   - Root harness: `bun test`

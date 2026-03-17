@@ -98,7 +98,6 @@ function inferTransportError(
 
 function buildRemoteScript(input: RunInput) {
   const cwd = input.cwd ?? "";
-  // Use heredocs to avoid quoting issues.
   return `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -107,10 +106,23 @@ ${cwd}
 __LILAC_CWD__
 )
 
-CMD=$(cat <<'__LILAC_CMD__'
+TMP_CMD=""
+cleanup() {
+  if [ -n "$TMP_CMD" ]; then
+    rm -f "$TMP_CMD" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if command -v mktemp >/dev/null 2>&1; then
+  TMP_CMD=$(mktemp -t lilac-ssh-cmd.XXXXXX)
+else
+  TMP_CMD="/tmp/lilac-ssh-cmd.$$"
+fi
+
+cat >"$TMP_CMD" <<'__LILAC_CMD__'
 ${input.cmd}
 __LILAC_CMD__
-)
 
 if [ -n "$CWD" ]; then
   if [ "$CWD" = "~" ]; then
@@ -122,7 +134,7 @@ if [ -n "$CWD" ]; then
 fi
 
 # Run under a clean bash to avoid remote environment surprises (rc/profile).
-bash --noprofile --norc -c "$CMD"
+bash --noprofile --norc "$TMP_CMD"
 
 # Explicitly exit so bash -s doesn't wait for more stdin.
 exit 0

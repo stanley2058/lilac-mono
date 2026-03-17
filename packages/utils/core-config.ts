@@ -62,6 +62,18 @@ type AgentConfig = {
   };
 };
 
+export type DiscordUserAliasConfig = {
+  discord: string;
+  comment?: string;
+};
+
+export type DiscordSessionAliasConfig =
+  | string
+  | {
+      discord: string;
+      comment?: string;
+    };
+
 const statsForNerdsSchema = z
   .union([
     z.boolean(),
@@ -72,6 +84,21 @@ const statsForNerdsSchema = z
   .default(false);
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("simple");
+
+const discordAliasCommentSchema = z.string().trim().min(1).optional();
+
+const discordUserAliasSchema = z.object({
+  discord: z.string().min(1),
+  comment: discordAliasCommentSchema,
+});
+
+const discordSessionAliasSchema = z.union([
+  z.string().min(1),
+  z.object({
+    discord: z.string().min(1),
+    comment: discordAliasCommentSchema,
+  }),
+]);
 
 const subagentProfileSchema = z
   .object({
@@ -360,13 +387,84 @@ const toolsSchema = z
     },
   });
 
+const pluginsSchema = z
+  .object({
+    disabled: z.array(z.string().min(1)).default([]),
+    config: z.record(z.string(), z.unknown()).default({}),
+  })
+  .default({
+    disabled: [],
+    config: {},
+  });
+
+const hhmmSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u, "expected HH:MM");
+const cronExpr5Schema = z
+  .string()
+  .trim()
+  .refine((s) => s.split(/\s+/g).filter(Boolean).length === 5, "cron expr must be 5 fields");
+const heartbeatOutputSessionSchema = z
+  .string()
+  .trim()
+  .regex(/^(discord|github)\/.+$/u, "expected <client>/<sessionIdOrAlias>");
+
+const heartbeatSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    cron: cronExpr5Schema.default("*/30 * * * *"),
+    every: z.unknown().optional(),
+    quietAfterActivityMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(5 * 60 * 1000),
+    retryBusyMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
+    defaultOutputSession: heartbeatOutputSessionSchema.optional(),
+    softQuietHours: z
+      .object({
+        start: hhmmSchema,
+        end: hhmmSchema,
+        timezone: z.string().trim().min(1).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.every !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["every"],
+        message: "surface.heartbeat.every has been removed; use surface.heartbeat.cron",
+      });
+    }
+  })
+  .transform((value) => ({
+    enabled: value.enabled,
+    cron: value.cron,
+    quietAfterActivityMs: value.quietAfterActivityMs,
+    retryBusyMs: value.retryBusyMs,
+    defaultOutputSession: value.defaultOutputSession,
+    softQuietHours: value.softQuietHours,
+  }))
+  .default({
+    enabled: false,
+    cron: "*/30 * * * *",
+    quietAfterActivityMs: 5 * 60 * 1000,
+    retryBusyMs: 60 * 1000,
+    defaultOutputSession: undefined,
+    softQuietHours: undefined,
+  });
 export const coreConfigSchema = z.object({
   tools: toolsSchema,
+  plugins: pluginsSchema,
 
   surface: z
     .object({
       router: routerSchema,
       discord: discordSurfaceSchema,
+      heartbeat: heartbeatSchema,
     })
     .default({
       router: {
@@ -390,6 +488,14 @@ export const coreConfigSchema = z.object({
             fallbackMode: "list",
           },
         },
+      },
+      heartbeat: {
+        enabled: false,
+        cron: "*/30 * * * *",
+        quietAfterActivityMs: 5 * 60 * 1000,
+        retryBusyMs: 60 * 1000,
+        defaultOutputSession: undefined,
+        softQuietHours: undefined,
       },
     }),
 
@@ -489,11 +595,11 @@ export const coreConfigSchema = z.object({
 
   entity: z
     .object({
-      users: z.record(z.string().min(1), z.object({ discord: z.string().min(1) })).default({}),
+      users: z.record(z.string().min(1), discordUserAliasSchema).default({}),
 
       sessions: z
         .object({
-          discord: z.record(z.string().min(1), z.string().min(1)).default({}),
+          discord: z.record(z.string().min(1), discordSessionAliasSchema).default({}),
         })
         .default({ discord: {} }),
     })
@@ -505,7 +611,11 @@ export const coreConfigSchema = z.object({
 
 type ParsedCoreConfig = z.infer<typeof coreConfigSchema>;
 
-export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface" | "models"> & {
+export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "plugins" | "surface" | "models"> & {
+  plugins?: {
+    disabled?: string[];
+    config?: Record<string, unknown>;
+  };
   surface: Omit<ParsedCoreConfig["surface"], "discord"> & {
     discord: Omit<ParsedCoreConfig["surface"]["discord"], "workingIndicators" | "experimental"> & {
       workingIndicators?: string[];
@@ -527,6 +637,31 @@ export type CoreConfig = Omit<ParsedCoreConfig, "agent" | "surface" | "models"> 
     };
   };
 };
+
+export function getDiscordUserAliasValue(alias: DiscordUserAliasConfig | undefined): {
+  discordId: string;
+  comment?: string;
+} | null {
+  if (!alias) return null;
+  return {
+    discordId: alias.discord,
+    comment: alias.comment,
+  };
+}
+
+export function getDiscordSessionAliasValue(alias: DiscordSessionAliasConfig | undefined): {
+  discordId: string;
+  comment?: string;
+} | null {
+  if (!alias) return null;
+  if (typeof alias === "string") {
+    return { discordId: alias };
+  }
+  return {
+    discordId: alias.discord,
+    comment: alias.comment,
+  };
+}
 
 let cached: CoreConfig | null = null;
 let cachedMtimeMs: number | null = null;

@@ -90,9 +90,18 @@ export type SurfaceMsgRef = {
 
 export type RequestQueueMode = "prompt" | "steer" | "followUp" | "interrupt";
 
+export type RequestRunPolicy = "normal" | "idle_only_session" | "idle_only_global";
+
+export type RequestOrigin = {
+  kind: "heartbeat";
+  reason: "interval" | "retry";
+};
+
 export type CmdRequestMessageData = {
   queue: RequestQueueMode;
   messages: ModelMessage[];
+  runPolicy?: RequestRunPolicy;
+  origin?: RequestOrigin;
   /** Optional direct model ref (provider/model or alias from models.def). */
   modelOverride?: string;
   /** Raw adapter payload (platform event) if you need it later. */
@@ -255,12 +264,12 @@ export type EvtAgentOutputResponseBinaryData = {
   filename?: string;
 };
 
-export type ToolCallStatus = "start" | "end";
+export type ToolCallStatus = "start" | "update" | "end";
 
 export type EvtAgentOutputToolCallData = {
-  /** Correlates start/end tool events within a request. */
+  /** Correlates tool events within a request. */
   toolCallId: string;
-  /** Start/end boundaries for a tool call. */
+  /** Start/update/end boundaries for a tool call. */
   status: ToolCallStatus;
   /** Preformatted label for UI (e.g. `[bash] ls -al`). */
   display: string;

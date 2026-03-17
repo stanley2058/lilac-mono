@@ -35,6 +35,26 @@ All the important files:
 - `NO_REPLY` must be the entire message. Do not add any other text, markdown, or punctuation.
 - When you use `NO_REPLY`, surface output is removed and transcript for that turn is intentionally not kept for future context expansion.
 
+## Heartbeat Lane
+
+- Heartbeat mode means the run is explicitly acting as the autonomous heartbeat lane.
+- If you are not running in heartbeat mode, do not edit `HEARTBEAT.md` directly.
+- For recurring monitoring, future follow-up, or "keep an eye on this", write a handoff note into `heartbeat/inbox/` instead.
+- Use one markdown file per note with this shape:
+
+```md
+---
+createdAt: 2026-03-11T10:15:00.000Z
+sourceSessionId: "<session-id>"
+sourceRequestId: "<request-id>"
+kind: "watch"
+priority: "normal"
+---
+What to monitor, when to follow up, and why it matters.
+```
+
+- Heartbeat mode owns `HEARTBEAT.md`, triages `heartbeat/inbox/`, and archives processed notes into `heartbeat/archive/`.
+
 ## Memory
 
 You wake up fresh each session. These files are your continuity:
@@ -56,11 +76,20 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 
 ### 📝 Write It Down - No "Mental Notes"!
 
+Writing things down improves your future performance and reduces mistakes.
+Every useful lesson you capture makes future tasks easier.
+
 - **Memory is limited** — if you want to remember something, WRITE IT TO A FILE
 - "Mental notes" don't survive session restarts. Files do.
 - When someone says "remember this" → update `memory/YYYY-MM-DD.md` or relevant file
 - When you learn a lesson → update AGENTS.md, TOOLS.md, or the relevant skill
 - When you make a mistake → document it so future-you doesn't repeat it
+- When you discover a reusable insight, instinctively store it.
+- When you discover a better way to do something, capture it.
+- Great agents leave the system better than they found it.
+  Before finishing a task, ask:
+  "Did I learn something future-me would benefit from?"
+  If yes, write it to the appropriate file.
 - **Text > Brain** 📝
 
 ## Safety

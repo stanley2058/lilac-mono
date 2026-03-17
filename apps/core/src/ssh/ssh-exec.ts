@@ -185,8 +185,8 @@ function buildRemoteScript(params: { cmd: string; cwd?: string; stdinMode?: SshB
   const cwd = params.cwd ?? "";
   const runCommandSnippet =
     stdinMode === "error"
-      ? 'bash --noprofile --norc -c \'exec 0>/dev/null; exec bash --noprofile --norc -c "$1"\' _ "$CMD"'
-      : 'bash --noprofile --norc -c "$CMD"';
+      ? 'bash --noprofile --norc "$TMP_CMD" </dev/null'
+      : 'bash --noprofile --norc "$TMP_CMD"';
   return `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -195,10 +195,23 @@ ${cwd}
 __LILAC_CWD__
 )
 
-CMD=$(cat <<'__LILAC_CMD__'
+TMP_CMD=""
+cleanup() {
+  if [ -n "$TMP_CMD" ]; then
+    rm -f "$TMP_CMD" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if command -v mktemp >/dev/null 2>&1; then
+  TMP_CMD=$(mktemp -t lilac-ssh-cmd.XXXXXX)
+else
+  TMP_CMD="/tmp/lilac-ssh-cmd.$$"
+fi
+
+cat >"$TMP_CMD" <<'__LILAC_CMD__'
 ${params.cmd}
 __LILAC_CMD__
-)
 
 if [ -n "$CWD" ]; then
   if [ "$CWD" = "~" ]; then

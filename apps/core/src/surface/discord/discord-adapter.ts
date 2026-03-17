@@ -79,6 +79,20 @@ export type DiscordAdapterOptions = {
   config?: CoreConfig;
 };
 
+export type DiscordAdapterHealthSnapshot = {
+  connectionState: "idle" | "connecting" | "ready" | "disconnected";
+  isReady: boolean;
+  readyAt?: number;
+  lastDisconnectAt?: number;
+  lastDisconnectCode?: number;
+  lastErrorAt?: number;
+  lastError?: string;
+  lastResumeAt?: number;
+  lastGatewayEventAt?: number;
+  gatewayPingMs?: number;
+  lastGatewayPingAt?: number;
+};
+
 function asDiscordSessionRef(input: {
   channelId: string;
   guildId?: string | null;
@@ -567,11 +581,20 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private self: SurfaceSelf | null = null;
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private healthState: DiscordAdapterHealthSnapshot = {
+    connectionState: "idle",
+    isReady: false,
+  };
 
   constructor(private readonly opts?: DiscordAdapterOptions) {}
 
   async connect(): Promise<void> {
     if (this.client) return;
+
+    this.healthState = {
+      connectionState: "connecting",
+      isReady: false,
+    };
 
     const cfg = this.opts?.config ?? (await getCoreConfig());
     this.cfg = cfg;
@@ -631,6 +654,16 @@ export class DiscordAdapter implements SurfaceAdapter {
         userId: user.id,
         botName,
       });
+      this.noteGatewayEvent("ready");
+      this.healthState = {
+        ...this.healthState,
+        connectionState: "ready",
+        isReady: true,
+        readyAt: Date.now(),
+        lastDisconnectAt: undefined,
+        lastDisconnectCode: undefined,
+      };
+      this.refreshGatewayPing(client);
 
       const applicationId = client.application?.id ?? user.id;
       this.logger.info(
@@ -688,6 +721,65 @@ export class DiscordAdapter implements SurfaceAdapter {
       }
     });
 
+    client.on("shardReady", () => {
+      this.noteGatewayEvent("shardReady");
+      this.healthState = {
+        ...this.healthState,
+        connectionState: "ready",
+        isReady: true,
+        readyAt: this.healthState.readyAt ?? Date.now(),
+      };
+      this.refreshGatewayPing(client);
+    });
+
+    client.on("shardResume", () => {
+      this.noteGatewayEvent("shardResume");
+      this.healthState = {
+        ...this.healthState,
+        connectionState: "ready",
+        isReady: true,
+        lastResumeAt: Date.now(),
+      };
+      this.refreshGatewayPing(client);
+    });
+
+    client.on("shardDisconnect", (event) => {
+      this.noteGatewayEvent("shardDisconnect");
+      this.healthState = {
+        ...this.healthState,
+        connectionState: "disconnected",
+        isReady: false,
+        lastDisconnectAt: Date.now(),
+        lastDisconnectCode: typeof event?.code === "number" ? event.code : undefined,
+      };
+    });
+
+    client.on("shardError", (error) => {
+      this.noteGatewayEvent("shardError");
+      this.healthState = {
+        ...this.healthState,
+        lastErrorAt: Date.now(),
+        lastError: error instanceof Error ? error.message : String(error),
+      };
+    });
+
+    client.on("invalidated", () => {
+      this.noteGatewayEvent("invalidated");
+      this.healthState = {
+        ...this.healthState,
+        connectionState: "disconnected",
+        isReady: false,
+        lastDisconnectAt: Date.now(),
+        lastErrorAt: Date.now(),
+        lastError: "Gateway session invalidated",
+      };
+    });
+
+    client.on("raw", () => {
+      this.noteGatewayEvent("raw");
+      this.refreshGatewayPing(client);
+    });
+
     client.on("messageCreate", async (msg) => {
       await this.onMessageCreate(msg);
     });
@@ -743,7 +835,6 @@ export class DiscordAdapter implements SurfaceAdapter {
       clearInterval(this.presenceTimer);
       this.presenceTimer = null;
     }
-
     const c = this.client;
     this.client = null;
 
@@ -756,8 +847,18 @@ export class DiscordAdapter implements SurfaceAdapter {
     this.store?.close();
     this.store = null;
     this.entityMapper = null;
+    this.healthState = {
+      ...this.healthState,
+      connectionState: "disconnected",
+      isReady: false,
+      lastDisconnectAt: Date.now(),
+    };
 
     this.logger.info("disconnected");
+  }
+
+  getHealthSnapshot(): DiscordAdapterHealthSnapshot {
+    return { ...this.healthState };
   }
 
   async getSelf(): Promise<SurfaceSelf> {
@@ -1630,6 +1731,26 @@ export class DiscordAdapter implements SurfaceAdapter {
     await this.readMsg(msgRef).catch(() => null);
 
     return store.getMessageRelation(msgRef.channelId, msgRef.messageId);
+  }
+
+  private noteGatewayEvent(_event: string) {
+    this.healthState = {
+      ...this.healthState,
+      lastGatewayEventAt: Date.now(),
+    };
+    if (this.client) {
+      this.refreshGatewayPing(this.client);
+    }
+  }
+
+  private refreshGatewayPing(client: Client) {
+    const ping = client.ws.ping;
+    if (!Number.isFinite(ping) || ping < 0) return;
+    this.healthState = {
+      ...this.healthState,
+      gatewayPingMs: ping,
+      lastGatewayPingAt: Date.now(),
+    };
   }
 
   private upsertMessageRelationFromDiscordMessage(msg: Message, input?: { deleted?: boolean }) {

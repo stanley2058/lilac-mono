@@ -1,4 +1,4 @@
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import { getDiscordSessionAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
 
 function stripPrefix(s: string, prefix: string): string {
   return s.startsWith(prefix) ? s.slice(prefix.length) : s;
@@ -36,10 +36,12 @@ export function resolveDiscordSessionId(input: { sessionId: string; cfg: CoreCon
   const map = input.cfg.entity?.sessions?.discord ?? {};
 
   const tokenLc = token.toLowerCase();
-  for (const [k, channelId] of Object.entries(map)) {
+  for (const [k, value] of Object.entries(map)) {
+    const resolved = getDiscordSessionAliasValue(value);
+    if (!resolved) continue;
     const keyLc = k.trim().replace(/^#+/u, "").toLowerCase();
     if (keyLc === tokenLc) {
-      return channelId;
+      return resolved.discordId;
     }
   }
 
@@ -55,13 +57,15 @@ export function resolveDiscordSessionId(input: { sessionId: string; cfg: CoreCon
   );
 }
 
-export function bestEffortTokenForDiscordChannelId(input: {
+export function bestEffortAliasForDiscordChannelId(input: {
   channelId: string;
   cfg: CoreConfig;
 }): string | undefined {
   const map = input.cfg.entity?.sessions?.discord ?? {};
-  for (const [token, cid] of Object.entries(map)) {
-    if (cid === input.channelId) {
+  for (const [token, value] of Object.entries(map)) {
+    const resolved = getDiscordSessionAliasValue(value);
+    if (!resolved) continue;
+    if (resolved.discordId === input.channelId) {
       return stripPrefix(token.trim().replace(/^#+/u, ""), "#");
     }
   }

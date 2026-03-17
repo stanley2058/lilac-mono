@@ -1,4 +1,5 @@
 import { redactSecrets } from "../../../tools/bash-safety/format";
+import type { Level1ToolFailureSummary, Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 const SENSITIVE_KEYS = new Set([
   "authorization",
@@ -21,13 +22,7 @@ const SENSITIVE_KEYS = new Set([
 
 const DEFAULT_PREVIEW_MAX_CHARS = 4_000;
 
-type FailureKind = "hard" | "soft";
-
-export type ToolFailureSummary = {
-  ok: boolean;
-  failureKind?: FailureKind;
-  error?: string;
-};
+export type ToolFailureSummary = Level1ToolFailureSummary;
 
 export type BatchChildFailureEntry = {
   index: number;
@@ -203,12 +198,27 @@ function summarizeSubagentFailure(result: unknown): ToolFailureSummary {
   return { ok: true };
 }
 
+export const BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS: Record<
+  string,
+  (result: unknown) => ToolFailureSummary
+> = {
+  bash: summarizeBashFailure,
+  read_file: (result) => summarizeReadOrEditFailure(result, "read_file"),
+  edit_file: (result) => summarizeReadOrEditFailure(result, "edit_file"),
+  glob: (result) => summarizeSearchFailure(result, "glob"),
+  grep: (result) => summarizeSearchFailure(result, "grep"),
+  apply_patch: summarizeApplyPatchFailure,
+  batch: summarizeBatchFailure,
+  subagent_delegate: summarizeSubagentFailure,
+};
+
 export function summarizeToolFailure(params: {
   toolName: string;
   isError: boolean;
   result: unknown;
+  toolSpecs?: ReadonlyMap<string, Level1ToolSpec<unknown>>;
 }): ToolFailureSummary {
-  const { toolName, isError, result } = params;
+  const { toolName, isError, result, toolSpecs } = params;
 
   if (isError) {
     return {
@@ -218,24 +228,13 @@ export function summarizeToolFailure(params: {
     };
   }
 
-  switch (toolName) {
-    case "bash":
-      return summarizeBashFailure(result);
-    case "read_file":
-    case "edit_file":
-      return summarizeReadOrEditFailure(result, toolName);
-    case "glob":
-    case "grep":
-      return summarizeSearchFailure(result, toolName);
-    case "apply_patch":
-      return summarizeApplyPatchFailure(result);
-    case "batch":
-      return summarizeBatchFailure(result);
-    case "subagent_delegate":
-      return summarizeSubagentFailure(result);
-    default:
-      return { ok: true };
+  const specSummary = toolSpecs?.get(toolName)?.summarizeFailure;
+  if (specSummary) {
+    return specSummary({ isError: false, result });
   }
+
+  const builtin = BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS[toolName];
+  return builtin ? builtin(result) : { ok: true };
 }
 
 export function formatToolLogPreview(params: {

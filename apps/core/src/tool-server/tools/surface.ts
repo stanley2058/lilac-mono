@@ -2,8 +2,9 @@ import { z } from "zod";
 import fs from "node:fs/promises";
 import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type/core";
+import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
+
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { hasCacheBurstProvider, type SurfaceAdapter } from "../../surface/adapter";
 import type {
   MsgRef,
@@ -17,9 +18,11 @@ import type {
 } from "../../surface/types";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import type { RequestContext, ServerTool } from "../types";
+import type { TranscriptStore } from "../../transcript/transcript-store";
+import { isHeartbeatSessionId } from "../../transcript/heartbeat-handoff";
 
 import {
-  bestEffortTokenForDiscordChannelId,
+  bestEffortAliasForDiscordChannelId,
   resolveDiscordSessionId,
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
@@ -423,7 +426,9 @@ function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
   const users = cfg.entity?.users ?? {};
 
   for (const [alias, rec] of Object.entries(users)) {
-    const userId = rec.discord;
+    const resolved = getDiscordUserAliasValue(rec);
+    if (!resolved) continue;
+    const userId = resolved.discordId;
     if (!out.has(userId)) {
       out.set(userId, alias);
     }
@@ -785,16 +790,28 @@ function sortSurfaceMessages(
   return sorted;
 }
 
-function toSessionMeta(session: SessionRef): {
+type SessionMeta = {
   platform: string;
   channelId: string;
+  alias?: string;
   guildId?: string;
   parentChannelId?: string;
-} {
+};
+
+function toSessionMeta(session: SessionRef, cfg?: CoreConfig): SessionMeta {
+  const alias =
+    cfg && session.platform === "discord"
+      ? bestEffortAliasForDiscordChannelId({
+          channelId: session.channelId,
+          cfg,
+        })
+      : undefined;
+
   if (session.platform === "discord") {
     return {
       platform: session.platform,
       channelId: session.channelId,
+      alias,
       guildId: session.guildId,
       parentChannelId: session.parentChannelId,
     };
@@ -802,6 +819,7 @@ function toSessionMeta(session: SessionRef): {
   return {
     platform: session.platform,
     channelId: session.channelId,
+    alias,
   };
 }
 
@@ -855,18 +873,14 @@ function toCompactMessage(
 
 function buildMessagesListOutput(params: {
   session: SessionRef;
+  cfg?: CoreConfig;
   messages: readonly SurfaceMessage[];
   order: MessageListOrder;
   includeRaw: boolean;
   includeAttachments: boolean;
 }): {
   meta: {
-    session: {
-      platform: string;
-      channelId: string;
-      guildId?: string;
-      parentChannelId?: string;
-    };
+    session: SessionMeta;
     order: MessageListOrder;
     count: number;
   };
@@ -877,7 +891,7 @@ function buildMessagesListOutput(params: {
 
   return {
     meta: {
-      session: toSessionMeta(session),
+      session: toSessionMeta(session, params.cfg),
       order: params.order,
       count: sorted.length,
     },
@@ -892,23 +906,19 @@ function buildMessagesListOutput(params: {
 
 function buildMessagesReadOutput(params: {
   session: SessionRef;
+  cfg?: CoreConfig;
   message: SurfaceMessage | null;
   includeRaw: boolean;
 }): {
   meta: {
-    session: {
-      platform: string;
-      channelId: string;
-      guildId?: string;
-      parentChannelId?: string;
-    };
+    session: SessionMeta;
   };
   message: Record<string, unknown> | null;
 } {
   const session = params.message?.session ?? params.session;
   return {
     meta: {
-      session: toSessionMeta(session),
+      session: toSessionMeta(session, params.cfg),
     },
     message: params.message
       ? toCompactMessage(params.message, {
@@ -1165,6 +1175,7 @@ export class Surface implements ServerTool {
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
       discordSearch?: DiscordSearchService;
+      transcriptStore?: TranscriptStore;
     },
   ) {}
 
@@ -1353,13 +1364,23 @@ export class Surface implements ServerTool {
     const ctxClientRaw = ctx?.requestClient;
     const ctxClient = isAdapterPlatform(ctxClientRaw) ? ctxClientRaw : "unknown";
     const effectiveClient = input.client ?? (ctxClient !== "unknown" ? ctxClient : undefined);
+    const cfg = await this.getCfg();
+    const contextSessionId = typeof ctx?.sessionId === "string" ? ctx.sessionId : null;
+    const contextAlias =
+      contextSessionId !== null && (ctxClient === "discord" || effectiveClient === "discord")
+        ? bestEffortAliasForDiscordChannelId({
+            channelId: contextSessionId,
+            cfg,
+          })
+        : undefined;
 
     return {
       tool: "surface" as const,
       supportedClients: ["discord", "github"] as const,
       context: {
         requestClient: ctxClient,
-        sessionId: typeof ctx?.sessionId === "string" ? ctx.sessionId : null,
+        sessionId: contextSessionId,
+        alias: contextAlias,
       },
       terminology: {
         client:
@@ -1368,6 +1389,8 @@ export class Surface implements ServerTool {
           "A conversation container. For Discord, a session maps to a channel; for GitHub, a session maps to an issue/PR thread.",
         sessionId:
           "The CLI/session selector used by most surface.* tools. If omitted, surface tools default to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
+        alias:
+          "Human-friendly Discord session alias from cfg.entity.sessions.discord. Prefer aliases over raw channel ids when available.",
         messageId:
           "A platform-specific message identifier inside a session/channel. Many surface tools can default this to the origin message when requestId is 'discord:<sessionId>:<messageId>' or 'github:<OWNER/REPO#N>:<triggerId>'.",
         replyToMessageId: "When sending a message, optionally reply to an existing messageId.",
@@ -1391,7 +1414,11 @@ export class Surface implements ServerTool {
                 {
                   format: "dev-chat",
                   meaning:
-                    "Configured token alias (cfg.entity.sessions.discord maps token -> channelId)",
+                    "Configured session alias (cfg.entity.sessions.discord maps alias -> channelId or { discord, comment })",
+                },
+                {
+                  format: "#dev-chat",
+                  meaning: "Configured session alias with optional leading # prefix",
                 },
               ],
               notes: [
@@ -1435,6 +1462,22 @@ export class Surface implements ServerTool {
 
   private gh(): GithubSurfaceApi {
     return this.params.githubApi ?? defaultGithubApi;
+  }
+
+  private linkSentMessageToTranscript(ref: MsgRef, ctx: RequestContext | undefined): void {
+    const requestId = ctx?.requestId;
+    if (!requestId || !this.params.transcriptStore) return;
+    if (!ctx?.sessionId || !isHeartbeatSessionId(ctx.sessionId)) return;
+
+    try {
+      this.params.transcriptStore.linkSurfaceMessagesToRequest({
+        requestId,
+        created: [ref],
+        last: ref,
+      });
+    } catch {
+      // Best-effort only. Do not fail the send on transcript linkage issues.
+    }
   }
 
   private async listGithubReactions(params: {
@@ -1491,7 +1534,7 @@ export class Surface implements ServerTool {
       parentChannelId?: string;
       kind: string;
       title?: string;
-      token?: string;
+      alias?: string;
     }> = [];
 
     for (const s of sessions) {
@@ -1517,7 +1560,7 @@ export class Surface implements ServerTool {
         parentChannelId,
         kind: s.kind,
         title: s.title,
-        token: bestEffortTokenForDiscordChannelId({
+        alias: bestEffortAliasForDiscordChannelId({
           channelId,
           cfg,
         }),
@@ -1575,7 +1618,7 @@ export class Surface implements ServerTool {
 
     return {
       meta: {
-        session: toSessionMeta(sessionRef),
+        session: toSessionMeta(sessionRef, cfg),
         source: participants.source,
         count: participants.participants.length,
       },
@@ -1689,6 +1732,7 @@ export class Surface implements ServerTool {
 
     return buildMessagesListOutput({
       session: sessionRef,
+      cfg,
       messages: filtered,
       order,
       includeRaw,
@@ -1817,6 +1861,7 @@ export class Surface implements ServerTool {
     if (!msg) {
       return buildMessagesReadOutput({
         session: sessionRef,
+        cfg,
         message: null,
         includeRaw,
       });
@@ -1832,6 +1877,7 @@ export class Surface implements ServerTool {
     ) {
       return buildMessagesReadOutput({
         session: sessionRef,
+        cfg,
         message: null,
         includeRaw,
       });
@@ -1839,6 +1885,7 @@ export class Surface implements ServerTool {
 
     return buildMessagesReadOutput({
       session: sessionRef,
+      cfg,
       message: msg,
       includeRaw,
     });
@@ -1927,7 +1974,7 @@ export class Surface implements ServerTool {
 
     return {
       meta: {
-        session: toSessionMeta(sessionRef),
+        session: toSessionMeta(sessionRef, cfg),
         order,
         count: hits.length,
       },
@@ -1957,6 +2004,7 @@ export class Surface implements ServerTool {
     if (client === "github") {
       const sessionId = mustPresentString(input.sessionId, "sessionId");
       const thread = parseGithubSessionId(sessionId);
+      const sessionRef = asGithubSessionRef(sessionId);
 
       if (input.replyToMessageId) {
         throw new Error(
@@ -1978,7 +2026,9 @@ export class Surface implements ServerTool {
         body: input.text,
       });
 
-      return { ok: true as const, ref: asGithubMsgRef(sessionId, String(res.id)) };
+      const ref = asGithubMsgRef(sessionId, String(res.id));
+      this.linkSentMessageToTranscript(ref, ctx);
+      return { ok: true as const, ref, session: toSessionMeta(sessionRef) };
     }
 
     ensureDiscordClient(client);
@@ -2043,7 +2093,9 @@ export class Surface implements ServerTool {
         : undefined,
     );
 
-    return { ok: true as const, ref };
+    this.linkSentMessageToTranscript(ref, ctx);
+
+    return { ok: true as const, ref, session: toSessionMeta(sessionRef, cfg) };
   }
 
   private async callMessagesEdit(
