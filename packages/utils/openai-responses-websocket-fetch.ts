@@ -9,6 +9,7 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
   idleTimeoutMs?: number;
+  onTransportSelected?: (details: ResponsesTransportSelectionDetails) => void;
   onAutoFallback?: (details: {
     reason: "websocket_connect_failed";
     requestUrl: string;
@@ -22,6 +23,46 @@ export type OpenAIResponsesWebSocketFetch = typeof globalThis.fetch & {
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+
+type ResponsesRequestBody = JsonObject & {
+  input?: JsonValue;
+  previous_response_id?: JsonValue;
+  store?: JsonValue;
+};
+
+type ResponsesContinuationState = {
+  requestBody: ResponsesRequestBody;
+  responseId: string;
+  outputItems: readonly JsonObject[];
+};
+
+type ResponsesOptimizationReason =
+  | "transport_not_websocket"
+  | "no_continuation_state"
+  | "existing_previous_response_id"
+  | "missing_input"
+  | "request_shape_changed"
+  | "unreplayable_output_items"
+  | "not_prefix_extension"
+  | "incremental_replay";
+
+export type ResponsesTransportSelectionDetails = {
+  mode: ResponsesTransportMode;
+  transport: "sse" | "websocket";
+  requestUrl: string;
+  optimizationEnabled: boolean;
+  optimizationReason: ResponsesOptimizationReason;
+};
+
+type IncrementalPayloadResult = {
+  payload: ResponsesRequestBody;
+  optimizationEnabled: boolean;
+  optimizationReason: ResponsesOptimizationReason;
+};
 
 type WebSocketWithHeadersConstructor = {
   new (url: string | URL, options?: Bun.WebSocketOptions): WebSocket;
@@ -41,6 +82,7 @@ export function createOpenAIResponsesWebSocketFetch(
   let reusableBusy = false;
   let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let connectionHeadersKey: string | null = null;
+  let reusableContinuationState: ResponsesContinuationState | null = null;
 
   function reportAutoFallback(details: {
     reason: "websocket_connect_failed";
@@ -57,6 +99,21 @@ export function createOpenAIResponsesWebSocketFetch(
           : details.error === undefined
             ? undefined
             : String(details.error),
+    });
+  }
+
+  function reportTransportSelected(details: {
+    requestUrl: URL;
+    transport: "sse" | "websocket";
+    optimizationEnabled: boolean;
+    optimizationReason: ResponsesOptimizationReason;
+  }): void {
+    options.onTransportSelected?.({
+      mode: options.mode,
+      requestUrl: details.requestUrl.toString(),
+      transport: details.transport,
+      optimizationEnabled: details.optimizationEnabled,
+      optimizationReason: details.optimizationReason,
     });
   }
 
@@ -91,6 +148,7 @@ export function createOpenAIResponsesWebSocketFetch(
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
+      reusableContinuationState = null;
       return;
     }
 
@@ -99,9 +157,14 @@ export function createOpenAIResponsesWebSocketFetch(
         closeSocket(ws);
         ws = null;
         connectionHeadersKey = null;
+        reusableContinuationState = null;
       }
       idleCloseTimer = null;
     }, idleTimeoutMs);
+  }
+
+  function clearReusableContinuationState(): void {
+    reusableContinuationState = null;
   }
 
   function connectWebSocket(
@@ -152,6 +215,7 @@ export function createOpenAIResponsesWebSocketFetch(
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
+      clearReusableContinuationState();
     }
 
     connecting = connectWebSocket(socketUrl, headers)
@@ -164,6 +228,7 @@ export function createOpenAIResponsesWebSocketFetch(
             if (ws === socket) {
               ws = null;
               connectionHeadersKey = null;
+              clearReusableContinuationState();
             }
           },
           { once: true },
@@ -197,6 +262,14 @@ export function createOpenAIResponsesWebSocketFetch(
     };
 
     if (options.mode === "sse" || !isResponsesRequest) {
+      if (options.mode === "sse" && isResponsesRequest) {
+        reportTransportSelected({
+          requestUrl,
+          transport: "sse",
+          optimizationEnabled: false,
+          optimizationReason: "transport_not_websocket",
+        });
+      }
       return forwardWithSseNormalization();
     }
 
@@ -205,9 +278,9 @@ export function createOpenAIResponsesWebSocketFetch(
       return forwardWithSseNormalization();
     }
 
-    let parsedBody: Record<string, unknown>;
+    let parsedBody: ResponsesRequestBody;
     try {
-      parsedBody = JSON.parse(encodedBody) as Record<string, unknown>;
+      parsedBody = parseJsonObject(encodedBody);
     } catch {
       return forwardWithSseNormalization();
     }
@@ -232,6 +305,12 @@ export function createOpenAIResponsesWebSocketFetch(
           requestUrl,
           error,
         });
+        reportTransportSelected({
+          requestUrl,
+          transport: "sse",
+          optimizationEnabled: false,
+          optimizationReason: "transport_not_websocket",
+        });
         return forwardWithSseNormalization();
       }
       throw error;
@@ -243,11 +322,35 @@ export function createOpenAIResponsesWebSocketFetch(
     }
 
     const { stream: _stream, ...requestBody } = parsedBody;
+    const fullRequestBody = cloneJsonObject(requestBody);
+    const payloadResult =
+      useReusableConnection && reusableContinuationState
+        ? buildIncrementalWebSocketPayload({
+            requestBody: fullRequestBody,
+            continuationState: reusableContinuationState,
+            requestUrl,
+          })
+        : {
+            payload: cloneJsonObject(fullRequestBody),
+            optimizationEnabled: false,
+            optimizationReason: "no_continuation_state" as const,
+          };
+    const websocketPayload = payloadResult.payload;
+    reportTransportSelected({
+      requestUrl,
+      transport: "websocket",
+      optimizationEnabled: payloadResult.optimizationEnabled,
+      optimizationReason: payloadResult.optimizationReason,
+    });
     const encoder = new TextEncoder();
 
     const responseStream = new ReadableStream<Uint8Array>({
       start(controller) {
         let cleanedUp = false;
+        let responseId: string | null = null;
+        const outputItems: JsonObject[] = [];
+        const outputItemDrafts = new Map<string, JsonObject>();
+        let canPersistContinuation = true;
         const cleanup = (params?: { closeConnection?: boolean }) => {
           if (cleanedUp) return;
           cleanedUp = true;
@@ -263,11 +366,16 @@ export function createOpenAIResponsesWebSocketFetch(
 
           const shouldClose = params?.closeConnection === true || !useReusableConnection;
 
+          if (useReusableConnection && (!canPersistContinuation || shouldClose)) {
+            clearReusableContinuationState();
+          }
+
           if (shouldClose) {
             closeSocket(connection);
             if (ws === connection) {
               ws = null;
               connectionHeadersKey = null;
+              clearReusableContinuationState();
             }
           } else {
             scheduleIdleClose();
@@ -286,12 +394,42 @@ export function createOpenAIResponsesWebSocketFetch(
               return;
             }
 
+            const eventRecord = asRecord(eventJson);
+            if (eventRecord) {
+              const nextResponseId = extractResponseId(eventRecord);
+              if (nextResponseId) {
+                responseId = nextResponseId;
+              }
+
+              updateOutputItemDraft(outputItemDrafts, eventRecord);
+              const doneItem = extractOutputItemDone(eventRecord);
+              if (doneItem) {
+                outputItems.push(mergeOutputItemDraft(doneItem, outputItemDrafts));
+              }
+            }
+
             const normalized = normalizeResponsesEvent(eventJson, options.normalizeEvent);
 
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
 
             const type = typeof normalized.type === "string" ? normalized.type : "";
+            if (type === "error") {
+              canPersistContinuation = false;
+            }
             if (completionEventTypes.has(type) || type === "error") {
+              if (
+                useReusableConnection &&
+                canPersistContinuation &&
+                responseId &&
+                connection === ws &&
+                connection.readyState === WebSocket.OPEN
+              ) {
+                reusableContinuationState = {
+                  requestBody: fullRequestBody,
+                  responseId,
+                  outputItems,
+                };
+              }
               controller.enqueue(encoder.encode("data: [DONE]\n\n"));
               cleanup();
               controller.close();
@@ -300,11 +438,13 @@ export function createOpenAIResponsesWebSocketFetch(
         };
 
         const onError = (event: Event) => {
+          canPersistContinuation = false;
           cleanup({ closeConnection: true });
           controller.error(extractWebSocketError(event));
         };
 
         const onClose = () => {
+          canPersistContinuation = false;
           cleanup({ closeConnection: true });
           try {
             controller.close();
@@ -312,6 +452,7 @@ export function createOpenAIResponsesWebSocketFetch(
         };
 
         const onAbort = () => {
+          canPersistContinuation = false;
           cleanup({ closeConnection: true });
           try {
             controller.error(signal?.reason ?? new DOMException("Aborted", "AbortError"));
@@ -331,8 +472,9 @@ export function createOpenAIResponsesWebSocketFetch(
         }
 
         try {
-          connection.send(JSON.stringify({ type: "response.create", ...requestBody }));
+          connection.send(JSON.stringify({ type: "response.create", ...websocketPayload }));
         } catch (error) {
+          canPersistContinuation = false;
           cleanup({ closeConnection: true });
           controller.error(error instanceof Error ? error : new Error(String(error)));
         }
@@ -355,9 +497,526 @@ export function createOpenAIResponsesWebSocketFetch(
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
+      clearReusableContinuationState();
       reusableBusy = false;
     },
   }) as OpenAIResponsesWebSocketFetch;
+}
+
+function buildIncrementalWebSocketPayload(input: {
+  requestBody: ResponsesRequestBody;
+  continuationState: ResponsesContinuationState;
+  requestUrl: URL;
+}): IncrementalPayloadResult {
+  const { requestBody, continuationState, requestUrl } = input;
+  if (requestBody.previous_response_id != null) {
+    return {
+      payload: cloneJsonObject(requestBody),
+      optimizationEnabled: false,
+      optimizationReason: "existing_previous_response_id",
+    };
+  }
+
+  const currentInput = asJsonArray(requestBody.input);
+  const previousInput = asJsonArray(continuationState.requestBody.input);
+  if (!currentInput || !previousInput) {
+    return {
+      payload: cloneJsonObject(requestBody),
+      optimizationEnabled: false,
+      optimizationReason: "missing_input",
+    };
+  }
+
+  const currentWithoutInput = omitRequestInputFields(requestBody);
+  const previousWithoutInput = omitRequestInputFields(continuationState.requestBody);
+  if (!deepEqualJson(currentWithoutInput, previousWithoutInput)) {
+    return {
+      payload: cloneJsonObject(requestBody),
+      optimizationEnabled: false,
+      optimizationReason: "request_shape_changed",
+    };
+  }
+
+  const replayedItems = continuationState.outputItems
+    .map((item) =>
+      normalizeOutputItemForReplay(item, {
+        useStoreReferences: shouldUseStoreReferences(requestBody),
+        stripCodexIds: isCodexResponsesRequest(requestUrl),
+      }),
+    )
+    .filter(isJsonObject);
+  if (replayedItems.length !== continuationState.outputItems.length) {
+    return {
+      payload: cloneJsonObject(requestBody),
+      optimizationEnabled: false,
+      optimizationReason: "unreplayable_output_items",
+    };
+  }
+
+  const baseline = [...previousInput, ...replayedItems];
+  const suffix = sliceJsonArrayPrefix(currentInput, baseline);
+  if (!suffix) {
+    return {
+      payload: cloneJsonObject(requestBody),
+      optimizationEnabled: false,
+      optimizationReason: "not_prefix_extension",
+    };
+  }
+
+  return {
+    payload: {
+      ...cloneJsonObject(currentWithoutInput),
+      previous_response_id: continuationState.responseId,
+      input: suffix,
+    },
+    optimizationEnabled: true,
+    optimizationReason: "incremental_replay",
+  };
+}
+
+function parseJsonObject(text: string): ResponsesRequestBody {
+  const parsed = JSON.parse(text) as unknown;
+  const record = asRecord(parsed);
+  if (!record) {
+    throw new Error("Request body is not a JSON object");
+  }
+  return cloneJsonObject(record);
+}
+
+function cloneJsonObject(value: Record<string, unknown>): JsonObject {
+  return JSON.parse(JSON.stringify(value)) as JsonObject;
+}
+
+function omitRequestInputFields(requestBody: ResponsesRequestBody): JsonObject {
+  const cloned = cloneJsonObject(requestBody);
+  delete cloned.input;
+  delete cloned.previous_response_id;
+  return cloned;
+}
+
+function shouldUseStoreReferences(requestBody: ResponsesRequestBody): boolean {
+  return requestBody.store !== false;
+}
+
+function isCodexResponsesRequest(requestUrl: URL): boolean {
+  return (
+    requestUrl.origin === "https://chatgpt.com" &&
+    requestUrl.pathname.endsWith("/backend-api/codex/responses")
+  );
+}
+
+function extractResponseId(event: Record<string, unknown>): string | null {
+  if (readString(event.type) !== "response.created") return null;
+  return readString(asRecord(event.response)?.id) ?? null;
+}
+
+function extractOutputItemDone(event: Record<string, unknown>): JsonObject | null {
+  if (readString(event.type) !== "response.output_item.done") return null;
+  const item = asRecord(event.item);
+  return item ? cloneJsonObject(item) : null;
+}
+
+function updateOutputItemDraft(
+  drafts: Map<string, JsonObject>,
+  event: Record<string, unknown>,
+): void {
+  const type = readString(event.type);
+  const itemId = readString(event.item_id);
+  if (!type || !itemId) return;
+
+  switch (type) {
+    case "response.output_item.added": {
+      const item = asRecord(event.item);
+      if (!item) return;
+      drafts.set(itemId, cloneJsonObject(item));
+      return;
+    }
+    case "response.content_part.added":
+    case "response.content_part.done": {
+      const draft = ensureOutputItemDraft(drafts, itemId, "message");
+      const part = asRecord(event.part);
+      if (!part || readString(part.type) !== "output_text") return;
+      const content = ensureDraftArray(draft, "content");
+      const contentIndex = readNumber(event.content_index) ?? content.length;
+      content[contentIndex] = cloneJsonObject(part);
+      return;
+    }
+    case "response.output_text.delta": {
+      const draft = ensureOutputItemDraft(drafts, itemId, "message");
+      const content = ensureDraftArray(draft, "content");
+      const contentIndex = readNumber(event.content_index) ?? 0;
+      const existingPart = asRecord(content[contentIndex]) ?? { type: "output_text", text: "" };
+      existingPart.type = "output_text";
+      const currentText = readString(existingPart.text) ?? "";
+      existingPart.text = `${currentText}${readString(event.delta) ?? ""}`;
+      content[contentIndex] = existingPart as JsonValue;
+      return;
+    }
+    case "response.reasoning_summary_part.added": {
+      const draft = ensureOutputItemDraft(drafts, itemId, "reasoning");
+      const summary = ensureDraftArray(draft, "summary");
+      const summaryIndex = readNumber(event.summary_index) ?? summary.length;
+      if (!asRecord(summary[summaryIndex])) {
+        summary[summaryIndex] = { type: "summary_text", text: "" };
+      }
+      return;
+    }
+    case "response.reasoning_summary_text.delta": {
+      const draft = ensureOutputItemDraft(drafts, itemId, "reasoning");
+      const summary = ensureDraftArray(draft, "summary");
+      const summaryIndex = readNumber(event.summary_index) ?? 0;
+      const existingPart = asRecord(summary[summaryIndex]) ?? { type: "summary_text", text: "" };
+      existingPart.type = "summary_text";
+      const currentText = readString(existingPart.text) ?? "";
+      existingPart.text = `${currentText}${readString(event.delta) ?? ""}`;
+      summary[summaryIndex] = existingPart as JsonValue;
+      return;
+    }
+    case "response.function_call_arguments.delta": {
+      const draft = ensureOutputItemDraft(drafts, itemId, "function_call");
+      const currentArgs = readString(draft.arguments) ?? "";
+      draft.arguments = `${currentArgs}${readString(event.delta) ?? ""}`;
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+function ensureOutputItemDraft(
+  drafts: Map<string, JsonObject>,
+  itemId: string,
+  defaultType: string,
+): JsonObject {
+  const existing = drafts.get(itemId);
+  if (existing) return existing;
+
+  const next: JsonObject = {
+    id: itemId,
+    type: defaultType,
+  };
+  drafts.set(itemId, next);
+  return next;
+}
+
+function ensureDraftArray(draft: JsonObject, key: string): JsonValue[] {
+  const existing = draft[key];
+  if (Array.isArray(existing)) return existing;
+  const next: JsonValue[] = [];
+  draft[key] = next;
+  return next;
+}
+
+function mergeOutputItemDraft(item: JsonObject, drafts: Map<string, JsonObject>): JsonObject {
+  const itemId = readString(item.id);
+  if (!itemId) return item;
+  const draft = drafts.get(itemId);
+  if (!draft) return item;
+  return mergeJsonObjects(draft, item);
+}
+
+function mergeJsonObjects(base: JsonObject, override: JsonObject): JsonObject {
+  const merged = cloneJsonObject(base);
+  for (const [key, value] of Object.entries(override)) {
+    if (Array.isArray(value)) {
+      const baseValue = merged[key];
+      merged[key] = Array.isArray(baseValue)
+        ? mergeJsonArrays(baseValue, value)
+        : cloneJsonValue(value as JsonValue);
+      continue;
+    }
+
+    const valueRecord = asRecord(value);
+    const baseRecord = asRecord(merged[key]);
+    if (valueRecord && baseRecord) {
+      merged[key] = mergeJsonObjects(cloneJsonObject(baseRecord), cloneJsonObject(valueRecord));
+      continue;
+    }
+
+    merged[key] = cloneJsonValue(value as JsonValue);
+  }
+  return merged;
+}
+
+function mergeJsonArrays(base: readonly JsonValue[], override: readonly JsonValue[]): JsonValue[] {
+  const length = Math.max(base.length, override.length);
+  const merged: JsonValue[] = [];
+
+  for (let i = 0; i < length; i += 1) {
+    const overrideValue = override[i];
+    const baseValue = base[i];
+    if (overrideValue === undefined) {
+      if (baseValue !== undefined) {
+        merged[i] = cloneJsonValue(baseValue);
+      }
+      continue;
+    }
+
+    if (Array.isArray(baseValue) && Array.isArray(overrideValue)) {
+      merged[i] = mergeJsonArrays(baseValue, overrideValue);
+      continue;
+    }
+
+    const baseRecord = asRecord(baseValue);
+    const overrideRecord = asRecord(overrideValue);
+    if (baseRecord && overrideRecord) {
+      merged[i] = mergeJsonObjects(cloneJsonObject(baseRecord), cloneJsonObject(overrideRecord));
+      continue;
+    }
+
+    merged[i] = cloneJsonValue(overrideValue);
+  }
+
+  return merged;
+}
+
+function normalizeOutputItemForReplay(
+  item: JsonObject,
+  options: {
+    useStoreReferences: boolean;
+    stripCodexIds: boolean;
+  },
+): JsonObject | null {
+  const id = readString(item.id);
+  if (options.useStoreReferences) {
+    return id ? { type: "item_reference", id } : null;
+  }
+
+  const type = readString(item.type);
+  if (!type) return null;
+
+  const normalized = (() => {
+    switch (type) {
+      case "message":
+        return normalizeReplayMessageItem(item);
+      case "reasoning":
+        return normalizeReplayReasoningItem(item);
+      case "function_call":
+        return normalizeReplayFunctionCallItem(item);
+      case "custom_tool_call":
+        return normalizeReplayCustomToolCallItem(item);
+      case "local_shell_call":
+        return normalizeReplayLocalShellCallItem(item);
+      case "shell_call":
+        return normalizeReplayShellCallItem(item);
+      case "apply_patch_call":
+        return normalizeReplayApplyPatchCallItem(item);
+      default:
+        return null;
+    }
+  })();
+
+  if (!normalized) return null;
+  return options.stripCodexIds ? stripCodexReplayIds(normalized) : normalized;
+}
+
+function normalizeReplayMessageItem(item: JsonObject): JsonObject | null {
+  const content = asJsonArray(item.content) ?? [];
+  const normalizedContent = content
+    .map((part) => {
+      const record = asRecord(part);
+      if (!record || readString(record.type) !== "output_text") return null;
+      const text = readString(record.text);
+      return text === undefined ? null : ({ type: "output_text", text } satisfies JsonObject);
+    })
+    .filter(isJsonObject);
+
+  if (normalizedContent.length === 0) return null;
+
+  const next: JsonObject = {
+    role: "assistant",
+    content: normalizedContent,
+  };
+
+  const id = readString(item.id);
+  if (id) next.id = id;
+  const phase = readString(item.phase);
+  if (phase) next.phase = phase;
+  return next;
+}
+
+function normalizeReplayReasoningItem(item: JsonObject): JsonObject | null {
+  const summary = asJsonArray(item.summary) ?? [];
+  const normalizedSummary = summary
+    .map((part) => {
+      const record = asRecord(part);
+      if (!record || readString(record.type) !== "summary_text") return null;
+      const text = readString(record.text);
+      return text === undefined ? null : ({ type: "summary_text", text } satisfies JsonObject);
+    })
+    .filter(isJsonObject);
+
+  const next: JsonObject = {
+    type: "reasoning",
+    summary: normalizedSummary,
+  };
+
+  const id = readString(item.id);
+  if (id) next.id = id;
+  const encryptedContent = readString(item.encrypted_content);
+  if (encryptedContent) next.encrypted_content = encryptedContent;
+  return next;
+}
+
+function normalizeReplayFunctionCallItem(item: JsonObject): JsonObject | null {
+  const callId = readString(item.call_id);
+  const name = readString(item.name);
+  const args = readString(item.arguments);
+  if (!callId || !name || args === undefined) return null;
+
+  const next: JsonObject = {
+    type: "function_call",
+    call_id: callId,
+    name,
+    arguments: args,
+  };
+  const id = readString(item.id);
+  if (id) next.id = id;
+  return next;
+}
+
+function normalizeReplayCustomToolCallItem(item: JsonObject): JsonObject | null {
+  const callId = readString(item.call_id);
+  const name = readString(item.name);
+  const input = readString(item.input);
+  if (!callId || !name || input === undefined) return null;
+
+  const next: JsonObject = {
+    type: "custom_tool_call",
+    call_id: callId,
+    name,
+    input,
+  };
+  const id = readString(item.id);
+  if (id) next.id = id;
+  return next;
+}
+
+function normalizeReplayLocalShellCallItem(item: JsonObject): JsonObject | null {
+  const callId = readString(item.call_id);
+  const id = readString(item.id);
+  const action = asRecord(item.action);
+  if (!callId || !id || !action) return null;
+
+  return {
+    type: "local_shell_call",
+    call_id: callId,
+    id,
+    action: cloneJsonObject(action),
+  };
+}
+
+function normalizeReplayShellCallItem(item: JsonObject): JsonObject | null {
+  const callId = readString(item.call_id);
+  const id = readString(item.id);
+  const action = asRecord(item.action);
+  if (!callId || !id || !action) return null;
+
+  return {
+    type: "shell_call",
+    call_id: callId,
+    id,
+    status: readString(item.status) ?? "completed",
+    action: cloneJsonObject(action),
+  };
+}
+
+function normalizeReplayApplyPatchCallItem(item: JsonObject): JsonObject | null {
+  const callId = readString(item.call_id);
+  const id = readString(item.id);
+  const operation = asRecord(item.operation);
+  if (!callId || !id || !operation) return null;
+
+  return {
+    type: "apply_patch_call",
+    call_id: callId,
+    id,
+    status: readString(item.status) ?? "completed",
+    operation: cloneJsonObject(operation),
+  };
+}
+
+function stripCodexReplayIds(item: JsonObject): JsonObject {
+  const cloned = cloneJsonObject(item);
+  if (!("id" in cloned)) return cloned;
+
+  const type = readString(cloned.type);
+  if (
+    type === "item_reference" ||
+    type === "local_shell_call" ||
+    type === "shell_call" ||
+    type === "computer_call"
+  ) {
+    return cloned;
+  }
+
+  delete cloned.id;
+  return cloned;
+}
+
+function asJsonArray(value: unknown): JsonValue[] | null {
+  return Array.isArray(value) ? (value as JsonValue[]) : null;
+}
+
+function sliceJsonArrayPrefix(
+  values: readonly JsonValue[],
+  prefix: readonly JsonValue[],
+): JsonValue[] | null {
+  if (prefix.length > values.length) return null;
+  for (let i = 0; i < prefix.length; i += 1) {
+    if (!deepEqualJson(values[i], prefix[i])) {
+      return null;
+    }
+  }
+  return values.slice(prefix.length).map(cloneJsonValue);
+}
+
+function cloneJsonValue(value: JsonValue): JsonValue {
+  return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
+function deepEqualJson(left: JsonValue | undefined, right: JsonValue | undefined): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return left === right;
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+      if (!deepEqualJson(left[i], right[i])) return false;
+    }
+    return true;
+  }
+
+  if (typeof left === "object" || typeof right === "object") {
+    if (typeof left !== "object" || typeof right !== "object") return false;
+    const leftRecord = asRecord(left);
+    const rightRecord = asRecord(right);
+    if (!leftRecord || !rightRecord) return false;
+
+    const leftKeys = Object.keys(leftRecord).sort();
+    const rightKeys = Object.keys(rightRecord).sort();
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (let i = 0; i < leftKeys.length; i += 1) {
+      if (leftKeys[i] !== rightKeys[i]) return false;
+      const key = leftKeys[i]!;
+      if (
+        !deepEqualJson(
+          leftRecord[key] as JsonValue | undefined,
+          rightRecord[key] as JsonValue | undefined,
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function isJsonObject(value: JsonObject | null): value is JsonObject {
+  return value !== null;
 }
 
 function getRequestUrl(input: FetchInput): URL {
