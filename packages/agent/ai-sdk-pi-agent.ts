@@ -9,6 +9,7 @@
 
 import {
   type CallWarning,
+  type Experimental_DownloadFunction as DownloadFunction,
   streamText,
   type AssistantContent,
   type AssistantModelMessage,
@@ -291,6 +292,9 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
     [x: string]: JSONObject;
   };
 
+  /** Optional custom URL download hook forwarded to AI SDK. */
+  experimentalDownload?: DownloadFunction;
+
   /** Optional debug features. */
   debug?: {
     /** Capture and store model-view messages per turn (can be large). */
@@ -572,6 +576,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
   private transformMessages: TransformMessagesFn | undefined;
   private turnErrorHandler: TurnErrorHandler | undefined;
+  private experimentalDownload: DownloadFunction | undefined;
 
   private context?: unknown;
 
@@ -582,6 +587,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     this.transformMessages = options.transformMessages;
     this.turnErrorHandler = options.turnErrorHandler;
+    this.experimentalDownload = options.experimentalDownload;
 
     this.captureModelViewMessages = options.debug?.captureModelViewMessages === true;
 
@@ -1050,6 +1056,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       messages: messagesForModel,
       tools: toolsForModel,
       providerOptions: this.state.providerOptions,
+      experimental_download: this.experimentalDownload,
       experimental_context: this.context,
       abortSignal,
     });
