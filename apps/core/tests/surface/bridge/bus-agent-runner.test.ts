@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import {
@@ -320,6 +320,7 @@ describe("anthropic fallback URL downloads", () => {
 
   it("forces downloads for http urls when fallback order includes vertex or bedrock", async () => {
     const downloadCalls: string[] = [];
+    const dir = await mkdtemp(path.join(tmpdir(), "lilac-fallback-cache-"));
     const download = buildExperimentalDownloadForAnthropicFallback({
       spec: "vercel/anthropic/claude-opus-4.6",
       provider: "vercel",
@@ -335,32 +336,237 @@ describe("anthropic fallback URL downloads", () => {
           mediaType: "image/png",
         };
       },
+      cacheDir: dir,
     });
 
-    expect(download).toBeDefined();
+    try {
+      expect(download).toBeDefined();
 
-    const result = await download!([
-      {
-        url: new URL("https://example.com/image.png"),
-        isUrlSupportedByModel: true,
-      },
-      {
-        url: new URL("data:image/png;base64,AA=="),
-        isUrlSupportedByModel: false,
-      },
-    ]);
+      const result = await download!([
+        {
+          url: new URL("https://example.com/image.png?test=force-download"),
+          isUrlSupportedByModel: true,
+        },
+        {
+          url: new URL("data:image/png;base64,AA=="),
+          isUrlSupportedByModel: false,
+        },
+      ]);
 
-    expect(downloadCalls).toEqual(["https://example.com/image.png", "data:image/png;base64,AA=="]);
-    expect(result).toEqual([
-      {
-        data: new Uint8Array([1, 2, 3]),
-        mediaType: "image/png",
+      expect(downloadCalls).toEqual([
+        "https://example.com/image.png?test=force-download",
+        "data:image/png;base64,AA==",
+      ]);
+      expect(result).toEqual([
+        {
+          data: new Uint8Array([1, 2, 3]),
+          mediaType: "image/png",
+        },
+        {
+          data: new Uint8Array([1, 2, 3]),
+          mediaType: "image/png",
+        },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("caches fallback downloads across repeated requests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lilac-fallback-cache-"));
+    let calls = 0;
+
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          order: ["vertex", "anthropic", "bedrock"],
+        },
       },
-      {
-        data: new Uint8Array([1, 2, 3]),
-        mediaType: "image/png",
+      cacheDir: dir,
+      downloadUrl: async () => {
+        calls += 1;
+        return {
+          data: new Uint8Array([9, 8, 7, 6]),
+          mediaType: "application/pdf",
+        };
       },
-    ]);
+    });
+
+    try {
+      expect(download).toBeDefined();
+
+      const request = [
+        {
+          url: new URL("https://example.com/report.pdf?test=cache"),
+          isUrlSupportedByModel: true,
+        },
+      ];
+
+      await download!(request);
+      await download!(request);
+
+      expect(calls).toBe(1);
+      const files = await readdir(dir);
+      expect(files.some((file) => file.endsWith(".bin"))).toBe(true);
+      expect(files.some((file) => file.endsWith(".json"))).toBe(true);
+
+      const dirStat = await stat(dir);
+      expect(dirStat.mode & 0o077).toBe(0);
+
+      for (const file of files) {
+        const fileStat = await stat(path.join(dir, file));
+        expect(fileStat.mode & 0o077).toBe(0);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads large cached attachments back from disk without re-downloading", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lilac-fallback-cache-"));
+    let calls = 0;
+
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          order: ["vertex", "anthropic", "bedrock"],
+        },
+      },
+      cacheDir: dir,
+      downloadUrl: async () => {
+        calls += 1;
+        return {
+          data: new Uint8Array(9 * 1024 * 1024),
+          mediaType: "application/pdf",
+        };
+      },
+    });
+
+    try {
+      expect(download).toBeDefined();
+
+      const request = [
+        {
+          url: new URL("https://example.com/large-report.pdf?test=disk-cache"),
+          isUrlSupportedByModel: true,
+        },
+      ];
+
+      const first = await download!(request);
+      const second = await download!(request);
+
+      expect(calls).toBe(1);
+      expect(second).toEqual(first);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resizes oversized images to fit anthropic fallback limits", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lilac-fallback-cache-"));
+    let downloadCalls = 0;
+    let fitCalls = 0;
+
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          order: ["vertex", "anthropic", "bedrock"],
+        },
+      },
+      cacheDir: dir,
+      downloadUrl: async () => {
+        downloadCalls += 1;
+        return {
+          data: new Uint8Array(6 * 1024 * 1024),
+          mediaType: "image/png",
+        };
+      },
+      fitImage: async () => {
+        fitCalls += 1;
+        return {
+          data: new Uint8Array([1, 2, 3, 4]),
+          mediaType: "image/jpeg",
+        };
+      },
+    });
+
+    try {
+      expect(download).toBeDefined();
+
+      const request = [
+        {
+          url: new URL("https://example.com/huge-image.png?test=resize"),
+          isUrlSupportedByModel: true,
+        },
+      ];
+
+      const first = await download!(request);
+      const second = await download!(request);
+
+      expect(downloadCalls).toBe(1);
+      expect(fitCalls).toBe(1);
+      expect(first).toEqual([
+        {
+          data: new Uint8Array([1, 2, 3, 4]),
+          mediaType: "image/jpeg",
+        },
+      ]);
+      expect(second).toEqual(first);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("caches oversize image failures to avoid repeated downloads", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lilac-fallback-cache-"));
+    let downloadCalls = 0;
+    let fitCalls = 0;
+
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          order: ["vertex", "anthropic", "bedrock"],
+        },
+      },
+      cacheDir: dir,
+      downloadUrl: async () => {
+        downloadCalls += 1;
+        return {
+          data: new Uint8Array(6 * 1024 * 1024),
+          mediaType: "image/png",
+        };
+      },
+      fitImage: async () => {
+        fitCalls += 1;
+        return null;
+      },
+    });
+
+    try {
+      expect(download).toBeDefined();
+
+      const request = [
+        {
+          url: new URL("https://example.com/too-big-image.png?test=oversize"),
+          isUrlSupportedByModel: true,
+        },
+      ];
+
+      await expect(download!(request)).rejects.toThrow("Image attachment too large");
+      await expect(download!(request)).rejects.toThrow("Image attachment too large");
+      expect(downloadCalls).toBe(1);
+      expect(fitCalls).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not build a download hook when routing is pinned away from fallback providers", () => {
