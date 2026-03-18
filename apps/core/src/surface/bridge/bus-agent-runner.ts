@@ -408,14 +408,47 @@ function formatAnthropicFallbackImageTooLargeError(params: {
 }
 
 async function runCommand(params: { cmd: string[] }): Promise<{ code: number; stderr: string }> {
-  const proc = Bun.spawn(params.cmd, {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
+  try {
+    const proc = Bun.spawn(params.cmd, {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
 
-  const stderr = proc.stderr ? await new Response(proc.stderr).text() : "";
-  const code = await proc.exited;
-  return { code, stderr };
+    const stderr = proc.stderr ? await new Response(proc.stderr).text() : "";
+    const code = await proc.exited;
+    return { code, stderr };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { code: -1, stderr: message };
+  }
+}
+
+function buildImageResizeCommands(params: {
+  inputPath: string;
+  outputPath: string;
+  resize: string;
+  quality: number;
+}): string[][] {
+  const commonArgs = [
+    params.inputPath,
+    "-auto-orient",
+    "-strip",
+    "-background",
+    "white",
+    "-alpha",
+    "remove",
+    "-alpha",
+    "off",
+    "-resize",
+    params.resize,
+    "-sampling-factor",
+    "4:2:0",
+    "-quality",
+    String(params.quality),
+    `jpeg:${params.outputPath}`,
+  ];
+
+  return [["magick", ...commonArgs], ["convert", ...commonArgs]];
 }
 
 async function fitImageForAnthropicFallback(params: {
@@ -444,36 +477,32 @@ async function fitImageForAnthropicFallback(params: {
     for (const attempt of attempts) {
       await fs.rm(paths.resizedPath, { force: true }).catch(() => {});
       const resize = `${attempt.width}x${attempt.width}>`;
-      const command = [
-        "magick",
-        paths.originalPath,
-        "-auto-orient",
-        "-strip",
-        "-background",
-        "white",
-        "-alpha",
-        "remove",
-        "-alpha",
-        "off",
-        "-resize",
-        resize,
-        "-sampling-factor",
-        "4:2:0",
-        "-quality",
-        String(attempt.quality),
-        `jpeg:${paths.resizedPath}`,
-      ];
+      let resized = false;
 
-      const result = await runCommand({ cmd: command });
-      if (result.code !== 0) {
-        lastError = result.stderr.trim();
+      for (const command of buildImageResizeCommands({
+        inputPath: paths.originalPath,
+        outputPath: paths.resizedPath,
+        resize,
+        quality: attempt.quality,
+      })) {
+        const result = await runCommand({ cmd: command });
+        if (result.code !== 0) {
+          lastError = result.stderr.trim();
+          continue;
+        }
+
+        resized = true;
+        break;
+      }
+
+      if (!resized) {
         continue;
       }
 
-      const resized = new Uint8Array(await fs.readFile(paths.resizedPath));
-      if (resized.byteLength <= ANTHROPIC_FALLBACK_IMAGE_MAX_BYTES) {
+      const resizedBytes = new Uint8Array(await fs.readFile(paths.resizedPath));
+      if (resizedBytes.byteLength <= ANTHROPIC_FALLBACK_IMAGE_MAX_BYTES) {
         return {
-          data: resized,
+          data: resizedBytes,
           mediaType: "image/jpeg",
         };
       }
