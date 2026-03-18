@@ -24,6 +24,7 @@ import type { LanguageModel } from "ai";
 import {
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
+  buildExperimentalDownloadForAnthropicFallback,
   createDeferredSubagentManager,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
@@ -32,9 +33,11 @@ import {
   resolveSessionAdditionalPrompts,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
+  shouldForceUrlDownloadForAnthropicFallback,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
+  withStableAnthropicUpstreamOrder,
 } from "../../../src/surface/bridge/bus-agent-runner";
 
 function fakeModel(): LanguageModel {
@@ -219,6 +222,160 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
         parallelToolCalls: true,
       },
     });
+  });
+});
+
+describe("withStableAnthropicUpstreamOrder", () => {
+  it("injects the default order for vercel anthropic when none is configured", () => {
+    const next = withStableAnthropicUpstreamOrder("vercel", {
+      anthropic: {
+        thinking: { type: "enabled" },
+      },
+    });
+
+    expect(next).toEqual({
+      anthropic: {
+        thinking: { type: "enabled" },
+      },
+      gateway: {
+        order: ["anthropic", "vertex", "bedrock"],
+      },
+    });
+  });
+
+  it("preserves an explicit vercel gateway order", () => {
+    const next = withStableAnthropicUpstreamOrder("vercel", {
+      gateway: {
+        order: ["vertex", "anthropic", "bedrock"],
+      },
+    });
+
+    expect(next).toEqual({
+      gateway: {
+        order: ["vertex", "anthropic", "bedrock"],
+      },
+    });
+  });
+
+  it("preserves an explicit openrouter provider order", () => {
+    const next = withStableAnthropicUpstreamOrder("openrouter", {
+      openrouter: {
+        provider: {
+          order: ["bedrock", "anthropic"],
+        },
+      },
+    });
+
+    expect(next).toEqual({
+      openrouter: {
+        provider: {
+          order: ["bedrock", "anthropic"],
+        },
+      },
+    });
+  });
+});
+
+describe("anthropic fallback URL downloads", () => {
+  it("detects fallback-capable anthropic gateway models", () => {
+    expect(
+      shouldForceUrlDownloadForAnthropicFallback({
+        spec: "vercel/anthropic/claude-opus-4.6",
+        provider: "vercel",
+        providerOptions: {
+          gateway: {
+            order: ["vertex", "anthropic", "bedrock"],
+          },
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldForceUrlDownloadForAnthropicFallback({
+        spec: "openrouter/anthropic/claude-sonnet-4.5",
+        provider: "openrouter",
+        providerOptions: {
+          openrouter: {
+            provider: {
+              order: ["anthropic"],
+            },
+          },
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldForceUrlDownloadForAnthropicFallback({
+        spec: "vercel/anthropic/claude-opus-4.6",
+        provider: "vercel",
+        providerOptions: {
+          gateway: {
+            only: ["anthropic"],
+            order: ["vertex", "anthropic", "bedrock"],
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("forces downloads for http urls when fallback order includes vertex or bedrock", async () => {
+    const downloadCalls: string[] = [];
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          order: ["vertex", "anthropic", "bedrock"],
+        },
+      },
+      downloadUrl: async (url) => {
+        downloadCalls.push(url.toString());
+        return {
+          data: new Uint8Array([1, 2, 3]),
+          mediaType: "image/png",
+        };
+      },
+    });
+
+    expect(download).toBeDefined();
+
+    const result = await download!([
+      {
+        url: new URL("https://example.com/image.png"),
+        isUrlSupportedByModel: true,
+      },
+      {
+        url: new URL("data:image/png;base64,AA=="),
+        isUrlSupportedByModel: false,
+      },
+    ]);
+
+    expect(downloadCalls).toEqual(["https://example.com/image.png", "data:image/png;base64,AA=="]);
+    expect(result).toEqual([
+      {
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: "image/png",
+      },
+      {
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: "image/png",
+      },
+    ]);
+  });
+
+  it("does not build a download hook when routing is pinned away from fallback providers", () => {
+    const download = buildExperimentalDownloadForAnthropicFallback({
+      spec: "vercel/anthropic/claude-opus-4.6",
+      provider: "vercel",
+      providerOptions: {
+        gateway: {
+          only: ["anthropic"],
+          order: ["vertex", "anthropic", "bedrock"],
+        },
+      },
+    });
+
+    expect(download).toBeUndefined();
   });
 });
 

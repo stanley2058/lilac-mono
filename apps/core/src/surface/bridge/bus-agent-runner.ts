@@ -2,7 +2,9 @@
 
 import {
   asSchema,
+  createDownload,
   type CallWarning,
+  type Experimental_DownloadFunction as DownloadFunction,
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
@@ -197,6 +199,15 @@ const ANTHROPIC_PROMPT_CACHE_CONTROL = {
 } as const;
 
 const ANTHROPIC_UPSTREAM_PROVIDER_ORDER = ["anthropic", "vertex", "bedrock"] as const;
+const ANTHROPIC_FALLBACK_FORCE_DOWNLOAD_PROVIDERS = new Set([
+  "vertex",
+  "vertexAnthropic",
+  "bedrock",
+]);
+const ANTHROPIC_FALLBACK_FORCE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const downloadUrlForAnthropicFallback = createDownload({
+  maxBytes: ANTHROPIC_FALLBACK_FORCE_DOWNLOAD_MAX_BYTES,
+});
 
 const ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS = {
   anthropic: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
@@ -245,7 +256,7 @@ function withProviderOptionsOnLastUserMessage(
   return messages;
 }
 
-function withStableAnthropicUpstreamOrder(
+export function withStableAnthropicUpstreamOrder(
   provider: string,
   providerOptions: { [x: string]: JSONObject } | undefined,
 ): { [x: string]: JSONObject } | undefined {
@@ -253,6 +264,11 @@ function withStableAnthropicUpstreamOrder(
 
   if (provider === "vercel") {
     const existingGateway = (base["gateway"] as JSONObject | undefined) ?? {};
+    const existingOrder = readProviderOrder(existingGateway["order"]);
+    if (existingOrder) {
+      return providerOptions;
+    }
+
     return {
       ...base,
       gateway: {
@@ -266,6 +282,10 @@ function withStableAnthropicUpstreamOrder(
     const existingOpenRouter = (base["openrouter"] as JSONObject | undefined) ?? {};
     const existingProvider =
       (existingOpenRouter["provider"] as Record<string, unknown> | undefined) ?? {};
+    const existingOrder = readProviderOrder(existingProvider["order"]);
+    if (existingOrder) {
+      return providerOptions;
+    }
 
     return {
       ...base,
@@ -280,6 +300,120 @@ function withStableAnthropicUpstreamOrder(
   }
 
   return providerOptions;
+}
+
+function readProviderOrder(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function getAnthropicUpstreamProviderOrder(
+  provider: string,
+  providerOptions: { [x: string]: JSONObject } | undefined,
+): readonly string[] | undefined {
+  const base = providerOptions ?? {};
+
+  if (provider === "vercel") {
+    const gateway = base["gateway"];
+    if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) {
+      return undefined;
+    }
+    return readProviderOrder((gateway as JSONObject)["order"]);
+  }
+
+  if (provider === "openrouter") {
+    const openRouter = base["openrouter"];
+    if (!openRouter || typeof openRouter !== "object" || Array.isArray(openRouter)) {
+      return undefined;
+    }
+
+    const providerBlock = (openRouter as JSONObject)["provider"];
+    if (!providerBlock || typeof providerBlock !== "object" || Array.isArray(providerBlock)) {
+      return undefined;
+    }
+
+    return readProviderOrder((providerBlock as JSONObject)["order"]);
+  }
+
+  return undefined;
+}
+
+function getAnthropicUpstreamProviderOnly(
+  provider: string,
+  providerOptions: { [x: string]: JSONObject } | undefined,
+): readonly string[] | undefined {
+  const base = providerOptions ?? {};
+
+  if (provider === "vercel") {
+    const gateway = base["gateway"];
+    if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) {
+      return undefined;
+    }
+    return readProviderOrder((gateway as JSONObject)["only"]);
+  }
+
+  if (provider === "openrouter") {
+    const openRouter = base["openrouter"];
+    if (!openRouter || typeof openRouter !== "object" || Array.isArray(openRouter)) {
+      return undefined;
+    }
+
+    const providerBlock = (openRouter as JSONObject)["provider"];
+    if (!providerBlock || typeof providerBlock !== "object" || Array.isArray(providerBlock)) {
+      return undefined;
+    }
+
+    return readProviderOrder((providerBlock as JSONObject)["only"]);
+  }
+
+  return undefined;
+}
+
+export function shouldForceUrlDownloadForAnthropicFallback(params: {
+  spec: string;
+  provider: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+}): boolean {
+  if (!isAnthropicModelSpec(params.spec)) return false;
+
+  const only = getAnthropicUpstreamProviderOnly(params.provider, params.providerOptions);
+  if (only) {
+    return only.some((entry) => ANTHROPIC_FALLBACK_FORCE_DOWNLOAD_PROVIDERS.has(entry));
+  }
+
+  const order = getAnthropicUpstreamProviderOrder(params.provider, params.providerOptions);
+  if (!order) return false;
+
+  return order.some((entry) => ANTHROPIC_FALLBACK_FORCE_DOWNLOAD_PROVIDERS.has(entry));
+}
+
+export function buildExperimentalDownloadForAnthropicFallback(params: {
+  spec: string;
+  provider: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+  downloadUrl?: (url: URL) => Promise<{ data: Uint8Array; mediaType: string | undefined }>;
+}): DownloadFunction | undefined {
+  if (!shouldForceUrlDownloadForAnthropicFallback(params)) {
+    return undefined;
+  }
+
+  const downloadUrl =
+    params.downloadUrl ?? ((url: URL) => downloadUrlForAnthropicFallback({ url }));
+
+  return async (downloads) => {
+    return Promise.all(
+      downloads.map(async ({ url, isUrlSupportedByModel }) => {
+        if (url.protocol !== "http:" && url.protocol !== "https:" && isUrlSupportedByModel) {
+          return null;
+        }
+
+        return downloadUrl(url);
+      }),
+    );
+  };
 }
 
 function isOpenAIBackedModel(provider: string, modelId: string): boolean {
@@ -2789,6 +2923,11 @@ export async function startBusAgentRunner(params: {
       const providerOptionsForAgent = anthropicPromptCachingEnabled
         ? withStableAnthropicUpstreamOrder(resolved.provider, providerOptionsWithPromptCacheKey)
         : providerOptionsWithPromptCacheKey;
+      const experimentalDownloadForAgent = buildExperimentalDownloadForAnthropicFallback({
+        spec: resolved.spec,
+        provider: resolved.provider,
+        providerOptions: providerOptionsForAgent,
+      });
 
       const baseSystemPrompt = buildSystemPromptForProfile({
         baseSystemPrompt: cfg.agent.systemPrompt,
@@ -2948,6 +3087,7 @@ export async function startBusAgentRunner(params: {
         messages: next.recovery?.checkpointMessages ?? seededSessionMessages,
         tools,
         providerOptions: providerOptionsForAgent,
+        experimentalDownload: experimentalDownloadForAgent,
         debug: {
           captureModelViewMessages: env.debug.contextDump.enabled,
         },
