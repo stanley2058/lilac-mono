@@ -68,6 +68,7 @@ import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import {
+  buildDiscordModelContextTextFromContentAndEmbeds,
   buildDiscordRichTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
   type DiscordEmbedTextMeta,
@@ -377,6 +378,7 @@ function normalizeFlagsNumber(v: unknown): number | undefined {
 function getForwardSnapshotPayload(msg: Message): {
   content: string;
   embeds: DiscordEmbedTextMeta[];
+  modelText?: string;
   attachments: DiscordAttachmentMeta[];
   timestamp?: number;
   editedTimestamp?: number;
@@ -427,6 +429,7 @@ function buildForwardMessageSnapshots(
       message: {
         content: forwardSnapshot.content,
         embeds: forwardSnapshot.embeds,
+        ...(forwardSnapshot.modelText ? { modelText: forwardSnapshot.modelText } : {}),
         attachments: forwardSnapshot.attachments,
         ...(forwardSnapshot.timestamp !== undefined
           ? { timestamp: forwardSnapshot.timestamp }
@@ -449,6 +452,13 @@ function getDisplayTextFromDiscordMessage(msg: Message): string {
     content: msg.content ?? "",
     embeds: getMessageEmbeds(msg),
     mode: "inbound",
+  });
+}
+
+function getModelContextTextFromDiscordMessage(msg: Message): string {
+  return buildDiscordModelContextTextFromContentAndEmbeds({
+    content: msg.content ?? "",
+    embeds: getMessageEmbeds(msg),
   });
 }
 
@@ -2543,7 +2553,26 @@ export class DiscordAdapter implements SurfaceAdapter {
     const attachments = collectDiscordAttachmentMeta(msg.attachments);
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
-    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const modelContextText = getModelContextTextFromDiscordMessage(msg);
+    const normalizedModelText =
+      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
+    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
+    const forwardSnapshot = forwardSnapshotBase
+      ? {
+          ...forwardSnapshotBase,
+          modelText:
+            this.entityMapper?.normalizeIncomingText(
+              buildDiscordModelContextTextFromContentAndEmbeds({
+                content: forwardSnapshotBase.content,
+                embeds: forwardSnapshotBase.embeds,
+              }),
+            ) ??
+            buildDiscordModelContextTextFromContentAndEmbeds({
+              content: forwardSnapshotBase.content,
+              embeds: forwardSnapshotBase.embeds,
+            }),
+        }
+      : null;
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
@@ -2575,6 +2604,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         authorId: msg.author.id,
         content: msg.content,
         embeds,
+        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
@@ -2727,7 +2757,26 @@ export class DiscordAdapter implements SurfaceAdapter {
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
-    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const modelContextText = getModelContextTextFromDiscordMessage(msg);
+    const normalizedModelText =
+      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
+    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
+    const forwardSnapshot = forwardSnapshotBase
+      ? {
+          ...forwardSnapshotBase,
+          modelText:
+            this.entityMapper?.normalizeIncomingText(
+              buildDiscordModelContextTextFromContentAndEmbeds({
+                content: forwardSnapshotBase.content,
+                embeds: forwardSnapshotBase.embeds,
+              }),
+            ) ??
+            buildDiscordModelContextTextFromContentAndEmbeds({
+              content: forwardSnapshotBase.content,
+              embeds: forwardSnapshotBase.embeds,
+            }),
+        }
+      : null;
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
@@ -2754,6 +2803,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       raw: {
         content: msg.content,
         embeds,
+        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
@@ -2882,7 +2932,26 @@ export class DiscordAdapter implements SurfaceAdapter {
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
-    const forwardSnapshot = getForwardSnapshotPayload(msg);
+    const modelContextText = getModelContextTextFromDiscordMessage(msg);
+    const normalizedModelText =
+      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
+    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
+    const forwardSnapshot = forwardSnapshotBase
+      ? {
+          ...forwardSnapshotBase,
+          modelText:
+            this.entityMapper?.normalizeIncomingText(
+              buildDiscordModelContextTextFromContentAndEmbeds({
+                content: forwardSnapshotBase.content,
+                embeds: forwardSnapshotBase.embeds,
+              }),
+            ) ??
+            buildDiscordModelContextTextFromContentAndEmbeds({
+              content: forwardSnapshotBase.content,
+              embeds: forwardSnapshotBase.embeds,
+            }),
+        }
+      : null;
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
 
     const displayText = getDisplayTextFromDiscordMessage(msg);
@@ -2916,6 +2985,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       raw: {
         content: msg.content,
         embeds,
+        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,

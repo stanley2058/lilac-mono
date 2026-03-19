@@ -2,6 +2,7 @@ import type { MsgRef, SurfaceMessage } from "../../types";
 
 import { hasReplyChainPlannerProvider, type SurfaceAdapter } from "../../adapter";
 import {
+  buildDiscordModelContextTextFromContentAndEmbeds,
   buildDiscordRichTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
 } from "../../discord/discord-embed-text";
@@ -13,6 +14,17 @@ import type { DiscordAttachmentMeta, MergedChunk, ReplyChainMessage } from "./ty
 const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
 const DISCORD_REFERENCE_TYPE_FORWARD = 1;
 const DEFAULT_MENTION_BLOCK_LIMIT = 50;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
+function joinNonEmptyBlocks(blocks: readonly string[]): string | undefined {
+  const nonEmpty = blocks.filter((block) => block.length > 0);
+  if (nonEmpty.length === 0) return undefined;
+  return nonEmpty.join("\n\n");
+}
 
 function compareDiscordSnowflakeLike(a: string, b: string): number {
   try {
@@ -112,6 +124,65 @@ export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined 
   return fromSnapshot.length > 0 ? fromSnapshot : undefined;
 }
 
+function getDiscordContentAndEmbedsFromRaw(raw: unknown): {
+  modelText?: string;
+  content?: string;
+  embeds: ReturnType<typeof normalizeDiscordEmbeds>;
+} | null {
+  const top = asRecord(raw);
+  if (!top) return null;
+
+  const modelText = typeof top.modelText === "string" ? top.modelText : undefined;
+  const topContent = typeof top.content === "string" ? top.content : undefined;
+  const topEmbeds = normalizeDiscordEmbeds(top.embeds);
+
+  const discord = asRecord(top.discord);
+  const fallbackContent = typeof discord?.content === "string" ? discord.content : undefined;
+  const fallbackEmbeds = normalizeDiscordEmbeds(discord?.embeds);
+
+  return {
+    modelText,
+    content: topContent ?? fallbackContent,
+    embeds: topEmbeds.length > 0 ? topEmbeds : fallbackEmbeds,
+  };
+}
+
+export function getDiscordModelContextTextFromRaw(input: {
+  raw: unknown;
+  fallbackText?: string;
+  contentTransform?: (text: string) => string;
+}): string | undefined {
+  const top = getDiscordContentAndEmbedsFromRaw(input.raw);
+  const topRichText = top
+    ? (top.modelText ??
+      buildDiscordModelContextTextFromContentAndEmbeds({
+        content: top.content
+          ? input.contentTransform
+            ? input.contentTransform(top.content)
+            : top.content
+          : top.content,
+        embeds: top.embeds,
+      }))
+    : "";
+
+  const snapshot = getForwardSnapshotMessageFromRaw(input.raw);
+  const snapshotData = snapshot ? getDiscordContentAndEmbedsFromRaw(snapshot) : null;
+  const snapshotRichText = snapshotData
+    ? (snapshotData.modelText ??
+      buildDiscordModelContextTextFromContentAndEmbeds({
+        content: snapshotData.content,
+        embeds: snapshotData.embeds,
+      }))
+    : "";
+
+  return (
+    joinNonEmptyBlocks([topRichText, snapshotRichText]) ??
+    (typeof input.fallbackText === "string" && input.fallbackText.trim().length > 0
+      ? input.fallbackText
+      : undefined)
+  );
+}
+
 function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {
   if (!raw || typeof raw !== "object") return [];
 
@@ -197,6 +268,7 @@ export function toReplyChainMessage(
   msg: SurfaceMessage,
   opts?: {
     overrideText?: string;
+    overrideModelText?: string;
     authorNameFallback?: string;
   },
 ): ReplyChainMessage {
@@ -206,6 +278,10 @@ export function toReplyChainMessage(
       : msg.text.trim().length > 0
         ? msg.text
         : (getForwardSnapshotTextFromRaw(msg.raw) ?? msg.text);
+  const modelText =
+    opts?.overrideModelText ??
+    getDiscordModelContextTextFromRaw({ raw: msg.raw, fallbackText: text }) ??
+    text;
 
   return {
     messageId: msg.ref.messageId,
@@ -213,6 +289,7 @@ export function toReplyChainMessage(
     authorName: msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
     ts: msg.ts,
     text,
+    modelText,
     attachments: extractDiscordAttachmentsFromRaw(msg.raw),
     raw: msg.raw,
   };
@@ -553,6 +630,7 @@ export function mergeChainByDiscordWindow(
       tsStart: first.ts,
       tsEnd: last.ts,
       text: messages.map((m) => m.text).join("\n\n"),
+      modelText: messages.map((m) => m.modelText).join("\n\n"),
       attachments: messages.flatMap((m) => m.attachments),
     };
   });

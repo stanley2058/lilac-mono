@@ -64,6 +64,7 @@ export type ReplyChainMessage = {
   authorName: string;
   ts: number;
   text: string;
+  modelText: string;
   attachments: DiscordAttachmentMeta[];
   raw?: unknown;
 };
@@ -75,5 +76,6 @@ export type MergedChunk = {
   tsStart: number;
   tsEnd: number;
   text: string;
+  modelText: string;
   attachments: DiscordAttachmentMeta[];
 };

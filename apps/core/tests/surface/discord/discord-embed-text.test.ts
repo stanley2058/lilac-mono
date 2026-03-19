@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  buildDiscordModelContextTextFromContentAndEmbeds,
   buildDiscordRichTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
 } from "../../../src/surface/discord/discord-embed-text";
@@ -82,5 +83,34 @@ describe("discord-embed-text", () => {
     });
 
     expect(text).toBe("  line with padding  ");
+  });
+
+  it("labels embeds separately for model context", () => {
+    const embeds = normalizeDiscordEmbeds([
+      {
+        title: "embed-title",
+        description: "embed-description",
+        fields: [{ name: "field-1", value: "value-1" }],
+        image: { url: "https://example.com/image.png" },
+        footer: { text: "embed-footer" },
+      },
+    ]);
+
+    const text = buildDiscordModelContextTextFromContentAndEmbeds({
+      content: "normal-text",
+      embeds,
+    });
+
+    expect(text).toBe(
+      [
+        "normal-text",
+        "[discord_embed]",
+        "embed-title",
+        "embed-description",
+        "https://example.com/image.png",
+      ].join("\n\n"),
+    );
+    expect(text).not.toContain("field-1");
+    expect(text).not.toContain("embed-footer");
   });
 });

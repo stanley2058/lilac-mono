@@ -21,6 +21,7 @@ import {
 } from "./request-composition/normalization";
 import {
   fetchMentionThreadContext,
+  getDiscordModelContextTextFromRaw,
   fetchReplyChainFrom,
   findEarliestReplyAnchor,
   getForwardSnapshotTextFromRaw,
@@ -63,6 +64,46 @@ function shouldIncludeInModelContext(msg: SurfaceMessage): boolean {
 
   const isChat = getDiscordIsChatFromRaw(msg.raw);
   return isChat ?? true;
+}
+
+function applyUserTextTransformToReplyChainMessage(input: {
+  message: ReplyChainMessage;
+  transformUserText?: (text: string) => string;
+  shouldTransform: boolean;
+}): ReplyChainMessage {
+  const { message, transformUserText, shouldTransform } = input;
+  if (!shouldTransform || !transformUserText) return message;
+
+  const text = transformUserText(message.text);
+  const modelText =
+    getDiscordModelContextTextFromRaw({
+      raw: message.raw,
+      fallbackText: text,
+      contentTransform: transformUserText,
+    }) ?? text;
+
+  return {
+    ...message,
+    text,
+    modelText,
+  };
+}
+
+function toReplyChainMessageForModelContext(input: {
+  message: SurfaceMessage;
+  botUserId: string;
+  triggerMessageId?: string;
+  transformUserText?: (text: string) => string;
+}): ReplyChainMessage {
+  const base = toReplyChainMessage(input.message);
+  return applyUserTextTransformToReplyChainMessage({
+    message: base,
+    transformUserText: input.transformUserText,
+    shouldTransform:
+      input.message.userId !== input.botUserId &&
+      typeof input.triggerMessageId === "string" &&
+      input.message.ref.messageId === input.triggerMessageId,
+  });
 }
 
 function compareDiscordSnowflakeLike(a: string, b: string): number {
@@ -285,15 +326,12 @@ export async function composeRequestMessages(
   });
 
   const transformedChain = filteredChain.map((m) => {
-    if (m.authorId === opts.botUserId) return m;
-    if (!opts.transformUserText) return m;
     const targetMessageId = opts.transformUserTextForMessageId ?? opts.trigger.msgRef.messageId;
-    if (m.messageId !== targetMessageId) return m;
-
-    return {
-      ...m,
-      text: opts.transformUserText(m.text),
-    };
+    return applyUserTextTransformToReplyChainMessage({
+      message: m,
+      transformUserText: opts.transformUserText,
+      shouldTransform: m.authorId !== opts.botUserId && m.messageId === targetMessageId,
+    });
   });
 
   // IMPORTANT: session divider cutoff intentionally does NOT apply to explicit reply/mention
@@ -348,7 +386,7 @@ export async function composeRequestMessages(
       }
     }
 
-    const normalized = normalizeText(chunk.text, {
+    const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {
       // We currently rely on adapter text already being normalized (mentions rewritten).
       // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
     });
@@ -455,15 +493,12 @@ export async function composeRecentChannelMessages(
         );
 
         const transformedAnchored = anchoredNoDivider.map((m) => {
-          if (m.authorId === opts.botUserId) return m;
-          if (!opts.transformUserText) return m;
           const targetMessageId = opts.transformUserTextForMessageId ?? triggerMsg.ref.messageId;
-          if (m.messageId !== targetMessageId) return m;
-
-          return {
-            ...m,
-            text: opts.transformUserText(m.text),
-          };
+          return applyUserTextTransformToReplyChainMessage({
+            message: m,
+            transformUserText: opts.transformUserText,
+            shouldTransform: m.authorId !== opts.botUserId && m.messageId === targetMessageId,
+          });
         });
 
         const merged = mergeChainByDiscordWindow(transformedAnchored);
@@ -508,7 +543,7 @@ export async function composeRecentChannelMessages(
             }
           }
 
-          const normalized = normalizeText(chunk.text, {});
+          const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {});
 
           if (isBot) {
             modelMessages.push({
@@ -681,20 +716,14 @@ export async function composeRecentChannelMessages(
   );
 
   const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => {
-    const base = toReplyChainMessage(m);
-
-    const text =
-      opts.transformUserText &&
-      opts.triggerMsgRef &&
-      m.userId !== opts.botUserId &&
-      m.ref.messageId === (opts.transformUserTextForMessageId ?? opts.triggerMsgRef.messageId)
-        ? opts.transformUserText(base.text)
-        : base.text;
-
-    return {
-      ...base,
-      text,
-    };
+    return toReplyChainMessageForModelContext({
+      message: m,
+      botUserId: opts.botUserId,
+      triggerMessageId: opts.triggerMsgRef
+        ? (opts.transformUserTextForMessageId ?? opts.triggerMsgRef.messageId)
+        : undefined,
+      transformUserText: opts.transformUserText,
+    });
   });
 
   const merged = mergeChainByDiscordWindow(chain);
@@ -757,7 +786,7 @@ export async function composeRecentChannelMessages(
       }
     }
 
-    const normalized = normalizeText(chunk.text, {});
+    const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {});
 
     if (isBot) {
       modelMessages.push({
@@ -819,10 +848,20 @@ export async function composeSingleMessage(
   if (isDiscordSessionDividerSurfaceMessageAnyAuthor(m)) return null;
 
   let text = m.text.trim().length > 0 ? m.text : (getForwardSnapshotTextFromRaw(m.raw) ?? m.text);
+  const contentTransform = m.userId !== opts.botUserId ? opts.transformUserText : undefined;
 
-  if (m.userId !== opts.botUserId && opts.transformUserText) {
-    text = opts.transformUserText(text);
+  if (contentTransform) {
+    text = contentTransform(text);
   }
+
+  const modelText =
+    m.userId !== opts.botUserId
+      ? (getDiscordModelContextTextFromRaw({
+          raw: m.raw,
+          fallbackText: text,
+          contentTransform,
+        }) ?? text)
+      : text;
 
   if (m.userId === opts.botUserId) {
     return {
@@ -839,14 +878,14 @@ export async function composeSingleMessage(
     reactions: await safeListReactions(adapter, m.ref),
   });
 
-  const mainText = `${header}\n${normalizeText(text, {})}`.trimEnd();
+  const mainModelText = `${header}\n${normalizeText(modelText, {})}`.trimEnd();
 
   const attachments = toReplyChainMessage(m).attachments;
   if (attachments.length === 0) {
-    return { role: "user", content: mainText } satisfies ModelMessage;
+    return { role: "user", content: mainModelText } satisfies ModelMessage;
   }
 
-  const parts: UserContent = [{ type: "text", text: mainText }];
+  const parts: UserContent = [{ type: "text", text: mainModelText }];
   await appendDiscordAttachmentsToUserContent(parts, attachments, createDiscordAttachmentState());
 
   return { role: "user", content: parts } satisfies ModelMessage;
