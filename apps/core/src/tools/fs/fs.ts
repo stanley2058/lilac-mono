@@ -188,7 +188,8 @@ function buildReadFileInputZod(hashlineEnabled: boolean) {
       .describe("Maximum number of characters to return. Defaults to 10000."),
     format: (hashlineEnabled
       ? z.enum(["raw", "numbered", "hashline"])
-      : z.enum(["raw", "numbered"]))
+      : z.enum(["raw", "numbered"])
+    )
       .optional()
       .describe(
         hashlineEnabled
