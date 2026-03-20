@@ -292,6 +292,8 @@ export type GrepResult =
       degradedFromHashline?: boolean;
       results: {
         file: string;
+        resolvedPath: string;
+        fileHash: string;
         line: number;
         text: string;
       }[];
@@ -1126,10 +1128,12 @@ export class FileSystem {
     {
       path,
       edits,
+      expectedHash,
       dangerouslyAllow = false,
     }: {
       path: string;
       edits: readonly HashlineEdit[];
+      expectedHash?: string;
       dangerouslyAllow?: boolean;
     },
     cwd?: string,
@@ -1139,8 +1143,48 @@ export class FileSystem {
     try {
       this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow);
 
+      const lastAccess = this.fileAccessRecord.get(resolvedPath);
       const file = await fs.readFile(resolvedPath, "utf-8");
       const oldHash = this.hash(file);
+
+      if (expectedHash) {
+        if (expectedHash !== oldHash) {
+          return {
+            success: false,
+            resolvedPath,
+            currentHash: oldHash,
+            error: {
+              code: "HASH_MISMATCH",
+              message: `File has changed since last read: ${resolvedPath}`,
+            },
+          };
+        }
+      } else {
+        if (!lastAccess) {
+          return {
+            success: false,
+            resolvedPath,
+            currentHash: oldHash,
+            error: {
+              code: "NOT_READ",
+              message: `File must be read before editing: ${resolvedPath}`,
+            },
+          };
+        }
+
+        if (lastAccess.fileHash !== oldHash) {
+          return {
+            success: false,
+            resolvedPath,
+            currentHash: oldHash,
+            error: {
+              code: "HASH_MISMATCH",
+              message: `File has changed since last read: ${resolvedPath}`,
+            },
+          };
+        }
+      }
+
       const applied = applyHashlineEdits({ content: file, edits });
       const newHash = this.hash(applied.content);
       const changesMade = newHash !== oldHash;
@@ -1342,18 +1386,41 @@ export class FileSystem {
           line: match.line,
           text: match.text,
         }));
-        const hashlineResults: { file: string; line: number; text: string }[] = [];
+        const hashlineResults: {
+          file: string;
+          resolvedPath: string;
+          fileHash: string;
+          line: number;
+          text: string;
+        }[] = [];
+        const fileHashCache = new Map<string, string>();
 
         for (const match of ripgrepResult.matches) {
-          if (match.text.length > HASHLINE_MAX_LINE_CHARS) {
-            warnings.push(buildHashlineWarning(match.line, match.text.length));
+          const normalizedMatchText = match.text.replace(/\r?\n$/, "");
+
+          if (normalizedMatchText.length > HASHLINE_MAX_LINE_CHARS) {
+            warnings.push(buildHashlineWarning(match.line, normalizedMatchText.length));
             continue;
+          }
+
+          const resolvedMatchPath = this.resolvePath(match.file, resolvedBaseDir);
+          let fileHash = fileHashCache.get(resolvedMatchPath);
+          if (!fileHash) {
+            const matchFile = await fs.readFile(resolvedMatchPath, "utf-8");
+            fileHash = this.hash(matchFile);
+            fileHashCache.set(resolvedMatchPath, fileHash);
+            this.fileAccessRecord.set(resolvedMatchPath, {
+              lastAccess: Date.now(),
+              fileHash,
+            });
           }
 
           hashlineResults.push({
             file: match.file,
+            resolvedPath: resolvedMatchPath,
+            fileHash,
             line: match.line,
-            text: formatHashlineWindow([match.text], match.line),
+            text: formatHashlineWindow([normalizedMatchText], match.line),
           });
         }
 
