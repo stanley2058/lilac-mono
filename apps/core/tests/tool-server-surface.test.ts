@@ -688,7 +688,7 @@ describe("tool-server surface", () => {
     });
   });
 
-  it("builds discord read richText from raw content and embeds", async () => {
+  it("uses stored discord tagged text for read richText", async () => {
     const channelId = "123";
     const cfg = testConfig({
       surface: {
@@ -709,7 +709,9 @@ describe("tool-server surface", () => {
             ref: { platform: "discord", channelId, messageId: "m1" },
             session: { platform: "discord", channelId },
             userId: "u",
-            text: "inbound shadow text",
+            text: ["normal-text", "[discord_embed]", "embed-title", "embed-description"].join(
+              "\n\n",
+            ),
             ts: 0,
             raw: {
               content: "normal-text",
@@ -745,14 +747,7 @@ describe("tool-server surface", () => {
     };
 
     expect(out.message?.richText).toBe(
-      [
-        "normal-text",
-        "embed-title",
-        "embed-description",
-        "field-1: value-1\nfield-2: value-2",
-        "https://example.com/embed-image.png",
-        "embed-footer",
-      ].join("\n\n"),
+      ["normal-text", "[discord_embed]", "embed-title", "embed-description"].join("\n\n"),
     );
     expect(out.message?.raw?.content).toBe("normal-text");
   });
@@ -778,7 +773,13 @@ describe("tool-server surface", () => {
             ref: { platform: "discord", channelId, messageId: "m1" },
             session: { platform: "discord", channelId },
             userId: "u",
-            text: "inbound text",
+            text: [
+              "forward-comment",
+              "snapshot-content",
+              "[discord_embed]",
+              "snapshot-title",
+              "snapshot-description",
+            ].join("\n\n"),
             ts: 0,
             raw: {
               content: "forward-comment",
@@ -812,9 +813,13 @@ describe("tool-server surface", () => {
     };
 
     expect(out.message?.richText).toBe(
-      ["forward-comment", "snapshot-content", "snapshot-title", "snapshot-description"].join(
-        "\n\n",
-      ),
+      [
+        "forward-comment",
+        "snapshot-content",
+        "[discord_embed]",
+        "snapshot-title",
+        "snapshot-description",
+      ].join("\n\n"),
     );
   });
 
@@ -1125,7 +1130,7 @@ describe("tool-server surface", () => {
     searchStore.close();
   });
 
-  it("indexes the same discord display text that read returns", async () => {
+  it("indexes the same stored discord text that read returns", async () => {
     const channelId = "123";
     const cfg = testConfig({
       surface: {
@@ -1146,7 +1151,9 @@ describe("tool-server surface", () => {
             ref: { platform: "discord", channelId, messageId: "m1" },
             session: { platform: "discord", channelId },
             userId: "u1",
-            text: "shadow text one",
+            text: ["normal-text", "[discord_embed]", "embed-title", "embed-description"].join(
+              "\n\n",
+            ),
             ts: 100,
             raw: {
               content: "normal-text",
@@ -1164,7 +1171,13 @@ describe("tool-server surface", () => {
             ref: { platform: "discord", channelId, messageId: "m2" },
             session: { platform: "discord", channelId },
             userId: "u2",
-            text: "shadow text two",
+            text: [
+              "forward-comment",
+              "snapshot-content",
+              "[discord_embed]",
+              "snapshot-title",
+              "snapshot-description",
+            ].join("\n\n"),
             ts: 200,
             raw: {
               content: "forward-comment",
@@ -1195,7 +1208,7 @@ describe("tool-server surface", () => {
     const embedHit = (await tool.call("surface.messages.search", {
       client: "discord",
       sessionId: channelId,
-      query: "value-1",
+      query: "embed-description",
     })) as {
       hits: Array<{ messageId: string; richText: string }>;
     };
