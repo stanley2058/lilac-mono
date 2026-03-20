@@ -184,13 +184,42 @@ describe("request-composition attachments", () => {
     expect(out!.content as string).not.toContain("[discord user_id=");
   });
 
+  it("keeps bot embed-only messages untagged", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "other-bot",
+      userName: "github-bot",
+      text: ["assistant embed title", "assistant embed body"].join("\n\n"),
+      ts: 0,
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("assistant embed title\n\nassistant embed body");
+    expect(out!.content as string).toContain(
+      "[discord user_id=other-bot user_name=github-bot message_id=m]",
+    );
+    expect(out!.content as string).not.toContain("[discord_embed]");
+  });
+
   it("labels embed text separately from user-authored text", async () => {
     const msg: SurfaceMessage = {
       ref: { platform: "discord", channelId: "c", messageId: "m" },
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: ["check this out", "preview title", "preview description"].join("\n\n"),
+      text: ["check this out", "[discord_embed]", "preview title", "preview description"].join(
+        "\n\n",
+      ),
       ts: 0,
       raw: {
         content: "check this out",
@@ -222,18 +251,17 @@ describe("request-composition attachments", () => {
     expect(content.indexOf("check this out")).toBeLessThan(content.indexOf("[discord_embed]"));
   });
 
-  it("prefers stored normalized model text over raw content reconstruction", async () => {
+  it("uses stored tagged text directly", async () => {
     const msg: SurfaceMessage = {
       ref: { platform: "discord", channelId: "c", messageId: "m" },
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "@alice shared this\n\npreview title",
+      text: "@alice shared this\n\n[discord_embed]\n\npreview title",
       ts: 0,
       raw: {
         content: "<@123> shared this",
         embeds: [{ title: "preview title" }],
-        modelText: "@alice shared this\n\n[discord_embed]\n\npreview title",
       },
     };
 
@@ -319,7 +347,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: ["look", "preview title"].join("\n\n"),
+      text: ["look", "[discord_embed]", "preview title"].join("\n\n"),
       ts: 0,
       raw: {
         content: "look",
@@ -619,7 +647,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: "Forwarded snapshot text",
       ts: 0,
       raw: {
         reference: {
@@ -691,7 +719,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: ["[discord_embed]", "forwarded embed text"].join("\n\n"),
       ts: 0,
       raw: {
         reference: {
@@ -731,7 +759,12 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: [
+        "[discord_embed]",
+        "forwarded title",
+        "forwarded description",
+        "https://example.com/snapshot-image.png",
+      ].join("\n\n"),
       ts: 0,
       raw: {
         reference: {
@@ -779,13 +812,13 @@ describe("request-composition attachments", () => {
     expect(content).not.toContain("skip-footer-for-inbound");
   });
 
-  it("prefers stored normalized forwarded snapshot model text", async () => {
+  it("uses stored tagged forwarded snapshot text directly", async () => {
     const msg: SurfaceMessage = {
       ref: { platform: "discord", channelId: "c", messageId: "m" },
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: "@alice forwarded this\n\n[discord_embed]\n\nforwarded title",
       ts: 0,
       raw: {
         reference: {
@@ -798,7 +831,6 @@ describe("request-composition attachments", () => {
             message: {
               content: "<@123> forwarded this",
               embeds: [{ title: "forwarded title" }],
-              modelText: "@alice forwarded this\n\n[discord_embed]\n\nforwarded title",
               attachments: [],
             },
           },
@@ -1214,7 +1246,9 @@ describe("request-composition mention thread context", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "u1",
       userName: "user1",
-      text: ["<@bot> check this", "preview title", "preview description"].join("\n\n"),
+      text: ["<@bot> check this", "[discord_embed]", "preview title", "preview description"].join(
+        "\n\n",
+      ),
       ts: 0,
       raw: {
         content: "<@bot> check this",

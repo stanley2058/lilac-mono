@@ -27,7 +27,7 @@ import {
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
 import { inferMimeTypeFromFilename, resolveToolPath } from "../../shared/attachment-utils";
-import { getDiscordSurfaceTextFromRaw } from "../../surface/discord/discord-surface-display-text";
+import { getDiscordSurfaceDisplayText } from "../../surface/discord/discord-surface-display-text";
 
 import {
   isGithubIssueTriggerId,
@@ -704,8 +704,10 @@ function getMessageAttachmentMeta(msg: SurfaceMessage): SurfaceMessageAttachment
 
 function getSurfaceMessageRichText(msg: SurfaceMessage): string {
   if (msg.session.platform === "discord") {
-    const fromRaw = getDiscordSurfaceTextFromRaw(msg.raw);
-    if (fromRaw) return fromRaw;
+    return getDiscordSurfaceDisplayText({
+      raw: msg.raw,
+      fallbackText: msg.text,
+    });
   }
 
   return msg.text;

@@ -21,7 +21,6 @@ import {
 } from "./request-composition/normalization";
 import {
   fetchMentionThreadContext,
-  getDiscordModelContextTextFromRaw,
   fetchReplyChainFrom,
   findEarliestReplyAnchor,
   getForwardSnapshotTextFromRaw,
@@ -75,17 +74,10 @@ function applyUserTextTransformToReplyChainMessage(input: {
   if (!shouldTransform || !transformUserText) return message;
 
   const text = transformUserText(message.text);
-  const modelText =
-    getDiscordModelContextTextFromRaw({
-      raw: message.raw,
-      fallbackText: text,
-      contentTransform: transformUserText,
-    }) ?? text;
 
   return {
     ...message,
     text,
-    modelText,
   };
 }
 
@@ -386,7 +378,7 @@ export async function composeRequestMessages(
       }
     }
 
-    const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {
+    const normalized = normalizeText(chunk.text, {
       // We currently rely on adapter text already being normalized (mentions rewritten).
       // If/when adapters expose richer raw mentions, we can do a more faithful rewrite.
     });
@@ -543,7 +535,7 @@ export async function composeRecentChannelMessages(
             }
           }
 
-          const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {});
+          const normalized = normalizeText(chunk.text, {});
 
           if (isBot) {
             modelMessages.push({
@@ -786,7 +778,7 @@ export async function composeRecentChannelMessages(
       }
     }
 
-    const normalized = normalizeText(isBot ? chunk.text : chunk.modelText, {});
+    const normalized = normalizeText(chunk.text, {});
 
     if (isBot) {
       modelMessages.push({
@@ -854,15 +846,6 @@ export async function composeSingleMessage(
     text = contentTransform(text);
   }
 
-  const modelText =
-    m.userId !== opts.botUserId
-      ? (getDiscordModelContextTextFromRaw({
-          raw: m.raw,
-          fallbackText: text,
-          contentTransform,
-        }) ?? text)
-      : text;
-
   if (m.userId === opts.botUserId) {
     return {
       role: "assistant",
@@ -878,14 +861,14 @@ export async function composeSingleMessage(
     reactions: await safeListReactions(adapter, m.ref),
   });
 
-  const mainModelText = `${header}\n${normalizeText(modelText, {})}`.trimEnd();
+  const mainText = `${header}\n${normalizeText(text, {})}`.trimEnd();
 
   const attachments = toReplyChainMessage(m).attachments;
   if (attachments.length === 0) {
-    return { role: "user", content: mainModelText } satisfies ModelMessage;
+    return { role: "user", content: mainText } satisfies ModelMessage;
   }
 
-  const parts: UserContent = [{ type: "text", text: mainModelText }];
+  const parts: UserContent = [{ type: "text", text: mainText }];
   await appendDiscordAttachmentsToUserContent(parts, attachments, createDiscordAttachmentState());
 
   return { role: "user", content: parts } satisfies ModelMessage;

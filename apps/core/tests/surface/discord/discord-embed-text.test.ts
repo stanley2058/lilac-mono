@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
-  buildDiscordModelContextTextFromContentAndEmbeds,
+  buildDiscordTaggedTextFromContentAndEmbeds,
   buildDiscordRichTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
 } from "../../../src/surface/discord/discord-embed-text";
@@ -96,7 +96,7 @@ describe("discord-embed-text", () => {
       },
     ]);
 
-    const text = buildDiscordModelContextTextFromContentAndEmbeds({
+    const text = buildDiscordTaggedTextFromContentAndEmbeds({
       content: "normal-text",
       embeds,
     });
@@ -112,5 +112,23 @@ describe("discord-embed-text", () => {
     );
     expect(text).not.toContain("field-1");
     expect(text).not.toContain("embed-footer");
+  });
+
+  it("can omit embed labels for embed-only bot output", () => {
+    const embeds = normalizeDiscordEmbeds([
+      {
+        title: "embed-title",
+        description: "embed-description",
+      },
+    ]);
+
+    const text = buildDiscordTaggedTextFromContentAndEmbeds({
+      content: "",
+      embeds,
+      labelEmbeds: false,
+    });
+
+    expect(text).toBe(["embed-title", "embed-description"].join("\n\n"));
+    expect(text).not.toContain("[discord_embed]");
   });
 });

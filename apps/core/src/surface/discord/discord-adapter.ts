@@ -68,8 +68,7 @@ import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import {
-  buildDiscordModelContextTextFromContentAndEmbeds,
-  buildDiscordRichTextFromContentAndEmbeds,
+  buildDiscordTaggedTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
   type DiscordEmbedTextMeta,
 } from "./discord-embed-text";
@@ -378,7 +377,6 @@ function normalizeFlagsNumber(v: unknown): number | undefined {
 function getForwardSnapshotPayload(msg: Message): {
   content: string;
   embeds: DiscordEmbedTextMeta[];
-  modelText?: string;
   attachments: DiscordAttachmentMeta[];
   timestamp?: number;
   editedTimestamp?: number;
@@ -429,7 +427,6 @@ function buildForwardMessageSnapshots(
       message: {
         content: forwardSnapshot.content,
         embeds: forwardSnapshot.embeds,
-        ...(forwardSnapshot.modelText ? { modelText: forwardSnapshot.modelText } : {}),
         attachments: forwardSnapshot.attachments,
         ...(forwardSnapshot.timestamp !== undefined
           ? { timestamp: forwardSnapshot.timestamp }
@@ -447,19 +444,31 @@ function getMessageEmbeds(msg: Message): DiscordEmbedTextMeta[] {
   return normalizeDiscordEmbeds(msg.embeds);
 }
 
-function getDisplayTextFromDiscordMessage(msg: Message): string {
-  return buildDiscordRichTextFromContentAndEmbeds({
-    content: msg.content ?? "",
-    embeds: getMessageEmbeds(msg),
-    mode: "inbound",
-  });
+function joinNonEmptyTextBlocks(blocks: readonly string[]): string {
+  const nonEmpty = blocks.filter((block) => block.length > 0);
+  return nonEmpty.join("\n\n");
 }
 
-function getModelContextTextFromDiscordMessage(msg: Message): string {
-  return buildDiscordModelContextTextFromContentAndEmbeds({
+function getStoredTextFromDiscordMessage(input: {
+  msg: Message;
+  forwardSnapshot: ReturnType<typeof getForwardSnapshotPayload>;
+}): string {
+  const { msg, forwardSnapshot } = input;
+  const embeds = getMessageEmbeds(msg);
+  const hasOnlyEmbeds = (msg.content ?? "").trim().length === 0 && embeds.length > 0;
+  const topText = buildDiscordTaggedTextFromContentAndEmbeds({
     content: msg.content ?? "",
-    embeds: getMessageEmbeds(msg),
+    embeds,
+    labelEmbeds: !(msg.author.bot && hasOnlyEmbeds),
   });
+  const snapshotText = forwardSnapshot
+    ? buildDiscordTaggedTextFromContentAndEmbeds({
+        content: forwardSnapshot.content,
+        embeds: forwardSnapshot.embeds,
+      })
+    : "";
+
+  return joinNonEmptyTextBlocks([topText, snapshotText]);
 }
 
 function isDiscordChatLikeMessage(msg: Message): boolean {
@@ -2553,30 +2562,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     const attachments = collectDiscordAttachmentMeta(msg.attachments);
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
-    const modelContextText = getModelContextTextFromDiscordMessage(msg);
-    const normalizedModelText =
-      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
-    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
-    const forwardSnapshot = forwardSnapshotBase
-      ? {
-          ...forwardSnapshotBase,
-          modelText:
-            this.entityMapper?.normalizeIncomingText(
-              buildDiscordModelContextTextFromContentAndEmbeds({
-                content: forwardSnapshotBase.content,
-                embeds: forwardSnapshotBase.embeds,
-              }),
-            ) ??
-            buildDiscordModelContextTextFromContentAndEmbeds({
-              content: forwardSnapshotBase.content,
-              embeds: forwardSnapshotBase.embeds,
-            }),
-        }
-      : null;
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
-
-    const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const storedText = getStoredTextFromDiscordMessage({ msg, forwardSnapshot });
+    const normalizedText = this.entityMapper?.normalizeIncomingText(storedText) ?? storedText;
 
     const sessionRef = asDiscordSessionRef({
       channelId,
@@ -2593,7 +2582,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       session: sessionRef,
       userId: msg.author.id,
       userName: authorName,
-      text: normalizedContent,
+      text: normalizedText,
       ts,
       editedTs,
       deleted: false,
@@ -2604,7 +2593,6 @@ export class DiscordAdapter implements SurfaceAdapter {
         authorId: msg.author.id,
         content: msg.content,
         embeds,
-        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
@@ -2757,30 +2745,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
-    const modelContextText = getModelContextTextFromDiscordMessage(msg);
-    const normalizedModelText =
-      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
-    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
-    const forwardSnapshot = forwardSnapshotBase
-      ? {
-          ...forwardSnapshotBase,
-          modelText:
-            this.entityMapper?.normalizeIncomingText(
-              buildDiscordModelContextTextFromContentAndEmbeds({
-                content: forwardSnapshotBase.content,
-                embeds: forwardSnapshotBase.embeds,
-              }),
-            ) ??
-            buildDiscordModelContextTextFromContentAndEmbeds({
-              content: forwardSnapshotBase.content,
-              embeds: forwardSnapshotBase.embeds,
-            }),
-        }
-      : null;
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
-
-    const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const storedText = getStoredTextFromDiscordMessage({ msg, forwardSnapshot });
+    const normalizedText = this.entityMapper?.normalizeIncomingText(storedText) ?? storedText;
 
     const sessionRef = asDiscordSessionRef({
       channelId,
@@ -2797,13 +2765,12 @@ export class DiscordAdapter implements SurfaceAdapter {
       session: sessionRef,
       userId: msg.author.id,
       userName: authorName,
-      text: normalizedContent,
+      text: normalizedText,
       ts,
       editedTs,
       raw: {
         content: msg.content,
         embeds,
-        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
@@ -2932,30 +2899,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     const embeds = getMessageEmbeds(msg);
     const reference = normalizeDiscordReference(msg);
     const replyRef = getReplyReference(msg);
-    const modelContextText = getModelContextTextFromDiscordMessage(msg);
-    const normalizedModelText =
-      this.entityMapper?.normalizeIncomingText(modelContextText) ?? modelContextText;
-    const forwardSnapshotBase = getForwardSnapshotPayload(msg);
-    const forwardSnapshot = forwardSnapshotBase
-      ? {
-          ...forwardSnapshotBase,
-          modelText:
-            this.entityMapper?.normalizeIncomingText(
-              buildDiscordModelContextTextFromContentAndEmbeds({
-                content: forwardSnapshotBase.content,
-                embeds: forwardSnapshotBase.embeds,
-              }),
-            ) ??
-            buildDiscordModelContextTextFromContentAndEmbeds({
-              content: forwardSnapshotBase.content,
-              embeds: forwardSnapshotBase.embeds,
-            }),
-        }
-      : null;
+    const forwardSnapshot = getForwardSnapshotPayload(msg);
     const messageSnapshots = buildForwardMessageSnapshots(forwardSnapshot);
-
-    const displayText = getDisplayTextFromDiscordMessage(msg);
-    const normalizedContent = this.entityMapper?.normalizeIncomingText(displayText) ?? displayText;
+    const storedText = getStoredTextFromDiscordMessage({ msg, forwardSnapshot });
+    const normalizedText = this.entityMapper?.normalizeIncomingText(storedText) ?? storedText;
 
     const sess = store.getSession(channelId);
     const sessionRef = asDiscordSessionRef({
@@ -2979,13 +2926,12 @@ export class DiscordAdapter implements SurfaceAdapter {
       session: sessionRef,
       userId: msg.author.id,
       userName: authorName,
-      text: normalizedContent,
+      text: normalizedText,
       ts,
       editedTs,
       raw: {
         content: msg.content,
         embeds,
-        modelText: normalizedModelText,
         reference: reference ?? undefined,
         messageSnapshots,
         editedTs,
