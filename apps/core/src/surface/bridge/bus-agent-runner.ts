@@ -555,6 +555,7 @@ type DeferredSubagentHandle = {
   evtSub: { stop(): Promise<void> } | null;
   timeout: ReturnType<typeof setTimeout> | null;
   settled: boolean;
+  handlingEvtSubscriptionMessage: boolean;
 };
 
 function isDeferredSubagentAcceptedResult(result: unknown): result is {
@@ -720,14 +721,45 @@ export function createDeferredSubagentManager(params: {
     });
   };
 
-  const stopHandle = async (handle: DeferredSubagentHandle) => {
+  const stopHandle = async (
+    handle: DeferredSubagentHandle,
+    options?: { deferEvtSubStop?: boolean },
+  ) => {
     if (handle.timeout) {
       clearTimeout(handle.timeout);
       handle.timeout = null;
     }
-    await Promise.all([handle.outSub?.stop(), handle.evtSub?.stop()]);
+
+    const outSub = handle.outSub;
+    const evtSub = handle.evtSub;
     handle.outSub = null;
     handle.evtSub = null;
+
+    const stopPromises: Promise<void>[] = [];
+
+    if (outSub) {
+      stopPromises.push(outSub.stop());
+    }
+
+    if (evtSub) {
+      if (options?.deferEvtSubStop) {
+        void evtSub.stop().catch((e: unknown) => {
+          logger.warn(
+            "deferred subagent lifecycle subscription stop failed",
+            {
+              requestId: parentHeaders.request_id,
+              sessionId: parentHeaders.session_id,
+              childRequestId: handle.childRequestId,
+            },
+            e,
+          );
+        });
+      } else {
+        stopPromises.push(evtSub.stop());
+      }
+    }
+
+    await Promise.all(stopPromises);
   };
 
   const cancelChild = async (handle: DeferredSubagentHandle, detail: string) => {
@@ -789,8 +821,25 @@ export function createDeferredSubagentManager(params: {
 
     bufferedCompletions.push(completion);
     handles.delete(handle.childRequestId);
-    await stopHandle(handle);
     notifyWaiters();
+
+    if (handle.handlingEvtSubscriptionMessage) {
+      void stopHandle(handle, { deferEvtSubStop: true }).catch((e: unknown) => {
+        logger.warn(
+          "deferred subagent stop after settlement failed",
+          {
+            requestId: parentHeaders.request_id,
+            sessionId: parentHeaders.session_id,
+            childRequestId: handle.childRequestId,
+            status,
+          },
+          e,
+        );
+      });
+      return;
+    }
+
+    await stopHandle(handle);
   };
 
   const restoreOutstandingHandle = async (
@@ -814,6 +863,7 @@ export function createDeferredSubagentManager(params: {
       evtSub: null,
       timeout: null,
       settled: false,
+      handlingEvtSubscriptionMessage: false,
     };
 
     handles.set(handle.childRequestId, handle);
@@ -906,27 +956,33 @@ export function createDeferredSubagentManager(params: {
             batch: { maxWaitMs: 250 },
           },
       async (msg, subCtx) => {
-        if (msg.headers?.request_id !== handle.childRequestId) {
+        handle.handlingEvtSubscriptionMessage = true;
+
+        try {
+          if (msg.headers?.request_id !== handle.childRequestId) {
+            await subCtx.commit();
+            return;
+          }
+
+          if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
+            handle.detail = msg.data.detail ?? handle.detail;
+            if (msg.data.state === "failed") {
+              await settleHandle(handle, "failed", msg.data.detail);
+            }
+            if (msg.data.state === "cancelled") {
+              await settleHandle(handle, "cancelled", msg.data.detail);
+            }
+            if (msg.data.state === "resolved") {
+              await settleHandle(handle, "resolved", msg.data.detail);
+            }
+          }
+
+          handle.evtCursor = subCtx.cursor;
+
           await subCtx.commit();
-          return;
+        } finally {
+          handle.handlingEvtSubscriptionMessage = false;
         }
-
-        if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
-          handle.detail = msg.data.detail ?? handle.detail;
-          if (msg.data.state === "failed") {
-            await settleHandle(handle, "failed", msg.data.detail);
-          }
-          if (msg.data.state === "cancelled") {
-            await settleHandle(handle, "cancelled", msg.data.detail);
-          }
-          if (msg.data.state === "resolved") {
-            await settleHandle(handle, "resolved", msg.data.detail);
-          }
-        }
-
-        handle.evtCursor = subCtx.cursor;
-
-        await subCtx.commit();
       },
     );
 
