@@ -433,7 +433,13 @@ type GrepOutput =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
-      results: { file: string; resolvedPath: string; fileHash: string; line: number; text: string }[];
+      results: {
+        file: string;
+        resolvedPath: string;
+        fileHash: string;
+        line: number;
+        text: string;
+      }[];
       error?: string;
     };
 

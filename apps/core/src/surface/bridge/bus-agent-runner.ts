@@ -41,6 +41,7 @@ import {
 import {
   AiSdkPiAgent,
   attachAutoCompaction,
+  buildSyntheticToolCallId,
   type AiSdkPiAgentEvent,
   type TransformMessagesFn,
 } from "@stanley2058/lilac-agent";
@@ -577,7 +578,10 @@ function isDeferredSubagentAcceptedResult(result: unknown): result is {
 }
 
 function buildSubagentResultToolCallId(childRequestId: string): string {
-  return `subagent_result:${childRequestId}`;
+  return buildSyntheticToolCallId({
+    prefix: "subagent_result",
+    seed: childRequestId,
+  });
 }
 
 function buildDeferredSubagentResultMessages(

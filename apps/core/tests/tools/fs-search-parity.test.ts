@@ -552,7 +552,9 @@ describe("fs search parity (local vs remote runner)", () => {
       throw new Error("expected remote hashline grep");
     }
 
-    const localMatch = localGrep.results.find((result) => normalizePathPrefix(result.file) === "grep-edit-local.ts");
+    const localMatch = localGrep.results.find(
+      (result) => normalizePathPrefix(result.file) === "grep-edit-local.ts",
+    );
     const remoteMatch = remoteGrep.results.find(
       (result) => normalizePathPrefix(result.file) === "grep-edit-remote.ts",
     );

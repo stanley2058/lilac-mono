@@ -23,6 +23,8 @@ import {
   type ToolSet,
 } from "ai";
 
+import { normalizeModelMessagesToolCallIds } from "./tool-call-id-normalization";
+
 export type SystemPrompt = string | SystemModelMessage | SystemModelMessage[];
 
 /**
@@ -1032,6 +1034,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         });
       }
     }
+
+    messagesForModel = normalizeModelMessagesToolCallIds({
+      messages: messagesForModel,
+      modelSpecifier: this.state.modelSpecifier,
+    });
 
     if (this.captureModelViewMessages) {
       const cloned = messagesForModel.map(cloneMessage);
