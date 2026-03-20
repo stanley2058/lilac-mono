@@ -8,7 +8,7 @@ import {
 } from "../src/surface/store/discord-search-store";
 import type { RequestContext } from "../src/tool-server/types";
 import type { SurfaceAdapter } from "../src/surface/adapter";
-import type { TranscriptStore } from "../src/transcript/transcript-store";
+import { SqliteTranscriptStore, type TranscriptStore } from "../src/transcript/transcript-store";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1476,6 +1476,218 @@ describe("tool-server surface", () => {
     );
 
     expect(linked).toEqual([]);
+  });
+
+  it("lists recent visible agent writes with thin previews", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: {
+        sessions: {
+          discord: {
+            ops: "c1",
+          },
+        },
+      },
+    });
+
+    const longText = `Agent update\n\n${"x".repeat(140)}`;
+    const adapter = new FakeAdapter([], {
+      c1: [
+        {
+          ref: { platform: "discord", channelId: "c1", messageId: "m1" },
+          session: { platform: "discord", channelId: "c1" },
+          userId: "bot",
+          userName: "lilac",
+          text: longText,
+          ts: 1,
+        },
+      ],
+      c2: [
+        {
+          ref: { platform: "discord", channelId: "c2", messageId: "m2" },
+          session: { platform: "discord", channelId: "c2" },
+          userId: "bot",
+          userName: "lilac",
+          text: "hidden write",
+          ts: 2,
+        },
+      ],
+    });
+
+    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-surface-transcript-"));
+    const transcriptStore = new SqliteTranscriptStore(join(tmp, "transcripts.sqlite"));
+
+    try {
+      transcriptStore.saveRequestTranscript({
+        requestId: "heartbeat:allowed",
+        sessionId: "__heartbeat__",
+        requestClient: "unknown",
+        messages: [],
+        finalText: "fallback preview should not win",
+      });
+      transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "heartbeat:allowed",
+        created: [{ platform: "discord", channelId: "c1", messageId: "m1" }],
+        last: { platform: "discord", channelId: "c1", messageId: "m1" },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      transcriptStore.saveRequestTranscript({
+        requestId: "heartbeat:hidden",
+        sessionId: "__heartbeat__",
+        requestClient: "unknown",
+        messages: [],
+        finalText: "hidden write",
+      });
+      transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "heartbeat:hidden",
+        created: [{ platform: "discord", channelId: "c2", messageId: "m2" }],
+        last: { platform: "discord", channelId: "c2", messageId: "m2" },
+      });
+
+      const tool = new Surface({ adapter, config: cfg, transcriptStore });
+      const out = (await tool.call("surface.activities.recentAgentWrites", {
+        limit: 5,
+      })) as Array<{
+        sessionId: string;
+        messageId: string;
+        alias?: string;
+        client: string;
+        requestId: string;
+        preview: string;
+        updatedTs: number;
+        truncated: boolean;
+      }>;
+
+      expect(out).toHaveLength(1);
+      expect(out[0]?.sessionId).toBe("c1");
+      expect(out[0]?.messageId).toBe("m1");
+      expect(out[0]?.alias).toBe("ops");
+      expect(out[0]?.client).toBe("discord");
+      expect(out[0]?.requestId).toBe("heartbeat:allowed");
+      expect(out[0]?.updatedTs).toBeTypeOf("number");
+      expect(out[0]?.preview).toBe(longText.replace(/\s+/g, " ").trim().slice(0, 128));
+      expect(out[0]?.truncated).toBe(true);
+    } finally {
+      transcriptStore.close();
+    }
+  });
+
+  it("skips hidden recent writes before applying the final limit", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const adapter = new FakeAdapter([], {
+      c1: [
+        {
+          ref: { platform: "discord", channelId: "c1", messageId: "m-visible" },
+          session: { platform: "discord", channelId: "c1" },
+          userId: "bot",
+          userName: "lilac",
+          text: "visible write",
+          ts: 1,
+        },
+      ],
+      c2: [
+        {
+          ref: { platform: "discord", channelId: "c2", messageId: "m-hidden" },
+          session: { platform: "discord", channelId: "c2" },
+          userId: "bot",
+          userName: "lilac",
+          text: "hidden write",
+          ts: 2,
+        },
+      ],
+    });
+
+    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-surface-transcript-"));
+    const transcriptStore = new SqliteTranscriptStore(join(tmp, "transcripts.sqlite"));
+
+    try {
+      transcriptStore.saveRequestTranscript({
+        requestId: "heartbeat:visible",
+        sessionId: "__heartbeat__",
+        requestClient: "unknown",
+        messages: [],
+        finalText: "visible write",
+      });
+      transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "heartbeat:visible",
+        created: [{ platform: "discord", channelId: "c1", messageId: "m-visible" }],
+        last: { platform: "discord", channelId: "c1", messageId: "m-visible" },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      transcriptStore.saveRequestTranscript({
+        requestId: "heartbeat:hidden",
+        sessionId: "__heartbeat__",
+        requestClient: "unknown",
+        messages: [],
+        finalText: "hidden write",
+      });
+      transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "heartbeat:hidden",
+        created: [{ platform: "discord", channelId: "c2", messageId: "m-hidden" }],
+        last: { platform: "discord", channelId: "c2", messageId: "m-hidden" },
+      });
+
+      const tool = new Surface({ adapter, config: cfg, transcriptStore });
+      const out = (await tool.call("surface.activities.recentAgentWrites", {
+        limit: 1,
+      })) as Array<{ requestId: string; sessionId: string; messageId: string }>;
+
+      expect(out).toHaveLength(1);
+      expect(out[0]).toEqual(
+        expect.objectContaining({
+          requestId: "heartbeat:visible",
+          sessionId: "c1",
+          messageId: "m-visible",
+        }),
+      );
+    } finally {
+      transcriptStore.close();
+    }
+  });
+
+  it("errors clearly when recent agent writes are unavailable", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+      entity: { sessions: { discord: { ops: "c1" } } },
+    });
+
+    const tool = new Surface({
+      adapter: new FakeAdapter([], {}),
+      config: cfg,
+    });
+
+    await expect(tool.call("surface.activities.recentAgentWrites", {})).rejects.toThrow(
+      "transcript store is not initialized",
+    );
   });
 
   it("allows guild allowlist when channel is not cached", async () => {

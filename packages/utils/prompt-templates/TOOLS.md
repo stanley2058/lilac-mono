@@ -63,6 +63,7 @@ cat payload.json | tools <tool> --stdin
 - `attachment.add_files` — Reads local files and attaches them to the current reply.
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
+- `surface.activities.recentAgentWrites` — List recent visible writes produced by the agent, with message ids and thin previews.
 - `surface.sessions.list` — List cached sessions.
 - `surface.sessions.listParticipants` — List participants in a session (Discord only).
 - `surface.messages.list` — List messages for a session (defaults: limit=50,order=ts_desc; use  --help  to see all options).

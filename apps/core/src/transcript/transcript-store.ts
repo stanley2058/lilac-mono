@@ -15,6 +15,15 @@ export type TranscriptSnapshot = {
   modelLabel?: string;
 };
 
+export type RecentAgentWriteSnapshot = {
+  requestId: string;
+  sessionId: string;
+  client: AdapterPlatform;
+  messageId: string;
+  updatedTs: number;
+  finalText?: string;
+};
+
 export type TranscriptStore = {
   saveRequestTranscript(input: {
     requestId: string;
@@ -40,6 +49,12 @@ export type TranscriptStore = {
   getLatestTranscriptBySession?(input: { sessionId: string }): TranscriptSnapshot | null;
 
   listSurfaceMessagesForRequest?(input: { requestId: string }): MsgRef[];
+
+  listRecentAgentWrites?(input?: {
+    limit?: number;
+    offset?: number;
+    client?: AdapterPlatform;
+  }): RecentAgentWriteSnapshot[];
 
   close(): void;
 };
@@ -258,6 +273,67 @@ export class SqliteTranscriptStore implements TranscriptStore {
     }
 
     return refs;
+  }
+
+  listRecentAgentWrites(input?: {
+    limit?: number;
+    offset?: number;
+    client?: AdapterPlatform;
+  }): RecentAgentWriteSnapshot[] {
+    const limit = Math.min(200, Math.max(1, Math.floor(input?.limit ?? 20)));
+    const offset = Math.max(0, Math.floor(input?.offset ?? 0));
+    const client = input?.client ?? null;
+
+    const rows = this.db
+      .query(
+        `
+        SELECT
+          rt.request_id,
+          sm.platform,
+          sm.channel_id,
+          sm.message_id,
+          rt.updated_ts,
+          rt.final_text
+        FROM request_transcripts rt
+        JOIN surface_message_to_request sm
+          ON sm.request_id = rt.request_id
+        WHERE sm.rowid = (
+          SELECT sm2.rowid
+          FROM surface_message_to_request sm2
+          WHERE sm2.request_id = sm.request_id
+            AND sm2.platform = sm.platform
+            AND sm2.channel_id = sm.channel_id
+          ORDER BY sm2.created_ts DESC, sm2.rowid DESC
+          LIMIT 1
+        )
+          AND (?1 IS NULL OR sm.platform = ?1)
+        ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts DESC, sm.rowid DESC
+        LIMIT ?2 OFFSET ?3
+        `,
+      )
+      .all(client, limit, offset) as Array<{
+      request_id: string;
+      platform: string;
+      channel_id: string;
+      message_id: string;
+      updated_ts: number;
+      final_text: string | null;
+    }>;
+
+    const out: RecentAgentWriteSnapshot[] = [];
+    for (const row of rows) {
+      if (row.platform !== "discord" && row.platform !== "github") continue;
+      out.push({
+        requestId: row.request_id,
+        sessionId: row.channel_id,
+        client: row.platform,
+        messageId: row.message_id,
+        updatedTs: row.updated_ts,
+        finalText: row.final_text ?? undefined,
+      });
+    }
+
+    return out;
   }
 
   private rowToSnapshot(
