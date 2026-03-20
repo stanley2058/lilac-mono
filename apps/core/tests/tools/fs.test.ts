@@ -93,9 +93,9 @@ describe("fs tool", () => {
 
     const lines = res.hashlineContent.split("\n");
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toMatch(/^1#[0-9a-f]{8}:alpha$/);
-    expect(lines[1]).toMatch(/^2#[0-9a-f]{8}:beta$/);
-    expect(lines[2]).toMatch(/^3#[0-9a-f]{8}:$/);
+    expect(lines[0]).toMatch(/^1#[0-9a-f]{4}:alpha$/);
+    expect(lines[1]).toMatch(/^2#[0-9a-f]{4}:beta$/);
+    expect(lines[2]).toMatch(/^3#[0-9a-f]{4}:$/);
   });
 
   it("readFile downgrades oversized hashline reads back to raw with a warning", async () => {

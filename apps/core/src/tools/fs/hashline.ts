@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const HASHLINE_MAX_LINE_CHARS = 8_192;
+export const HASHLINE_ID_LENGTH = 4;
 
 export type HashlineWarning = {
   code: "LINE_TOO_LONG_FOR_HASHLINE";
@@ -45,11 +46,14 @@ type NormalizedHashlineEdit =
     };
 
 function hashlinePrefixPattern() {
-  return /^(\d+)#([0-9a-f]{8}):(.*)$/i;
+  return new RegExp(`^(\\d+)#([0-9a-f]{${HASHLINE_ID_LENGTH}}):(.*)$`, "i");
 }
 
 export function computeHashlineId(lineNumber: number, line: string): string {
-  return createHash("sha1").update(`${lineNumber}:${line}`).digest("hex").slice(0, 8);
+  return createHash("sha1")
+    .update(`${lineNumber}:${line}`)
+    .digest("hex")
+    .slice(0, HASHLINE_ID_LENGTH);
 }
 
 export function formatHashlineLine(lineNumber: number, line: string): string {
@@ -89,12 +93,12 @@ function parseHashlineRef(input: string): HashlineRef | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  const match = /^(\d+)#([0-9a-f]{8})\b/i.exec(trimmed);
+  const match = new RegExp(`^(\\d+)#([0-9a-f]{${HASHLINE_ID_LENGTH}})\\b`, "i").exec(trimmed);
   if (!match) return null;
 
   const line = Number(match[1]);
   const hash = (match[2] ?? "").toLowerCase();
-  if (!Number.isInteger(line) || line < 1 || hash.length !== 8) return null;
+  if (!Number.isInteger(line) || line < 1 || hash.length !== HASHLINE_ID_LENGTH) return null;
   return { line, hash, raw: trimmed };
 }
 
