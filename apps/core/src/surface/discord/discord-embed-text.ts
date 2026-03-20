@@ -134,3 +134,35 @@ export function buildDiscordRichTextFromContentAndEmbeds(params: {
 
   return blocks.join("\n\n");
 }
+
+export function buildDiscordTaggedTextFromContentAndEmbeds(params: {
+  content?: string;
+  embeds?: readonly DiscordEmbedTextMeta[];
+  labelEmbeds?: boolean;
+}): string {
+  const blocks: string[] = [];
+  const labelEmbeds = params.labelEmbeds ?? true;
+
+  const content = asNonEmptyString(params.content);
+  if (content) blocks.push(content);
+
+  for (const embed of params.embeds ?? []) {
+    const embedBlocks: string[] = [];
+
+    if (labelEmbeds) {
+      embedBlocks.push("[discord_embed]");
+    }
+
+    const title = asNonEmptyString(embed.title);
+    const description = asNonEmptyString(embed.description);
+    const imageUrl = asNonEmptyString(embed.imageUrl);
+
+    if (title) embedBlocks.push(title);
+    if (description) embedBlocks.push(description);
+    if (imageUrl) embedBlocks.push(imageUrl);
+
+    blocks.push(embedBlocks.join("\n\n"));
+  }
+
+  return blocks.join("\n\n");
+}

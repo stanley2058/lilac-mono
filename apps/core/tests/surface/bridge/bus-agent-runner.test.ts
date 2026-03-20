@@ -24,7 +24,6 @@ import type { LanguageModel } from "ai";
 import {
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
-  buildExperimentalDownloadForAnthropicFallback,
   createDeferredSubagentManager,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
@@ -33,12 +32,15 @@ import {
   resolveSessionAdditionalPrompts,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
-  shouldForceUrlDownloadForAnthropicFallback,
   toOpenAIPromptCacheKey,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
-  withStableAnthropicUpstreamOrder,
 } from "../../../src/surface/bridge/bus-agent-runner";
+import {
+  buildExperimentalDownloadForAnthropicFallback,
+  shouldForceUrlDownloadForAnthropicFallback,
+  withStableAnthropicUpstreamOrder,
+} from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
 
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;

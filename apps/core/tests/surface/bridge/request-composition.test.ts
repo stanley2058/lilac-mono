@@ -184,6 +184,104 @@ describe("request-composition attachments", () => {
     expect(out!.content as string).not.toContain("[discord user_id=");
   });
 
+  it("keeps bot embed-only messages untagged", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "other-bot",
+      userName: "github-bot",
+      text: ["assistant embed title", "assistant embed body"].join("\n\n"),
+      ts: 0,
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("assistant embed title\n\nassistant embed body");
+    expect(out!.content as string).toContain(
+      "[discord user_id=other-bot user_name=github-bot message_id=m]",
+    );
+    expect(out!.content as string).not.toContain("[discord_embed]");
+  });
+
+  it("labels embed text separately from user-authored text", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: ["check this out", "[discord_embed]", "preview title", "preview description"].join(
+        "\n\n",
+      ),
+      ts: 0,
+      raw: {
+        content: "check this out",
+        embeds: [
+          {
+            title: "preview title",
+            description: "preview description",
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+
+    const content = out!.content as string;
+    expect(content).toContain("check this out");
+    expect(content).toContain("[discord_embed]");
+    expect(content).toContain("preview title");
+    expect(content).toContain("preview description");
+    expect(content.indexOf("check this out")).toBeLessThan(content.indexOf("[discord_embed]"));
+  });
+
+  it("uses stored tagged text directly", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "@alice shared this\n\n[discord_embed]\n\npreview title",
+      ts: 0,
+      raw: {
+        content: "<@123> shared this",
+        embeds: [{ title: "preview title" }],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+
+    const content = out!.content as string;
+    expect(content).toContain("@alice shared this");
+    expect(content).not.toContain("<@123>");
+    expect(content).toContain("[discord_embed]");
+  });
+
   it("downloads discord attachment when mimeType is missing", async () => {
     let calls = 0;
     // @ts-expect-error stub fetch
@@ -231,6 +329,57 @@ describe("request-composition attachments", () => {
     expect(content[1].text).toContain("[discord_attachment");
     expect(content[1].text).toContain("file.txt");
     expect(content[1].text).toContain("hello");
+    expect(calls).toBe(1);
+  });
+
+  it("keeps labeled embed text before attachment-derived parts", async () => {
+    let calls = 0;
+    // @ts-expect-error stub fetch
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response("hello", {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    };
+
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: ["look", "[discord_embed]", "preview title"].join("\n\n"),
+      ts: 0,
+      raw: {
+        content: "look",
+        embeds: [{ title: "preview title" }],
+        discord: {
+          attachments: [
+            {
+              url: "https://cdn.discordapp.com/attachments/1/2/file.txt",
+              filename: "file.txt",
+            },
+          ],
+        },
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(Array.isArray(out?.content)).toBe(true);
+
+    const content = out!.content as Array<{ type: string; text?: string }>;
+    expect(content[0]?.type).toBe("text");
+    expect(content[0]?.text).toContain("look");
+    expect(content[0]?.text).toContain("[discord_embed]");
+    expect(content[1]?.type).toBe("text");
+    expect(content[1]?.text).toContain("[discord_attachment");
     expect(calls).toBe(1);
   });
 
@@ -498,7 +647,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: "Forwarded snapshot text",
       ts: 0,
       raw: {
         reference: {
@@ -570,7 +719,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: ["[discord_embed]", "forwarded embed text"].join("\n\n"),
       ts: 0,
       raw: {
         reference: {
@@ -600,6 +749,7 @@ describe("request-composition attachments", () => {
 
     expect(out?.role).toBe("user");
     expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain("[discord_embed]");
     expect(out!.content as string).toContain("forwarded embed text");
   });
 
@@ -609,7 +759,12 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "u",
       userName: "user",
-      text: "",
+      text: [
+        "[discord_embed]",
+        "forwarded title",
+        "forwarded description",
+        "https://example.com/snapshot-image.png",
+      ].join("\n\n"),
       ts: 0,
       raw: {
         reference: {
@@ -649,11 +804,55 @@ describe("request-composition attachments", () => {
     expect(typeof out?.content).toBe("string");
 
     const content = out!.content as string;
+    expect(content).toContain("[discord_embed]");
     expect(content).toContain("forwarded title");
     expect(content).toContain("forwarded description");
     expect(content).toContain("https://example.com/snapshot-image.png");
     expect(content).not.toContain("skip-for-inbound");
     expect(content).not.toContain("skip-footer-for-inbound");
+  });
+
+  it("uses stored tagged forwarded snapshot text directly", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "@alice forwarded this\n\n[discord_embed]\n\nforwarded title",
+      ts: 0,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "orig",
+          channelId: "other",
+        },
+        messageSnapshots: [
+          {
+            message: {
+              content: "<@123> forwarded this",
+              embeds: [{ title: "forwarded title" }],
+              attachments: [],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+
+    const content = out!.content as string;
+    expect(content).toContain("@alice forwarded this");
+    expect(content).not.toContain("<@123>");
+    expect(content).toContain("[discord_embed]");
   });
 });
 
@@ -1037,6 +1236,51 @@ describe("request-composition mention thread context", () => {
     expect(out.messages[0]!.content as string).toContain("C");
     expect(out.messages[0]!.content as string).not.toContain("A");
     expect(out.messages[0]!.content as string).not.toContain("B");
+  });
+
+  it("keeps embed previews labeled in composed request messages", async () => {
+    const sessionId = "c";
+
+    const m1: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u1",
+      userName: "user1",
+      text: ["<@bot> check this", "[discord_embed]", "preview title", "preview description"].join(
+        "\n\n",
+      ),
+      ts: 0,
+      raw: {
+        content: "<@bot> check this",
+        embeds: [
+          {
+            title: "preview title",
+            description: "preview description",
+          },
+        ],
+        reference: {},
+      },
+    };
+
+    const adapter = new MultiFakeAdapter({
+      [`${sessionId}:m1`]: m1,
+    });
+
+    const out = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      trigger: { type: "mention", msgRef: m1.ref },
+    });
+
+    expect(out.messages).toHaveLength(1);
+    expect(typeof out.messages[0]?.content).toBe("string");
+
+    const content = out.messages[0]!.content as string;
+    expect(content).toContain("check this");
+    expect(content).toContain("[discord_embed]");
+    expect(content).toContain("preview title");
+    expect(content).toContain("preview description");
   });
 
   it("does not anchor mention context to an older reply outside trigger group", async () => {

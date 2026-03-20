@@ -105,5 +105,9 @@ export function getDiscordSurfaceDisplayText(input: {
   raw?: unknown;
   fallbackText?: string;
 }): string {
+  if (typeof input.fallbackText === "string" && input.fallbackText.length > 0) {
+    return input.fallbackText;
+  }
+
   return getDiscordSurfaceTextFromRaw(input.raw) ?? input.fallbackText ?? "";
 }
