@@ -8,6 +8,38 @@ import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 import { createCoreToolPluginManager } from "../../src/plugins";
 import type { SurfaceAdapter } from "../../src/surface/adapter";
 
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Symbol.asyncIterator in value &&
+    typeof (value as Record<PropertyKey, unknown>)[Symbol.asyncIterator] === "function"
+  );
+}
+
+async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable<T>): Promise<T> {
+  if (isAsyncIterable(value)) {
+    let last: T | undefined;
+    for await (const chunk of value) last = chunk;
+    if (last === undefined) {
+      throw new Error("AsyncIterable tool execute produced no values");
+    }
+    return last;
+  }
+  return await value;
+}
+
+function getExecutableTool(
+  tools: Record<string, { execute?: (...args: readonly unknown[]) => unknown }>,
+  name: string,
+): { execute: (...args: readonly unknown[]) => unknown } {
+  const tool = tools[name];
+  if (!tool || typeof tool.execute !== "function") {
+    throw new Error(`missing executable tool: ${name}`);
+  }
+  return { execute: tool.execute };
+}
+
 const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "attachment.add_files",
   "attachment.download",
@@ -36,6 +68,7 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "ssh.run",
   "summarize",
   "surface.help",
+  "surface.activities.recentAgentWrites",
   "surface.messages.delete",
   "surface.messages.edit",
   "surface.messages.list",
@@ -154,6 +187,123 @@ describe("core tool plugin manager", () => {
       subagentConfig: cfg.agent.subagents!,
     });
     expect([...exploreTools.specs.keys()].sort()).toEqual(["batch", "glob", "grep", "read_file"]);
+  });
+
+  it("shares local read state between read_file and edit_file within one toolset", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({});
+
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        adapter: {} as SurfaceAdapter,
+        config: cfg,
+      },
+      dataDir,
+    });
+
+    await manager.init();
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, "note.txt"), "before\n", "utf8");
+
+    const toolset = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "edit_file",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents!,
+    });
+
+    const tools = toolset.tools as Record<
+      string,
+      { execute?: (...args: readonly unknown[]) => unknown }
+    >;
+    const readFile = getExecutableTool(tools, "read_file");
+    const editFile = getExecutableTool(tools, "edit_file");
+
+    const readRes = await resolveExecuteResult(
+      readFile.execute!({ path: "note.txt" }, { toolCallId: "read-1", messages: [] }),
+    );
+    expect((readRes as { success: boolean }).success).toBe(true);
+
+    const editRes = await resolveExecuteResult(
+      editFile.execute!(
+        {
+          path: "note.txt",
+          oldText: "before",
+          newText: "after",
+        },
+        { toolCallId: "edit-1", messages: [] },
+      ),
+    );
+
+    expect((editRes as { success: boolean }).success).toBe(true);
+    await expect(fs.readFile(path.join(dataDir, "note.txt"), "utf8")).resolves.toBe("after\n");
+  });
+
+  it("switches non-openai edit toolsets to hashline mode when enabled in config", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({
+      tools: {
+        experimental_hashline_edit: true,
+      },
+    });
+
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        adapter: {} as SurfaceAdapter,
+        config: cfg,
+      },
+      dataDir,
+    });
+
+    await manager.init();
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, "note.txt"), "before\n", "utf8");
+
+    const toolset = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "edit_file",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents!,
+    });
+
+    const tools = toolset.tools as Record<
+      string,
+      { execute?: (...args: readonly unknown[]) => unknown }
+    >;
+    const readFile = getExecutableTool(tools, "read_file");
+    const editFile = getExecutableTool(tools, "edit_file");
+
+    const readRes = await resolveExecuteResult(
+      readFile.execute!(
+        { path: "note.txt", format: "hashline" },
+        { toolCallId: "read-hashline", messages: [] },
+      ),
+    );
+    expect((readRes as { success: boolean }).success).toBe(true);
+    const hashlineContent = (readRes as { format: string; hashlineContent?: string })
+      .hashlineContent;
+    expect((readRes as { format: string }).format).toBe("hashline");
+    expect(typeof hashlineContent).toBe("string");
+
+    const anchor = hashlineContent!.split("\n")[0]!;
+    const editRes = await resolveExecuteResult(
+      editFile.execute!(
+        {
+          path: "note.txt",
+          edits: [{ op: "replace", pos: anchor, lines: ["after"] }],
+        },
+        { toolCallId: "edit-hashline", messages: [] },
+      ),
+    );
+
+    expect((editRes as { success: boolean }).success).toBe(true);
+    await expect(fs.readFile(path.join(dataDir, "note.txt"), "utf8")).resolves.toBe("after\n");
   });
 
   it("preserves built-in Level 2 callable ids", async () => {

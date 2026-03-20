@@ -1,13 +1,14 @@
 import { sshExecScriptJson } from "../../ssh/ssh-exec";
 import { getRemoteRunnerJsText } from "../../ssh/remote-js";
 import type { FileEdit } from "./fs-impl";
+import type { HashlineEdit, HashlineWarning } from "./hashline";
 
 export type RemoteReadTextInput = {
   path: string;
   startLine?: number;
   maxLines?: number;
   maxCharacters?: number;
-  format?: "raw" | "numbered";
+  format?: "raw" | "numbered" | "hashline";
 };
 
 export type RemoteReadTextOutput =
@@ -20,6 +21,8 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       format: "raw";
       content: string;
     }
@@ -32,8 +35,24 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       format: "numbered";
       numberedContent: string;
+    }
+  | {
+      success: true;
+      resolvedPath: string;
+      fileHash: string;
+      startLine: number;
+      endLine: number;
+      totalLines: number;
+      hasMoreLines: boolean;
+      truncatedByChars: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      format: "hashline";
+      hashlineContent: string;
     }
   | {
       success: false;
@@ -98,6 +117,8 @@ export type RemoteGrepOutput =
   | {
       mode: "default";
       truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       results: {
         file: string;
         line: number;
@@ -108,15 +129,36 @@ export type RemoteGrepOutput =
   | {
       mode: "detailed";
       truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       results: RemoteGrepMatch[];
+      error?: string;
+    }
+  | {
+      mode: "hashline";
+      truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      results: {
+        file: string;
+        line: number;
+        text: string;
+      }[];
       error?: string;
     };
 
-export type RemoteEditInput = {
-  path: string;
-  edits: FileEdit[];
-  expectedHash?: string;
-};
+export type RemoteEditInput =
+  | {
+      path: string;
+      edits: FileEdit[];
+      expectedHash?: string;
+      mode?: "legacy";
+    }
+  | {
+      path: string;
+      edits: readonly HashlineEdit[];
+      mode: "hashline";
+    };
 
 export type RemoteEditOutput =
   | {
@@ -144,7 +186,8 @@ export type RemoteEditOutput =
           | "TOO_MANY_MATCHES"
           | "NOT_ENOUGH_MATCHES"
           | "INVALID_REGEX"
-          | "INVALID_EDIT";
+          | "INVALID_EDIT"
+          | "STALE_ANCHOR";
         message: string;
       };
     };
@@ -263,7 +306,7 @@ export async function remoteGrep(params: {
     maxResults?: number;
     fileExtensions?: readonly string[];
     includeContextLines?: number;
-    mode?: "default" | "detailed";
+    mode?: "default" | "detailed" | "hashline";
   };
   denyPaths: readonly string[];
   timeoutMs?: number;
@@ -292,6 +335,9 @@ export async function remoteGrep(params: {
 
   if (!res.ok) {
     if (mode === "default") {
+      return { mode, truncated: false, results: [], error: res.error };
+    }
+    if (mode === "hashline") {
       return { mode, truncated: false, results: [], error: res.error };
     }
     return { mode, truncated: false, results: [], error: res.error };

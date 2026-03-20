@@ -18,7 +18,7 @@ import type {
 } from "../../surface/types";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import type { RequestContext, ServerTool } from "../types";
-import type { TranscriptStore } from "../../transcript/transcript-store";
+import type { RecentAgentWriteSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import { isHeartbeatSessionId } from "../../transcript/heartbeat-handoff";
 
 import {
@@ -825,6 +825,21 @@ function toSessionMeta(session: SessionRef, cfg?: CoreConfig): SessionMeta {
   };
 }
 
+function toPreviewText(text: string, maxChars = 128): { preview: string; truncated: boolean } {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) {
+    return {
+      preview: compact,
+      truncated: false,
+    };
+  }
+
+  return {
+    preview: compact.slice(0, maxChars),
+    truncated: true,
+  };
+}
+
 function toCompactMessage(
   msg: SurfaceMessage,
   opts: { includeRaw: boolean; includeAttachments: boolean },
@@ -932,6 +947,16 @@ function buildMessagesReadOutput(params: {
 }
 
 const sessionsListInputSchema = baseInputSchema;
+
+const activitiesRecentAgentWritesInputSchema = baseInputSchema.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(200)
+    .optional()
+    .describe("Max recent writes to return (default: 20)."),
+});
 
 const sessionsListParticipantsInputSchema = baseInputSchema.extend({
   sessionId: z
@@ -1197,6 +1222,16 @@ export class Surface implements ServerTool {
         input: zodObjectToCliLines(helpInputSchema),
       },
       {
+        callableId: "surface.activities.recentAgentWrites",
+        name: "Surface Activities Recent Agent Writes",
+        description:
+          "List recent visible writes produced by the agent, with session ids, message ids, and thin previews.",
+        shortInput: zodObjectToCliLines(activitiesRecentAgentWritesInputSchema, {
+          mode: "required",
+        }),
+        input: zodObjectToCliLines(activitiesRecentAgentWritesInputSchema),
+      },
+      {
         callableId: "surface.sessions.list",
         name: "Surface Sessions List",
         description: "List cached sessions. Provide --client if request client is unknown.",
@@ -1319,6 +1354,9 @@ export class Surface implements ServerTool {
   ): Promise<unknown> {
     if (callableId === "surface.help") {
       return await this.callHelp(input, opts?.context);
+    }
+    if (callableId === "surface.activities.recentAgentWrites") {
+      return await this.callActivitiesRecentAgentWrites(input);
     }
     if (callableId === "surface.sessions.list") {
       return await this.callSessionsList(input, opts?.context);
@@ -1466,6 +1504,47 @@ export class Surface implements ServerTool {
     return this.params.githubApi ?? defaultGithubApi;
   }
 
+  private async readRecentAgentWriteText(row: RecentAgentWriteSnapshot): Promise<string> {
+    if (row.client === "discord") {
+      const msg = await this.params.adapter.readMsg(asDiscordMsgRef(row.sessionId, row.messageId));
+      return msg?.text ?? row.finalText ?? "";
+    }
+
+    if (row.client === "github") {
+      const thread = parseGithubSessionId(row.sessionId);
+
+      if (
+        isGithubIssueTriggerId({
+          sessionId: row.sessionId,
+          triggerId: row.messageId,
+        })
+      ) {
+        const issue = await this.gh().getIssue({
+          owner: thread.owner,
+          repo: thread.repo,
+          number: thread.number,
+        });
+
+        return typeof issue.body === "string" ? issue.body : (row.finalText ?? "");
+      }
+
+      const commentId = Number(row.messageId);
+      if (!Number.isFinite(commentId) || commentId <= 0) {
+        return row.finalText ?? "";
+      }
+
+      const comment = await this.gh().getIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId,
+      });
+
+      return typeof comment.body === "string" ? comment.body : (row.finalText ?? "");
+    }
+
+    return row.finalText ?? "";
+  }
+
   private linkSentMessageToTranscript(ref: MsgRef, ctx: RequestContext | undefined): void {
     const requestId = ctx?.requestId;
     if (!requestId || !this.params.transcriptStore) return;
@@ -1480,6 +1559,96 @@ export class Surface implements ServerTool {
     } catch {
       // Best-effort only. Do not fail the send on transcript linkage issues.
     }
+  }
+
+  private async callActivitiesRecentAgentWrites(rawInput: Record<string, unknown>) {
+    const input = activitiesRecentAgentWritesInputSchema.parse(rawInput);
+    const transcriptStore = this.params.transcriptStore;
+
+    if (!transcriptStore?.listRecentAgentWrites) {
+      throw new Error(
+        "surface.activities.recentAgentWrites is unavailable: transcript store is not initialized.",
+      );
+    }
+
+    const cfg = await this.getCfg();
+    const targetLimit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 20)));
+
+    const out: Array<{
+      sessionId: string;
+      messageId: string;
+      alias?: string;
+      client: string;
+      requestId: string;
+      preview: string;
+      updatedTs: number;
+      truncated: boolean;
+    }> = [];
+
+    let offset = 0;
+    const pageSize = Math.min(200, Math.max(targetLimit, 20));
+
+    while (out.length < targetLimit) {
+      const rows = transcriptStore.listRecentAgentWrites({
+        limit: pageSize,
+        offset,
+        client: input.client,
+      });
+      if (rows.length === 0) break;
+
+      offset += rows.length;
+
+      for (const row of rows) {
+        if (row.client === "discord") {
+          const guildId = await resolveGuildIdForChannel({
+            adapter: this.params.adapter,
+            channelId: row.sessionId,
+          });
+
+          if (
+            !shouldAllowDiscordChannel({
+              cfg,
+              channelId: row.sessionId,
+              guildId,
+            })
+          ) {
+            continue;
+          }
+        }
+
+        let text = row.finalText ?? "";
+        try {
+          text = await this.readRecentAgentWriteText(row);
+        } catch {
+          // Fall back to persisted finalText when the backing message cannot be fetched.
+        }
+
+        const preview = toPreviewText(text);
+
+        out.push({
+          sessionId: row.sessionId,
+          messageId: row.messageId,
+          alias:
+            row.client === "discord"
+              ? bestEffortAliasForDiscordChannelId({
+                  channelId: row.sessionId,
+                  cfg,
+                })
+              : undefined,
+          client: row.client,
+          requestId: row.requestId,
+          preview: preview.preview,
+          updatedTs: row.updatedTs,
+          truncated: preview.truncated,
+        });
+
+        if (out.length >= targetLimit) break;
+      }
+
+      if (rows.length < pageSize) break;
+    }
+
+    return out;
   }
 
   private async listGithubReactions(params: {

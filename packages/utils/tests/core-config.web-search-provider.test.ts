@@ -71,3 +71,19 @@ describe("coreConfigSchema tools.web.fetch.mode", () => {
     expect(parsed.tools.web.fetch.mode).toBe("extract");
   });
 });
+
+describe("coreConfigSchema tools.experimental_hashline_edit", () => {
+  it("defaults to false", () => {
+    const parsed = coreConfigSchema.parse({});
+    expect(parsed.tools.experimental_hashline_edit).toBe(false);
+  });
+
+  it("accepts true", () => {
+    const parsed = coreConfigSchema.parse({
+      tools: {
+        experimental_hashline_edit: true,
+      },
+    });
+    expect(parsed.tools.experimental_hashline_edit).toBe(true);
+  });
+});

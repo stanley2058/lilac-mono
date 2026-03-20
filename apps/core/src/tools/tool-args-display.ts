@@ -4,7 +4,6 @@ import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import { formatRemoteDisplayPath, parseSshCwdTarget } from "../ssh/ssh-cwd";
 import { bashInputSchema } from "./bash";
-import { editFileInputZod, globInputZod, grepInputZod, readFileInputZod } from "./fs/fs";
 
 type ValidationResult<T> = { success: true; value: T } | { success: false; error: Error };
 
@@ -136,11 +135,43 @@ function normalizeRemoteCwdDisplay(input: string): string {
   return normalized;
 }
 
-const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
-  const parsed = safeValidateSync<{ path: string }>(readFileInputZod, args);
-  if (!parsed) return "";
+function getRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
 
-  const p = normalizeRemoteDisplay(parsed.path);
+function getPathArg(value: unknown): string | null {
+  const record = getRecord(value);
+  return record && typeof record["path"] === "string" ? record["path"] : null;
+}
+
+function getGlobArgs(value: unknown): { patterns: string[]; cwd?: string } | null {
+  const record = getRecord(value);
+  if (!record) return null;
+  const rawPatterns = record["patterns"];
+  if (!Array.isArray(rawPatterns)) return null;
+  const patterns = rawPatterns.filter((item): item is string => typeof item === "string");
+  if (patterns.length === 0) return null;
+  return {
+    patterns,
+    cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined,
+  };
+}
+
+function getGrepArgs(value: unknown): { pattern: string; cwd?: string } | null {
+  const record = getRecord(value);
+  if (!record || typeof record["pattern"] !== "string") return null;
+  return {
+    pattern: record["pattern"],
+    cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined,
+  };
+}
+
+const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
+  const parsedPath = getPathArg(args);
+  if (!parsedPath) return "";
+
+  const p = normalizeRemoteDisplay(parsedPath);
   if (!p) return "";
   return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
 };
@@ -169,7 +200,7 @@ export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatt
   readFile: readFileToolArgsFormatter,
 
   glob: (args) => {
-    const parsed = safeValidateSync<{ patterns: string[]; cwd?: string }>(globInputZod, args);
+    const parsed = getGlobArgs(args);
     if (!parsed) return "";
 
     const joinedPatterns = parsed.patterns
@@ -185,7 +216,7 @@ export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatt
   },
 
   grep: (args) => {
-    const parsed = safeValidateSync<{ pattern: string; cwd?: string }>(grepInputZod, args);
+    const parsed = getGrepArgs(args);
     if (!parsed) return "";
 
     const pattern = parsed.pattern.replace(/\s+/g, " ").trim();
@@ -220,10 +251,10 @@ export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatt
   },
 
   edit_file: (args) => {
-    const parsed = safeValidateSync<{ path: string }>(editFileInputZod, args);
-    if (!parsed) return "";
+    const parsedPath = getPathArg(args);
+    if (!parsedPath) return "";
 
-    const p = normalizeRemoteDisplay(parsed.path);
+    const p = normalizeRemoteDisplay(parsedPath);
     if (!p) return "";
     return " " + truncateMiddle(p, PATH_HEAD_LEN, PATH_TAIL_LEN, DISPLAY_MAX_LEN);
   },

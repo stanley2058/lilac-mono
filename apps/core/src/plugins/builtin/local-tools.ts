@@ -13,13 +13,34 @@ import { BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS } from "../../surface/bridge/bu
 import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-display";
 import type { CoreLevel1ToolSpec, CoreToolPlugin } from "../types";
 
-function getFsReadOnlyTool(name: "read_file" | "glob" | "grep", cwd: string): unknown {
-  const tools = fsTool(cwd);
+type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
+
+const localFsToolsByBuildContext = new WeakMap<CoreToolBuildContext, ReturnType<typeof fsTool>>();
+
+function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
+  const cached = localFsToolsByBuildContext.get(context);
+  if (cached) return cached;
+
+  const tools = fsTool(context.cwd, {
+    includeEditFile: true,
+    experimentalHashlineEdit:
+      context.editingToolMode === "edit_file" &&
+      context.runtime.config?.tools.experimental_hashline_edit === true,
+  });
+  localFsToolsByBuildContext.set(context, tools);
+  return tools;
+}
+
+function getFsReadOnlyTool(
+  name: "read_file" | "glob" | "grep",
+  context: CoreToolBuildContext,
+): unknown {
+  const tools = getFsTools(context);
   return tools[name];
 }
 
-function getEditFileTool(cwd: string): unknown {
-  return (fsTool(cwd, { includeEditFile: true }) as Record<string, unknown>)["edit_file"];
+function getEditFileTool(context: CoreToolBuildContext): unknown {
+  return (getFsTools(context) as Record<string, unknown>)["edit_file"];
 }
 
 function withBuiltinMetadata(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
@@ -55,26 +76,26 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       name: "read_file",
       supportsBatch: true,
       isEnabled: () => true,
-      createTool: ({ cwd }) => getFsReadOnlyTool("read_file", cwd),
+      createTool: (context) => getFsReadOnlyTool("read_file", context),
     }),
     withBuiltinMetadata({
       name: "glob",
       supportsBatch: true,
       isEnabled: () => true,
-      createTool: ({ cwd }) => getFsReadOnlyTool("glob", cwd),
+      createTool: (context) => getFsReadOnlyTool("glob", context),
     }),
     withBuiltinMetadata({
       name: "grep",
       supportsBatch: true,
       isEnabled: () => true,
-      createTool: ({ cwd }) => getFsReadOnlyTool("grep", cwd),
+      createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
     withBuiltinMetadata({
       name: "edit_file",
       supportsBatch: true,
       isEnabled: ({ runProfile, editingToolMode }) =>
         runProfile !== "explore" && editingToolMode === "edit_file",
-      createTool: ({ cwd }) => getEditFileTool(cwd),
+      createTool: (context) => getEditFileTool(context),
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;
         if (typeof record.path !== "string") {

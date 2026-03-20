@@ -355,6 +355,7 @@ export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig
           mode: "auto",
         },
       },
+      experimental_hashline_edit: false,
     },
   };
 }

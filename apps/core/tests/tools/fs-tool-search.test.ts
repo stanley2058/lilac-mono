@@ -185,6 +185,28 @@ describe("fs tool search wrappers", () => {
     expect(out.results.every((r: { column: number }) => typeof r.column === "number")).toBe(true);
   });
 
+  it("grep returns hashline output when enabled", async () => {
+    const tools = fsTool(baseDir, { experimentalHashlineEdit: true });
+
+    const out = await resolveExecuteResult(
+      tools.grep.execute!(
+        {
+          pattern: "alpha",
+          fileExtensions: ["ts"],
+          mode: "hashline",
+        },
+        { toolCallId: "g4b", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("hashline");
+    if (out.mode !== "hashline") {
+      throw new Error("expected hashline grep output");
+    }
+    expect(out.results.length).toBe(2);
+    expect(out.results[0]?.text).toMatch(/^1#[0-9a-f]{8}:/);
+  });
+
   it("grep enforces global maxResults", async () => {
     const tools = fsTool(baseDir);
     await writeFile(
