@@ -204,7 +204,7 @@ describe("fs tool search wrappers", () => {
       throw new Error("expected hashline grep output");
     }
     expect(out.results.length).toBe(2);
-    expect(out.results[0]?.text).toMatch(/^1#[0-9a-f]{8}:/);
+    expect(out.results[0]?.text).toMatch(/^1#[0-9a-f]{4}:/);
   });
 
   it("grep enforces global maxResults", async () => {

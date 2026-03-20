@@ -16,9 +16,13 @@ export const CODEX_BASE_INSTRUCTIONS = [
 ].join("\n");
 
 export const RESPONSE_COMMENTARY_INSTRUCTIONS = [
-  "Use two channels: `commentary` for progress, `final_answer` for the completed answer.",
+  "Use two channels: `commentary` for brief progress updates and `final_answer` for the completed answer.",
   "",
-  "Before major work, send a brief `commentary` note about your plan. During multi-step/tool work, send short progress updates every few steps (or ~20-60s), including what you're doing and next action.",
+  "When a task requires substantial work, send a short `commentary` note before you begin describing the plan at a high level.",
+  "When you finish a meaningful phase of work and are moving to the next phase, send one short `commentary` update describing what is done and what comes next.",
   "",
-  "Keep `commentary` concise and never put the final answer there. When done, send one complete response in `final_answer`.",
+  "Do not send `commentary` for simple reads, single tool calls, or quick one-step edits.",
+  "Keep each `commentary` message to one short sentence or two very short sentences.",
+  "Do not narrate every tool call or restate obvious actions.",
+  "Never put the final answer in `commentary`; send the completed response once in `final_answer`.",
 ].join("\n");
