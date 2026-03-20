@@ -99,7 +99,7 @@ describe("fs tool", () => {
   });
 
   it("readFile downgrades oversized hashline reads back to raw with a warning", async () => {
-    await writeFile(join(baseDir, "long.txt"), `${"x".repeat(8_193)}\nshort\n`);
+    await writeFile(join(baseDir, "long.txt"), `${"x".repeat(2_049)}\nshort\n`);
 
     const res = await fsTool.readFile({ path: "long.txt", format: "hashline" });
 
@@ -111,6 +111,7 @@ describe("fs tool", () => {
     }
     expect(res.degradedFromHashline).toBe(true);
     expect(res.warnings?.[0]?.code).toBe("LINE_TOO_LONG_FOR_HASHLINE");
+    expect(res.warnings?.[0]?.message).toContain("Use bash");
     expect(res.content.startsWith("x")).toBe(true);
   });
 
@@ -389,9 +390,15 @@ describe("fs tool", () => {
 
     const betaAnchor = readRes.hashlineContent.split("\n")[1]!;
     await writeFile(join(baseDir, "stale.txt"), "alpha\ngamma\n");
+    const currentReadRes = await fsTool.readFile({ path: "stale.txt", format: "hashline" });
+    expect(currentReadRes.success).toBe(true);
+    if (!currentReadRes.success) {
+      throw new Error("expected current read");
+    }
 
     const editRes = await fsTool.hashlineEditFile({
       path: "stale.txt",
+      expectedHash: currentReadRes.fileHash,
       edits: [{ op: "replace", pos: betaAnchor, lines: ["delta"] }],
     });
 
@@ -399,5 +406,28 @@ describe("fs tool", () => {
     if (editRes.success) return;
     expect(editRes.error.code).toBe("STALE_ANCHOR");
     expect(editRes.error.message).toContain("Re-read the file");
+  });
+
+  it("hashlineEditFile rejects files changed since the last read", async () => {
+    await writeFile(join(baseDir, "stale-file.txt"), "alpha\nbeta\n");
+
+    const readRes = await fsTool.readFile({ path: "stale-file.txt", format: "hashline" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success || readRes.format !== "hashline") {
+      throw new Error("expected hashline read");
+    }
+
+    const betaAnchor = readRes.hashlineContent.split("\n")[1]!;
+    await writeFile(join(baseDir, "stale-file.txt"), "alpha changed\nbeta\n");
+
+    const editRes = await fsTool.hashlineEditFile({
+      path: "stale-file.txt",
+      edits: [{ op: "replace", pos: betaAnchor, lines: ["gamma"] }],
+    });
+
+    expect(editRes.success).toBe(false);
+    if (editRes.success) return;
+    expect(editRes.error.code).toBe("HASH_MISMATCH");
+    expect(editRes.currentHash).toBeDefined();
   });
 });

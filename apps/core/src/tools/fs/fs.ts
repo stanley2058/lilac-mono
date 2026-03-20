@@ -393,6 +393,8 @@ function buildGrepOutputZod(hashlineEnabled: boolean) {
               results: z.array(
                 z.object({
                   file: z.string(),
+                  resolvedPath: z.string(),
+                  fileHash: z.string(),
                   line: z.number(),
                   text: z.string(),
                 }),
@@ -431,7 +433,7 @@ type GrepOutput =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
-      results: { file: string; line: number; text: string }[];
+      results: { file: string; resolvedPath: string; fileHash: string; line: number; text: string }[];
       error?: string;
     };
 
@@ -485,6 +487,12 @@ function buildEditFileInputZod(hashlineEnabled: boolean) {
         .array(hashlineEditSchema)
         .min(1)
         .describe("Batch all hashline edits for the file into one call."),
+      expectedHash: z
+        .string()
+        .optional()
+        .describe(
+          "Optional optimistic concurrency hash from read_file. If omitted, edit_file requires a prior read in the same tool session.",
+        ),
       dangerouslyAllow: z
         .boolean()
         .optional()
@@ -542,6 +550,7 @@ type HashlineEditFileInput = {
   path: string;
   cwd?: string;
   edits: HashlineEdit[];
+  expectedHash?: string;
   dangerouslyAllow?: boolean;
 };
 
@@ -793,6 +802,10 @@ export function fsTool(
     return `${host}|${remoteCwd}|${inputPath}`;
   }
 
+  function normalizeRemoteLookupInputPath(inputPath: string): string {
+    return inputPath.replace(/^\.\//, "");
+  }
+
   function recordRemoteFileAccess(params: {
     host: string;
     remoteCwd: string;
@@ -805,7 +818,11 @@ export function fsTool(
       params.fileHash,
     );
     remoteResolvedPathByLookup.set(
-      remoteLookupKey(params.host, params.remoteCwd, params.inputPath),
+      remoteLookupKey(
+        params.host,
+        params.remoteCwd,
+        normalizeRemoteLookupInputPath(params.inputPath),
+      ),
       params.resolvedPath,
     );
   }
@@ -816,7 +833,11 @@ export function fsTool(
     inputPath: string;
   }): { resolvedPath: string; hash: string } | null {
     const resolvedPath = remoteResolvedPathByLookup.get(
-      remoteLookupKey(params.host, params.remoteCwd, params.inputPath),
+      remoteLookupKey(
+        params.host,
+        params.remoteCwd,
+        normalizeRemoteLookupInputPath(params.inputPath),
+      ),
     );
     if (!resolvedPath) return null;
 
@@ -910,7 +931,7 @@ export function fsTool(
   const baseTools = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description: hashlineEnabled
-        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true."
+        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true."
         : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: readFileSchema,
       outputSchema: readFileOutputSchema,
@@ -1253,7 +1274,7 @@ export function fsTool(
 
     grep: tool<GrepInput, GrepOutput>({
       description: hashlineEnabled
-        ? "Search file contents with ripgrep. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning. Denylisted paths require dangerouslyAllow=true."
+        ? "Search file contents with ripgrep. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning that tells you to use bash instead. Denylisted paths require dangerouslyAllow=true."
         : "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: grepInputSchema,
       outputSchema: grepOutputSchema,
@@ -1288,6 +1309,18 @@ export function fsTool(
             },
             denyPaths: remoteDenyPaths,
           });
+
+          if (res.mode === "hashline") {
+            for (const match of res.results) {
+              recordRemoteFileAccess({
+                host: cwdTarget.host,
+                remoteCwd: cwdTarget.cwd,
+                inputPath: match.file,
+                resolvedPath: match.resolvedPath,
+                fileHash: match.fileHash,
+              });
+            }
+          }
 
           logger.info("fs.grep done", {
             resultCount: countGrepItems(res),
@@ -1330,7 +1363,7 @@ export function fsTool(
     ...baseTools,
     edit_file: tool<EditFileInput, EditFileOutput>({
       description: hashlineEnabled
-        ? "Edit an existing file using hashline anchors from read_file(format='hashline') or grep(mode='hashline'). Batch all edits for the file into one call, then re-read before any further edits. Very long lines may prevent hashline anchoring and require a raw read instead. Denylisted paths require dangerouslyAllow=true."
+        ? "Edit an existing file using hashline anchors from read_file(format='hashline') or grep(mode='hashline'). Batch all edits for the file into one call, then re-read before any further edits. edit_file also checks the file hash from your prior read so unrelated external modifications are rejected. Very long lines may prevent hashline anchoring and require bash instead. Denylisted paths require dangerouslyAllow=true."
         : "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: editFileSchema,
       outputSchema: editFileOutputZod,
@@ -1348,7 +1381,7 @@ export function fsTool(
           matching: isLegacy ? input.matching : undefined,
           expectedMatches: isLegacy ? resolveExpectedMatches(input) : undefined,
           expectedHashProvided:
-            isLegacy && typeof input.expectedHash === "string" && input.expectedHash.length > 0,
+            typeof input.expectedHash === "string" && input.expectedHash.length > 0,
           dangerouslyAllow: dangerouslyAllow === true,
         });
 
@@ -1356,6 +1389,29 @@ export function fsTool(
           ? await (async () => {
               const hashlineInput = input as HashlineEditFileInput;
               if (cwdTarget.kind === "ssh") {
+                let expectedHash = hashlineInput.expectedHash;
+                let resolvedPathHint: string | undefined;
+
+                if (!expectedHash) {
+                  const prior = lookupRemoteReadHash({
+                    host: cwdTarget.host,
+                    remoteCwd: cwdTarget.cwd,
+                    inputPath: hashlineInput.path,
+                  });
+                  if (!prior) {
+                    return {
+                      success: false as const,
+                      resolvedPath: toRemoteDebugPath(cwdTarget.host, hashlineInput.path),
+                      error: {
+                        code: "NOT_READ" as const,
+                        message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, hashlineInput.path)}`,
+                      },
+                    };
+                  }
+                  expectedHash = prior.hash;
+                  resolvedPathHint = prior.resolvedPath;
+                }
+
                 const remoteRes = await remoteEditFile({
                   host: cwdTarget.host,
                   cwd: cwdTarget.cwd,
@@ -1363,6 +1419,7 @@ export function fsTool(
                     path: hashlineInput.path,
                     edits: hashlineInput.edits,
                     mode: "hashline",
+                    expectedHash,
                   },
                   denyPaths: remoteDenyPaths,
                 });
@@ -1374,6 +1431,11 @@ export function fsTool(
                     resolvedPath: remoteRes.resolvedPath,
                     fileHash: remoteRes.newHash,
                   });
+                } else if (resolvedPathHint) {
+                  remoteResolvedPathByLookup.set(
+                    remoteLookupKey(cwdTarget.host, cwdTarget.cwd, hashlineInput.path),
+                    resolvedPathHint,
+                  );
                 }
                 return normalizeEditOutput({
                   ...remoteRes,
@@ -1386,6 +1448,7 @@ export function fsTool(
                   {
                     path: hashlineInput.path,
                     edits: hashlineInput.edits,
+                    expectedHash: hashlineInput.expectedHash,
                     dangerouslyAllow,
                   },
                   opCwd,

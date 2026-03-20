@@ -399,7 +399,7 @@ describe("fs search parity (local vs remote runner)", () => {
   });
 
   it("hashline grep downgrades consistently on long lines", async () => {
-    await writeFile(path.join(baseDir, "src", "long.ts"), `${"x".repeat(8_193)}\n`);
+    await writeFile(path.join(baseDir, "src", "long.ts"), `${"x".repeat(2_049)}\n`);
     const longNeedle = "x".repeat(64);
 
     const local = await fsTool.grep({
@@ -460,6 +460,7 @@ describe("fs search parity (local vs remote runner)", () => {
       input: {
         path: "hash-edit-remote.ts",
         mode: "hashline",
+        expectedHash: remoteRead2.fileHash,
         edits: [
           { op: "replace", pos: remoteRead2.hashlineContent.split("\n")[1]!, lines: ["gamma"] },
         ],
@@ -474,6 +475,108 @@ describe("fs search parity (local vs remote runner)", () => {
 
     expect(local.changesMade).toBe(remote.changesMade);
     expect(local.replacementsMade).toBe(remote.replacementsMade);
+  });
+
+  it("hashline edit rejects files changed since the last read in both local and remote", async () => {
+    await writeFile(path.join(baseDir, "hash-stale-local.ts"), "alpha\nbeta\n");
+    await writeFile(path.join(baseDir, "hash-stale-remote.ts"), "alpha\nbeta\n");
+
+    const localRead = await fsTool.readFile({ path: "hash-stale-local.ts", format: "hashline" });
+    if (!localRead.success || localRead.format !== "hashline") {
+      throw new Error("expected local hashline read");
+    }
+
+    const remoteRead = await runRemoteOp<Awaited<ReturnType<FileSystem["readFile"]>>>({
+      cwd: baseDir,
+      op: "fs.read_text",
+      input: { path: "hash-stale-remote.ts", format: "hashline" },
+    });
+    if (!remoteRead.success || remoteRead.format !== "hashline") {
+      throw new Error("expected remote hashline read");
+    }
+
+    await writeFile(path.join(baseDir, "hash-stale-local.ts"), "alpha changed\nbeta\n");
+    await writeFile(path.join(baseDir, "hash-stale-remote.ts"), "alpha changed\nbeta\n");
+
+    const local = await fsTool.hashlineEditFile({
+      path: "hash-stale-local.ts",
+      edits: [{ op: "replace", pos: localRead.hashlineContent.split("\n")[1]!, lines: ["gamma"] }],
+    });
+
+    const remote = await runRemoteOp<EditFileResult>({
+      cwd: baseDir,
+      op: "fs.edit",
+      input: {
+        path: "hash-stale-remote.ts",
+        mode: "hashline",
+        expectedHash: remoteRead.fileHash,
+        edits: [
+          { op: "replace", pos: remoteRead.hashlineContent.split("\n")[1]!, lines: ["gamma"] },
+        ],
+      },
+    });
+
+    expect(local.success).toBe(false);
+    expect(remote.success).toBe(false);
+    if (local.success || remote.success) {
+      throw new Error("expected hashline edit mismatches");
+    }
+
+    expect(local.error.code).toBe("HASH_MISMATCH");
+    expect(remote.error.code).toBe("HASH_MISMATCH");
+  });
+
+  it("hashline grep can bootstrap local edit_file and provide expectedHash for remote edits", async () => {
+    await writeFile(path.join(baseDir, "grep-edit-local.ts"), "alpha\nbeta\n");
+    await writeFile(path.join(baseDir, "grep-edit-remote.ts"), "alpha\nbeta\n");
+
+    const localGrep = await fsTool.grep({
+      pattern: "beta",
+      fileExtensions: ["ts"],
+      mode: "hashline",
+    });
+    if (localGrep.mode !== "hashline") {
+      throw new Error("expected local hashline grep");
+    }
+
+    const remoteGrep = await runRemoteOp<GrepResult>({
+      cwd: baseDir,
+      op: "fs.grep",
+      input: {
+        pattern: "beta",
+        fileExtensions: ["ts"],
+        mode: "hashline",
+      },
+    });
+    if (remoteGrep.mode !== "hashline") {
+      throw new Error("expected remote hashline grep");
+    }
+
+    const localMatch = localGrep.results.find((result) => normalizePathPrefix(result.file) === "grep-edit-local.ts");
+    const remoteMatch = remoteGrep.results.find(
+      (result) => normalizePathPrefix(result.file) === "grep-edit-remote.ts",
+    );
+    if (!localMatch || !remoteMatch) {
+      throw new Error("expected grep results for edit targets");
+    }
+
+    const local = await fsTool.hashlineEditFile({
+      path: "grep-edit-local.ts",
+      edits: [{ op: "replace", pos: localMatch.text, lines: ["gamma"] }],
+    });
+    const remote = await runRemoteOp<EditFileResult>({
+      cwd: baseDir,
+      op: "fs.edit",
+      input: {
+        path: "grep-edit-remote.ts",
+        mode: "hashline",
+        expectedHash: remoteMatch.fileHash,
+        edits: [{ op: "replace", pos: remoteMatch.text, lines: ["gamma"] }],
+      },
+    });
+
+    expect(local.success).toBe(true);
+    expect(remote.success).toBe(true);
   });
 
   it("edit default snippet replacement matches between local and remote", async () => {

@@ -141,6 +141,8 @@ export type RemoteGrepOutput =
       degradedFromHashline?: boolean;
       results: {
         file: string;
+        resolvedPath: string;
+        fileHash: string;
         line: number;
         text: string;
       }[];
@@ -158,6 +160,7 @@ export type RemoteEditInput =
       path: string;
       edits: readonly HashlineEdit[];
       mode: "hashline";
+      expectedHash?: string;
     };
 
 export type RemoteEditOutput =

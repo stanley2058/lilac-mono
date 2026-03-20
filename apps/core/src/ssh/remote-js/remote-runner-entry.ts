@@ -184,7 +184,11 @@ async function opEdit(
   const mode = input["mode"] === "hashline" ? "hashline" : "legacy";
 
   if (mode === "hashline") {
-    const editRes = await fsTool.hashlineEditFile({ path: pathInput, edits: hashlineEdits });
+    const editRes = await fsTool.hashlineEditFile({
+      path: pathInput,
+      edits: hashlineEdits,
+      expectedHash,
+    });
     return normalizeEditOutput(editRes);
   }
 

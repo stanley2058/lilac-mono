@@ -306,6 +306,70 @@ describe("core tool plugin manager", () => {
     await expect(fs.readFile(path.join(dataDir, "note.txt"), "utf8")).resolves.toBe("after\n");
   });
 
+  it("rejects hashline edits when the file changed after the read", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({
+      tools: {
+        experimental_hashline_edit: true,
+      },
+    });
+
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        adapter: {} as SurfaceAdapter,
+        config: cfg,
+      },
+      dataDir,
+    });
+
+    await manager.init();
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, "note.txt"), "before\nafter\n", "utf8");
+
+    const toolset = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "edit_file",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents!,
+    });
+
+    const tools = toolset.tools as Record<
+      string,
+      { execute?: (...args: readonly unknown[]) => unknown }
+    >;
+    const readFile = getExecutableTool(tools, "read_file");
+    const editFile = getExecutableTool(tools, "edit_file");
+
+    const readRes = await resolveExecuteResult(
+      readFile.execute!(
+        { path: "note.txt", format: "hashline" },
+        { toolCallId: "read-hashline-stale", messages: [] },
+      ),
+    );
+    expect((readRes as { success: boolean }).success).toBe(true);
+
+    const hashlineContent = (readRes as { format: string; hashlineContent?: string })
+      .hashlineContent;
+    expect((readRes as { format: string }).format).toBe("hashline");
+    await fs.writeFile(path.join(dataDir, "note.txt"), "before changed\nafter\n", "utf8");
+
+    const editRes = await resolveExecuteResult(
+      editFile.execute!(
+        {
+          path: "note.txt",
+          edits: [{ op: "replace", pos: hashlineContent!.split("\n")[1]!, lines: ["done"] }],
+        },
+        { toolCallId: "edit-hashline-stale", messages: [] },
+      ),
+    );
+
+    expect((editRes as { success: boolean }).success).toBe(false);
+    expect((editRes as { error?: { code?: string } }).error?.code).toBe("HASH_MISMATCH");
+  });
+
   it("preserves built-in Level 2 callable ids", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");

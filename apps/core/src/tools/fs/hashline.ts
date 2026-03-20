@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const HASHLINE_MAX_LINE_CHARS = 8_192;
+export const HASHLINE_MAX_LINE_CHARS = 2_048;
 export const HASHLINE_ID_LENGTH = 4;
 
 export type HashlineWarning = {
@@ -68,7 +68,7 @@ export function buildHashlineWarning(line: number, actualLength: number): Hashli
     actualLength,
     message:
       `Line ${line} is too long for hashline mode (${actualLength} chars; max ${HASHLINE_MAX_LINE_CHARS}). ` +
-      "This response is downgraded and must not be used as an edit anchor.",
+      "This response is downgraded and must not be used as an edit anchor. Use bash to inspect or modify this line instead.",
   };
 }
 
