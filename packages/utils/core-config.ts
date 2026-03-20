@@ -412,6 +412,7 @@ const modelCapabilitySchema = z
 const toolsSchema = z
   .object({
     web: webExtractConfigSchema,
+    experimental_hashline_edit: z.boolean().default(false),
   })
   .default({
     web: {
@@ -422,6 +423,7 @@ const toolsSchema = z
         mode: "auto",
       },
     },
+    experimental_hashline_edit: false,
   });
 
 const pluginsSchema = z
