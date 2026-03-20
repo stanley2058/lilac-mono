@@ -68,6 +68,7 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "ssh.run",
   "summarize",
   "surface.help",
+  "surface.activities.recentAgentWrites",
   "surface.messages.delete",
   "surface.messages.edit",
   "surface.messages.list",
