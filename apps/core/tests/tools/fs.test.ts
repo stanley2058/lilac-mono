@@ -79,6 +79,41 @@ describe("fs tool", () => {
     }
   });
 
+  it("readFile supports hashline format", async () => {
+    await writeFile(join(baseDir, "hashline.txt"), "alpha\nbeta\n");
+
+    const res = await fsTool.readFile({ path: "hashline.txt", format: "hashline" });
+
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.format).toBe("hashline");
+    if (res.format !== "hashline") {
+      throw new Error("expected hashline output");
+    }
+
+    const lines = res.hashlineContent.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^1#[0-9a-f]{8}:alpha$/);
+    expect(lines[1]).toMatch(/^2#[0-9a-f]{8}:beta$/);
+    expect(lines[2]).toMatch(/^3#[0-9a-f]{8}:$/);
+  });
+
+  it("readFile downgrades oversized hashline reads back to raw with a warning", async () => {
+    await writeFile(join(baseDir, "long.txt"), `${"x".repeat(8_193)}\nshort\n`);
+
+    const res = await fsTool.readFile({ path: "long.txt", format: "hashline" });
+
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.format).toBe("raw");
+    if (res.format !== "raw") {
+      throw new Error("expected downgraded raw output");
+    }
+    expect(res.degradedFromHashline).toBe(true);
+    expect(res.warnings?.[0]?.code).toBe("LINE_TOO_LONG_FOR_HASHLINE");
+    expect(res.content.startsWith("x")).toBe(true);
+  });
+
   it("writeFile refuses to overwrite by default", async () => {
     await writeFile(join(baseDir, "b.txt"), "old");
 
@@ -301,5 +336,68 @@ describe("fs tool", () => {
     expect(denied.success).toBe(false);
     if (denied.success) return;
     expect(denied.error.code).toBe("NOT_ENOUGH_MATCHES");
+  });
+
+  it("hashlineEditFile replaces, prepends, and appends using read anchors", async () => {
+    await writeFile(join(baseDir, "anchors.txt"), "before\nmatch\nafter\n");
+
+    const readRes = await fsTool.readFile({ path: "anchors.txt", format: "hashline" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success || readRes.format !== "hashline") {
+      throw new Error("expected hashline read");
+    }
+
+    const [beforeAnchor, matchAnchor] = readRes.hashlineContent.split("\n");
+    expect(beforeAnchor).toBeDefined();
+    expect(matchAnchor).toBeDefined();
+
+    const editRes = await fsTool.hashlineEditFile({
+      path: "anchors.txt",
+      edits: [
+        {
+          op: "prepend",
+          pos: matchAnchor!,
+          lines: ["intro"],
+        },
+        {
+          op: "replace",
+          pos: matchAnchor!,
+          lines: ["matched"],
+        },
+        {
+          op: "append",
+          pos: beforeAnchor!,
+          lines: ["between"],
+        },
+      ],
+    });
+
+    expect(editRes.success).toBe(true);
+    await expect(readFile(join(baseDir, "anchors.txt"), "utf-8")).resolves.toBe(
+      "before\nbetween\nintro\nmatched\nafter\n",
+    );
+  });
+
+  it("hashlineEditFile rejects stale anchors", async () => {
+    await writeFile(join(baseDir, "stale.txt"), "alpha\nbeta\n");
+
+    const readRes = await fsTool.readFile({ path: "stale.txt", format: "hashline" });
+    expect(readRes.success).toBe(true);
+    if (!readRes.success || readRes.format !== "hashline") {
+      throw new Error("expected hashline read");
+    }
+
+    const betaAnchor = readRes.hashlineContent.split("\n")[1]!;
+    await writeFile(join(baseDir, "stale.txt"), "alpha\ngamma\n");
+
+    const editRes = await fsTool.hashlineEditFile({
+      path: "stale.txt",
+      edits: [{ op: "replace", pos: betaAnchor, lines: ["delta"] }],
+    });
+
+    expect(editRes.success).toBe(false);
+    if (editRes.success) return;
+    expect(editRes.error.code).toBe("STALE_ANCHOR");
+    expect(editRes.error.message).toContain("Re-read the file");
   });
 });

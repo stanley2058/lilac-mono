@@ -82,11 +82,15 @@ export function createCoreToolPluginManager(params: {
     getLevel2Tools: () => manager.getLevel2Items(),
     async buildLevel1Toolset(buildParams: BuildLevel1ToolsetParams): Promise<BuiltLevel1Toolset> {
       await manager.ensureFresh();
+      const resolvedConfig = await resolveConfig();
 
       const tools: ToolSet = {} as ToolSet;
       const specs = new Map<string, CoreLevel1ToolSpec>();
       const runContext = {
-        runtime: params.runtime,
+        runtime: {
+          ...params.runtime,
+          config: resolvedConfig,
+        },
         cwd: buildParams.cwd,
         runProfile: buildParams.runProfile,
         editingToolMode: buildParams.editingToolMode,

@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { applyHunks, parsePatch } from "../../tools/apply-patch/apply-patch-core";
 import { FileSystem, type FileEdit, type EditFileResult } from "../../tools/fs/fs-impl";
+import type { HashlineEdit } from "../../tools/fs/hashline";
 
 function ok(value: unknown): void {
   process.stdout.write(JSON.stringify({ ok: true, value }));
@@ -76,7 +77,12 @@ async function opReadText(input: Record<string, unknown>, fsTool: FileSystem): P
     startLine: numberOrUndefined(input["startLine"]),
     maxLines: numberOrUndefined(input["maxLines"]),
     maxCharacters: numberOrUndefined(input["maxCharacters"]),
-    format: input["format"] === "numbered" ? "numbered" : "raw",
+    format:
+      input["format"] === "numbered"
+        ? "numbered"
+        : input["format"] === "hashline"
+          ? "hashline"
+          : "raw",
   });
   return readRes;
 }
@@ -135,7 +141,12 @@ async function opGrep(input: Record<string, unknown>, fsTool: FileSystem): Promi
   const fileExtensions = Array.isArray(input["fileExtensions"])
     ? input["fileExtensions"].map((e) => String(e).replace(/^\./, ""))
     : [];
-  const mode = input["mode"] === "detailed" ? "detailed" : "default";
+  const mode =
+    input["mode"] === "detailed"
+      ? "detailed"
+      : input["mode"] === "hashline"
+        ? "hashline"
+        : "default";
 
   return await fsTool.grep({
     pattern: String(input["pattern"] ?? ""),
@@ -166,9 +177,16 @@ async function opEdit(
   }
 
   const edits = Array.isArray(input["edits"]) ? (input["edits"] as FileEdit[]) : [];
+  const hashlineEdits = Array.isArray(input["edits"]) ? (input["edits"] as HashlineEdit[]) : [];
   const expectedHashRaw = input["expectedHash"];
   const expectedHash =
     typeof expectedHashRaw === "string" && expectedHashRaw.length > 0 ? expectedHashRaw : undefined;
+  const mode = input["mode"] === "hashline" ? "hashline" : "legacy";
+
+  if (mode === "hashline") {
+    const editRes = await fsTool.hashlineEditFile({ path: pathInput, edits: hashlineEdits });
+    return normalizeEditOutput(editRes);
+  }
 
   if (expectedHash) {
     const editRes = await fsTool.editFile({ path: pathInput, edits, expectedHash });

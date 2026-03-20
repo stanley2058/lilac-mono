@@ -3,6 +3,17 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
+
+import {
+  applyHashlineEdits,
+  buildHashlineWarning,
+  HASHLINE_MAX_LINE_CHARS,
+  type HashlineEdit,
+  type HashlineWarning,
+  findFirstHashlineOverflow,
+  formatHashlineWindow,
+} from "./hashline";
+
 import { ripgrep } from "./ripgrep";
 
 export function expandTilde(input: string) {
@@ -36,6 +47,7 @@ export const EDIT_ERROR_CODES = [
   "NOT_ENOUGH_MATCHES",
   "INVALID_REGEX",
   "INVALID_EDIT",
+  "STALE_ANCHOR",
 ] as const;
 export type EditErrorCode = (typeof EDIT_ERROR_CODES)[number];
 
@@ -48,6 +60,8 @@ export type ReadFileSuccessBase = {
   totalLines: number;
   hasMoreLines: boolean;
   truncatedByChars: boolean;
+  warnings?: HashlineWarning[];
+  degradedFromHashline?: boolean;
 };
 
 export type ReadFileBytesResult =
@@ -75,6 +89,10 @@ export type ReadFileResult =
   | (ReadFileSuccessBase & {
       format: "numbered";
       numberedContent: string;
+    })
+  | (ReadFileSuccessBase & {
+      format: "hashline";
+      hashlineContent: string;
     })
   | {
       success: false;
@@ -136,10 +154,12 @@ export interface ReadFileOptions {
   /** Maximum number of characters to return, defaults to 10000 */
   maxCharacters?: number;
   /** Output format, defaults to "raw" */
-  format?: "raw" | "numbered";
+  format?: "raw" | "numbered" | "hashline";
   /** Bypass denylist guardrails for this call. */
   dangerouslyAllow?: boolean;
 }
+
+export type HashlineEditFileResult = EditFileResult;
 
 export type FileEdit =
   | {
@@ -203,6 +223,8 @@ export type FileEdit =
 
 export const SEARCH_MODES = ["default", "detailed"] as const;
 export type SearchMode = (typeof SEARCH_MODES)[number];
+export const GREP_MODES = ["default", "detailed", "hashline"] as const;
+export type GrepMode = (typeof GREP_MODES)[number];
 
 export type GlobEntry = {
   path: string;
@@ -236,6 +258,8 @@ export type GrepResult =
   | {
       mode: "default";
       truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       results: {
         file: string;
         line: number;
@@ -246,6 +270,8 @@ export type GrepResult =
   | {
       mode: "detailed";
       truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
       results: {
         file: string;
         line: number;
@@ -256,6 +282,18 @@ export type GrepResult =
           start: number;
           end: number;
         }[];
+      }[];
+      error?: string;
+    }
+  | {
+      mode: "hashline";
+      truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      results: {
+        file: string;
+        line: number;
+        text: string;
       }[];
       error?: string;
     };
@@ -289,7 +327,7 @@ export type GrepOpts = {
   /**
    * Output verbosity mode. Default is default.
    */
-  mode?: SearchMode;
+  mode?: GrepMode;
   /** Bypass denylist guardrails for this call. */
   dangerouslyAllow?: boolean;
 };
@@ -395,11 +433,28 @@ export class FileSystem {
       const hasMoreLines = endLine < totalLines;
 
       let output: string;
+      let warnings: HashlineWarning[] | undefined;
+      let degradedFromHashline = false;
+      let effectiveFormat: "raw" | "numbered" | "hashline" = format;
+
       if (format === "numbered") {
         const digits = Math.max(1, String(Math.max(endLine, normalizedStartLine)).length);
         output = windowLines
           .map((line, i) => `${String(normalizedStartLine + i).padStart(digits, " ")}| ${line}`)
           .join("\n");
+      } else if (format === "hashline") {
+        const overflow = findFirstHashlineOverflow({
+          lines: windowLines,
+          startLine: normalizedStartLine,
+        });
+        if (overflow) {
+          effectiveFormat = "raw";
+          degradedFromHashline = true;
+          warnings = [overflow];
+          output = windowLines.join("\n");
+        } else {
+          output = formatHashlineWindow(windowLines, normalizedStartLine);
+        }
       } else {
         output = windowLines.join("\n");
       }
@@ -427,10 +482,16 @@ export class FileSystem {
         totalLines,
         hasMoreLines,
         truncatedByChars,
+        ...(warnings ? { warnings } : {}),
+        ...(degradedFromHashline ? { degradedFromHashline } : {}),
       };
 
-      if (format === "numbered") {
+      if (effectiveFormat === "numbered") {
         return { ...base, format: "numbered", numberedContent: output };
+      }
+
+      if (effectiveFormat === "hashline") {
+        return { ...base, format: "hashline", hashlineContent: output };
       }
 
       return { ...base, format: "raw", content: output };
@@ -1061,6 +1122,74 @@ export class FileSystem {
     }
   }
 
+  async hashlineEditFile(
+    {
+      path,
+      edits,
+      dangerouslyAllow = false,
+    }: {
+      path: string;
+      edits: readonly HashlineEdit[];
+      dangerouslyAllow?: boolean;
+    },
+    cwd?: string,
+  ): Promise<HashlineEditFileResult> {
+    const resolvedPath = this.resolvePath(path, cwd);
+
+    try {
+      this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow);
+
+      const file = await fs.readFile(resolvedPath, "utf-8");
+      const oldHash = this.hash(file);
+      const applied = applyHashlineEdits({ content: file, edits });
+      const newHash = this.hash(applied.content);
+      const changesMade = newHash !== oldHash;
+
+      if (changesMade) {
+        await fs.writeFile(resolvedPath, applied.content);
+      }
+
+      this.fileAccessRecord.set(resolvedPath, {
+        lastAccess: Date.now(),
+        fileHash: newHash,
+      });
+
+      this.fireEvent({
+        type: "editFile",
+        path: resolvedPath,
+        accessAt: Date.now(),
+        operations: ["replace_snippet"],
+      });
+
+      return {
+        success: true,
+        resolvedPath,
+        oldHash,
+        newHash,
+        changesMade,
+        replacementsMade: applied.appliedEditCount,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+
+      const errorCode: EditErrorCode =
+        code === "ENOENT"
+          ? "NOT_FOUND"
+          : code === "EACCES" || code === "EPERM"
+            ? "PERMISSION"
+            : code === "INVALID_EDIT" || code === "STALE_ANCHOR"
+              ? (code as EditErrorCode)
+              : "UNKNOWN";
+
+      return {
+        success: false,
+        resolvedPath,
+        error: { code: errorCode, message: msg },
+      };
+    }
+  }
+
   /**
    * Globs files in the filesystem
    *
@@ -1206,6 +1335,45 @@ export class FileSystem {
         extraArgs,
       });
 
+      if (mode === "hashline") {
+        const warnings: HashlineWarning[] = [];
+        const rawResults = ripgrepResult.matches.map((match) => ({
+          file: match.file,
+          line: match.line,
+          text: match.text,
+        }));
+        const hashlineResults: { file: string; line: number; text: string }[] = [];
+
+        for (const match of ripgrepResult.matches) {
+          if (match.text.length > HASHLINE_MAX_LINE_CHARS) {
+            warnings.push(buildHashlineWarning(match.line, match.text.length));
+            continue;
+          }
+
+          hashlineResults.push({
+            file: match.file,
+            line: match.line,
+            text: formatHashlineWindow([match.text], match.line),
+          });
+        }
+
+        if (warnings.length > 0) {
+          return {
+            mode: "default",
+            truncated: ripgrepResult.truncated,
+            results: rawResults,
+            warnings,
+            degradedFromHashline: true,
+          };
+        }
+
+        return {
+          mode,
+          truncated: ripgrepResult.truncated,
+          results: hashlineResults,
+        };
+      }
+
       if (mode === "default") {
         const results = ripgrepResult.matches.map((match) => ({
           file: match.file,
@@ -1228,6 +1396,9 @@ export class FileSystem {
       const msg = e instanceof Error ? e.message : String(e);
       const mode = opts.mode ?? "default";
       if (mode === "default") {
+        return { mode, truncated: false, results: [], error: msg };
+      }
+      if (mode === "hashline") {
         return { mode, truncated: false, results: [], error: msg };
       }
       return { mode, truncated: false, results: [], error: msg };

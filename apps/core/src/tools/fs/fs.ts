@@ -8,10 +8,12 @@ import {
   FileSystem,
   expandTilde,
   type FileEdit,
+  type GrepMode,
 } from "./fs-impl";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
+import { type HashlineEdit, type HashlineWarning } from "./hashline";
 
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import {
@@ -32,6 +34,14 @@ const pathSchema = z
 const readErrorCodeSchema = z.enum(READ_ERROR_CODES);
 const editErrorCodeSchema = z.enum(EDIT_ERROR_CODES);
 const searchModeSchema = z.enum(["default", "detailed"]);
+const grepModeSchema = z.enum(["default", "detailed", "hashline"]);
+const warningZod = z.object({
+  code: z.literal("LINE_TOO_LONG_FOR_HASHLINE"),
+  message: z.string(),
+  line: z.number(),
+  maxLength: z.number(),
+  actualLength: z.number(),
+});
 
 const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
 const MAX_INSTRUCTION_CHARS = 20_000;
@@ -155,34 +165,54 @@ function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): 
   return out;
 }
 
-export const readFileInputZod = z.object({
-  path: pathSchema,
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Optional working directory to resolve relative paths against (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
-    ),
-  startLine: z
-    .number()
-    .optional()
-    .describe("1-based line number to start reading from. Defaults to 1."),
-  maxLines: z.number().optional().describe("Maximum number of lines to return. Defaults to 2000."),
-  maxCharacters: z
-    .number()
-    .optional()
-    .describe("Maximum number of characters to return. Defaults to 10000."),
-  format: z
-    .enum(["raw", "numbered"])
-    .optional()
-    .describe("Output format. Default is raw (no line numbers). 'numbered' is for display only."),
-  dangerouslyAllow: z
-    .boolean()
-    .optional()
-    .describe("Bypass filesystem denylist guardrails for this call."),
-});
+function buildReadFileInputZod(hashlineEnabled: boolean) {
+  return z.object({
+    path: pathSchema,
+    cwd: z
+      .string()
+      .optional()
+      .describe(
+        "Optional working directory to resolve relative paths against (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
+      ),
+    startLine: z
+      .number()
+      .optional()
+      .describe("1-based line number to start reading from. Defaults to 1."),
+    maxLines: z
+      .number()
+      .optional()
+      .describe("Maximum number of lines to return. Defaults to 2000."),
+    maxCharacters: z
+      .number()
+      .optional()
+      .describe("Maximum number of characters to return. Defaults to 10000."),
+    format: (hashlineEnabled
+      ? z.enum(["raw", "numbered", "hashline"])
+      : z.enum(["raw", "numbered"]))
+      .optional()
+      .describe(
+        hashlineEnabled
+          ? "Output format. Default is raw. Use 'hashline' before edit_file when you need stable edit anchors."
+          : "Output format. Default is raw (no line numbers). 'numbered' is for display only.",
+      ),
+    dangerouslyAllow: z
+      .boolean()
+      .optional()
+      .describe("Bypass filesystem denylist guardrails for this call."),
+  });
+}
 
-type ReadFileInput = z.infer<typeof readFileInputZod>;
+export const readFileInputZod = buildReadFileInputZod(false);
+
+type ReadFileInput = {
+  path: string;
+  cwd?: string;
+  startLine?: number;
+  maxLines?: number;
+  maxCharacters?: number;
+  format?: "raw" | "numbered" | "hashline";
+  dangerouslyAllow?: boolean;
+};
 
 const globEntryTypeSchema = z.enum([
   "symlink",
@@ -248,120 +278,277 @@ const globOutputZod = z.discriminatedUnion("mode", [
 
 type GlobOutput = z.infer<typeof globOutputZod>;
 
-export const grepInputZod = z.object({
-  pattern: z.string().min(1).describe("Search pattern. Literal by default unless regex=true."),
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Optional base directory to search from (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
-    ),
-  regex: z
-    .boolean()
-    .optional()
-    .describe("Treat pattern as regex when true. Default is false (literal)."),
-  maxResults: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe("Maximum number of matches to return (default: 100)."),
-  fileExtensions: z
-    .array(z.string().min(1))
-    .optional()
-    .describe('Optional file extension filters (e.g. ["ts", "tsx"]).'),
-  includeContextLines: z
-    .number()
-    .int()
-    .nonnegative()
-    .optional()
-    .describe("Include N context lines around each match."),
-  mode: searchModeSchema
-    .optional()
-    .describe(
-      "Output mode. Recommended: 'default'. Use 'detailed' only when you need column/submatches metadata.",
-    ),
-  dangerouslyAllow: z
-    .boolean()
-    .optional()
-    .describe("Bypass filesystem denylist guardrails for this call."),
+function buildGrepInputZod(hashlineEnabled: boolean) {
+  return z.object({
+    pattern: z.string().min(1).describe("Search pattern. Literal by default unless regex=true."),
+    cwd: z
+      .string()
+      .optional()
+      .describe(
+        "Optional base directory to search from (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
+      ),
+    regex: z
+      .boolean()
+      .optional()
+      .describe("Treat pattern as regex when true. Default is false (literal)."),
+    maxResults: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Maximum number of matches to return (default: 100)."),
+    fileExtensions: z
+      .array(z.string().min(1))
+      .optional()
+      .describe('Optional file extension filters (e.g. ["ts", "tsx"]).'),
+    includeContextLines: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Include N context lines around each match."),
+    mode: (hashlineEnabled ? grepModeSchema : searchModeSchema)
+      .optional()
+      .describe(
+        hashlineEnabled
+          ? "Output mode. Recommended: 'default'. Use 'hashline' when you want grep output that can be turned into edit anchors. Use 'detailed' only when you need column/submatches metadata."
+          : "Output mode. Recommended: 'default'. Use 'detailed' only when you need column/submatches metadata.",
+      ),
+    dangerouslyAllow: z
+      .boolean()
+      .optional()
+      .describe("Bypass filesystem denylist guardrails for this call."),
+  });
+}
+
+export const grepInputZod = buildGrepInputZod(false);
+
+type GrepInput = {
+  pattern: string;
+  cwd?: string;
+  regex?: boolean;
+  maxResults?: number;
+  fileExtensions?: string[];
+  includeContextLines?: number;
+  mode?: GrepMode;
+  dangerouslyAllow?: boolean;
+};
+
+const grepOutputBase = z.object({
+  truncated: z.boolean(),
+  warnings: z.array(warningZod).optional(),
+  degradedFromHashline: z.boolean().optional(),
+  error: z.string().optional(),
 });
 
-type GrepInput = z.infer<typeof grepInputZod>;
-
-const grepOutputZod = z.discriminatedUnion("mode", [
-  z.object({
-    mode: z.literal("default"),
-    truncated: z.boolean(),
-    results: z.array(
-      z.object({
-        file: z.string(),
-        line: z.number(),
-        text: z.string(),
+function buildGrepOutputZod(hashlineEnabled: boolean) {
+  return z.discriminatedUnion("mode", [
+    z
+      .object({
+        mode: z.literal("default"),
+      })
+      .extend(grepOutputBase.shape)
+      .extend({
+        results: z.array(
+          z.object({
+            file: z.string(),
+            line: z.number(),
+            text: z.string(),
+          }),
+        ),
       }),
-    ),
-    error: z.string().optional(),
+    z
+      .object({
+        mode: z.literal("detailed"),
+      })
+      .extend(grepOutputBase.shape)
+      .extend({
+        results: z.array(
+          z.object({
+            file: z.string(),
+            line: z.number(),
+            column: z.number(),
+            text: z.string(),
+            submatches: z
+              .array(
+                z.object({
+                  match: z.string(),
+                  start: z.number(),
+                  end: z.number(),
+                }),
+              )
+              .optional(),
+          }),
+        ),
+      }),
+    ...(hashlineEnabled
+      ? [
+          z
+            .object({
+              mode: z.literal("hashline"),
+            })
+            .extend(grepOutputBase.shape)
+            .extend({
+              results: z.array(
+                z.object({
+                  file: z.string(),
+                  line: z.number(),
+                  text: z.string(),
+                }),
+              ),
+            }),
+        ]
+      : []),
+  ]);
+}
+
+type GrepOutput =
+  | {
+      mode: "default";
+      truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      results: { file: string; line: number; text: string }[];
+      error?: string;
+    }
+  | {
+      mode: "detailed";
+      truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      results: {
+        file: string;
+        line: number;
+        column: number;
+        text: string;
+        submatches?: { match: string; start: number; end: number }[];
+      }[];
+      error?: string;
+    }
+  | {
+      mode: "hashline";
+      truncated: boolean;
+      warnings?: HashlineWarning[];
+      degradedFromHashline?: boolean;
+      results: { file: string; line: number; text: string }[];
+      error?: string;
+    };
+
+const expectedMatchesSchema = z.union([z.literal("any"), z.number().int().positive()]);
+const hashlineEditSchema = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("replace"),
+    pos: z
+      .string()
+      .min(1)
+      .describe("Starting hashline anchor from read_file/grep hashline output."),
+    end: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional ending hashline anchor for multi-line replace."),
+    lines: z
+      .union([z.string(), z.array(z.string()), z.null()])
+      .optional()
+      .describe("Replacement lines. Prefer an array of lines; null or [] deletes the range."),
   }),
   z.object({
-    mode: z.literal("detailed"),
-    truncated: z.boolean(),
-    results: z.array(
-      z.object({
-        file: z.string(),
-        line: z.number(),
-        column: z.number(),
-        text: z.string(),
-        submatches: z
-          .array(
-            z.object({
-              match: z.string(),
-              start: z.number(),
-              end: z.number(),
-            }),
-          )
-          .optional(),
-      }),
-    ),
-    error: z.string().optional(),
+    op: z.literal("append"),
+    pos: z.string().min(1).describe("Hashline anchor after which to insert."),
+    lines: z
+      .union([z.string(), z.array(z.string()), z.null()])
+      .optional()
+      .describe("Lines to insert after the anchor."),
+  }),
+  z.object({
+    op: z.literal("prepend"),
+    pos: z.string().min(1).describe("Hashline anchor before which to insert."),
+    lines: z
+      .union([z.string(), z.array(z.string()), z.null()])
+      .optional()
+      .describe("Lines to insert before the anchor."),
   }),
 ]);
 
-type GrepOutput = z.infer<typeof grepOutputZod>;
+function buildEditFileInputZod(hashlineEnabled: boolean) {
+  if (hashlineEnabled) {
+    return z.object({
+      path: pathSchema,
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          "Optional working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
+        ),
+      edits: z
+        .array(hashlineEditSchema)
+        .min(1)
+        .describe("Batch all hashline edits for the file into one call."),
+      dangerouslyAllow: z
+        .boolean()
+        .optional()
+        .describe("Bypass filesystem denylist guardrails for this call."),
+    });
+  }
 
-const expectedMatchesSchema = z.union([z.literal("any"), z.number().int().positive()]);
+  return z.object({
+    path: pathSchema,
+    cwd: z
+      .string()
+      .optional()
+      .describe(
+        "Optional working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
+      ),
+    oldText: z
+      .string()
+      .min(1)
+      .describe("Exact text to find and replace. Must uniquely match by default."),
+    newText: z.string().describe("Replacement text."),
+    matching: z.enum(["exact", "regex"]).optional().describe("Matching mode. Default: exact."),
+    replaceAll: z
+      .boolean()
+      .optional()
+      .describe("Replace all matches when true. Default: false (single replacement)."),
+    expectedMatches: expectedMatchesSchema
+      .optional()
+      .describe("Expected number of matches. Default: 1 when replaceAll=false, otherwise 'any'."),
+    expectedHash: z
+      .string()
+      .optional()
+      .describe("Optional optimistic concurrency hash from read_file."),
+    dangerouslyAllow: z
+      .boolean()
+      .optional()
+      .describe("Bypass filesystem denylist guardrails for this call."),
+  });
+}
 
-export const editFileInputZod = z.object({
-  path: pathSchema,
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Optional working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
-    ),
-  oldText: z
-    .string()
-    .min(1)
-    .describe("Exact text to find and replace. Must uniquely match by default."),
-  newText: z.string().describe("Replacement text."),
-  matching: z.enum(["exact", "regex"]).optional().describe("Matching mode. Default: exact."),
-  replaceAll: z
-    .boolean()
-    .optional()
-    .describe("Replace all matches when true. Default: false (single replacement)."),
-  expectedMatches: expectedMatchesSchema
-    .optional()
-    .describe("Expected number of matches. Default: 1 when replaceAll=false, otherwise 'any'."),
-  expectedHash: z
-    .string()
-    .optional()
-    .describe("Optional optimistic concurrency hash from read_file."),
-  dangerouslyAllow: z
-    .boolean()
-    .optional()
-    .describe("Bypass filesystem denylist guardrails for this call."),
-});
+export const editFileInputZod = buildEditFileInputZod(false);
 
-type EditFileInput = z.infer<typeof editFileInputZod>;
+type LegacyEditFileInput = {
+  path: string;
+  cwd?: string;
+  oldText: string;
+  newText: string;
+  matching?: "exact" | "regex";
+  replaceAll?: boolean;
+  expectedMatches?: "any" | number;
+  expectedHash?: string;
+  dangerouslyAllow?: boolean;
+};
+
+type HashlineEditFileInput = {
+  path: string;
+  cwd?: string;
+  edits: HashlineEdit[];
+  dangerouslyAllow?: boolean;
+};
+
+type EditFileInput = LegacyEditFileInput | HashlineEditFileInput;
+
+function isLegacyEditFileInput(input: EditFileInput): input is LegacyEditFileInput {
+  return "oldText" in input;
+}
 
 const editFileOutputZod = z.union([
   z.object({
@@ -403,6 +590,8 @@ const instructionFieldsZod = z.object({
     .string()
     .optional()
     .describe("Instruction text auto-loaded from AGENTS.md files. Intended for model context."),
+  warnings: z.array(warningZod).optional(),
+  degradedFromHashline: z.boolean().optional(),
 });
 
 const readFileSuccessBaseZod = z
@@ -430,29 +619,96 @@ const readFileAttachmentSuccessZod = z
   })
   .extend(instructionFieldsZod.shape);
 
-const readFileOutputZod = z.union([
-  readFileSuccessBaseZod.extend({
-    format: z.literal("raw"),
-    content: z.string(),
-  }),
-  readFileSuccessBaseZod.extend({
-    format: z.literal("numbered"),
-    numberedContent: z.string(),
-  }),
-  readFileAttachmentSuccessZod,
-  z.object({
-    success: z.literal(false),
-    resolvedPath: z.string(),
-    error: z.object({
-      code: readErrorCodeSchema,
-      message: z.string(),
+function buildReadFileOutputZod(hashlineEnabled: boolean) {
+  return z.union([
+    readFileSuccessBaseZod.extend({
+      format: z.literal("raw"),
+      content: z.string(),
     }),
-  }),
-]);
+    readFileSuccessBaseZod.extend({
+      format: z.literal("numbered"),
+      numberedContent: z.string(),
+    }),
+    ...(hashlineEnabled
+      ? [
+          readFileSuccessBaseZod.extend({
+            format: z.literal("hashline"),
+            hashlineContent: z.string(),
+          }),
+        ]
+      : []),
+    readFileAttachmentSuccessZod,
+    z.object({
+      success: z.literal(false),
+      resolvedPath: z.string(),
+      error: z.object({
+        code: readErrorCodeSchema,
+        message: z.string(),
+      }),
+    }),
+  ]);
+}
 
-type ReadFileOutput = z.infer<typeof readFileOutputZod>;
+type InstructionFields = {
+  loadedInstructions?: string[];
+  instructionsText?: string;
+  warnings?: HashlineWarning[];
+  degradedFromHashline?: boolean;
+};
 
-function resolveExpectedMatches(input: EditFileInput): "any" | number {
+type ReadFileOutput =
+  | ({
+      success: true;
+      resolvedPath: string;
+      fileHash: string;
+      startLine: number;
+      endLine: number;
+      totalLines: number;
+      hasMoreLines: boolean;
+      truncatedByChars: boolean;
+      format: "raw";
+      content: string;
+    } & InstructionFields)
+  | ({
+      success: true;
+      resolvedPath: string;
+      fileHash: string;
+      startLine: number;
+      endLine: number;
+      totalLines: number;
+      hasMoreLines: boolean;
+      truncatedByChars: boolean;
+      format: "numbered";
+      numberedContent: string;
+    } & InstructionFields)
+  | ({
+      success: true;
+      resolvedPath: string;
+      fileHash: string;
+      startLine: number;
+      endLine: number;
+      totalLines: number;
+      hasMoreLines: boolean;
+      truncatedByChars: boolean;
+      format: "hashline";
+      hashlineContent: string;
+    } & InstructionFields)
+  | ({
+      success: true;
+      kind: "attachment";
+      resolvedPath: string;
+      fileHash: string;
+      filename: string;
+      mimeType: string;
+      bytes: number;
+    } & InstructionFields)
+  | {
+      success: false;
+      resolvedPath: string;
+      error: { code: (typeof READ_ERROR_CODES)[number]; message: string };
+    };
+
+function resolveExpectedMatches(input: LegacyEditFileInput): "any" | number {
   if (input.expectedMatches !== undefined) return input.expectedMatches;
   return input.replaceAll ? "any" : 1;
 }
@@ -489,11 +745,20 @@ function normalizeEditOutput(output: {
   };
 }
 
-export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
+export function fsTool(
+  cwd: string,
+  opts?: { includeEditFile?: boolean; experimentalHashlineEdit?: boolean },
+) {
   const logger = createLogger({
     module: "tool:fs",
   });
   const includeEditFile = opts?.includeEditFile ?? false;
+  const hashlineEnabled = opts?.experimentalHashlineEdit === true;
+  const readFileSchema = buildReadFileInputZod(hashlineEnabled);
+  const readFileOutputSchema = buildReadFileOutputZod(hashlineEnabled);
+  const grepInputSchema = buildGrepInputZod(hashlineEnabled);
+  const grepOutputSchema = buildGrepOutputZod(hashlineEnabled);
+  const editFileSchema = buildEditFileInputZod(hashlineEnabled);
 
   const toolRootAbs = path.resolve(expandTilde(cwd));
 
@@ -574,12 +839,12 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
 
   function isReadTextOutput(
     output: ReadFileOutput,
-  ): output is Extract<ReadFileOutput, { success: true; format: "raw" | "numbered" }> {
+  ): output is Extract<ReadFileOutput, { success: true; format: "raw" | "numbered" | "hashline" }> {
     if (!output || typeof output !== "object") return false;
     const o = output as Record<string, unknown>;
     return (
       o["success"] === true &&
-      (o["format"] === "raw" || o["format"] === "numbered") &&
+      (o["format"] === "raw" || o["format"] === "numbered" || o["format"] === "hashline") &&
       typeof o["resolvedPath"] === "string"
     );
   }
@@ -643,10 +908,11 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
 
   const baseTools = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
-      description:
-        "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true.",
-      inputSchema: readFileInputZod,
-      outputSchema: readFileOutputZod,
+      description: hashlineEnabled
+        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true."
+        : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true.",
+      inputSchema: readFileSchema,
+      outputSchema: readFileOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }, options) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -835,7 +1101,9 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
               returnedChars:
                 withInstructions.format === "raw"
                   ? withInstructions.content.length
-                  : withInstructions.numberedContent.length,
+                  : withInstructions.format === "numbered"
+                    ? withInstructions.numberedContent.length
+                    : withInstructions.hashlineContent.length,
             }
           : undefined;
 
@@ -983,10 +1251,11 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
     }),
 
     grep: tool<GrepInput, GrepOutput>({
-      description:
-        "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
-      inputSchema: grepInputZod,
-      outputSchema: grepOutputZod,
+      description: hashlineEnabled
+        ? "Search file contents with ripgrep. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning. Denylisted paths require dangerouslyAllow=true."
+        : "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
+      inputSchema: grepInputSchema,
+      outputSchema: grepOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
@@ -1059,65 +1328,108 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
   return {
     ...baseTools,
     edit_file: tool<EditFileInput, EditFileOutput>({
-      description:
-        "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches. Denylisted paths require dangerouslyAllow=true.",
-      inputSchema: editFileInputZod,
+      description: hashlineEnabled
+        ? "Edit an existing file using hashline anchors from read_file(format='hashline') or grep(mode='hashline'). Batch all edits for the file into one call, then re-read before any further edits. Very long lines may prevent hashline anchoring and require a raw read instead. Denylisted paths require dangerouslyAllow=true."
+        : "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches. Denylisted paths require dangerouslyAllow=true.",
+      inputSchema: editFileSchema,
       outputSchema: editFileOutputZod,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
+        const isLegacy = isLegacyEditFileInput(input);
 
         logger.info("fs.editFile", {
           path: input.path,
           cwd: opCwd,
           target: cwdTarget.kind,
-          replaceAll: input.replaceAll,
-          matching: input.matching,
-          expectedMatches: resolveExpectedMatches(input),
+          mode: hashlineEnabled ? "hashline" : "legacy",
+          replaceAll: isLegacy ? input.replaceAll : undefined,
+          matching: isLegacy ? input.matching : undefined,
+          expectedMatches: isLegacy ? resolveExpectedMatches(input) : undefined,
           expectedHashProvided:
-            typeof input.expectedHash === "string" && input.expectedHash.length > 0,
+            isLegacy && typeof input.expectedHash === "string" && input.expectedHash.length > 0,
           dangerouslyAllow: dangerouslyAllow === true,
         });
 
-        const occurrence: "all" | "first" = input.replaceAll ? "all" : "first";
-        const editPayload: {
-          path: string;
-          edits: FileEdit[];
-          expectedHash?: string;
-        } = {
-          path: input.path,
-          edits: [
-            {
-              type: "replace_snippet" as const,
-              target: input.oldText,
-              matching: input.matching,
-              newText: input.newText,
-              occurrence,
-              expectedMatches: resolveExpectedMatches(input),
-            },
-          ],
-          expectedHash: input.expectedHash,
-        };
+        const res = hashlineEnabled
+          ? await (async () => {
+              const hashlineInput = input as HashlineEditFileInput;
+              if (cwdTarget.kind === "ssh") {
+                const remoteRes = await remoteEditFile({
+                  host: cwdTarget.host,
+                  cwd: cwdTarget.cwd,
+                  input: {
+                    path: hashlineInput.path,
+                    edits: hashlineInput.edits,
+                    mode: "hashline",
+                  },
+                  denyPaths: remoteDenyPaths,
+                });
+                if (remoteRes.success) {
+                  recordRemoteFileAccess({
+                    host: cwdTarget.host,
+                    remoteCwd: cwdTarget.cwd,
+                    inputPath: hashlineInput.path,
+                    resolvedPath: remoteRes.resolvedPath,
+                    fileHash: remoteRes.newHash,
+                  });
+                }
+                return normalizeEditOutput({
+                  ...remoteRes,
+                  resolvedPath: toRemoteDebugPath(cwdTarget.host, remoteRes.resolvedPath),
+                });
+              }
 
-        const res =
-          cwdTarget.kind === "ssh"
-            ? await (async () => {
-                let expectedHash = input.expectedHash;
+              return normalizeEditOutput(
+                await fileSystem.hashlineEditFile(
+                  {
+                    path: hashlineInput.path,
+                    edits: hashlineInput.edits,
+                    dangerouslyAllow,
+                  },
+                  opCwd,
+                ),
+              );
+            })()
+          : await (async () => {
+              const legacyInput = input as LegacyEditFileInput;
+              const occurrence: "all" | "first" = legacyInput.replaceAll ? "all" : "first";
+              const editPayload: {
+                path: string;
+                edits: FileEdit[];
+                expectedHash?: string;
+              } = {
+                path: legacyInput.path,
+                edits: [
+                  {
+                    type: "replace_snippet",
+                    target: legacyInput.oldText,
+                    matching: legacyInput.matching,
+                    newText: legacyInput.newText,
+                    occurrence,
+                    expectedMatches: resolveExpectedMatches(legacyInput),
+                  },
+                ],
+                expectedHash: legacyInput.expectedHash,
+              };
+
+              if (cwdTarget.kind === "ssh") {
+                let expectedHash = legacyInput.expectedHash;
                 let resolvedPathHint: string | undefined;
 
                 if (!expectedHash) {
                   const prior = lookupRemoteReadHash({
                     host: cwdTarget.host,
                     remoteCwd: cwdTarget.cwd,
-                    inputPath: input.path,
+                    inputPath: legacyInput.path,
                   });
                   if (!prior) {
                     return {
                       success: false as const,
-                      resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                      resolvedPath: toRemoteDebugPath(cwdTarget.host, legacyInput.path),
                       error: {
                         code: "NOT_READ" as const,
-                        message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, input.path)}`,
+                        message: `File must be read before editing: ${toRemoteDebugPath(cwdTarget.host, legacyInput.path)}`,
                       },
                     };
                   }
@@ -1132,6 +1444,7 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                     path: editPayload.path,
                     edits: editPayload.edits,
                     expectedHash,
+                    mode: "legacy",
                   },
                   denyPaths: remoteDenyPaths,
                 });
@@ -1140,13 +1453,13 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                   recordRemoteFileAccess({
                     host: cwdTarget.host,
                     remoteCwd: cwdTarget.cwd,
-                    inputPath: input.path,
+                    inputPath: legacyInput.path,
                     resolvedPath: remoteRes.resolvedPath,
                     fileHash: remoteRes.newHash,
                   });
                 } else if (resolvedPathHint) {
                   remoteResolvedPathByLookup.set(
-                    remoteLookupKey(cwdTarget.host, cwdTarget.cwd, input.path),
+                    remoteLookupKey(cwdTarget.host, cwdTarget.cwd, legacyInput.path),
                     resolvedPathHint,
                   );
                 }
@@ -1155,10 +1468,12 @@ export function fsTool(cwd: string, opts?: { includeEditFile?: boolean }) {
                   ...remoteRes,
                   resolvedPath: toRemoteDebugPath(cwdTarget.host, remoteRes.resolvedPath),
                 });
-              })()
-            : normalizeEditOutput(
+              }
+
+              return normalizeEditOutput(
                 await fileSystem.editFile({ ...editPayload, dangerouslyAllow }, opCwd),
               );
+            })();
 
         logger.info("fs.editFile done", {
           path: res.resolvedPath,
