@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 
 declare global {
   // injected at build time in real releases
@@ -37,6 +38,9 @@ type ToolOutputFull = {
   description: string;
   shortInput: string[];
   input: string[];
+  primaryPositional?: {
+    field: string;
+  };
   hidden?: boolean;
 };
 
@@ -458,6 +462,14 @@ function formatToolBlock(
 
   if (opts.showArgs) {
     const args = "input" in tool ? tool.input : tool.shortInput;
+    if (tool.primaryPositional) {
+      lines.push(
+        ...formatBullets([formatPrimaryPositionalSummary(tool.primaryPositional.field)], {
+          indent: 2,
+          dim: true,
+        }),
+      );
+    }
     if (args.length > 0) {
       lines.push(...formatBullets(args, { indent: 2, dim: true }));
     }
@@ -474,6 +486,26 @@ const commonOptions = [
   "--stdin (alias for --input=@-)",
   "--<field>:json=@file.json | --<field>:json='<json>' | --<field>:json=@-",
 ];
+
+function formatPrimaryPositionalSummary(field: string): string {
+  const display = camelToKebabCase(field);
+  return `<${display}> (primary positional; same as --${display}=...)`;
+}
+
+function buildUsageLinesForTool(
+  tool: Pick<ToolOutputFull, "callableId" | "primaryPositional">,
+): string[] {
+  const usageLines: string[] = [];
+  if (tool.primaryPositional) {
+    usageLines.push(`tools ${tool.callableId} <${camelToKebabCase(tool.primaryPositional.field)}>`);
+  }
+  usageLines.push(
+    `tools ${tool.callableId} --arg1=value --arg2=value`,
+    `tools ${tool.callableId} --input=@payload.json`,
+    `cat payload.json | tools ${tool.callableId} --stdin`,
+  );
+  return usageLines;
+}
 
 async function main() {
   const parsed = parseArgs();
@@ -519,11 +551,7 @@ async function main() {
 
           const result = await toolHelp(parsed.callableId);
 
-          const usageLines = [
-            `tools ${result.callableId} --arg1=value --arg2=value`,
-            `tools ${result.callableId} --input=@payload.json`,
-            `cat payload.json | tools ${result.callableId} --stdin`,
-          ];
+          const usageLines = buildUsageLinesForTool(result);
 
           const output = [
             banner(),
@@ -611,7 +639,8 @@ async function main() {
         const hasAnyInputFlags =
           parsed.baseInput !== undefined ||
           parsed.fieldInputs.length > 0 ||
-          parsed.jsonFieldInputs.length > 0;
+          parsed.jsonFieldInputs.length > 0 ||
+          parsed.positionalArgs.length > 0;
 
         if (!parsed.usesStdin && !hasAnyInputFlags && process.stdin.isTTY === false) {
           throw new Error(
@@ -619,7 +648,12 @@ async function main() {
           );
         }
 
-        const toolInput = await buildToolInput(parsed);
+        const primaryPositional =
+          parsed.positionalArgs.length > 0
+            ? (await toolHelp(parsed.callableId)).primaryPositional
+            : undefined;
+
+        const toolInput = await buildToolInput(parsed, primaryPositional);
         const result = await callTool(parsed.callableId, toolInput);
 
         if (result.isError) {
@@ -683,12 +717,12 @@ type ParsedArgs =
       baseInput?: JsonSource;
       fieldInputs: { field: string; value: string | boolean }[];
       jsonFieldInputs: { field: string; source: JsonSource }[];
+      positionalArgs: string[];
       usesStdin: boolean;
     }
   | { type: "unknown" };
 
-function parseArgs(): ParsedArgs {
-  const args = process.argv.slice(2);
+export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
   const firstArg = args[0];
 
   if (firstArg === "--version") return { type: "version" };
@@ -822,6 +856,7 @@ function parseArgs(): ParsedArgs {
 
     const fieldInputs: { field: string; value: string | boolean }[] = [];
     const jsonFieldInputs: { field: string; source: JsonSource }[] = [];
+    const positionalArgs: string[] = [];
 
     const seenCanonicalFields = new Map<string, string>();
 
@@ -842,8 +877,16 @@ function parseArgs(): ParsedArgs {
     const restArgs = args.slice(1);
     for (let i = 0; i < restArgs.length; i++) {
       const a = restArgs[i];
-      if (!a || !a.startsWith("--")) {
-        throw new Error(`Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`);
+      if (!a) continue;
+
+      if (a === "--") {
+        positionalArgs.push(...restArgs.slice(i + 1));
+        break;
+      }
+
+      if (!a.startsWith("--")) {
+        positionalArgs.push(a);
+        continue;
       }
 
       const eq = a.indexOf("=");
@@ -977,6 +1020,7 @@ function parseArgs(): ParsedArgs {
       baseInput,
       fieldInputs,
       jsonFieldInputs,
+      positionalArgs,
       usesStdin: stdinConsumer !== undefined,
     };
   }
@@ -984,7 +1028,10 @@ function parseArgs(): ParsedArgs {
   return { type: "unknown" };
 }
 
-async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
+export async function buildToolInput(
+  parsed: Extract<ParsedArgs, { type: "call" }>,
+  primaryPositional?: { field: string },
+) {
   let input: Record<string, unknown> = {};
 
   if (parsed.baseInput) {
@@ -998,6 +1045,32 @@ async function buildToolInput(parsed: Extract<ParsedArgs, { type: "call" }>) {
 
   for (const { field, value } of parsed.fieldInputs) {
     input[field] = value;
+  }
+
+  if (parsed.positionalArgs.length > 0) {
+    if (!primaryPositional) {
+      throw new Error(
+        `Tool '${parsed.callableId}' does not support positional input. Use --flags or --input JSON instead.`,
+      );
+    }
+
+    const displayField = camelToKebabCase(primaryPositional.field);
+    if (parsed.positionalArgs.length > 1) {
+      throw new Error(
+        `Tool '${parsed.callableId}' accepts at most one positional argument: <${displayField}>.`,
+      );
+    }
+
+    if (Object.hasOwn(input, primaryPositional.field)) {
+      throw new Error(
+        `Primary positional <${displayField}> conflicts with an existing '${primaryPositional.field}' value from flags or JSON input.`,
+      );
+    }
+
+    input[primaryPositional.field] = normalizeMaybePath(
+      primaryPositional.field,
+      parsed.positionalArgs[0] ?? "",
+    );
   }
 
   return input;
@@ -1235,4 +1308,16 @@ function kebabToCamelCase(input: string): string {
   return input.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 }
 
-await main();
+function camelToKebabCase(input: string): string {
+  return input.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
+}
+
+function isMainModule() {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+  return resolve(entrypoint) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
+  await main();
+}

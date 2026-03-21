@@ -513,6 +513,9 @@ export class Web implements ServerTool {
         description: "Fetch a web page",
         shortInput: zodObjectToCliLines(getPageSchema, { mode: "required" }),
         input: zodObjectToCliLines(getPageSchema),
+        primaryPositional: {
+          field: "url",
+        },
       },
       {
         callableId: "search",

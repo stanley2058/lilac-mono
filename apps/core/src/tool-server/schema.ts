@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+const PrimaryPositionalSchema = z.object({
+  field: z.string(),
+});
+
 export const BridgeListResponse = z.object({
   tools: z.array(
     z.object({
@@ -7,6 +11,7 @@ export const BridgeListResponse = z.object({
       name: z.string(),
       description: z.string(),
       shortInput: z.array(z.string()),
+      primaryPositional: PrimaryPositionalSchema.optional(),
       hidden: z.boolean().optional(),
     }),
   ),
@@ -22,6 +27,7 @@ export const BridgeFnHelpResponse = z.object({
   description: z.string(),
   shortInput: z.array(z.string()),
   input: z.array(z.string()),
+  primaryPositional: PrimaryPositionalSchema.optional(),
   hidden: z.boolean().optional(),
 });
 

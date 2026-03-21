@@ -9,12 +9,17 @@ export type RequestContext = {
   cwd?: string;
 };
 
+export type ServerToolPrimaryPositional = {
+  field: string;
+};
+
 export type ServerToolHelpEntry = {
   callableId: string;
   name: string;
   description: string;
   shortInput: string[];
   input?: string[];
+  primaryPositional?: ServerToolPrimaryPositional;
   hidden?: boolean;
 };
 

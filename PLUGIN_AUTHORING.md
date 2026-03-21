@@ -69,6 +69,9 @@ const level2Tool: ServerTool = {
         description: "Echo text back to the caller.",
         shortInput: ["text=<string>"],
         input: ["text: string"],
+        primaryPositional: {
+          field: "text",
+        },
       },
     ];
   },
@@ -128,5 +131,6 @@ plugins:
 - Plugins run in-process and have the same privileges as core code.
 - Level 1 tool names must be globally unique.
 - Level 2 callable ids must be globally unique.
+- Level 2 tools can opt into a single string positional shortcut via `primaryPositional`, e.g. `tools fetch <url>`.
 - Built-in and external plugins share the same loading path and validation rules.
 - Hot reload is based on `core-config.yaml` and plugin directory contents; changing the built entrypoint and then calling `/reload`, `/list`, `/help/:callableId`, or `/call` will cause re-evaluation.
