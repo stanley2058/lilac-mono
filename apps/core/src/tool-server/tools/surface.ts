@@ -1276,6 +1276,9 @@ export class Surface implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(messagesSearchInputSchema),
+        primaryPositional: {
+          field: "query",
+        },
       },
       {
         callableId: "surface.messages.send",
@@ -1285,6 +1288,9 @@ export class Surface implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(messagesSendInputSchema),
+        primaryPositional: {
+          field: "text",
+        },
       },
       {
         callableId: "surface.messages.edit",

@@ -129,6 +129,9 @@ export class Workflow implements ServerTool {
         description: "Cancel a workflow and its pending tasks.",
         shortInput: ["--workflow-id=<string>"],
         input: ["--workflow-id=<string>", "--reason=<string> | Optional cancellation reason"],
+        primaryPositional: {
+          field: "workflowId",
+        },
       },
       {
         callableId: "workflow.list",

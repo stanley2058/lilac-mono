@@ -525,6 +525,9 @@ export class Web implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(webSearchInputSchema),
+        primaryPositional: {
+          field: "query",
+        },
       },
     ];
   }
