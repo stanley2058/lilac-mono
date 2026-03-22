@@ -27,7 +27,7 @@ const getPageSchema = z.object({
   mode: getPageModeSchema
     .optional()
     .describe(
-      "Mode to use for fetching the page; `auto`: smart fallback flow; `fetch`: direct HTTP fetch; `browser`: render with a browser; `extract`: use the configured extract provider.",
+      "Mode to use for fetching the page; `auto`: smart fallback flow; `fetch`: direct HTTP fetch; `browser`: render with a browser; `extract`: use the configured extract provider order.",
     ),
   format: z
     .union([z.literal("markdown"), z.literal("text"), z.literal("html")])
@@ -84,6 +84,24 @@ const SPA_SHELL_MARKERS = [
   "webpack",
   "hydration",
 ] as const;
+const RETRIABLE_WEB_PROVIDER_ERROR_PATTERNS = [
+  /credits? (are )?(exhausted|depleted|insufficient|used up)/i,
+  /quota (is )?(exhausted|depleted|exceeded|reached)/i,
+  /rate limit/i,
+  /too many requests/i,
+  /temporar(?:y|ily) unavailable/i,
+  /try again later/i,
+  /timeout/i,
+  /timed out/i,
+  /server error/i,
+  /bad gateway/i,
+  /gateway timeout/i,
+  /service unavailable/i,
+  /network error/i,
+  /connection reset/i,
+  /socket hang up/i,
+  /fetch failed/i,
+] as const;
 
 type GetPageMode = z.infer<typeof getPageModeSchema>;
 type GetPageInput = z.infer<typeof getPageSchema>;
@@ -108,11 +126,94 @@ type PageContentError = {
   contentLength?: number | null;
 };
 type PageContentResult = PageContentSuccess | PageContentError;
+type WebProviderFailure = {
+  providerId: WebSearchProviderId;
+  message: string;
+};
 
-function createAbortError(): Error {
-  const error = new Error("request aborted");
+function createAbortError(message = "request aborted"): Error {
+  const error = new Error(message);
   error.name = "AbortError";
   return error;
+}
+
+function getAbortReasonError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === "string" && reason.length > 0) {
+    return createAbortError(reason);
+  }
+  return createAbortError();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getNumericField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getErrorStatus(error: unknown): number | null {
+  if (!isRecord(error)) return null;
+
+  const directStatus = getNumericField(error, "status") ?? getNumericField(error, "statusCode");
+  if (directStatus !== null) return directStatus;
+
+  const response = error.response;
+  if (isRecord(response)) {
+    const responseStatus =
+      getNumericField(response, "status") ?? getNumericField(response, "statusCode");
+    if (responseStatus !== null) return responseStatus;
+  }
+
+  const cause = error.cause;
+  if (isRecord(cause)) {
+    const causeStatus = getNumericField(cause, "status") ?? getNumericField(cause, "statusCode");
+    if (causeStatus !== null) return causeStatus;
+  }
+
+  return null;
+}
+
+function isRetriableWebProviderError(error: unknown): boolean {
+  const status = getErrorStatus(error);
+  if (
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    (status !== null && status >= 500)
+  ) {
+    return true;
+  }
+
+  const message = getErrorMessage(error);
+  return RETRIABLE_WEB_PROVIDER_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function formatWebProviderFailureMessage(
+  operation: "search" | "extract",
+  failures: readonly WebProviderFailure[],
+): string {
+  if (failures.length === 0) {
+    return `web.${operation} failed.`;
+  }
+
+  if (failures.length === 1) {
+    return failures[0]!.message;
+  }
+
+  return `web.${operation} failed across fallback providers: ${failures
+    .map((failure) => `${failure.providerId}: ${failure.message}`)
+    .join(" | ")}`;
 }
 
 function parseMediaType(contentType: string | null): string | null {
@@ -140,7 +241,7 @@ function contentLengthFromHeaders(headers: Headers): number | null {
 }
 
 function checkSignal(signal?: AbortSignal) {
-  if (signal?.aborted) throw createAbortError();
+  if (signal?.aborted) throw getAbortReasonError(signal);
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -161,7 +262,7 @@ function withAbortSignal<T>(signal: AbortSignal | undefined, run: () => Promise<
 
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
-      reject(createAbortError());
+      reject(getAbortReasonError(signal));
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
@@ -368,7 +469,7 @@ export class Web implements ServerTool {
 
   private tavily: TavilyClient | null = null;
   private exa: Exa | null = null;
-  private webSearchProvider: WebSearchProvider | null = null;
+  private webSearchProviders: readonly WebSearchProvider[] = [];
   private webSearchProviderError: string | null = null;
   private webSearchProviderKey: string | null = null;
   private webFetchDefaultMode: GetPageMode = "auto";
@@ -387,30 +488,32 @@ export class Web implements ServerTool {
   }
 
   private async loadWebToolConfigFromCoreConfig(): Promise<{
-    extractProvider: WebSearchProviderId;
+    extractProviders: readonly WebSearchProviderId[];
     fetchMode: GetPageMode;
   }> {
     const cfg = await getCoreConfig();
     return {
-      extractProvider: cfg.tools.web.extract.provider,
+      extractProviders: cfg.tools.web.extract.providers,
       fetchMode: cfg.tools.web.fetch.mode,
     };
   }
 
   private async refreshWebConfig(): Promise<void> {
-    let extractProviderFromConfig: string | undefined;
+    let extractProvidersFromConfig: readonly string[] = [];
     let fetchModeFromConfig: GetPageMode = "auto";
     try {
       const config = await this.loadWebToolConfigFromCoreConfig();
-      extractProviderFromConfig = config.extractProvider;
+      extractProvidersFromConfig = config.extractProviders;
       fetchModeFromConfig = config.fetchMode;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.logError(`Failed to read core-config.yaml for web tool config: ${msg}`);
-      extractProviderFromConfig = undefined;
+      extractProvidersFromConfig = [];
     }
 
-    const normalizedRequested = extractProviderFromConfig?.trim().toLowerCase() ?? "";
+    const normalizedRequested = extractProvidersFromConfig.map((providerId) =>
+      providerId.trim().toLowerCase(),
+    );
 
     const exaBaseUrl = env.tools.web.exa.baseUrl;
     const exaApiKey = env.tools.web.exa.apiKey;
@@ -418,7 +521,7 @@ export class Web implements ServerTool {
     const tavilyApiBaseUrl = env.tools.web.tavilyApiBaseUrl;
 
     const nextKey = JSON.stringify({
-      requested: normalizedRequested || null,
+      requested: normalizedRequested,
       fetchMode: fetchModeFromConfig,
       exaBaseUrl: exaBaseUrl ?? null,
       hasExaApiKey: Boolean(exaApiKey),
@@ -428,7 +531,7 @@ export class Web implements ServerTool {
     if (nextKey === this.webSearchProviderKey) return;
     this.webSearchProviderKey = nextKey;
 
-    const prevId = this.webSearchProvider?.id ?? null;
+    const prevIds = this.webSearchProviders.map((provider) => provider.id).join(" -> ") || null;
     const prevFetchMode = this.webFetchDefaultMode;
 
     const providers = createDefaultWebSearchProviders({
@@ -441,25 +544,25 @@ export class Web implements ServerTool {
     });
 
     const resolved = resolveWebSearchProvider({
-      requested: extractProviderFromConfig,
+      requested: extractProvidersFromConfig,
       providers,
     });
 
-    this.webSearchProvider = resolved.provider;
+    this.webSearchProviders = resolved.providers;
     this.webSearchProviderError = resolved.error;
     this.webFetchDefaultMode = fetchModeFromConfig;
 
-    const nextId = this.webSearchProvider?.id ?? null;
+    const nextIds = this.webSearchProviders.map((provider) => provider.id).join(" -> ") || null;
     if (resolved.warning) {
       this.logger.logInfo(resolved.warning);
     }
-    if (nextId && nextId !== prevId) {
-      this.logger.logInfo(`web.extract provider: ${nextId}`);
+    if (nextIds && nextIds !== prevIds) {
+      this.logger.logInfo(`web.extract providers: ${nextIds}`);
     }
     if (prevFetchMode !== this.webFetchDefaultMode) {
       this.logger.logInfo(`web.fetch mode: ${this.webFetchDefaultMode}`);
     }
-    if (!nextId && this.webSearchProviderError) {
+    if (!nextIds && this.webSearchProviderError) {
       this.logger.logError(this.webSearchProviderError);
     }
   }
@@ -589,23 +692,42 @@ export class Web implements ServerTool {
 
     await this.refreshWebConfig();
 
-    if (!this.webSearchProvider) {
+    if (this.webSearchProviders.length === 0) {
       return {
         isError: true as const,
         error: this.webSearchProviderError ?? "web.search is unavailable: no provider configured.",
       };
     }
 
-    try {
-      return await this.webSearchProvider.search(input, { signal: opts?.signal });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.logger.logError(`web.search failed (${this.webSearchProvider.id}): ${msg}`);
-      return {
-        isError: true as const,
-        error: msg,
-      };
+    const failures: WebProviderFailure[] = [];
+
+    for (const [index, provider] of this.webSearchProviders.entries()) {
+      try {
+        if (index > 0) {
+          this.logger.logInfo(`web.search retrying with fallback provider '${provider.id}'.`);
+        }
+        return await provider.search(input, { signal: opts?.signal });
+      } catch (e) {
+        const msg = getErrorMessage(e);
+        failures.push({ providerId: provider.id, message: msg });
+
+        const retriable = isRetriableWebProviderError(e);
+        if (retriable && index < this.webSearchProviders.length - 1) {
+          this.logger.logInfo(
+            `web.search retryable failure (${provider.id}): ${msg}. Falling back to next provider.`,
+          );
+          continue;
+        }
+
+        this.logger.logError(`web.search failed (${provider.id}): ${msg}`);
+        break;
+      }
     }
+
+    return {
+      isError: true as const,
+      error: formatWebProviderFailureMessage("search", failures),
+    };
   }
 
   private async findSystemChromiumExecutable(): Promise<string | null> {
@@ -853,7 +975,7 @@ export class Web implements ServerTool {
       signal?: AbortSignal;
     },
   ): Promise<PageContentResult> {
-    const { url, format = "markdown", timeout = 10_000 } = input;
+    const { format = "markdown" } = input;
 
     if (format === "html") {
       return {
@@ -862,14 +984,71 @@ export class Web implements ServerTool {
       };
     }
 
-    if (!this.webSearchProvider) {
+    if (this.webSearchProviders.length === 0) {
       return {
         isError: true,
         error: this.webSearchProviderError ?? "web.extract is unavailable: no provider configured.",
       };
     }
 
-    switch (this.webSearchProvider.id) {
+    const failures: WebProviderFailure[] = [];
+
+    for (const [index, provider] of this.webSearchProviders.entries()) {
+      if (index > 0) {
+        this.logger.logInfo(`web.extract retrying with fallback provider '${provider.id}'.`);
+      }
+
+      try {
+        const result = await this.extractPageContentWithProvider(provider.id, input, opts);
+        if (!result.isError) {
+          return result;
+        }
+
+        failures.push({ providerId: provider.id, message: result.error });
+
+        const retriable = isRetriableWebProviderError(result.error);
+        if (retriable && index < this.webSearchProviders.length - 1) {
+          this.logger.logInfo(
+            `web.extract retryable failure (${provider.id}): ${result.error}. Falling back to next provider.`,
+          );
+          continue;
+        }
+
+        this.logger.logError(`web.extract failed (${provider.id}): ${result.error}`);
+        break;
+      } catch (e) {
+        const msg = getErrorMessage(e);
+        failures.push({ providerId: provider.id, message: msg });
+
+        const retriable = isRetriableWebProviderError(e);
+        if (retriable && index < this.webSearchProviders.length - 1) {
+          this.logger.logInfo(
+            `web.extract retryable failure (${provider.id}): ${msg}. Falling back to next provider.`,
+          );
+          continue;
+        }
+
+        this.logger.logError(`web.extract failed (${provider.id}): ${msg}`);
+        break;
+      }
+    }
+
+    return {
+      isError: true,
+      error: formatWebProviderFailureMessage("extract", failures),
+    };
+  }
+
+  private async extractPageContentWithProvider(
+    providerId: WebSearchProviderId,
+    input: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ): Promise<PageContentResult> {
+    const { url, format = "markdown", timeout = 10_000 } = input;
+
+    switch (providerId) {
       case "tavily": {
         const client = this.getTavilyClient();
         const response = await withAbortSignal(opts?.signal, () =>
@@ -939,7 +1118,7 @@ export class Web implements ServerTool {
       default: {
         return {
           isError: true,
-          error: `web.extract provider '${this.webSearchProvider.id}' is not supported.`,
+          error: `web.extract provider '${providerId}' is not supported.`,
         };
       }
     }
