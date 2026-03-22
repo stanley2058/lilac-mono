@@ -1,8 +1,15 @@
 import Elysia, { NotFoundError } from "elysia";
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger, getBuildInfo } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { BridgeFnRequest, BridgeFnResponse, BridgeListResponse } from "./schema";
+import {
+  BridgeFnRequest,
+  BridgeFnResponse,
+  BridgeListResponse,
+  BridgeVersionResponse,
+} from "./schema";
 import {
   createToolServerHealthState,
   type ToolServerHealthCheck,
@@ -104,6 +111,7 @@ export type ToolServerOptions = {
 };
 
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 5 * 60 * 1000;
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
 function createDeadlineSignal(timeoutMs: number): {
   signal: AbortSignal;
@@ -127,9 +135,19 @@ function timeoutForTool(tool: ServerTool, options?: ToolCallTimeoutOptions): num
   return options?.perToolMs?.[tool.id] ?? options?.defaultTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
 }
 
-function getVersion(): string {
-  const pkgVersion = process.env.npm_package_version?.trim();
-  return pkgVersion && pkgVersion.length > 0 ? pkgVersion : "dev";
+function countLoadedExternalPlugins(statuses: readonly unknown[] | undefined): number {
+  if (!statuses) return 0;
+
+  let count = 0;
+  for (const status of statuses) {
+    if (!status || typeof status !== "object") continue;
+
+    const source = Reflect.get(status, "source");
+    const state = Reflect.get(status, "state");
+    if (source === "external" && state === "loaded") count += 1;
+  }
+
+  return count;
 }
 
 export function createToolServer(options: ToolServerOptions) {
@@ -196,12 +214,35 @@ export function createToolServer(options: ToolServerOptions) {
     return snapshot;
   });
 
-  app.get("/versionz", async () => ({
-    ok: true as const,
-    version: getVersion(),
-    startedAt: serverStartedAt,
-    pid: process.pid,
-  }));
+  app.get(
+    "/versionz",
+    async () => {
+      if (options.pluginManager) {
+        await options.pluginManager.ensureFresh();
+      }
+
+      const buildInfo = getBuildInfo({ cwd: MODULE_DIR });
+      const loadedExternalPlugins = countLoadedExternalPlugins(
+        options.pluginManager?.getStatuses?.(),
+      );
+
+      return {
+        ok: true as const,
+        version: buildInfo.version,
+        commit: buildInfo.commit,
+        dirty: buildInfo.dirty,
+        builtAt: buildInfo.builtAt,
+        plugins: {
+          loadedExternal: loadedExternalPlugins,
+        },
+        startedAt: serverStartedAt,
+        pid: process.pid,
+      };
+    },
+    {
+      response: BridgeVersionResponse,
+    },
+  );
 
   app.get(
     "/list",

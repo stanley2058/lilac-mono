@@ -8,6 +8,7 @@ export * from "./core-config";
 export * from "./agent-prompts";
 export * from "./skills";
 export * from "./find-root";
+export * from "./build-info";
 export * from "./logging";
 export * from "./vcs-env";
 export * from "./model-edit-mode";

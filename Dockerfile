@@ -140,7 +140,9 @@ USER root
 
 FROM deps AS build
 WORKDIR /app
-COPY . .
+COPY bunfig.toml tsconfig.json ./
+COPY apps ./apps
+COPY packages ./packages
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app
 USER ${LILAC_USER}
 
@@ -149,6 +151,10 @@ RUN (cd apps/tool-bridge && bun run build)
 RUN (cd apps/core && bun run build:remote-runner)
 
 USER root
+# Copy generated build metadata late so commit-only changes do not invalidate source build layers.
+COPY build ./build
+RUN test -f /app/build/build-info.json || printf '{\n  "version": "dev",\n  "commit": "dev"\n}\n' > /app/build/build-info.json
+RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app/build
 # Make `tools` available globally
 RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
 USER ${LILAC_USER}

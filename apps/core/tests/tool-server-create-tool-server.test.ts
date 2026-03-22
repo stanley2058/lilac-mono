@@ -14,8 +14,35 @@ import { parseToolInput } from "../src/tool-server/validation-error-message";
 
 const originalMemoryUsage = process.memoryUsage;
 
+type BuildEnvSnapshot = {
+  LILAC_BUILD_VERSION: string | undefined;
+  LILAC_BUILD_COMMIT: string | undefined;
+  LILAC_BUILD_DIRTY: string | undefined;
+  LILAC_BUILD_AT: string | undefined;
+};
+
 function setMockMemoryUsage(memory: ReturnType<typeof process.memoryUsage>) {
   process.memoryUsage = (() => memory) as typeof process.memoryUsage;
+}
+
+function snapshotBuildEnv(): BuildEnvSnapshot {
+  return {
+    LILAC_BUILD_VERSION: process.env.LILAC_BUILD_VERSION,
+    LILAC_BUILD_COMMIT: process.env.LILAC_BUILD_COMMIT,
+    LILAC_BUILD_DIRTY: process.env.LILAC_BUILD_DIRTY,
+    LILAC_BUILD_AT: process.env.LILAC_BUILD_AT,
+  };
+}
+
+function restoreBuildEnv(snapshot: BuildEnvSnapshot) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key];
+      continue;
+    }
+
+    process.env[key] = value;
+  }
 }
 
 async function writePluginServerTool(params: {
@@ -379,6 +406,63 @@ describe("createToolServer", () => {
     expect(await callRes.json()).toEqual({ isError: false, output: { value: "two" } });
 
     await server.stop();
+  });
+
+  it("reports build metadata and loaded external plugin count from /versionz", async () => {
+    const originalEnv = snapshotBuildEnv();
+    process.env.LILAC_BUILD_VERSION = "2026.03.22";
+    process.env.LILAC_BUILD_COMMIT = "abc123def456";
+    process.env.LILAC_BUILD_DIRTY = "1";
+    process.env.LILAC_BUILD_AT = "2026-03-22T00:00:00.000Z";
+
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
+    const dataDir = path.join(tmpRoot, "data");
+
+    await writePluginServerTool({
+      dataDir,
+      pluginId: "version-plugin",
+      callableId: "version.call",
+      value: "one",
+    });
+
+    const pluginManager = new ToolPluginManager<
+      Record<string, never>,
+      Level1ToolSpec<Record<string, never>>,
+      ServerTool
+    >({
+      runtime: {},
+      dataDir,
+      getLevel1Name: (spec) => spec.name,
+      getLevel2CallableIds: async (tool) => (await tool.list()).map((entry) => entry.callableId),
+      initLevel2Item: async (tool) => {
+        await tool.init();
+      },
+      destroyLevel2Item: async (tool) => {
+        await tool.destroy();
+      },
+    });
+
+    const server = createToolServer({ pluginManager });
+
+    try {
+      await server.init();
+
+      const response = await server.app.handle(new Request("http://localhost/versionz"));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        version: "2026.03.22",
+        commit: "abc123def456",
+        dirty: true,
+        builtAt: "2026-03-22T00:00:00.000Z",
+        plugins: {
+          loadedExternal: 1,
+        },
+      });
+    } finally {
+      restoreBuildEnv(originalEnv);
+      await server.stop();
+    }
   });
 
   it("reports live and ready health separately", async () => {

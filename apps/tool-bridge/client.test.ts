@@ -4,7 +4,13 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { buildToolInput, isMainModule, parseArgs, resolveBuildId } from "./client";
+import {
+  buildToolInput,
+  buildVersionTags,
+  isMainModule,
+  parseArgs,
+  resolveBuildId,
+} from "./client";
 
 describe("tool-bridge entrypoint detection", () => {
   it("treats the generated dist index wrapper as the main CLI entrypoint", () => {
@@ -69,6 +75,27 @@ describe("tool-bridge build id", () => {
 
   it("falls back to dev when running from source", async () => {
     await expect(resolveBuildId("/workspace/apps/tool-bridge/client.ts")).resolves.toBe("dev");
+  });
+
+  it("shows backend dirty state even when commits match", () => {
+    expect(
+      buildVersionTags(
+        {
+          version: "dev",
+          commit: "abc123def456",
+          build: "deadbeef",
+        },
+        {
+          ok: true,
+          version: "dev",
+          commit: "abc123def456",
+          dirty: true,
+          plugins: {
+            loadedExternal: 2,
+          },
+        },
+      ),
+    ).toEqual(["[commit: abc123def456]", "[build: deadbeef]", "[app-dirty]", "[plugins: 2]"]);
   });
 });
 
