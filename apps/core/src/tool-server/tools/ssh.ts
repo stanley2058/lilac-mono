@@ -182,6 +182,9 @@ export class SSH implements ServerTool {
           "Probe remote host capabilities (expected tools + basic system and git context).",
         shortInput: zodObjectToCliLines(probeInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(probeInputSchema),
+        primaryPositional: {
+          field: "host",
+        },
         hidden,
       },
     ];

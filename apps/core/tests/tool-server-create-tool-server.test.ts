@@ -152,6 +152,69 @@ describe("createToolServer", () => {
     expect(captured.messages).toEqual(cachedMessages);
   });
 
+  it("includes primary positional metadata in list and help responses", async () => {
+    const tool: ServerTool = {
+      id: "test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "fetch",
+            name: "Fetch",
+            description: "Fetch a web page",
+            shortInput: ["--url=<string>"],
+            input: ["--url=<string>"],
+            primaryPositional: {
+              field: "url",
+            },
+          },
+        ];
+      },
+      async call() {
+        return { ok: true };
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+    });
+
+    await server.init();
+
+    const listRes = await server.app.handle(new Request("http://localhost/list"));
+    expect(listRes.status).toBe(200);
+    expect(await listRes.json()).toEqual({
+      tools: [
+        {
+          callableId: "fetch",
+          name: "Fetch",
+          description: "Fetch a web page",
+          shortInput: ["--url=<string>"],
+          primaryPositional: {
+            field: "url",
+          },
+          hidden: undefined,
+        },
+      ],
+    });
+
+    const helpRes = await server.app.handle(new Request("http://localhost/help/fetch"));
+    expect(helpRes.status).toBe(200);
+    expect(await helpRes.json()).toEqual({
+      callableId: "fetch",
+      name: "Fetch",
+      description: "Fetch a web page",
+      shortInput: ["--url=<string>"],
+      input: ["--url=<string>"],
+      primaryPositional: {
+        field: "url",
+      },
+    });
+
+    await server.stop();
+  });
+
   it("supports plugin-backed list/call/reload flows", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
     const dataDir = path.join(tmpRoot, "data");

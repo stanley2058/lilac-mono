@@ -222,6 +222,7 @@ export function createToolServer(options: ToolServerOptions) {
             name: entry.name,
             description: entry.description,
             shortInput: entry.shortInput,
+            primaryPositional: entry.primaryPositional,
             hidden: entry.hidden,
           })),
         ),

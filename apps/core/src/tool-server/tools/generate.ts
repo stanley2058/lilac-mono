@@ -702,6 +702,9 @@ export class Generate implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(imageGenerateInputSchema),
+        primaryPositional: {
+          field: "prompt",
+        },
       });
     }
 

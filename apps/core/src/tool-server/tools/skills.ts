@@ -125,6 +125,9 @@ export class Skills implements ServerTool {
         description: "Load a skill's frontmatter + a truncated SKILL.md body.",
         shortInput: zodObjectToCliLines(readInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(readInputSchema),
+        primaryPositional: {
+          field: "name",
+        },
       },
       {
         callableId: "skills.full",
@@ -133,6 +136,9 @@ export class Skills implements ServerTool {
           "Load a skill's frontmatter + a larger SKILL.md body, plus a top-level directory listing.",
         shortInput: zodObjectToCliLines(readInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(readInputSchema),
+        primaryPositional: {
+          field: "name",
+        },
       },
     ];
   }
