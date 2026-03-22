@@ -15,6 +15,10 @@ function formatEnvPreview(env: Record<string, string>): string {
     .join(" ");
 }
 
+function buildArgFlags(env: Record<string, string>): string[] {
+  return Object.entries(env).flatMap(([key, value]) => ["--build-arg", `${key}=${value}`]);
+}
+
 function main() {
   const mode = parseMode(process.argv[2]);
   const rawArgs = process.argv.slice(3);
@@ -23,7 +27,10 @@ function main() {
   const passthroughArgs = dryRun ? rawArgs.filter((arg) => arg !== "--dry-run") : rawArgs;
 
   const metadataEnv = buildMetadataEnv(collectBuildMetadata());
-  const dockerArgs = mode === "compose-build" ? ["compose", "build", ...passthroughArgs] : ["build", ...passthroughArgs];
+  const dockerArgs =
+    mode === "compose-build"
+      ? ["compose", "build", ...passthroughArgs]
+      : ["build", ...buildArgFlags(metadataEnv), ...passthroughArgs];
 
   if (dryRun) {
     console.log(formatEnvPreview(metadataEnv));
