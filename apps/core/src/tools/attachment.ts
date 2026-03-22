@@ -38,6 +38,20 @@ const optionalNonEmptyStringListInputSchema = z
     return Array.isArray(value) ? value : [value];
   });
 
+function normalizeAttachmentAddFilesInput(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+
+  const input = raw as Record<string, unknown>;
+  if (input["paths"] !== undefined || input["files"] === undefined) {
+    return raw;
+  }
+
+  return {
+    ...input,
+    paths: input["files"],
+  };
+}
+
 function asBuffer(data: unknown): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof Uint8Array) return Buffer.from(data);
@@ -57,17 +71,20 @@ function asBuffer(data: unknown): Buffer {
 }
 
 const attachmentAddFilesInputSchema = z
-  .object({
-    paths: nonEmptyStringListInputSchema.describe(
-      "Local file paths to attach (resolved relative to tool cwd)",
-    ),
-    filenames: optionalNonEmptyStringListInputSchema.describe(
-      "Optional filenames for each attachment",
-    ),
-    mimeTypes: optionalNonEmptyStringListInputSchema.describe(
-      "Optional mime types for each attachment",
-    ),
-  })
+  .preprocess(
+    normalizeAttachmentAddFilesInput,
+    z.object({
+      paths: nonEmptyStringListInputSchema.describe(
+        "Local file paths to attach (resolved relative to tool cwd; alias: files)",
+      ),
+      filenames: optionalNonEmptyStringListInputSchema.describe(
+        "Optional filenames for each attachment",
+      ),
+      mimeTypes: optionalNonEmptyStringListInputSchema.describe(
+        "Optional mime types for each attachment",
+      ),
+    }),
+  )
   .describe("Add one or more attachments from local files.");
 
 const attachmentAddOutputSchema = z.object({

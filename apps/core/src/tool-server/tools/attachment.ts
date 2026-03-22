@@ -6,6 +6,7 @@ import { basename, extname, join, resolve } from "node:path";
 import type { ModelMessage } from "ai";
 import type { RequestContext, ServerTool } from "../types";
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
+import { parseToolInput } from "../validation-error-message";
 import {
   requireToolServerHeaders,
   type RequiredToolServerHeaders,
@@ -42,6 +43,20 @@ const optionalNonEmptyStringListInputSchema = z
     if (value === undefined) return undefined;
     return Array.isArray(value) ? value : [value];
   });
+
+function normalizeAttachmentAddFilesInput(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+
+  const input = raw as Record<string, unknown>;
+  if (input["paths"] !== undefined || input["files"] === undefined) {
+    return raw;
+  }
+
+  return {
+    ...input,
+    paths: input["files"],
+  };
+}
 
 function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "attachment");
@@ -101,17 +116,20 @@ async function downloadToBuffer(input: unknown): Promise<{
 }
 
 const attachmentAddFilesInputSchema = z
-  .object({
-    paths: nonEmptyStringListInputSchema.describe(
-      "Local file paths to attach (resolved relative to request cwd)",
-    ),
-    filenames: optionalNonEmptyStringListInputSchema.describe(
-      "Optional filenames for each attachment",
-    ),
-    mimeTypes: optionalNonEmptyStringListInputSchema.describe(
-      "Optional mime types for each attachment",
-    ),
-  })
+  .preprocess(
+    normalizeAttachmentAddFilesInput,
+    z.object({
+      paths: nonEmptyStringListInputSchema.describe(
+        "Local file paths to attach (resolved relative to request cwd; alias: files)",
+      ),
+      filenames: optionalNonEmptyStringListInputSchema.describe(
+        "Optional filenames for each attachment",
+      ),
+      mimeTypes: optionalNonEmptyStringListInputSchema.describe(
+        "Optional mime types for each attachment",
+      ),
+    }),
+  )
   .describe("Add one or more attachments from local files.");
 
 const attachmentDownloadInputSchema = z.object({
@@ -203,7 +221,7 @@ export class Attachment implements ServerTool {
         description: "Reads local files and attaches them to the current reply.",
         shortInput: ["--paths=<string | string[]>"],
         input: [
-          "--paths=<string | string[]> | Local file paths",
+          "--paths=<string | string[]> | Local file paths (preferred; alias: files)",
           "--filenames=<string | string[]> | Optional filenames (same length as paths)",
           "--mimeTypes=<string | string[]> | Optional mime types (same length as paths)",
         ],
@@ -246,7 +264,11 @@ export class Attachment implements ServerTool {
   }
 
   private async callAddFiles(rawInput: Record<string, unknown>, ctx: RequestContext | undefined) {
-    const input = attachmentAddFilesInputSchema.parse(rawInput);
+    const input = parseToolInput({
+      callableId: "attachment.add_files",
+      input: rawInput,
+      schema: attachmentAddFilesInputSchema,
+    });
     const headers = toHeaders(ctx);
 
     const cwd = ctx?.cwd ?? process.cwd();
@@ -303,7 +325,11 @@ export class Attachment implements ServerTool {
   }
 
   private async callDownload(rawInput: Record<string, unknown>, messages: readonly ModelMessage[]) {
-    const input = attachmentDownloadInputSchema.parse(rawInput);
+    const input = parseToolInput({
+      callableId: "attachment.download",
+      input: rawInput,
+      schema: attachmentDownloadInputSchema,
+    });
 
     const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
 
