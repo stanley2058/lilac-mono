@@ -1,7 +1,9 @@
 /* oxlint-disable eslint/no-control-regex */
 
 import { encode } from "@toon-format/toon";
+import { getBuildInfo, type BuildInfo } from "@stanley2058/lilac-utils";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
@@ -9,15 +11,16 @@ import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-declare global {
-  // injected at build time in real releases
-  // eslint-disable-next-line no-var
-  var PACKAGE_VERSION: string;
-}
-
-globalThis.PACKAGE_VERSION = "dev";
-
 const BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
+const BUILD_ID_LENGTH = 8;
+const DEV_BUILD_ID = "dev";
+const VERSION_FETCH_TIMEOUT_MS = 1_500;
+const CURRENT_FILE = fileURLToPath(import.meta.url);
+const MODULE_DIR = dirname(CURRENT_FILE);
+
+let buildIdPromise: Promise<string> | undefined;
+let localVersionInfoPromise: Promise<LocalVersionInfo> | undefined;
+let backendVersionInfoPromise: Promise<BackendVersionInfo | null> | undefined;
 
 async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Response> {
   // Bun (and Node's undici fetch) can enforce a default request timeout (~5m)
@@ -33,6 +36,27 @@ async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Respon
   return await fetch(req);
 }
 
+async function fetchWithTimeout(
+  input: string,
+  timeoutMs: number,
+  init?: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  timer.unref?.();
+
+  try {
+    return await fetchNoTimeout(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type ToolOutputFull = {
   callableId: string;
   name: string;
@@ -43,6 +67,10 @@ type ToolOutputFull = {
     field: string;
   };
   hidden?: boolean;
+};
+
+type LocalVersionInfo = BuildInfo & {
+  build: string;
 };
 
 let callableIdsCache: string[] | undefined;
@@ -64,6 +92,23 @@ const errorPayloadSchema = z
     error: z.unknown().optional(),
   })
   .passthrough();
+
+const backendVersionPayloadSchema = z
+  .object({
+    ok: z.literal(true),
+    version: z.string(),
+    commit: z.string(),
+    dirty: z.boolean().optional(),
+    builtAt: z.string().optional(),
+    plugins: z
+      .object({
+        loadedExternal: z.number().int().nonnegative(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+type BackendVersionInfo = z.infer<typeof backendVersionPayloadSchema>;
 
 function parseCallableIdsFromListPayload(payload: unknown): string[] {
   const parsed = listPayloadSchema.safeParse(payload);
@@ -255,6 +300,23 @@ async function listTools() {
   };
 }
 
+async function getBackendVersionInfoBestEffort(): Promise<BackendVersionInfo | null> {
+  backendVersionInfoPromise ??= (async () => {
+    try {
+      const res = await fetchWithTimeout(`${BACKEND_URL}/versionz`, VERSION_FETCH_TIMEOUT_MS);
+      if (!res.ok) return null;
+
+      const payload = (await res.json()) as unknown;
+      const parsed = backendVersionPayloadSchema.safeParse(payload);
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  return await backendVersionInfoPromise;
+}
+
 async function toolHelp(callableId: string) {
   const res = await fetchNoTimeout(`${BACKEND_URL}/help/${encodeURIComponent(callableId)}`);
   if (!res.ok) {
@@ -413,10 +475,109 @@ function section(title: string, lines: string[]) {
   return [hdr, ...body].join("\n");
 }
 
-function banner() {
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function sha256HexPrefix(filePath: string, length = BUILD_ID_LENGTH): Promise<string> {
+  const bytes = await fs.readFile(filePath);
+  return createHash("sha256").update(bytes).digest("hex").slice(0, length);
+}
+
+export async function resolveBuildId(currentFile = CURRENT_FILE): Promise<string> {
+  const normalizedCurrent = normalizePathCandidate(currentFile, process.cwd()) ?? currentFile;
+  if (!normalizedCurrent) return DEV_BUILD_ID;
+
+  const currentBase = basename(normalizedCurrent);
+  if (currentBase === "client.ts") return DEV_BUILD_ID;
+
+  const artifactPath =
+    currentBase === "client.js"
+      ? normalizedCurrent
+      : resolve(dirname(normalizedCurrent), "client.js");
+
+  if (!(await isFile(artifactPath))) return DEV_BUILD_ID;
+
+  try {
+    return await sha256HexPrefix(artifactPath);
+  } catch {
+    return DEV_BUILD_ID;
+  }
+}
+
+async function getBuildId(): Promise<string> {
+  buildIdPromise ??= resolveBuildId();
+  return await buildIdPromise;
+}
+
+async function getLocalVersionInfo(): Promise<LocalVersionInfo> {
+  localVersionInfoPromise ??= (async () => ({
+    ...getBuildInfo({ cwd: MODULE_DIR }),
+    build: await getBuildId(),
+  }))();
+
+  return await localVersionInfoPromise;
+}
+
+function formatTag(label: string, value: string): string {
+  return styles.dim(`[${label}: ${value}]`);
+}
+
+function buildLocalVersionTags(localVersion: LocalVersionInfo): string[] {
+  const tags = [formatTag("commit", localVersion.commit), formatTag("build", localVersion.build)];
+
+  if (localVersion.dirty) {
+    tags.push(styles.yellow("[dirty]"));
+  }
+
+  return tags;
+}
+
+export function buildVersionTags(
+  localVersion: LocalVersionInfo,
+  backendVersion: BackendVersionInfo | null,
+): string[] {
+  const tags = buildLocalVersionTags(localVersion);
+  if (!backendVersion) return tags;
+
+  if (backendVersion.commit !== localVersion.commit) {
+    tags.push(formatTag("app", backendVersion.commit));
+  }
+
+  if (backendVersion.dirty) {
+    tags.push(styles.yellow("[app-dirty]"));
+  }
+
+  const pluginCount = backendVersion.plugins?.loadedExternal ?? 0;
+  if (pluginCount > 0) {
+    tags.push(formatTag("plugins", String(pluginCount)));
+  }
+
+  return tags;
+}
+
+function renderBanner(tags: readonly string[]): string {
   const name = styles.bold("tools");
-  const version = styles.dim(`[version: ${PACKAGE_VERSION}]`);
-  return `${name} - All-in-one tool proxy ${version}`;
+  return tags.length > 0
+    ? `${name} - All-in-one tool proxy ${tags.join(" ")}`
+    : `${name} - All-in-one tool proxy`;
+}
+
+async function banner() {
+  return renderBanner(buildLocalVersionTags(await getLocalVersionInfo()));
+}
+
+async function versionBanner() {
+  const [localVersion, backendVersion] = await Promise.all([
+    getLocalVersionInfo(),
+    getBackendVersionInfoBestEffort(),
+  ]);
+  return renderBanner(buildVersionTags(localVersion, backendVersion));
 }
 
 function formatBullets(
@@ -514,14 +675,14 @@ async function main() {
   try {
     switch (parsed.type) {
       case "version": {
-        console.log(banner());
+        console.log(await versionBanner());
         break;
       }
       case "help": {
         if (parsed.callableId) {
           if (parsed.callableId === "onboard") {
             const output = [
-              banner(),
+              await banner(),
               "",
               `${styles.bold("onboard")} ${styles.dim("—")} Configure agent git identity + GPG signing under DATA_DIR`,
               "",
@@ -555,7 +716,7 @@ async function main() {
           const usageLines = buildUsageLinesForTool(result);
 
           const output = [
-            banner(),
+            await banner(),
             "",
             `${styles.bold(result.name)} ${styles.dim("—")} ${result.description}`,
             "",
@@ -569,7 +730,7 @@ async function main() {
           console.log(output.join("\n"));
         } else {
           const output = [
-            banner(),
+            await banner(),
             "",
             section("Usage", [
               "tools --list",
@@ -618,7 +779,7 @@ async function main() {
         const idWidth = Math.min(28, Math.max(10, ...visibleTools.map((t) => t.callableId.length)));
 
         const output: string[] = [
-          banner(),
+          await banner(),
           "",
           section("Usage", [
             "tools <tool> --arg1=value --arg2=value",
@@ -1324,11 +1485,7 @@ function normalizePathCandidate(candidate: string | undefined, cwd: string): str
   }
 }
 
-export function isMainModule(
-  args = process.argv,
-  cwd = process.cwd(),
-  currentFile = fileURLToPath(import.meta.url),
-) {
+export function isMainModule(args = process.argv, cwd = process.cwd(), currentFile = CURRENT_FILE) {
   const normalizedCurrent = normalizePathCandidate(currentFile, cwd);
   const normalizedArgv1 = normalizePathCandidate(args[1], cwd);
 

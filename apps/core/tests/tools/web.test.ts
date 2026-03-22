@@ -24,6 +24,21 @@ function stubWeb(tool: Web, stub: Record<string, unknown>): void {
   Object.assign(tool as unknown as Record<string, unknown>, stub);
 }
 
+function callExtractPageContent(
+  tool: Web,
+  input: Record<string, unknown>,
+  opts?: { signal?: AbortSignal },
+): Promise<unknown> {
+  const privateApi = tool as unknown as {
+    extractPageContent: (
+      input: Record<string, unknown>,
+      opts?: { signal?: AbortSignal },
+    ) => Promise<unknown>;
+  };
+
+  return privateApi.extractPageContent(input, opts);
+}
+
 describe("web tool fetch", () => {
   it("propagates abort signals through fetch mode", async () => {
     const server = startServer(async () => {
@@ -353,11 +368,7 @@ describe("web tool fetch", () => {
 
     stubWeb(tool, {
       refreshWebConfig: async () => {},
-      webSearchProvider: {
-        id: "exa",
-        isConfigured: () => true,
-        search: async () => [],
-      },
+      webSearchProviders: [{ id: "exa", isConfigured: () => true, search: async () => [] }],
       getExaClient: () => ({
         getContents: async () => ({
           results: [
@@ -390,11 +401,7 @@ describe("web tool fetch", () => {
 
     stubWeb(tool, {
       refreshWebConfig: async () => {},
-      webSearchProvider: {
-        id: "exa",
-        isConfigured: () => true,
-        search: async () => [],
-      },
+      webSearchProviders: [{ id: "exa", isConfigured: () => true, search: async () => [] }],
       getExaClient: () => ({
         getContents: async () => {
           await Bun.sleep(50);
@@ -412,14 +419,188 @@ describe("web tool fetch", () => {
     });
 
     await expect(
+      callExtractPageContent(tool, {
+        url: "https://example.com",
+        timeout: 10,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      error: expect.stringMatching(/abort|timeout|timed out/i),
+    });
+  });
+
+  it("falls back to the next search provider on retriable errors", async () => {
+    const tool = new Web();
+    const calls: string[] = [];
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProviders: [
+        {
+          id: "tavily",
+          isConfigured: () => true,
+          search: async () => {
+            calls.push("tavily");
+            throw new Error("credits exhausted for current billing period");
+          },
+        },
+        {
+          id: "exa",
+          isConfigured: () => true,
+          search: async () => {
+            calls.push("exa");
+            return [
+              {
+                url: "https://example.com",
+                title: "Example",
+                content: "Recovered from fallback provider.",
+                score: null,
+              },
+            ];
+          },
+        },
+      ],
+    });
+
+    await expect(tool.call("search", { query: "fallback test" })).resolves.toEqual([
+      {
+        url: "https://example.com",
+        title: "Example",
+        content: "Recovered from fallback provider.",
+        score: null,
+      },
+    ]);
+    expect(calls).toEqual(["tavily", "exa"]);
+  });
+
+  it("does not fall back on non-retriable search errors", async () => {
+    const tool = new Web();
+    const calls: string[] = [];
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProviders: [
+        {
+          id: "tavily",
+          isConfigured: () => true,
+          search: async () => {
+            calls.push("tavily");
+            throw new Error("401 unauthorized");
+          },
+        },
+        {
+          id: "exa",
+          isConfigured: () => true,
+          search: async () => {
+            calls.push("exa");
+            return [];
+          },
+        },
+      ],
+    });
+
+    await expect(tool.call("search", { query: "no retry" })).resolves.toMatchObject({
+      isError: true,
+      error: "401 unauthorized",
+    });
+    expect(calls).toEqual(["tavily"]);
+  });
+
+  it("falls back to the next extract provider on retriable errors", async () => {
+    const tool = new Web();
+    const calls: string[] = [];
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProviders: [
+        { id: "tavily", isConfigured: () => true, search: async () => [] },
+        { id: "exa", isConfigured: () => true, search: async () => [] },
+      ],
+      getTavilyClient: () => ({
+        extract: async () => {
+          calls.push("tavily");
+          throw new Error("credits exhausted for current billing period");
+        },
+      }),
+      getExaClient: () => ({
+        getContents: async () => {
+          calls.push("exa");
+          return {
+            results: [
+              {
+                url: "https://example.com",
+                title: "Example",
+                text: "Recovered from fallback provider.",
+              },
+            ],
+          };
+        },
+      }),
+      getPageBrowser: async () => {
+        throw new Error("browser fallback should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "extract",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Example",
+      content: "Recovered from fallback provider.",
+    });
+    expect(calls).toEqual(["tavily", "exa"]);
+  });
+
+  it("falls back to the next extract provider on timeout errors", async () => {
+    const tool = new Web();
+    const calls: string[] = [];
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProviders: [
+        { id: "exa", isConfigured: () => true, search: async () => [] },
+        { id: "tavily", isConfigured: () => true, search: async () => [] },
+      ],
+      getExaClient: () => ({
+        getContents: async () => {
+          calls.push("exa");
+          await Bun.sleep(50);
+          return { results: [] };
+        },
+      }),
+      getTavilyClient: () => ({
+        extract: async () => {
+          calls.push("tavily");
+          return {
+            results: [
+              {
+                url: "https://example.com",
+                title: "Example",
+                rawContent: "Recovered after timeout fallback.",
+              },
+            ],
+          };
+        },
+      }),
+      getPageBrowser: async () => {
+        throw new Error("browser fallback should not run");
+      },
+    });
+
+    await expect(
       tool.call("fetch", {
         url: "https://example.com",
         mode: "extract",
         timeout: 10,
       }),
     ).resolves.toMatchObject({
-      isError: true,
-      error: expect.stringMatching(/abort/i),
+      isError: false,
+      title: "Example",
+      content: "Recovered after timeout fallback.",
     });
+    expect(calls).toEqual(["exa", "tavily"]);
   });
 });

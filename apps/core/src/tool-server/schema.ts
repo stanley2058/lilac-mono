@@ -17,6 +17,21 @@ export const BridgeListResponse = z.object({
   ),
 });
 
+export const BridgeVersionResponse = z.object({
+  ok: z.literal(true),
+  version: z.string(),
+  commit: z.string(),
+  dirty: z.boolean().optional(),
+  builtAt: z.string().optional(),
+  plugins: z
+    .object({
+      loadedExternal: z.number().int().nonnegative(),
+    })
+    .optional(),
+  startedAt: z.number(),
+  pid: z.number(),
+});
+
 export const BridgeFnHelpRequest = z.object({
   callableId: z.string(),
 });

@@ -357,7 +357,7 @@ Key sections:
 Parsed in `packages/utils/env.ts`. The important ones:
 
 - `REDIS_URL` (required by core runtime)
-- `SQLITE_URL` (workflow store sqlite path; default: `data/data.sqlite3`)
+- `SQLITE_URL` (workflow store sqlite path; default: `${DATA_DIR}/data.sqlite3`)
 - `DATA_DIR` (where config/prompt/db live)
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)

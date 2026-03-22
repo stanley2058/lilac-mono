@@ -13,19 +13,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 describe("web-search (exa)", () => {
-  it("resolveWebSearchProvider falls back to first configured provider", () => {
+  it("resolveWebSearchProvider keeps configured fallback order", () => {
+    const exa = new ExaWebSearchProvider({ apiKey: "exa" });
+    const tavily = new TavilyWebSearchProvider({ apiKey: "tavily" });
+
+    const resolved = resolveWebSearchProvider({
+      requested: ["tavily", "exa"],
+      providers: [exa, tavily],
+    });
+
+    expect(resolved.providers.map((provider) => provider.id)).toEqual(["tavily", "exa"]);
+    expect(resolved.error).toBeNull();
+    expect(resolved.warning).toBeNull();
+  });
+
+  it("resolveWebSearchProvider drops unconfigured providers and keeps configured fallbacks", () => {
     const exa = new ExaWebSearchProvider({});
     const tavily = new TavilyWebSearchProvider({ apiKey: "tavily" });
 
     const resolved = resolveWebSearchProvider({
-      requested: "exa",
+      requested: ["exa", "tavily"],
       providers: [exa, tavily],
     });
 
-    expect(resolved.provider?.id).toBe("tavily");
+    expect(resolved.providers.map((provider) => provider.id)).toEqual(["tavily"]);
     expect(resolved.error).toBeNull();
     expect(resolved.warning).toBe(
-      "web.search provider 'exa' is not configured; falling back to 'tavily'.",
+      "web.search providers 'exa' are not configured; using configured fallback order: tavily.",
     );
   });
 
@@ -38,7 +52,7 @@ describe("web-search (exa)", () => {
       providers: [exa, tavily],
     });
 
-    expect(resolved.provider).toBeNull();
+    expect(resolved.providers).toEqual([]);
     expect(resolved.error).toBe(
       "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).",
     );
@@ -54,7 +68,7 @@ describe("web-search (exa)", () => {
       providers: [exa, tavily],
     });
 
-    expect(resolved.provider).toBeNull();
+    expect(resolved.providers).toEqual([]);
     expect(resolved.error).toBe(
       "web.search is unavailable: unknown provider 'duckduckgo'. Registered: exa, tavily.",
     );
@@ -73,7 +87,7 @@ describe("web-search (exa)", () => {
       providers: [custom],
     });
 
-    expect(resolved.provider?.id).toBe("MyProvider");
+    expect(resolved.providers.map((provider) => provider.id)).toEqual(["MyProvider"]);
     expect(resolved.error).toBeNull();
     expect(resolved.warning).toBeNull();
   });

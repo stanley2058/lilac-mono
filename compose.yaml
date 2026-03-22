@@ -8,6 +8,10 @@ services:
         NODE_MAJOR: ${NODE_MAJOR:-22}
         CONTAINER_USER: ${CONTAINER_USER:-lilac}
         CONTAINER_UID: ${CONTAINER_UID:-1000}
+        LILAC_BUILD_VERSION: ${LILAC_BUILD_VERSION:-dev}
+        LILAC_BUILD_COMMIT: ${LILAC_BUILD_COMMIT:-dev}
+        LILAC_BUILD_DIRTY: ${LILAC_BUILD_DIRTY:-false}
+        LILAC_BUILD_AT: ${LILAC_BUILD_AT:-}
     image: lilac:dev
     depends_on:
       redis:

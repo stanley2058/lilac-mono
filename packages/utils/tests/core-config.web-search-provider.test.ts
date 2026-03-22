@@ -2,13 +2,27 @@ import { describe, expect, it } from "bun:test";
 
 import { coreConfigSchema } from "../core-config";
 
-describe("coreConfigSchema tools.web.extract.provider", () => {
+describe("coreConfigSchema tools.web.extract.providers", () => {
   it("defaults to tavily", () => {
     const parsed = coreConfigSchema.parse({});
-    expect(parsed.tools.web.extract.provider).toBe("tavily");
+    expect(parsed.tools.web.extract.providers).toEqual(["tavily"]);
   });
 
-  it("accepts exa", () => {
+  it("accepts ordered providers", () => {
+    const parsed = coreConfigSchema.parse({
+      tools: {
+        web: {
+          extract: {
+            providers: ["tavily", "exa"],
+          },
+        },
+      },
+    });
+
+    expect(parsed.tools.web.extract.providers).toEqual(["tavily", "exa"]);
+  });
+
+  it("accepts legacy singular provider inside extract", () => {
     const parsed = coreConfigSchema.parse({
       tools: {
         web: {
@@ -19,7 +33,7 @@ describe("coreConfigSchema tools.web.extract.provider", () => {
       },
     });
 
-    expect(parsed.tools.web.extract.provider).toBe("exa");
+    expect(parsed.tools.web.extract.providers).toEqual(["exa"]);
   });
 
   it("accepts legacy search.provider as an alias", () => {
@@ -33,7 +47,35 @@ describe("coreConfigSchema tools.web.extract.provider", () => {
       },
     });
 
-    expect(parsed.tools.web.extract.provider).toBe("exa");
+    expect(parsed.tools.web.extract.providers).toEqual(["exa"]);
+  });
+
+  it("accepts legacy search.providers as an alias", () => {
+    const parsed = coreConfigSchema.parse({
+      tools: {
+        web: {
+          search: {
+            providers: ["exa", "tavily"],
+          },
+        },
+      },
+    });
+
+    expect(parsed.tools.web.extract.providers).toEqual(["exa", "tavily"]);
+  });
+
+  it("deduplicates providers while preserving order", () => {
+    const parsed = coreConfigSchema.parse({
+      tools: {
+        web: {
+          extract: {
+            providers: ["tavily", "exa", "tavily"],
+          },
+        },
+      },
+    });
+
+    expect(parsed.tools.web.extract.providers).toEqual(["tavily", "exa"]);
   });
 
   it("rejects unknown providers", () => {
