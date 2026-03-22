@@ -28,6 +28,7 @@ function parseResponsesTransportMode(value: string | undefined): ResponsesTransp
 
 export function parseEnv() {
   const env = process.env;
+  const dataDir = env.DATA_DIR || path.resolve(findWorkspaceRoot(), "data");
 
   const perfLog = parseBoolean(env.LILAC_PERF_LOG);
   const perfLagWarnMsRaw = env.LILAC_PERF_LAG_WARN_MS;
@@ -48,8 +49,8 @@ export function parseEnv() {
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
-    sqliteUrl: env.SQLITE_URL || path.resolve(findWorkspaceRoot(), "data", "data.sqlite3"),
-    dataDir: env.DATA_DIR || path.resolve(findWorkspaceRoot(), "data"),
+    sqliteUrl: env.SQLITE_URL || path.join(dataDir, "data.sqlite3"),
+    dataDir,
     toolServer: {
       port: env.LL_TOOL_SERVER_PORT,
     },
