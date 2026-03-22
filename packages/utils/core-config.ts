@@ -272,8 +272,50 @@ const discordSurfaceSchema = z
     },
   });
 
-const webExtractProviderSchema = z.enum(["tavily", "exa"]).default("tavily");
+const webExtractProviderSchema = z.enum(["tavily", "exa"]);
 const webFetchModeSchema = z.enum(["auto", "fetch", "browser", "extract"]).default("auto");
+
+function uniqueItems<T>(items: readonly T[]): T[] {
+  const seen = new Set<T>();
+  const unique: T[] = [];
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    unique.push(item);
+  }
+  return unique;
+}
+
+const webExtractProvidersSchema = z
+  .array(webExtractProviderSchema)
+  .min(1)
+  .transform((providers) => uniqueItems(providers))
+  .default(["tavily"]);
+
+const webExtractConfigValueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return value;
+    }
+
+    const extractConfig = value as {
+      provider?: unknown;
+      providers?: unknown;
+    };
+
+    if (extractConfig.providers !== undefined || extractConfig.provider === undefined) {
+      return value;
+    }
+
+    return {
+      ...extractConfig,
+      providers: [extractConfig.provider],
+    };
+  },
+  z.object({
+    providers: webExtractProvidersSchema,
+  }),
+);
 
 const webExtractConfigSchema = z
   .preprocess(
@@ -297,13 +339,9 @@ const webExtractConfigSchema = z
       };
     },
     z.object({
-      extract: z
-        .object({
-          provider: webExtractProviderSchema,
-        })
-        .default({
-          provider: "tavily",
-        }),
+      extract: webExtractConfigValueSchema.default({
+        providers: ["tavily"],
+      }),
       fetch: z
         .object({
           mode: webFetchModeSchema,
@@ -315,7 +353,7 @@ const webExtractConfigSchema = z
   )
   .default({
     extract: {
-      provider: "tavily",
+      providers: ["tavily"],
     },
     fetch: {
       mode: "auto",
@@ -417,7 +455,7 @@ const toolsSchema = z
   .default({
     web: {
       extract: {
-        provider: "tavily",
+        providers: ["tavily"],
       },
       fetch: {
         mode: "auto",

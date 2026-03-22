@@ -2,6 +2,21 @@ import type { WebSearchProvider, WebSearchProviderId } from "./types";
 
 const DEFAULT_WEB_SEARCH_PROVIDER = "tavily" as const;
 
+function uniqueStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function formatProviderList(ids: readonly string[]): string {
+  return ids.map((id) => `'${id}'`).join(", ");
+}
+
 function missingConfigMessage(id: WebSearchProviderId): string | null {
   if (id === "exa") {
     return "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).";
@@ -13,10 +28,10 @@ function missingConfigMessage(id: WebSearchProviderId): string | null {
 }
 
 export function resolveWebSearchProvider(params: {
-  requested?: string;
+  requested?: string | readonly string[];
   providers: readonly WebSearchProvider[];
 }): {
-  provider: WebSearchProvider | null;
+  providers: readonly WebSearchProvider[];
   error: string | null;
   warning: string | null;
 } {
@@ -31,33 +46,63 @@ export function resolveWebSearchProvider(params: {
     byId.set(normalizedId, provider);
   }
 
-  const normalized = params.requested?.trim().toLowerCase() ?? "";
+  const normalizedRequested = uniqueStrings(
+    (Array.isArray(params.requested) ? params.requested : [params.requested])
+      .flatMap((value) => (typeof value === "string" ? [value.trim().toLowerCase()] : []))
+      .filter((value) => value.length > 0),
+  );
 
-  const requested =
-    normalized.length > 0
-      ? normalized
+  const requestedIds =
+    normalizedRequested.length > 0
+      ? normalizedRequested
       : byId.has(DEFAULT_WEB_SEARCH_PROVIDER)
-        ? DEFAULT_WEB_SEARCH_PROVIDER
-        : (ids[0] ?? DEFAULT_WEB_SEARCH_PROVIDER);
+        ? [
+            DEFAULT_WEB_SEARCH_PROVIDER,
+            ...ids.filter((id) => id.toLowerCase() !== DEFAULT_WEB_SEARCH_PROVIDER),
+          ]
+        : ids;
 
-  const provider = byId.get(requested);
-  if (!provider) {
+  const unknownRequested = requestedIds.find((requestedId) => !byId.has(requestedId));
+  if (unknownRequested) {
     return {
-      provider: null,
-      error: `web.search is unavailable: unknown provider '${requested}'. Registered: ${ids.join(", ") || "none"}.`,
+      providers: [],
+      error: `web.search is unavailable: unknown provider '${unknownRequested}'. Registered: ${ids.join(", ") || "none"}.`,
       warning: null,
     };
   }
 
-  if (provider.isConfigured()) {
-    return { provider, error: null, warning: null };
+  const requestedProviders = requestedIds
+    .map((requestedId) => byId.get(requestedId))
+    .filter((provider): provider is WebSearchProvider => provider !== undefined);
+
+  const configuredProviders = requestedProviders.filter((provider) => provider.isConfigured());
+  if (configuredProviders.length > 0) {
+    const unconfiguredIds = requestedProviders
+      .filter((provider) => !provider.isConfigured())
+      .map((provider) => provider.id);
+
+    return {
+      providers: configuredProviders,
+      error: null,
+      warning:
+        unconfiguredIds.length > 0
+          ? `web.search providers ${formatProviderList(unconfiguredIds)} are not configured; using configured fallback order: ${configuredProviders.map((provider) => provider.id).join(" -> ")}.`
+          : null,
+    };
   }
 
-  const fallback = params.providers.find((candidate) => candidate.isConfigured()) ?? null;
-
-  if (!fallback) {
+  if (requestedProviders.length === 0) {
     return {
-      provider: null,
+      providers: [],
+      error: "web.search is unavailable: no provider configured.",
+      warning: null,
+    };
+  }
+
+  if (requestedProviders.length === 1) {
+    const provider = requestedProviders[0]!;
+    return {
+      providers: [],
       error:
         missingConfigMessage(provider.id) ??
         `web.search is unavailable: provider '${provider.id}' is not configured.`,
@@ -66,8 +111,8 @@ export function resolveWebSearchProvider(params: {
   }
 
   return {
-    provider: fallback,
-    error: null,
-    warning: `web.search provider '${provider.id}' is not configured; falling back to '${fallback.id}'.`,
+    providers: [],
+    error: `web.search is unavailable: none of the requested providers are configured. Missing configuration for ${formatProviderList(requestedProviders.map((provider) => provider.id))}.`,
+    warning: null,
   };
 }

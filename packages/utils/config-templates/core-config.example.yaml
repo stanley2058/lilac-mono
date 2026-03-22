@@ -3,7 +3,7 @@ basePrompt: "You are Lilac."
 tools:
   web:
     extract:
-      provider: tavily
+      providers: [tavily]
 
 plugins:
   disabled: []
