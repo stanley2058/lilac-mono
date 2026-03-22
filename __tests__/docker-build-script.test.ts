@@ -1,12 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const BUN_BIN = process.execPath;
 
 async function runDockerBuildDryRun(args: string[]): Promise<{
   exitCode: number;
   stdout: string;
   stderr: string;
 }> {
-  const proc = Bun.spawn(["bun", "scripts/docker-build.ts", ...args, "--dry-run"], {
-    cwd: "/home/stanley/Sandbox/lilac-mcp/lilac-mono",
+  const proc = Bun.spawn([BUN_BIN, "scripts/docker-build.ts", ...args, "--dry-run"], {
+    cwd: REPO_ROOT,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
