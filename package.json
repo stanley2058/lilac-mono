@@ -4,6 +4,8 @@
   "license": "MIT",
   "scripts": {
     "build:info": "bun scripts/write-build-info.ts",
+    "docker:build": "bun scripts/docker-build.ts build",
+    "docker:compose:build": "bun scripts/docker-build.ts compose-build",
     "lint": "oxlint --tsconfig tsconfig.json apps packages __tests__",
     "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages __tests__",
     "typecheck": "set -e; pids=''; for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit & pids=\"$pids $!\"; fi; done; for pid in $pids; do wait \"$pid\"; done",

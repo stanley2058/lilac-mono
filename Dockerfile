@@ -151,9 +151,12 @@ RUN (cd apps/tool-bridge && bun run build)
 RUN (cd apps/core && bun run build:remote-runner)
 
 USER root
-# Copy generated build metadata late so commit-only changes do not invalidate source build layers.
-COPY build ./build
-RUN test -f /app/build/build-info.json || printf '{\n  "version": "dev",\n  "commit": "dev"\n}\n' > /app/build/build-info.json
+ARG LILAC_BUILD_VERSION=dev
+ARG LILAC_BUILD_COMMIT=dev
+ARG LILAC_BUILD_DIRTY=false
+ARG LILAC_BUILD_AT=
+# Generate build metadata late so commit-only changes do not invalidate source build layers.
+RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; then BUILD_AT_FRAGMENT=$(printf ',\n  "builtAt": "%s"' "$LILAC_BUILD_AT"); fi && printf '{\n  "version": "%s",\n  "commit": "%s",\n  "dirty": %s%s\n}\n' "$LILAC_BUILD_VERSION" "$LILAC_BUILD_COMMIT" "$LILAC_BUILD_DIRTY" "$BUILD_AT_FRAGMENT" > /app/build/build-info.json
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app/build
 # Make `tools` available globally
 RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
