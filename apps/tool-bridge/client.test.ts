@@ -1,6 +1,23 @@
 import { describe, expect, it } from "bun:test";
 
-import { buildToolInput, parseArgs } from "./client";
+import { buildToolInput, isMainModule, parseArgs } from "./client";
+
+describe("tool-bridge entrypoint detection", () => {
+  it("treats the generated dist index wrapper as the main CLI entrypoint", () => {
+    expect(
+      isMainModule(
+        [
+          "/usr/bin/bun",
+          "/workspace/apps/tool-bridge/dist/index.js",
+          "fetch",
+          "https://example.com",
+        ],
+        "/workspace",
+        "/workspace/apps/tool-bridge/dist/client.js",
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("tool-bridge positional input", () => {
   it("parses a bare positional argument for tool calls", () => {

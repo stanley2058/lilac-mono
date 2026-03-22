@@ -2,9 +2,10 @@
 
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
+import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
@@ -1312,10 +1313,42 @@ function camelToKebabCase(input: string): string {
   return input.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
 }
 
-function isMainModule() {
-  const entrypoint = process.argv[1];
-  if (!entrypoint) return false;
-  return resolve(entrypoint) === fileURLToPath(import.meta.url);
+function normalizePathCandidate(candidate: string | undefined, cwd: string): string | undefined {
+  if (!candidate) return undefined;
+
+  const resolved = resolve(cwd, candidate);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function isMainModule(
+  args = process.argv,
+  cwd = process.cwd(),
+  currentFile = fileURLToPath(import.meta.url),
+) {
+  const normalizedCurrent = normalizePathCandidate(currentFile, cwd);
+  const normalizedArgv1 = normalizePathCandidate(args[1], cwd);
+
+  if (!normalizedCurrent || !normalizedArgv1) return false;
+  if (normalizedCurrent === normalizedArgv1) return true;
+
+  const currentBase = basename(normalizedCurrent);
+  const argvBase = basename(normalizedArgv1);
+  const isClientModule = currentBase === "client.js" || currentBase === "client.ts";
+  const isGeneratedWrapper = argvBase === "index.js" || argvBase === "index.ts";
+
+  if (
+    isClientModule &&
+    isGeneratedWrapper &&
+    dirname(normalizedCurrent) === dirname(normalizedArgv1)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 if (isMainModule()) {
