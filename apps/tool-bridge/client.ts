@@ -2,6 +2,7 @@
 
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
@@ -9,15 +10,11 @@ import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-declare global {
-  // injected at build time in real releases
-  // eslint-disable-next-line no-var
-  var PACKAGE_VERSION: string;
-}
-
-globalThis.PACKAGE_VERSION = "dev";
-
 const BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
+const BUILD_ID_LENGTH = 8;
+const DEV_BUILD_ID = "dev";
+
+let buildIdPromise: Promise<string> | undefined;
 
 async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Response> {
   // Bun (and Node's undici fetch) can enforce a default request timeout (~5m)
@@ -413,9 +410,51 @@ function section(title: string, lines: string[]) {
   return [hdr, ...body].join("\n");
 }
 
-function banner() {
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function sha256HexPrefix(filePath: string, length = BUILD_ID_LENGTH): Promise<string> {
+  const bytes = await fs.readFile(filePath);
+  return createHash("sha256").update(bytes).digest("hex").slice(0, length);
+}
+
+export async function resolveBuildId(
+  currentFile = fileURLToPath(import.meta.url),
+): Promise<string> {
+  const normalizedCurrent = normalizePathCandidate(currentFile, process.cwd()) ?? currentFile;
+  if (!normalizedCurrent) return DEV_BUILD_ID;
+
+  const currentBase = basename(normalizedCurrent);
+  if (currentBase === "client.ts") return DEV_BUILD_ID;
+
+  const artifactPath =
+    currentBase === "client.js"
+      ? normalizedCurrent
+      : resolve(dirname(normalizedCurrent), "client.js");
+
+  if (!(await isFile(artifactPath))) return DEV_BUILD_ID;
+
+  try {
+    return await sha256HexPrefix(artifactPath);
+  } catch {
+    return DEV_BUILD_ID;
+  }
+}
+
+async function getBuildId(): Promise<string> {
+  buildIdPromise ??= resolveBuildId();
+  return await buildIdPromise;
+}
+
+async function banner() {
   const name = styles.bold("tools");
-  const version = styles.dim(`[version: ${PACKAGE_VERSION}]`);
+  const version = styles.dim(`[build: ${await getBuildId()}]`);
   return `${name} - All-in-one tool proxy ${version}`;
 }
 
@@ -514,14 +553,14 @@ async function main() {
   try {
     switch (parsed.type) {
       case "version": {
-        console.log(banner());
+        console.log(await banner());
         break;
       }
       case "help": {
         if (parsed.callableId) {
           if (parsed.callableId === "onboard") {
             const output = [
-              banner(),
+              await banner(),
               "",
               `${styles.bold("onboard")} ${styles.dim("—")} Configure agent git identity + GPG signing under DATA_DIR`,
               "",
@@ -555,7 +594,7 @@ async function main() {
           const usageLines = buildUsageLinesForTool(result);
 
           const output = [
-            banner(),
+            await banner(),
             "",
             `${styles.bold(result.name)} ${styles.dim("—")} ${result.description}`,
             "",
@@ -569,7 +608,7 @@ async function main() {
           console.log(output.join("\n"));
         } else {
           const output = [
-            banner(),
+            await banner(),
             "",
             section("Usage", [
               "tools --list",
@@ -618,7 +657,7 @@ async function main() {
         const idWidth = Math.min(28, Math.max(10, ...visibleTools.map((t) => t.callableId.length)));
 
         const output: string[] = [
-          banner(),
+          await banner(),
           "",
           section("Usage", [
             "tools <tool> --arg1=value --arg2=value",
