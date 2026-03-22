@@ -135,6 +135,41 @@ describe("tool-server attachment", () => {
     }
   });
 
+  it("accepts files as an alias for paths", async () => {
+    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-tool-server-"));
+    const p = join(tmp, "hello.txt");
+    await fs.writeFile(p, "hello", "utf8");
+
+    try {
+      const raw = createInMemoryRawBus();
+      const bus = createLilacBus(raw);
+      const tool = new Attachment({ bus });
+
+      const ctx: RequestContext = {
+        requestId: "discord:c1:m1",
+        sessionId: "c1",
+        requestClient: "discord",
+        cwd: tmp,
+      };
+
+      const res = await tool.call(
+        "attachment.add_files",
+        {
+          files: p,
+          filenames: "aliased.txt",
+        },
+        { context: ctx },
+      );
+
+      expect(isAddFilesResult(res)).toBe(true);
+      if (!isAddFilesResult(res)) return;
+      expect(res.attachments.length).toBe(1);
+      expect(res.attachments[0]?.filename).toBe("aliased.txt");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("rejects attachment.download URLs outside Discord CDN hosts", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

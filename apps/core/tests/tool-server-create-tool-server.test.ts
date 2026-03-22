@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import { ToolPluginManager, type Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import {
@@ -9,6 +10,7 @@ import {
   type ToolServerHealthSnapshot,
 } from "../src/tool-server/create-tool-server";
 import type { ServerTool } from "../src/tool-server/types";
+import { parseToolInput } from "../src/tool-server/validation-error-message";
 
 const originalMemoryUsage = process.memoryUsage;
 
@@ -642,6 +644,121 @@ describe("createToolServer", () => {
     };
     expect(healthBody.checks.find((check) => check.name === "tool-calls.overdue")?.ok).toBe(true);
     expect(healthBody.info.toolServer.activeCalls).toEqual([]);
+
+    await server.stop();
+  });
+
+  it("returns guided validation errors for invalid tool input", async () => {
+    const tool: ServerTool = {
+      id: "validate",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "validate.input",
+            name: "Validate Input",
+            description: "validates request input",
+            shortInput: ["--paths=<string | string[]>"],
+            input: ["--paths=<string | string[]> | Local file paths"],
+          },
+        ];
+      },
+      async call(_callableId, input) {
+        return parseToolInput({
+          callableId: "validate.input",
+          input,
+          schema: z.object({
+            paths: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+          }),
+        });
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const callRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "validate.input",
+          input: {
+            files: ["/tmp/generated-image.png"],
+          },
+        }),
+      }),
+    );
+
+    expect(await callRes.json()).toEqual({
+      isError: true,
+      output: [
+        "validate.input has invalid input.",
+        "Missing or invalid fields: paths",
+        "Provided keys: files",
+        "Run 'tools --help validate.input' for details.",
+      ].join("\n"),
+    });
+
+    await server.stop();
+  });
+
+  it("preserves runtime Zod errors that are not input parsing failures", async () => {
+    const tool: ServerTool = {
+      id: "validate-runtime",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "validate.runtime",
+            name: "Validate Runtime",
+            description: "parses non-input runtime data",
+            shortInput: [],
+            input: [],
+          },
+        ];
+      },
+      async call() {
+        return z
+          .object({
+            tag: z.string(),
+          })
+          .parse({});
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+    });
+
+    await server.init();
+    await server.start(0);
+
+    const callRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "validate.runtime",
+          input: {},
+        }),
+      }),
+    );
+
+    const body = (await callRes.json()) as { isError: boolean; output: string };
+    expect(body.isError).toBe(true);
+    expect(body.output).toContain('"tag"');
+    expect(body.output).not.toContain("validate.runtime has invalid input.");
 
     await server.stop();
   });

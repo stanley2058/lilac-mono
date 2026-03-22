@@ -11,6 +11,7 @@ import {
   type ToolServerHealthSnapshot,
 } from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
+import { ToolInputValidationError } from "./validation-error-message";
 
 type ToolPluginManagerLike = {
   init(): Promise<void>;
@@ -420,7 +421,12 @@ export function createToolServer(options: ToolServerOptions) {
 
         return {
           isError: true,
-          output: e instanceof Error ? e.message : String(e),
+          output:
+            e instanceof ToolInputValidationError
+              ? e.message
+              : e instanceof Error
+                ? e.message
+                : String(e),
         };
       }
     },
