@@ -24,6 +24,21 @@ function stubWeb(tool: Web, stub: Record<string, unknown>): void {
   Object.assign(tool as unknown as Record<string, unknown>, stub);
 }
 
+function callExtractPageContent(
+  tool: Web,
+  input: Record<string, unknown>,
+  opts?: { signal?: AbortSignal },
+): Promise<unknown> {
+  const privateApi = tool as unknown as {
+    extractPageContent: (
+      input: Record<string, unknown>,
+      opts?: { signal?: AbortSignal },
+    ) => Promise<unknown>;
+  };
+
+  return privateApi.extractPageContent(input, opts);
+}
+
 describe("web tool fetch", () => {
   it("propagates abort signals through fetch mode", async () => {
     const server = startServer(async () => {
@@ -404,9 +419,8 @@ describe("web tool fetch", () => {
     });
 
     await expect(
-      tool.call("fetch", {
+      callExtractPageContent(tool, {
         url: "https://example.com",
-        mode: "extract",
         timeout: 10,
       }),
     ).resolves.toMatchObject({

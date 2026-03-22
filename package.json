@@ -2,6 +2,7 @@
   "name": "lilac-mono",
   "private": true,
   "license": "MIT",
+  "packageManager": "bun@1.3.10",
   "scripts": {
     "build:info": "bun scripts/write-build-info.ts",
     "docker:build": "bun scripts/docker-build.ts build",
