@@ -108,7 +108,8 @@ function stripLeadingBotMentionPrefix(
 }
 
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
-const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!m:([^\s]+)(?:\s+|$)/iu;
+const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!(?:m|model):([^\s]+)(?:\s+|$)/iu;
+const LEADING_CONTINUE_DIRECTIVE_RE = /^\s*(?:[:,]\s*)?!(?:continue|cont)=(\d+)(?:\s+|$)/iu;
 
 export function parseLeadingModelOverride(input: {
   text: string;
@@ -121,6 +122,20 @@ export function parseLeadingModelOverride(input: {
 
   const model = String(m[1] ?? "").trim();
   return model.length > 0 ? model : undefined;
+}
+
+export function parseLeadingContinueDirective(input: {
+  text: string;
+  botNames: readonly string[];
+}): number | undefined {
+  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
+  const target = stripped.hadLeadingMention ? stripped.text : input.text;
+  const m = target.match(LEADING_CONTINUE_DIRECTIVE_RE);
+  if (!m) return undefined;
+
+  const rawCount = Number.parseInt(String(m[1] ?? "").trim(), 10);
+  if (!Number.isFinite(rawCount) || rawCount < 1) return undefined;
+  return Math.min(200, rawCount);
 }
 
 export function stripLeadingModelOverrideDirective(input: {
@@ -138,6 +153,25 @@ export function stripLeadingModelOverrideDirective(input: {
 
   const remainder = strippedMention.text
     .replace(LEADING_MODEL_OVERRIDE_RE, "")
+    .replace(/^\s+/u, "");
+  return `${strippedMention.mentionPrefix}${remainder}`;
+}
+
+export function stripLeadingContinueDirective(input: {
+  text: string;
+  botNames: readonly string[];
+}): string {
+  const strippedMention = stripLeadingBotMentionPrefix(input.text, input.botNames);
+  if (!strippedMention.hadLeadingMention) {
+    return input.text.replace(LEADING_CONTINUE_DIRECTIVE_RE, "").replace(/^\s+/u, "");
+  }
+
+  if (!LEADING_CONTINUE_DIRECTIVE_RE.test(strippedMention.text)) {
+    return input.text;
+  }
+
+  const remainder = strippedMention.text
+    .replace(LEADING_CONTINUE_DIRECTIVE_RE, "")
     .replace(/^\s+/u, "");
   return `${strippedMention.mentionPrefix}${remainder}`;
 }

@@ -15,6 +15,7 @@ export type ComposeRecentChannelMessagesOpts = {
   sessionId: string;
   botUserId: string;
   botName: string;
+  botMentionNames?: readonly string[];
   limit: number;
   transcriptStore?: TranscriptStore;
   discordUserAliasById?: ReadonlyMap<string, string>;

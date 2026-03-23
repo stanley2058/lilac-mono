@@ -3,6 +3,10 @@ import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef, SurfaceMessage } from "../types";
 
 import {
+  parseLeadingContinueDirective,
+  stripLeadingContinueDirective,
+} from "./bus-request-router/common";
+import {
   isDiscordSessionDividerSurfaceMessageAnyAuthor,
   isDiscordSessionDividerSurfaceMessage,
   isDiscordSessionDividerText,
@@ -96,6 +100,117 @@ function toReplyChainMessageForModelContext(input: {
       typeof input.triggerMessageId === "string" &&
       input.message.ref.messageId === input.triggerMessageId,
   });
+}
+
+function getSurfaceMessageContextText(message: SurfaceMessage): string {
+  return message.text.trim().length > 0
+    ? message.text
+    : (getForwardSnapshotTextFromRaw(message.raw) ?? message.text);
+}
+
+function stripContinueDirectiveFromReplyChainMessage(input: {
+  message: ReplyChainMessage;
+  botUserId: string;
+  botMentionNames: readonly string[];
+}): ReplyChainMessage {
+  if (input.message.authorId === input.botUserId) return input.message;
+
+  const stripped = stripLeadingContinueDirective({
+    text: input.message.text,
+    botNames: input.botMentionNames,
+  });
+  if (stripped === input.message.text) return input.message;
+
+  return {
+    ...input.message,
+    text: stripped,
+  };
+}
+
+function findLatestVisibleContinueDirective(input: {
+  selected: readonly SurfaceMessage[];
+  selectedStartIndex: number;
+  botUserId: string;
+  botMentionNames: readonly string[];
+}): { absoluteIndex: number; count: number } | null {
+  for (let i = input.selected.length - 1; i >= 0; i--) {
+    const message = input.selected[i]!;
+    if (message.userId === input.botUserId) continue;
+
+    const count = parseLeadingContinueDirective({
+      text: getSurfaceMessageContextText(message),
+      botNames: input.botMentionNames,
+    });
+    if (count === undefined) continue;
+
+    return {
+      absoluteIndex: input.selectedStartIndex + i,
+      count,
+    };
+  }
+
+  return null;
+}
+
+async function listRecentMessagesEndingAt(params: {
+  adapter: SurfaceAdapter;
+  sessionId: string;
+  anchor: SurfaceMessage;
+  maxPreviousMessages: number;
+}): Promise<SurfaceMessage[]> {
+  const sessionRef = {
+    platform: "discord",
+    channelId: params.sessionId,
+  } as const;
+
+  const seen = new Set<string>([params.anchor.ref.messageId]);
+  const collected: SurfaceMessage[] = [params.anchor];
+  let cursor: string | undefined = params.anchor.ref.messageId;
+  let remaining = Math.max(0, params.maxPreviousMessages);
+
+  while (cursor && remaining > 0) {
+    const page = await params.adapter.listMsg(sessionRef, {
+      limit: Math.min(100, remaining),
+      beforeMessageId: cursor,
+    });
+    if (!page || page.length === 0) break;
+
+    let oldestInPage: SurfaceMessage | null = null;
+    let addedAny = false;
+
+    for (const message of page) {
+      if (message.session.channelId !== params.sessionId) continue;
+      if (seen.has(message.ref.messageId)) continue;
+      seen.add(message.ref.messageId);
+      collected.push(message);
+      addedAny = true;
+      remaining -= 1;
+
+      if (
+        !oldestInPage ||
+        compareDiscordMsgPosition(
+          { ts: message.ts, messageId: message.ref.messageId },
+          { ts: oldestInPage.ts, messageId: oldestInPage.ref.messageId },
+        ) < 0
+      ) {
+        oldestInPage = message;
+      }
+
+      if (remaining <= 0) break;
+    }
+
+    if (!addedAny || !oldestInPage) break;
+    if (oldestInPage.ref.messageId === cursor) break;
+    cursor = oldestInPage.ref.messageId;
+  }
+
+  collected.sort((a, b) =>
+    compareDiscordMsgPosition(
+      { ts: a.ts, messageId: a.ref.messageId },
+      { ts: b.ts, messageId: b.ref.messageId },
+    ),
+  );
+  return collected;
 }
 
 function compareDiscordSnowflakeLike(a: string, b: string): number {
@@ -319,10 +434,16 @@ export async function composeRequestMessages(
 
   const transformedChain = filteredChain.map((m) => {
     const targetMessageId = opts.transformUserTextForMessageId ?? opts.trigger.msgRef.messageId;
-    return applyUserTextTransformToReplyChainMessage({
+    const transformed = applyUserTextTransformToReplyChainMessage({
       message: m,
       transformUserText: opts.transformUserText,
       shouldTransform: m.authorId !== opts.botUserId && m.messageId === targetMessageId,
+    });
+
+    return stripContinueDirectiveFromReplyChainMessage({
+      message: transformed,
+      botUserId: opts.botUserId,
+      botMentionNames: [opts.botName],
     });
   });
 
@@ -486,10 +607,16 @@ export async function composeRecentChannelMessages(
 
         const transformedAnchored = anchoredNoDivider.map((m) => {
           const targetMessageId = opts.transformUserTextForMessageId ?? triggerMsg.ref.messageId;
-          return applyUserTextTransformToReplyChainMessage({
+          const transformed = applyUserTextTransformToReplyChainMessage({
             message: m,
             transformUserText: opts.transformUserText,
             shouldTransform: m.authorId !== opts.botUserId && m.messageId === targetMessageId,
+          });
+
+          return stripContinueDirectiveFromReplyChainMessage({
+            message: transformed,
+            botUserId: opts.botUserId,
+            botMentionNames: opts.botMentionNames ?? [opts.botName],
           });
         });
 
@@ -586,41 +713,46 @@ export async function composeRecentChannelMessages(
     platform: "discord",
     channelId: opts.sessionId,
   } as const;
+  const continueDirectiveBotNames = opts.botMentionNames ?? [opts.botName];
 
   // Active-burst rules are intended for "latest view" prompts, including
   // fresh @mentions that are not replies. They prevent stale context when a
   // channel has been idle.
   const shouldApplyActiveBurstRules = Boolean(opts.triggerMsgRef && opts.triggerType !== "reply");
 
-  // In active-mode gate-forwarded prompts, we may need a little more history to
-  // apply time-based cutoffs (age/gap) without relying on fixed "last N".
-  const fetchLimit = shouldApplyActiveBurstRules
-    ? Math.min(200, Math.max(opts.limit, 50))
-    : opts.limit;
+  let orderedList: SurfaceMessage[];
 
-  const recent = await adapter.listMsg(sessionRef, { limit: fetchLimit });
+  if (shouldApplyActiveBurstRules && opts.triggerMsgRef) {
+    const triggerMsg = await adapter.readMsg(opts.triggerMsgRef);
+    orderedList = triggerMsg
+      ? await listRecentMessagesEndingAt({
+          adapter,
+          sessionId: opts.sessionId,
+          anchor: triggerMsg,
+          maxPreviousMessages: 200,
+        })
+      : [];
+  } else {
+    orderedList = [...(await adapter.listMsg(sessionRef, { limit: opts.limit }))];
 
-  const list: typeof recent = [...recent];
-
-  let fetchedTrigger: SurfaceMessage | null = null;
-
-  if (opts.triggerMsgRef) {
-    const exists = list.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
-    if (!exists) {
-      fetchedTrigger = await adapter.readMsg(opts.triggerMsgRef);
-      if (fetchedTrigger) list.push(fetchedTrigger);
+    if (opts.triggerMsgRef) {
+      const exists = orderedList.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
+      if (!exists) {
+        const fetchedTrigger = await adapter.readMsg(opts.triggerMsgRef);
+        if (fetchedTrigger) orderedList.push(fetchedTrigger);
+      }
     }
-  }
 
-  list.sort((a, b) => {
-    if (a.ts !== b.ts) return a.ts - b.ts;
-    return compareDiscordSnowflakeLike(a.ref.messageId, b.ref.messageId);
-  });
+    orderedList.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      return compareDiscordSnowflakeLike(a.ref.messageId, b.ref.messageId);
+    });
+  }
 
   // The surface layer can include Discord system/notification messages (e.g.
   // thread-created). Keep them listable via surface tools, but exclude them from
   // the default model context.
-  const contextList = list.filter(shouldIncludeInModelContext);
+  const contextList = orderedList.filter(shouldIncludeInModelContext);
 
   const triggerMsg = opts.triggerMsgRef
     ? (contextList.find((m) => m.ref.messageId === opts.triggerMsgRef!.messageId) ?? null)
@@ -697,7 +829,24 @@ export async function composeRecentChannelMessages(
       prev = cur;
     }
 
-    selected = pickedNewestToOldest.reverse();
+    const provisionalSelected = pickedNewestToOldest.reverse();
+    const provisionalStartIndex = Math.max(0, startIndex - (provisionalSelected.length - 1));
+    const latestVisibleContinue = findLatestVisibleContinueDirective({
+      selected: provisionalSelected,
+      selectedStartIndex: provisionalStartIndex,
+      botUserId: opts.botUserId,
+      botMentionNames: continueDirectiveBotNames,
+    });
+
+    if (!latestVisibleContinue) {
+      selected = provisionalSelected;
+    } else {
+      const floorIndex = Math.max(
+        0,
+        latestVisibleContinue.absoluteIndex - latestVisibleContinue.count,
+      );
+      selected = eligible.slice(floorIndex, startIndex + 1);
+    }
   } else {
     selected = dividerCutContextList.slice(Math.max(0, dividerCutContextList.length - opts.limit));
   }
@@ -708,13 +857,19 @@ export async function composeRecentChannelMessages(
   );
 
   const chain: ReplyChainMessage[] = selectedNoDivider.map((m) => {
-    return toReplyChainMessageForModelContext({
+    const transformed = toReplyChainMessageForModelContext({
       message: m,
       botUserId: opts.botUserId,
       triggerMessageId: opts.triggerMsgRef
         ? (opts.transformUserTextForMessageId ?? opts.triggerMsgRef.messageId)
         : undefined,
       transformUserText: opts.transformUserText,
+    });
+
+    return stripContinueDirectiveFromReplyChainMessage({
+      message: transformed,
+      botUserId: opts.botUserId,
+      botMentionNames: continueDirectiveBotNames,
     });
   });
 

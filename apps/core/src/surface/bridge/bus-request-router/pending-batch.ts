@@ -1,11 +1,12 @@
 import type { MsgRef } from "../../types";
 
 import type { SessionMode } from "./common";
-import { stripLeadingModelOverrideDirective } from "./common";
+import { stripLeadingContinueDirective, stripLeadingModelOverrideDirective } from "./common";
 
 export type PendingMentionReplyBatchItem = {
   msgRef: MsgRef;
   requestModelOverride?: string;
+  continueCount?: number;
   botMentionNames: readonly string[];
 };
 
@@ -40,6 +41,7 @@ export function enqueuePendingMentionReplyBatch(params: {
         {
           msgRef: params.input.item.msgRef,
           requestModelOverride: params.input.item.requestModelOverride,
+          continueCount: params.input.item.continueCount,
           botMentionNames: [...params.input.item.botMentionNames],
         },
       ],
@@ -54,6 +56,7 @@ export function enqueuePendingMentionReplyBatch(params: {
     existing.items.push({
       msgRef: params.input.item.msgRef,
       requestModelOverride: params.input.item.requestModelOverride,
+      continueCount: params.input.item.continueCount,
       botMentionNames: [...params.input.item.botMentionNames],
     });
   }
@@ -83,10 +86,20 @@ export function takePendingMentionReplyBatch(params: {
 export function transformPendingUserText(
   item: PendingMentionReplyBatchItem,
 ): ((text: string) => string) | undefined {
-  if (!item.requestModelOverride) return undefined;
-  return (text: string) =>
-    stripLeadingModelOverrideDirective({
-      text,
-      botNames: item.botMentionNames,
-    });
+  if (!item.requestModelOverride && item.continueCount === undefined) return undefined;
+  return (text: string) => {
+    const withoutModel = item.requestModelOverride
+      ? stripLeadingModelOverrideDirective({
+          text,
+          botNames: item.botMentionNames,
+        })
+      : text;
+
+    return item.continueCount !== undefined
+      ? stripLeadingContinueDirective({
+          text: withoutModel,
+          botNames: item.botMentionNames,
+        })
+      : withoutModel;
+  };
 }

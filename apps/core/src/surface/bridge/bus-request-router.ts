@@ -17,9 +17,11 @@ import {
   previewText,
   resolveBotMentionNames,
   normalizeGateText,
+  parseLeadingContinueDirective,
   parseLeadingModelOverride,
   stripLeadingModelOverrideDirective,
   parseSteerDirectiveMode,
+  stripLeadingContinueDirective,
   stripLeadingInterruptDirective,
   shouldRunDirectReplyMentionGate,
   consumerId,
@@ -158,6 +160,29 @@ export async function startBusRequestRouter(params: {
     messages: readonly BufferedMessage[],
   ): Promise<string | undefined> {
     return resolvePreviousBatchMessageTextImpl({ adapter, messages });
+  }
+
+  function combineTextTransforms(
+    ...transforms: Array<((text: string) => string) | undefined>
+  ): ((text: string) => string) | undefined {
+    const activeTransforms = transforms.filter(
+      (transform): transform is (text: string) => string => typeof transform === "function",
+    );
+    if (activeTransforms.length === 0) return undefined;
+    return (text: string) => activeTransforms.reduce((acc, transform) => transform(acc), text);
+  }
+
+  function stripCurrentContinueDirective(input: {
+    text: string;
+    botNames: readonly string[];
+    continueCount?: number;
+  }): ((text: string) => string) | undefined {
+    if (input.continueCount === undefined) return undefined;
+    return (text: string) =>
+      stripLeadingContinueDirective({
+        text,
+        botNames: input.botNames,
+      });
   }
 
   const lifecycleSub = await bus.subscribeTopic(
@@ -334,9 +359,13 @@ export async function startBusRequestRouter(params: {
       const parentChannelId = flags.parentChannelId;
       const botMentionNames = resolveBotMentionNames({
         cfg,
-        botUserId: flags.botUserId,
+        botUserId: flags.botUserId ?? (await adapter.getSelf()).userId,
       });
       const requestModelOverride = parseLeadingModelOverride({
+        text: msg.data.text,
+        botNames: botMentionNames,
+      });
+      const continueCount = parseLeadingContinueDirective({
         text: msg.data.text,
         botNames: botMentionNames,
       });
@@ -376,6 +405,7 @@ export async function startBusRequestRouter(params: {
           sessionConfigId,
           modelOverride,
           requestModelOverride,
+          continueCount,
         });
       };
 
@@ -391,6 +421,7 @@ export async function startBusRequestRouter(params: {
         sessionConfigId,
         modelOverride,
         requestModelOverride,
+        continueCount,
         textPreview:
           typeof msg.data.text === "string" && msg.data.text.trim().length > 0
             ? previewText(msg.data.text)
@@ -475,6 +506,7 @@ export async function startBusRequestRouter(params: {
             sessionConfigId,
             modelOverride,
             requestModelOverride,
+            continueCount,
             botMentionNames,
           });
         } else {
@@ -498,6 +530,7 @@ export async function startBusRequestRouter(params: {
             sessionConfigId,
             modelOverride,
             requestModelOverride,
+            continueCount,
             botMentionNames,
           });
         }
@@ -523,6 +556,7 @@ export async function startBusRequestRouter(params: {
         sessionConfigId,
         modelOverride,
         requestModelOverride,
+        continueCount,
         botMentionNames,
       });
 
@@ -698,6 +732,7 @@ export async function startBusRequestRouter(params: {
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    continueCount?: number;
     botMentionNames: readonly string[];
   }) {
     const {
@@ -715,8 +750,22 @@ export async function startBusRequestRouter(params: {
       sessionConfigId,
       modelOverride,
       requestModelOverride,
+      continueCount,
       botMentionNames,
     } = input;
+
+    const modelOverrideTransform = requestModelOverride
+      ? (text: string) =>
+          stripLeadingModelOverrideDirective({
+            text,
+            botNames: botMentionNames,
+          })
+      : undefined;
+    const continueDirectiveTransform = stripCurrentContinueDirective({
+      text: userText,
+      botNames: botMentionNames,
+      continueCount,
+    });
 
     if (active) {
       // While a request is running:
@@ -757,19 +806,17 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             sessionConfigId,
-            transformUserText: requestModelOverride
-              ? (text) =>
-                  stripLeadingModelOverrideDirective({
-                    text,
-                    botNames: botMentionNames,
-                  })
-              : steerMode === "interrupt"
+            transformUserText: combineTextTransforms(
+              modelOverrideTransform,
+              continueDirectiveTransform,
+              steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
                       botNames: botMentionNames,
                     })
                 : undefined,
+            ),
           });
           return;
         }
@@ -784,13 +831,10 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
-          transformUserText: requestModelOverride
-            ? (text) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : undefined,
+          transformUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+          ),
         });
         return;
       }
@@ -809,13 +853,11 @@ export async function startBusRequestRouter(params: {
           sessionMode,
           sessionConfigId,
           modelOverride,
-          transformTriggerUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : undefined,
+          botMentionNames,
+          transformTriggerUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+          ),
           transformUserTextForMessageId: msgRef.messageId,
           markActive: false,
         });
@@ -832,6 +874,7 @@ export async function startBusRequestRouter(params: {
         msgRef,
         sessionMode,
         sessionConfigId,
+        transformUserText: continueDirectiveTransform,
       });
       return;
     }
@@ -856,13 +899,11 @@ export async function startBusRequestRouter(params: {
       sessionMode,
       sessionConfigId,
       modelOverride,
-      transformTriggerUserText: requestModelOverride
-        ? (text) =>
-            stripLeadingModelOverrideDirective({
-              text,
-              botNames: botMentionNames,
-            })
-        : undefined,
+      botMentionNames,
+      transformTriggerUserText: combineTextTransforms(
+        modelOverrideTransform,
+        continueDirectiveTransform,
+      ),
       transformUserTextForMessageId: msgRef.messageId,
       markActive: true,
     });
@@ -888,6 +929,7 @@ export async function startBusRequestRouter(params: {
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    continueCount?: number;
     botMentionNames: readonly string[];
   }) {
     const {
@@ -909,8 +951,22 @@ export async function startBusRequestRouter(params: {
       sessionConfigId,
       modelOverride,
       requestModelOverride,
+      continueCount,
       botMentionNames,
     } = input;
+
+    const modelOverrideTransform = requestModelOverride
+      ? (text: string) =>
+          stripLeadingModelOverrideDirective({
+            text,
+            botNames: botMentionNames,
+          })
+      : undefined;
+    const continueDirectiveTransform = stripCurrentContinueDirective({
+      text: userText,
+      botNames: botMentionNames,
+      continueCount,
+    });
 
     if (active) {
       // Active channels behave like group chats while a request is running.
@@ -952,19 +1008,17 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             sessionConfigId,
-            transformUserText: requestModelOverride
-              ? (text: string) =>
-                  stripLeadingModelOverrideDirective({
-                    text,
-                    botNames: botMentionNames,
-                  })
-              : steerMode === "interrupt"
+            transformUserText: combineTextTransforms(
+              modelOverrideTransform,
+              continueDirectiveTransform,
+              steerMode === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
                       botNames: botMentionNames,
                     })
                 : undefined,
+            ),
           });
           return;
         }
@@ -979,13 +1033,10 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
-          transformUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : undefined,
+          transformUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+          ),
         });
         return;
       }
@@ -1017,19 +1068,17 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
-          transformUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : steerMode === "interrupt"
+          transformUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+            steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
                     botNames: botMentionNames,
                   })
               : undefined,
+          ),
         });
         return;
       }
@@ -1047,13 +1096,11 @@ export async function startBusRequestRouter(params: {
           triggerType: "reply",
           sessionMode,
           sessionConfigId,
-          transformTriggerUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : undefined,
+          botMentionNames,
+          transformTriggerUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+          ),
           transformUserTextForMessageId: msgRef.messageId,
           modelOverride,
           markActive: false,
@@ -1071,13 +1118,10 @@ export async function startBusRequestRouter(params: {
         msgRef,
         sessionMode,
         modelOverride,
-        transformUserText: requestModelOverride
-          ? (text: string) =>
-              stripLeadingModelOverrideDirective({
-                text,
-                botNames: botMentionNames,
-              })
-          : undefined,
+        transformUserText: combineTextTransforms(
+          modelOverrideTransform,
+          continueDirectiveTransform,
+        ),
         raw: {
           bufferedForActiveRequestId: active.requestId,
         },
@@ -1086,6 +1130,31 @@ export async function startBusRequestRouter(params: {
     }
 
     // No active request.
+    if (continueCount !== undefined && !mentionsBot && !replyToBot) {
+      clearDebounceBuffer(sessionId);
+
+      await publishActiveChannelPrompt({
+        adapter,
+        bus,
+        cfg,
+        requestId: `discord:${sessionId}:${msgRef.messageId}`,
+        sessionId,
+        triggerMsgRef: msgRef,
+        triggerType: undefined,
+        sessionMode,
+        sessionConfigId,
+        modelOverride,
+        botMentionNames,
+        transformTriggerUserText: combineTextTransforms(
+          modelOverrideTransform,
+          continueDirectiveTransform,
+        ),
+        transformUserTextForMessageId: msgRef.messageId,
+        markActive: true,
+      });
+      return;
+    }
+
     if (mentionsBot || replyToBot) {
       // Mention/reply is a bypass trigger.
       // Discard any pending buffer to avoid a second gated request for the same context.
@@ -1106,13 +1175,11 @@ export async function startBusRequestRouter(params: {
         sessionMode,
         sessionConfigId,
         modelOverride,
-        transformTriggerUserText: requestModelOverride
-          ? (text: string) =>
-              stripLeadingModelOverrideDirective({
-                text,
-                botNames: botMentionNames,
-              })
-          : undefined,
+        botMentionNames,
+        transformTriggerUserText: combineTextTransforms(
+          modelOverrideTransform,
+          continueDirectiveTransform,
+        ),
         transformUserTextForMessageId: msgRef.messageId,
         markActive: true,
       });
@@ -1250,6 +1317,7 @@ export async function startBusRequestRouter(params: {
     })();
     const modelOverride =
       overrideCarrier?.model ?? b.messages[b.messages.length - 1]?.sessionModelOverride;
+    const self = await adapter.getSelf();
 
     // Gate-forwarded prompt: do NOT reply-to a message.
     // Use newest message as the context anchor.
@@ -1265,6 +1333,11 @@ export async function startBusRequestRouter(params: {
       triggerType: undefined,
       sessionMode: "active",
       modelOverride,
+      botMentionNames: resolveBotMentionNames({
+        cfg,
+        botUserId:
+          overrideCarrier?.botUserId ?? b.messages[b.messages.length - 1]?.botUserId ?? self.userId,
+      }),
       transformTriggerUserText: overrideCarrier
         ? (text: string) =>
             stripLeadingModelOverrideDirective({
@@ -1294,6 +1367,7 @@ export async function startBusRequestRouter(params: {
     sessionConfigId: string;
     modelOverride?: string;
     requestModelOverride?: string;
+    continueCount?: number;
     botMentionNames: readonly string[];
   }) {
     const {
@@ -1309,8 +1383,22 @@ export async function startBusRequestRouter(params: {
       replyToBot,
       active,
       requestModelOverride,
+      continueCount,
       botMentionNames,
     } = input;
+
+    const modelOverrideTransform = requestModelOverride
+      ? (text: string) =>
+          stripLeadingModelOverrideDirective({
+            text,
+            botNames: botMentionNames,
+          })
+      : undefined;
+    const continueDirectiveTransform = stripCurrentContinueDirective({
+      text: userText,
+      botNames: botMentionNames,
+      continueCount,
+    });
 
     const triggerType = replyToBot ? "reply" : mentionsBot ? "mention" : null;
 
@@ -1364,19 +1452,17 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode: input.sessionMode,
           sessionConfigId: input.sessionConfigId,
-          transformUserText: requestModelOverride
-            ? (text: string) =>
-                stripLeadingModelOverrideDirective({
-                  text,
-                  botNames: botMentionNames,
-                })
-            : steerMode === "interrupt"
+          transformUserText: combineTextTransforms(
+            modelOverrideTransform,
+            continueDirectiveTransform,
+            steerMode === "interrupt"
               ? (text) =>
                   stripLeadingInterruptDirective({
                     text,
                     botNames: botMentionNames,
                   })
               : undefined,
+          ),
         });
 
         await flushPendingMentionReplyBatchAsFollowUp({
@@ -1393,6 +1479,7 @@ export async function startBusRequestRouter(params: {
           item: {
             msgRef,
             requestModelOverride,
+            continueCount,
             botMentionNames,
           },
         });
@@ -1422,13 +1509,10 @@ export async function startBusRequestRouter(params: {
       sessionMode: input.sessionMode,
       sessionConfigId: input.sessionConfigId,
       modelOverride: input.modelOverride,
-      transformTriggerUserText: input.requestModelOverride
-        ? (text: string) =>
-            stripLeadingModelOverrideDirective({
-              text,
-              botNames: botMentionNames,
-            })
-        : undefined,
+      transformTriggerUserText: combineTextTransforms(
+        modelOverrideTransform,
+        continueDirectiveTransform,
+      ),
       transformUserTextForMessageId: msgRef.messageId,
     });
   }

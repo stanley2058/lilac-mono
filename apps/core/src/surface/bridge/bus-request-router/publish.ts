@@ -151,6 +151,7 @@ export async function publishActiveChannelPrompt(params: {
     triggerType: "mention" | "reply" | undefined;
     sessionMode: SessionMode;
     modelOverride?: string;
+    botMentionNames?: readonly string[];
     transformTriggerUserText?: (text: string) => string;
     transformUserTextForMessageId?: string;
   };
@@ -178,6 +179,7 @@ export async function publishActiveChannelPrompt(params: {
           sessionId: params.input.sessionId,
           botUserId: self.userId,
           botName: params.cfg.surface.discord.botName,
+          botMentionNames: params.input.botMentionNames,
           limit: 8,
           transcriptStore: params.transcriptStore,
           discordUserAliasById,
