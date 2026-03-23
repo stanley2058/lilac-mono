@@ -176,6 +176,26 @@ Direct-reply mention disambiguation gate (additional path):
   - direct-reply disambiguation: fail-open (forward on gate errors/timeouts)
   - active-batch gate: fail-closed (skip on gate errors/timeouts)
 
+Router message directives (Discord):
+
+- Leading directives are parsed after an optional leading bot mention such as `<@bot>` or `@Lilac`.
+- `!m:<model>` or `!model:<model>`
+  - one-shot model override for the current routed request
+  - takes precedence over adapter/config session model overrides
+  - stripped before the model sees user text
+- `!continue=<n>` or `!cont=<n>`
+  - active-mode only
+  - reopens recent context and asks for `n` messages before the current one (non-inclusive)
+  - sticky only while the directive message remains visible in reconstructed post-divider history
+  - stripped before the model sees user text
+- `!interrupt`
+  - only meaningful on a direct mention/reply to the currently active output chain
+  - routes as queue mode `interrupt` instead of normal `steer`
+  - stripped before the model sees user text
+- `/divider`
+  - Discord slash command, not a text prefix
+  - inserts a session divider marker that cuts off active-history reconstruction
+
 When the router forwards, it publishes `cmd.request.message` (topic: `cmd.request`) containing `ModelMessage[]`.
 
 GitHub webhook ingress can also publish `cmd.request.message` directly (without passing through routing on `evt.adapter`).

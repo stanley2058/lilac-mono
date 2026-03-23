@@ -108,7 +108,7 @@ function stripLeadingBotMentionPrefix(
 }
 
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
-const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!m:([^\s]+)(?:\s+|$)/iu;
+const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!(?:m|model):([^\s]+)(?:\s+|$)/iu;
 const LEADING_CONTINUE_DIRECTIVE_RE = /^\s*(?:[:,]\s*)?!(?:continue|cont)=(\d+)(?:\s+|$)/iu;
 
 export function parseLeadingModelOverride(input: {
