@@ -1520,7 +1520,19 @@ describe("request-composition active channel burst rules", () => {
 
     async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const limit = Math.max(1, opts?.limit ?? 50);
-      const inChannel = this.messages.filter((m) => m.session.channelId === sessionRef.channelId);
+      const before = opts?.beforeMessageId;
+      const beforeMessage = before
+        ? this.messages.find(
+            (m) => m.session.channelId === sessionRef.channelId && m.ref.messageId === before,
+          )
+        : null;
+      const inChannel = this.messages.filter((m) => {
+        if (m.session.channelId !== sessionRef.channelId) return false;
+        if (!beforeMessage) return true;
+        if (m.ts < beforeMessage.ts) return true;
+        if (m.ts > beforeMessage.ts) return false;
+        return m.ref.messageId < beforeMessage.ref.messageId;
+      });
       // Return a recent-ish slice (ordering doesn't matter; composeRecentChannelMessages sorts).
       return inChannel.slice(Math.max(0, inChannel.length - limit));
     }
@@ -1827,6 +1839,159 @@ describe("request-composition active channel burst rules", () => {
     });
 
     expect(out.chainMessageIds).toEqual(["9", "10"]);
+  });
+
+  it("keeps the normal active window at exactly the requested limit without !cont", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const mk = (id: string, ts: number): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "u",
+      userName: "user",
+      text: `msg_${id}`,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const msgs = [
+      mk("1", anchorTs - 3_000),
+      mk("2", anchorTs - 2_000),
+      mk("3", anchorTs - 1_000),
+      mk("4", anchorTs),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 2,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "4" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["3", "4"]);
+  });
+
+  it("expands active context when current message uses !cont", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+
+    const mk = (id: string, ts: number, text: string): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId: id },
+      session: { platform: "discord", channelId: sessionId },
+      userId: id === "3" ? "bot" : "u",
+      userName: id === "3" ? "lilac" : "user",
+      text,
+      ts,
+      raw: { reference: {} },
+    });
+
+    const msgs = [
+      mk("1", anchorTs - 4 * 60 * 60 * 1000, "old_1"),
+      mk("2", anchorTs - (3 * 60 * 60 * 1000 + 1), "old_2"),
+      mk("3", anchorTs - 2 * 60 * 60 * 1000, "bot_old"),
+      mk("4", anchorTs - 30 * 60 * 1000, "recent_4"),
+      mk("5", anchorTs, "!cont=4 current request"),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "5" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["1", "2", "3", "4", "5"]);
+
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).not.toContain("!cont=");
+    expect(combined).toContain("current request");
+  });
+
+  it("keeps a visible !cont sticky for later plain active messages", async () => {
+    const sessionId = "c";
+
+    const mk = (id: string, ts: number, text: string, userId = "u", userName = "user") =>
+      ({
+        ref: { platform: "discord", channelId: sessionId, messageId: id },
+        session: { platform: "discord", channelId: sessionId },
+        userId,
+        userName,
+        text,
+        ts,
+        raw: { reference: {} },
+      }) satisfies SurfaceMessage;
+
+    const msgs = [
+      mk("1", 1, "before"),
+      mk("2", 2, "!cont=2 reopen"),
+      mk("3", 3, "assistant", "bot", "lilac"),
+      mk("4", 4, "plain follow-up"),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 3,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "4" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("uses the latest visible !cont when multiple directives are present", async () => {
+    const sessionId = "c";
+
+    const mk = (id: string, ts: number, text: string, userId = "u", userName = "user") =>
+      ({
+        ref: { platform: "discord", channelId: sessionId, messageId: id },
+        session: { platform: "discord", channelId: sessionId },
+        userId,
+        userName,
+        text,
+        ts,
+        raw: { reference: {} },
+      }) satisfies SurfaceMessage;
+
+    const msgs = [
+      mk("1", 1, "!cont=5 wide"),
+      mk("2", 2, "assistant one", "bot", "lilac"),
+      mk("3", 3, "middle user"),
+      mk("4", 4, "assistant two", "bot", "lilac"),
+      mk("5", 5, "!cont=2 narrow"),
+      mk("6", 6, "current"),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "6" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["3", "4", "5", "6"]);
   });
 
   it("uses assistant-only transcript fallback for bot messages older than 1h", async () => {
