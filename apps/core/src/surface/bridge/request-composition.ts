@@ -157,60 +157,117 @@ async function listRecentMessagesEndingAt(params: {
   sessionId: string;
   anchor: SurfaceMessage;
   maxPreviousMessages: number;
+  previousMessageTargets?: readonly number[];
+  shouldContinue?: (input: {
+    collected: readonly SurfaceMessage[];
+    exhausted: boolean;
+    fetchedPreviousMessages: number;
+  }) => boolean;
 }): Promise<SurfaceMessage[]> {
   const sessionRef = {
     platform: "discord",
     channelId: params.sessionId,
   } as const;
 
+  const previousMessageTargets = (() => {
+    const requested = params.previousMessageTargets ?? [params.maxPreviousMessages];
+    const normalized = requested
+      .map((target) => Math.min(params.maxPreviousMessages, Math.max(0, Math.floor(target))))
+      .filter((target, index, list) => target > 0 && list.indexOf(target) === index)
+      .sort((a, b) => a - b);
+
+    if (
+      normalized.length === 0 ||
+      normalized[normalized.length - 1] !== params.maxPreviousMessages
+    ) {
+      normalized.push(params.maxPreviousMessages);
+    }
+
+    return normalized;
+  })();
+
   const seen = new Set<string>([params.anchor.ref.messageId]);
   const collected: SurfaceMessage[] = [params.anchor];
   let cursor: string | undefined = params.anchor.ref.messageId;
   let remaining = Math.max(0, params.maxPreviousMessages);
+  let fetchedPreviousMessages = 0;
+  let exhausted = false;
 
-  while (cursor && remaining > 0) {
-    const page = await params.adapter.listMsg(sessionRef, {
-      limit: Math.min(100, remaining),
-      beforeMessageId: cursor,
-    });
-    if (!page || page.length === 0) break;
-
-    let oldestInPage: SurfaceMessage | null = null;
-    let addedAny = false;
-
-    for (const message of page) {
-      if (message.session.channelId !== params.sessionId) continue;
-      if (seen.has(message.ref.messageId)) continue;
-      seen.add(message.ref.messageId);
-      collected.push(message);
-      addedAny = true;
-      remaining -= 1;
-
-      if (
-        !oldestInPage ||
+  const getSortedCollected = () =>
+    collected
+      .slice()
+      .sort((a, b) =>
         compareDiscordMsgPosition(
-          { ts: message.ts, messageId: message.ref.messageId },
-          { ts: oldestInPage.ts, messageId: oldestInPage.ref.messageId },
-        ) < 0
-      ) {
-        oldestInPage = message;
+          { ts: a.ts, messageId: a.ref.messageId },
+          { ts: b.ts, messageId: b.ref.messageId },
+        ),
+      );
+
+  for (const target of previousMessageTargets) {
+    while (cursor && fetchedPreviousMessages < target && remaining > 0) {
+      const page = await params.adapter.listMsg(sessionRef, {
+        limit: Math.min(100, remaining, target - fetchedPreviousMessages),
+        beforeMessageId: cursor,
+      });
+      if (!page || page.length === 0) {
+        exhausted = true;
+        cursor = undefined;
+        break;
       }
 
-      if (remaining <= 0) break;
+      let oldestInPage: SurfaceMessage | null = null;
+      let addedAny = false;
+
+      for (const message of page) {
+        if (message.session.channelId !== params.sessionId) continue;
+        if (seen.has(message.ref.messageId)) continue;
+        seen.add(message.ref.messageId);
+        collected.push(message);
+        addedAny = true;
+        fetchedPreviousMessages += 1;
+        remaining -= 1;
+
+        if (
+          !oldestInPage ||
+          compareDiscordMsgPosition(
+            { ts: message.ts, messageId: message.ref.messageId },
+            { ts: oldestInPage.ts, messageId: oldestInPage.ref.messageId },
+          ) < 0
+        ) {
+          oldestInPage = message;
+        }
+
+        if (remaining <= 0 || fetchedPreviousMessages >= target) break;
+      }
+
+      if (!addedAny || !oldestInPage) {
+        exhausted = true;
+        cursor = undefined;
+        break;
+      }
+      if (oldestInPage.ref.messageId === cursor) {
+        exhausted = true;
+        cursor = undefined;
+        break;
+      }
+      cursor = oldestInPage.ref.messageId;
     }
 
-    if (!addedAny || !oldestInPage) break;
-    if (oldestInPage.ref.messageId === cursor) break;
-    cursor = oldestInPage.ref.messageId;
+    if (
+      params.shouldContinue &&
+      !params.shouldContinue({
+        collected: getSortedCollected(),
+        exhausted,
+        fetchedPreviousMessages,
+      })
+    ) {
+      return getSortedCollected();
+    }
+
+    if (exhausted || remaining <= 0) break;
   }
 
-  collected.sort((a, b) =>
-    compareDiscordMsgPosition(
-      { ts: a.ts, messageId: a.ref.messageId },
-      { ts: b.ts, messageId: b.ref.messageId },
-    ),
-  );
-  return collected;
+  return getSortedCollected();
 }
 
 function compareDiscordSnowflakeLike(a: string, b: string): number {
@@ -231,6 +288,142 @@ function compareDiscordMsgPosition(
 ): number {
   if (a.ts !== b.ts) return a.ts - b.ts;
   return compareDiscordSnowflakeLike(a.messageId, b.messageId);
+}
+
+const ACTIVE_BURST_HISTORY_CAP = 200;
+const ACTIVE_BURST_HISTORY_TARGETS = [16, 48, 112, ACTIVE_BURST_HISTORY_CAP] as const;
+const ACTIVE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+const ACTIVE_MAX_GAP_MS = 2 * 60 * 60 * 1000;
+const ACTIVE_TRANSCRIPT_MAX_AGE_MS = 1 * 60 * 60 * 1000;
+
+type ActiveBurstSelection = {
+  selected: SurfaceMessage[];
+  dividerBoundaryReached: boolean;
+  hitAgeCutoff: boolean;
+  hitGapCutoff: boolean;
+  hasVisibleContinue: boolean;
+  unresolvedContinue: boolean;
+};
+
+function filterMessagesUpToAnchor(input: {
+  list: readonly SurfaceMessage[];
+  anchor: SurfaceMessage;
+}): SurfaceMessage[] {
+  const anchorTs = input.anchor.ts;
+  const anchorId = input.anchor.ref.messageId;
+
+  return input.list.filter((message) => {
+    if (message.ts < anchorTs) return true;
+    if (message.ts > anchorTs) return false;
+    return compareDiscordSnowflakeLike(message.ref.messageId, anchorId) <= 0;
+  });
+}
+
+function selectActiveBurstMessages(input: {
+  contextList: readonly SurfaceMessage[];
+  activeAnchor: SurfaceMessage;
+  limit: number;
+  botUserId: string;
+  botMentionNames: readonly string[];
+}): ActiveBurstSelection {
+  const eligibleToAnchor = filterMessagesUpToAnchor({
+    list: input.contextList,
+    anchor: input.activeAnchor,
+  });
+
+  const eligible = applyDiscordSessionDividerCutoff({
+    listOldestToNewest: eligibleToAnchor,
+    botUserId: input.botUserId,
+  });
+
+  const dividerBoundaryReached = eligible.length !== eligibleToAnchor.length;
+  const anchorId = input.activeAnchor.ref.messageId;
+  const anchorTs = input.activeAnchor.ts;
+  const anchorIndex = eligible.findIndex((message) => message.ref.messageId === anchorId);
+  const startIndex = anchorIndex >= 0 ? anchorIndex : eligible.length - 1;
+
+  if (startIndex < 0) {
+    return {
+      selected: [],
+      dividerBoundaryReached,
+      hitAgeCutoff: false,
+      hitGapCutoff: false,
+      hasVisibleContinue: false,
+      unresolvedContinue: false,
+    };
+  }
+
+  const pickedNewestToOldest: SurfaceMessage[] = [];
+  let hitAgeCutoff = false;
+  let hitGapCutoff = false;
+
+  let prev = eligible[startIndex] ?? null;
+  if (prev) pickedNewestToOldest.push(prev);
+
+  for (let i = startIndex - 1; i >= 0 && pickedNewestToOldest.length < input.limit; i--) {
+    const cur = eligible[i]!;
+
+    const ageMs = anchorTs - cur.ts;
+    if (ageMs > ACTIVE_MAX_AGE_MS) {
+      hitAgeCutoff = true;
+      break;
+    }
+
+    const gapMs = (prev?.ts ?? anchorTs) - cur.ts;
+    if (gapMs > ACTIVE_MAX_GAP_MS) {
+      hitGapCutoff = true;
+      break;
+    }
+
+    pickedNewestToOldest.push(cur);
+    prev = cur;
+  }
+
+  const provisionalSelected = pickedNewestToOldest.reverse();
+  const provisionalStartIndex = Math.max(0, startIndex - (provisionalSelected.length - 1));
+  const latestVisibleContinue = findLatestVisibleContinueDirective({
+    selected: provisionalSelected,
+    selectedStartIndex: provisionalStartIndex,
+    botUserId: input.botUserId,
+    botMentionNames: input.botMentionNames,
+  });
+
+  if (!latestVisibleContinue) {
+    return {
+      selected: provisionalSelected,
+      dividerBoundaryReached,
+      hitAgeCutoff,
+      hitGapCutoff,
+      hasVisibleContinue: false,
+      unresolvedContinue: false,
+    };
+  }
+
+  const desiredFloorIndex = latestVisibleContinue.absoluteIndex - latestVisibleContinue.count;
+  const floorIndex = Math.max(0, desiredFloorIndex);
+
+  return {
+    selected: eligible.slice(floorIndex, startIndex + 1),
+    dividerBoundaryReached,
+    hitAgeCutoff,
+    hitGapCutoff,
+    hasVisibleContinue: true,
+    unresolvedContinue: desiredFloorIndex < 0,
+  };
+}
+
+function shouldContinueLoadingActiveBurstHistory(input: {
+  selection: ActiveBurstSelection;
+  exhausted: boolean;
+  limit: number;
+}): boolean {
+  if (input.exhausted) return false;
+  if (input.selection.dividerBoundaryReached) return false;
+  if (input.selection.unresolvedContinue) return true;
+  if (input.selection.hasVisibleContinue) return false;
+  if (input.selection.selected.length >= input.limit) return false;
+  if (input.selection.hitAgeCutoff || input.selection.hitGapCutoff) return false;
+  return true;
 }
 
 function applyDiscordSessionDividerCutoff(params: {
@@ -729,7 +922,34 @@ export async function composeRecentChannelMessages(
           adapter,
           sessionId: opts.sessionId,
           anchor: triggerMsg,
-          maxPreviousMessages: 200,
+          maxPreviousMessages: ACTIVE_BURST_HISTORY_CAP,
+          previousMessageTargets: ACTIVE_BURST_HISTORY_TARGETS,
+          shouldContinue: ({ collected, exhausted }) => {
+            const activeContextList = collected.filter(shouldIncludeInModelContext);
+            const activeTriggerMsg =
+              activeContextList.find(
+                (message) => message.ref.messageId === opts.triggerMsgRef!.messageId,
+              ) ?? null;
+            const activeAnchor =
+              activeTriggerMsg ??
+              (activeContextList.length > 0
+                ? activeContextList[activeContextList.length - 1]!
+                : null);
+
+            if (!activeAnchor) return !exhausted;
+
+            return shouldContinueLoadingActiveBurstHistory({
+              selection: selectActiveBurstMessages({
+                contextList: activeContextList,
+                activeAnchor,
+                limit: opts.limit,
+                botUserId: opts.botUserId,
+                botMentionNames: continueDirectiveBotNames,
+              }),
+              exhausted,
+              limit: opts.limit,
+            });
+          },
         })
       : [];
   } else {
@@ -762,91 +982,30 @@ export async function composeRecentChannelMessages(
     ? (triggerMsg ?? (contextList.length > 0 ? contextList[contextList.length - 1]! : null))
     : null;
 
-  // Divider cutoff should apply before selection rules so we never include pre-divider
-  // content even if it is within the age/gap window.
-  // IMPORTANT: when using an activeAnchor, only consider messages up to the anchor.
-  // (Newer divider messages must not affect the historical anchor context.)
-  const dividerCutContextList = (() => {
-    if (shouldApplyActiveBurstRules && activeAnchor) {
-      const anchorTs = activeAnchor.ts;
-      const anchorId = activeAnchor.ref.messageId;
-      const eligibleToAnchor = contextList.filter((m) => {
-        if (m.ts < anchorTs) return true;
-        if (m.ts > anchorTs) return false;
-        return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
-      });
-
-      return applyDiscordSessionDividerCutoff({
-        listOldestToNewest: eligibleToAnchor,
-        botUserId: opts.botUserId,
-      });
-    }
-
-    return applyDiscordSessionDividerCutoff({
-      listOldestToNewest: contextList,
-      botUserId: opts.botUserId,
-    });
-  })();
-
-  const ACTIVE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
-  const ACTIVE_MAX_GAP_MS = 2 * 60 * 60 * 1000;
-  const ACTIVE_TRANSCRIPT_MAX_AGE_MS = 1 * 60 * 60 * 1000;
+  const dividerCutContextList =
+    shouldApplyActiveBurstRules && activeAnchor
+      ? applyDiscordSessionDividerCutoff({
+          listOldestToNewest: filterMessagesUpToAnchor({
+            list: contextList,
+            anchor: activeAnchor,
+          }),
+          botUserId: opts.botUserId,
+        })
+      : applyDiscordSessionDividerCutoff({
+          listOldestToNewest: contextList,
+          botUserId: opts.botUserId,
+        });
 
   let selected: SurfaceMessage[];
 
   if (shouldApplyActiveBurstRules && activeAnchor) {
-    const anchorTs = activeAnchor.ts;
-    const anchorId = activeAnchor.ref.messageId;
-
-    // Only include messages up to the anchor (avoid pulling in newer messages
-    // that arrived after the gate decision).
-    const eligible = dividerCutContextList.filter((m) => {
-      if (m.ts < anchorTs) return true;
-      if (m.ts > anchorTs) return false;
-      return compareDiscordSnowflakeLike(m.ref.messageId, anchorId) <= 0;
-    });
-
-    const anchorIndex = eligible.findIndex((m) => m.ref.messageId === anchorId);
-    const startIndex = anchorIndex >= 0 ? anchorIndex : eligible.length - 1;
-
-    const pickedNewestToOldest: SurfaceMessage[] = [];
-
-    let prev = eligible[startIndex] ?? null;
-    if (prev) pickedNewestToOldest.push(prev);
-
-    for (let i = startIndex - 1; i >= 0 && pickedNewestToOldest.length < opts.limit; i--) {
-      const cur = eligible[i]!;
-
-      // Absolute age cutoff relative to the anchor message.
-      const ageMs = anchorTs - cur.ts;
-      if (ageMs > ACTIVE_MAX_AGE_MS) break;
-
-      // Silence-gap cutoff: stop and do NOT include the message that crosses the gap.
-      const gapMs = (prev?.ts ?? anchorTs) - cur.ts;
-      if (gapMs > ACTIVE_MAX_GAP_MS) break;
-
-      pickedNewestToOldest.push(cur);
-      prev = cur;
-    }
-
-    const provisionalSelected = pickedNewestToOldest.reverse();
-    const provisionalStartIndex = Math.max(0, startIndex - (provisionalSelected.length - 1));
-    const latestVisibleContinue = findLatestVisibleContinueDirective({
-      selected: provisionalSelected,
-      selectedStartIndex: provisionalStartIndex,
+    selected = selectActiveBurstMessages({
+      contextList,
+      activeAnchor,
+      limit: opts.limit,
       botUserId: opts.botUserId,
       botMentionNames: continueDirectiveBotNames,
-    });
-
-    if (!latestVisibleContinue) {
-      selected = provisionalSelected;
-    } else {
-      const floorIndex = Math.max(
-        0,
-        latestVisibleContinue.absoluteIndex - latestVisibleContinue.count,
-      );
-      selected = eligible.slice(floorIndex, startIndex + 1);
-    }
+    }).selected;
   } else {
     selected = dividerCutContextList.slice(Math.max(0, dividerCutContextList.length - opts.limit));
   }

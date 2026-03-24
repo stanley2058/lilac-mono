@@ -1476,6 +1476,8 @@ describe("request-composition mention thread context", () => {
 
 describe("request-composition active channel burst rules", () => {
   class ListFakeAdapter implements SurfaceAdapter {
+    readonly listMsgCalls: Array<{ limit: number; beforeMessageId?: string }> = [];
+
     constructor(private readonly messages: SurfaceMessage[]) {}
 
     async connect(): Promise<void> {
@@ -1520,6 +1522,7 @@ describe("request-composition active channel burst rules", () => {
 
     async listMsg(sessionRef: SessionRef, opts?: LimitOpts): Promise<SurfaceMessage[]> {
       const limit = Math.max(1, opts?.limit ?? 50);
+      this.listMsgCalls.push({ limit, beforeMessageId: opts?.beforeMessageId });
       const before = opts?.beforeMessageId;
       const beforeMessage = before
         ? this.messages.find(
@@ -1573,6 +1576,229 @@ describe("request-composition active channel burst rules", () => {
       throw new Error("not implemented");
     }
   }
+
+  function makeSequentialActiveMessages(input: {
+    sessionId: string;
+    count: number;
+    latestText?: string;
+    gapAfterId?: number;
+  }): SurfaceMessage[] {
+    const anchorTs = 10_000_000;
+
+    return Array.from({ length: input.count }, (_, index) => {
+      const id = index + 1;
+      const ts =
+        input.gapAfterId && id <= input.gapAfterId
+          ? anchorTs - 3 * 60 * 60 * 1000 - (input.gapAfterId - id) * 1_000
+          : anchorTs - (input.count - id) * 1_000;
+
+      return {
+        ref: {
+          platform: "discord",
+          channelId: input.sessionId,
+          messageId: String(id),
+        },
+        session: { platform: "discord", channelId: input.sessionId },
+        userId: id % 3 === 0 ? "bot" : "u",
+        userName: id % 3 === 0 ? "lilac" : "user",
+        text: id === input.count ? (input.latestText ?? `msg_${id}`) : `msg_${id}`,
+        ts,
+        raw: { reference: {} },
+      } satisfies SurfaceMessage;
+    });
+  }
+
+  it("stops active history fetch at the first 16-message rung when prompt limit is filled", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({ sessionId, count: 40 });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "40" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["33", "34", "35", "36", "37", "38", "39", "40"]);
+    expect(adapter.listMsgCalls).toEqual([{ limit: 16, beforeMessageId: "40" }]);
+  });
+
+  it("stops active history fetch at the first 16-message rung when a gap cutoff is already visible", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({
+      sessionId,
+      count: 40,
+      gapAfterId: 24,
+    });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 20,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "40" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual([
+      "25",
+      "26",
+      "27",
+      "28",
+      "29",
+      "30",
+      "31",
+      "32",
+      "33",
+      "34",
+      "35",
+      "36",
+      "37",
+      "38",
+      "39",
+      "40",
+    ]);
+    expect(adapter.listMsgCalls).toEqual([{ limit: 16, beforeMessageId: "40" }]);
+  });
+
+  it("ramps active history fetch from 16 to 48 when more live context is needed", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({ sessionId, count: 80 });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 40,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "80" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(
+      Array.from({ length: 40 }, (_, index) => String(index + 41)),
+    );
+    expect(adapter.listMsgCalls).toEqual([
+      { limit: 16, beforeMessageId: "80" },
+      { limit: 32, beforeMessageId: "64" },
+    ]);
+  });
+
+  it("ramps active history fetch from 16 to 48 to 112 when needed", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({ sessionId, count: 160 });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 100,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "160" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(
+      Array.from({ length: 100 }, (_, index) => String(index + 61)),
+    );
+    expect(adapter.listMsgCalls).toEqual([
+      { limit: 16, beforeMessageId: "160" },
+      { limit: 32, beforeMessageId: "144" },
+      { limit: 64, beforeMessageId: "112" },
+    ]);
+  });
+
+  it("ramps active history fetch to the 200-message cap for large continue expansions", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({
+      sessionId,
+      count: 220,
+      latestText: "!cont=200 current request",
+    });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "220" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(
+      Array.from({ length: 201 }, (_, index) => String(index + 20)),
+    );
+    expect(adapter.listMsgCalls).toEqual([
+      { limit: 16, beforeMessageId: "220" },
+      { limit: 32, beforeMessageId: "204" },
+      { limit: 64, beforeMessageId: "172" },
+      { limit: 88, beforeMessageId: "108" },
+    ]);
+  });
+
+  it("stops at the first rung when a visible continue is already fully satisfied", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({
+      sessionId,
+      count: 80,
+      latestText: "!cont=2 current request",
+    });
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 40,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "80" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["78", "79", "80"]);
+    expect(adapter.listMsgCalls).toEqual([{ limit: 16, beforeMessageId: "80" }]);
+  });
+
+  it("stops at the first rung when a divider already bounds a large continue", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({
+      sessionId,
+      count: 220,
+      latestText: "!cont=200 current request",
+    });
+    msgs[209] = {
+      ...msgs[209]!,
+      userId: "bot",
+      userName: "lilac",
+      text: "[LILAC_SESSION_DIVIDER] (by user)",
+    };
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "220" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(
+      Array.from({ length: 10 }, (_, index) => String(index + 211)),
+    );
+    expect(adapter.listMsgCalls).toEqual([{ limit: 16, beforeMessageId: "220" }]);
+  });
 
   it("stops at >3h age cutoff (active mode, non-trigger)", async () => {
     const sessionId = "c";
