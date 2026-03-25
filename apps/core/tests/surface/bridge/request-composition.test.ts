@@ -2103,7 +2103,7 @@ describe("request-composition active channel burst rules", () => {
     expect(out.chainMessageIds).toEqual(["3", "4"]);
   });
 
-  it("expands active context when current message uses !cont", async () => {
+  it("expands active context when current message uses bare !continue", async () => {
     const sessionId = "c";
     const anchorTs = 10_000_000;
 
@@ -2122,7 +2122,7 @@ describe("request-composition active channel burst rules", () => {
       mk("2", anchorTs - (3 * 60 * 60 * 1000 + 1), "old_2"),
       mk("3", anchorTs - 2 * 60 * 60 * 1000, "bot_old"),
       mk("4", anchorTs - 30 * 60 * 1000, "recent_4"),
-      mk("5", anchorTs, "!cont=4 current request"),
+      mk("5", anchorTs, "!continue current request"),
     ];
 
     const adapter = new ListFakeAdapter(msgs);
