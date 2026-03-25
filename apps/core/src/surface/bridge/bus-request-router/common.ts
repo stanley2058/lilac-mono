@@ -109,7 +109,8 @@ function stripLeadingBotMentionPrefix(
 
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
 const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!(?:m|model):([^\s]+)(?:\s+|$)/iu;
-const LEADING_CONTINUE_DIRECTIVE_RE = /^\s*(?:[:,]\s*)?!(?:continue|cont)=(\d+)(?:\s+|$)/iu;
+const DEFAULT_CONTINUE_DIRECTIVE_COUNT = 8;
+const LEADING_CONTINUE_DIRECTIVE_RE = /^\s*(?:[:,]\s*)?!(?:continue|cont)(?:=(\d+))?(?:\s+|$)/iu;
 
 export function parseLeadingModelOverride(input: {
   text: string;
@@ -133,7 +134,9 @@ export function parseLeadingContinueDirective(input: {
   const m = target.match(LEADING_CONTINUE_DIRECTIVE_RE);
   if (!m) return undefined;
 
-  const rawCount = Number.parseInt(String(m[1] ?? "").trim(), 10);
+  if (m[1] === undefined) return DEFAULT_CONTINUE_DIRECTIVE_COUNT;
+
+  const rawCount = Number.parseInt(String(m[1]).trim(), 10);
   if (!Number.isFinite(rawCount) || rawCount < 1) return undefined;
   return Math.min(200, rawCount);
 }
