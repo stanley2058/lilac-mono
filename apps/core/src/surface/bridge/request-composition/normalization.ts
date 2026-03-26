@@ -2,6 +2,14 @@ import type { ModelMessage } from "ai";
 
 import type { TranscriptSnapshot } from "../../../transcript/transcript-store";
 
+const DISCORD_MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 export function normalizeText(text: string, _ctx: {}): string {
   return text;
 }
@@ -79,6 +87,7 @@ export function formatDiscordAttributionHeader(params: {
   authorName: string;
   userAlias?: string;
   messageId: string;
+  messageTs?: number;
   reactions?: readonly string[];
 }): string {
   const userName = sanitizeUserToken(params.authorName || `user_${params.authorId}`);
@@ -86,9 +95,18 @@ export function formatDiscordAttributionHeader(params: {
 
   const reactions = formatReactionSet(params.reactions);
   const aliasPart = userAlias ? ` user_alias=${userAlias}` : "";
+  const messageTimePart = formatMessageTimePart(params.messageTs);
   const reactionsPart = reactions ? ` reactions=${reactions}` : "";
 
-  return `[discord user_id=${params.authorId} user_name=${userName}${aliasPart} message_id=${params.messageId}${reactionsPart}]`;
+  return `[discord user_id=${params.authorId} user_name=${userName}${aliasPart} message_id=${params.messageId}${messageTimePart}${reactionsPart}]`;
+}
+
+function formatMessageTimePart(messageTs: number | undefined): string {
+  if (!Number.isFinite(messageTs) || messageTs === undefined || messageTs < 0) {
+    return "";
+  }
+
+  return ` message_time="${DISCORD_MESSAGE_TIME_FORMATTER.format(new Date(messageTs))}"`;
 }
 
 function sanitizeUserToken(name: string): string {

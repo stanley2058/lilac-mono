@@ -107,6 +107,17 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 const originalFetch = globalThis.fetch;
+const EXPECTED_DISCORD_MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatExpectedDiscordMessageTime(ts: number): string {
+  return EXPECTED_DISCORD_MESSAGE_TIME_FORMATTER.format(new Date(ts));
+}
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -134,6 +145,31 @@ describe("request-composition attachments", () => {
     expect(out?.role).toBe("user");
     expect(typeof out?.content).toBe("string");
     expect(out!.content as string).toContain("reactions=👍,👀");
+  });
+
+  it("includes local message time in attribution header", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "hi",
+      ts: Date.UTC(2026, 2, 26, 14, 5),
+    };
+
+    const adapter = new FakeAdapter(msg, []);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(typeof out?.content).toBe("string");
+    expect(out!.content as string).toContain(
+      `message_time="${formatExpectedDiscordMessageTime(msg.ts)}"`,
+    );
   });
 
   it("includes user alias in attribution header when configured", async () => {
@@ -166,7 +202,7 @@ describe("request-composition attachments", () => {
       session: { platform: "discord", channelId: "c" },
       userId: "bot",
       userName: "lilac",
-      text: "[discord user_id=bot user_name=lilac message_id=m]\nassistant_output",
+      text: '[discord user_id=bot user_name=lilac message_id=m message_time="Jan 01, 00:00"]\nassistant_output',
       ts: 0,
     };
 
@@ -206,7 +242,7 @@ describe("request-composition attachments", () => {
     expect(typeof out?.content).toBe("string");
     expect(out!.content as string).toContain("assistant embed title\n\nassistant embed body");
     expect(out!.content as string).toContain(
-      "[discord user_id=other-bot user_name=github-bot message_id=m]",
+      `[discord user_id=other-bot user_name=github-bot message_id=m message_time="${formatExpectedDiscordMessageTime(msg.ts)}"]`,
     );
     expect(out!.content as string).not.toContain("[discord_embed]");
   });
@@ -1873,7 +1909,7 @@ describe("request-composition active channel burst rules", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "[discord user_id=bot user_name=lilac message_id=b1]\nassistant_surface",
+      text: '[discord user_id=bot user_name=lilac message_id=b1 message_time="Jan 01, 00:00"]\nassistant_surface',
       ts: anchorTs - 1_000,
       raw: { reference: {} },
     };
@@ -1916,7 +1952,7 @@ describe("request-composition active channel burst rules", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "[discord user_id=bot user_name=lilac message_id=b1]\nassistant_one",
+      text: '[discord user_id=bot user_name=lilac message_id=b1 message_time="Jan 01, 00:00"]\nassistant_one',
       ts: anchorTs - 2_000,
       raw: { reference: {} },
     };
@@ -1926,7 +1962,7 @@ describe("request-composition active channel burst rules", () => {
       session: { platform: "discord", channelId: sessionId },
       userId: "bot",
       userName: "lilac",
-      text: "[discord user_id=bot user_name=lilac message_id=b2]\nassistant_two",
+      text: '[discord user_id=bot user_name=lilac message_id=b2 message_time="Jan 01, 00:01"]\nassistant_two',
       ts: anchorTs - 1_000,
       raw: { reference: {} },
     };
@@ -2275,7 +2311,7 @@ describe("request-composition active channel burst rules", () => {
                   },
                   {
                     type: "text",
-                    text: "[discord user_id=bot user_name=lilac message_id=old]\nFALLBACK_OLD",
+                    text: '[discord user_id=bot user_name=lilac message_id=old message_time="Jan 01, 00:00"]\nFALLBACK_OLD',
                   },
                 ],
               },
@@ -2390,7 +2426,7 @@ describe("request-composition active channel burst rules", () => {
                   },
                   {
                     type: "text",
-                    text: "[discord user_id=bot user_name=lilac message_id=old]\nFALLBACK_OLD",
+                    text: '[discord user_id=bot user_name=lilac message_id=old message_time="Jan 01, 00:00"]\nFALLBACK_OLD',
                   },
                 ],
               },
