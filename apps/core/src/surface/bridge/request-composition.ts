@@ -712,6 +712,7 @@ export async function composeRequestMessages(
       authorName: chunk.authorName,
       userAlias: opts.discordUserAliasById?.get(chunk.authorId),
       messageId,
+      messageTs: chunk.tsEnd,
       reactions,
     });
 
@@ -872,6 +873,7 @@ export async function composeRecentChannelMessages(
             authorName: chunk.authorName,
             userAlias: opts.discordUserAliasById?.get(chunk.authorId),
             messageId,
+            messageTs: chunk.tsEnd,
             reactions,
           });
 
@@ -1109,6 +1111,7 @@ export async function composeRecentChannelMessages(
       authorName: chunk.authorName,
       userAlias: opts.discordUserAliasById?.get(chunk.authorId),
       messageId,
+      messageTs: chunk.tsEnd,
       reactions,
     });
 
@@ -1172,6 +1175,7 @@ export async function composeSingleMessage(
     authorName: m.userName ?? `user_${m.userId}`,
     userAlias: opts.discordUserAliasById?.get(m.userId),
     messageId: m.ref.messageId,
+    messageTs: m.ts,
     reactions: await safeListReactions(adapter, m.ref),
   });
 

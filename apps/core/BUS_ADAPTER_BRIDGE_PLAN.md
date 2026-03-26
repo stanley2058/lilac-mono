@@ -193,7 +193,7 @@ Steps:
 Recommended content template (string-only, simplest):
 
 ```
-[discord user_id=<id> user_name=<name> message_id=<id>]
+[discord user_id=<id> user_name=<name> message_id=<id> message_time="Mar 26, 14:05"]
 <normalized_text>
 ```
 
