@@ -954,6 +954,8 @@ export async function startBusRequestRouter(params: {
       continueCount,
       botMentionNames,
     } = input;
+    const hasReplyTarget =
+      typeof input.replyToMessageId === "string" && input.replyToMessageId.trim().length > 0;
 
     const modelOverrideTransform = requestModelOverride
       ? (text: string) =>
@@ -1130,14 +1132,14 @@ export async function startBusRequestRouter(params: {
     }
 
     // No active request.
-    if (continueCount !== undefined && !mentionsBot && !replyToBot) {
+    if (continueCount !== undefined && !mentionsBot && !replyToBot && !hasReplyTarget) {
       clearDebounceBuffer(sessionId);
 
       await publishActiveChannelPrompt({
         adapter,
         bus,
         cfg,
-        requestId: `discord:${sessionId}:${msgRef.messageId}`,
+        requestId: randomRequestId(),
         sessionId,
         triggerMsgRef: msgRef,
         triggerType: undefined,
@@ -1161,8 +1163,7 @@ export async function startBusRequestRouter(params: {
       clearDebounceBuffer(sessionId);
 
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
-      const requestId =
-        triggerType === "reply" ? `discord:${sessionId}:${msgRef.messageId}` : randomRequestId();
+      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
 
       await publishActiveChannelPrompt({
         adapter,

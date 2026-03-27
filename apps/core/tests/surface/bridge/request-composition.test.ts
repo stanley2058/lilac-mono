@@ -2218,6 +2218,55 @@ describe("request-composition active channel burst rules", () => {
     expect(out.chainMessageIds).toEqual(["1", "2", "3", "4"]);
   });
 
+  it("ignores sticky !cont on reply-thread messages while still stripping it", async () => {
+    const sessionId = "c";
+
+    const mk = (
+      id: string,
+      ts: number,
+      text: string,
+      raw: SurfaceMessage["raw"] = { reference: {} },
+      userId = "u",
+      userName = "user",
+    ) =>
+      ({
+        ref: { platform: "discord", channelId: sessionId, messageId: id },
+        session: { platform: "discord", channelId: sessionId },
+        userId,
+        userName,
+        text,
+        ts,
+        raw,
+      }) satisfies SurfaceMessage;
+
+    const msgs = [
+      mk("1", 1, "before"),
+      mk("2", 2, "!cont=2 reopen", { reference: { messageId: "1", channelId: sessionId } }),
+      mk("3", 3, "assistant", { reference: {} }, "bot", "lilac"),
+      mk("4", 4, "plain follow-up"),
+    ];
+
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 3,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "4" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(["2", "3", "4"]);
+
+    const combined = out.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    expect(combined).toContain("reopen");
+    expect(combined).not.toContain("!cont=");
+  });
+
   it("uses the latest visible !cont when multiple directives are present", async () => {
     const sessionId = "c";
 
