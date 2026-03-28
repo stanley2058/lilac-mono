@@ -24,9 +24,13 @@ import type { LanguageModel } from "ai";
 import {
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
+  consumeAssistantTextDelta,
+  createAssistantTextPartBoundaryState,
   createDeferredSubagentManager,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
+  markAssistantTextPartEnded,
+  markAssistantTextPartStarted,
   mergeToSingleUserMessage,
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
@@ -1103,6 +1107,114 @@ describe("withBlankLineBetweenTextParts", () => {
     });
 
     expect(out).toBe("Fresh reply.");
+  });
+});
+
+describe("assistant text part boundary accumulation", () => {
+  it("separates streamed output and final text when a resumed text block reuses the same part id", () => {
+    const state = createAssistantTextPartBoundaryState(undefined);
+    const streamed: string[] = [];
+    let finalText = "";
+
+    markAssistantTextPartStarted(state, "text-0");
+    const firstDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "...update the notes.",
+    });
+    streamed.push(firstDelta);
+    finalText += firstDelta;
+    markAssistantTextPartEnded(state, "text-0");
+
+    markAssistantTextPartStarted(state, "text-0");
+    const secondDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "Works without the old patch...",
+    });
+    streamed.push(secondDelta);
+    finalText += secondDelta;
+    markAssistantTextPartEnded(state, "text-0");
+
+    markAssistantTextPartStarted(state, "text-0");
+    const thirdDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "Now let me update the discovery.search entry...",
+    });
+    streamed.push(thirdDelta);
+    finalText += thirdDelta;
+
+    expect(streamed).toEqual([
+      "...update the notes.",
+      "\n\nWorks without the old patch...",
+      "\n\nNow let me update the discovery.search entry...",
+    ]);
+    expect(finalText).toBe(
+      "...update the notes.\n\nWorks without the old patch...\n\nNow let me update the discovery.search entry...",
+    );
+  });
+
+  it("separates resumed streamed output from recovered visible text before persistence", () => {
+    const state = createAssistantTextPartBoundaryState("Done. Updated TOOLS.md...");
+    const streamed: string[] = [];
+    let finalText = "";
+
+    markAssistantTextPartStarted(state, "text-0");
+    const delta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      recoveryPartialText: "Done. Updated TOOLS.md...",
+      partId: "text-0",
+      delta: "Now let me also write a daily note...",
+    });
+    streamed.push(delta);
+    finalText += delta;
+
+    expect(streamed).toEqual(["\n\nNow let me also write a daily note..."]);
+    expect(finalText).toBe("\n\nNow let me also write a daily note...");
+  });
+
+  it("keeps a new text-block boundary pending across whitespace-only deltas", () => {
+    const state = createAssistantTextPartBoundaryState(undefined);
+    const streamed: string[] = [];
+    let finalText = "";
+
+    markAssistantTextPartStarted(state, "text-0");
+    const firstDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "...update the notes.",
+    });
+    streamed.push(firstDelta);
+    finalText += firstDelta;
+    markAssistantTextPartEnded(state, "text-0");
+
+    markAssistantTextPartStarted(state, "text-0");
+    const whitespaceDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "\n",
+    });
+    streamed.push(whitespaceDelta);
+    finalText += whitespaceDelta;
+
+    const textDelta = consumeAssistantTextDelta({
+      state,
+      finalText,
+      partId: "text-0",
+      delta: "Works without the old patch...",
+    });
+    streamed.push(textDelta);
+    finalText += textDelta;
+
+    expect(streamed).toEqual(["...update the notes.", "\n", "\nWorks without the old patch..."]);
+    expect(finalText).toBe("...update the notes.\n\nWorks without the old patch...");
   });
 });
 

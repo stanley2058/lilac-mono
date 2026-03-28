@@ -301,6 +301,65 @@ export function withBlankLineBetweenTextParts(params: {
   return `\n\n${params.delta}`;
 }
 
+export type AssistantTextPartBoundaryState = {
+  lastTextPartId: string | null;
+  pendingRecoveryTextBoundary: boolean;
+  pendingTextPartStartIds: Set<string>;
+};
+
+export function createAssistantTextPartBoundaryState(
+  partialText: string | undefined,
+): AssistantTextPartBoundaryState {
+  return {
+    lastTextPartId: null,
+    pendingRecoveryTextBoundary: Boolean(partialText?.trim()),
+    pendingTextPartStartIds: new Set<string>(),
+  };
+}
+
+export function markAssistantTextPartStarted(
+  state: AssistantTextPartBoundaryState,
+  partId: string,
+): void {
+  state.pendingTextPartStartIds.add(partId);
+}
+
+export function markAssistantTextPartEnded(
+  state: AssistantTextPartBoundaryState,
+  partId: string,
+): void {
+  state.pendingTextPartStartIds.delete(partId);
+}
+
+export function consumeAssistantTextDelta(params: {
+  state: AssistantTextPartBoundaryState;
+  finalText: string;
+  recoveryPartialText?: string;
+  partId: string;
+  delta: string;
+}): string {
+  const startedNewTextBlock = params.state.pendingTextPartStartIds.has(params.partId);
+  const hasPartBoundary =
+    startedNewTextBlock ||
+    (params.state.lastTextPartId !== null && params.partId !== params.state.lastTextPartId);
+  const accumulatedTextForBoundary =
+    params.finalText.length > 0 ? params.finalText : (params.recoveryPartialText ?? "");
+  const nextDelta = withBlankLineBetweenTextParts({
+    accumulatedText: accumulatedTextForBoundary,
+    delta: params.delta,
+    partChanged: hasPartBoundary || params.state.pendingRecoveryTextBoundary,
+  });
+  if (nextDelta.length > 0) {
+    const boundaryResolvedByThisDelta = /\S/u.test(params.delta);
+    if (boundaryResolvedByThisDelta) {
+      params.state.pendingRecoveryTextBoundary = false;
+      params.state.pendingTextPartStartIds.delete(params.partId);
+    }
+  }
+  params.state.lastTextPartId = params.partId;
+  return nextDelta;
+}
+
 function estimateTokensFromValue(value: unknown): number {
   // Best-effort token estimate (OpenCode uses chars/4).
   const chars = safeStringify(value).length;
@@ -3100,8 +3159,9 @@ export async function startBusAgentRunner(params: {
       await deferredSubagents.restore(next.recovery?.deferredSubagents);
 
       let finalText = "";
-      let lastTextPartId: string | null = null;
-      let pendingRecoveryTextBoundary = Boolean(next.recovery?.partialText.trim());
+      const assistantTextPartBoundaryState = createAssistantTextPartBoundaryState(
+        next.recovery?.partialText,
+      );
       const reasoningChunkById = new Map<string, string>();
       let reasoningChunkSeq = 0;
 
@@ -3230,22 +3290,23 @@ export async function startBusAgentRunner(params: {
           });
         }
 
+        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_start") {
+          markAssistantTextPartStarted(
+            assistantTextPartBoundaryState,
+            event.assistantMessageEvent.id,
+          );
+        }
+
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           runStats.firstTextDeltaAt ??= Date.now();
 
-          const partId = event.assistantMessageEvent.id;
-          const hasPartBoundary = lastTextPartId !== null && partId !== lastTextPartId;
-          const accumulatedTextForBoundary =
-            finalText.length > 0 ? finalText : (next.recovery?.partialText ?? "");
-          const delta = withBlankLineBetweenTextParts({
-            accumulatedText: accumulatedTextForBoundary,
+          const delta = consumeAssistantTextDelta({
+            state: assistantTextPartBoundaryState,
+            finalText,
+            recoveryPartialText: next.recovery?.partialText,
+            partId: event.assistantMessageEvent.id,
             delta: event.assistantMessageEvent.delta,
-            partChanged: hasPartBoundary || pendingRecoveryTextBoundary,
           });
-          if (delta.length > 0) {
-            pendingRecoveryTextBoundary = false;
-          }
-          lastTextPartId = partId;
 
           finalText += delta;
           if (state.activeRun && state.activeRun.requestId === next.requestId) {
@@ -3261,6 +3322,13 @@ export async function startBusAgentRunner(params: {
                 e,
               );
             });
+        }
+
+        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_end") {
+          markAssistantTextPartEnded(
+            assistantTextPartBoundaryState,
+            event.assistantMessageEvent.id,
+          );
         }
 
         if (
