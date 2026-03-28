@@ -3,6 +3,7 @@ import { ToolPluginSkipError, type ServerTool } from "@stanley2058/lilac-plugin-
 import {
   Attachment,
   Codex,
+  Discovery,
   Generate,
   Onboarding,
   SSH,
@@ -33,6 +34,22 @@ export function createBuiltinWebPlugin(): CoreToolPlugin {
 
 export function createBuiltinSkillsPlugin(): CoreToolPlugin {
   return singletonLevel2("skills", () => new Skills());
+}
+
+export function createBuiltinDiscoveryPlugin(): CoreToolPlugin {
+  return {
+    meta: {
+      id: "discovery",
+    },
+    create({ runtime }) {
+      if (!runtime.discovery) {
+        throw new ToolPluginSkipError("discovery requires discovery service");
+      }
+      return {
+        level2: [new Discovery({ discovery: runtime.discovery })],
+      };
+    },
+  };
 }
 
 export function createBuiltinOnboardingPlugin(): CoreToolPlugin {

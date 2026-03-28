@@ -24,6 +24,15 @@ export type RecentAgentWriteSnapshot = {
   finalText?: string;
 };
 
+export type TranscriptDiscoveryRecord = {
+  requestId: string;
+  sessionId: string;
+  requestClient: AdapterPlatform;
+  updatedTs: number;
+  finalText?: string;
+  surfaceRefs: MsgRef[];
+};
+
 export type TranscriptStore = {
   saveRequestTranscript(input: {
     requestId: string;
@@ -55,6 +64,8 @@ export type TranscriptStore = {
     offset?: number;
     client?: AdapterPlatform;
   }): RecentAgentWriteSnapshot[];
+
+  listDiscoveryRecords?(): TranscriptDiscoveryRecord[];
 
   close(): void;
 };
@@ -334,6 +345,69 @@ export class SqliteTranscriptStore implements TranscriptStore {
     }
 
     return out;
+  }
+
+  listDiscoveryRecords(): TranscriptDiscoveryRecord[] {
+    const rows = this.db
+      .query(
+        `
+        SELECT
+          rt.request_id,
+          rt.session_id,
+          rt.request_client,
+          rt.updated_ts,
+          rt.final_text,
+          sm.platform AS surface_platform,
+          sm.channel_id AS surface_channel_id,
+          sm.message_id AS surface_message_id,
+          sm.created_ts AS surface_created_ts
+        FROM request_transcripts rt
+        LEFT JOIN surface_message_to_request sm
+          ON sm.request_id = rt.request_id
+        ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts ASC, sm.rowid ASC
+        `,
+      )
+      .all() as Array<{
+      request_id: string;
+      session_id: string;
+      request_client: string;
+      updated_ts: number;
+      final_text: string | null;
+      surface_platform: string | null;
+      surface_channel_id: string | null;
+      surface_message_id: string | null;
+    }>;
+
+    const byRequestId = new Map<string, TranscriptDiscoveryRecord>();
+    for (const row of rows) {
+      let record = byRequestId.get(row.request_id);
+      if (!record) {
+        record = {
+          requestId: row.request_id,
+          sessionId: row.session_id,
+          requestClient: row.request_client as AdapterPlatform,
+          updatedTs: row.updated_ts,
+          finalText: row.final_text ?? undefined,
+          surfaceRefs: [],
+        };
+        byRequestId.set(row.request_id, record);
+      }
+
+      if (
+        row.surface_platform !== null &&
+        row.surface_channel_id !== null &&
+        row.surface_message_id !== null &&
+        (row.surface_platform === "discord" || row.surface_platform === "github")
+      ) {
+        record.surfaceRefs.push({
+          platform: row.surface_platform,
+          channelId: row.surface_channel_id,
+          messageId: row.surface_message_id,
+        });
+      }
+    }
+
+    return [...byRequestId.values()];
   }
 
   private rowToSnapshot(

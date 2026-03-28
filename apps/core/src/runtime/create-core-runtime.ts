@@ -5,6 +5,7 @@ import {
   env,
   getCoreConfig,
   resolveCoreConfigPath,
+  resolveDiscoveryDbPath,
   resolveDiscordSearchDbPath,
   resolveTranscriptDbPath,
 } from "@stanley2058/lilac-utils";
@@ -21,6 +22,7 @@ import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
 import { DiscordSearchService, DiscordSearchStore } from "../surface/store/discord-search-store";
+import { DiscoveryService } from "../discovery/discovery-service";
 
 import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
@@ -136,6 +138,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let transcriptStore: SqliteTranscriptStore | null = null;
   let discordSearchStore: DiscordSearchStore | null = null;
   let discordSearchService: DiscordSearchService | null = null;
+  let discoveryService: DiscoveryService | null = null;
 
   let started = false;
 
@@ -429,6 +432,13 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         adapter,
         store: discordSearchStore,
       });
+      discoveryService = new DiscoveryService({
+        dbPath: resolveDiscoveryDbPath(),
+        dataDir: env.dataDir,
+        discordSearchStore,
+        transcriptStore,
+        getConfig: () => getCoreConfig(),
+      });
 
       stopDiscordSearchIndexer = await startDiscordSearchIndexer({
         adapter,
@@ -504,6 +514,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           adapter,
           getConfig: () => getCoreConfig(),
           workflowStore,
+          discovery: discoveryService ?? undefined,
           discordSearch: discordSearchService ?? undefined,
           transcriptStore: transcriptStore ?? undefined,
         },
@@ -755,6 +766,10 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
     await safe("adapter.disconnect", () => adapter.disconnect());
     await safe("githubAdapter.disconnect", () => githubAdapter.disconnect());
+    await safe("discoveryService.close", async () => {
+      discoveryService?.close();
+      discoveryService = null;
+    });
     await safe("transcriptStore.close", async () => {
       transcriptStore?.close();
       transcriptStore = null;

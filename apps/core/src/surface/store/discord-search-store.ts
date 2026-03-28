@@ -26,6 +26,18 @@ export type DiscordSearchHit = {
   score: number;
 };
 
+export type DiscordSearchIndexedMessage = {
+  ref: DiscordMsgRef;
+  session: DiscordSessionRef;
+  userId: string;
+  userName?: string;
+  text: string;
+  ts: number;
+  editedTs?: number;
+  deleted: boolean;
+  updatedTs: number;
+};
+
 export type DiscordSearchHealResult = {
   attempted: boolean;
   skipped: boolean;
@@ -79,6 +91,19 @@ type RawSearchRow = {
   ts: number;
   edited_ts: number | null;
   score: number;
+};
+
+type RawIndexedRow = {
+  channel_id: string;
+  guild_id: string | null;
+  message_id: string;
+  user_id: string;
+  user_name: string | null;
+  text: string;
+  ts: number;
+  edited_ts: number | null;
+  deleted: number;
+  updated_ts: number;
 };
 
 export class DiscordSearchStore {
@@ -242,6 +267,66 @@ export class DiscordSearchStore {
       .query("SELECT COUNT(1) AS c FROM discord_search_messages WHERE channel_id = ?")
       .get(channelId) as { c: number };
     return typeof row?.c === "number" ? row.c : 0;
+  }
+
+  listMessagesForDiscovery(sinceUpdatedTs?: number): DiscordSearchIndexedMessage[] {
+    const rows = (
+      sinceUpdatedTs === undefined
+        ? this.db
+            .query(
+              `
+            SELECT
+              channel_id,
+              guild_id,
+              message_id,
+              user_id,
+              user_name,
+              text,
+              ts,
+              edited_ts,
+              deleted,
+              updated_ts
+            FROM discord_search_messages
+            ORDER BY updated_ts ASC, channel_id ASC, message_id ASC
+            `,
+            )
+            .all()
+        : this.db
+            .query(
+              `
+            SELECT
+              channel_id,
+              guild_id,
+              message_id,
+              user_id,
+              user_name,
+              text,
+              ts,
+              edited_ts,
+              deleted,
+              updated_ts
+            FROM discord_search_messages
+            WHERE updated_ts >= ?
+            ORDER BY updated_ts ASC, channel_id ASC, message_id ASC
+            `,
+            )
+            .all(sinceUpdatedTs)
+    ) as RawIndexedRow[];
+
+    return rows.map((row) => ({
+      ref: asDiscordMsgRef(row.channel_id, row.message_id),
+      session: asDiscordSessionRef({
+        channelId: row.channel_id,
+        guildId: row.guild_id,
+      }),
+      userId: row.user_id,
+      userName: row.user_name ?? undefined,
+      text: row.text,
+      ts: row.ts,
+      editedTs: row.edited_ts ?? undefined,
+      deleted: row.deleted !== 0,
+      updatedTs: row.updated_ts,
+    }));
   }
 
   searchChannel(input: { channelId: string; query: string; limit?: number }): DiscordSearchHit[] {

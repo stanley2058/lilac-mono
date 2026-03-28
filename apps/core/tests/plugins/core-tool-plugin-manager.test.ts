@@ -6,6 +6,7 @@ import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { createCoreToolPluginManager } from "../../src/plugins";
+import type { DiscoveryService } from "../../src/discovery/discovery-service";
 import type { SurfaceAdapter } from "../../src/surface/adapter";
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
@@ -46,6 +47,7 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "codex.login",
   "codex.logout",
   "codex.status",
+  "discovery.search",
   "fetch",
   "onboarding.all",
   "onboarding.bootstrap",
@@ -138,6 +140,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -198,6 +201,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -255,6 +259,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -319,6 +324,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -379,6 +385,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -413,6 +420,7 @@ describe("core tool plugin manager", () => {
 
     const manager = createCoreToolPluginManager({
       runtime: {
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,
@@ -464,6 +472,7 @@ describe("core tool plugin manager", () => {
       runtime: {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
         config: cfg,
       },
       dataDir,

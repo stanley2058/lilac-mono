@@ -7,6 +7,7 @@ import type {
 } from "@stanley2058/lilac-plugin-runtime";
 
 import type { SurfaceAdapter } from "../surface/adapter";
+import type { DiscoveryService } from "../discovery/discovery-service";
 import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { WorkflowStore } from "../workflow/workflow-store";
@@ -17,6 +18,7 @@ export type CoreToolPluginRuntime = {
   config?: CoreConfig;
   getConfig?: () => Promise<CoreConfig>;
   workflowStore?: WorkflowStore;
+  discovery?: DiscoveryService;
   discordSearch?: DiscordSearchService;
   transcriptStore?: TranscriptStore;
 };

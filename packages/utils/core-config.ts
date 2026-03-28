@@ -907,6 +907,10 @@ export function resolveDiscordSearchDbPath(): string {
   return path.join(env.dataDir, "discord-search.db");
 }
 
+export function resolveDiscoveryDbPath(): string {
+  return path.join(env.dataDir, "discovery.db");
+}
+
 export function resolveDiscordToken(cfg: CoreConfig): string {
   const key = cfg.surface.discord.tokenEnv;
   const value = process.env[key];

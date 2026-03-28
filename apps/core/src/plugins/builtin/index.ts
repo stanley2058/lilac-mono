@@ -3,6 +3,7 @@ import { createBuiltinLocalToolsPlugin } from "./local-tools";
 import {
   createBuiltinAttachmentPlugin,
   createBuiltinCodexPlugin,
+  createBuiltinDiscoveryPlugin,
   createBuiltinGeneratePlugin,
   createBuiltinOnboardingPlugin,
   createBuiltinSkillsPlugin,
@@ -18,6 +19,7 @@ export function createBuiltinCoreToolPlugins(): CoreToolPlugin[] {
     createBuiltinLocalToolsPlugin(),
     createBuiltinWebPlugin(),
     createBuiltinSkillsPlugin(),
+    createBuiltinDiscoveryPlugin(),
     createBuiltinWorkflowPlugin(),
     createBuiltinSurfacePlugin(),
     createBuiltinAttachmentPlugin(),
