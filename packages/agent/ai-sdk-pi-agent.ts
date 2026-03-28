@@ -22,13 +22,13 @@ import {
   type Tool,
   type ToolSet,
 } from "ai";
+import {
+  normalizeReplayMessages,
+  normalizeAssistantToolCallInputMessage,
+  normalizeToolCallInputValue,
+} from "@stanley2058/lilac-utils";
 
 import { normalizeModelMessagesToolCallIds } from "./tool-call-id-normalization";
-import {
-  normalizeAssistantToolCallInputMessage,
-  normalizeAssistantToolCallInputs,
-  normalizeToolCallInputValue,
-} from "./tool-call-input-normalization";
 
 export type SystemPrompt = string | SystemModelMessage | SystemModelMessage[];
 
@@ -603,7 +603,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       model: options.model,
       modelSpecifier: options.modelSpecifier,
       tools: (options.tools ?? ({} as TOOLS)) as TOOLS,
-      messages: options.messages ?? [],
+      messages: normalizeReplayMessages(options.messages ?? []),
       providerOptions: options.providerOptions,
       isStreaming: false,
       streamMessage: null,
@@ -670,7 +670,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     }
 
     const previousMessageCount = this.state.messages.length;
-    this.state.messages = normalizeAssistantToolCallInputs(messages);
+    this.state.messages = normalizeReplayMessages(messages);
     this.state.streamMessage = null;
     this.state.pendingToolCalls = new Set();
 
@@ -1019,7 +1019,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
     const abortSignal = this.abortController?.signal;
 
-    let messagesForModel = normalizeAssistantToolCallInputs(this.state.messages.map(cloneMessage));
+    let messagesForModel = normalizeReplayMessages(this.state.messages.map(cloneMessage));
     if (this.transformMessages) {
       if (abortSignal?.aborted) {
         throw new TurnAbortedError({
@@ -1033,7 +1033,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         abortSignal,
       });
 
-      messagesForModel = normalizeAssistantToolCallInputs(messagesForModel);
+      messagesForModel = normalizeReplayMessages(messagesForModel);
 
       if (abortSignal?.aborted) {
         throw new TurnAbortedError({
@@ -1304,7 +1304,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       });
     }
 
-    const newMessages: ModelMessage[] = normalizeAssistantToolCallInputs(response.messages);
+    const newMessages: ModelMessage[] = normalizeReplayMessages(response.messages);
     const toolCalls = extractToolCallsFromMessages(newMessages);
 
     // Emit message_end for assistant message (first assistant in response.messages)
@@ -1612,13 +1612,20 @@ function hasOwnKey<T extends object, K extends PropertyKey>(
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
-function extractToolCallsFromMessages(messages: readonly ModelMessage[]): Array<{
+export function extractToolCallsFromMessages(messages: readonly ModelMessage[]): Array<{
   toolCallId: string;
   toolName: string;
   input: unknown;
   invalid?: boolean;
   error?: unknown;
 }> {
+  const satisfiedToolCallIds = new Set<string>();
+  for (const message of messages) {
+    for (const toolCallId of getToolResultToolCallIds(message)) {
+      satisfiedToolCallIds.add(toolCallId);
+    }
+  }
+
   const toolCalls: Array<{
     toolCallId: string;
     toolName: string;
@@ -1635,6 +1642,10 @@ function extractToolCallsFromMessages(messages: readonly ModelMessage[]): Array<
     for (const part of content) {
       // Ignore tool approval request prompts and other parts.
       if (part.type !== "tool-call") continue;
+
+      // If this batch of messages already contains a tool result for the same
+      // toolCallId, do not execute it again locally.
+      if (satisfiedToolCallIds.has(part.toolCallId)) continue;
 
       // Provider-executed tools should produce tool messages without local execution.
       if (part.providerExecuted === true) continue;

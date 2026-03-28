@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import JSON from "superjson";
 import type { ModelMessage } from "ai";
 import type { AdapterPlatform } from "@stanley2058/lilac-event-bus";
+import { normalizeReplayMessages } from "@stanley2058/lilac-utils";
 import type { MsgRef } from "../surface/types";
 
 export type TranscriptSnapshot = {
@@ -127,11 +128,13 @@ export class SqliteTranscriptStore implements TranscriptStore {
     modelLabel?: string;
   }): void {
     const now = Date.now();
+    const normalizedMessages = normalizeReplayMessages(input.messages);
 
-    // Persist the full transcript as-is.
+    // Persist the full transcript, but repair provider-shaped stringified assistant
+    // tool inputs into canonical object form so resumed sessions remain executable.
     // Do not prune/compact tool outputs at persistence time; do that (if needed)
     // only in the model-facing view right before sending.
-    const finalJson = JSON.stringify(input.messages);
+    const finalJson = JSON.stringify(normalizedMessages);
 
     this.db.run(
       `
@@ -426,7 +429,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
     let messages: ModelMessage[];
     try {
-      messages = JSON.parse(row.messages_json);
+      messages = normalizeReplayMessages(JSON.parse(row.messages_json));
     } catch {
       return null;
     }

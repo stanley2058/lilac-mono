@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { LanguageModel } from "ai";
 
-import { AiSdkPiAgent } from "../ai-sdk-pi-agent";
+import { AiSdkPiAgent, extractToolCallsFromMessages } from "../ai-sdk-pi-agent";
 
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
@@ -22,6 +22,123 @@ describe("AiSdkPiAgent model spec tracking", () => {
 
     agent.setModel(fakeModel());
     expect(agent.state.modelSpecifier).toBeUndefined();
+  });
+
+  it("normalizes stringified assistant tool-call inputs from constructor messages", () => {
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              input: '{"path":"note.txt","edits":[{"op":"replace","lines":["after"]}}',
+            },
+          ],
+        },
+      ],
+    });
+
+    const assistant = agent.state.messages[1];
+    expect(assistant?.role).toBe("assistant");
+    if (!assistant || assistant.role !== "assistant" || !Array.isArray(assistant.content)) {
+      throw new Error("expected assistant message");
+    }
+
+    const part = assistant.content[0];
+    expect(part?.type).toBe("tool-call");
+    if (!part || part.type !== "tool-call") {
+      throw new Error("expected tool-call part");
+    }
+
+    expect(part.input).toEqual({
+      path: "note.txt",
+      edits: [
+        {
+          op: "replace",
+          lines: ["after"],
+        },
+      ],
+    });
+  });
+
+  it("dedupes duplicate tool results from constructor messages", () => {
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              input: { path: "note.txt" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              output: { type: "error-text", value: "first" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              output: { type: "error-text", value: "second" },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(agent.state.messages).toHaveLength(2);
+    expect(agent.state.messages[1]?.role).toBe("tool");
+  });
+
+  it("does not schedule local execution when a tool result already exists", () => {
+    expect(
+      extractToolCallsFromMessages([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              input: { path: "note.txt" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "edit_file",
+              output: { type: "error-text", value: "already handled" },
+            },
+          ],
+        },
+      ]),
+    ).toEqual([]);
   });
 
   it("appends messages while idle", () => {
