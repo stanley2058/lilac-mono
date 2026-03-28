@@ -24,6 +24,11 @@ import {
 } from "ai";
 
 import { normalizeModelMessagesToolCallIds } from "./tool-call-id-normalization";
+import {
+  normalizeAssistantToolCallInputMessage,
+  normalizeAssistantToolCallInputs,
+  normalizeToolCallInputValue,
+} from "./tool-call-input-normalization";
 
 export type SystemPrompt = string | SystemModelMessage | SystemModelMessage[];
 
@@ -665,7 +670,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     }
 
     const previousMessageCount = this.state.messages.length;
-    this.state.messages = messages;
+    this.state.messages = normalizeAssistantToolCallInputs(messages);
     this.state.streamMessage = null;
     this.state.pendingToolCalls = new Set();
 
@@ -808,9 +813,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   private appendMessage(message: ModelMessage) {
-    this.state.messages.push(message);
-    this.emit({ type: "message_start", message: cloneMessage(message) });
-    this.emit({ type: "message_end", message: cloneMessage(message) });
+    const normalizedMessage = normalizeAssistantToolCallInputMessage(message);
+    this.state.messages.push(normalizedMessage);
+    this.emit({ type: "message_start", message: cloneMessage(normalizedMessage) });
+    this.emit({ type: "message_end", message: cloneMessage(normalizedMessage) });
   }
 
   private resetMessagesForInterrupt() {
@@ -1013,7 +1019,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
     const abortSignal = this.abortController?.signal;
 
-    let messagesForModel = this.state.messages.map(cloneMessage);
+    let messagesForModel = normalizeAssistantToolCallInputs(this.state.messages.map(cloneMessage));
     if (this.transformMessages) {
       if (abortSignal?.aborted) {
         throw new TurnAbortedError({
@@ -1026,6 +1032,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         system: this.state.system,
         abortSignal,
       });
+
+      messagesForModel = normalizeAssistantToolCallInputs(messagesForModel);
 
       if (abortSignal?.aborted) {
         throw new TurnAbortedError({
@@ -1231,7 +1239,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             type: "tool-call",
             toolCallId,
             toolName,
-            input,
+            input: normalizeToolCallInputValue(input),
             providerExecuted: part.providerExecuted,
           });
           this.state.streamMessage = partialAssistant;
@@ -1296,7 +1304,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       });
     }
 
-    const newMessages: ModelMessage[] = response.messages;
+    const newMessages: ModelMessage[] = normalizeAssistantToolCallInputs(response.messages);
     const toolCalls = extractToolCallsFromMessages(newMessages);
 
     // Emit message_end for assistant message (first assistant in response.messages)
@@ -1637,7 +1645,7 @@ function extractToolCallsFromMessages(messages: readonly ModelMessage[]): Array<
       toolCalls.push({
         toolCallId: part.toolCallId,
         toolName: part.toolName,
-        input: part.input,
+        input: normalizeToolCallInputValue(part.input),
         ...(invalid ? { invalid: true } : {}),
         ...(error !== undefined ? { error } : {}),
       });

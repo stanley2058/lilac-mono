@@ -60,4 +60,80 @@ describe("AiSdkPiAgent model spec tracking", () => {
     expect(agent.state.messages[1]?.role).toBe("assistant");
     expect(agent.state.messages[2]?.role).toBe("tool");
   });
+
+  it("normalizes stringified assistant tool-call inputs when appending", () => {
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    agent.appendMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "edit_file",
+            input: '{"path":"note.txt","oldText":"before","newText":"after"}',
+          },
+        ],
+      },
+    ]);
+
+    const assistant = agent.state.messages[1];
+    expect(assistant?.role).toBe("assistant");
+    if (!assistant || assistant.role !== "assistant" || !Array.isArray(assistant.content)) {
+      throw new Error("expected assistant message");
+    }
+
+    const part = assistant.content[0];
+    expect(part?.type).toBe("tool-call");
+    if (!part || part.type !== "tool-call") {
+      throw new Error("expected tool-call part");
+    }
+
+    expect(part.input).toEqual({
+      path: "note.txt",
+      oldText: "before",
+      newText: "after",
+    });
+  });
+
+  it("normalizes stringified assistant tool-call inputs when replacing", () => {
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    agent.replaceMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "edit_file",
+            input: '{"path":"note.txt"}',
+          },
+        ],
+      },
+    ]);
+
+    const assistant = agent.state.messages[0];
+    expect(assistant?.role).toBe("assistant");
+    if (!assistant || assistant.role !== "assistant" || !Array.isArray(assistant.content)) {
+      throw new Error("expected assistant message");
+    }
+
+    const part = assistant.content[0];
+    expect(part?.type).toBe("tool-call");
+    if (!part || part.type !== "tool-call") {
+      throw new Error("expected tool-call part");
+    }
+
+    expect(part.input).toEqual({ path: "note.txt" });
+  });
 });
