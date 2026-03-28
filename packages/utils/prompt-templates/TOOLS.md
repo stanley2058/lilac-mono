@@ -62,6 +62,7 @@ cat payload.json | tools <tool> --stdin
 - `ssh.probe` — Probe remote host OS + tool availability + git context
 - `attachment.add_files` — Reads local files and attaches them to the current reply.
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
+- `discovery.search` — Primary memory retrieval entry. Search unified agent memory across conversations, prompts, and heartbeat files with grouped origins, time windows, and surrounding context.
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
 - `surface.activities.recentAgentWrites` — List recent visible writes produced by the agent, with message ids and thin previews.
 - `surface.sessions.list` — List cached sessions.
@@ -71,7 +72,7 @@ cat payload.json | tools <tool> --stdin
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
 - `surface.messages.delete` — Delete a message.
-- `surface.messages.search` — Search indexed messages in a session.
+- `surface.messages.search` — Deprecated, hidden by default. Only use when you explicitly need the legacy Discord-session-only search; otherwise use `discovery.search`.
 - `surface.reactions.list` — List reactions for a message (emoji + count).
 - `surface.reactions.listDetailed` — List reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
@@ -91,6 +92,14 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 3. You create a workflow task that waits for a reply to that messageId via `workflow.wait_for_reply.create`
 4. The workflow service will resume you with the context you set when you created the task after a reply is received from B
    (In the above example, 2 and 3 can be simplified with `workflow.wait_for_reply.send_and_wait`)
+
+## Memory retrieval
+
+- Use `discovery.search` as the default memory/discovery entry.
+- Prefer `groupBy=origin` so conversation hits stay grouped by session and file hits stay grouped by source file.
+- Use `surrounding` to expand local context around a match: surrounding messages for conversations, surrounding lines for files.
+- Use `offsetTime` + `lookbackTime` for time-bounded memory retrieval.
+- Reach for `surface.messages.search` only for legacy compatibility or when you intentionally want the old Discord-only behavior.
 
 ## Skills
 

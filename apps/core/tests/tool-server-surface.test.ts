@@ -180,6 +180,16 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("tool-server surface", () => {
+  it("marks surface.messages.search as deprecated and hidden", async () => {
+    const tool = new Surface({ adapter: new FakeAdapter([], {}), config: testConfig({}) });
+
+    const entry = (await tool.list()).find((item) => item.callableId === "surface.messages.search");
+
+    expect(entry?.hidden).toBe(true);
+    expect(entry?.description.toLowerCase()).toContain("deprecated");
+    expect(entry?.description).toContain("discovery.search");
+  });
+
   it("returns reaction counts", async () => {
     const channelId = "123";
     const cfg = testConfig({

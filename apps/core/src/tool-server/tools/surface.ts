@@ -1271,7 +1271,8 @@ export class Surface implements ServerTool {
       {
         callableId: "surface.messages.search",
         name: "Surface Messages Search",
-        description: "Search indexed messages in a single Discord session.",
+        description:
+          "Deprecated: search indexed messages in a single Discord session. Prefer discovery.search for memory retrieval.",
         shortInput: zodObjectToCliLines(messagesSearchInputSchema, {
           mode: "required",
         }),
@@ -1279,6 +1280,7 @@ export class Surface implements ServerTool {
         primaryPositional: {
           field: "query",
         },
+        hidden: true,
       },
       {
         callableId: "surface.messages.send",
