@@ -50,6 +50,11 @@ describe("tool-server discovery", () => {
             ops: "c1",
           },
         },
+        users: {
+          releaseCaptain: {
+            discord: "u2",
+          },
+        },
       },
     });
 
@@ -64,6 +69,7 @@ describe("tool-server discovery", () => {
     });
 
     const now = Date.now();
+    const previousYearTs = new Date(new Date().getFullYear() - 1, 0, 2, 15, 4, 0, 0).getTime();
     discordSearchStore.upsertMessages([
       {
         ref: { platform: "discord", channelId: "c1", messageId: "m1" },
@@ -96,6 +102,14 @@ describe("tool-server discovery", () => {
         userName: "dana",
         text: "old deploy thread",
         ts: now - 3 * 86_400_000,
+      },
+      {
+        ref: { platform: "discord", channelId: "c4", messageId: "m5" },
+        session: { platform: "discord", channelId: "c4" },
+        userId: "u5",
+        userName: "erin",
+        text: "annual archive note",
+        ts: previousYearTs,
       },
     ]);
 
@@ -155,7 +169,7 @@ describe("tool-server discovery", () => {
     };
   }
 
-  it("groups by origin, dedupes linked transcripts, and includes surrounding context", async () => {
+  it("groups by origin, dedupes linked transcripts, and hides verbose fields by default", async () => {
     const fixture = await makeFixture();
 
     try {
@@ -163,49 +177,74 @@ describe("tool-server discovery", () => {
         query: "deploy",
         sources: ["conversation", "prompt", "heartbeat"],
         groupBy: "origin",
-        surrounding: 1,
         limit: 10,
       })) as {
+        meta: {
+          surrounding: number;
+        };
         groups: Array<{
           source: string;
+          time?: string;
+          score?: number;
+          ts?: number;
           origin?: { kind: string; sessionId?: string; label?: string; filePath?: string };
-          entries: Array<{
-            kind: string;
-            text: string;
-            matched?: boolean;
-            requestId?: string;
-          }>;
+          entries: Array<
+            Array<{
+              kind: string;
+              text: string;
+              time?: string;
+              matched?: boolean;
+              requestId?: string;
+              author?: string;
+              score?: number;
+              ts?: number;
+            }>
+          >;
         }>;
       };
+
+      expect(result.meta.surrounding).toBe(1);
 
       const conversationGroup = result.groups.find(
         (group) => group.source === "conversation" && group.origin?.sessionId === "c1",
       );
       expect(conversationGroup).toBeDefined();
       expect(conversationGroup?.origin?.label).toBe("ops");
-      expect(conversationGroup?.entries.map((entry) => entry.text)).toEqual([
+      expect(typeof conversationGroup?.time).toBe("string");
+      expect(Object.prototype.hasOwnProperty.call(conversationGroup ?? {}, "score")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(conversationGroup ?? {}, "ts")).toBe(false);
+      expect(conversationGroup?.entries).toHaveLength(1);
+      expect(conversationGroup?.entries[0]?.map((entry) => entry.text)).toEqual([
         "start release prep",
         "deploy completed successfully",
         "post deploy checklist pending",
       ]);
-      expect((conversationGroup?.entries.filter((entry) => entry.matched).length ?? 0) >= 1).toBe(
-        true,
-      );
+      expect(conversationGroup?.entries[0]?.[1]?.author).toBe("releaseCaptain (bob; u2)");
+      expect(typeof conversationGroup?.entries[0]?.[1]?.time).toBe("string");
+      expect(
+        Object.prototype.hasOwnProperty.call(conversationGroup?.entries[0]?.[1] ?? {}, "score"),
+      ).toBe(false);
+      expect(
+        Object.prototype.hasOwnProperty.call(conversationGroup?.entries[0]?.[1] ?? {}, "ts"),
+      ).toBe(false);
+      expect(
+        (conversationGroup?.entries[0]?.filter((entry) => entry.matched).length ?? 0) >= 1,
+      ).toBe(true);
 
       const transcriptOnlyGroup = result.groups.find(
         (group) => group.source === "conversation" && group.origin?.sessionId === "c3",
       );
-      expect(transcriptOnlyGroup?.entries[0]?.requestId).toBe("req-orphan");
+      expect(transcriptOnlyGroup?.entries[0]?.[0]?.requestId).toBe("req-orphan");
 
       const githubTranscriptGroup = result.groups.find(
         (group) => group.source === "conversation" && group.origin?.sessionId === "owner/repo#12",
       );
-      expect(githubTranscriptGroup?.entries[0]?.requestId).toBe("req-github");
+      expect(githubTranscriptGroup?.entries[0]?.[0]?.requestId).toBe("req-github");
 
       const duplicateTranscript = result.groups.find(
         (group) =>
           group.source === "conversation" &&
-          group.entries.some((entry) => entry.requestId === "req-surface"),
+          group.entries.some((window) => window.some((entry) => entry.requestId === "req-surface")),
       );
       expect(duplicateTranscript).toBeUndefined();
 
@@ -234,16 +273,29 @@ describe("tool-server discovery", () => {
         lookbackTime: "1d",
         offsetTime: 0,
         limit: 10,
+        verbose: true,
       })) as {
+        meta: {
+          window?: {
+            startTime: string;
+            endTime: string;
+            startTs?: number;
+            endTs?: number;
+          };
+        };
         groups: Array<{
           ts?: number;
+          time?: string;
           origin?: { sessionId?: string };
         }>;
       };
 
       expect(result.groups.every((group) => group.origin?.sessionId !== "c2")).toBe(true);
-      expect(result.groups[0]?.origin?.sessionId).toBe("c3");
+      expect(["c3", "owner/repo#12"]).toContain(result.groups[0]?.origin?.sessionId ?? "");
+      expect(typeof result.groups[0]?.time).toBe("string");
       expect((result.groups[0]?.ts ?? 0) >= (result.groups[1]?.ts ?? 0)).toBe(true);
+      expect(result.meta.window?.startTs).toBeDefined();
+      expect(result.meta.window?.endTs).toBeDefined();
     } finally {
       fixture.discoveryService.close();
       fixture.discordSearchStore.close();
@@ -273,6 +325,46 @@ describe("tool-server discovery", () => {
         ),
       );
       expect(uniqueOrigins.size).toBe(2);
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("declares query as the primary positional argument", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      const entry = (await fixture.tool.list()).find(
+        (item) => item.callableId === "discovery.search",
+      );
+      expect(entry?.primaryPositional?.field).toBe("query");
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("includes the year in formatted time for non-current-year hits", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      const result = (await fixture.tool.call("discovery.search", {
+        query: "annual archive note",
+        sources: ["conversation"],
+        groupBy: "none",
+        limit: 1,
+      })) as {
+        groups: Array<{
+          entries: Array<Array<{ time?: string }>>;
+        }>;
+      };
+
+      expect(result.groups[0]?.entries[0]?.[0]?.time).toContain(
+        String(new Date().getFullYear() - 1),
+      );
     } finally {
       fixture.discoveryService.close();
       fixture.discordSearchStore.close();

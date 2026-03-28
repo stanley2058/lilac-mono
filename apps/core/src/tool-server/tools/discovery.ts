@@ -33,7 +33,7 @@ const discoverySearchInputSchema = z.object({
     .max(DISCOVERY_SURROUNDING_MAX)
     .optional()
     .describe(
-      `Conversation: surrounding messages. Files: surrounding lines. Default: 2, max: ${DISCOVERY_SURROUNDING_MAX}.`,
+      `Conversation: surrounding messages. Files: surrounding lines. Default: 1, max: ${DISCOVERY_SURROUNDING_MAX}.`,
     ),
   offsetTime: z
     .union([z.string().min(1), z.number().nonnegative()])
@@ -54,6 +54,10 @@ const discoverySearchInputSchema = z.object({
     .max(DISCOVERY_LIMIT_MAX)
     .optional()
     .describe(`Max result groups (default: 10, max: ${DISCOVERY_LIMIT_MAX}).`),
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("Include raw ranking/debug fields like score, bm25, recencyBoost, and ts."),
 });
 
 export class Discovery implements ServerTool {

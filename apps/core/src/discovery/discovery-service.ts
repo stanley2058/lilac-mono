@@ -5,6 +5,7 @@ import type { AdapterPlatform } from "@stanley2058/lilac-event-bus";
 import {
   CORE_PROMPT_FILES,
   ensurePromptWorkspace,
+  getDiscordUserAliasValue,
   resolveHeartbeatPromptPaths,
   resolvePromptDir,
   type CoreConfig,
@@ -45,22 +46,21 @@ export type DiscoverySearchInput = {
   offsetTime?: string | number;
   lookbackTime?: string | number;
   limit?: number;
+  verbose?: boolean;
 };
 
 export type DiscoveryConversationEntry = {
   kind: "message";
   matched: boolean;
   text: string;
-  ts: number;
-  score: number;
-  bm25: number;
-  recencyBoost: number;
+  time?: string;
+  ts?: number;
+  score?: number;
+  bm25?: number;
+  recencyBoost?: number;
   messageId?: string;
   requestId?: string;
-  author?: {
-    userId: string;
-    userName?: string;
-  };
+  author?: string;
   origin?: DiscoveryOrigin;
 };
 
@@ -69,10 +69,11 @@ export type DiscoveryFileRangeEntry = {
   startLine: number;
   endLine: number;
   text: string;
-  ts: number;
-  score: number;
-  bm25: number;
-  recencyBoost: number;
+  time?: string;
+  ts?: number;
+  score?: number;
+  bm25?: number;
+  recencyBoost?: number;
   matchRanges: Array<{
     startLine: number;
     endLine: number;
@@ -85,10 +86,11 @@ export type DiscoveryResultEntry = DiscoveryConversationEntry | DiscoveryFileRan
 export type DiscoveryResultGroup = {
   key: string;
   source: DiscoverySource;
-  score: number;
+  score?: number;
+  time?: string;
   ts?: number;
   origin?: DiscoveryOrigin;
-  entries: DiscoveryResultEntry[];
+  entries: DiscoveryResultEntry[][];
 };
 
 export type DiscoverySearchResult = {
@@ -100,9 +102,12 @@ export type DiscoverySearchResult = {
     groupBy: DiscoveryGroupBy;
     surrounding: number;
     limit: number;
+    verbose: boolean;
     window?: {
-      startTs: number;
-      endTs: number;
+      startTime: string;
+      endTime: string;
+      startTs?: number;
+      endTs?: number;
     };
   };
   groups: DiscoveryResultGroup[];
@@ -175,6 +180,22 @@ type TimeWindow = {
 const RELATIVE_DURATION_RE = /^(?:\d+(?:ms|s|m|h|d|w))+$/u;
 const RELATIVE_DURATION_PART_RE = /(\d+)(ms|s|m|h|d|w)/gu;
 const DIGITS_RE = /^\d+$/u;
+const DISCOVERY_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const DISCOVERY_TIME_WITH_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
 
 function normalizeFtsQuery(input: string): string | null {
   const tokens = input
@@ -200,6 +221,46 @@ function clampNonNegativeInt(value: number | undefined, fallback: number, max: n
 
 function splitLines(text: string): string[] {
   return text.replace(/\r\n/gu, "\n").split("\n");
+}
+
+function formatDiscoveryTime(ts: number | undefined): string | undefined {
+  if (ts === undefined || !Number.isFinite(ts) || ts < 0) return undefined;
+  const date = new Date(ts);
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear()
+    ? DISCOVERY_TIME_FORMATTER.format(date)
+    : DISCOVERY_TIME_WITH_YEAR_FORMATTER.format(date);
+}
+
+function buildDiscordUserAliasById(cfg: CoreConfig | null): Map<string, string> {
+  const out = new Map<string, string>();
+  const users = cfg?.entity?.users ?? {};
+
+  for (const [alias, rec] of Object.entries(users)) {
+    const resolved = getDiscordUserAliasValue(rec);
+    if (!resolved) continue;
+    if (!out.has(resolved.discordId)) {
+      out.set(resolved.discordId, alias);
+    }
+  }
+
+  return out;
+}
+
+function formatDiscoveryAuthor(params: {
+  platform: AdapterPlatform | null;
+  userId: string | null;
+  userName: string | null;
+  discordUserAliasById: ReadonlyMap<string, string>;
+}): string | undefined {
+  if (!params.userId) return undefined;
+  const alias =
+    params.platform === "discord" ? params.discordUserAliasById.get(params.userId) : undefined;
+  const userName = params.userName?.trim();
+  if (alias && userName) return `${alias} (${userName}; ${params.userId})`;
+  if (alias) return `${alias} (${params.userId})`;
+  if (userName) return `${userName} (${params.userId})`;
+  return params.userId;
 }
 
 function stripFrontmatter(raw: string): string {
@@ -438,14 +499,16 @@ function compareGroups(
   orderBy: DiscoveryOrderBy,
   direction: DiscoveryDirection,
 ): number {
+  const leftScore = left.score ?? 0;
+  const rightScore = right.score ?? 0;
   const dir = direction === "asc" ? 1 : -1;
   if (orderBy === "time") {
     const leftTs = left.ts ?? 0;
     const rightTs = right.ts ?? 0;
     if (leftTs !== rightTs) return (leftTs - rightTs) * dir;
-    if (left.score !== right.score) return (left.score - right.score) * dir;
+    if (leftScore !== rightScore) return (leftScore - rightScore) * dir;
   } else {
-    if (left.score !== right.score) return (left.score - right.score) * dir;
+    if (leftScore !== rightScore) return (leftScore - rightScore) * dir;
     const leftTs = left.ts ?? 0;
     const rightTs = right.ts ?? 0;
     if (leftTs !== rightTs) return (leftTs - rightTs) * -dir;
@@ -466,8 +529,11 @@ function mergeLineWindows(
     matchStartLine: number;
     matchEndLine: number;
   }>,
-  lines: string[],
-): DiscoveryFileRangeEntry[] {
+): Array<{
+  startLine: number;
+  endLine: number;
+  matchRanges: Array<{ startLine: number; endLine: number }>;
+}> {
   if (windows.length === 0) return [];
   const sorted = [...windows].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
   const merged: Array<{
@@ -491,17 +557,94 @@ function mergeLineWindows(
     prev.matchRanges.push({ startLine: window.matchStartLine, endLine: window.matchEndLine });
   }
 
-  return merged.map((window) => ({
+  return merged;
+}
+
+function mergeIndexWindows(
+  windows: ReadonlyArray<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  if (windows.length === 0) return [];
+  const sorted = [...windows].sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: Array<{ start: number; end: number }> = [];
+
+  for (const window of sorted) {
+    const prev = merged.at(-1);
+    if (!prev || window.start > prev.end + 1) {
+      merged.push({ ...window });
+      continue;
+    }
+
+    prev.end = Math.max(prev.end, window.end);
+  }
+
+  return merged;
+}
+
+function buildConversationEntry(params: {
+  row: IndexedDocumentRow;
+  matched: boolean;
+  candidate?: SearchCandidate;
+  origin?: DiscoveryOrigin;
+  discordUserAliasById: ReadonlyMap<string, string>;
+}): DiscoveryConversationEntry {
+  return {
+    kind: "message",
+    matched: params.matched,
+    text: params.row.text,
+    time: formatDiscoveryTime(params.row.ts),
+    ts: params.row.ts,
+    score: params.candidate?.score ?? 0,
+    bm25: params.candidate?.bm25 ?? 0,
+    recencyBoost: params.candidate?.recencyBoost ?? 0,
+    messageId: params.row.message_id ?? undefined,
+    requestId: params.row.request_id ?? undefined,
+    author: formatDiscoveryAuthor({
+      platform: params.row.platform,
+      userId: params.row.author_id,
+      userName: params.row.author_name,
+      discordUserAliasById: params.discordUserAliasById,
+    }),
+    origin: params.origin,
+  };
+}
+
+function buildFileRangeEntry(params: {
+  row: Pick<IndexedDocumentRow, "ts">;
+  startLine: number;
+  endLine: number;
+  text: string;
+  matchRanges: Array<{ startLine: number; endLine: number }>;
+  candidate?: SearchCandidate;
+  origin?: DiscoveryOrigin;
+}): DiscoveryFileRangeEntry {
+  return {
     kind: "file-range",
-    startLine: window.startLine,
-    endLine: window.endLine,
-    text: lines.slice(window.startLine - 1, window.endLine).join("\n"),
-    ts: 0,
-    score: 0,
-    bm25: 0,
-    recencyBoost: 0,
-    matchRanges: window.matchRanges,
-  }));
+    startLine: params.startLine,
+    endLine: params.endLine,
+    text: params.text,
+    time: formatDiscoveryTime(params.row.ts),
+    ts: params.row.ts,
+    score: params.candidate?.score ?? 0,
+    bm25: params.candidate?.bm25 ?? 0,
+    recencyBoost: params.candidate?.recencyBoost ?? 0,
+    matchRanges: params.matchRanges,
+    origin: params.origin,
+  };
+}
+
+function stripVerboseEntry(entry: DiscoveryResultEntry, verbose: boolean): DiscoveryResultEntry {
+  if (verbose) return entry;
+  const { ts: _ts, score: _score, bm25: _bm25, recencyBoost: _recencyBoost, ...rest } = entry;
+  return rest;
+}
+
+function stripVerboseGroup(group: DiscoveryResultGroup, verbose: boolean): DiscoveryResultGroup {
+  if (verbose) return group;
+  const { ts: _ts, score: _score, ...rest } = group;
+  return {
+    ...rest,
+    entries: rest.entries.map((window) => window.map((entry) => stripVerboseEntry(entry, verbose))),
+  };
 }
 
 class SqliteDiscoveryStore {
@@ -965,6 +1108,7 @@ export class DiscoveryService {
     const groups: DiscoveryResultGroup[] = [];
     const sessionCache = new Map<string, IndexedDocumentRow[]>();
     const fileLinesCache = new Map<string, string[]>();
+    const discordUserAliasById = buildDiscordUserAliasById(params.cfg);
 
     for (const [key, matches] of byOrigin) {
       const top = matches[0]!;
@@ -983,50 +1127,38 @@ export class DiscoveryService {
         const rowIndexByKey = new Map(
           sessionRows.map((row, index) => [row.doc_key, index] as const),
         );
-        const included = new Map<string, DiscoveryConversationEntry>();
+        const matchByKey = new Map(matches.map((match) => [match.row.doc_key, match] as const));
+        const mergedWindows = mergeIndexWindows(
+          matches.flatMap((match) => {
+            const centerIndex = rowIndexByKey.get(match.row.doc_key);
+            if (centerIndex === undefined) return [];
+            return {
+              start: Math.max(0, centerIndex - params.surrounding),
+              end: Math.min(sessionRows.length - 1, centerIndex + params.surrounding),
+            };
+          }),
+        );
 
-        for (const match of matches) {
-          const centerIndex = rowIndexByKey.get(match.row.doc_key);
-          if (centerIndex === undefined) continue;
-          const start = Math.max(0, centerIndex - params.surrounding);
-          const end = Math.min(sessionRows.length - 1, centerIndex + params.surrounding);
-          for (let idx = start; idx <= end; idx += 1) {
-            const row = sessionRows[idx]!;
-            const existing = included.get(row.doc_key);
-            const isMatched = row.doc_key === match.row.doc_key;
-            if (existing) {
-              existing.matched = existing.matched || isMatched;
-              continue;
-            }
-            const candidateForRow = matches.find((item) => item.row.doc_key === row.doc_key);
-            included.set(row.doc_key, {
-              kind: "message",
-              matched: isMatched,
-              text: row.text,
-              ts: row.ts,
-              score: candidateForRow?.score ?? 0,
-              bm25: candidateForRow?.bm25 ?? 0,
-              recencyBoost: candidateForRow?.recencyBoost ?? 0,
-              messageId: row.message_id ?? undefined,
-              requestId: row.request_id ?? undefined,
-              author:
-                row.author_id === null
-                  ? undefined
-                  : {
-                      userId: row.author_id,
-                      userName: row.author_name ?? undefined,
-                    },
-            });
-          }
-        }
+        const entries = mergedWindows.map((window) =>
+          sessionRows.slice(window.start, window.end + 1).map((row) =>
+            buildConversationEntry({
+              row,
+              matched: matchByKey.has(row.doc_key),
+              candidate: matchByKey.get(row.doc_key),
+              origin,
+              discordUserAliasById,
+            }),
+          ),
+        );
 
         groups.push({
           key,
           source: "conversation",
           score: Math.max(...matches.map((match) => match.score)),
           ts: Math.max(...matches.map((match) => match.row.ts)),
+          time: formatDiscoveryTime(Math.max(...matches.map((match) => match.row.ts))),
           origin,
-          entries: [...included.values()].sort((a, b) => a.ts - b.ts),
+          entries,
         });
         continue;
       }
@@ -1057,19 +1189,25 @@ export class DiscoveryService {
           };
         });
 
-        const entries = mergeLineWindows(windows, lines).map((entry) => ({
-          ...entry,
-          ts: top.row.ts,
-          score: Math.max(...matches.map((match) => match.score)),
-          bm25: matches[0]?.bm25 ?? 0,
-          recencyBoost: matches[0]?.recencyBoost ?? 0,
-        }));
+        const mergedWindows = mergeLineWindows(windows);
+        const entries = mergedWindows.map((window) => [
+          buildFileRangeEntry({
+            row: top.row,
+            startLine: window.startLine,
+            endLine: window.endLine,
+            text: lines.slice(window.startLine - 1, window.endLine).join("\n"),
+            matchRanges: window.matchRanges,
+            candidate: matches[0],
+            origin,
+          }),
+        ]);
 
         groups.push({
           key,
           source: top.row.source,
           score: Math.max(...matches.map((match) => match.score)),
           ts: Math.max(...matches.map((match) => match.row.ts)),
+          time: formatDiscoveryTime(Math.max(...matches.map((match) => match.row.ts))),
           origin,
           entries,
         });
@@ -1084,6 +1222,7 @@ export class DiscoveryService {
     cfg: CoreConfig | null;
   }): DiscoveryResultGroup[] {
     const bySource = new Map<DiscoverySource, SearchCandidate[]>();
+    const discordUserAliasById = buildDiscordUserAliasById(params.cfg);
     for (const candidate of params.candidates) {
       const arr = bySource.get(candidate.row.source);
       if (arr) arr.push(candidate);
@@ -1092,47 +1231,36 @@ export class DiscoveryService {
 
     const groups: DiscoveryResultGroup[] = [];
     for (const [source, candidates] of bySource) {
-      const entries: DiscoveryResultEntry[] = candidates.map((candidate) => {
+      const entries: DiscoveryResultEntry[][] = candidates.map((candidate) => {
         const origin = buildOriginFromRow(candidate.row, params.cfg);
         if (candidate.row.source === "conversation") {
-          return {
-            kind: "message",
-            matched: true,
-            text: candidate.row.text,
-            ts: candidate.row.ts,
-            score: candidate.score,
-            bm25: candidate.bm25,
-            recencyBoost: candidate.recencyBoost,
-            messageId: candidate.row.message_id ?? undefined,
-            requestId: candidate.row.request_id ?? undefined,
-            author:
-              candidate.row.author_id === null
-                ? undefined
-                : {
-                    userId: candidate.row.author_id,
-                    userName: candidate.row.author_name ?? undefined,
-                  },
-            origin,
-          } satisfies DiscoveryConversationEntry;
+          return [
+            buildConversationEntry({
+              row: candidate.row,
+              matched: true,
+              candidate,
+              origin,
+              discordUserAliasById,
+            }),
+          ];
         }
 
-        return {
-          kind: "file-range",
-          startLine: candidate.row.start_line ?? 1,
-          endLine: candidate.row.end_line ?? 1,
-          text: candidate.row.text,
-          ts: candidate.row.ts,
-          score: candidate.score,
-          bm25: candidate.bm25,
-          recencyBoost: candidate.recencyBoost,
-          matchRanges: [
-            {
-              startLine: candidate.row.start_line ?? 1,
-              endLine: candidate.row.end_line ?? 1,
-            },
-          ],
-          origin,
-        } satisfies DiscoveryFileRangeEntry;
+        return [
+          buildFileRangeEntry({
+            row: candidate.row,
+            startLine: candidate.row.start_line ?? 1,
+            endLine: candidate.row.end_line ?? 1,
+            text: candidate.row.text,
+            matchRanges: [
+              {
+                startLine: candidate.row.start_line ?? 1,
+                endLine: candidate.row.end_line ?? 1,
+              },
+            ],
+            candidate,
+            origin,
+          }),
+        ];
       });
 
       groups.push({
@@ -1140,6 +1268,7 @@ export class DiscoveryService {
         source,
         score: Math.max(...candidates.map((candidate) => candidate.score)),
         ts: Math.max(...candidates.map((candidate) => candidate.row.ts)),
+        time: formatDiscoveryTime(Math.max(...candidates.map((candidate) => candidate.row.ts))),
         entries,
       });
     }
@@ -1160,8 +1289,9 @@ export class DiscoveryService {
     const orderBy = input.orderBy ?? "relevance";
     const direction = input.direction ?? "desc";
     const groupBy = input.groupBy ?? "origin";
-    const surrounding = clampNonNegativeInt(input.surrounding, 2, DISCOVERY_SURROUNDING_MAX);
+    const surrounding = clampNonNegativeInt(input.surrounding, 1, DISCOVERY_SURROUNDING_MAX);
     const limit = clampPositiveInt(input.limit, 10, DISCOVERY_LIMIT_MAX);
+    const verbose = input.verbose ?? false;
     const nowMs = Date.now();
     const window = resolveTimeWindow(input, nowMs);
     const candidateLimit = Math.min(500, Math.max(limit * 8, 50));
@@ -1194,46 +1324,38 @@ export class DiscoveryService {
               source: candidate.row.source,
               score: candidate.score,
               ts: candidate.row.ts,
+              time: formatDiscoveryTime(candidate.row.ts),
               origin: buildOriginFromRow(candidate.row, cfg),
               entries:
                 candidate.row.source === "conversation"
                   ? [
-                      {
-                        kind: "message",
-                        matched: true,
-                        text: candidate.row.text,
-                        ts: candidate.row.ts,
-                        score: candidate.score,
-                        bm25: candidate.bm25,
-                        recencyBoost: candidate.recencyBoost,
-                        messageId: candidate.row.message_id ?? undefined,
-                        requestId: candidate.row.request_id ?? undefined,
-                        author:
-                          candidate.row.author_id === null
-                            ? undefined
-                            : {
-                                userId: candidate.row.author_id,
-                                userName: candidate.row.author_name ?? undefined,
-                              },
-                      } satisfies DiscoveryConversationEntry,
+                      [
+                        buildConversationEntry({
+                          row: candidate.row,
+                          matched: true,
+                          candidate,
+                          origin: buildOriginFromRow(candidate.row, cfg),
+                          discordUserAliasById: buildDiscordUserAliasById(cfg),
+                        }),
+                      ],
                     ]
                   : [
-                      {
-                        kind: "file-range",
-                        startLine: candidate.row.start_line ?? 1,
-                        endLine: candidate.row.end_line ?? 1,
-                        text: candidate.row.text,
-                        ts: candidate.row.ts,
-                        score: candidate.score,
-                        bm25: candidate.bm25,
-                        recencyBoost: candidate.recencyBoost,
-                        matchRanges: [
-                          {
-                            startLine: candidate.row.start_line ?? 1,
-                            endLine: candidate.row.end_line ?? 1,
-                          },
-                        ],
-                      } satisfies DiscoveryFileRangeEntry,
+                      [
+                        buildFileRangeEntry({
+                          row: candidate.row,
+                          startLine: candidate.row.start_line ?? 1,
+                          endLine: candidate.row.end_line ?? 1,
+                          text: candidate.row.text,
+                          matchRanges: [
+                            {
+                              startLine: candidate.row.start_line ?? 1,
+                              endLine: candidate.row.end_line ?? 1,
+                            },
+                          ],
+                          candidate,
+                          origin: buildOriginFromRow(candidate.row, cfg),
+                        }),
+                      ],
                     ],
             }));
 
@@ -1253,9 +1375,17 @@ export class DiscoveryService {
         groupBy,
         surrounding,
         limit,
-        window,
+        verbose,
+        window:
+          window === undefined
+            ? undefined
+            : {
+                startTime: formatDiscoveryTime(window.startTs) ?? String(window.startTs),
+                endTime: formatDiscoveryTime(window.endTs) ?? String(window.endTs),
+                ...(verbose ? { startTs: window.startTs, endTs: window.endTs } : {}),
+              },
       },
-      groups: limitedGroups,
+      groups: limitedGroups.map((group) => stripVerboseGroup(group, verbose)),
     };
   }
 }
