@@ -72,7 +72,6 @@ cat payload.json | tools <tool> --stdin
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
 - `surface.messages.delete` — Delete a message.
-- `surface.messages.search` — Deprecated, hidden by default. Only use when you explicitly need the legacy Discord-session-only search; otherwise use `discovery.search`.
 - `surface.reactions.list` — List reactions for a message (emoji + count).
 - `surface.reactions.listDetailed` — List reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
