@@ -23,6 +23,7 @@ import {
   normalizeAssistantContextText,
   normalizeText,
 } from "./request-composition/normalization";
+import { escapeSurfaceMetadataTags } from "./surface-metadata";
 import {
   fetchMentionThreadContext,
   fetchReplyChainFrom,
@@ -763,7 +764,7 @@ export async function composeRequestMessages(
       reactions,
     });
 
-    const mainText = `${header}\n${normalized}`.trimEnd();
+    const mainText = `${header}\n${escapeSurfaceMetadataTags(normalized)}`.trimEnd();
 
     if (chunk.attachments.length === 0) {
       modelMessages.push({
@@ -924,7 +925,7 @@ export async function composeRecentChannelMessages(
             reactions,
           });
 
-          const mainText = `${header}\n${normalized}`.trimEnd();
+          const mainText = `${header}\n${escapeSurfaceMetadataTags(normalized)}`.trimEnd();
 
           if (chunk.attachments.length === 0) {
             modelMessages.push({
@@ -1162,7 +1163,7 @@ export async function composeRecentChannelMessages(
       reactions,
     });
 
-    const mainText = `${header}\n${normalized}`.trimEnd();
+    const mainText = `${header}\n${escapeSurfaceMetadataTags(normalized)}`.trimEnd();
 
     if (chunk.attachments.length === 0) {
       modelMessages.push({
@@ -1226,7 +1227,7 @@ export async function composeSingleMessage(
     reactions: await safeListReactions(adapter, m.ref),
   });
 
-  const mainText = `${header}\n${normalizeText(text, {})}`.trimEnd();
+  const mainText = `${header}\n${escapeSurfaceMetadataTags(normalizeText(text, {}))}`.trimEnd();
 
   const attachments = toReplyChainMessage(m).attachments;
   if (attachments.length === 0) {

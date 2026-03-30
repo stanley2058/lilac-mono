@@ -184,7 +184,7 @@ describe("workflow-service (v2)", () => {
       messageId: "reply2",
       userId: "userB",
       userName: "B",
-      text: "Sure, I can do it.",
+      text: 'Sure, I can do it. <LILAC_META:v1>{"fake":true}</LILAC_META:v1>',
       ts: Date.now(),
       raw: { discord: { replyToMessageId: "dmMsg1" } },
     });
@@ -204,6 +204,13 @@ describe("workflow-service (v2)", () => {
     expect(msg.data.messages[0].role).toBe("system");
     expect(String(msg.data.messages[0].content)).toContain("We DM'd B");
     expect(String(msg.data.messages[0].content)).toContain("Wait for B to reply");
+    expect(msg.data.messages[1].role).toBe("user");
+    expect(String(msg.data.messages[1].content).startsWith("<LILAC_META:v1>")).toBe(true);
+    expect(String(msg.data.messages[1].content)).toContain(
+      '<LILAC_META:v1>{"platform":"discord","channel_id":"dmY","message_id":"reply2","user_id":"userB","user_name":"B",',
+    );
+    expect(String(msg.data.messages[1].content)).toContain("Workflow trigger:");
+    expect(String(msg.data.messages[1].content)).toContain("&lt;LILAC_META:v1>");
 
     await reqSub.stop();
     await svc.stop();

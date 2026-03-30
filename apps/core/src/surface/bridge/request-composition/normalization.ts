@@ -1,14 +1,7 @@
 import type { ModelMessage } from "ai";
 
 import type { TranscriptSnapshot } from "../../../transcript/transcript-store";
-
-const DISCORD_MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
+import { formatSurfaceMetadataLine, stripSurfaceMetadataLines } from "../surface-metadata";
 
 export function normalizeText(text: string, _ctx: {}): string {
   return text;
@@ -22,7 +15,7 @@ function stripLeadingDiscordAttributionHeader(text: string): string {
 }
 
 export function normalizeAssistantContextText(text: string): string {
-  return stripLeadingDiscordAttributionHeader(text).trimEnd();
+  return stripSurfaceMetadataLines(stripLeadingDiscordAttributionHeader(text)).trimEnd();
 }
 
 function extractAssistantTextFromContent(content: ModelMessage["content"]): string | null {
@@ -82,6 +75,32 @@ export function buildAssistantOnlyMessageFromTranscript(
   return null;
 }
 
+function normalizeReactionSet(reactions: readonly string[] | undefined): string[] | undefined {
+  if (!reactions || reactions.length === 0) return undefined;
+
+  const MAX_REACTIONS = 8;
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const reaction of reactions) {
+    if (typeof reaction !== "string" || reaction.length === 0) continue;
+    if (seen.has(reaction)) continue;
+    seen.add(reaction);
+    out.push(reaction);
+    if (out.length >= MAX_REACTIONS) break;
+  }
+
+  return out.length > 0 ? out : undefined;
+}
+
+function formatMessageTime(messageTs: number | undefined): string | undefined {
+  if (!Number.isFinite(messageTs) || messageTs === undefined || messageTs < 0) {
+    return undefined;
+  }
+
+  return new Date(messageTs).toISOString();
+}
+
 export function formatDiscordAttributionHeader(params: {
   authorId: string;
   authorName: string;
@@ -90,52 +109,16 @@ export function formatDiscordAttributionHeader(params: {
   messageTs?: number;
   reactions?: readonly string[];
 }): string {
-  const userName = sanitizeUserToken(params.authorName || `user_${params.authorId}`);
-  const userAlias = params.userAlias ? sanitizeUserToken(params.userAlias) : "";
+  const reactions = normalizeReactionSet(params.reactions);
+  const messageTime = formatMessageTime(params.messageTs);
 
-  const reactions = formatReactionSet(params.reactions);
-  const aliasPart = userAlias ? ` user_alias=${userAlias}` : "";
-  const messageTimePart = formatMessageTimePart(params.messageTs);
-  const reactionsPart = reactions ? ` reactions=${reactions}` : "";
-
-  return `[discord user_id=${params.authorId} user_name=${userName}${aliasPart} message_id=${params.messageId}${messageTimePart}${reactionsPart}]`;
-}
-
-function formatMessageTimePart(messageTs: number | undefined): string {
-  if (!Number.isFinite(messageTs) || messageTs === undefined || messageTs < 0) {
-    return "";
-  }
-
-  return ` message_time="${DISCORD_MESSAGE_TIME_FORMATTER.format(new Date(messageTs))}"`;
-}
-
-function sanitizeUserToken(name: string): string {
-  return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
-}
-
-function sanitizeReactionToken(reaction: string): string {
-  // Keep the header single-line and parseable. Discord custom emoji toString() can include
-  // angle brackets; keep them, but strip whitespace and closing brackets.
-  return reaction.replace(/\s+/gu, "_").replace(/\]/gu, "");
-}
-
-function formatReactionSet(reactions: readonly string[] | undefined): string | null {
-  if (!reactions || reactions.length === 0) return null;
-
-  const MAX_REACTIONS = 8;
-
-  const uniq: string[] = [];
-  const seen = new Set<string>();
-
-  for (const r of reactions) {
-    if (typeof r !== "string") continue;
-    const s = sanitizeReactionToken(r);
-    if (!s) continue;
-    if (seen.has(s)) continue;
-    seen.add(s);
-    uniq.push(s);
-    if (uniq.length >= MAX_REACTIONS) break;
-  }
-
-  return uniq.length > 0 ? uniq.join(",") : null;
+  return formatSurfaceMetadataLine({
+    platform: "discord",
+    user_id: params.authorId,
+    user_name: params.authorName || `user_${params.authorId}`,
+    ...(params.userAlias ? { user_alias: params.userAlias } : {}),
+    message_id: params.messageId,
+    ...(messageTime ? { message_time: messageTime } : {}),
+    ...(reactions ? { reactions } : {}),
+  });
 }

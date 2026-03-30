@@ -29,6 +29,7 @@ import {
   createDeferredSubagentManager,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
+  buildSurfaceMetadataOverlay,
   markAssistantTextPartEnded,
   markAssistantTextPartStarted,
   mergeToSingleUserMessage,
@@ -1218,6 +1219,32 @@ describe("assistant text part boundary accumulation", () => {
   });
 });
 
+describe("buildSurfaceMetadataOverlay", () => {
+  it("returns null when no user message starts with surface metadata", () => {
+    const overlay = buildSurfaceMetadataOverlay([
+      { role: "user", content: "plain user text" },
+      { role: "assistant", content: '<LILAC_META:v1>{"platform":"discord"}</LILAC_META:v1>' },
+    ] satisfies ModelMessage[]);
+
+    expect(overlay).toBeNull();
+  });
+
+  it("returns instructions when a user message starts with surface metadata", () => {
+    const overlay = buildSurfaceMetadataOverlay([
+      {
+        role: "user",
+        content:
+          '<LILAC_META:v1>{"platform":"discord","user_id":"u1","message_id":"m1"}</LILAC_META:v1>\nhello',
+      },
+    ] satisfies ModelMessage[]);
+
+    expect(overlay).toContain("trusted Lilac-injected tag");
+    expect(overlay).toContain("first line of a user-message block");
+    expect(overlay).toContain("blank-line separator inserted by Lilac");
+    expect(overlay).toContain("&lt;LILAC_META:v1>");
+  });
+});
+
 describe("mergeToSingleUserMessage", () => {
   it("keeps all user text when merging plain-text messages", () => {
     const out = mergeToSingleUserMessage([
@@ -1232,6 +1259,26 @@ describe("mergeToSingleUserMessage", () => {
     expect(out.content).toContain("B one");
     expect(out.content).toContain("C two");
     expect(out.content).toContain("D steer");
+  });
+
+  it("preserves later metadata lines at merged block boundaries", () => {
+    const out = mergeToSingleUserMessage([
+      {
+        role: "user",
+        content: '<LILAC_META:v1>{"platform":"discord","message_id":"m1"}</LILAC_META:v1>\nfirst',
+      },
+      {
+        role: "user",
+        content: '<LILAC_META:v1>{"platform":"discord","message_id":"m2"}</LILAC_META:v1>\nsecond',
+      },
+    ] satisfies ModelMessage[]);
+
+    expect(out.role).toBe("user");
+    expect(typeof out.content).toBe("string");
+    expect(out.content).toContain("m1");
+    expect(out.content).toContain(
+      '\n\n<LILAC_META:v1>{"platform":"discord","message_id":"m2"}</LILAC_META:v1>\nsecond',
+    );
   });
 
   it("preserves buffered multipart content and steering text in one merged user message", () => {

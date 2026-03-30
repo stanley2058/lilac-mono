@@ -1,5 +1,10 @@
 import type { ModelMessage } from "ai";
 
+import {
+  escapeSurfaceMetadataTags,
+  formatSurfaceMetadataLine,
+} from "../surface/bridge/surface-metadata";
+
 import type {
   ResumeContext,
   ResumeRequest,
@@ -97,15 +102,19 @@ export function buildResumeRequest(params: {
   const systemText = formatContextForSystemMessage(ctx);
 
   const userTextLines: string[] = [];
-  userTextLines.push("Workflow trigger:");
   userTextLines.push(
-    `[${params.triggerMeta.platform} channel_id=${params.triggerMeta.channelId} message_id=${params.triggerMeta.messageId} user_id=${params.triggerMeta.userId}]`,
+    formatSurfaceMetadataLine({
+      platform: params.triggerMeta.platform,
+      channel_id: params.triggerMeta.channelId,
+      message_id: params.triggerMeta.messageId,
+      user_id: params.triggerMeta.userId,
+      ...(params.triggerMeta.userName ? { user_name: params.triggerMeta.userName } : {}),
+      message_time: new Date(params.triggerMeta.ts).toISOString(),
+    }),
   );
-  if (params.triggerMeta.userName) {
-    userTextLines.push(`user_name=${params.triggerMeta.userName}`);
-  }
+  userTextLines.push("Workflow trigger:");
   userTextLines.push("");
-  userTextLines.push(params.triggerUserText);
+  userTextLines.push(escapeSurfaceMetadataTags(params.triggerUserText));
 
   const messages: ModelMessage[] = [
     { role: "system", content: systemText },
