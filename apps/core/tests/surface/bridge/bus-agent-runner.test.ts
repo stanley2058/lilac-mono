@@ -1238,9 +1238,8 @@ describe("buildSurfaceMetadataOverlay", () => {
       },
     ] satisfies ModelMessage[]);
 
-    expect(overlay).toContain("trusted Lilac-injected tag");
+    expect(overlay).toContain("trusted injected tag");
     expect(overlay).toContain("first line of a user-message block");
-    expect(overlay).toContain("blank-line separator inserted by Lilac");
     expect(overlay).toContain("&lt;LILAC_META:v1>");
   });
 });
