@@ -174,13 +174,15 @@ function stripContinueDirectiveFromReplyChainMessage(input: {
   };
 }
 
-function findLatestVisibleContinueDirective(input: {
+function findVisibleContinueDirectives(input: {
   selected: readonly SurfaceMessage[];
   selectedStartIndex: number;
   botUserId: string;
   botMentionNames: readonly string[];
-}): { absoluteIndex: number; count: number } | null {
-  for (let i = input.selected.length - 1; i >= 0; i--) {
+}): VisibleContinueDirectives | null {
+  let desiredFloorIndex: number | null = null;
+
+  for (let i = 0; i < input.selected.length; i++) {
     const message = input.selected[i]!;
     if (message.userId === input.botUserId) continue;
     if (!shouldApplyContinueDirectiveToSurfaceMessage(message)) continue;
@@ -191,13 +193,15 @@ function findLatestVisibleContinueDirective(input: {
     });
     if (count === undefined) continue;
 
-    return {
-      absoluteIndex: input.selectedStartIndex + i,
-      count,
-    };
+    const messageAbsoluteIndex = input.selectedStartIndex + i;
+    const messageDesiredFloorIndex = messageAbsoluteIndex - count;
+    desiredFloorIndex =
+      desiredFloorIndex === null
+        ? messageDesiredFloorIndex
+        : Math.min(desiredFloorIndex, messageDesiredFloorIndex);
   }
 
-  return null;
+  return desiredFloorIndex === null ? null : { desiredFloorIndex };
 }
 
 async function listRecentMessagesEndingAt(params: {
@@ -353,6 +357,10 @@ type ActiveBurstSelection = {
   unresolvedContinue: boolean;
 };
 
+type VisibleContinueDirectives = {
+  desiredFloorIndex: number;
+};
+
 function filterMessagesUpToAnchor(input: {
   list: readonly SurfaceMessage[];
   anchor: SurfaceMessage;
@@ -429,14 +437,32 @@ function selectActiveBurstMessages(input: {
 
   const provisionalSelected = pickedNewestToOldest.reverse();
   const provisionalStartIndex = Math.max(0, startIndex - (provisionalSelected.length - 1));
-  const latestVisibleContinue = findLatestVisibleContinueDirective({
-    selected: provisionalSelected,
-    selectedStartIndex: provisionalStartIndex,
-    botUserId: input.botUserId,
-    botMentionNames: input.botMentionNames,
-  });
+  let selected = provisionalSelected;
+  let selectedStartIndex = provisionalStartIndex;
+  let hasVisibleContinue = false;
+  let unresolvedContinue = false;
 
-  if (!latestVisibleContinue) {
+  while (selected.length > 0) {
+    const visibleContinueDirectives = findVisibleContinueDirectives({
+      selected,
+      selectedStartIndex,
+      botUserId: input.botUserId,
+      botMentionNames: input.botMentionNames,
+    });
+
+    if (!visibleContinueDirectives) break;
+
+    hasVisibleContinue = true;
+    unresolvedContinue ||= visibleContinueDirectives.desiredFloorIndex < 0;
+
+    const nextSelectedStartIndex = Math.max(0, visibleContinueDirectives.desiredFloorIndex);
+    if (nextSelectedStartIndex === selectedStartIndex) break;
+
+    selectedStartIndex = nextSelectedStartIndex;
+    selected = eligible.slice(selectedStartIndex, startIndex + 1);
+  }
+
+  if (!hasVisibleContinue) {
     return {
       selected: provisionalSelected,
       dividerBoundaryReached,
@@ -447,16 +473,13 @@ function selectActiveBurstMessages(input: {
     };
   }
 
-  const desiredFloorIndex = latestVisibleContinue.absoluteIndex - latestVisibleContinue.count;
-  const floorIndex = Math.max(0, desiredFloorIndex);
-
   return {
-    selected: eligible.slice(floorIndex, startIndex + 1),
+    selected,
     dividerBoundaryReached,
     hitAgeCutoff,
     hitGapCutoff,
-    hasVisibleContinue: true,
-    unresolvedContinue: desiredFloorIndex < 0,
+    hasVisibleContinue,
+    unresolvedContinue,
   };
 }
 

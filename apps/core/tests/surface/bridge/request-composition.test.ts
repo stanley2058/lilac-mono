@@ -1830,6 +1830,40 @@ describe("request-composition active channel burst rules", () => {
     expect(adapter.listMsgCalls).toEqual([{ limit: 16, beforeMessageId: "80" }]);
   });
 
+  it("ramps active history fetch to the cap for recursive continue expansions", async () => {
+    const sessionId = "c";
+    const msgs = makeSequentialActiveMessages({
+      sessionId,
+      count: 220,
+      latestText: "!cont=2 current request",
+    });
+    msgs[217] = {
+      ...msgs[217]!,
+      text: "!cont=200 earlier reopen",
+    };
+    const adapter = new ListFakeAdapter(msgs);
+
+    const out = await composeRecentChannelMessages(adapter, {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "220" },
+      triggerType: undefined,
+    });
+
+    expect(out.chainMessageIds).toEqual(
+      Array.from({ length: 201 }, (_, index) => String(index + 20)),
+    );
+    expect(adapter.listMsgCalls).toEqual([
+      { limit: 16, beforeMessageId: "220" },
+      { limit: 32, beforeMessageId: "204" },
+      { limit: 64, beforeMessageId: "172" },
+      { limit: 88, beforeMessageId: "108" },
+    ]);
+  });
+
   it("stops at the first rung when a divider already bounds a large continue", async () => {
     const sessionId = "c";
     const msgs = makeSequentialActiveMessages({
@@ -2227,7 +2261,7 @@ describe("request-composition active channel burst rules", () => {
     expect(combined).toContain("current request");
   });
 
-  it("keeps a visible !cont sticky for later plain active messages", async () => {
+  it("keeps visible !cont directives sticky and expands them recursively for later plain active messages", async () => {
     const sessionId = "c";
 
     const mk = (id: string, ts: number, text: string, userId = "u", userName = "user") =>
@@ -2242,10 +2276,13 @@ describe("request-composition active channel burst rules", () => {
       }) satisfies SurfaceMessage;
 
     const msgs = [
-      mk("1", 1, "before"),
-      mk("2", 2, "!cont=2 reopen"),
-      mk("3", 3, "assistant", "bot", "lilac"),
-      mk("4", 4, "plain follow-up"),
+      mk("1", 1, "start"),
+      mk("2", 2, "assistant one", "bot", "lilac"),
+      mk("3", 3, "!cont=2 reopen deeper"),
+      mk("4", 4, "assistant two", "bot", "lilac"),
+      mk("5", 5, "!cont=2 reopen"),
+      mk("6", 6, "assistant three", "bot", "lilac"),
+      mk("7", 7, "plain follow-up"),
     ];
 
     const adapter = new ListFakeAdapter(msgs);
@@ -2256,11 +2293,11 @@ describe("request-composition active channel burst rules", () => {
       botUserId: "bot",
       botName: "lilac",
       limit: 3,
-      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "4" },
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "7" },
       triggerType: undefined,
     });
 
-    expect(out.chainMessageIds).toEqual(["1", "2", "3", "4"]);
+    expect(out.chainMessageIds).toEqual(["1", "2", "3", "4", "5", "6", "7"]);
   });
 
   it("ignores sticky !cont on reply-thread messages while still stripping it", async () => {
@@ -2312,7 +2349,7 @@ describe("request-composition active channel burst rules", () => {
     expect(combined).not.toContain("!cont=");
   });
 
-  it("uses the latest visible !cont when multiple directives are present", async () => {
+  it("expands all visible !cont directives when multiple directives are present", async () => {
     const sessionId = "c";
 
     const mk = (id: string, ts: number, text: string, userId = "u", userName = "user") =>
@@ -2347,7 +2384,7 @@ describe("request-composition active channel burst rules", () => {
       triggerType: undefined,
     });
 
-    expect(out.chainMessageIds).toEqual(["3", "4", "5", "6"]);
+    expect(out.chainMessageIds).toEqual(["1", "2", "3", "4", "5", "6"]);
   });
 
   it("uses assistant-only transcript fallback for bot messages older than 1h", async () => {

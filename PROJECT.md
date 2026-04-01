@@ -187,6 +187,8 @@ Router message directives (Discord):
   - active-mode only
   - reopens recent context and asks for `n` messages before the current one (non-inclusive)
   - sticky only while the directive message remains visible in reconstructed post-divider history
+  - visible directives are applied cumulatively: if a loaded message also has `!cont`, it can expand history further
+  - still bounded by dividers, history exhaustion, and the active history cap
   - stripped before the model sees user text
 - `!interrupt`
   - only meaningful on a direct mention/reply to the currently active output chain
