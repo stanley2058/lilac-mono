@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
 import { createLogger, env } from "@stanley2058/lilac-utils";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 import {
   EDIT_ERROR_CODES,
   READ_ERROR_CODES,

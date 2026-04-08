@@ -3,13 +3,13 @@
   "private": true,
   "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "^1.3.11"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@stanley2058/lilac-utils": "workspace:*",
-    "ai": "^6.0.105"
+    "ai": "^6.0.153"
   }
 }

@@ -15,9 +15,9 @@
     "ci": "bun test && bun run lint && bun run typecheck && bun run fmt:check && echo 'check passed'"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.9",
-    "oxfmt": "^0.32.0",
-    "oxlint": "^1.47.0",
+    "@types/bun": "^1.3.11",
+    "oxfmt": "^0.44.0",
+    "oxlint": "^1.59.0",
     "typescript": "^5.9.3"
   },
   "workspaces": [

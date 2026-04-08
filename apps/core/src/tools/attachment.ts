@@ -1,7 +1,7 @@
 import { tool, type ModelMessage } from "ai";
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";

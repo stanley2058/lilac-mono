@@ -217,9 +217,6 @@ export class AcpHarnessClient {
 
   async close(): Promise<void> {
     try {
-      if (this.initializeResponse.agentCapabilities?.sessionCapabilities?.stop) {
-        // No session scope available here; worker handles session stop lifecycle separately.
-      }
       this.child.kill();
       await Promise.race([
         this.connection.closed,

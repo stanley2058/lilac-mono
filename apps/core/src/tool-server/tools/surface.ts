@@ -1,7 +1,7 @@
 import { z } from "zod";
 import fs from "node:fs/promises";
 import { basename } from "node:path";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";

@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import type { UserContent } from "ai";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 
 import { inferMimeTypeFromFilename } from "../../../shared/attachment-utils";
 

@@ -6,7 +6,7 @@ import {
   type GenerateVideoPrompt,
   type ImageModel,
 } from "ai";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 import fs from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { z } from "zod";

@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import { fileTypeFromBuffer } from "file-type/core";
+import { fileTypeFromBuffer } from "file-type";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
