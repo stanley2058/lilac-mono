@@ -104,7 +104,7 @@ export class AcpHarnessClient {
     });
 
     const input = Writable.toWeb(child.stdin!);
-    const output = Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>;
+    const output = Readable.toWeb(child.stdout!) as unknown as ReadableStream<Uint8Array>;
     const stream = ndJsonStream(input, output);
     const client = new ControllerClient(
       params.permissionBehavior,

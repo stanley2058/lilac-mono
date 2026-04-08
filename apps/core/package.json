@@ -16,7 +16,7 @@
     "@types/shell-quote": "^1.7.5"
   },
   "peerDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.2"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.60",
