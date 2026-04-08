@@ -78,7 +78,7 @@ export class ExaWebSearchProvider implements WebSearchProvider {
             maxCharacters: 4000,
           },
           text: {
-            maxCharacters: 4000,
+            maxCharacters: 200_000,
           },
         },
       }),
