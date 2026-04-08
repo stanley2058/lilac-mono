@@ -1,13 +1,23 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { env } from "@stanley2058/lilac-utils";
 
 import { Web } from "../../src/tool-server/tools/web";
 
 const servers: Array<{ stop(force?: boolean): void }> = [];
+const originalFirecrawlApiKey = env.tools.web.firecrawl.apiKey;
+const originalFirecrawlApiBaseUrl = env.tools.web.firecrawl.apiBaseUrl;
 
 afterEach(() => {
   while (servers.length > 0) {
     servers.pop()?.stop(true);
   }
+
+  const mutableFirecrawlEnv = env.tools.web.firecrawl as {
+    apiKey?: string;
+    apiBaseUrl?: string;
+  };
+  mutableFirecrawlEnv.apiKey = originalFirecrawlApiKey;
+  mutableFirecrawlEnv.apiBaseUrl = originalFirecrawlApiBaseUrl;
 });
 
 function startServer(handler: (req: Request) => Response | Promise<Response>) {
@@ -37,6 +47,23 @@ function callExtractPageContent(
   };
 
   return privateApi.extractPageContent(input, opts);
+}
+
+function callExtractPageContentWithProvider(
+  tool: Web,
+  providerId: string,
+  input: Record<string, unknown>,
+  opts?: { signal?: AbortSignal },
+): Promise<unknown> {
+  const privateApi = tool as unknown as {
+    extractPageContentWithProvider: (
+      providerId: string,
+      input: Record<string, unknown>,
+      opts?: { signal?: AbortSignal },
+    ) => Promise<unknown>;
+  };
+
+  return privateApi.extractPageContentWithProvider(providerId, input, opts);
 }
 
 describe("web tool fetch", () => {
@@ -359,6 +386,209 @@ describe("web tool fetch", () => {
       isError: false,
       title: "Configured Extract",
       content: "Configured extract content",
+    });
+  });
+
+  it("uses configured provider-only mode when mode is omitted", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async function (this: Record<string, unknown>) {
+        this.webFetchDefaultMode = "provider-only";
+      },
+      getPageProviderOnly: async () => ({
+        isError: false,
+        title: "Configured Provider",
+        content: "Configured provider content",
+        length: 25,
+        rearTruncated: false,
+        sourceTruncated: false,
+      }),
+      getPageAuto: async () => {
+        throw new Error("auto mode should not run");
+      },
+      getPageFetch: async () => {
+        throw new Error("fetch mode should not run");
+      },
+      getPageBrowser: async () => {
+        throw new Error("browser mode should not run");
+      },
+      getPageExtract: async () => {
+        throw new Error("extract mode should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Configured Provider",
+      content: "Configured provider content",
+    });
+  });
+
+  it("provider-only returns provider errors without browser fallback", async () => {
+    const tool = new Web();
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      extractPageContent: async () => ({
+        isError: true,
+        error: "provider unavailable",
+      }),
+      getPageBrowser: async () => {
+        throw new Error("browser fallback should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "provider-only",
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      error: "provider unavailable",
+    });
+  });
+
+  it("extract html can fall through unsupported providers to Firecrawl", async () => {
+    const tool = new Web();
+    const calls: string[] = [];
+
+    stubWeb(tool, {
+      refreshWebConfig: async () => {},
+      webSearchProviders: [
+        { id: "tavily", isConfigured: () => true, search: async () => [] },
+        { id: "firecrawl", isConfigured: () => true, search: async () => [] },
+      ],
+      extractPageContentWithProvider: async (providerId: string) => {
+        calls.push(providerId);
+        if (providerId === "tavily") {
+          return {
+            isError: true,
+            error: "Tavily extract does not support format=html.",
+          };
+        }
+
+        return {
+          isError: false,
+          content: {
+            url: "https://example.com",
+            title: "Firecrawl HTML",
+            markdown: "Firecrawl HTML",
+            text: "Firecrawl HTML",
+            raw: "<main>Firecrawl HTML</main>",
+          },
+        };
+      },
+      getPageBrowser: async () => {
+        throw new Error("browser fallback should not run");
+      },
+    });
+
+    await expect(
+      tool.call("fetch", {
+        url: "https://example.com",
+        mode: "extract",
+        format: "html",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      title: "Firecrawl HTML",
+      content: "<main>Firecrawl HTML</main>",
+    });
+    expect(calls).toEqual(["tavily", "firecrawl"]);
+  });
+
+  it("maps Firecrawl scrape payloads for html extraction", async () => {
+    const server = startServer(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(req.headers.get("authorization")).toBe("Bearer firecrawl-test-key");
+
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body.url).toBe("https://example.com/article");
+      expect(body.formats).toEqual(["html"]);
+      expect(body.timeout).toBe(10000);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: {
+            html: "<html><body><main>Rendered Firecrawl article</main></body></html>",
+            metadata: {
+              title: "Firecrawl Article",
+              sourceURL: "https://example.com/final-article",
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const mutableFirecrawlEnv = env.tools.web.firecrawl as {
+      apiKey?: string;
+      apiBaseUrl?: string;
+    };
+    mutableFirecrawlEnv.apiKey = "firecrawl-test-key";
+    mutableFirecrawlEnv.apiBaseUrl = `http://127.0.0.1:${server.port}`;
+
+    const tool = new Web();
+
+    await expect(
+      callExtractPageContentWithProvider(tool, "firecrawl", {
+        url: "https://example.com/article",
+        format: "html",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      content: {
+        url: "https://example.com/final-article",
+        title: "Firecrawl Article",
+        raw: "<html><body><main>Rendered Firecrawl article</main></body></html>",
+      },
+    });
+  });
+
+  it("maps Firecrawl markdown to plain text for text extraction", async () => {
+    const server = startServer(async () => {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: {
+            markdown: "# Firecrawl Article\n\n[Useful link](https://example.com)\n\n- Bullet point",
+            metadata: {
+              title: "Firecrawl Text Article",
+              sourceURL: "https://example.com/text-article",
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const mutableFirecrawlEnv = env.tools.web.firecrawl as {
+      apiKey?: string;
+      apiBaseUrl?: string;
+    };
+    mutableFirecrawlEnv.apiKey = "firecrawl-test-key";
+    mutableFirecrawlEnv.apiBaseUrl = `http://127.0.0.1:${server.port}`;
+
+    const tool = new Web();
+
+    await expect(
+      callExtractPageContentWithProvider(tool, "firecrawl", {
+        url: "https://example.com/article",
+        format: "text",
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      content: {
+        url: "https://example.com/text-article",
+        title: "Firecrawl Text Article",
+        text: "Firecrawl Article Useful link Bullet point",
+        markdown: "# Firecrawl Article\n\n[Useful link](https://example.com)\n\n- Bullet point",
+      },
     });
   });
 

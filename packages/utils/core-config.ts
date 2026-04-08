@@ -272,8 +272,10 @@ const discordSurfaceSchema = z
     },
   });
 
-const webExtractProviderSchema = z.enum(["tavily", "exa"]);
-const webFetchModeSchema = z.enum(["auto", "fetch", "browser", "extract"]).default("auto");
+const webExtractProviderSchema = z.enum(["tavily", "exa", "firecrawl"]);
+const webFetchModeSchema = z
+  .enum(["auto", "fetch", "browser", "extract", "provider-only"])
+  .default("auto");
 
 function uniqueItems<T>(items: readonly T[]): T[] {
   const seen = new Set<T>();

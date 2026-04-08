@@ -18,6 +18,9 @@ function formatProviderList(ids: readonly string[]): string {
 }
 
 function missingConfigMessage(id: WebSearchProviderId): string | null {
+  if (id === "firecrawl") {
+    return "web.search is unavailable: FIRECRAWL_API_KEY is not configured (set env var FIRECRAWL_API_KEY).";
+  }
   if (id === "exa") {
     return "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).";
   }

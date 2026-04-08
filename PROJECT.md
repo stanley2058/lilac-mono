@@ -365,7 +365,8 @@ Key sections:
 
 - `surface.router`: mention/active routing config.
 - `surface.discord`: bot token env var name, allowlists, botName.
-- `tools.web.search.provider`: web search backend selector (`tavily` or `exa`).
+- `tools.web.extract.providers`: ordered web provider list shared by `web.search` and provider-backed `web.fetch`/extract (`tavily`, `exa`, `firecrawl`).
+- `tools.web.fetch.mode`: default fetch strategy (`auto`, `fetch`, `browser`, `extract`, or `provider-only`).
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
@@ -385,8 +386,9 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
 - `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
-- `TAVILY_API_KEY` and/or `EXA_API_KEY` (enable `tools search`; backend selected by `tools.web.search.provider`)
+- `TAVILY_API_KEY`, `EXA_API_KEY`, and/or `FIRECRAWL_API_KEY` (enable configured web providers)
 - `EXA_API_BASE_URL` (optional Exa API endpoint override)
+- `FIRECRAWL_API_BASE_URL` (optional Firecrawl API endpoint override)
 - `TAVILY_API_BASE_URL` (optional Tavily API endpoint override)
 - `DISCORD_TOKEN` (or whatever `surface.discord.tokenEnv` points to)
 

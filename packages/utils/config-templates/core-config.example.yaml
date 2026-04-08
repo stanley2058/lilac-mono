@@ -4,6 +4,8 @@ tools:
   web:
     extract:
       providers: [tavily]
+    fetch:
+      mode: auto
 
 plugins:
   disabled: []

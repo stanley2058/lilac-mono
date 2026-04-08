@@ -20,14 +20,14 @@ import {
   type WebSearchProvider,
 } from "./web-search";
 
-const getPageModeSchema = z.enum(["auto", "fetch", "browser", "extract"]);
+const getPageModeSchema = z.enum(["auto", "fetch", "browser", "extract", "provider-only"]);
 
 const getPageSchema = z.object({
   url: z.string().describe("URL to fetch"),
   mode: getPageModeSchema
     .optional()
     .describe(
-      "Mode to use for fetching the page; `auto`: smart fallback flow; `fetch`: direct HTTP fetch; `browser`: render with a browser; `extract`: use the configured extract provider order.",
+      "Mode to use for fetching the page; `auto`: smart fallback flow; `fetch`: direct HTTP fetch; `browser`: render with a browser; `extract`: use the configured extract provider order, then browser fallback if needed; `provider-only`: go straight to the configured provider order with no simple fetch or browser fallback.",
     ),
   format: z
     .union([z.literal("markdown"), z.literal("text"), z.literal("html")])
@@ -129,6 +129,13 @@ type PageContentResult = PageContentSuccess | PageContentError;
 type WebProviderFailure = {
   providerId: WebSearchProviderId;
   message: string;
+};
+
+type FirecrawlScrapeResponse = {
+  success?: boolean;
+  error?: string;
+  message?: string;
+  data?: unknown;
 };
 
 function createAbortError(message = "request aborted"): Error {
@@ -376,6 +383,29 @@ function buildExaExtractCharacterBudget(input: GetPageInput): {
   };
 }
 
+function supportsHtmlExtractFormat(providerId: WebSearchProviderId): boolean {
+  return providerId === "firecrawl";
+}
+
+function getRecordString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function getFirecrawlTitle(payload: FirecrawlScrapeResponse, fallbackUrl: string): string {
+  if (isRecord(payload.data) && isRecord(payload.data.metadata)) {
+    const metadataTitle = getRecordString(payload.data.metadata, "title");
+    if (metadataTitle) return metadataTitle;
+  }
+
+  if (isRecord(payload.data)) {
+    const payloadTitle = getRecordString(payload.data, "title");
+    if (payloadTitle) return payloadTitle;
+  }
+
+  return fallbackUrl;
+}
+
 async function readResponseTextWithLimit(params: {
   res: Response;
   maxBytes: number;
@@ -453,6 +483,19 @@ function simpleHtmlToText(html: string): string {
     .trim();
 }
 
+function markdownToText(markdown: string): string {
+  return markdown
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""))
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function buildSimpleHtmlContent(html: string, url: string) {
   const text = simpleHtmlToText(html);
   return {
@@ -517,12 +560,16 @@ export class Web implements ServerTool {
 
     const exaBaseUrl = env.tools.web.exa.baseUrl;
     const exaApiKey = env.tools.web.exa.apiKey;
+    const firecrawlApiKey = env.tools.web.firecrawl.apiKey;
+    const firecrawlApiBaseUrl = env.tools.web.firecrawl.apiBaseUrl;
     const tavilyApiKey = env.tools.web.tavilyApiKey;
     const tavilyApiBaseUrl = env.tools.web.tavilyApiBaseUrl;
 
     const nextKey = JSON.stringify({
       requested: normalizedRequested,
       fetchMode: fetchModeFromConfig,
+      firecrawlApiBaseUrl: firecrawlApiBaseUrl ?? null,
+      hasFirecrawlApiKey: Boolean(firecrawlApiKey),
       exaBaseUrl: exaBaseUrl ?? null,
       hasExaApiKey: Boolean(exaApiKey),
       hasTavilyApiKey: Boolean(tavilyApiKey),
@@ -535,6 +582,10 @@ export class Web implements ServerTool {
     const prevFetchMode = this.webFetchDefaultMode;
 
     const providers = createDefaultWebSearchProviders({
+      firecrawl: {
+        apiKey: firecrawlApiKey,
+        apiBaseUrl: firecrawlApiBaseUrl,
+      },
       exa: {
         baseUrl: exaBaseUrl,
         apiKey: exaApiKey,
@@ -672,6 +723,9 @@ export class Web implements ServerTool {
         }
         case "extract": {
           return await this.getPageExtract({ ...input, mode }, opts);
+        }
+        case "provider-only": {
+          return await this.getPageProviderOnly({ ...input, mode }, opts);
         }
       }
     } catch (e) {
@@ -977,13 +1031,6 @@ export class Web implements ServerTool {
   ): Promise<PageContentResult> {
     const { format = "markdown" } = input;
 
-    if (format === "html") {
-      return {
-        isError: true,
-        error: "extract mode does not support format=html",
-      };
-    }
-
     if (this.webSearchProviders.length === 0) {
       return {
         isError: true,
@@ -1007,9 +1054,14 @@ export class Web implements ServerTool {
         failures.push({ providerId: provider.id, message: result.error });
 
         const retriable = isRetriableWebProviderError(result.error);
-        if (retriable && index < this.webSearchProviders.length - 1) {
+        const canTryNextProviderForFormat =
+          format === "html" && !supportsHtmlExtractFormat(provider.id);
+        if (
+          (retriable || canTryNextProviderForFormat) &&
+          index < this.webSearchProviders.length - 1
+        ) {
           this.logger.logInfo(
-            `web.extract retryable failure (${provider.id}): ${result.error}. Falling back to next provider.`,
+            `web.extract fallback failure (${provider.id}): ${result.error}. Falling back to next provider.`,
           );
           continue;
         }
@@ -1049,7 +1101,123 @@ export class Web implements ServerTool {
     const { url, format = "markdown", timeout = 10_000 } = input;
 
     switch (providerId) {
+      case "firecrawl": {
+        const apiKey = env.tools.web.firecrawl.apiKey;
+        if (!apiKey) {
+          throw new Error("FIRECRAWL_API_KEY is not configured.");
+        }
+
+        const apiBaseUrlRaw = env.tools.web.firecrawl.apiBaseUrl?.trim();
+        const apiBaseUrl = apiBaseUrlRaw
+          ? normalizeBaseUrl(apiBaseUrlRaw)
+          : "https://api.firecrawl.dev";
+        const timeoutSignal = AbortSignal.timeout(timeout);
+        const signal = AbortSignal.any([timeoutSignal, ...(opts?.signal ? [opts.signal] : [])]);
+        const requestedFormats = format === "html" ? ["html"] : ["markdown"];
+
+        const response = await fetch(`${apiBaseUrl}/v2/scrape`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url,
+            formats: requestedFormats,
+            onlyMainContent: true,
+            timeout,
+          }),
+          signal,
+        });
+
+        let payload: FirecrawlScrapeResponse;
+        try {
+          payload = (await response.json()) as FirecrawlScrapeResponse;
+        } catch {
+          return {
+            isError: true,
+            error: `Firecrawl scrape failed (${response.status}): invalid JSON response.`,
+          };
+        }
+
+        if (!response.ok || payload.success === false) {
+          const detail =
+            (typeof payload.error === "string" && payload.error) ||
+            (typeof payload.message === "string" && payload.message) ||
+            response.statusText ||
+            "unknown error";
+          return {
+            isError: true,
+            error: `Firecrawl scrape failed (${response.status}): ${detail}`,
+          };
+        }
+
+        if (!isRecord(payload.data)) {
+          return {
+            isError: true,
+            error: "Firecrawl scrape returned no content.",
+          };
+        }
+
+        const resultUrl =
+          (isRecord(payload.data.metadata) &&
+            getRecordString(payload.data.metadata, "sourceURL")) ||
+          getRecordString(payload.data, "url") ||
+          url;
+        const title = getFirecrawlTitle(payload, resultUrl);
+
+        if (format === "html") {
+          const html = getRecordString(payload.data, "html");
+          if (!html) {
+            return {
+              isError: true,
+              error: "Firecrawl scrape returned no html content.",
+            };
+          }
+
+          const text = simpleHtmlToText(html);
+          return {
+            isError: false,
+            content: {
+              url: resultUrl,
+              title,
+              markdown: text,
+              text,
+              raw: html,
+            },
+          };
+        }
+
+        const markdown =
+          getRecordString(payload.data, "markdown") ?? getRecordString(payload.data, "content");
+        if (!markdown) {
+          return {
+            isError: true,
+            error: "Firecrawl scrape returned no content.",
+          };
+        }
+
+        const text = format === "text" ? markdownToText(markdown) : markdown;
+
+        return {
+          isError: false,
+          content: buildTextContent({
+            url: resultUrl,
+            title,
+            text,
+            markdown,
+            raw: markdown,
+          }),
+        };
+      }
       case "tavily": {
+        if (format === "html") {
+          return {
+            isError: true,
+            error: "Tavily extract does not support format=html.",
+          };
+        }
+
         const client = this.getTavilyClient();
         const response = await withAbortSignal(opts?.signal, () =>
           client.extract([url], {
@@ -1080,6 +1248,13 @@ export class Web implements ServerTool {
         };
       }
       case "exa": {
+        if (format === "html") {
+          return {
+            isError: true,
+            error: "Exa extract does not support format=html.",
+          };
+        }
+
         const client = this.getExaClient();
         const timeoutSignal = AbortSignal.timeout(timeout);
         const signal = AbortSignal.any([timeoutSignal, ...(opts?.signal ? [opts.signal] : [])]);
@@ -1166,17 +1341,30 @@ export class Web implements ServerTool {
       signal?: AbortSignal;
     },
   ) {
-    if (format === "html") {
-      this.logger.logInfo(
-        "web.fetch mode=extract does not support html; falling back to browser mode.",
-      );
-      return await this.getPageBrowser({ ...rest, format, mode: "browser" }, opts);
-    }
-
     const result = await this.extractPageContent({ ...rest, format }, opts);
     if (result.isError) {
       this.logger.logError(`${result.error} Falling back to browser mode.`);
       return await this.getPageBrowser({ ...rest, format, mode: "browser" }, opts);
+    }
+
+    return this.toOutputFormat({
+      content: result.content,
+      format,
+      startOffset: rest.startOffset ?? 0,
+      maxCharacters: rest.maxCharacters ?? 200_000,
+      sourceTruncated: result.sourceTruncated,
+    });
+  }
+
+  private async getPageProviderOnly(
+    { format = "markdown", ...rest }: GetPageInput,
+    opts?: {
+      signal?: AbortSignal;
+    },
+  ) {
+    const result = await this.extractPageContent({ ...rest, format }, opts);
+    if (result.isError) {
+      return result;
     }
 
     return this.toOutputFormat({

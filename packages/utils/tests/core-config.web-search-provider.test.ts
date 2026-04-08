@@ -13,13 +13,13 @@ describe("coreConfigSchema tools.web.extract.providers", () => {
       tools: {
         web: {
           extract: {
-            providers: ["tavily", "exa"],
+            providers: ["tavily", "exa", "firecrawl"],
           },
         },
       },
     });
 
-    expect(parsed.tools.web.extract.providers).toEqual(["tavily", "exa"]);
+    expect(parsed.tools.web.extract.providers).toEqual(["tavily", "exa", "firecrawl"]);
   });
 
   it("accepts legacy singular provider inside extract", () => {
@@ -104,13 +104,27 @@ describe("coreConfigSchema tools.web.fetch.mode", () => {
       tools: {
         web: {
           fetch: {
-            mode: "extract",
+            mode: "provider-only",
           },
         },
       },
     });
 
-    expect(parsed.tools.web.fetch.mode).toBe("extract");
+    expect(parsed.tools.web.fetch.mode).toBe("provider-only");
+  });
+
+  it("accepts firecrawl as a provider", () => {
+    const parsed = coreConfigSchema.parse({
+      tools: {
+        web: {
+          extract: {
+            providers: ["firecrawl"],
+          },
+        },
+      },
+    });
+
+    expect(parsed.tools.web.extract.providers).toEqual(["firecrawl"]);
   });
 });
 

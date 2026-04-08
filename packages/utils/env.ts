@@ -94,6 +94,10 @@ export function parseEnv() {
     },
     tools: {
       web: {
+        firecrawl: {
+          apiKey: env.FIRECRAWL_API_KEY,
+          apiBaseUrl: env.FIRECRAWL_API_BASE_URL,
+        },
         tavilyApiKey: env.TAVILY_API_KEY,
         tavilyApiBaseUrl: env.TAVILY_API_BASE_URL,
         exa: {

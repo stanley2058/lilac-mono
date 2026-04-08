@@ -54,7 +54,7 @@ export type WebSearchResult = {
   score: number | null;
 };
 
-export type WebSearchProviderId = "exa" | "tavily" | (string & {});
+export type WebSearchProviderId = "exa" | "firecrawl" | "tavily" | (string & {});
 
 export interface WebSearchProvider {
   readonly id: WebSearchProviderId;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   ExaWebSearchProvider,
+  FirecrawlWebSearchProvider,
   TavilyWebSearchProvider,
   resolveWebSearchProvider,
   type WebSearchProvider,
@@ -55,6 +56,21 @@ describe("web-search (exa)", () => {
     expect(resolved.providers).toEqual([]);
     expect(resolved.error).toBe(
       "web.search is unavailable: EXA_API_KEY is not configured (set env var EXA_API_KEY).",
+    );
+    expect(resolved.warning).toBeNull();
+  });
+
+  it("resolveWebSearchProvider returns a Firecrawl missing-config error", () => {
+    const firecrawl = new FirecrawlWebSearchProvider({});
+
+    const resolved = resolveWebSearchProvider({
+      requested: "firecrawl",
+      providers: [firecrawl],
+    });
+
+    expect(resolved.providers).toEqual([]);
+    expect(resolved.error).toBe(
+      "web.search is unavailable: FIRECRAWL_API_KEY is not configured (set env var FIRECRAWL_API_KEY).",
     );
     expect(resolved.warning).toBeNull();
   });
@@ -230,7 +246,8 @@ describe("web-search (exa)", () => {
       if (!isRecord(text)) {
         throw new Error("expected request contents.text to be a JSON object");
       }
-      expect(text.maxCharacters).toBe(4000);
+      // exa-js forwards a much larger full-text cap than the highlight budget.
+      expect(text.maxCharacters).toBe(200000);
 
       expect(contents.summary).toBeUndefined();
     } finally {
