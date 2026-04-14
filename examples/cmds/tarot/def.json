@@ -1,11 +1,11 @@
 {
   "name": "tarot",
-  "description": "Draw tarot cards for the current turn.",
+  "description": "Draw a tarot spread and give the assistant structured reading context.",
   "args": [
     {
-      "key": "count",
-      "type": "number",
-      "description": "How many cards to draw",
+      "key": "mode",
+      "type": "string",
+      "description": "Spread: single, past-present-future, situation-obstacle-advice, or mind-body-spirit",
       "required": false
     }
   ]
