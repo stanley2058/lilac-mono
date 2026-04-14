@@ -239,6 +239,20 @@ export class CustomCommandManager {
     return result;
   }
 
+  formatPreview(invocation: ParsedCustomCommandInvocation): string {
+    const baseText = this.formatText(
+      invocation.command,
+      invocation.command.def.args.flatMap((arg, index) => {
+        const value = invocation.args[index];
+        if (value === undefined) return [];
+        return [`${arg.key}=${String(value)}`];
+      }),
+    );
+
+    if (!invocation.prompt) return baseText;
+    return `${baseText}\nPrompt: ${invocation.prompt}`;
+  }
+
   private formatText(
     command: LoadedCustomCommand,
     parts: readonly string[],

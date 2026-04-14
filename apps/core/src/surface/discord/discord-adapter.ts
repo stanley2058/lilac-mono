@@ -2330,6 +2330,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         rawArgs,
         prompt,
       });
+      const preview = this.opts!.customCommands!.formatPreview(parsed);
       const parentChannelId = this.getParentChannelIdFromInteractionChannel(interaction);
       const sessionMode = getSessionMode(cfg, channelId, parentChannelId);
       const sessionConfigId = resolveSessionConfigId({
@@ -2344,8 +2345,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       });
 
       await interaction.reply({
-        content: `Running \`/${parsed.command.textName}\`...`,
-        flags: MessageFlags.Ephemeral,
+        content: preview,
       });
 
       this.emit({
@@ -2372,7 +2372,6 @@ export class DiscordAdapter implements SurfaceAdapter {
         } else {
           await interaction.reply({
             content: `Failed to run custom command: ${msg}`,
-            flags: MessageFlags.Ephemeral,
           });
         }
       } catch {

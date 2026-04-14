@@ -112,6 +112,44 @@ describe("CustomCommandManager", () => {
     });
   });
 
+  it("formats slash previews with prompt on a second line", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [{ key: "mode", type: "string", required: false }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const manager = new CustomCommandManager(dataDir);
+    await manager.init();
+
+    const withPrompt = manager.parseSlash({
+      name: "tarot",
+      rawArgs: { mode: "situation-obstacle-advice" },
+      prompt: "Please give me advice on my career change.",
+    });
+    if (!withPrompt) throw new Error("expected parsed invocation");
+    expect(manager.formatPreview(withPrompt)).toBe(
+      "/lilac:tarot mode=situation-obstacle-advice\nPrompt: Please give me advice on my career change.",
+    );
+
+    const withoutPrompt = manager.parseSlash({
+      name: "tarot",
+      rawArgs: { mode: "past-present-future" },
+    });
+    expect(manager.formatPreview(withoutPrompt)).toBe(
+      "/lilac:tarot mode=past-present-future",
+    );
+  });
+
   it("executes a command module with explicit context", async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
     const dataDir = path.join(tmp, "data");
