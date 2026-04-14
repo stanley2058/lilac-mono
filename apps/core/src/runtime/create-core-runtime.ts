@@ -48,6 +48,7 @@ import {
   type RequestMessageCache,
 } from "../tool-server/request-message-cache";
 import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plugins";
+import { CustomCommandManager } from "../custom-commands/manager";
 import { handleCoreConfigWatchEvent } from "./core-config-watch";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 
@@ -130,7 +131,13 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
   const bus: LilacBus = createLilacBus(raw);
 
-  const adapter = new DiscordAdapter();
+  const customCommands = new CustomCommandManager(env.dataDir);
+  await customCommands.init();
+  for (const warning of customCommands.listWarnings()) {
+    logger.warn("custom command skipped", { warning });
+  }
+
+  const adapter = new DiscordAdapter({ customCommands });
   const githubAdapter = new GithubAdapter();
   const workflowStore = new SqliteWorkflowStore();
   const workflowQueries = createWorkflowStoreQueries(workflowStore);
@@ -489,6 +496,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         adapter,
         bus,
         subscriptionId: subId(subscriptionPrefix, "router"),
+        customCommands,
         shouldSuppressAdapterEvent: async ({ evt }) =>
           shouldSuppressRouterForWorkflowReply({ queries: workflowQueries, evt }),
         transcriptStore: transcriptStore ?? undefined,
@@ -589,6 +597,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         bus,
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
         pluginManager,
+        customCommands,
         cwd,
         transcriptStore: transcriptStore ?? undefined,
       });

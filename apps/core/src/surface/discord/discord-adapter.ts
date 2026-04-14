@@ -29,7 +29,7 @@ import type {
   EvtAdapterReactionAddedData,
   EvtAdapterReactionRemovedData,
 } from "@stanley2058/lilac-event-bus";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import type { CoreConfig, CustomCommandArgDef } from "@stanley2058/lilac-utils";
 import {
   createLogger,
   getCoreConfig,
@@ -73,10 +73,13 @@ import {
   type DiscordEmbedTextMeta,
 } from "./discord-embed-text";
 import type { MarkdownTableRenderOptions } from "../../shared/markdown-table-renderer";
+import type { CustomCommandManager } from "../../custom-commands/manager";
+import { getSessionMode, resolveSessionConfigId } from "../bridge/bus-request-router/common";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
   config?: CoreConfig;
+  customCommands?: CustomCommandManager;
 };
 
 export type DiscordAdapterHealthSnapshot = {
@@ -596,6 +599,31 @@ function buildDiscordBotInviteUrl(input: { clientId: string; permissions: bigint
     permissions: input.permissions.toString(),
   });
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+function buildDiscordSlashOption(arg: CustomCommandArgDef) {
+  if (arg.type === "number") {
+    return {
+      type: ApplicationCommandOptionType.Number as const,
+      name: arg.key,
+      description: arg.description ?? arg.key,
+      required: arg.required ?? false,
+    };
+  }
+  if (arg.type === "boolean") {
+    return {
+      type: ApplicationCommandOptionType.Boolean as const,
+      name: arg.key,
+      description: arg.description ?? arg.key,
+      required: arg.required ?? false,
+    };
+  }
+  return {
+    type: ApplicationCommandOptionType.String as const,
+    name: arg.key,
+    description: arg.description ?? arg.key,
+    required: arg.required ?? false,
+  };
 }
 
 export class DiscordAdapter implements SurfaceAdapter {
@@ -2046,44 +2074,58 @@ export class DiscordAdapter implements SurfaceAdapter {
     // Ensure the application is fetched (discord.js sometimes lazily loads it).
     await app.fetch().catch(() => null);
 
+    const customOptions = (this.opts?.customCommands?.list() ?? []).map((cmd) => ({
+      type: ApplicationCommandOptionType.Subcommand as const,
+      name: cmd.def.name,
+      description: cmd.def.description,
+      options: cmd.def.args.map((arg) => buildDiscordSlashOption(arg)),
+    }));
+
+    if (customOptions.length > 24) {
+      this.logger.warn("too many custom commands for /lilac; only first 24 will be registered", {
+        discovered: customOptions.length,
+      });
+    }
+
     const slashDefinition = {
       name: "lilac",
       description: "Lilac bot commands",
       options: [
         {
-          type: ApplicationCommandOptionType.Subcommand,
+          type: ApplicationCommandOptionType.Subcommand as const,
           name: "divider",
           description: "Insert a session divider for context",
           options: [
             {
-              type: ApplicationCommandOptionType.String,
+              type: ApplicationCommandOptionType.String as const,
               name: "label",
               description: "Optional label for the divider",
               required: false,
             },
           ],
         },
+        ...customOptions.slice(0, 24),
       ],
-    } as const;
+    };
 
     const modelSlashDefinition = {
       name: "model",
       description: "View or switch this session model",
       options: [
         {
-          type: ApplicationCommandOptionType.String,
+          type: ApplicationCommandOptionType.String as const,
           name: "model",
           description: "Model alias or provider/model",
           required: false,
           autocomplete: true,
         },
       ],
-    } as const;
+    };
 
     const cancelContextMenuDefinition = {
       name: CONTEXT_MENU_CANCEL_REQUEST_NAME,
-      type: ApplicationCommandType.Message,
-    } as const;
+      type: ApplicationCommandType.Message as const,
+    };
 
     // Force-sync (bulk overwrite) so stale commands are removed.
     // This is intentional: we treat the current code's command list as the
@@ -2181,7 +2223,75 @@ export class DiscordAdapter implements SurfaceAdapter {
       sub = null;
     }
 
-    if (sub !== "divider") {
+    if (sub === "divider") {
+      const label = interaction.options.getString("label");
+
+      const content = buildDiscordSessionDividerText({
+        label,
+        createdByUserId: interaction.user?.id ?? null,
+        createdByUserName: interaction.user?.username ?? null,
+      });
+
+      try {
+        // Defer immediately to avoid the 3s interaction timeout.
+        try {
+          await interaction.deferReply({
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch {
+          // ignore
+        }
+
+        const ch = await client.channels.fetch(channelId).catch(() => null);
+        if (!isTextSendableChannel(ch)) {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+              content: "Channel not found or not text-based.",
+            });
+          } else {
+            await interaction.reply({
+              content: "Channel not found or not text-based.",
+              flags: MessageFlags.Ephemeral,
+            });
+          }
+          return;
+        }
+
+        await ch.send({
+          content,
+          allowedMentions: { parse: [] },
+        });
+
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: "Inserted session divider." });
+        } else {
+          await interaction.reply({
+            content: "Inserted session divider.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+              content: `Failed to insert divider: ${msg}`,
+            });
+          } else {
+            await interaction.reply({
+              content: `Failed to insert divider: ${msg}`,
+              flags: MessageFlags.Ephemeral,
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
+    const custom = this.opts?.customCommands?.get(sub ?? "");
+    if (!custom) {
       try {
         await interaction.reply({
           content: "Unknown subcommand.",
@@ -2193,62 +2303,60 @@ export class DiscordAdapter implements SurfaceAdapter {
       return;
     }
 
-    const label = interaction.options.getString("label");
-
-    const content = buildDiscordSessionDividerText({
-      label,
-      createdByUserId: interaction.user?.id ?? null,
-      createdByUserName: interaction.user?.username ?? null,
-    });
-
     try {
-      // Defer immediately to avoid the 3s interaction timeout.
-      try {
-        await interaction.deferReply({
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
-
-      const ch = await client.channels.fetch(channelId).catch(() => null);
-      if (!isTextSendableChannel(ch)) {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({
-            content: "Channel not found or not text-based.",
-          });
-        } else {
-          await interaction.reply({
-            content: "Channel not found or not text-based.",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
-        return;
-      }
-
-      await ch.send({
-        content,
-        allowedMentions: { parse: [] },
+      const rawArgs = Object.fromEntries(
+        custom.def.args.flatMap((arg) => {
+          const value =
+            arg.type === "number"
+              ? interaction.options.getNumber(arg.key)
+              : arg.type === "boolean"
+                ? interaction.options.getBoolean(arg.key)
+                : interaction.options.getString(arg.key);
+          return value === null ? [] : [[arg.key, value] as const];
+        }),
+      );
+      const parsed = this.opts!.customCommands!.parseSlash(custom.def.name, rawArgs);
+      const parentChannelId = this.getParentChannelIdFromInteractionChannel(interaction);
+      const sessionMode = getSessionMode(cfg, channelId, parentChannelId);
+      const sessionConfigId = resolveSessionConfigId({
+        cfg,
+        sessionId: channelId,
+        parentChannelId,
+      });
+      const modelOverride = this.getSessionModelRef({
+        cfg,
+        sessionId: channelId,
+        parentChannelId,
       });
 
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: "Inserted session divider." });
-      } else {
-        await interaction.reply({
-          content: "Inserted session divider.",
-          flags: MessageFlags.Ephemeral,
-        });
-      }
+      await interaction.reply({
+        content: `Running \`/${parsed.command.textName}\`...`,
+        flags: MessageFlags.Ephemeral,
+      });
+
+      this.emit({
+        type: "adapter.command.invoked",
+        platform: "discord",
+        ts: Date.now(),
+        requestId: `discord:${channelId}:slash:${interaction.id}`,
+        sessionId: channelId,
+        commandName: custom.def.name,
+        args: parsed.args,
+        text: parsed.text,
+        sessionMode,
+        sessionConfigId,
+        modelOverride,
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       try {
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({
-            content: `Failed to insert divider: ${msg}`,
+            content: `Failed to run custom command: ${msg}`,
           });
         } else {
           await interaction.reply({
-            content: `Failed to insert divider: ${msg}`,
+            content: `Failed to run custom command: ${msg}`,
             flags: MessageFlags.Ephemeral,
           });
         }

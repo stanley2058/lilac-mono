@@ -13,3 +13,4 @@ export * from "./logging";
 export * from "./vcs-env";
 export * from "./model-edit-mode";
 export * from "./tool-call-input-normalization";
+export * from "./custom-commands";

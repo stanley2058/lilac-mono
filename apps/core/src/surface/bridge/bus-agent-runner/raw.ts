@@ -103,3 +103,32 @@ export function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
 
   return { profile, depth };
 }
+
+export type ParsedCustomCommand = {
+  name: string;
+  args: unknown[];
+  text: string;
+  source: "text" | "discord-slash";
+  error?: string;
+};
+
+export function parseCustomCommandFromRaw(raw: unknown): ParsedCustomCommand | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["customCommand"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record["name"] !== "string") return null;
+  if (typeof record["text"] !== "string") return null;
+
+  const source = record["source"];
+  if (source !== "text" && source !== "discord-slash") return null;
+
+  return {
+    name: record["name"],
+    args: Array.isArray(record["args"]) ? record["args"] : [],
+    text: record["text"],
+    source,
+    ...(typeof record["error"] === "string" ? { error: record["error"] } : {}),
+  };
+}

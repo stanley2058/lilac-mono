@@ -63,6 +63,7 @@ import {
   resolvePreviousMessageText as resolvePreviousMessageTextImpl,
   resolveRepliedToMessageText as resolveRepliedToMessageTextImpl,
 } from "./bus-request-router/context";
+import type { CustomCommandManager } from "../../custom-commands/manager";
 
 type ActiveSessionState = {
   requestId: string;
@@ -82,6 +83,7 @@ export async function startBusRequestRouter(params: {
   adapter: SurfaceAdapter;
   bus: LilacBus;
   subscriptionId: string;
+  customCommands?: CustomCommandManager;
   /** Optionally inject config; defaults to getCoreConfig(). */
   config?: RouterConfigOverride;
   transcriptStore?: TranscriptStore;
@@ -95,7 +97,7 @@ export async function startBusRequestRouter(params: {
   /** Optional injection for unit tests (bypasses real model call). */
   routerGate?: (input: RouterGateInput) => Promise<RouterGateDecision>;
 }) {
-  const { adapter, bus, subscriptionId } = params;
+  const { adapter, bus, subscriptionId, customCommands } = params;
 
   const logger = createLogger({
     module: "bus-request-router",
@@ -427,6 +429,79 @@ export async function startBusRequestRouter(params: {
             ? previewText(msg.data.text)
             : undefined,
       });
+
+      const customName = customCommands?.peekTextName(msg.data.text) ?? null;
+      if (customName) {
+        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+        const raw = (() => {
+          const known = customCommands?.get(customName);
+          if (!known) {
+            return {
+              customCommand: {
+                name: customName,
+                args: [],
+                text: msg.data.text,
+                source: "text",
+                error: `Unknown custom command '${customName}'.`,
+              },
+            };
+          }
+
+          try {
+            const parsed = customCommands?.parseText(msg.data.text);
+            if (!parsed) {
+              return {
+                customCommand: {
+                  name: customName,
+                  args: [],
+                  text: msg.data.text,
+                  source: "text",
+                  error: `Unknown custom command '${customName}'.`,
+                },
+              };
+            }
+
+            return {
+              customCommand: {
+                name: parsed.command.def.name,
+                args: parsed.args,
+                text: parsed.text,
+                source: parsed.source,
+              },
+            };
+          } catch (error) {
+            return {
+              customCommand: {
+                name: customName,
+                args: [],
+                text: msg.data.text,
+                source: "text",
+                error: error instanceof Error ? error.message : String(error),
+              },
+            };
+          }
+        })();
+
+        await publishSingleMessagePrompt({
+          adapter,
+          bus,
+          cfg,
+          requestId,
+          sessionId,
+          sessionConfigId,
+          msgRef,
+          sessionMode: mode,
+          modelOverride,
+          raw,
+        });
+
+        logRouteDecision({
+          decision: "forward",
+          reason: `custom_command:${customName}`,
+        });
+        await ctx.commit();
+        return;
+      }
 
       if (
         !isDm &&

@@ -38,6 +38,9 @@ export async function startDiscordSearchIndexer(params: {
       case "adapter.request.cancel": {
         return;
       }
+      case "adapter.command.invoked": {
+        return;
+      }
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

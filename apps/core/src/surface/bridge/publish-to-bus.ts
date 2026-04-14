@@ -305,6 +305,59 @@ export async function bridgeAdapterToBus(params: {
         break;
       }
 
+      case "adapter.command.invoked": {
+        try {
+          await bus.publish(
+            lilacEventTypes.CmdRequestMessage,
+            {
+              queue: "prompt",
+              messages: [{ role: "user", content: evt.text }],
+              ...(evt.modelOverride ? { modelOverride: evt.modelOverride } : {}),
+              raw: {
+                sessionMode: evt.sessionMode,
+                sessionConfigId: evt.sessionConfigId,
+                ...(evt.modelOverride ? { modelOverride: evt.modelOverride } : {}),
+                customCommand: {
+                  name: evt.commandName,
+                  args: evt.args,
+                  text: evt.text,
+                  source: "discord-slash",
+                },
+              },
+            },
+            {
+              headers: {
+                request_id: evt.requestId,
+                session_id: evt.sessionId,
+                request_client: evt.platform,
+              },
+            },
+          );
+          logPublish({
+            adapterEventType: evt.type,
+            busType: lilacEventTypes.CmdRequestMessage,
+            platform: evt.platform,
+            requestId: evt.requestId,
+            sessionId: evt.sessionId,
+            startedAt,
+            ok: true,
+          });
+        } catch (e) {
+          logPublish({
+            adapterEventType: evt.type,
+            busType: lilacEventTypes.CmdRequestMessage,
+            platform: evt.platform,
+            requestId: evt.requestId,
+            sessionId: evt.sessionId,
+            startedAt,
+            ok: false,
+            errorClass: e instanceof Error ? e.name : "unknown",
+          });
+          throw e;
+        }
+        break;
+      }
+
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

@@ -10,8 +10,13 @@ import {
   type ToolSet,
   type UserContent,
 } from "ai";
-import type { CoreConfig, ModelCapabilityInfo } from "@stanley2058/lilac-utils";
+import type {
+  CoreConfig,
+  CustomCommandResult,
+  ModelCapabilityInfo,
+} from "@stanley2058/lilac-utils";
 import {
+  CUSTOM_COMMAND_TOOL_NAME,
   discoverSkills,
   env,
   findWorkspaceRoot,
@@ -87,6 +92,7 @@ import {
 } from "./bus-agent-runner/anthropic-fallback-media";
 import {
   type AgentRunProfile,
+  parseCustomCommandFromRaw,
   parseBufferedForActiveRequestIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -96,6 +102,7 @@ import {
   requestRawReferencesMessage,
 } from "./bus-agent-runner/raw";
 import { messagesContainSurfaceMetadata } from "./surface-metadata";
+import type { CustomCommandManager } from "../../custom-commands/manager";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -642,6 +649,52 @@ function buildSubagentResultToolCallId(childRequestId: string): string {
     prefix: "subagent_result",
     seed: childRequestId,
   });
+}
+
+function buildCustomCommandToolCallId(requestId: string, name: string): string {
+  return buildSyntheticToolCallId({
+    prefix: CUSTOM_COMMAND_TOOL_NAME,
+    seed: `${requestId}:${name}`,
+  });
+}
+
+function buildCustomCommandMessages(params: {
+  toolCallId: string;
+  name: string;
+  args: readonly unknown[];
+  text: string;
+  source: "text" | "discord-slash";
+  output: CustomCommandResult;
+}): ModelMessage[] {
+  return [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: params.toolCallId,
+          toolName: CUSTOM_COMMAND_TOOL_NAME,
+          input: {
+            name: params.name,
+            args: params.args,
+            text: params.text,
+            source: params.source,
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: params.toolCallId,
+          toolName: CUSTOM_COMMAND_TOOL_NAME,
+          output: params.output,
+        },
+      ],
+    },
+  ];
 }
 
 function buildDeferredSubagentResultMessages(
@@ -2077,6 +2130,7 @@ type SessionQueue = {
     queue: RequestQueueMode;
     runPolicy: RequestRunPolicy;
     origin?: RequestOrigin;
+    messages: ModelMessage[];
     modelOverride?: string;
     raw?: unknown;
     partialText: string;
@@ -2091,6 +2145,7 @@ export async function startBusAgentRunner(params: {
   subscriptionId: string;
   config?: CoreConfig;
   pluginManager: CoreToolPluginManager;
+  customCommands?: CustomCommandManager;
   /** Where core tools operate (fs tool root). */
   cwd?: string;
   transcriptStore?: TranscriptStore;
@@ -2558,7 +2613,22 @@ export async function startBusAgentRunner(params: {
   };
 
   function buildActiveRecoveryEntry(state: SessionQueue): AgentRunnerRecoveryEntry | null {
-    if (!state.running || !state.agent || !state.activeRun) return null;
+    if (!state.running || !state.activeRun) return null;
+
+    if (!state.agent) {
+      return {
+        kind: "active",
+        requestId: state.activeRun.requestId,
+        sessionId: state.activeRun.sessionId,
+        requestClient: state.activeRun.requestClient,
+        queue: "prompt",
+        runPolicy: state.activeRun.runPolicy,
+        origin: state.activeRun.origin,
+        messages: state.activeRun.messages,
+        ...(state.activeRun.modelOverride ? { modelOverride: state.activeRun.modelOverride } : {}),
+        raw: state.activeRun.raw,
+      };
+    }
 
     const checkpointMessages = buildSafeRecoveryCheckpoint(
       state.agent.state.messages,
@@ -2600,7 +2670,7 @@ export async function startBusAgentRunner(params: {
     if (!hasRunning()) return;
 
     for (const state of bySession.values()) {
-      if (!state.running || !state.agent || !state.activeRun) continue;
+      if (!state.running || !state.activeRun) continue;
 
       const recovery = buildActiveRecoveryEntry(state);
       if (recovery) {
@@ -2608,7 +2678,7 @@ export async function startBusAgentRunner(params: {
         restartAbortRequestIds.add(recovery.requestId);
       }
 
-      state.agent.abort();
+      state.agent?.abort();
     }
 
     await new Promise((r) => setTimeout(r, 150));
@@ -2738,6 +2808,7 @@ export async function startBusAgentRunner(params: {
       queue: next.queue,
       runPolicy: next.runPolicy,
       origin: next.origin,
+      messages: next.messages,
       modelOverride: next.modelOverride,
       raw: next.raw,
       partialText: next.recovery?.partialText ?? "",
@@ -2745,6 +2816,8 @@ export async function startBusAgentRunner(params: {
     };
 
     let initialMessages: ModelMessage[] = [];
+    const parsedCustomCommand = next.recovery ? null : parseCustomCommandFromRaw(next.raw);
+    let customCommandMessages: ModelMessage[] = [];
     let responseStartIndex = 0;
     const runStats: {
       totalUsage?: LanguageModelUsage;
@@ -2799,6 +2872,114 @@ export async function startBusAgentRunner(params: {
             : undefined,
       });
       await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+
+      if (parsedCustomCommand) {
+        const toolCallId = buildCustomCommandToolCallId(next.requestId, parsedCustomCommand.name);
+        const display = `${CUSTOM_COMMAND_TOOL_NAME} ${parsedCustomCommand.text}`;
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputToolCall,
+          {
+            toolCallId,
+            status: "start",
+            display,
+          },
+          { headers },
+        );
+
+        let output: CustomCommandResult = { type: "json", value: null };
+        let customError = parsedCustomCommand.error ?? null;
+        const command = params.customCommands?.get(parsedCustomCommand.name) ?? null;
+
+        if (!customError && !params.customCommands) {
+          customError = "Custom command manager is unavailable.";
+        }
+        if (!customError && !command) {
+          customError = `Unknown custom command '${parsedCustomCommand.name}'.`;
+        }
+
+        if (!customError && command && params.customCommands) {
+          try {
+            output = await params.customCommands.execute({
+              command,
+              args: parsedCustomCommand.args,
+              context: {
+                cwd,
+                dataDir: env.dataDir,
+                commandDir: command.dir,
+                commandName: command.def.name,
+                requestId: next.requestId,
+                sessionId: next.sessionId,
+              },
+            });
+          } catch (error) {
+            customError = error instanceof Error ? error.message : String(error);
+          }
+        }
+
+        if (customError) {
+          output = { type: "error-text", value: customError };
+        }
+
+        customCommandMessages = buildCustomCommandMessages({
+          toolCallId,
+          name: parsedCustomCommand.name,
+          args: parsedCustomCommand.args,
+          text: parsedCustomCommand.text,
+          source: parsedCustomCommand.source,
+          output,
+        });
+
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputToolCall,
+          {
+            toolCallId,
+            status: "end",
+            display,
+            ok: !customError,
+            error: customError ?? undefined,
+          },
+          { headers },
+        );
+
+        if (customError) {
+          const finalText = `Error running ${parsedCustomCommand.text}: ${customError}`;
+          resolvedModelLabel = CUSTOM_COMMAND_TOOL_NAME;
+
+          if (params.transcriptStore) {
+            try {
+              params.transcriptStore.saveRequestTranscript({
+                requestId: headers.request_id,
+                sessionId: headers.session_id,
+                requestClient: headers.request_client,
+                messages: [
+                  ...customCommandMessages,
+                  { role: "assistant", content: finalText } satisfies ModelMessage,
+                ],
+                finalText,
+                modelLabel: resolvedModelLabel,
+              });
+            } catch (error) {
+              logger.error(
+                "failed to persist transcript after custom command error",
+                { requestId: headers.request_id, sessionId: headers.session_id },
+                error,
+              );
+            }
+          }
+
+          await publishLifecycle({ bus, headers, state: "failed", detail: customError });
+          await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
+
+          logger.warn("custom command failed", {
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            commandName: parsedCustomCommand.name,
+            error: customError,
+          });
+          return;
+        }
+      }
 
       const subagentProfileConfig =
         runProfile === "primary" ? null : subagents.profiles[runProfile];
@@ -3591,17 +3772,26 @@ export async function startBusAgentRunner(params: {
 
       if (next.recovery) {
         initialMessages = [buildResumePrompt(next.recovery.partialText)];
+        responseStartIndex = agent.state.messages.length + initialMessages.length;
+      } else if (parsedCustomCommand) {
+        initialMessages = [...next.messages];
+        agent.appendMessages(initialMessages);
+        responseStartIndex = agent.state.messages.length;
+        agent.appendMessages(customCommandMessages);
       } else {
         // First message should be a prompt.
         // If additional messages for the same request id were queued before the run started,
         // merge them into the initial prompt so they don't become separate runs.
         const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
         initialMessages = [...mergedInitial];
+        responseStartIndex = agent.state.messages.length + initialMessages.length;
       }
 
-      responseStartIndex = agent.state.messages.length + initialMessages.length;
-
-      await agent.prompt(initialMessages);
+      if (parsedCustomCommand) {
+        await agent.continue();
+      } else {
+        await agent.prompt(initialMessages);
+      }
 
       while (true) {
         await agent.waitForIdle();
