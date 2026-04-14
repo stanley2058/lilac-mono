@@ -145,9 +145,7 @@ describe("CustomCommandManager", () => {
       name: "tarot",
       rawArgs: { mode: "past-present-future" },
     });
-    expect(manager.formatPreview(withoutPrompt)).toBe(
-      "/lilac:tarot mode=past-present-future",
-    );
+    expect(manager.formatPreview(withoutPrompt)).toBe("/lilac:tarot mode=past-present-future");
   });
 
   it("executes a command module with explicit context", async () => {
