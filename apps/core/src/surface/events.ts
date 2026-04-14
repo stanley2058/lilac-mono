@@ -69,6 +69,7 @@ export type AdapterCommandInvokedEvent = AdapterEventBase & {
   sessionId: string;
   commandName: string;
   args: unknown[];
+  prompt?: string;
   text: string;
   sessionMode: "mention" | "active";
   sessionConfigId: string;

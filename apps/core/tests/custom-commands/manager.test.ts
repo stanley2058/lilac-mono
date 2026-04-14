@@ -19,7 +19,7 @@ describe("CustomCommandManager", () => {
     tmp = null;
   });
 
-  it("parses positional and named text arguments", async () => {
+  it("parses positional and named text arguments with trailing prompt", async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
     const dataDir = path.join(tmp, "data");
     const dir = path.join(dataDir, "cmds", "tarot");
@@ -40,6 +40,76 @@ describe("CustomCommandManager", () => {
 
     expect(manager.parseText("/lilac:tarot 3")?.args).toEqual([3]);
     expect(manager.parseText("/lilac:tarot count=2")?.args).toEqual([2]);
+    expect(
+      manager.parseText("/lilac:tarot count=2 Please give me advice on my career change."),
+    ).toEqual({
+      command: expect.objectContaining({ textName: "lilac:tarot" }),
+      args: [2],
+      prompt: "Please give me advice on my career change.",
+      text: "/lilac:tarot count=2 Please give me advice on my career change.",
+      source: "text",
+    });
+  });
+
+  it("treats non-matching optional args as transcript prompt text", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [{ key: "count", type: "number", required: false }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const manager = new CustomCommandManager(dataDir);
+    await manager.init();
+
+    expect(manager.parseText("/lilac:tarot Please read this for my career")?.args).toEqual([
+      undefined,
+    ]);
+    expect(manager.parseText("/lilac:tarot Please read this for my career")?.prompt).toBe(
+      "Please read this for my career",
+    );
+  });
+
+  it("adds reserved slash prompt text without passing it as an execute arg", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [{ key: "mode", type: "string", required: false }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const manager = new CustomCommandManager(dataDir);
+    await manager.init();
+
+    expect(
+      manager.parseSlash({
+        name: "tarot",
+        rawArgs: { mode: "past-present-future" },
+        prompt: "Please focus on my work situation.",
+      }),
+    ).toEqual({
+      command: expect.objectContaining({ textName: "lilac:tarot" }),
+      args: ["past-present-future"],
+      prompt: "Please focus on my work situation.",
+      text: "/lilac:tarot mode=past-present-future Please focus on my work situation.",
+      source: "discord-slash",
+    });
   });
 
   it("executes a command module with explicit context", async () => {
@@ -106,6 +176,7 @@ describe("parseCustomCommandFromRaw", () => {
         customCommand: {
           name: "tarot",
           args: [3],
+          prompt: "Please focus on work.",
           text: "/lilac:tarot 3",
           source: "text",
         },
@@ -113,6 +184,7 @@ describe("parseCustomCommandFromRaw", () => {
     ).toEqual({
       name: "tarot",
       args: [3],
+      prompt: "Please focus on work.",
       text: "/lilac:tarot 3",
       source: "text",
     });

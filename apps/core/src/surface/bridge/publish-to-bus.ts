@@ -320,6 +320,7 @@ export async function bridgeAdapterToBus(params: {
                 customCommand: {
                   name: evt.commandName,
                   args: evt.args,
+                  ...(evt.prompt ? { prompt: evt.prompt } : {}),
                   text: evt.text,
                   source: "discord-slash",
                 },

@@ -662,6 +662,7 @@ function buildCustomCommandMessages(params: {
   toolCallId: string;
   name: string;
   args: readonly unknown[];
+  prompt?: string;
   text: string;
   source: "text" | "discord-slash";
   output: CustomCommandResult;
@@ -677,6 +678,7 @@ function buildCustomCommandMessages(params: {
           input: {
             name: params.name,
             args: params.args,
+            ...(params.prompt ? { prompt: params.prompt } : {}),
             text: params.text,
             source: params.source,
           },
@@ -2925,6 +2927,7 @@ export async function startBusAgentRunner(params: {
           toolCallId,
           name: parsedCustomCommand.name,
           args: parsedCustomCommand.args,
+          prompt: parsedCustomCommand.prompt,
           text: parsedCustomCommand.text,
           source: parsedCustomCommand.source,
           output,

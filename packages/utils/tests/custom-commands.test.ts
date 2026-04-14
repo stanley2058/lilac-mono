@@ -88,4 +88,53 @@ describe("custom command discovery", () => {
     if (result[0]?.type !== "invalid") throw new Error("expected invalid");
     expect(result[0].invalid.reason).toContain("arg key must be lowercase letters/numbers");
   });
+
+  it("rejects the reserved prompt arg key", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "bad-args");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "bad-args",
+        description: "Draw cards",
+        args: [{ key: "prompt", type: "string" }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const result = await discoverCustomCommands({ dataDir });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("invalid");
+    if (result[0]?.type !== "invalid") throw new Error("expected invalid");
+    expect(result[0].invalid.reason).toContain("'prompt' is reserved");
+  });
+
+  it("rejects commands with more than 24 declared args", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "too-many-args");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "too-many-args",
+        description: "Draw cards",
+        args: Array.from({ length: 25 }, (_, index) => ({
+          key: `arg-${index + 1}`,
+          type: "string",
+        })),
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const result = await discoverCustomCommands({ dataDir });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("invalid");
+    if (result[0]?.type !== "invalid") throw new Error("expected invalid");
+    expect(result[0].invalid.reason).toContain("Too big: expected array to have <=24 items");
+  });
 });

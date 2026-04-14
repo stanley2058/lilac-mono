@@ -1,0 +1,12 @@
+{
+  "name": "tarot",
+  "description": "Draw tarot cards for the current turn.",
+  "args": [
+    {
+      "key": "count",
+      "type": "number",
+      "description": "How many cards to draw",
+      "required": false
+    }
+  ]
+}

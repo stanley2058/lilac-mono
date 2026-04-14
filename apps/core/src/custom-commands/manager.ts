@@ -92,8 +92,14 @@ export type LoadedCustomCommand = DiscoveredCustomCommand & {
 export type ParsedCustomCommandInvocation = {
   command: LoadedCustomCommand;
   args: unknown[];
+  prompt: string | null;
   text: string;
   source: "text" | "discord-slash";
+};
+
+type ParsedArgsAndPrompt = {
+  args: unknown[];
+  prompt: string | null;
 };
 
 export class CustomCommandManager {
@@ -162,16 +168,23 @@ export class CustomCommandManager {
     const name = head.slice(CUSTOM_COMMAND_TEXT_PREFIX.length);
     const command = this.get(name);
     if (!command) return null;
+    const parsed = this.parseArgsAndPrompt(command, tokens);
 
     return {
       command,
-      args: this.parseArgs(command, tokens),
-      text: this.formatText(command, tokens),
+      args: parsed.args,
+      prompt: parsed.prompt,
+      text: trimmed,
       source: "text",
     };
   }
 
-  parseSlash(name: string, rawArgs: Record<string, unknown>): ParsedCustomCommandInvocation {
+  parseSlash(params: {
+    name: string;
+    rawArgs: Record<string, unknown>;
+    prompt?: string | null;
+  }): ParsedCustomCommandInvocation {
+    const { name, rawArgs } = params;
     const command = this.get(name);
     if (!command) {
       throw new Error(`Unknown custom command '${name}'.`);
@@ -191,6 +204,7 @@ export class CustomCommandManager {
     return {
       command,
       args,
+      prompt: params.prompt?.trim() ? params.prompt.trim() : null,
       text: this.formatText(
         command,
         command.def.args.flatMap((arg, index) => {
@@ -198,6 +212,7 @@ export class CustomCommandManager {
           if (value === undefined) return [];
           return [`${arg.key}=${String(value)}`];
         }),
+        params.prompt ?? null,
       ),
       source: "discord-slash",
     };
@@ -224,16 +239,28 @@ export class CustomCommandManager {
     return result;
   }
 
-  private formatText(command: LoadedCustomCommand, parts: readonly string[]): string {
-    if (parts.length === 0) return `/${command.textName}`;
-    return `/${command.textName} ${parts.join(" ")}`;
+  private formatText(
+    command: LoadedCustomCommand,
+    parts: readonly string[],
+    prompt?: string | null,
+  ): string {
+    const trimmedPrompt = prompt?.trim() ? prompt.trim() : null;
+    if (parts.length === 0 && !trimmedPrompt) return `/${command.textName}`;
+    if (parts.length === 0) return `/${command.textName} ${trimmedPrompt}`;
+    if (!trimmedPrompt) return `/${command.textName} ${parts.join(" ")}`;
+    return `/${command.textName} ${parts.join(" ")} ${trimmedPrompt}`;
   }
 
-  private parseArgs(command: LoadedCustomCommand, tokens: readonly string[]): unknown[] {
+  private parseArgsAndPrompt(
+    command: LoadedCustomCommand,
+    tokens: readonly string[],
+  ): ParsedArgsAndPrompt {
     const out = Array.from({ length: command.def.args.length }, () => undefined as unknown);
     let pos = 0;
+    let promptStartIndex: number | null = null;
 
-    for (const token of tokens) {
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i]!;
       const eq = token.indexOf("=");
       if (eq > 0) {
         const key = token.slice(0, eq);
@@ -251,9 +278,17 @@ export class CustomCommandManager {
       }
       const arg = command.def.args[pos];
       if (!arg) {
-        throw new Error(`Too many arguments for /${command.textName}.`);
+        promptStartIndex = i;
+        break;
       }
-      out[pos] = parseArgValue(arg.type, token);
+
+      try {
+        out[pos] = parseArgValue(arg.type, token);
+      } catch (error) {
+        if (arg.required) throw error;
+        promptStartIndex = i;
+        break;
+      }
       pos += 1;
     }
 
@@ -264,7 +299,10 @@ export class CustomCommandManager {
       }
     }
 
-    return out;
+    return {
+      args: out,
+      prompt: promptStartIndex === null ? null : tokens.slice(promptStartIndex).join(" "),
+    };
   }
 }
 

@@ -107,6 +107,7 @@ export function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
 export type ParsedCustomCommand = {
   name: string;
   args: unknown[];
+  prompt?: string;
   text: string;
   source: "text" | "discord-slash";
   error?: string;
@@ -127,6 +128,7 @@ export function parseCustomCommandFromRaw(raw: unknown): ParsedCustomCommand | n
   return {
     name: record["name"],
     args: Array.isArray(record["args"]) ? record["args"] : [],
+    ...(typeof record["prompt"] === "string" ? { prompt: record["prompt"] } : {}),
     text: record["text"],
     source,
     ...(typeof record["error"] === "string" ? { error: record["error"] } : {}),

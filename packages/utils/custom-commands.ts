@@ -6,6 +6,7 @@ import type { ToolContent } from "ai";
 
 export const CUSTOM_COMMAND_TEXT_PREFIX = "lilac:";
 export const CUSTOM_COMMAND_TOOL_NAME = "custom_command";
+export const CUSTOM_COMMAND_PROMPT_ARG_KEY = "prompt";
 
 const COMMAND_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COMMAND_ARG_KEY_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -31,13 +32,20 @@ export const customCommandDefSchema = z
       .max(32)
       .regex(COMMAND_NAME_RE, "name must be lowercase letters/numbers with hyphen separators"),
     description: z.string().trim().min(1).max(100),
-    args: z.array(customCommandArgSchema).max(25).default([]),
+    args: z.array(customCommandArgSchema).max(24).default([]),
   })
   .superRefine((value, ctx) => {
     const seen = new Set<string>();
     for (let i = 0; i < value.args.length; i += 1) {
       const key = value.args[i]?.key;
       if (!key) continue;
+      if (key === CUSTOM_COMMAND_PROMPT_ARG_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["args", i, "key"],
+          message: `'${CUSTOM_COMMAND_PROMPT_ARG_KEY}' is reserved for transcript prompts`,
+        });
+      }
       if (!seen.has(key)) {
         seen.add(key);
         continue;

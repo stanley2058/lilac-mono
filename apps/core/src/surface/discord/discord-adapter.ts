@@ -31,6 +31,7 @@ import type {
 } from "@stanley2058/lilac-event-bus";
 import type { CoreConfig, CustomCommandArgDef } from "@stanley2058/lilac-utils";
 import {
+  CUSTOM_COMMAND_PROMPT_ARG_KEY,
   createLogger,
   getCoreConfig,
   resolveModelRef,
@@ -2078,7 +2079,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       type: ApplicationCommandOptionType.Subcommand as const,
       name: cmd.def.name,
       description: cmd.def.description,
-      options: cmd.def.args.map((arg) => buildDiscordSlashOption(arg)),
+      options: [
+        ...cmd.def.args.map((arg) => buildDiscordSlashOption(arg)),
+        {
+          type: ApplicationCommandOptionType.String as const,
+          name: CUSTOM_COMMAND_PROMPT_ARG_KEY,
+          description: "Extra prompt text for the assistant after the command runs",
+          required: false,
+        },
+      ],
     }));
 
     if (customOptions.length > 24) {
@@ -2315,7 +2324,12 @@ export class DiscordAdapter implements SurfaceAdapter {
           return value === null ? [] : [[arg.key, value] as const];
         }),
       );
-      const parsed = this.opts!.customCommands!.parseSlash(custom.def.name, rawArgs);
+      const prompt = interaction.options.getString(CUSTOM_COMMAND_PROMPT_ARG_KEY);
+      const parsed = this.opts!.customCommands!.parseSlash({
+        name: custom.def.name,
+        rawArgs,
+        prompt,
+      });
       const parentChannelId = this.getParentChannelIdFromInteractionChannel(interaction);
       const sessionMode = getSessionMode(cfg, channelId, parentChannelId);
       const sessionConfigId = resolveSessionConfigId({
@@ -2342,6 +2356,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         sessionId: channelId,
         commandName: custom.def.name,
         args: parsed.args,
+        ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
         text: parsed.text,
         sessionMode,
         sessionConfigId,

@@ -1,0 +1,134 @@
+[
+  {
+    "name": "The Fool",
+    "type": "major",
+    "meaning_up": "Folly, mania, extravagance, intoxication, delirium, frenzy, bewrayment.",
+    "meaning_rev": "Negligence, absence, distribution, carelessness, apathy, nullity, vanity."
+  },
+  {
+    "name": "The Magician",
+    "type": "major",
+    "meaning_up": "Skill, diplomacy, address, subtlety; self-confidence and will.",
+    "meaning_rev": "Physician, Magus, mental disease, disgrace, disquiet."
+  },
+  {
+    "name": "The High Priestess",
+    "type": "major",
+    "meaning_up": "Secrets, mystery, wisdom, science, the future as yet unrevealed.",
+    "meaning_rev": "Passion, moral or physical ardour, conceit, surface knowledge."
+  },
+  {
+    "name": "The Empress",
+    "type": "major",
+    "meaning_up": "Fruitfulness, action, initiative, length of days.",
+    "meaning_rev": "Light, truth, the unravelling of involved matters, public rejoicings."
+  },
+  {
+    "name": "The Emperor",
+    "type": "major",
+    "meaning_up": "Stability, power, protection, realization, authority and will.",
+    "meaning_rev": "Benevolence, compassion, credit, obstruction, immaturity."
+  },
+  {
+    "name": "The Hierophant",
+    "type": "major",
+    "meaning_up": "Marriage, alliance, mercy, goodness, inspiration.",
+    "meaning_rev": "Society, good understanding, concord, overkindness, weakness."
+  },
+  {
+    "name": "The Lovers",
+    "type": "major",
+    "meaning_up": "Attraction, love, beauty, trials overcome.",
+    "meaning_rev": "Failure, foolish designs, marriage frustrated, contrarieties."
+  },
+  {
+    "name": "The Chariot",
+    "type": "major",
+    "meaning_up": "Succour, providence, war, triumph, presumption, vengeance, trouble.",
+    "meaning_rev": "Riot, quarrel, dispute, litigation, defeat."
+  },
+  {
+    "name": "Fortitude",
+    "type": "major",
+    "meaning_up": "Power, energy, action, courage, magnanimity, complete success and honours.",
+    "meaning_rev": "Despotism, abuse of power, weakness, discord, disgrace."
+  },
+  {
+    "name": "The Hermit",
+    "type": "major",
+    "meaning_up": "Prudence, circumspection; also treason, dissimulation, roguery, corruption.",
+    "meaning_rev": "Concealment, disguise, policy, fear, unreasoned caution."
+  },
+  {
+    "name": "Wheel of Fortune",
+    "type": "major",
+    "meaning_up": "Destiny, fortune, success, elevation, luck, felicity.",
+    "meaning_rev": "Increase, abundance, superfluity."
+  },
+  {
+    "name": "Justice",
+    "type": "major",
+    "meaning_up": "Equity, rightness, probity, executive, triumph of the deserving side in law.",
+    "meaning_rev": "Law in all its departments, legal complications, bigotry, bias, excessive severity."
+  },
+  {
+    "name": "The Hanged Man",
+    "type": "major",
+    "meaning_up": "Wisdom, circumspection, discernment, trials, sacrifice, intuition, prophecy.",
+    "meaning_rev": "Selfishness, the crowd, body politic."
+  },
+  {
+    "name": "Death",
+    "type": "major",
+    "meaning_up": "End, mortality, destruction, corruption, contrarieties.",
+    "meaning_rev": "Inertia, sleep, lethargy, petrifaction, somnambulism, hope destroyed."
+  },
+  {
+    "name": "Temperance",
+    "type": "major",
+    "meaning_up": "Economy, moderation, frugality, management, accommodation.",
+    "meaning_rev": "Things connected with churches, religions, sects, disunion, unfortunate combinations."
+  },
+  {
+    "name": "The Devil",
+    "type": "major",
+    "meaning_up": "Ravage, violence, vehemence, extraordinary efforts, force, fatality.",
+    "meaning_rev": "Evil fatality, weakness, pettiness, blindness."
+  },
+  {
+    "name": "The Tower",
+    "type": "major",
+    "meaning_up": "Misery, distress, adversity, calamity, disgrace, deception, ruin.",
+    "meaning_rev": "Oppression, imprisonment, tyranny, the same in a lesser degree."
+  },
+  {
+    "name": "The Star",
+    "type": "major",
+    "meaning_up": "Hope, bright prospects, though also loss, theft, privation and abandonment.",
+    "meaning_rev": "Arrogance, haughtiness, impotence."
+  },
+  {
+    "name": "The Moon",
+    "type": "major",
+    "meaning_up": "Hidden enemies, danger, calumny, darkness, terror, deception, occult forces, error.",
+    "meaning_rev": "Instability, inconstancy, silence, lesser degrees of deception and error."
+  },
+  {
+    "name": "The Sun",
+    "type": "major",
+    "meaning_up": "Material happiness, fortunate marriage, contentment.",
+    "meaning_rev": "The same in a lesser sense."
+  },
+  {
+    "name": "The Last Judgment",
+    "type": "major",
+    "meaning_up": "Change of position, renewal, outcome.",
+    "meaning_rev": "Weakness, pusillanimity, simplicity, deliberation, decision, sentence."
+  },
+  {
+    "name": "The World",
+    "type": "major",
+    "meaning_up": "Assured success, recompense, voyage, route, emigration, flight, change of place.",
+    "meaning_rev": "Inertia, fixity, stagnation, permanence."
+  }
+]

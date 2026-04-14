@@ -465,6 +465,7 @@ export async function startBusRequestRouter(params: {
               customCommand: {
                 name: parsed.command.def.name,
                 args: parsed.args,
+                ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
                 text: parsed.text,
                 source: parsed.source,
               },
