@@ -5,6 +5,7 @@ import {
   env,
   getCoreConfig,
   resolveCoreConfigPath,
+  resolveCustomCommandsDir,
   resolveDiscoveryDbPath,
   resolveDiscordSearchDbPath,
   resolveTranscriptDbPath,
@@ -133,7 +134,17 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
   const customCommands = new CustomCommandManager(env.dataDir);
   await customCommands.init();
-  for (const warning of customCommands.listWarnings()) {
+  const loadedCustomCommands = customCommands.list();
+  const customCommandWarnings = customCommands.listWarnings();
+  logger.info("custom commands initialized", {
+    dataDir: env.dataDir,
+    commandsDir: resolveCustomCommandsDir(env.dataDir),
+    discoveredCount: loadedCustomCommands.length + customCommandWarnings.length,
+    loadedCount: loadedCustomCommands.length,
+    warningCount: customCommandWarnings.length,
+    loadedNames: loadedCustomCommands.map((command) => command.def.name),
+  });
+  for (const warning of customCommandWarnings) {
     logger.warn("custom command skipped", { warning });
   }
 
