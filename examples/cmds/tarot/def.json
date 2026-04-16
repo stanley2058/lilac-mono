@@ -5,7 +5,8 @@
     {
       "key": "mode",
       "type": "string",
-      "description": "Spread: single, past-present-future, situation-obstacle-advice, or mind-body-spirit",
+      "description": "Spread",
+      "choices": ["single", "past-present-future", "situation-obstacle-advice", "mind-body-spirit"],
       "required": false
     }
   ]

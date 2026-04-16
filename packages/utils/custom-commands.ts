@@ -21,6 +21,7 @@ export const customCommandArgSchema = z.object({
   type: z.enum(["string", "number", "boolean"]),
   description: z.string().trim().min(1).max(100).optional(),
   required: z.boolean().optional().default(false),
+  choices: z.array(z.string().trim().min(1).max(100)).optional(),
 });
 
 export const customCommandDefSchema = z
@@ -48,13 +49,39 @@ export const customCommandDefSchema = z
       }
       if (!seen.has(key)) {
         seen.add(key);
-        continue;
+      } else {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["args", i, "key"],
+          message: `duplicate arg key '${key}'`,
+        });
       }
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["args", i, "key"],
-        message: `duplicate arg key '${key}'`,
-      });
+
+      const choices = value.args[i]?.choices;
+      if (!choices) continue;
+      if (value.args[i]?.type !== "string") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["args", i, "choices"],
+          message: "choices are only supported for string args",
+        });
+      }
+
+      const seenChoices = new Set<string>();
+      for (let choiceIndex = 0; choiceIndex < choices.length; choiceIndex += 1) {
+        const choice = choices[choiceIndex];
+        if (!choice) continue;
+        if (!seenChoices.has(choice)) {
+          seenChoices.add(choice);
+          continue;
+        }
+
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["args", i, "choices", choiceIndex],
+          message: `duplicate choice '${choice}'`,
+        });
+      }
     }
   });
 

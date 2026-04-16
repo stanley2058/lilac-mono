@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { MessageType, type Message } from "discord.js";
+import { ApplicationCommandOptionType, MessageType, type Message } from "discord.js";
 
 import {
   DiscordAdapter,
+  buildDiscordSlashOption,
   hasExplicitDiscordUserMentionInContent,
   isExplicitDiscordUserMention,
   isRoutableDiscordUserMessage,
@@ -70,6 +71,49 @@ describe("isRoutableDiscordUserMessage", () => {
 
     expect(isRoutableDiscordUserMessage(botMessage)).toBe(false);
     expect(isRoutableDiscordUserMessage(systemMessage)).toBe(false);
+  });
+});
+
+describe("buildDiscordSlashOption", () => {
+  it("includes static string choices when declared", () => {
+    expect(
+      buildDiscordSlashOption({
+        key: "mode",
+        type: "string",
+        description: "Spread",
+        required: false,
+        choices: ["single", "past-present-future"],
+      }),
+    ).toEqual({
+      type: ApplicationCommandOptionType.String,
+      name: "mode",
+      description: "Spread",
+      required: false,
+      choices: [
+        { name: "single", value: "single" },
+        { name: "past-present-future", value: "past-present-future" },
+      ],
+    });
+  });
+
+  it("truncates static string choices to Discord's 25-choice limit", () => {
+    const choices = Array.from({ length: 26 }, (_, index) => `choice-${index + 1}`);
+
+    expect(
+      buildDiscordSlashOption({
+        key: "mode",
+        type: "string",
+        description: "Spread",
+        required: false,
+        choices,
+      }),
+    ).toEqual({
+      type: ApplicationCommandOptionType.String,
+      name: "mode",
+      description: "Spread",
+      required: false,
+      choices: choices.slice(0, 25).map((choice) => ({ name: choice, value: choice })),
+    });
   });
 });
 

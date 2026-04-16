@@ -42,6 +42,59 @@ describe("custom command discovery", () => {
     expect(buildCustomCommandTextName(result[0].command.def.name)).toBe("lilac:tarot");
   });
 
+  it("accepts static string choices for slash-friendly args", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [
+          {
+            key: "mode",
+            type: "string",
+            choices: ["single", "past-present-future"],
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const result = await discoverCustomCommands({ dataDir });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("command");
+    if (result[0]?.type !== "command") throw new Error("expected command");
+    expect(result[0].command.def.args[0]?.choices).toEqual(["single", "past-present-future"]);
+  });
+
+  it("allows more than 25 string choices in shared command metadata", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "palette");
+    const choices = Array.from({ length: 26 }, (_, index) => `choice-${index + 1}`);
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "palette",
+        description: "Pick a palette",
+        args: [{ key: "name", type: "string", choices }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const result = await discoverCustomCommands({ dataDir });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("command");
+    if (result[0]?.type !== "command") throw new Error("expected command");
+    expect(result[0].command.def.args[0]?.choices).toEqual(choices);
+  });
+
   it("reports invalid command directories", async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
     const dataDir = path.join(tmp, "data");
@@ -87,6 +140,33 @@ describe("custom command discovery", () => {
     expect(result[0]?.type).toBe("invalid");
     if (result[0]?.type !== "invalid") throw new Error("expected invalid");
     expect(result[0].invalid.reason).toContain("arg key must be lowercase letters/numbers");
+  });
+
+  it("rejects duplicate or non-string choices", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-cmds-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "bad-choices");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "bad-choices",
+        description: "Draw cards",
+        args: [
+          { key: "mode", type: "string", choices: ["single", "single"] },
+          { key: "count", type: "number", choices: ["1", "2"] },
+        ],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const result = await discoverCustomCommands({ dataDir });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.type).toBe("invalid");
+    if (result[0]?.type !== "invalid") throw new Error("expected invalid");
+    expect(result[0].invalid.reason).toContain("duplicate choice 'single'");
+    expect(result[0].invalid.reason).toContain("choices are only supported for string args");
   });
 
   it("rejects the reserved prompt arg key", async () => {

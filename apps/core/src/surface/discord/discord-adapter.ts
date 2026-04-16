@@ -602,7 +602,7 @@ function buildDiscordBotInviteUrl(input: { clientId: string; permissions: bigint
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
 }
 
-function buildDiscordSlashOption(arg: CustomCommandArgDef) {
+export function buildDiscordSlashOption(arg: CustomCommandArgDef) {
   if (arg.type === "number") {
     return {
       type: ApplicationCommandOptionType.Number as const,
@@ -624,6 +624,14 @@ function buildDiscordSlashOption(arg: CustomCommandArgDef) {
     name: arg.key,
     description: arg.description ?? arg.key,
     required: arg.required ?? false,
+    ...(arg.choices?.length
+      ? {
+          choices: arg.choices.slice(0, 25).map((choice) => ({
+            name: choice,
+            value: choice,
+          })),
+        }
+      : {}),
   };
 }
 

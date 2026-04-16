@@ -6,11 +6,21 @@ import {
   CUSTOM_COMMAND_TOOL_NAME,
   discoverCustomCommands,
   isValidCustomCommandResult,
+  type CustomCommandArgDef,
   type CustomCommandContext,
   type CustomCommandModule,
   type CustomCommandResult,
   type DiscoveredCustomCommand,
 } from "@stanley2058/lilac-utils";
+
+function validateArgChoice(arg: CustomCommandArgDef, value: unknown): unknown {
+  if (arg.type !== "string" || typeof value !== "string" || !arg.choices?.length) {
+    return value;
+  }
+  if (arg.choices.includes(value)) return value;
+
+  throw new Error(`Argument '${arg.key}' must be one of: ${arg.choices.join(", ")}.`);
+}
 
 function parseStringToken(token: string): string {
   if (token.length >= 2) {
@@ -198,7 +208,7 @@ export class CustomCommandManager {
         }
         return undefined;
       }
-      return value;
+      return validateArgChoice(arg, value);
     });
 
     return {
@@ -283,7 +293,10 @@ export class CustomCommandManager {
         if (index < 0) {
           throw new Error(`Unknown argument '${key}' for /${command.textName}.`);
         }
-        out[index] = parseArgValue(command.def.args[index]!.type, raw);
+        out[index] = validateArgChoice(
+          command.def.args[index]!,
+          parseArgValue(command.def.args[index]!.type, raw),
+        );
         continue;
       }
 
@@ -296,13 +309,15 @@ export class CustomCommandManager {
         break;
       }
 
+      let parsedValue: unknown;
       try {
-        out[pos] = parseArgValue(arg.type, token);
+        parsedValue = parseArgValue(arg.type, token);
       } catch (error) {
         if (arg.required) throw error;
         promptStartIndex = i;
         break;
       }
+      out[pos] = validateArgChoice(arg, parsedValue);
       pos += 1;
     }
 

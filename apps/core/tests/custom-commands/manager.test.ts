@@ -148,6 +148,57 @@ describe("CustomCommandManager", () => {
     expect(manager.formatPreview(withoutPrompt)).toBe("/lilac:tarot mode=past-present-future");
   });
 
+  it("rejects slash arg values outside declared choices", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [{ key: "mode", type: "string", choices: ["single", "past-present-future"] }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const manager = new CustomCommandManager(dataDir);
+    await manager.init();
+
+    expect(() =>
+      manager.parseSlash({
+        name: "tarot",
+        rawArgs: { mode: "mind-body-spirit" },
+      }),
+    ).toThrow("Argument 'mode' must be one of: single, past-present-future.");
+  });
+
+  it("rejects invalid optional positional choice values instead of treating them as prompt text", async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
+    const dataDir = path.join(tmp, "data");
+    const dir = path.join(dataDir, "cmds", "tarot");
+    await mkdirp(dir);
+    await fs.writeFile(
+      path.join(dir, "def.json"),
+      JSON.stringify({
+        name: "tarot",
+        description: "Draw cards",
+        args: [{ key: "mode", type: "string", choices: ["single", "past-present-future"] }],
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "index.ts"), "export async function execute() {}\n", "utf8");
+
+    const manager = new CustomCommandManager(dataDir);
+    await manager.init();
+
+    expect(() => manager.parseText("/lilac:tarot mind-body-spirit help")).toThrow(
+      "Argument 'mode' must be one of: single, past-present-future.",
+    );
+  });
+
   it("executes a command module with explicit context", async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
     const dataDir = path.join(tmp, "data");
