@@ -348,6 +348,7 @@ export function withReasoningDisplayDefaultForAnthropicOpus47Models(params: {
     };
   } else if (thinkingType === "enabled") {
     nextThinking = {
+      ...existingThinking,
       type: "adaptive",
       display: "summarized",
     };

@@ -382,6 +382,7 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
       anthropic: {
         thinking: {
           type: "adaptive",
+          budgetTokens: 12000,
           display: "summarized",
         },
       },
