@@ -38,6 +38,7 @@ import {
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
   toOpenAIPromptCacheKey,
+  withReasoningDisplayDefaultForAnthropicOpus47Models,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
@@ -331,6 +332,141 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
       openai: {
         reasoningSummary: "auto",
         parallelToolCalls: true,
+      },
+    });
+  });
+});
+
+describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
+  it("does not inject summarized thinking when display is none", () => {
+    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+      reasoningDisplay: "none",
+      provider: "anthropic",
+      modelId: "claude-opus-4.7",
+      providerOptions: {
+        anthropic: {
+          thinking: {
+            type: "enabled",
+            budgetTokens: 12000,
+          },
+        },
+      },
+    });
+
+    expect(next).toEqual({
+      anthropic: {
+        thinking: {
+          type: "enabled",
+          budgetTokens: 12000,
+        },
+      },
+    });
+  });
+
+  it("upgrades enabled thinking to adaptive summarized for opus 4.7", () => {
+    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+      reasoningDisplay: "simple",
+      provider: "anthropic",
+      modelId: "claude-opus-4.7",
+      providerOptions: {
+        anthropic: {
+          thinking: {
+            type: "enabled",
+            budgetTokens: 12000,
+          },
+        },
+      },
+    });
+
+    expect(next).toEqual({
+      anthropic: {
+        thinking: {
+          type: "adaptive",
+          budgetTokens: 12000,
+          display: "summarized",
+        },
+      },
+    });
+  });
+
+  it("injects summarized display for vercel/openrouter anthropic opus 4.7 models", () => {
+    const vercel = withReasoningDisplayDefaultForAnthropicOpus47Models({
+      reasoningDisplay: "detailed",
+      provider: "vercel",
+      modelId: "anthropic/claude-opus-4.7",
+      providerOptions: {
+        anthropic: {
+          thinking: {
+            type: "adaptive",
+          },
+        },
+        gateway: {
+          order: ["anthropic"],
+        },
+      },
+    });
+
+    const openrouter = withReasoningDisplayDefaultForAnthropicOpus47Models({
+      reasoningDisplay: "detailed",
+      provider: "openrouter",
+      modelId: "anthropic/claude-opus-4-7",
+      providerOptions: {
+        anthropic: {
+          thinking: {
+            type: "adaptive",
+          },
+        },
+        openrouter: {
+          route: "fallback",
+        },
+      },
+    });
+
+    expect(vercel).toEqual({
+      anthropic: {
+        thinking: {
+          type: "adaptive",
+          display: "summarized",
+        },
+      },
+      gateway: {
+        order: ["anthropic"],
+      },
+    });
+    expect(openrouter).toEqual({
+      anthropic: {
+        thinking: {
+          type: "adaptive",
+          display: "summarized",
+        },
+      },
+      openrouter: {
+        route: "fallback",
+      },
+    });
+  });
+
+  it("does not override explicit anthropic thinking display", () => {
+    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+      reasoningDisplay: "simple",
+      provider: "anthropic",
+      modelId: "claude-opus-4.7",
+      providerOptions: {
+        anthropic: {
+          thinking: {
+            type: "adaptive",
+            display: "omitted",
+          },
+        },
+      },
+    });
+
+    expect(next).toEqual({
+      anthropic: {
+        thinking: {
+          type: "adaptive",
+          display: "omitted",
+        },
       },
     });
   });

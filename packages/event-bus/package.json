@@ -13,7 +13,7 @@
   "dependencies": {
     "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/simple-module-logger": "^0.0.4",
-    "ai": "^6.0.153",
+    "ai": "^6.0.168",
     "ioredis": "^5.10.1",
     "superjson": "^2.2.6"
   }

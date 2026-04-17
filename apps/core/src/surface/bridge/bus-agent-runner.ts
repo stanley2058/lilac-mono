@@ -256,6 +256,20 @@ function isOpenAIBackedModel(provider: string, modelId: string): boolean {
   return modelId.startsWith("openai/");
 }
 
+function isAnthropicBackedModel(provider: string, modelId: string): boolean {
+  if (provider === "anthropic") return true;
+  return modelId.startsWith("anthropic/");
+}
+
+function isAnthropicOpus47Model(provider: string, modelId: string): boolean {
+  if (!isAnthropicBackedModel(provider, modelId)) return false;
+
+  const normalizedModelId = modelId.toLowerCase();
+  return (
+    normalizedModelId.includes("claude-opus-4.7") || normalizedModelId.includes("claude-opus-4-7")
+  );
+}
+
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 
 export function toOpenAIPromptCacheKey(sessionId: string): string {
@@ -291,6 +305,62 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
     openai: {
       ...existingOpenAI,
       reasoningSummary: "detailed",
+    },
+  };
+}
+
+export function withReasoningDisplayDefaultForAnthropicOpus47Models(params: {
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
+  provider: string;
+  modelId: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+}): { [x: string]: JSONObject } | undefined {
+  if (params.reasoningDisplay === "none") return params.providerOptions;
+  if (!isAnthropicOpus47Model(params.provider, params.modelId)) return params.providerOptions;
+
+  const base = params.providerOptions ?? {};
+  const rawAnthropic = base["anthropic"];
+  const existingAnthropic: JSONObject =
+    rawAnthropic && typeof rawAnthropic === "object" && !Array.isArray(rawAnthropic)
+      ? (rawAnthropic as JSONObject)
+      : {};
+
+  const rawThinking = existingAnthropic["thinking"];
+  if (!rawThinking || typeof rawThinking !== "object" || Array.isArray(rawThinking)) {
+    return params.providerOptions;
+  }
+
+  const existingThinking = rawThinking as JSONObject;
+  if ("display" in existingThinking) {
+    return params.providerOptions;
+  }
+
+  const thinkingType = existingThinking["type"];
+  if (thinkingType === "disabled") {
+    return params.providerOptions;
+  }
+
+  let nextThinking: JSONObject;
+  if (thinkingType === "adaptive") {
+    nextThinking = {
+      ...existingThinking,
+      display: "summarized",
+    };
+  } else if (thinkingType === "enabled") {
+    nextThinking = {
+      ...existingThinking,
+      type: "adaptive",
+      display: "summarized",
+    };
+  } else {
+    return params.providerOptions;
+  }
+
+  return {
+    ...base,
+    anthropic: {
+      ...existingAnthropic,
+      thinking: nextThinking,
     },
   };
 }
@@ -3036,20 +3106,32 @@ export async function startBusAgentRunner(params: {
       // This helps when many requests share a large common prefix (e.g. a long system prompt).
       // Also, when reasoning display is enabled, request detailed reasoning summaries
       // for OpenAI-backed models (including gateway/openrouter openai/* model IDs).
-      const providerOptionsWithReasoningSummary = withReasoningSummaryDefaultForOpenAIModels({
+      const providerOptionsWithOpenAIReasoningSummary = withReasoningSummaryDefaultForOpenAIModels({
         reasoningDisplay: cfg.agent.reasoningDisplay,
         provider: resolved.provider,
         modelId: resolved.modelId,
         providerOptions: resolved.providerOptions,
       });
 
+      // Anthropic Opus 4.7 defaults to omitting thinking text unless
+      // anthropic.thinking.display="summarized" is set. When the user wants a
+      // reasoning lane and has thinking enabled, upgrade the legacy enabled mode
+      // to adaptive and request summarized thinking text.
+      const providerOptionsWithReasoningDisplay =
+        withReasoningDisplayDefaultForAnthropicOpus47Models({
+          reasoningDisplay: cfg.agent.reasoningDisplay,
+          provider: resolved.provider,
+          modelId: resolved.modelId,
+          providerOptions: providerOptionsWithOpenAIReasoningSummary,
+        });
+
       // Prompt cache key only applies for direct OpenAI/Codex providers.
       const providerOptionsWithPromptCacheKey = (() => {
         const provider = resolved.provider;
         const supports = provider === "openai" || provider === "codex";
-        if (!supports) return providerOptionsWithReasoningSummary;
+        if (!supports) return providerOptionsWithReasoningDisplay;
 
-        const base = providerOptionsWithReasoningSummary ?? {};
+        const base = providerOptionsWithReasoningDisplay ?? {};
         const existingOpenAI = (base["openai"] ?? {}) as Record<string, unknown>;
 
         return {
