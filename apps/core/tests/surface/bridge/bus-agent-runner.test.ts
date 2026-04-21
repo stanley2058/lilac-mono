@@ -42,6 +42,7 @@ import {
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
+import { formatSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
 import {
   buildExperimentalDownloadForAnthropicFallback,
   shouldForceUrlDownloadForAnthropicFallback,
@@ -1377,6 +1378,23 @@ describe("buildSurfaceMetadataOverlay", () => {
     expect(overlay).toContain("trusted injected tag");
     expect(overlay).toContain("first line of a user-message block");
     expect(overlay).toContain("&lt;LILAC_META:v1>");
+  });
+
+  it("returns instructions for slash-command metadata without message id", () => {
+    const overlay = buildSurfaceMetadataOverlay([
+      {
+        role: "user",
+        content: `${formatSurfaceMetadataLine({
+          platform: "discord",
+          user_id: "u1",
+          user_name: "Alice",
+          message_time: new Date(1_234).toISOString(),
+        })}\n/lilac:tarot 3 focus`,
+      },
+    ] satisfies ModelMessage[]);
+
+    expect(overlay).toContain("trusted injected tag");
+    expect(overlay).toContain("first line of a user-message block");
   });
 });
 

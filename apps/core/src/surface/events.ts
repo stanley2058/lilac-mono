@@ -71,6 +71,8 @@ export type AdapterCommandInvokedEvent = AdapterEventBase & {
   args: unknown[];
   prompt?: string;
   text: string;
+  userId?: string;
+  userName?: string;
   sessionMode: "mention" | "active";
   sessionConfigId: string;
   modelOverride?: string;

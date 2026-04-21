@@ -2366,6 +2366,14 @@ export class DiscordAdapter implements SurfaceAdapter {
         args: parsed.args,
         ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
         text: parsed.text,
+        userId: interaction.user?.id ?? undefined,
+        userName:
+          (interaction.member && "displayName" in interaction.member
+            ? interaction.member.displayName
+            : undefined) ??
+          interaction.user?.globalName ??
+          interaction.user?.username ??
+          undefined,
         sessionMode,
         sessionConfigId,
         modelOverride,

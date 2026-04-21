@@ -11,6 +11,20 @@ import {
   toBusEvtAdapterReactionAdded,
   toBusEvtAdapterReactionRemoved,
 } from "../discord/discord-adapter";
+import { escapeSurfaceMetadataTags, formatSurfaceMetadataLine } from "./surface-metadata";
+
+function buildSlashCommandUserMessageContent(
+  evt: Extract<AdapterEvent, { type: "adapter.command.invoked" }>,
+) {
+  const header = formatSurfaceMetadataLine({
+    platform: evt.platform,
+    ...(evt.userId ? { user_id: evt.userId } : {}),
+    ...(evt.userName ? { user_name: evt.userName } : {}),
+    message_time: new Date(evt.ts).toISOString(),
+  });
+
+  return `${header}\n${escapeSurfaceMetadataTags(evt.text)}`.trimEnd();
+}
 
 export async function bridgeAdapterToBus(params: {
   adapter: SurfaceAdapter;
@@ -311,7 +325,7 @@ export async function bridgeAdapterToBus(params: {
             lilacEventTypes.CmdRequestMessage,
             {
               queue: "prompt",
-              messages: [{ role: "user", content: evt.text }],
+              messages: [{ role: "user", content: buildSlashCommandUserMessageContent(evt) }],
               ...(evt.modelOverride ? { modelOverride: evt.modelOverride } : {}),
               raw: {
                 sessionMode: evt.sessionMode,
