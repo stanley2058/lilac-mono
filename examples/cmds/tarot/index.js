@@ -6,7 +6,8 @@ function isCard(value) {
     typeof value.name === "string" &&
     typeof value.type === "string" &&
     typeof value.meaning_up === "string" &&
-    typeof value.meaning_rev === "string"
+    typeof value.meaning_rev === "string" &&
+    typeof value.desc === "string"
   );
 }
 
@@ -128,6 +129,7 @@ export async function execute(args) {
       type: card.type,
       orientation,
       meaning: orientation === "upright" ? card.meaning_up : card.meaning_rev,
+      desc: card.desc,
     });
   }
 

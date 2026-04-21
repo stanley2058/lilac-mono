@@ -23,4 +23,4 @@ Supported modes:
 - `situation-obstacle-advice`
 - `mind-body-spirit`
 
-The command returns structured card data plus `assistant_guidance` so the model can turn the draw into a grounded reading.
+The command returns structured card data, including each card's `desc`, plus `assistant_guidance` so the model can turn the draw into a grounded reading.
