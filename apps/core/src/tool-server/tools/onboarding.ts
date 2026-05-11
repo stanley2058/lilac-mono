@@ -1124,6 +1124,23 @@ export class Onboarding implements ServerTool {
         }
       };
 
+      await runStep("skills.coding-agent", async () => {
+        const src = path.resolve(
+          process.cwd(),
+          "packages/utils/skill-templates/coding-agent/SKILL.md",
+        );
+        const dst = path.join(paths.lilacSkillsDir, "coding-agent", "SKILL.md");
+        const { copied, overwritten } = await copyFileIfNeeded({
+          from: src,
+          to: dst,
+          overwrite: input.overwriteSkills,
+        });
+        return {
+          status: copied ? "installed" : "already_present",
+          details: { src, dst, overwritten },
+        };
+      });
+
       await runStep("skills.mcporter", async () => {
         const src = path.resolve(process.cwd(), "packages/utils/skill-templates/mcporter/SKILL.md");
         const dst = path.join(paths.lilacSkillsDir, "mcporter", "SKILL.md");

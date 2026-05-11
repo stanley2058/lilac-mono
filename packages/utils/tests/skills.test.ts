@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { discoverSkills } from "../skills";
+import { discoverSkills, parseSkillMarkdown } from "../skills";
 import { formatAvailableSkillsSection, type DiscoveredSkill } from "../skills";
 
 async function mkdirp(p: string) {
@@ -131,5 +131,21 @@ describe("skills prompt formatting", () => {
     // Omission line
     expect(section!).toContain("(...and ");
     expect(section!.length).toBeLessThanOrEqual(180);
+  });
+});
+
+describe("bundled skill templates", () => {
+  it("includes a strong coding-agent template", async () => {
+    const raw = await Bun.file(
+      path.join(import.meta.dir, "..", "skill-templates", "coding-agent", "SKILL.md"),
+    ).text();
+
+    const skill = parseSkillMarkdown(raw);
+
+    expect(skill.name).toBe("coding-agent");
+    expect(skill.description).toContain("Essential coding workflow rules");
+    expect(skill.description).toContain("load this before software engineering tasks");
+    expect(skill.body).toContain("Use `git` when applicable");
+    expect(skill.body).toContain("Use `gh` when configured and the project is linked to GitHub");
   });
 });
