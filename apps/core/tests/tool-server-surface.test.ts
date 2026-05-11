@@ -37,6 +37,7 @@ class FakeAdapter implements SurfaceAdapter {
     content: ContentOpts;
     opts?: SendOpts;
   }> = [];
+  public readCalls: MsgRef[] = [];
   public addReactionCalls: Array<{ msgRef: MsgRef; reaction: string }> = [];
   public removeReactionCalls: Array<{ msgRef: MsgRef; reaction: string }> = [];
   public listCalls: Array<{ sessionRef: SessionRef; opts?: LimitOpts }> = [];
@@ -94,6 +95,7 @@ class FakeAdapter implements SurfaceAdapter {
   }
 
   async readMsg(msgRef: MsgRef): Promise<SurfaceMessage | null> {
+    this.readCalls.push(msgRef);
     const msgs = this.messagesByChannelId[msgRef.channelId] ?? [];
     return msgs.find((m) => m.ref.messageId === msgRef.messageId) ?? null;
   }
@@ -678,7 +680,7 @@ describe("tool-server surface", () => {
     expect(base.meta.session.alias).toBe("ops");
     expect(base.message).not.toBeNull();
     expect("raw" in (base.message ?? {})).toBe(false);
-    expect(base.message?.hasAttachments).toBe(true);
+    expect(base.message?.hasAttachments).toBeUndefined();
     expect(base.message?.attachmentCount).toBe(1);
     expect(Array.isArray(base.message?.attachments)).toBe(true);
     expect(base.message?.attachments?.length).toBe(1);
@@ -689,9 +691,10 @@ describe("tool-server surface", () => {
       messageId: "m1",
       includeRaw: true,
     })) as {
-      message: { raw?: unknown } | null;
+      message: { raw?: unknown; hasAttachments?: boolean } | null;
     };
 
+    expect(withRaw.message?.hasAttachments).toBe(true);
     expect(withRaw.message?.raw).toEqual({
       sample: true,
       attachments: [{ url: "https://cdn.discordapp.com/attachments/1/2/log.txt" }],
@@ -908,6 +911,8 @@ describe("tool-server surface", () => {
     })) as {
       messages: Array<{
         platformMessageType?: string;
+        platformMessageKind?: string;
+        platformMessageTypeId?: number;
         platformIsChat?: boolean;
         platformIsSystem?: boolean;
       }>;
@@ -915,8 +920,292 @@ describe("tool-server surface", () => {
 
     expect(res.messages.length).toBe(1);
     expect(res.messages[0]?.platformMessageType).toBe("ThreadCreated");
-    expect(res.messages[0]?.platformIsChat).toBe(false);
-    expect(res.messages[0]?.platformIsSystem).toBe(true);
+    expect(res.messages[0]?.platformMessageKind).toBe("system");
+    expect(res.messages[0]?.platformMessageTypeId).toBeUndefined();
+    expect(res.messages[0]?.platformIsChat).toBeUndefined();
+    expect(res.messages[0]?.platformIsSystem).toBeUndefined();
+
+    const raw = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      includeRaw: true,
+    })) as {
+      messages: Array<{
+        platformMessageTypeId?: number;
+        platformIsChat?: boolean;
+        platformIsSystem?: boolean;
+      }>;
+    };
+
+    expect(raw.messages[0]?.platformMessageTypeId).toBe(18);
+    expect(raw.messages[0]?.platformIsChat).toBe(false);
+    expect(raw.messages[0]?.platformIsSystem).toBe(true);
+  });
+
+  it("expands a ThreadStarterMessage parent seed into referenced", async () => {
+    const parentChannelId = "111";
+    const threadId = "222";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [parentChannelId, threadId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const seed: SurfaceMessage = {
+      ref: { platform: "discord", channelId: parentChannelId, messageId: "seed" },
+      session: { platform: "discord", channelId: parentChannelId, guildId: "g" },
+      userId: "stanley",
+      userName: "Stanley",
+      text: "original seed text",
+      ts: 100,
+      raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+    };
+
+    const starter: SurfaceMessage = {
+      ref: { platform: "discord", channelId: threadId, messageId: "starter" },
+      session: {
+        platform: "discord",
+        channelId: threadId,
+        guildId: "g",
+        parentChannelId,
+      },
+      userId: "df",
+      userName: "DF",
+      text: "",
+      ts: 200,
+      raw: {
+        reference: { messageId: "seed", channelId: parentChannelId, guildId: "g", type: 0 },
+        discord: { type: 21, typeName: "ThreadStarterMessage", isChat: false, system: true },
+      },
+    };
+
+    const adapter = new FakeAdapter(
+      [
+        { ref: { platform: "discord", channelId: parentChannelId, guildId: "g" }, kind: "channel" },
+        {
+          ref: { platform: "discord", channelId: threadId, guildId: "g", parentChannelId },
+          kind: "thread",
+        },
+      ],
+      { [parentChannelId]: [seed], [threadId]: [starter] },
+      { [parentChannelId]: "g", [threadId]: "g" },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: threadId,
+      order: "ts_asc",
+    })) as {
+      messages: Array<{
+        richText: string;
+        referenced?: {
+          messageId?: string;
+          userName?: string;
+          richText?: string;
+          referenced?: unknown;
+        };
+      }>;
+    };
+
+    expect(res.messages[0]?.richText).toBe("");
+    expect(res.messages[0]?.referenced?.messageId).toBe("seed");
+    expect(res.messages[0]?.referenced?.userName).toBe("Stanley");
+    expect(res.messages[0]?.referenced?.richText).toBe("original seed text");
+    expect(res.messages[0]?.referenced?.referenced).toBeUndefined();
+  });
+
+  it("expands same-session references and skips normal cross-session references", async () => {
+    const channelId = "333";
+    const otherChannelId = "444";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId, otherChannelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const root: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "root" },
+      session: { platform: "discord", channelId, guildId: "g" },
+      userId: "u1",
+      userName: "User 1",
+      text: "same channel root",
+      ts: 100,
+      raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+    };
+    const reply: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "reply" },
+      session: { platform: "discord", channelId, guildId: "g" },
+      userId: "u2",
+      userName: "User 2",
+      text: "same channel reply",
+      ts: 200,
+      raw: {
+        reference: { messageId: "root", channelId, guildId: "g", type: 0 },
+        discord: { type: 19, typeName: "Reply", isChat: true, system: false },
+      },
+    };
+    const cross: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "cross" },
+      session: { platform: "discord", channelId, guildId: "g" },
+      userId: "u3",
+      userName: "User 3",
+      text: "cross channel reply",
+      ts: 300,
+      raw: {
+        reference: { messageId: "other-root", channelId: otherChannelId, guildId: "g", type: 0 },
+        discord: { type: 19, typeName: "Reply", isChat: true, system: false },
+      },
+    };
+    const otherRoot: SurfaceMessage = {
+      ref: { platform: "discord", channelId: otherChannelId, messageId: "other-root" },
+      session: { platform: "discord", channelId: otherChannelId, guildId: "g" },
+      userId: "u4",
+      userName: "User 4",
+      text: "other channel root",
+      ts: 50,
+      raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+    };
+
+    const adapter = new FakeAdapter(
+      [
+        { ref: { platform: "discord", channelId, guildId: "g" }, kind: "channel" },
+        { ref: { platform: "discord", channelId: otherChannelId, guildId: "g" }, kind: "channel" },
+      ],
+      { [channelId]: [root, reply, cross], [otherChannelId]: [otherRoot] },
+      { [channelId]: "g", [otherChannelId]: "g" },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      order: "ts_asc",
+    })) as { messages: Array<{ messageId: string; referenced?: { messageId?: string } }> };
+
+    expect(res.messages.find((m) => m.messageId === "reply")?.referenced?.messageId).toBe("root");
+    expect(res.messages.find((m) => m.messageId === "cross")?.referenced).toBeUndefined();
+    expect(adapter.readCalls).toEqual([]);
+  });
+
+  it("does not live-expand forwarded references", async () => {
+    const channelId = "555";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const original: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "orig" },
+      session: { platform: "discord", channelId },
+      userId: "u1",
+      userName: "User 1",
+      text: "should not be fetched",
+      ts: 100,
+    };
+    const forwarded: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "fwd" },
+      session: { platform: "discord", channelId },
+      userId: "u2",
+      userName: "User 2",
+      text: "Forwarded snapshot text",
+      ts: 200,
+      raw: {
+        reference: { type: 1, messageId: "orig", channelId },
+        messageSnapshots: [{ message: { content: "Forwarded snapshot text" } }],
+      },
+    };
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      { [channelId]: [original, forwarded] },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      order: "ts_asc",
+    })) as { messages: Array<{ messageId: string; richText?: string; referenced?: unknown }> };
+
+    const fwd = res.messages.find((m) => m.messageId === "fwd");
+    expect(fwd?.richText).toBe("Forwarded snapshot text");
+    expect(fwd?.referenced).toBeUndefined();
+  });
+
+  it("memoizes duplicate live reference fetches during list expansion", async () => {
+    const channelId = "666";
+    const parentChannelId = "777";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId, parentChannelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const seed: SurfaceMessage = {
+      ref: { platform: "discord", channelId: parentChannelId, messageId: "seed" },
+      session: { platform: "discord", channelId: parentChannelId, guildId: "g" },
+      userId: "u1",
+      userName: "User 1",
+      text: "shared seed",
+      ts: 100,
+      raw: { discord: { type: 0, typeName: "Default", isChat: true, system: false } },
+    };
+
+    const starters: SurfaceMessage[] = ["starter-1", "starter-2"].map((messageId, index) => ({
+      ref: { platform: "discord", channelId, messageId },
+      session: { platform: "discord", channelId, guildId: "g", parentChannelId },
+      userId: `u${index + 2}`,
+      userName: `User ${index + 2}`,
+      text: "",
+      ts: 200 + index,
+      raw: {
+        reference: { messageId: "seed", channelId: parentChannelId, guildId: "g", type: 0 },
+        discord: { type: 21, typeName: "ThreadStarterMessage", isChat: false, system: true },
+      },
+    }));
+
+    const adapter = new FakeAdapter(
+      [
+        { ref: { platform: "discord", channelId, guildId: "g", parentChannelId }, kind: "thread" },
+        { ref: { platform: "discord", channelId: parentChannelId, guildId: "g" }, kind: "channel" },
+      ],
+      { [channelId]: starters, [parentChannelId]: [seed] },
+      { [channelId]: "g", [parentChannelId]: "g" },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const res = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      order: "ts_asc",
+    })) as { messages: Array<{ referenced?: { messageId?: string } }> };
+
+    expect(res.messages.map((m) => m.referenced?.messageId)).toEqual(["seed", "seed"]);
+    expect(adapter.readCalls).toEqual([
+      { platform: "discord", channelId: parentChannelId, messageId: "seed" },
+    ]);
   });
 
   it("supports list order and includeRaw options", async () => {
@@ -1046,12 +1335,26 @@ describe("tool-server surface", () => {
       }>;
     };
 
-    expect(hintsOnly.messages[0]?.hasAttachments).toBe(true);
+    expect(hintsOnly.messages[0]?.hasAttachments).toBeUndefined();
     expect(hintsOnly.messages[0]?.attachmentCount).toBe(2);
-    expect(hintsOnly.messages[0]?.hasMedia).toBe(true);
+    expect(hintsOnly.messages[0]?.hasMedia).toBeUndefined();
     expect(hintsOnly.messages[0]?.mediaCount).toBe(1);
     expect(hintsOnly.messages[0]?.mediaKinds).toEqual(["image"]);
     expect("attachments" in (hintsOnly.messages[0] ?? {})).toBe(false);
+
+    const rawHints = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      includeRaw: true,
+    })) as {
+      messages: Array<{
+        hasAttachments?: boolean;
+        hasMedia?: boolean;
+      }>;
+    };
+
+    expect(rawHints.messages[0]?.hasAttachments).toBe(true);
+    expect(rawHints.messages[0]?.hasMedia).toBe(true);
 
     const withAttachments = (await tool.call("surface.messages.list", {
       client: "discord",
