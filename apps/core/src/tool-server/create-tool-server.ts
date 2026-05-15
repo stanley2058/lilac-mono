@@ -160,7 +160,7 @@ export function createToolServer(options: ToolServerOptions) {
   const staticTools = options.tools ?? [];
   const serverStartedAt = Date.now();
 
-  const callMapping = new Map<string, ServerTool>();
+  let callMapping = new Map<string, ServerTool>();
   const healthState = createToolServerHealthState({
     logger,
     pluginManager: options.pluginManager,
@@ -178,12 +178,13 @@ export function createToolServer(options: ToolServerOptions) {
   }
 
   async function refreshToolMapping() {
-    callMapping.clear();
+    const nextCallMapping = new Map<string, ServerTool>();
     for (const tool of await getActiveTools()) {
       for (const { callableId } of await tool.list()) {
-        callMapping.set(callableId, tool);
+        nextCallMapping.set(callableId, tool);
       }
     }
+    callMapping = nextCallMapping;
   }
 
   async function ensureFreshToolMapping() {
