@@ -326,5 +326,35 @@ describe("token-complete", () => {
       const input = "```yaml\nconfigVersion: 1\n```\nThen continue.";
       expect(completeMarkdown(input)).toBe(input);
     });
+
+    it("tokenCompleteAt should not infer continuation from nested-fence escaping", () => {
+      const input = [
+        "The rendered text contains markdown examples before the real split.",
+        "",
+        "```md",
+        "```yaml",
+        "configVersion: 1",
+        "```",
+        "Then continue",
+        "```",
+        "",
+        "And later a normal output block crosses the split:",
+        "",
+        "```txt",
+        "bun run lint",
+        "0 warnings, 0 errors",
+        "",
+        "bun run typecheck",
+        "passed",
+        "```",
+      ].join("\n");
+
+      const splitAt = input.indexOf("warnings");
+      const result = tokenCompleteAt(input, splitAt);
+
+      expect(result.overflow).toStartWith("```txt\nwarnings, 0 errors");
+      expect(result.overflow).not.toContain(`\`${ZWSP}\`\`txt\n\`${ZWSP}\`\`txt`);
+      expect(result.overflow).not.toContain("``````````````````");
+    });
   });
 });

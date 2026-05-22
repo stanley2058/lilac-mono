@@ -34,6 +34,7 @@ function chunkRaw(
   content: string,
   maxChunkLength: number,
   useSmartSplitting: boolean,
+  hardMaxChunkLength: number | null = null,
 ): ChunkResult {
   if (!content) return { rawChunks: [], displayChunks: [] };
   if (maxChunkLength <= 0) {
@@ -57,9 +58,12 @@ function chunkRaw(
 
   while (remaining.length > 0) {
     if (remaining.length <= maxChunkLength) {
-      rawChunks.push(remaining);
-      displayChunks.push(completeMarkdown(remaining));
-      break;
+      const completedRemaining = completeMarkdown(remaining);
+      if (hardMaxChunkLength === null || completedRemaining.length <= hardMaxChunkLength) {
+        rawChunks.push(remaining);
+        displayChunks.push(completedRemaining);
+        break;
+      }
     }
 
     const completedWindow = tokenCompleteAt(remaining, maxChunkLength).completed;
@@ -93,6 +97,18 @@ function chunkRaw(
       attemptSplitPos = Math.min(maxChunkLength, attemptSplitPos + 1);
     }
 
+    while (
+      hardMaxChunkLength !== null &&
+      completed.length > hardMaxChunkLength &&
+      attemptSplitPos > 1
+    ) {
+      attemptSplitPos--;
+      ({ completed, overflow } = tokenCompleteAt(remaining, attemptSplitPos));
+
+      const isFencedCodeChunk = /^```/m.test(completed);
+      nextRemaining = isFencedCodeChunk ? overflow : overflow.replace(/^[\s\n]+/u, "");
+    }
+
     const isFencedCodeChunk = /^```/m.test(completed);
     const trimmedCompleted = isFencedCodeChunk ? completed : completed.replace(/[\s\n]+$/u, "");
 
@@ -123,7 +139,7 @@ export function chunkMarkdownForEmbeds(
   const finalize = (chunks: string[]) =>
     safeHardMaxChunkLength === null ? chunks : hardCapDisplayChunks(chunks, safeHardMaxChunkLength);
 
-  const initial = chunkRaw(content, safeMaxChunkLength, useSmartSplitting);
+  const initial = chunkRaw(content, safeMaxChunkLength, useSmartSplitting, safeHardMaxChunkLength);
 
   if (initial.rawChunks.length === 0 || safeMaxLastChunkLength === safeMaxChunkLength) {
     return finalize(initial.displayChunks);
@@ -134,7 +150,12 @@ export function chunkMarkdownForEmbeds(
     return finalize(initial.displayChunks);
   }
 
-  const rechunkedLast = chunkRaw(lastRaw, safeMaxLastChunkLength, useSmartSplitting);
+  const rechunkedLast = chunkRaw(
+    lastRaw,
+    safeMaxLastChunkLength,
+    useSmartSplitting,
+    safeHardMaxChunkLength,
+  );
 
   const prefix = initial.displayChunks.slice(0, -1);
   return finalize(prefix.concat(rechunkedLast.displayChunks));

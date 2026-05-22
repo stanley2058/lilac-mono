@@ -3,6 +3,18 @@ import { chunkMarkdownForEmbeds } from "../../../../src/surface/discord/output/m
 
 // Intentionally copied/adapted from ref/js-llmcord.
 
+const ZWSP = "\u200b";
+
+function expectDiscordChunksSafe(chunks: readonly string[], hardLimit: number): void {
+  expect(chunks.length).toBeGreaterThan(0);
+  expect(chunks.every((chunk) => chunk.length <= hardLimit)).toBe(true);
+
+  const joined = chunks.join("\n");
+  expect(joined).not.toContain(`\`${ZWSP}\`\`txt\n\`${ZWSP}\`\`txt`);
+  expect(joined).not.toContain(`\`${ZWSP}\`\`ts\n\`${ZWSP}\`\`ts`);
+  expect(joined).not.toContain("``````````````````");
+}
+
 describe("markdown-chunker", () => {
   it("should not drop content for plain text", () => {
     const input = "0123456789ABCDEFGHIJ";
@@ -136,5 +148,104 @@ describe("markdown-chunker", () => {
     expect(chunks.every((chunk) => chunk.length <= 300)).toBe(true);
     expect(chunks.join("\n")).toContain("change timeout from 30s to 60s");
     expect(chunks.join("\n")).toContain("room to improve the creature");
+  });
+
+  it("should not emit repeated fence prefixes after earlier nested markdown examples", () => {
+    const input = [
+      "Fixed and pushed directly to `main`.",
+      "",
+      "The root fix is in `token-complete.ts`: closed code fences now preserve the newline after the closing fence, so `completeMarkdown()` no longer rewrites:",
+      "",
+      "```md",
+      "```yaml",
+      "configVersion: 1",
+      "```",
+      "Then continue",
+      "```",
+      "",
+      "into the subtly broken:",
+      "",
+      "```md",
+      "```yaml",
+      "configVersion: 1",
+      "```Then continue",
+      "```",
+      "",
+      "Validation run on your PC:",
+      "",
+      "```txt",
+      "bun test ./apps/core/tests/surface/discord/output/token-complete.test.ts ./apps/core/tests/surface/discord/output/markdown-chunker.test.ts ./apps/core/tests/surface/discord/output/discord-output-stream.test.ts",
+      "71 pass",
+      "0 fail",
+      "```",
+      "",
+      "Also clean:",
+      "",
+      "```txt",
+      "bun run lint",
+      "0 warnings, 0 errors",
+      "",
+      "bun run typecheck",
+      "passed",
+      "```",
+      "",
+      "Tiny goblin contained. Not forgiven.",
+    ].join("\n");
+
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 900,
+      maxLastChunkLength: 900,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 920,
+    });
+
+    expectDiscordChunksSafe(chunks, 920);
+    expect(chunks.join("\n")).toContain("0 warnings, 0 errors");
+    expect(chunks.join("\n")).toContain("bun run typecheck");
+  });
+
+  it("should keep varied markdown edge cases within hard limits", () => {
+    const cases = [
+      [
+        "A paragraph with **bold text that keeps going past the boundary** and then normal text.",
+        "Another paragraph with *italic text that also crosses the boundary* safely.",
+      ].join("\n\n"),
+      [
+        "Inline code near the boundary: `const value = response.*.items.map((x) => x.id)` should not leak emphasis.",
+        "Trailing text keeps this longer than a single chunk.",
+      ].join("\n\n"),
+      [
+        "```ts",
+        "const alpha = 1;",
+        "const beta = 2;",
+        "const gamma = alpha + beta;",
+        "console.log(gamma);",
+        "```",
+      ].join("\n"),
+      [
+        "```md",
+        "# Example",
+        "",
+        "```ts",
+        "const nested = true;",
+        "```",
+        "",
+        "Back to markdown.",
+        "```",
+        "After the nested fence example, keep writing until the text needs multiple chunks.",
+      ].join("\n"),
+      ["$$", "x = y + z + veryLongSymbolName", "$$", "Then normal prose after math."].join("\n"),
+    ];
+
+    for (const input of cases) {
+      const chunks = chunkMarkdownForEmbeds(input.repeat(3), {
+        maxChunkLength: 120,
+        maxLastChunkLength: 120,
+        useSmartSplitting: true,
+        hardMaxChunkLength: 130,
+      });
+
+      expectDiscordChunksSafe(chunks, 130);
+    }
   });
 });

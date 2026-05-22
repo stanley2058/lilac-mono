@@ -2,6 +2,8 @@
 
 import remend from "remend";
 
+import { buildMarkdownContinuationPrefix, getMarkdownContinuationState } from "./markdown-state";
+
 // Null character used as placeholder delimiter (won't appear in normal text)
 const CODE_PLACEHOLDER = "\x00";
 const ZERO_WIDTH_SPACE = "\u200b";
@@ -200,95 +202,6 @@ function safeRemend(text: string): string {
   return closeUnclosedCodeFences(restored);
 }
 
-function longestCommonPrefixLength(a: string, b: string): number {
-  const max = Math.min(a.length, b.length);
-  let i = 0;
-  for (; i < max; i++) {
-    if (a.charCodeAt(i) !== b.charCodeAt(i)) break;
-  }
-  return i;
-}
-
-function getCloseSuffix(original: string, completed: string): string {
-  const lcp = longestCommonPrefixLength(original, completed);
-  return completed.slice(lcp);
-}
-
-function detectClosedTagsFromSuffix(addedSuffix: string): string[] {
-  const openingTags: string[] = [];
-
-  if (!addedSuffix) return openingTags;
-
-  let remaining = addedSuffix;
-
-  while (remaining.length > 0) {
-    const fenceMatch = /^`{3,}/u.exec(remaining);
-    if (fenceMatch?.[0]) {
-      openingTags.unshift(fenceMatch[0]);
-      remaining = remaining.slice(fenceMatch[0].length);
-    } else if (remaining.startsWith("***")) {
-      openingTags.unshift("***");
-      remaining = remaining.slice(3);
-    } else if (remaining.startsWith("**")) {
-      openingTags.unshift("**");
-      remaining = remaining.slice(2);
-    } else if (remaining.startsWith("__")) {
-      openingTags.unshift("__");
-      remaining = remaining.slice(2);
-    } else if (remaining.startsWith("~~")) {
-      openingTags.unshift("~~");
-      remaining = remaining.slice(2);
-    } else if (remaining.startsWith("$$")) {
-      openingTags.unshift("$$");
-      remaining = remaining.slice(2);
-    } else if (remaining.startsWith("`")) {
-      openingTags.unshift("`");
-      remaining = remaining.slice(1);
-    } else if (remaining.startsWith("*")) {
-      openingTags.unshift("*");
-      remaining = remaining.slice(1);
-    } else if (remaining.startsWith("_")) {
-      openingTags.unshift("_");
-      remaining = remaining.slice(1);
-    } else if (remaining.startsWith("\n$$")) {
-      openingTags.unshift("$$");
-      remaining = remaining.slice(3);
-    } else {
-      remaining = remaining.slice(1);
-    }
-  }
-
-  return openingTags;
-}
-
-function detectClosedTags(original: string, completed: string): string[] {
-  return detectClosedTagsFromSuffix(getCloseSuffix(original, completed));
-}
-
-function findCodeBlockLanguage(text: string): string {
-  const matches = [...text.matchAll(/^(?: {0,3})(`{3,})([^`\n]*)\n/gmu)];
-  const lastMatch = matches.at(-1);
-  if (!lastMatch) return "";
-
-  return (lastMatch[2] || "").trim();
-}
-
-function buildOpeningPrefix(closedTags: string[], originalText: string): string {
-  return closedTags
-    .map((tag) => {
-      if (tag.startsWith("```")) {
-        const lang = findCodeBlockLanguage(originalText);
-        return tag + lang + "\n";
-      }
-      if (tag === "$$") {
-        const isBlockMath = /\$\$\n/.test(originalText);
-        return isBlockMath ? "$$\n" : "$$";
-      }
-      return tag;
-    })
-    .join("");
-}
-
 export function tokenComplete(
   input: string,
   maxOutput: number,
@@ -314,8 +227,7 @@ export function tokenCompleteAt(
   const remainingPart = input.slice(clampedSplitAt);
 
   const completedFirst = safeRemend(firstPart);
-  const closedTags = detectClosedTags(firstPart, completedFirst);
-  const openingPrefix = buildOpeningPrefix(closedTags, firstPart);
+  const openingPrefix = buildMarkdownContinuationPrefix(getMarkdownContinuationState(firstPart));
 
   return {
     completed: completedFirst,
