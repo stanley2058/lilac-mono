@@ -177,6 +177,12 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("identifier keeps going");
     });
 
+    it("should not reopen underscores inside unicode words", () => {
+      const input = "The caf\u00e9_na\u00efve identifier keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("identifier"));
+      expect(result.overflow).toBe("identifier keeps going");
+    });
+
     it("should ignore escaped emphasis markers", () => {
       const input = "Escaped \\* marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("marker"));
@@ -243,6 +249,12 @@ describe("token-complete", () => {
       const input = "Run echo $$ and keep going";
       const result = tokenCompleteAt(input, input.indexOf("and"));
       expect(result.overflow).toBe("and keep going");
+    });
+
+    it("should close inline math before whitespace", () => {
+      const input = "The equation $$x + y$$ continues after split";
+      const result = tokenCompleteAt(input, input.indexOf("continues"));
+      expect(result.overflow).toBe("continues after split");
     });
 
     it("should close block math at split boundaries", () => {

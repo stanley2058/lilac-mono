@@ -206,8 +206,8 @@ function isPunctuation(char: string): boolean {
   );
 }
 
-function isAsciiAlphanumeric(char: string): boolean {
-  return /^[A-Za-z0-9]$/u.test(char);
+function isAlphanumeric(char: string): boolean {
+  return /^[\p{L}\p{N}]$/u.test(char);
 }
 
 function canOpenDelimiter(source: string, start: number, length: number, marker: string): boolean {
@@ -222,7 +222,7 @@ function canOpenDelimiter(source: string, start: number, length: number, marker:
   if (!leftFlanking) return false;
 
   if (marker === "_" || marker === "__") {
-    return !isAsciiAlphanumeric(before);
+    return !isAlphanumeric(before);
   }
 
   return true;
@@ -253,7 +253,7 @@ function canCloseDelimiter(source: string, start: number, marker: string): boole
   if (!rightFlanking) return false;
 
   if (marker === "_" || marker === "__") {
-    return !isAsciiAlphanumeric(after);
+    return !isAlphanumeric(after);
   }
 
   return true;
@@ -302,12 +302,19 @@ function toggleInlineTag(openInlineTags: string[], tag: string): void {
   openInlineTags.unshift(tag);
 }
 
-function isMathDelimiter(source: string, start: number, lookahead: string): boolean {
+function isMathDelimiter(
+  source: string,
+  start: number,
+  lookahead: string,
+  openInlineTags: readonly string[],
+): boolean {
   if (isEscaped(source, start)) return false;
 
   const before = source[start - 1] ?? "";
   const after = source[start + 2] ?? lookahead[0] ?? "";
   const isLineStart = start === 0 || before === "\n";
+
+  if (openInlineTags[0] === "$$") return !isWhitespace(before);
 
   return isLineStart ? after === "\n" : !isWhitespace(after);
 }
@@ -340,7 +347,7 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
       toggleDelimitedInlineTag(source, i, "~~", openInlineTags, lookahead)
     ) {
       i += 2;
-    } else if (rest.startsWith("$$") && isMathDelimiter(source, i, lookahead)) {
+    } else if (rest.startsWith("$$") && isMathDelimiter(source, i, lookahead, openInlineTags)) {
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
