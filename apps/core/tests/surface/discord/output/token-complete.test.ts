@@ -189,6 +189,18 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("keeps going");
     });
 
+    it("should ignore escaped strikethrough markers", () => {
+      const input = "Escaped \\~~ marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("keeps"));
+      expect(result.overflow).toBe("keeps going");
+    });
+
+    it("should ignore escaped math markers", () => {
+      const input = "Escaped \\$$ marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("keeps"));
+      expect(result.overflow).toBe("keeps going");
+    });
+
     it("should preserve outer formatting when splitting inside inline code", () => {
       const input = "**bold `code keeps going**";
       const result = tokenCompleteAt(input, input.indexOf(" keeps"));
@@ -394,6 +406,24 @@ describe("token-complete", () => {
       expect(result.overflow).toStartWith("```txt\nwarnings, 0 errors");
       expect(result.overflow).not.toContain(`\`${ZWSP}\`\`txt\n\`${ZWSP}\`\`txt`);
       expect(result.overflow).not.toContain("``````````````````");
+    });
+
+    it("tokenCompleteAt should detect open fences after closed markdown examples", () => {
+      const input = [
+        "A closed markdown example:",
+        "",
+        "```md",
+        "# Example",
+        "```",
+        "",
+        "And then a real open fence:",
+        "",
+        "```",
+        "unterminated fence content",
+      ].join("\n");
+
+      const result = tokenCompleteAt(input, input.indexOf("fence content"));
+      expect(result.overflow).toBe("```\nfence content");
     });
   });
 });

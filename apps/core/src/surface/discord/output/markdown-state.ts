@@ -45,21 +45,30 @@ function findFenceCloser(
   opener: OpenCodeFence,
 ): { start: number; end: number } | null {
   let scan = start;
-  let closer: { start: number; end: number } | null = null;
+  let nestedMarkdownFenceDepth = 0;
 
   while (scan < text.length) {
     const end = lineEndIndex(text, scan);
     const line = text.slice(scan, end);
 
     if (isFenceCloser(line, opener.marker.length)) {
-      closer = { start: scan, end };
-      if (!isMarkdownFenceLanguage(opener.lang)) return closer;
+      if (nestedMarkdownFenceDepth > 0) {
+        nestedMarkdownFenceDepth--;
+        scan = end;
+        continue;
+      }
+
+      return { start: scan, end };
+    }
+
+    if (isMarkdownFenceLanguage(opener.lang) && parseFenceOpener(line)) {
+      nestedMarkdownFenceDepth++;
     }
 
     scan = end;
   }
 
-  return closer;
+  return null;
 }
 
 function findOpenCodeFence(text: string): OpenCodeFence | null {
@@ -247,10 +256,10 @@ function detectOpenInlineTags(text: string): readonly string[] {
       i += 2;
     } else if (rest.startsWith("__") && toggleDelimitedInlineTag(source, i, "__", openInlineTags)) {
       i += 2;
-    } else if (rest.startsWith("~~")) {
+    } else if (rest.startsWith("~~") && !isEscaped(source, i)) {
       toggleInlineTag(openInlineTags, "~~");
       i += 2;
-    } else if (rest.startsWith("$$")) {
+    } else if (rest.startsWith("$$") && !isEscaped(source, i)) {
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
