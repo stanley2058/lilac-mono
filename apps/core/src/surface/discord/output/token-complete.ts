@@ -147,10 +147,7 @@ function escapeCodeBlocks(text: string): {
       continue;
     }
 
-    let closerStart = result.indexOf(marker, markerEnd);
-    while (closerStart !== -1 && isEscaped(result, closerStart)) {
-      closerStart = result.indexOf(marker, closerStart + marker.length);
-    }
+    const closerStart = result.indexOf(marker, markerEnd);
     const idx = codeBlocks.length;
     if (closerStart !== -1) {
       const content = result.slice(markerEnd, closerStart);

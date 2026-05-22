@@ -208,6 +208,13 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("**text continues**");
     });
 
+    it("should allow escaped-looking backticks to close inline code", () => {
+      const input = "Inline `a\\` then **bold text continues**";
+      const result = tokenCompleteAt(input, input.indexOf("text"));
+      expect(result.completed).toBe("Inline `a\\` then **bold**");
+      expect(result.overflow).toBe("**text continues**");
+    });
+
     it("should ignore escaped strikethrough markers", () => {
       const input = "Escaped \\~~ marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("keeps"));
