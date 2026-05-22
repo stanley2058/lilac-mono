@@ -292,6 +292,7 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
 
     expect(next).toEqual({
       openai: {
+        include: ["reasoning.encrypted_content"],
         reasoningSummary: "detailed",
       },
     });
@@ -313,10 +314,12 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
     });
 
     expect(vercel?.openai?.reasoningSummary).toBe("detailed");
+    expect(vercel?.openai?.include).toEqual(["reasoning.encrypted_content"]);
     expect(openrouter?.openai?.reasoningSummary).toBe("detailed");
+    expect(openrouter?.openai?.include).toEqual(["reasoning.encrypted_content"]);
   });
 
-  it("does not override explicit reasoningSummary", () => {
+  it("does not override explicit reasoningSummary and injects encrypted reasoning include", () => {
     const next = withReasoningSummaryDefaultForOpenAIModels({
       reasoningDisplay: "simple",
       provider: "openai",
@@ -333,8 +336,24 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
       openai: {
         reasoningSummary: "auto",
         parallelToolCalls: true,
+        include: ["reasoning.encrypted_content"],
       },
     });
+  });
+
+  it("preserves existing encrypted reasoning include", () => {
+    const next = withReasoningSummaryDefaultForOpenAIModels({
+      reasoningDisplay: "simple",
+      provider: "codex",
+      modelId: "gpt-5.5",
+      providerOptions: {
+        openai: {
+          include: ["reasoning.encrypted_content"],
+        },
+      },
+    });
+
+    expect(next?.openai?.include).toEqual(["reasoning.encrypted_content"]);
   });
 });
 

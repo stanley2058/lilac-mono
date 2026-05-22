@@ -271,6 +271,7 @@ function isAnthropicOpus47Model(provider: string, modelId: string): boolean {
 }
 
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
+const OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE = "reasoning.encrypted_content";
 
 export function toOpenAIPromptCacheKey(sessionId: string): string {
   if (sessionId.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) {
@@ -296,14 +297,28 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
       ? (rawOpenAI as JSONObject)
       : {};
 
+  const include = existingOpenAI["include"];
+  const openAIWithReasoningInclude =
+    Array.isArray(include) && include.includes(OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE)
+      ? existingOpenAI
+      : {
+          ...existingOpenAI,
+          include: Array.isArray(include)
+            ? [...include, OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE]
+            : [OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE],
+        };
+
   if ("reasoningSummary" in existingOpenAI) {
-    return params.providerOptions;
+    return {
+      ...base,
+      openai: openAIWithReasoningInclude,
+    };
   }
 
   return {
     ...base,
     openai: {
-      ...existingOpenAI,
+      ...openAIWithReasoningInclude,
       reasoningSummary: "detailed",
     },
   };
