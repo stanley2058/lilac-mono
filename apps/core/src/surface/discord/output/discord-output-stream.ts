@@ -833,6 +833,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       maxChunkLength,
       maxLastChunkLength: maxChunkLength,
       useSmartSplitting: this.deps.useSmartSplitting,
+      hardMaxChunkLength: 4096,
     });
 
     const MAX_FILES = 10;
@@ -924,6 +925,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       maxChunkLength,
       maxLastChunkLength: maxChunkLength,
       useSmartSplitting: this.deps.useSmartSplitting,
+      hardMaxChunkLength: DISCORD_CONTENT_MAX_CHARS,
     });
 
     const MAX_FILES = 10;

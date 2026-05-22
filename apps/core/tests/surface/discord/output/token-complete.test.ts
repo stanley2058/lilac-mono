@@ -321,5 +321,10 @@ describe("token-complete", () => {
         ].join("\n"),
       );
     });
+
+    it("completeMarkdown should preserve newlines after closed code fences", () => {
+      const input = "```yaml\nconfigVersion: 1\n```\nThen continue.";
+      expect(completeMarkdown(input)).toBe(input);
+    });
   });
 });

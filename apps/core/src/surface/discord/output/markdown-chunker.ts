@@ -5,11 +5,29 @@ export interface ChunkMarkdownOptions {
   maxChunkLength: number;
   maxLastChunkLength: number;
   useSmartSplitting: boolean;
+  hardMaxChunkLength?: number;
 }
 
 interface ChunkResult {
   rawChunks: string[];
   displayChunks: string[];
+}
+
+function hardCapDisplayChunks(chunks: string[], maxChunkLength: number): string[] {
+  if (maxChunkLength <= 0) return chunks;
+
+  const capped: string[] = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChunkLength) {
+      capped.push(chunk);
+      continue;
+    }
+
+    for (let i = 0; i < chunk.length; i += maxChunkLength) {
+      capped.push(chunk.slice(i, i + maxChunkLength));
+    }
+  }
+  return capped;
 }
 
 function chunkRaw(
@@ -89,26 +107,35 @@ function chunkRaw(
 
 export function chunkMarkdownForEmbeds(
   content: string,
-  { maxChunkLength, maxLastChunkLength, useSmartSplitting }: ChunkMarkdownOptions,
+  {
+    maxChunkLength,
+    maxLastChunkLength,
+    useSmartSplitting,
+    hardMaxChunkLength,
+  }: ChunkMarkdownOptions,
 ): string[] {
   if (!content) return [];
 
   const safeMaxChunkLength = Math.max(1, maxChunkLength);
   const safeMaxLastChunkLength = Math.max(1, Math.min(maxLastChunkLength, safeMaxChunkLength));
+  const safeHardMaxChunkLength =
+    hardMaxChunkLength === undefined ? null : Math.max(1, hardMaxChunkLength);
+  const finalize = (chunks: string[]) =>
+    safeHardMaxChunkLength === null ? chunks : hardCapDisplayChunks(chunks, safeHardMaxChunkLength);
 
   const initial = chunkRaw(content, safeMaxChunkLength, useSmartSplitting);
 
   if (initial.rawChunks.length === 0 || safeMaxLastChunkLength === safeMaxChunkLength) {
-    return initial.displayChunks;
+    return finalize(initial.displayChunks);
   }
 
   const lastRaw = initial.rawChunks.at(-1) ?? "";
   if (lastRaw.length <= safeMaxLastChunkLength) {
-    return initial.displayChunks;
+    return finalize(initial.displayChunks);
   }
 
   const rechunkedLast = chunkRaw(lastRaw, safeMaxLastChunkLength, useSmartSplitting);
 
   const prefix = initial.displayChunks.slice(0, -1);
-  return prefix.concat(rechunkedLast.displayChunks);
+  return finalize(prefix.concat(rechunkedLast.displayChunks));
 }

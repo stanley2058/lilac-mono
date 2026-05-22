@@ -12,6 +12,7 @@ interface CodeBlock {
   lang: string;
   closed: boolean;
   markerLength?: number;
+  closeTrailingNewline?: string;
 }
 
 function lineEndIndex(text: string, start: number): number {
@@ -92,6 +93,8 @@ function escapeCodeBlocks(text: string): {
       lang: opener.lang,
       closed: isClosed,
       markerLength: opener.markerLength,
+      closeTrailingNewline:
+        isClosed && text.slice(closerStart, closerEnd).endsWith("\n") ? "\n" : "",
     });
 
     if (isClosed) {
@@ -136,7 +139,12 @@ function restoreCodeBlocks(text: string, codeBlocks: CodeBlock[]): string {
       if (block.closed) {
         const placeholder = `${CODE_PLACEHOLDER}FENCE${i}${CODE_PLACEHOLDER}`;
         const langPart = block.lang ? block.lang + "\n" : "";
-        const restored = "```" + langPart + escapeNestedFenceMarkers(block.content) + "```";
+        const restored =
+          "```" +
+          langPart +
+          escapeNestedFenceMarkers(block.content) +
+          "```" +
+          (block.closeTrailingNewline ?? "");
         result = result.replace(placeholder, restored);
       } else {
         const placeholder = `${CODE_PLACEHOLDER}FENCECONTENT${i}${CODE_PLACEHOLDER}`;

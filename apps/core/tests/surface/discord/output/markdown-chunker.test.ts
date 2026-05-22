@@ -86,4 +86,55 @@ describe("markdown-chunker", () => {
     const chunks = chunkMarkdownForEmbeds("0123456789ABCDEFGHI", opts);
     expect(chunks).toEqual(["0123456789", "ABCDEFGH", "I"]);
   });
+
+  it("should keep final plain-output chunks under the hard limit without dropping overflow", () => {
+    const input = [
+      "Mmm. I’d treat this as a **defaults migration problem**, not a breaking-change label problem.",
+      "",
+      "For example:",
+      "",
+      "```yaml",
+      "configVersion: 1",
+      "```",
+      "Then new generated configs use:",
+      "",
+      "```yaml",
+      "configVersion: 2",
+      "```",
+      "And the app does something like:",
+      "",
+      "```ts",
+      "const defaults = config.configVersion >= 2",
+      "  ? modernDefaults",
+      "  : legacyDefaults;",
+      "```",
+      "That gives us a nice split. Small ghost. Manageable.",
+      "",
+      "The migration command should show a diff or summary before applying changes:",
+      "",
+      "```txt",
+      "This migration will:",
+      "- switch default model routing from X to Y",
+      "- enable feature Z by default",
+      "- change timeout from 30s to 60s",
+      "",
+      "Existing explicit config values will be preserved.",
+      "```",
+      "",
+      "The golden rule: **only change implicit defaults, never overwrite explicit user choices.**",
+      "",
+      "That gives new users the polished experience, existing users stability, and us room to improve the creature without making it bite its current caretakers. 🌸",
+    ].join("\n");
+
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 300,
+      maxLastChunkLength: 300,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 300,
+    });
+
+    expect(chunks.every((chunk) => chunk.length <= 300)).toBe(true);
+    expect(chunks.join("\n")).toContain("change timeout from 30s to 60s");
+    expect(chunks.join("\n")).toContain("room to improve the creature");
+  });
 });
