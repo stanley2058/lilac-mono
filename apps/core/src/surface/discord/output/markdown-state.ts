@@ -113,7 +113,7 @@ function stripCodeSpansAndFences(text: string): string {
   return stripCodeFences(text).replace(/`+[^`]*`*/gu, "");
 }
 
-function hasOpenInlineCode(text: string): boolean {
+function getOpenInlineCodeMarker(text: string): string | null {
   const source = stripCodeFences(text);
   let openMarker: string | null = null;
   let i = 0;
@@ -139,7 +139,84 @@ function hasOpenInlineCode(text: string): boolean {
     i = end;
   }
 
-  return openMarker !== null;
+  return openMarker;
+}
+
+function isEscaped(source: string, index: number): boolean {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && source[i] === "\\"; i--) {
+    slashCount++;
+  }
+  return slashCount % 2 === 1;
+}
+
+function isWhitespace(char: string): boolean {
+  return char === "" || /\s/u.test(char);
+}
+
+function isPunctuation(char: string): boolean {
+  return char !== "" && /[!"#$%&'()+,\-./:;<=>?@[\\\]^`{|}~]/u.test(char);
+}
+
+function isAsciiAlphanumeric(char: string): boolean {
+  return /^[A-Za-z0-9]$/u.test(char);
+}
+
+function canOpenDelimiter(source: string, start: number, length: number, marker: string): boolean {
+  const before = source[start - 1] ?? "";
+  const after = source[start + length] ?? "";
+
+  if (isWhitespace(after)) return before === "" && marker.length > 1;
+
+  const leftFlanking =
+    !isWhitespace(after) &&
+    (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before));
+  if (!leftFlanking) return false;
+
+  if (marker === "_" || marker === "__") {
+    return !isAsciiAlphanumeric(before);
+  }
+
+  return true;
+}
+
+function canCloseDelimiter(source: string, start: number, marker: string): boolean {
+  const before = source[start - 1] ?? "";
+  const after = source[start + marker.length] ?? "";
+
+  if (isWhitespace(before)) return false;
+
+  const rightFlanking =
+    !isWhitespace(before) &&
+    (!isPunctuation(before) || isWhitespace(after) || isPunctuation(after));
+  if (!rightFlanking) return false;
+
+  if (marker === "_" || marker === "__") {
+    return !isAsciiAlphanumeric(after);
+  }
+
+  return true;
+}
+
+function toggleDelimitedInlineTag(
+  source: string,
+  start: number,
+  tag: string,
+  openInlineTags: string[],
+): boolean {
+  if (isEscaped(source, start)) return false;
+
+  if (openInlineTags[0] === tag && canCloseDelimiter(source, start, tag)) {
+    openInlineTags.shift();
+    return true;
+  }
+
+  if (canOpenDelimiter(source, start, tag.length, tag)) {
+    openInlineTags.unshift(tag);
+    return true;
+  }
+
+  return false;
 }
 
 function toggleInlineTag(openInlineTags: string[], tag: string): void {
@@ -159,14 +236,11 @@ function detectOpenInlineTags(text: string): readonly string[] {
   while (i < source.length) {
     const rest = source.slice(i);
 
-    if (rest.startsWith("***")) {
-      toggleInlineTag(openInlineTags, "***");
+    if (rest.startsWith("***") && toggleDelimitedInlineTag(source, i, "***", openInlineTags)) {
       i += 3;
-    } else if (rest.startsWith("**")) {
-      toggleInlineTag(openInlineTags, "**");
+    } else if (rest.startsWith("**") && toggleDelimitedInlineTag(source, i, "**", openInlineTags)) {
       i += 2;
-    } else if (rest.startsWith("__")) {
-      toggleInlineTag(openInlineTags, "__");
+    } else if (rest.startsWith("__") && toggleDelimitedInlineTag(source, i, "__", openInlineTags)) {
       i += 2;
     } else if (rest.startsWith("~~")) {
       toggleInlineTag(openInlineTags, "~~");
@@ -175,11 +249,9 @@ function detectOpenInlineTags(text: string): readonly string[] {
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
-    } else if (rest.startsWith("*")) {
-      toggleInlineTag(openInlineTags, "*");
+    } else if (rest.startsWith("*") && toggleDelimitedInlineTag(source, i, "*", openInlineTags)) {
       i += 1;
-    } else if (rest.startsWith("_")) {
-      toggleInlineTag(openInlineTags, "_");
+    } else if (rest.startsWith("_") && toggleDelimitedInlineTag(source, i, "_", openInlineTags)) {
       i += 1;
     } else {
       i += 1;
@@ -198,10 +270,11 @@ export function getMarkdownContinuationState(text: string): MarkdownContinuation
     };
   }
 
-  if (hasOpenInlineCode(text)) {
+  const openInlineCodeMarker = getOpenInlineCodeMarker(text);
+  if (openInlineCodeMarker) {
     return {
       openFence: null,
-      openInlineTags: ["`"],
+      openInlineTags: [openInlineCodeMarker],
     };
   }
 
@@ -214,7 +287,7 @@ export function getMarkdownContinuationState(text: string): MarkdownContinuation
 export function buildMarkdownContinuationPrefix(state: MarkdownContinuationState): string {
   if (state.openFence) {
     const langPart = state.openFence.lang ? state.openFence.lang : "";
-    return "```" + langPart + "\n";
+    return state.openFence.marker + langPart + "\n";
   }
 
   return state.openInlineTags.join("");

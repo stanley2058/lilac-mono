@@ -102,11 +102,25 @@ function chunkRaw(
       completed.length > hardMaxChunkLength &&
       attemptSplitPos > 1
     ) {
-      attemptSplitPos--;
-      ({ completed, overflow } = tokenCompleteAt(remaining, attemptSplitPos));
+      const candidateSplitPos = attemptSplitPos - 1;
+      const { completed: candidateCompleted, overflow: candidateOverflow } = tokenCompleteAt(
+        remaining,
+        candidateSplitPos,
+      );
 
-      const isFencedCodeChunk = /^```/m.test(completed);
-      nextRemaining = isFencedCodeChunk ? overflow : overflow.replace(/^[\s\n]+/u, "");
+      const isFencedCodeChunk = /^```/m.test(candidateCompleted);
+      const candidateNextRemaining = isFencedCodeChunk
+        ? candidateOverflow
+        : candidateOverflow.replace(/^[\s\n]+/u, "");
+
+      if (candidateNextRemaining.length >= remaining.length) {
+        break;
+      }
+
+      attemptSplitPos = candidateSplitPos;
+      completed = candidateCompleted;
+      overflow = candidateOverflow;
+      nextRemaining = candidateNextRemaining;
     }
 
     const isFencedCodeChunk = /^```/m.test(completed);

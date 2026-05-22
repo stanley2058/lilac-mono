@@ -112,21 +112,56 @@ function escapeCodeBlocks(text: string): {
     pos = text.length;
   }
 
-  // Then handle inline code (single backticks) - both closed and unclosed
-  // Now safe because all ``` are replaced with placeholders
-  result = result.replace(/`([^`\x00]+)(`|$)/g, (_match, content: string, closing: string) => {
-    const idx = codeBlocks.length;
-    const isClosed = closing === "`";
-    codeBlocks.push({ type: "inline", content, lang: "", closed: isClosed });
-
-    if (isClosed) {
-      // Closed: completely replace with placeholder
-      return `${CODE_PLACEHOLDER}INLINE${idx}${CODE_PLACEHOLDER}`;
+  // Then handle inline code (single/double backticks) - both closed and unclosed.
+  // Now safe because all ``` are replaced with placeholders.
+  let inlineResult = "";
+  pos = 0;
+  while (pos < result.length) {
+    if (result[pos] !== "`") {
+      inlineResult += result[pos];
+      pos++;
+      continue;
     }
 
-    // Unclosed: keep ` visible so remend can close it, hide content
-    return `\`${CODE_PLACEHOLDER}INLINECONTENT${idx}${CODE_PLACEHOLDER}`;
-  });
+    let markerEnd = pos + 1;
+    while (result[markerEnd] === "`") markerEnd++;
+
+    const marker = result.slice(pos, markerEnd);
+    if (marker.length > 2) {
+      inlineResult += marker;
+      pos = markerEnd;
+      continue;
+    }
+
+    const closerStart = result.indexOf(marker, markerEnd);
+    const idx = codeBlocks.length;
+    if (closerStart !== -1) {
+      const content = result.slice(markerEnd, closerStart);
+      codeBlocks.push({
+        type: "inline",
+        content,
+        lang: "",
+        closed: true,
+        markerLength: marker.length,
+      });
+      inlineResult += `${CODE_PLACEHOLDER}INLINE${idx}${CODE_PLACEHOLDER}`;
+      pos = closerStart + marker.length;
+      continue;
+    }
+
+    const content = result.slice(markerEnd);
+    codeBlocks.push({
+      type: "inline",
+      content,
+      lang: "",
+      closed: false,
+      markerLength: marker.length,
+    });
+    inlineResult += marker + `${CODE_PLACEHOLDER}INLINECONTENT${idx}${CODE_PLACEHOLDER}`;
+    pos = result.length;
+  }
+
+  result = inlineResult;
 
   return { escaped: result, codeBlocks };
 }
@@ -157,11 +192,17 @@ function restoreCodeBlocks(text: string, codeBlocks: CodeBlock[]): string {
 
     if (block.closed) {
       const placeholder = `${CODE_PLACEHOLDER}INLINE${i}${CODE_PLACEHOLDER}`;
-      const restored = "`" + block.content + "`";
+      const marker = "`".repeat(block.markerLength ?? 1);
+      const restored = marker + block.content + marker;
       result = result.replace(placeholder, restored);
     } else {
       const placeholder = `${CODE_PLACEHOLDER}INLINECONTENT${i}${CODE_PLACEHOLDER}`;
-      result = result.replace(placeholder, block.content);
+      const marker = "`".repeat(block.markerLength ?? 1);
+      const placeholderIndex = result.indexOf(placeholder);
+      const hasRemendClose =
+        placeholderIndex !== -1 &&
+        result.slice(placeholderIndex + placeholder.length).startsWith(marker);
+      result = result.replace(placeholder, block.content + (hasRemendClose ? "" : marker));
     }
   }
   return result;

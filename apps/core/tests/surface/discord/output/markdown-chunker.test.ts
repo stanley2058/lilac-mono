@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+
 import { chunkMarkdownForEmbeds } from "../../../../src/surface/discord/output/markdown-chunker";
 
 // Intentionally copied/adapted from ref/js-llmcord.
@@ -7,7 +8,9 @@ const ZWSP = "\u200b";
 
 function expectDiscordChunksSafe(chunks: readonly string[], hardLimit: number): void {
   expect(chunks.length).toBeGreaterThan(0);
-  expect(chunks.every((chunk) => chunk.length <= hardLimit)).toBe(true);
+  chunks.forEach((chunk) => {
+    expect(chunk.length).toBeLessThanOrEqual(hardLimit);
+  });
 
   const joined = chunks.join("\n");
   expect(joined).not.toContain(`\`${ZWSP}\`\`txt\n\`${ZWSP}\`\`txt`);
@@ -204,17 +207,24 @@ describe("markdown-chunker", () => {
     expect(chunks.join("\n")).toContain("bun run typecheck");
   });
 
-  it("should keep varied markdown edge cases within hard limits", () => {
-    const cases = [
-      [
+  const edgeCases = [
+    {
+      name: "bold and italic boundaries",
+      input: [
         "A paragraph with **bold text that keeps going past the boundary** and then normal text.",
         "Another paragraph with *italic text that also crosses the boundary* safely.",
       ].join("\n\n"),
-      [
+    },
+    {
+      name: "inline code markers",
+      input: [
         "Inline code near the boundary: `const value = response.*.items.map((x) => x.id)` should not leak emphasis.",
         "Trailing text keeps this longer than a single chunk.",
       ].join("\n\n"),
-      [
+    },
+    {
+      name: "fenced code",
+      input: [
         "```ts",
         "const alpha = 1;",
         "const beta = 2;",
@@ -222,7 +232,10 @@ describe("markdown-chunker", () => {
         "console.log(gamma);",
         "```",
       ].join("\n"),
-      [
+    },
+    {
+      name: "nested markdown fences",
+      input: [
         "```md",
         "# Example",
         "",
@@ -234,10 +247,17 @@ describe("markdown-chunker", () => {
         "```",
         "After the nested fence example, keep writing until the text needs multiple chunks.",
       ].join("\n"),
-      ["$$", "x = y + z + veryLongSymbolName", "$$", "Then normal prose after math."].join("\n"),
-    ];
+    },
+    {
+      name: "block math",
+      input: ["$$", "x = y + z + veryLongSymbolName", "$$", "Then normal prose after math."].join(
+        "\n",
+      ),
+    },
+  ];
 
-    for (const input of cases) {
+  for (const { name, input } of edgeCases) {
+    it(`should keep ${name} edge cases within hard limits`, () => {
       const chunks = chunkMarkdownForEmbeds(input.repeat(3), {
         maxChunkLength: 120,
         maxLastChunkLength: 120,
@@ -246,6 +266,6 @@ describe("markdown-chunker", () => {
       });
 
       expectDiscordChunksSafe(chunks, 130);
-    }
-  });
+    });
+  }
 });

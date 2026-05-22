@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+
 import {
   completeMarkdown,
   tokenComplete,
@@ -78,6 +79,13 @@ describe("token-complete", () => {
       expect(result.completed).toBe("`some co`");
       expect(result.overflow).toBe("`de here`");
     });
+
+    it("should preserve double-backtick inline code markers when split", () => {
+      const input = "``some ` code here``";
+      const result = tokenComplete(input, 12);
+      expect(result.completed).toBe("``some ` cod``");
+      expect(result.overflow).toBe("``e here``");
+    });
   });
 
   describe("code blocks (```)", () => {
@@ -92,6 +100,7 @@ describe("token-complete", () => {
       const input = "````txt\nhello world\n````";
       const result = tokenComplete(input, 12);
       expect(result.completed).toBe("```txt\nhell\n```");
+      expect(result.overflow).toBe("````txt\no world\n````");
       expect(completeMarkdown(result.overflow)).toBe("```txt\no world\n```");
     });
   });
@@ -154,6 +163,24 @@ describe("token-complete", () => {
       const input = "**bold** and `code with *` here";
       const result = tokenComplete(input, 100);
       expect(result.completed).toBe(input);
+    });
+
+    it("should not reopen literal multiplication as italic", () => {
+      const input = "The formula is 2 * 3 and keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("and"));
+      expect(result.overflow).toBe("and keeps going");
+    });
+
+    it("should not reopen underscores inside words", () => {
+      const input = "The snake_case identifier keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("identifier"));
+      expect(result.overflow).toBe("identifier keeps going");
+    });
+
+    it("should ignore escaped emphasis markers", () => {
+      const input = "Escaped \\* marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("marker"));
+      expect(result.overflow).toBe("marker keeps going");
     });
 
     it("should handle multiple code blocks with asterisks", () => {
