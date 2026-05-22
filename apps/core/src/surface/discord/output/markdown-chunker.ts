@@ -71,7 +71,7 @@ function chunkRaw(
     const rawEnd = Math.min(content.length, offset + rawLength);
     const rawSegment = content.slice(offset, rawEnd);
     const prefix = buildMarkdownContinuationPrefix(
-      getMarkdownContinuationState(sourcePrefix + content.slice(0, offset)),
+      getMarkdownContinuationState(sourcePrefix + content.slice(0, offset), content.slice(offset)),
     );
     const completed = completeMarkdown(prefix + rawSegment);
     const isFencedCodeChunk = /^```/m.test(completed);
@@ -103,7 +103,7 @@ function chunkRaw(
     }
 
     const prefix = buildMarkdownContinuationPrefix(
-      getMarkdownContinuationState(sourcePrefix + content.slice(0, offset)),
+      getMarkdownContinuationState(sourcePrefix + content.slice(0, offset), content.slice(offset)),
     );
     const windowRaw = content.slice(offset, offset + maxChunkLength);
     const completedWindow = completeMarkdown(prefix + windowRaw);

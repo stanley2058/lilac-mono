@@ -213,7 +213,7 @@ function canOpenDelimiter(source: string, start: number, length: number, marker:
   const before = source[start - 1] ?? "";
   const after = source[start + length] ?? "";
 
-  if (isWhitespace(after)) return before === "" && marker.length > 1;
+  if (isWhitespace(after)) return false;
 
   const leftFlanking =
     !isWhitespace(after) &&
@@ -225,6 +225,19 @@ function canOpenDelimiter(source: string, start: number, length: number, marker:
   }
 
   return true;
+}
+
+function hasClosingDelimiter(source: string, start: number, marker: string): boolean {
+  let scan = start + marker.length;
+
+  while (scan < source.length) {
+    const next = source.indexOf(marker, scan);
+    if (next === -1) return false;
+    if (!isEscaped(source, next) && canCloseDelimiter(source, next, marker)) return true;
+    scan = next + marker.length;
+  }
+
+  return false;
 }
 
 function canCloseDelimiter(source: string, start: number, marker: string): boolean {
@@ -250,11 +263,24 @@ function toggleDelimitedInlineTag(
   start: number,
   tag: string,
   openInlineTags: string[],
+  lookahead: string,
 ): boolean {
   if (isEscaped(source, start)) return false;
 
   if (openInlineTags[0] === tag && canCloseDelimiter(source, start, tag)) {
     openInlineTags.shift();
+    return true;
+  }
+
+  const before = source[start - 1] ?? "";
+  const after = source[start + tag.length] ?? "";
+  if (
+    before === "" &&
+    tag.length > 1 &&
+    isWhitespace(after) &&
+    hasClosingDelimiter(source + lookahead, start, tag)
+  ) {
+    openInlineTags.unshift(tag);
     return true;
   }
 
@@ -275,7 +301,17 @@ function toggleInlineTag(openInlineTags: string[], tag: string): void {
   openInlineTags.unshift(tag);
 }
 
-function detectOpenInlineTags(text: string): readonly string[] {
+function isMathDelimiter(source: string, start: number): boolean {
+  if (isEscaped(source, start)) return false;
+
+  const before = source[start - 1] ?? "";
+  const after = source[start + 2] ?? "";
+  const isLineStart = start === 0 || before === "\n";
+
+  return isLineStart ? after === "\n" : !isWhitespace(after);
+}
+
+function detectOpenInlineTags(text: string, lookahead: string): readonly string[] {
   const source = stripCodeSpansAndFences(text);
   const openInlineTags: string[] = [];
 
@@ -283,22 +319,37 @@ function detectOpenInlineTags(text: string): readonly string[] {
   while (i < source.length) {
     const rest = source.slice(i);
 
-    if (rest.startsWith("***") && toggleDelimitedInlineTag(source, i, "***", openInlineTags)) {
+    if (
+      rest.startsWith("***") &&
+      toggleDelimitedInlineTag(source, i, "***", openInlineTags, lookahead)
+    ) {
       i += 3;
-    } else if (rest.startsWith("**") && toggleDelimitedInlineTag(source, i, "**", openInlineTags)) {
+    } else if (
+      rest.startsWith("**") &&
+      toggleDelimitedInlineTag(source, i, "**", openInlineTags, lookahead)
+    ) {
       i += 2;
-    } else if (rest.startsWith("__") && toggleDelimitedInlineTag(source, i, "__", openInlineTags)) {
+    } else if (
+      rest.startsWith("__") &&
+      toggleDelimitedInlineTag(source, i, "__", openInlineTags, lookahead)
+    ) {
       i += 2;
     } else if (rest.startsWith("~~") && !isEscaped(source, i)) {
       toggleInlineTag(openInlineTags, "~~");
       i += 2;
-    } else if (rest.startsWith("$$") && !isEscaped(source, i)) {
+    } else if (rest.startsWith("$$") && isMathDelimiter(source, i)) {
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
-    } else if (rest.startsWith("*") && toggleDelimitedInlineTag(source, i, "*", openInlineTags)) {
+    } else if (
+      rest.startsWith("*") &&
+      toggleDelimitedInlineTag(source, i, "*", openInlineTags, lookahead)
+    ) {
       i += 1;
-    } else if (rest.startsWith("_") && toggleDelimitedInlineTag(source, i, "_", openInlineTags)) {
+    } else if (
+      rest.startsWith("_") &&
+      toggleDelimitedInlineTag(source, i, "_", openInlineTags, lookahead)
+    ) {
       i += 1;
     } else {
       i += 1;
@@ -308,7 +359,10 @@ function detectOpenInlineTags(text: string): readonly string[] {
   return openInlineTags;
 }
 
-export function getMarkdownContinuationState(text: string): MarkdownContinuationState {
+export function getMarkdownContinuationState(
+  text: string,
+  lookahead: string = "",
+): MarkdownContinuationState {
   const openFence = findOpenCodeFence(text);
   if (openFence) {
     return {
@@ -321,13 +375,13 @@ export function getMarkdownContinuationState(text: string): MarkdownContinuation
   if (openInlineCodeMarker) {
     return {
       openFence: null,
-      openInlineTags: [openInlineCodeMarker, ...detectOpenInlineTags(text)],
+      openInlineTags: [openInlineCodeMarker, ...detectOpenInlineTags(text, lookahead)],
     };
   }
 
   return {
     openFence: null,
-    openInlineTags: detectOpenInlineTags(text),
+    openInlineTags: detectOpenInlineTags(text, lookahead),
   };
 }
 

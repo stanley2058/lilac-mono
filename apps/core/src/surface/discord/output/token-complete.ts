@@ -285,7 +285,9 @@ export function tokenCompleteAt(
   const remainingPart = input.slice(clampedSplitAt);
 
   const completedFirst = safeRemend(firstPart);
-  const openingPrefix = buildMarkdownContinuationPrefix(getMarkdownContinuationState(firstPart));
+  const openingPrefix = buildMarkdownContinuationPrefix(
+    getMarkdownContinuationState(firstPart, remainingPart),
+  );
 
   return {
     completed: completedFirst,

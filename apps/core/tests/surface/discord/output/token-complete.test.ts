@@ -183,6 +183,18 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("marker keeps going");
     });
 
+    it("should not reopen literal strong markers followed by whitespace", () => {
+      const input = "** warning marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("marker"));
+      expect(result.overflow).toBe("marker keeps going");
+    });
+
+    it("should not reopen literal underscore strong markers followed by whitespace", () => {
+      const input = "__ note marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("marker"));
+      expect(result.overflow).toBe("marker keeps going");
+    });
+
     it("should ignore escaped inline-code markers", () => {
       const input = "Escaped \\` marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("keeps"));
@@ -206,6 +218,12 @@ describe("token-complete", () => {
       const input = "Escaped \\$$ marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("keeps"));
       expect(result.overflow).toBe("keeps going");
+    });
+
+    it("should not reopen literal shell-style dollar markers", () => {
+      const input = "Run echo $$ and keep going";
+      const result = tokenCompleteAt(input, input.indexOf("and"));
+      expect(result.overflow).toBe("and keep going");
     });
 
     it("should preserve outer formatting when splitting inside inline code", () => {
