@@ -5,48 +5,113 @@ import remend from "remend";
 // Null character used as placeholder delimiter (won't appear in normal text)
 const CODE_PLACEHOLDER = "\x00";
 
+interface CodeBlock {
+  type: "fence" | "inline";
+  content: string;
+  lang: string;
+  closed: boolean;
+  markerLength?: number;
+}
+
+function lineEndIndex(text: string, start: number): number {
+  const newline = text.indexOf("\n", start);
+  return newline === -1 ? text.length : newline + 1;
+}
+
+function parseFenceOpener(line: string): { markerLength: number; lang: string } | null {
+  const withoutNewline = line.replace(/\n$/u, "");
+  const match = /^(?: {0,3})(`{3,})([^`]*)$/u.exec(withoutNewline);
+  if (!match) return null;
+
+  return {
+    markerLength: match[1]?.length ?? 3,
+    lang: (match[2] ?? "").trim(),
+  };
+}
+
+function parseFenceCloser(line: string, markerLength: number): boolean {
+  const withoutNewline = line.replace(/\n$/u, "");
+  const match = /^(?: {0,3})(`{3,})\s*$/u.exec(withoutNewline);
+  return (match?.[1]?.length ?? 0) >= markerLength;
+}
+
+function maxBacktickFenceLineLength(text: string): number {
+  let max = 0;
+  for (const line of text.split("\n")) {
+    const match = /^(?: {0,3})(`{3,})/u.exec(line);
+    if (match?.[1]) max = Math.max(max, match[1].length);
+  }
+  return max;
+}
+
+function safeFenceLength(block: CodeBlock): number {
+  const original = block.markerLength ?? 3;
+  return Math.max(original, maxBacktickFenceLineLength(block.content) + 1);
+}
+
+function isMarkdownFenceLanguage(lang: string): boolean {
+  const normalized = lang.toLowerCase();
+  return normalized === "md" || normalized === "markdown";
+}
+
 function escapeCodeBlocks(text: string): {
   escaped: string;
-  codeBlocks: Array<{
-    type: "fence" | "inline";
-    content: string;
-    lang: string;
-    closed: boolean;
-  }>;
+  codeBlocks: CodeBlock[];
 } {
-  const codeBlocks: Array<{
-    type: "fence" | "inline";
-    content: string;
-    lang: string;
-    closed: boolean;
-  }> = [];
+  const codeBlocks: CodeBlock[] = [];
 
-  let result = text;
+  let result = "";
+  let pos = 0;
 
-  // First handle triple backticks (code fences) - both closed and unclosed
-  // Regex captures: optional language, optional newline, content, optional closing ```
-  result = result.replace(
-    /```(\w*)(\n?)([\s\S]*?)(```|$)/g,
-    (_match, lang: string, newline: string, content: string, closing: string) => {
-      const idx = codeBlocks.length;
-      const isClosed = closing === "```";
-      codeBlocks.push({
-        type: "fence",
-        content,
-        lang: lang || "",
-        closed: isClosed,
-      });
+  while (pos < text.length) {
+    const openerLineEnd = lineEndIndex(text, pos);
+    const openerLine = text.slice(pos, openerLineEnd);
+    const opener = parseFenceOpener(openerLine);
 
-      if (isClosed) {
-        // Closed: completely replace with placeholder (no backticks visible)
-        return `${CODE_PLACEHOLDER}FENCE${idx}${CODE_PLACEHOLDER}`;
+    if (!opener) {
+      result += openerLine;
+      pos = openerLineEnd;
+      continue;
+    }
+
+    let scan = openerLineEnd;
+    let closerStart = -1;
+    let closerEnd = -1;
+
+    while (scan < text.length) {
+      const end = lineEndIndex(text, scan);
+      const line = text.slice(scan, end);
+      if (parseFenceCloser(line, opener.markerLength)) {
+        closerStart = scan;
+        closerEnd = end;
+        if (!isMarkdownFenceLanguage(opener.lang)) break;
       }
+      scan = end;
+    }
 
-      // Unclosed: keep ``` visible so remend can close it, hide content
-      // Preserve original newline (or lack thereof) after language
-      return `\`\`\`${lang}${newline}${CODE_PLACEHOLDER}FENCECONTENT${idx}${CODE_PLACEHOLDER}`;
-    },
-  );
+    const idx = codeBlocks.length;
+    const isClosed = closerStart !== -1;
+    const contentEnd = isClosed ? closerStart : text.length;
+    const content = text.slice(openerLineEnd, contentEnd);
+    codeBlocks.push({
+      type: "fence",
+      content,
+      lang: opener.lang,
+      closed: isClosed,
+      markerLength: opener.markerLength,
+    });
+
+    if (isClosed) {
+      result += `${CODE_PLACEHOLDER}FENCE${idx}${CODE_PLACEHOLDER}`;
+      pos = closerEnd;
+      continue;
+    }
+
+    // Unclosed: keep the opener visible so remend can still repair nearby
+    // formatting, but hide fence content from emphasis/link repair.
+    result += `${openerLine}${CODE_PLACEHOLDER}FENCECONTENT${idx}${CODE_PLACEHOLDER}`;
+    pos = text.length;
+  }
 
   // Then handle inline code (single backticks) - both closed and unclosed
   // Now safe because all ``` are replaced with placeholders
@@ -67,25 +132,18 @@ function escapeCodeBlocks(text: string): {
   return { escaped: result, codeBlocks };
 }
 
-function restoreCodeBlocks(
-  text: string,
-  codeBlocks: Array<{
-    type: "fence" | "inline";
-    content: string;
-    lang: string;
-    closed: boolean;
-  }>,
-): string {
+function restoreCodeBlocks(text: string, codeBlocks: CodeBlock[]): string {
   let result = text;
   for (let i = 0; i < codeBlocks.length; i++) {
     const block = codeBlocks[i];
     if (!block) continue;
 
     if (block.type === "fence") {
+      const fence = "`".repeat(safeFenceLength(block));
       if (block.closed) {
         const placeholder = `${CODE_PLACEHOLDER}FENCE${i}${CODE_PLACEHOLDER}`;
         const langPart = block.lang ? block.lang + "\n" : "";
-        const restored = "```" + langPart + block.content + "```";
+        const restored = fence + langPart + block.content + fence;
         result = result.replace(placeholder, restored);
       } else {
         const placeholder = `${CODE_PLACEHOLDER}FENCECONTENT${i}${CODE_PLACEHOLDER}`;
@@ -109,20 +167,28 @@ function restoreCodeBlocks(
 function closeUnclosedCodeFences(text: string): string {
   // Discord requires fenced code blocks to be explicitly closed to render.
   // `remend` doesn't reliably close fences, so we do a minimal line-based pass.
-  const lines = text.split("\n");
-  let inFence = false;
+  let pos = 0;
+  let openFenceLength: number | null = null;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("```")) continue;
-    inFence = !inFence;
+  while (pos < text.length) {
+    const end = lineEndIndex(text, pos);
+    const line = text.slice(pos, end);
+
+    if (openFenceLength === null) {
+      const opener = parseFenceOpener(line);
+      if (opener) openFenceLength = opener.markerLength;
+    } else if (parseFenceCloser(line, openFenceLength)) {
+      openFenceLength = null;
+    }
+
+    pos = end;
   }
 
-  if (!inFence) return text;
+  if (openFenceLength === null) return text;
 
   let out = text;
   if (!out.endsWith("\n")) out += "\n";
-  out += "```";
+  out += "`".repeat(openFenceLength);
   return out;
 }
 
@@ -155,7 +221,11 @@ function detectClosedTagsFromSuffix(addedSuffix: string): string[] {
   let remaining = addedSuffix;
 
   while (remaining.length > 0) {
-    if (remaining.startsWith("***")) {
+    const fenceMatch = /^`{3,}/u.exec(remaining);
+    if (fenceMatch?.[0]) {
+      openingTags.unshift(fenceMatch[0]);
+      remaining = remaining.slice(fenceMatch[0].length);
+    } else if (remaining.startsWith("***")) {
       openingTags.unshift("***");
       remaining = remaining.slice(3);
     } else if (remaining.startsWith("**")) {
@@ -170,9 +240,6 @@ function detectClosedTagsFromSuffix(addedSuffix: string): string[] {
     } else if (remaining.startsWith("$$")) {
       openingTags.unshift("$$");
       remaining = remaining.slice(2);
-    } else if (remaining.startsWith("```")) {
-      openingTags.unshift("```");
-      remaining = remaining.slice(3);
     } else if (remaining.startsWith("`")) {
       openingTags.unshift("`");
       remaining = remaining.slice(1);
@@ -198,18 +265,19 @@ function detectClosedTags(original: string, completed: string): string[] {
 }
 
 function findCodeBlockLanguage(text: string): string {
-  const matches = text.match(/```([^\n]*)\n[\s\S]*$/);
-  if (!matches) return "";
+  const matches = [...text.matchAll(/^(?: {0,3})(`{3,})([^`\n]*)\n/gmu)];
+  const lastMatch = matches.at(-1);
+  if (!lastMatch) return "";
 
-  return (matches[1] || "").trim();
+  return (lastMatch[2] || "").trim();
 }
 
 function buildOpeningPrefix(closedTags: string[], originalText: string): string {
   return closedTags
     .map((tag) => {
-      if (tag === "```") {
+      if (tag.startsWith("```")) {
         const lang = findCodeBlockLanguage(originalText);
-        return "```" + lang + "\n";
+        return tag + lang + "\n";
       }
       if (tag === "$$") {
         const isBlockMath = /\$\$\n/.test(originalText);

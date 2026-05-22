@@ -86,6 +86,13 @@ describe("token-complete", () => {
       expect(result.completed).toBe("```js\nhe\n```");
       expect(result.overflow).toBe("```js\nllo world\n```");
     });
+
+    it("should close and reopen four-backtick code fences when split", () => {
+      const input = "````txt\nhello world\n````";
+      const result = tokenComplete(input, 12);
+      expect(result.completed).toBe("````txt\nhell\n````");
+      expect(result.overflow).toBe("````txt\no world\n````");
+    });
   });
 
   describe("strikethrough (~~)", () => {
@@ -277,6 +284,39 @@ describe("token-complete", () => {
     it("completeMarkdown should close fences even without trailing newline", () => {
       const input = "text\n```js\nconsole.log(1)";
       expect(completeMarkdown(input)).toBe("text\n```js\nconsole.log(1)\n```");
+    });
+
+    it("completeMarkdown should preserve four-backtick fences around triple-backtick content", () => {
+      const input = "````txt\n```txt\n****\n```\n````";
+      expect(completeMarkdown(input)).toBe(input);
+    });
+
+    it("completeMarkdown should upgrade markdown fences that contain nested fences", () => {
+      const input = [
+        "```md",
+        "**Short title when useful**",
+        "",
+        "```ts",
+        "code stays native and readable",
+        "```",
+        "",
+        "Lilac",
+        "```",
+      ].join("\n");
+
+      expect(completeMarkdown(input)).toBe(
+        [
+          "````md",
+          "**Short title when useful**",
+          "",
+          "```ts",
+          "code stays native and readable",
+          "```",
+          "",
+          "Lilac",
+          "````",
+        ].join("\n"),
+      );
     });
   });
 });
