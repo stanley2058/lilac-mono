@@ -177,6 +177,18 @@ function hasFiles(options: unknown): boolean {
   return Array.isArray(files) && files.length > 0;
 }
 
+function contentFromOptions(options: unknown): string | undefined {
+  if (!options || typeof options !== "object") return undefined;
+  const content = (options as { content?: unknown }).content;
+  return typeof content === "string" ? content : undefined;
+}
+
+function hasEmbeds(options: unknown): boolean {
+  if (!options || typeof options !== "object") return false;
+  const embeds = (options as { embeds?: unknown }).embeds;
+  return Array.isArray(embeds) && embeds.length > 0;
+}
+
 function filesCount(options: unknown): number {
   if (!options || typeof options !== "object") return 0;
   const files = (options as { files?: unknown }).files;
@@ -386,6 +398,77 @@ describe("attachment finalization", () => {
       throw new Error("expected overflow reply message with files");
     }
     expect(res.last.messageId).toBe(replyFileMsg.messageId);
+  });
+});
+
+describe("preview final output style", () => {
+  it("posts preview final output as normal Discord content when configured", async () => {
+    const { client, operations, deletedMessageIds } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      previewFinalOutputStyle: "plain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "preview text" });
+    await out.push({ type: "meta.stats", line: "nerd stats" });
+    const res = await out.finish();
+
+    const finalSend = operations.find(
+      (op) =>
+        op.kind === "send" &&
+        contentFromOptions(op.options) === "preview text" &&
+        !hasEmbeds(op.options),
+    );
+
+    expect(finalSend).toBeDefined();
+    if (!finalSend) {
+      throw new Error("expected plain final send");
+    }
+    expect(contentFromOptions(finalSend.options)).not.toContain("nerd stats");
+    expect(deletedMessageIds.length).toBeGreaterThan(0);
+    expect(res.last.messageId).toBe(finalSend.messageId);
+  });
+
+  it("splits plain preview final output into a normal reply chain", async () => {
+    const { client, operations } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      previewFinalOutputStyle: "plain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "x".repeat(4500) });
+    const res = await out.finish();
+
+    const plainFinalOps = operations.filter(
+      (op) =>
+        (op.kind === "send" || op.kind === "reply") &&
+        !hasEmbeds(op.options) &&
+        (contentFromOptions(op.options)?.startsWith("x") ?? false),
+    );
+
+    expect(plainFinalOps.length).toBe(3);
+    const lastPlainFinal = plainFinalOps[2];
+    if (!lastPlainFinal) {
+      throw new Error("expected third plain final chunk");
+    }
+    expect(contentFromOptions(plainFinalOps[0]?.options)?.length).toBe(2000);
+    expect(contentFromOptions(plainFinalOps[1]?.options)?.length).toBe(2000);
+    expect(contentFromOptions(lastPlainFinal.options)?.length).toBe(500);
+    expect(plainFinalOps[1]?.parentId).toBe(plainFinalOps[0]?.messageId);
+    expect(plainFinalOps[2]?.parentId).toBe(plainFinalOps[1]?.messageId);
+    expect(res.last.messageId).toBe(lastPlainFinal.messageId);
   });
 });
 

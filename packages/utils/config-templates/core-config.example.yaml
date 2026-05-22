@@ -73,6 +73,12 @@ surface:
     #   delete the preview window
     outputMode: inline
 
+    # Final reply style used after preview mode finishes:
+    # - embed: repost the final answer as embed(s) (legacy preview behavior)
+    # - plain: repost the final answer as normal Discord text message(s)
+    # Only applies when outputMode is preview.
+    previewFinalOutputStyle: embed
+
     # Optional: global override for Discord notifications on output messages.
     # - true: allow reply ping + @user mentions to notify
     # - false: suppress notifications by default
