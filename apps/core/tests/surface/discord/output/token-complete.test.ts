@@ -189,6 +189,12 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("marker keeps going");
     });
 
+    it("should not reopen strong markers before unicode punctuation", () => {
+      const input = "a**\u2014note marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("marker"));
+      expect(result.overflow).toBe("marker keeps going");
+    });
+
     it("should not reopen literal underscore strong markers followed by whitespace", () => {
       const input = "__ note marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("marker"));

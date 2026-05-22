@@ -199,7 +199,11 @@ function isWhitespace(char: string): boolean {
 }
 
 function isPunctuation(char: string): boolean {
-  return char !== "" && /[!"#$%&'()+,\-./:;<=>?@[\\\]^`{|}~]/u.test(char);
+  return (
+    char !== "" &&
+    (/[!"#$%&'()+,\-./:;<=>?@[\\\]^`{|}~]/u.test(char) ||
+      (char.charCodeAt(0) > 0x7f && /\p{P}/u.test(char)))
+  );
 }
 
 function isAsciiAlphanumeric(char: string): boolean {
