@@ -39,6 +39,15 @@ function parseFenceCloser(line: string, markerLength: number): boolean {
   return (match?.[1]?.length ?? 0) >= markerLength;
 }
 
+function isFenceOpenerAt(source: string, start: number): boolean {
+  const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+  const prefix = source.slice(lineStart, start);
+  if (!/^ {0,3}$/u.test(prefix)) return false;
+
+  const lineEnd = lineEndIndex(source, start);
+  return parseFenceOpener(source.slice(lineStart, lineEnd)) !== null;
+}
+
 function escapeNestedFenceMarkers(text: string): string {
   return text.replace(/^( {0,3})(`{3,})/gmu, (_match, indent: string, marker: string) => {
     return indent + marker[0] + ZERO_WIDTH_SPACE + marker.slice(1);
@@ -141,7 +150,7 @@ function escapeCodeBlocks(text: string): {
     while (result[markerEnd] === "`") markerEnd++;
 
     const marker = result.slice(pos, markerEnd);
-    if (marker.length > 2) {
+    if (marker.length >= 3 && isFenceOpenerAt(result, pos)) {
       inlineResult += marker;
       pos = markerEnd;
       continue;

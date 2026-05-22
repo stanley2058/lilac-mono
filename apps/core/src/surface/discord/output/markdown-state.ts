@@ -383,7 +383,9 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
       const end = delimiterRunEnd(source, i, "*");
       const marker = source.slice(i, end);
 
-      toggleDelimitedInlineTag(source, i, marker, openInlineTags, lookahead);
+      if (marker.length <= 3) {
+        toggleDelimitedInlineTag(source, i, marker, openInlineTags, lookahead);
+      }
       i = end;
     } else if (
       rest.startsWith("__") &&

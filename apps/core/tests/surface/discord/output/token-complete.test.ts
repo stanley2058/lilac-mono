@@ -86,6 +86,13 @@ describe("token-complete", () => {
       expect(result.completed).toBe("``some ` cod``");
       expect(result.overflow).toBe("``e here``");
     });
+
+    it("should preserve long-backtick inline code markers when split", () => {
+      const input = "Use `````*inside````` tail";
+      const result = tokenCompleteAt(input, input.indexOf("side"));
+      expect(result.completed).toBe("Use `````*in`````");
+      expect(result.overflow).toBe("`````side````` tail");
+    });
   });
 
   describe("code blocks (```)", () => {

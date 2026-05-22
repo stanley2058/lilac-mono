@@ -125,6 +125,11 @@ describe("markdown-state", () => {
       expectPrefix("Literal **** marker", "");
     });
 
+    it("should not reopen unclosed long asterisk delimiter runs", () => {
+      expectPrefix("****bold", "");
+      expectPrefix("*****bold", "");
+    });
+
     it("should not reopen literal multiplication as italic", () => {
       expectPrefix("The formula is 2 * 3 and keeps going", "");
     });
