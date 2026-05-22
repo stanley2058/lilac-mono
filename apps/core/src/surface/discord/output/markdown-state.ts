@@ -29,9 +29,13 @@ function parseFenceOpener(line: string): OpenCodeFence | null {
 }
 
 function isFenceCloser(line: string, markerLength: number): boolean {
+  return getFenceCloserLength(line) >= markerLength;
+}
+
+function getFenceCloserLength(line: string): number {
   const withoutNewline = line.replace(/\n$/u, "");
   const match = FENCE_CLOSE_RE.exec(withoutNewline);
-  return (match?.[1]?.length ?? 0) >= markerLength;
+  return match?.[1]?.length ?? 0;
 }
 
 function isMarkdownFenceLanguage(lang: string): boolean {
@@ -52,8 +56,17 @@ function findFenceCloser(
     const end = lineEndIndex(text, scan);
     const line = text.slice(scan, end);
     const nestedMarkerLength = nestedMarkdownFenceMarkerLengths.at(-1);
+    const closerLength = getFenceCloserLength(line);
 
-    if (nestedMarkerLength !== undefined && isFenceCloser(line, nestedMarkerLength)) {
+    if (
+      nestedMarkerLength !== undefined &&
+      closerLength >= opener.marker.length &&
+      closerLength > nestedMarkerLength
+    ) {
+      return { start: scan, end };
+    }
+
+    if (nestedMarkerLength !== undefined && closerLength >= nestedMarkerLength) {
       nestedMarkdownFenceMarkerLengths.pop();
       scan = end;
       continue;
@@ -315,6 +328,7 @@ function isMathDelimiter(
   const isLineStart = start === 0 || before === "\n";
 
   if (openInlineTags[0] === "$$") return !isWhitespace(before);
+  if (openInlineTags[0] === "$$\n") return isLineStart && (after === "" || after === "\n");
 
   return isLineStart ? after === "\n" : !isWhitespace(after);
 }
