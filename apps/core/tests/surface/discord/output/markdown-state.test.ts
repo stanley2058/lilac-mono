@@ -67,8 +67,16 @@ describe("markdown-state", () => {
       expectPrefix("Use ``code", "``");
     });
 
+    it("should reopen unclosed long-backtick inline code", () => {
+      expectPrefix("Use `````code", "`````");
+    });
+
     it("should not reopen closed inline code", () => {
       expectPrefix("Use `code` here", "");
+    });
+
+    it("should not infer formatting inside closed long-backtick inline code", () => {
+      expectPrefix("`````*````` tail", "");
     });
 
     it("should ignore escaped inline-code openers", () => {
@@ -81,6 +89,10 @@ describe("markdown-state", () => {
 
     it("should preserve outer formatting around open inline code", () => {
       expectPrefix("**bold `code", "**`");
+    });
+
+    it("should preserve delimiter flanking around closed inline code", () => {
+      expectPrefix("**`code` tail", "**");
     });
   });
 

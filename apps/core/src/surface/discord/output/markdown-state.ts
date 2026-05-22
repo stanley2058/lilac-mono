@@ -167,11 +167,10 @@ function getOpenInlineCodeMarker(text: string): string | null {
       continue;
     }
 
-    let end = i + 1;
-    while (source[end] === "`") end++;
+    const end = backtickRunEnd(source, i);
 
     const marker = source.slice(i, end);
-    if (marker.length >= 3) {
+    if (isIndentedCodeBacktickRun(source, i, marker.length)) {
       i = end;
       continue;
     }
@@ -183,6 +182,20 @@ function getOpenInlineCodeMarker(text: string): string | null {
   }
 
   return openMarker;
+}
+
+function backtickRunEnd(source: string, start: number): number {
+  let end = start + 1;
+  while (source[end] === "`") end++;
+  return end;
+}
+
+function isIndentedCodeBacktickRun(source: string, start: number, markerLength: number): boolean {
+  if (markerLength < 3) return false;
+
+  const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+  const indent = source.slice(lineStart, start);
+  return indent.length >= 4 && /^ +$/u.test(indent);
 }
 
 function stripCodeSpansAndFences(text: string): string {
@@ -197,18 +210,22 @@ function stripCodeSpansAndFences(text: string): string {
       continue;
     }
 
-    let markerEnd = i + 1;
-    while (source[markerEnd] === "`") markerEnd++;
-
+    const markerEnd = backtickRunEnd(source, i);
     const marker = source.slice(i, markerEnd);
-    if (marker.length >= 3) {
+    if (isIndentedCodeBacktickRun(source, i, marker.length)) {
       result += marker;
       i = markerEnd;
       continue;
     }
 
     const closerStart = source.indexOf(marker, markerEnd);
-    i = closerStart === -1 ? source.length : closerStart + marker.length;
+    if (closerStart === -1) {
+      i = source.length;
+      continue;
+    }
+
+    result += "x";
+    i = closerStart + marker.length;
   }
 
   return result;
