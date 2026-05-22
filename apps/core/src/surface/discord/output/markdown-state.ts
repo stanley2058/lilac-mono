@@ -118,10 +118,6 @@ function stripCodeFences(text: string): string {
   return result;
 }
 
-function stripCodeSpansAndFences(text: string): string {
-  return stripCodeFences(text).replace(/`+[^`]*`*/gu, "");
-}
-
 function getOpenInlineCodeMarker(text: string): string | null {
   const source = stripCodeFences(text);
   let openMarker: string | null = null;
@@ -154,6 +150,43 @@ function getOpenInlineCodeMarker(text: string): string | null {
   }
 
   return openMarker;
+}
+
+function findUnescapedMarker(source: string, marker: string, start: number): number {
+  let markerStart = source.indexOf(marker, start);
+  while (markerStart !== -1 && isEscaped(source, markerStart)) {
+    markerStart = source.indexOf(marker, markerStart + marker.length);
+  }
+  return markerStart;
+}
+
+function stripCodeSpansAndFences(text: string): string {
+  const source = stripCodeFences(text);
+  let result = "";
+  let i = 0;
+
+  while (i < source.length) {
+    if (source[i] !== "`" || isEscaped(source, i)) {
+      result += source[i];
+      i++;
+      continue;
+    }
+
+    let markerEnd = i + 1;
+    while (source[markerEnd] === "`") markerEnd++;
+
+    const marker = source.slice(i, markerEnd);
+    if (marker.length >= 3) {
+      result += marker;
+      i = markerEnd;
+      continue;
+    }
+
+    const closerStart = findUnescapedMarker(source, marker, markerEnd);
+    i = closerStart === -1 ? source.length : closerStart + marker.length;
+  }
+
+  return result;
 }
 
 function isEscaped(source: string, index: number): boolean {

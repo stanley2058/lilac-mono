@@ -189,6 +189,13 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("keeps going");
     });
 
+    it("should ignore escaped inline-code markers before formatting", () => {
+      const input = "Escaped \\` then **bold text continues**";
+      const result = tokenCompleteAt(input, input.indexOf("text"));
+      expect(result.completed).toBe("Escaped \\` then **bold**");
+      expect(result.overflow).toBe("**text continues**");
+    });
+
     it("should ignore escaped strikethrough markers", () => {
       const input = "Escaped \\~~ marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("keeps"));

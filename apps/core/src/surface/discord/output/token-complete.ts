@@ -50,6 +50,14 @@ function isMarkdownFenceLanguage(lang: string): boolean {
   return normalized === "md" || normalized === "markdown";
 }
 
+function isEscaped(source: string, index: number): boolean {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && source[i] === "\\"; i--) {
+    slashCount++;
+  }
+  return slashCount % 2 === 1;
+}
+
 function escapeCodeBlocks(text: string): {
   escaped: string;
   codeBlocks: CodeBlock[];
@@ -123,6 +131,12 @@ function escapeCodeBlocks(text: string): {
       continue;
     }
 
+    if (isEscaped(result, pos)) {
+      inlineResult += result[pos];
+      pos++;
+      continue;
+    }
+
     let markerEnd = pos + 1;
     while (result[markerEnd] === "`") markerEnd++;
 
@@ -133,7 +147,10 @@ function escapeCodeBlocks(text: string): {
       continue;
     }
 
-    const closerStart = result.indexOf(marker, markerEnd);
+    let closerStart = result.indexOf(marker, markerEnd);
+    while (closerStart !== -1 && isEscaped(result, closerStart)) {
+      closerStart = result.indexOf(marker, closerStart + marker.length);
+    }
     const idx = codeBlocks.length;
     if (closerStart !== -1) {
       const content = result.slice(markerEnd, closerStart);
