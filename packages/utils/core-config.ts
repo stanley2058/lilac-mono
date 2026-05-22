@@ -240,6 +240,9 @@ const discordSurfaceSchema = z
     /** Output rendering mode for Discord reply streams. */
     outputMode: z.enum(["inline", "preview"]).default("inline"),
 
+    /** Final reply style used after Discord preview mode finishes. */
+    previewFinalOutputStyle: z.enum(["embed", "plain"]).default("embed"),
+
     /**
      * Optional global override for Discord output notifications.
      * true = allow reply ping + @mentions, false = suppress by default.
@@ -261,6 +264,7 @@ const discordSurfaceSchema = z
     allowedGuildIds: [],
     botName: "lilac",
     outputMode: "inline",
+    previewFinalOutputStyle: "embed",
     workingIndicators: cloneDefaultDiscordWorkingIndicators(),
     experimental: {
       markdownTableRender: {
@@ -558,6 +562,7 @@ export const coreConfigSchema = z.object({
         allowedGuildIds: [],
         botName: "lilac",
         outputMode: "inline",
+        previewFinalOutputStyle: "embed",
         workingIndicators: cloneDefaultDiscordWorkingIndicators(),
         experimental: {
           markdownTableRender: {

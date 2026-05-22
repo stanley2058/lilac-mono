@@ -21,6 +21,25 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
     expect(parsed.surface.discord.outputMode).toBe("preview");
   });
 
+  it("defaults previewFinalOutputStyle to embed", () => {
+    const parsed = coreConfigSchema.parse({});
+    expect(parsed.surface.discord.previewFinalOutputStyle).toBe("embed");
+  });
+
+  it("accepts plain previewFinalOutputStyle", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        discord: {
+          botName: "lilac",
+          outputMode: "preview",
+          previewFinalOutputStyle: "plain",
+        },
+      },
+    });
+
+    expect(parsed.surface.discord.previewFinalOutputStyle).toBe("plain");
+  });
+
   it("keeps outputNotification optional by default", () => {
     const parsed = coreConfigSchema.parse({});
     expect(parsed.surface.discord.outputNotification).toBeUndefined();

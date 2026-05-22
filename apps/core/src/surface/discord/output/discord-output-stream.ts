@@ -63,8 +63,10 @@ const TASK_CHANGE_FORCE_ROTATE_MIN_WORD_AGE_MS = 5_000;
 const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"] as const;
 const THINKING_SPINNER_TICK_MS = 250;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
+const DISCORD_CONTENT_MAX_CHARS = 2000;
 
 type DiscordOutputMode = "inline" | "preview";
+type DiscordPreviewFinalOutputStyle = "embed" | "plain";
 const NOTIFY_PARSE_USERS = ["users"] as const;
 
 function clampWithEllipsis(text: string, maxChars: number): string {
@@ -311,6 +313,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       rewriteText?: (text: string) => string;
       markdownTableRender?: MarkdownTableRenderOptions;
       outputMode: DiscordOutputMode;
+      previewFinalOutputStyle?: DiscordPreviewFinalOutputStyle;
       outputNotification?: boolean;
       reasoningDisplayMode: "none" | "simple" | "detailed";
       workingIndicators: readonly string[];
@@ -898,6 +901,86 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     };
   }
 
+  private async postFinalReplyPlain(): Promise<{ created: MsgRef[]; lastMsg: Message }> {
+    const { client, sessionRef } = this.deps;
+    if (!isDiscordSessionRef(sessionRef)) {
+      throw new Error("Unsupported platform");
+    }
+
+    const channel = await fetchTextChannel(client, sessionRef.channelId);
+    if (!("send" in channel)) {
+      throw new Error("Discord channel not found");
+    }
+    const sendChannel = channel as TextBasedChannel & {
+      send: (options: MessageCreateOptions) => Promise<Message>;
+    };
+    const { CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
+    const fullText = this.getRenderedText();
+    const content = fullText.length > 0 ? fullText : "*<empty_string>*";
+
+    const maxChunkLength =
+      DISCORD_CONTENT_MAX_CHARS - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
+    const chunks = chunkMarkdownForEmbeds(content, {
+      maxChunkLength,
+      maxLastChunkLength: maxChunkLength,
+      useSmartSplitting: this.deps.useSmartSplitting,
+    });
+
+    const MAX_FILES = 10;
+    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
+    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
+
+    const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
+    const createdMsgs: Message[] = [];
+    let parent: Message | null = null;
+
+    for (let i = 0; i < displayChunks.length; i++) {
+      const chunk = displayChunks[i] ?? "";
+      const isLast = i === displayChunks.length - 1;
+      const contentChunk = chunk || "*<empty_string>*";
+
+      const msg: Message =
+        parent === null
+          ? await sendChannel.send({
+              content: contentChunk,
+              files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
+              reply:
+                this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
+                  ? { messageReference: this.deps.opts.replyTo.messageId }
+                  : undefined,
+              allowedMentions: this.getAllowedMentions({ isReply: true, isFinalLane: true }),
+            })
+          : await parent.reply({
+              content: contentChunk,
+              files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
+              allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
+            });
+
+      createdMsgs.push(msg);
+      parent = msg;
+    }
+
+    const created: MsgRef[] = [];
+    for (const msg of createdMsgs) {
+      const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+      created.push(ref);
+      this.created.push(ref);
+      this.notifyCreated(ref);
+    }
+
+    const lastMsg = createdMsgs[createdMsgs.length - 1];
+    if (!lastMsg) {
+      throw new Error("DiscordOutputStream produced no final messages");
+    }
+
+    this.pendingAttachments = overflowAttachments;
+    this.lastMsg = lastMsg;
+    return {
+      created,
+      lastMsg,
+    };
+  }
+
   async finish(): Promise<SurfaceOutputResult> {
     await this.ensureStarted();
 
@@ -905,7 +988,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     await this.running;
 
     if (this.isPreviewMode()) {
-      const finalReplyPromise = this.postFinalReplyEmbeds();
+      const finalReplyPromise =
+        this.deps.previewFinalOutputStyle === "plain"
+          ? this.postFinalReplyPlain()
+          : this.postFinalReplyEmbeds();
       const deletePreviewPromise = this.deleteTransientPreviewMessages().catch(() => undefined);
 
       const finalReply = await finalReplyPromise;

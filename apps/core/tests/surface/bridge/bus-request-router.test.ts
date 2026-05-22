@@ -335,6 +335,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -481,6 +482,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -576,6 +578,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -670,6 +673,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -761,6 +765,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -852,6 +857,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -945,6 +951,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1041,6 +1048,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1135,6 +1143,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -1236,6 +1245,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -1338,6 +1348,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -1437,6 +1448,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -1535,6 +1547,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1639,6 +1652,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1744,6 +1758,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1851,6 +1866,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -1958,6 +1974,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -2055,6 +2072,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -2165,6 +2183,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -2329,6 +2348,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -2431,6 +2451,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -2541,6 +2562,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -2663,6 +2685,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -2829,6 +2852,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -2996,6 +3020,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -3151,6 +3176,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -3333,6 +3359,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -3465,6 +3492,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -3623,6 +3651,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -3797,6 +3826,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -3926,6 +3956,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4088,6 +4119,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4282,6 +4314,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4512,6 +4545,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4697,6 +4731,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4791,6 +4826,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4890,6 +4926,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -4986,6 +5023,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -5082,6 +5120,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -5210,6 +5249,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -5371,6 +5411,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -5494,6 +5535,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
@@ -5621,6 +5663,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "mention",
@@ -5719,6 +5762,7 @@ describe("startBusRequestRouter", () => {
             allowedGuildIds: [],
             botName: "lilac",
             outputMode: "inline",
+            previewFinalOutputStyle: "embed",
           },
           router: {
             defaultMode: "active",
