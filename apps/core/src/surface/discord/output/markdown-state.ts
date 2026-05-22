@@ -365,6 +365,12 @@ function isMathDelimiter(
   return isLineStart ? after === "\n" : !isWhitespace(after);
 }
 
+function delimiterRunEnd(source: string, start: number, delimiter: string): number {
+  let end = start + 1;
+  while (source[end] === delimiter) end++;
+  return end;
+}
+
 function detectOpenInlineTags(text: string, lookahead: string): readonly string[] {
   const source = stripCodeSpansAndFences(text);
   const openInlineTags: string[] = [];
@@ -373,16 +379,12 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
   while (i < source.length) {
     const rest = source.slice(i);
 
-    if (
-      rest.startsWith("***") &&
-      toggleDelimitedInlineTag(source, i, "***", openInlineTags, lookahead)
-    ) {
-      i += 3;
-    } else if (
-      rest.startsWith("**") &&
-      toggleDelimitedInlineTag(source, i, "**", openInlineTags, lookahead)
-    ) {
-      i += 2;
+    if (rest.startsWith("*")) {
+      const end = delimiterRunEnd(source, i, "*");
+      const marker = source.slice(i, end);
+
+      toggleDelimitedInlineTag(source, i, marker, openInlineTags, lookahead);
+      i = end;
     } else if (
       rest.startsWith("__") &&
       toggleDelimitedInlineTag(source, i, "__", openInlineTags, lookahead)
@@ -397,11 +399,6 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
-    } else if (
-      rest.startsWith("*") &&
-      toggleDelimitedInlineTag(source, i, "*", openInlineTags, lookahead)
-    ) {
-      i += 1;
     } else if (
       rest.startsWith("_") &&
       toggleDelimitedInlineTag(source, i, "_", openInlineTags, lookahead)

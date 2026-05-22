@@ -115,6 +115,16 @@ describe("markdown-state", () => {
       expectPrefix("**bold** and *italic* and ~~strike~~", "");
     });
 
+    it("should not reopen balanced long asterisk delimiter runs", () => {
+      expectPrefix("****bold**** then", "");
+      expectPrefix("*****bold***** then", "");
+    });
+
+    it("should not reopen literal long asterisk delimiter runs", () => {
+      expectPrefix("****", "");
+      expectPrefix("Literal **** marker", "");
+    });
+
     it("should not reopen literal multiplication as italic", () => {
       expectPrefix("The formula is 2 * 3 and keeps going", "");
     });
