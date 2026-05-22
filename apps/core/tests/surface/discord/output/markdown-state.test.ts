@@ -49,6 +49,10 @@ describe("markdown-state", () => {
       expectPrefix("````md\n```ts\nconst x = 1;\n````", "");
     });
 
+    it("should close a same-marker markdown fence with an unclosed nested example", () => {
+      expectPrefix("```md\n```ts\nconst x = 1;\n```", "");
+    });
+
     it("should reopen a genuinely unclosed fence after an earlier closed markdown example", () => {
       expectPrefix("````md\n```ts\nconst x = 1;\n```\n````\n```js\nopen", "```js\n");
     });

@@ -38,6 +38,21 @@ function getFenceCloserLength(line: string): number {
   return match?.[1]?.length ?? 0;
 }
 
+function hasLaterFenceCloser(text: string, start: number, markerLength: number): boolean {
+  let scan = start;
+
+  while (scan < text.length) {
+    const end = lineEndIndex(text, scan);
+    const line = text.slice(scan, end);
+
+    if (isFenceCloser(line, markerLength)) return true;
+
+    scan = end;
+  }
+
+  return false;
+}
+
 function isMarkdownFenceLanguage(lang: string): boolean {
   const normalized = lang.toLowerCase();
   return normalized === "md" || normalized === "markdown";
@@ -61,7 +76,7 @@ function findFenceCloser(
     if (
       nestedMarkerLength !== undefined &&
       closerLength >= opener.marker.length &&
-      closerLength > nestedMarkerLength
+      (closerLength > nestedMarkerLength || !hasLaterFenceCloser(text, end, opener.marker.length))
     ) {
       return { start: scan, end };
     }
