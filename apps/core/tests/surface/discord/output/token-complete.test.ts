@@ -183,6 +183,18 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("marker keeps going");
     });
 
+    it("should ignore escaped inline-code markers", () => {
+      const input = "Escaped \\` marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("keeps"));
+      expect(result.overflow).toBe("keeps going");
+    });
+
+    it("should preserve outer formatting when splitting inside inline code", () => {
+      const input = "**bold `code keeps going**";
+      const result = tokenCompleteAt(input, input.indexOf(" keeps"));
+      expect(result.overflow).toBe("**` keeps going**");
+    });
+
     it("should handle multiple code blocks with asterisks", () => {
       const input = "First `a*b` then `c*d` end";
       const result = tokenComplete(input, 100);

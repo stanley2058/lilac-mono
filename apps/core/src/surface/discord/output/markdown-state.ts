@@ -124,6 +124,11 @@ function getOpenInlineCodeMarker(text: string): string | null {
       continue;
     }
 
+    if (isEscaped(source, i)) {
+      i++;
+      continue;
+    }
+
     let end = i + 1;
     while (source[end] === "`") end++;
 
@@ -274,7 +279,7 @@ export function getMarkdownContinuationState(text: string): MarkdownContinuation
   if (openInlineCodeMarker) {
     return {
       openFence: null,
-      openInlineTags: [openInlineCodeMarker],
+      openInlineTags: [openInlineCodeMarker, ...detectOpenInlineTags(text)],
     };
   }
 
@@ -290,5 +295,5 @@ export function buildMarkdownContinuationPrefix(state: MarkdownContinuationState
     return state.openFence.marker + langPart + "\n";
   }
 
-  return state.openInlineTags.join("");
+  return [...state.openInlineTags].reverse().join("");
 }

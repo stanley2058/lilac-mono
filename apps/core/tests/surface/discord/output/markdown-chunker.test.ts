@@ -207,6 +207,30 @@ describe("markdown-chunker", () => {
     expect(chunks.join("\n")).toContain("bun run typecheck");
   });
 
+  it("should not feed repaired fence prefixes back into raw chunking", () => {
+    const input = [
+      "```ts",
+      "const defaults =",
+      "getDefaultsForVersion(configVersion);",
+      "```",
+    ].join("\n");
+
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 32,
+      maxLastChunkLength: 32,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 32,
+    });
+
+    expectDiscordChunksSafe(chunks, 32);
+    const joined = chunks.join("\n");
+    expect(joined).not.toContain("```ts\n```ts");
+    expect(joined).not.toContain("```ts\n```ts\n```ts");
+    expect(joined).toContain("const");
+    expect(joined).toContain("getDefaultsForVersion");
+    expect(joined).toContain("configVersion");
+  });
+
   const edgeCases = [
     {
       name: "bold and italic boundaries",
