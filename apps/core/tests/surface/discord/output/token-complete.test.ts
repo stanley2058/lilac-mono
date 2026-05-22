@@ -7,6 +7,7 @@ import {
 
 // Intentionally copied/adapted from ref/js-llmcord.
 // Keep these tests to prevent regressions in markdown completion / streaming behavior.
+const ZWSP = "\u200b";
 
 describe("token-complete", () => {
   describe("no splitting needed", () => {
@@ -87,11 +88,11 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("```js\nllo world\n```");
     });
 
-    it("should close and reopen four-backtick code fences when split", () => {
+    it("should normalize four-backtick code fences when split", () => {
       const input = "````txt\nhello world\n````";
       const result = tokenComplete(input, 12);
-      expect(result.completed).toBe("````txt\nhell\n````");
-      expect(result.overflow).toBe("````txt\no world\n````");
+      expect(result.completed).toBe("```txt\nhell\n```");
+      expect(completeMarkdown(result.overflow)).toBe("```txt\no world\n```");
     });
   });
 
@@ -286,12 +287,14 @@ describe("token-complete", () => {
       expect(completeMarkdown(input)).toBe("text\n```js\nconsole.log(1)\n```");
     });
 
-    it("completeMarkdown should preserve four-backtick fences around triple-backtick content", () => {
+    it("completeMarkdown should neutralize nested fences inside four-backtick source fences", () => {
       const input = "````txt\n```txt\n****\n```\n````";
-      expect(completeMarkdown(input)).toBe(input);
+      expect(completeMarkdown(input)).toBe(
+        `\`\`\`txt\n\`${ZWSP}\`\`txt\n****\n\`${ZWSP}\`\`\n\`\`\``,
+      );
     });
 
-    it("completeMarkdown should upgrade markdown fences that contain nested fences", () => {
+    it("completeMarkdown should neutralize nested fences inside markdown fences", () => {
       const input = [
         "```md",
         "**Short title when useful**",
@@ -306,15 +309,15 @@ describe("token-complete", () => {
 
       expect(completeMarkdown(input)).toBe(
         [
-          "````md",
+          "```md",
           "**Short title when useful**",
           "",
-          "```ts",
+          `\`${ZWSP}\`\`ts`,
           "code stays native and readable",
-          "```",
+          `\`${ZWSP}\`\``,
           "",
           "Lilac",
-          "````",
+          "```",
         ].join("\n"),
       );
     });

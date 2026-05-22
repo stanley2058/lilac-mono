@@ -4,6 +4,7 @@ import remend from "remend";
 
 // Null character used as placeholder delimiter (won't appear in normal text)
 const CODE_PLACEHOLDER = "\x00";
+const ZERO_WIDTH_SPACE = "\u200b";
 
 interface CodeBlock {
   type: "fence" | "inline";
@@ -35,18 +36,10 @@ function parseFenceCloser(line: string, markerLength: number): boolean {
   return (match?.[1]?.length ?? 0) >= markerLength;
 }
 
-function maxBacktickFenceLineLength(text: string): number {
-  let max = 0;
-  for (const line of text.split("\n")) {
-    const match = /^(?: {0,3})(`{3,})/u.exec(line);
-    if (match?.[1]) max = Math.max(max, match[1].length);
-  }
-  return max;
-}
-
-function safeFenceLength(block: CodeBlock): number {
-  const original = block.markerLength ?? 3;
-  return Math.max(original, maxBacktickFenceLineLength(block.content) + 1);
+function escapeNestedFenceMarkers(text: string): string {
+  return text.replace(/^( {0,3})(`{3,})/gmu, (_match, indent: string, marker: string) => {
+    return indent + marker[0] + ZERO_WIDTH_SPACE + marker.slice(1);
+  });
 }
 
 function isMarkdownFenceLanguage(lang: string): boolean {
@@ -107,9 +100,10 @@ function escapeCodeBlocks(text: string): {
       continue;
     }
 
-    // Unclosed: keep the opener visible so remend can still repair nearby
-    // formatting, but hide fence content from emphasis/link repair.
-    result += `${openerLine}${CODE_PLACEHOLDER}FENCECONTENT${idx}${CODE_PLACEHOLDER}`;
+    // Unclosed: keep a Discord-supported opener visible so remend can still
+    // repair nearby formatting, but hide fence content from emphasis/link repair.
+    const newline = openerLine.endsWith("\n") ? "\n" : "";
+    result += `\`\`\`${opener.lang}${newline}${CODE_PLACEHOLDER}FENCECONTENT${idx}${CODE_PLACEHOLDER}`;
     pos = text.length;
   }
 
@@ -139,15 +133,14 @@ function restoreCodeBlocks(text: string, codeBlocks: CodeBlock[]): string {
     if (!block) continue;
 
     if (block.type === "fence") {
-      const fence = "`".repeat(safeFenceLength(block));
       if (block.closed) {
         const placeholder = `${CODE_PLACEHOLDER}FENCE${i}${CODE_PLACEHOLDER}`;
         const langPart = block.lang ? block.lang + "\n" : "";
-        const restored = fence + langPart + block.content + fence;
+        const restored = "```" + langPart + escapeNestedFenceMarkers(block.content) + "```";
         result = result.replace(placeholder, restored);
       } else {
         const placeholder = `${CODE_PLACEHOLDER}FENCECONTENT${i}${CODE_PLACEHOLDER}`;
-        result = result.replace(placeholder, block.content);
+        result = result.replace(placeholder, escapeNestedFenceMarkers(block.content));
       }
       continue;
     }
@@ -188,7 +181,7 @@ function closeUnclosedCodeFences(text: string): string {
 
   let out = text;
   if (!out.endsWith("\n")) out += "\n";
-  out += "`".repeat(openFenceLength);
+  out += "```";
   return out;
 }
 
