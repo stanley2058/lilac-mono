@@ -273,7 +273,7 @@ function toggleDelimitedInlineTag(
   const after = source[start + tag.length] ?? "";
   if (
     before === "" &&
-    tag.length > 1 &&
+    (tag === "**" || tag === "__" || tag === "***") &&
     isWhitespace(after) &&
     hasClosingDelimiter(source + lookahead, start, tag)
   ) {
@@ -331,8 +331,10 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
       toggleDelimitedInlineTag(source, i, "__", openInlineTags, lookahead)
     ) {
       i += 2;
-    } else if (rest.startsWith("~~") && !isEscaped(source, i)) {
-      toggleInlineTag(openInlineTags, "~~");
+    } else if (
+      rest.startsWith("~~") &&
+      toggleDelimitedInlineTag(source, i, "~~", openInlineTags, lookahead)
+    ) {
       i += 2;
     } else if (rest.startsWith("$$") && isMathDelimiter(source, i, lookahead)) {
       const isLineStart = i === 0 || source[i - 1] === "\n";

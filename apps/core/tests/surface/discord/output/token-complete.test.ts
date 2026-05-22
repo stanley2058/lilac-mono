@@ -221,6 +221,12 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("keeps going");
     });
 
+    it("should not reopen literal strikethrough markers followed by whitespace", () => {
+      const input = "~~ warning marker keeps going";
+      const result = tokenCompleteAt(input, input.indexOf("marker"));
+      expect(result.overflow).toBe("marker keeps going");
+    });
+
     it("should ignore escaped math markers", () => {
       const input = "Escaped \\$$ marker keeps going";
       const result = tokenCompleteAt(input, input.indexOf("keeps"));
