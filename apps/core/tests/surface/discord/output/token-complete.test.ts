@@ -233,6 +233,12 @@ describe("token-complete", () => {
       expect(result.overflow).toBe("and keep going");
     });
 
+    it("should close block math at split boundaries", () => {
+      const input = ["$$", "x = y + z", "$$", "After math prose"].join("\n");
+      const result = tokenCompleteAt(input, input.indexOf("\nAfter"));
+      expect(result.overflow).toBe("\nAfter math prose");
+    });
+
     it("should preserve outer formatting when splitting inside inline code", () => {
       const input = "**bold `code keeps going**";
       const result = tokenCompleteAt(input, input.indexOf(" keeps"));
@@ -456,6 +462,20 @@ describe("token-complete", () => {
 
       const result = tokenCompleteAt(input, input.indexOf("fence content"));
       expect(result.overflow).toBe("```\nfence content");
+    });
+
+    it("tokenCompleteAt should close nested fences inside longer markdown fences", () => {
+      const input = [
+        "````md",
+        "```ts",
+        "const nested = true;",
+        "```",
+        "````",
+        "After markdown example",
+      ].join("\n");
+
+      const result = tokenCompleteAt(input, input.indexOf("After"));
+      expect(result.overflow).toBe("After markdown example");
     });
   });
 });

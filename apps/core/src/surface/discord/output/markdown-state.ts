@@ -45,24 +45,34 @@ function findFenceCloser(
   opener: OpenCodeFence,
 ): { start: number; end: number } | null {
   let scan = start;
-  let nestedMarkdownFenceDepth = 0;
+  const nestedMarkdownFenceMarkerLengths: number[] = [];
+  const tracksNestedMarkdownFences = isMarkdownFenceLanguage(opener.lang);
 
   while (scan < text.length) {
     const end = lineEndIndex(text, scan);
     const line = text.slice(scan, end);
+    const nestedMarkerLength = nestedMarkdownFenceMarkerLengths.at(-1);
 
-    if (isFenceCloser(line, opener.marker.length)) {
-      if (nestedMarkdownFenceDepth > 0) {
-        nestedMarkdownFenceDepth--;
-        scan = end;
-        continue;
-      }
+    if (nestedMarkerLength !== undefined && isFenceCloser(line, nestedMarkerLength)) {
+      nestedMarkdownFenceMarkerLengths.pop();
+      scan = end;
+      continue;
+    }
 
+    if (
+      nestedMarkdownFenceMarkerLengths.length === 0 &&
+      isFenceCloser(line, opener.marker.length)
+    ) {
       return { start: scan, end };
     }
 
-    if (isMarkdownFenceLanguage(opener.lang) && parseFenceOpener(line)) {
-      nestedMarkdownFenceDepth++;
+    if (tracksNestedMarkdownFences) {
+      const nestedOpener = parseFenceOpener(line);
+      if (nestedOpener) {
+        nestedMarkdownFenceMarkerLengths.push(nestedOpener.marker.length);
+        scan = end;
+        continue;
+      }
     }
 
     scan = end;
@@ -288,11 +298,11 @@ function toggleInlineTag(openInlineTags: string[], tag: string): void {
   openInlineTags.unshift(tag);
 }
 
-function isMathDelimiter(source: string, start: number): boolean {
+function isMathDelimiter(source: string, start: number, lookahead: string): boolean {
   if (isEscaped(source, start)) return false;
 
   const before = source[start - 1] ?? "";
-  const after = source[start + 2] ?? "";
+  const after = source[start + 2] ?? lookahead[0] ?? "";
   const isLineStart = start === 0 || before === "\n";
 
   return isLineStart ? after === "\n" : !isWhitespace(after);
@@ -324,7 +334,7 @@ function detectOpenInlineTags(text: string, lookahead: string): readonly string[
     } else if (rest.startsWith("~~") && !isEscaped(source, i)) {
       toggleInlineTag(openInlineTags, "~~");
       i += 2;
-    } else if (rest.startsWith("$$") && isMathDelimiter(source, i)) {
+    } else if (rest.startsWith("$$") && isMathDelimiter(source, i, lookahead)) {
       const isLineStart = i === 0 || source[i - 1] === "\n";
       toggleInlineTag(openInlineTags, isLineStart ? "$$\n" : "$$");
       i += 2;
