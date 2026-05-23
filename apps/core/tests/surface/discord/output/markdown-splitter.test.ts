@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { findLexicalSafeSplitPoint } from "../../../../src/surface/discord/output/markdown-splitter";
+import { buildMarkdownIndex } from "../../../../src/surface/discord/output/markdown-index";
+import {
+  findLexicalSafeSplitPoint,
+  findRawSplitPoint,
+} from "../../../../src/surface/discord/output/markdown-splitter";
 import { tokenComplete } from "../../../../src/surface/discord/output/token-complete";
 
 // Intentionally copied/adapted from ref/js-llmcord.
@@ -15,6 +19,21 @@ describe("markdown-splitter", () => {
       });
       // "This is a " ends at 10.
       expect(splitPos).toBe(10);
+    });
+
+    it("findRawSplitPoint should search forward out of unsafe zones", () => {
+      const input = `prefix [${"a".repeat(40)}](x) suffix`;
+      const index = buildMarkdownIndex(input);
+      const target = input.indexOf("a".repeat(40)) + 20;
+
+      const splitPos = findRawSplitPoint(input, 0, target, target - 10, index, {
+        maxBacktrack: 30,
+        newlineBacktrack: 30,
+        locale: "en-US",
+      });
+
+      expect(splitPos).toBe(input.indexOf(" suffix"));
+      expect(index.isSafeOffset(splitPos)).toBe(true);
     });
 
     it("should chunk long markdown with *italics* without duplication", () => {

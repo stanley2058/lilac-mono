@@ -166,6 +166,7 @@ export async function startEmbedPusher(params: {
       maxChunkLength,
       maxLastChunkLength,
       useSmartSplitting: params.useSmartSplitting,
+      completeLastChunk: true,
     });
 
     const progressTitle = params.getProgressTitle?.() ?? null;
