@@ -95,6 +95,11 @@ export function findRawSplitPoint(
     if (isPreferredSafe(raw, pos, safeMinEnd, index)) return avoidSurrogateSplit(raw, pos);
   }
 
+  const forwardEnd = Math.min(raw.length, hardTarget + maxBacktrack);
+  for (let pos = hardTarget + 1; pos <= forwardEnd; pos++) {
+    if (isPreferredSafe(raw, pos, safeMinEnd, index)) return avoidSurrogateSplit(raw, pos);
+  }
+
   return hardTarget;
 }
 

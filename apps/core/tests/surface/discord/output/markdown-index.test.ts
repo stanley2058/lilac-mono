@@ -73,6 +73,12 @@ describe("markdown-index", () => {
     expect(index.getStateAt(6).fence).toEqual({ markerLength: 3, lang: "js" });
   });
 
+  it("should allow tildes in tilde fence info strings", () => {
+    const index = buildMarkdownIndex("~~~custom~info\ncode\n~~~");
+
+    expect(index.codeFences[0]).toMatchObject({ marker: "~", lang: "custom~info" });
+  });
+
   it("should not close fences on mixed marker runs", () => {
     const input = ["```txt", "```~~~", "still code", "```", "outside"].join("\n");
     const index = buildMarkdownIndex(input);

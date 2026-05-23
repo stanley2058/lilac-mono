@@ -84,7 +84,7 @@ function parseFenceOpener(
   const markerRun = match[1] ?? "```";
   const marker = markerRun[0] === "~" ? "~" : "`";
   const info = match[4] ?? "";
-  if (info.includes(marker)) return null;
+  if (marker === "`" && info.includes("`")) return null;
 
   return {
     marker,
