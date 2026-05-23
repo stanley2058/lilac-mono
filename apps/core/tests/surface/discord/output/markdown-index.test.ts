@@ -35,6 +35,14 @@ describe("markdown-index", () => {
     expect(index.codeFences[1]).toMatchObject({ lang: "js" });
   });
 
+  it("should close outer markdown fences before unclosed shorter nested fences", () => {
+    const input = ["````md", "```ts", "code", "````", "outside"].join("\n");
+    const index = buildMarkdownIndex(input);
+
+    expect(index.codeFences).toHaveLength(1);
+    expect(index.codeFences[0]?.closeStart).toBe(input.indexOf("````\noutside"));
+  });
+
   it("should not treat fence closer ticks as inline code state", () => {
     const input = "```js\none\n```\nafter";
     const index = buildMarkdownIndex(input);
@@ -67,5 +75,11 @@ describe("markdown-index", () => {
     const index = buildMarkdownIndex("**bold text still streaming");
 
     expect(index.getStateAt(10).formatting).toEqual(["**"]);
+  });
+
+  it("should conservatively track unclosed single emphasis state", () => {
+    const index = buildMarkdownIndex("*italic text still streaming");
+
+    expect(index.getStateAt(10).formatting).toEqual(["*"]);
   });
 });

@@ -35,7 +35,7 @@ describe("markdown-chunker", () => {
     });
 
     expect(chunks[0]).toBe("Line1\n");
-    expect(chunks.join("")).toContain("Line2");
+    expect(chunks.join("")).toBe(input);
   });
 
   it("should keep earlier chunks stable after splitting", () => {
@@ -75,7 +75,11 @@ describe("markdown-chunker", () => {
     expect(chunks.every((chunk) => chunk.length <= 22)).toBe(true);
     expect(chunks.every((chunk) => chunk.startsWith("```js\n"))).toBe(true);
     expect(chunks.every((chunk) => chunk.endsWith("\n```"))).toBe(true);
-    expect(chunks.join("\n")).toContain("nextLine");
+    const rendered = chunks.join("\n");
+    expect(rendered).toContain("console.log(");
+    expect(rendered).toContain("1)");
+    expect(rendered).toContain("nextLine");
+    expect(rendered).toContain("third");
   });
 
   it("should rechunk last chunk to reserve indicator space", () => {
@@ -109,6 +113,16 @@ describe("markdown-chunker", () => {
     });
 
     expect(chunks).toEqual(["```txt\n`​``ts\ncode\n`​``\n```"]);
+  });
+
+  it("should neutralize mid-line fence markers inside displayed code", () => {
+    const chunks = chunkMarkdownForEmbeds("```txt\nThe ``` marker stays code\n```", {
+      maxChunkLength: 100,
+      maxLastChunkLength: 100,
+      useSmartSplitting: true,
+    });
+
+    expect(chunks).toEqual(["```txt\nThe `​`` marker stays code\n```"]);
   });
 
   it("should not render original closer lines as standalone fence artifacts", () => {
@@ -249,6 +263,19 @@ describe("markdown-chunker", () => {
 
     expect(chunks).toEqual(["**aaaaaa**", "**aaaaaa**", "**aaaaaa**", "**aaaaaa**", "**a**"]);
     expect(chunks.every((chunk) => chunk.length <= 10)).toBe(true);
+  });
+
+  it("should preserve unclosed single emphasis across streaming chunks", () => {
+    const chunks = chunkMarkdownForEmbeds("*aaaaaaaaaaaaaaaaaaaaaaaaa", {
+      maxChunkLength: 9,
+      maxLastChunkLength: 9,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 9,
+      completeLastChunk: true,
+    });
+
+    expect(chunks).toEqual(["*aaaaaaa*", "*aaaaaaa*", "*aaaaaaa*", "*aaaa*"]);
+    expect(chunks.every((chunk) => chunk.length <= 9)).toBe(true);
   });
 
   it("should complete unmatched markdown on final last chunk when requested", () => {

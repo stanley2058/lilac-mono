@@ -226,6 +226,15 @@ function scanCodeFences(raw: string, zones: UnsafeZone[]): CodeFenceRange[] {
 
       if (isMarkdownFenceLanguage(opener.lang)) {
         if (nestedFence !== null) {
+          if (
+            opener.markerLength > nestedFence.markerLength &&
+            parseFenceCloser(line, opener.marker, opener.markerLength)
+          ) {
+            closeStart = scan;
+            closeEnd = end;
+            break;
+          }
+
           if (parseFenceCloser(line, nestedFence.marker, nestedFence.markerLength)) {
             nestedFence = null;
           }
@@ -302,6 +311,9 @@ function delimiterAt(raw: string, pos: number): MarkdownDelimiter | null {
   if (raw.startsWith("**", pos)) return "**";
   if (raw.startsWith("__", pos)) return "__";
   if (raw.startsWith("~~", pos)) return "~~";
+  const ch = raw[pos];
+  if (ch === "*") return "*";
+  if (ch === "_") return "_";
   return null;
 }
 

@@ -44,8 +44,8 @@ function ensureProgressByCodePoint(source: string, start: number, end: number): 
 }
 
 function escapeNestedFenceMarkers(text: string): string {
-  return text.replace(/^( {0,3})([`~]{3,})/gmu, (_match, indent: string, marker: string) => {
-    return indent + marker[0] + ZERO_WIDTH_SPACE + marker.slice(1);
+  return text.replace(/([`~]{3,})/gu, (marker: string) => {
+    return marker[0] + ZERO_WIDTH_SPACE + marker.slice(1);
   });
 }
 
