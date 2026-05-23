@@ -228,6 +228,16 @@ describe("markdown-chunker", () => {
     expect(chunks).toEqual(["```js\nconsole.log(1)\n```"]);
   });
 
+  it("should drop invalid backticks from normalized fence info strings", () => {
+    const chunks = chunkMarkdownForEmbeds("~~~lang`x\ncode\n~~~", {
+      maxChunkLength: 100,
+      maxLastChunkLength: 100,
+      useSmartSplitting: true,
+    });
+
+    expect(chunks).toEqual(["```\ncode\n```"]);
+  });
+
   it("should not shrink backward into a fence opener", () => {
     const chunks = chunkMarkdownForEmbeds("a".repeat(4079) + "\n```ts\nx", {
       maxChunkLength: 4086,

@@ -50,6 +50,7 @@ function escapeNestedFenceMarkers(text: string): string {
 }
 
 function normalizedFenceOpener(lang: string): string {
+  if (lang.includes("`")) return "```\n";
   return lang ? `\`\`\`${lang}\n` : "```\n";
 }
 
