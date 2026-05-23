@@ -98,6 +98,16 @@ function startFormattingAt(range: RawChunk, index: MarkdownIndex): string[] {
   return formatting;
 }
 
+function startInlineCodeMarkerAt(range: RawChunk, index: MarkdownIndex): string {
+  const stateMarker = index.getStateAt(range.start).inlineCode?.marker ?? "";
+  if (!stateMarker) return "";
+
+  const startsAtCloser = index.inlineCodeRanges.some(
+    (inlineRange) => inlineRange.closeStart === range.start,
+  );
+  return startsAtCloser ? "" : stateMarker;
+}
+
 function renderRawSlice(raw: string, range: RawChunk, index: MarkdownIndex): string {
   let pos = range.start;
   let out = "";
@@ -170,7 +180,7 @@ function renderDiscordChunk(
   if (startState.fence !== null) {
     prefix = normalizedFenceOpener(startState.fence.lang);
   } else {
-    prefix = startFormattingAt(range, index).join("") + (startState.inlineCode?.marker ?? "");
+    prefix = startFormattingAt(range, index).join("") + startInlineCodeMarkerAt(range, index);
   }
 
   if (endFence !== null) {

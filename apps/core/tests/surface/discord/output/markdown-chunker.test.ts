@@ -192,6 +192,17 @@ describe("markdown-chunker", () => {
     expect(chunks.every((chunk) => chunk.length <= 12)).toBe(true);
   });
 
+  it("should not duplicate inline code markers at closing boundaries", () => {
+    const chunks = chunkMarkdownForEmbeds("prefix `code` suffix", {
+      maxChunkLength: 12,
+      maxLastChunkLength: 12,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 12,
+    });
+
+    expect(chunks).toEqual(["prefix ", "`code` ", "suffix"]);
+  });
+
   it("should not split surrogate pairs", () => {
     const chunks = chunkMarkdownForEmbeds("abc🌸def", {
       maxChunkLength: 4,

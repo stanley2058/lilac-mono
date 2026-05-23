@@ -23,6 +23,18 @@ describe("markdown-index", () => {
     expect(index.codeFences[0]?.closeStart).toBe(input.lastIndexOf("```"));
   });
 
+  it("should not let closed markdown fences absorb later code blocks", () => {
+    const input = ["```md", "inside", "```", "outside", "```js", "code", "```"].join("\n");
+    const index = buildMarkdownIndex(input);
+
+    expect(index.codeFences).toHaveLength(2);
+    expect(index.codeFences[0]).toMatchObject({
+      lang: "md",
+      closeStart: input.indexOf("```\noutside"),
+    });
+    expect(index.codeFences[1]).toMatchObject({ lang: "js" });
+  });
+
   it("should not treat fence closer ticks as inline code state", () => {
     const input = "```js\none\n```\nafter";
     const index = buildMarkdownIndex(input);

@@ -218,14 +218,36 @@ function scanCodeFences(raw: string, zones: UnsafeZone[]): CodeFenceRange[] {
     let scan = openerEnd;
     let closeStart: number | null = null;
     let closeEnd: number | null = null;
+    let nestedFence: { marker: "`" | "~"; markerLength: number } | null = null;
 
     while (scan < raw.length) {
       const end = lineEndIndex(raw, scan);
       const line = raw.slice(scan, end);
+
+      if (isMarkdownFenceLanguage(opener.lang)) {
+        if (nestedFence !== null) {
+          if (parseFenceCloser(line, nestedFence.marker, nestedFence.markerLength)) {
+            nestedFence = null;
+          }
+          scan = end;
+          continue;
+        }
+
+        const nestedOpener = parseFenceOpener(line);
+        if (nestedOpener && line.trim() !== opener.marker.repeat(opener.markerLength)) {
+          nestedFence = {
+            marker: nestedOpener.marker,
+            markerLength: nestedOpener.markerLength,
+          };
+          scan = end;
+          continue;
+        }
+      }
+
       if (parseFenceCloser(line, opener.marker, opener.markerLength)) {
         closeStart = scan;
         closeEnd = end;
-        if (!isMarkdownFenceLanguage(opener.lang)) break;
+        break;
       }
       scan = end;
     }
