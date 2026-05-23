@@ -71,6 +71,13 @@ describe("markdown-index", () => {
     expect(index.getStateAt(input.indexOf("value")).inlineCode).toEqual({ marker: "``" });
   });
 
+  it("should ignore escaped backticks in inline code state", () => {
+    const input = "literal \\` backtick still text";
+    const index = buildMarkdownIndex(input);
+
+    expect(index.getStateAt(input.indexOf("still")).inlineCode).toBeNull();
+  });
+
   it("should conservatively track unclosed emphasis state", () => {
     const index = buildMarkdownIndex("**bold text still streaming");
 
@@ -81,5 +88,12 @@ describe("markdown-index", () => {
     const index = buildMarkdownIndex("*italic text still streaming");
 
     expect(index.getStateAt(10).formatting).toEqual(["*"]);
+  });
+
+  it("should ignore escaped emphasis delimiters in formatting state", () => {
+    const input = "literal \\* emphasis marker still text";
+    const index = buildMarkdownIndex(input);
+
+    expect(index.getStateAt(input.indexOf("still")).formatting).toEqual([]);
   });
 });

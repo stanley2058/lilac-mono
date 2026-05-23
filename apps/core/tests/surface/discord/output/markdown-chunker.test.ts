@@ -170,6 +170,18 @@ describe("markdown-chunker", () => {
     expect(chunks).not.toContain("*c d*");
   });
 
+  it("should not add formatting wrappers for escaped emphasis delimiters", () => {
+    const input = "literal \\* emphasis marker still text";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 12,
+      maxLastChunkLength: 12,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 12,
+    });
+
+    expect(chunks.join("")).toBe(input);
+  });
+
   it("should normalize tilde code fences to backtick display fences", () => {
     const chunks = chunkMarkdownForEmbeds("~~~js\nconsole.log(1)\n~~~", {
       maxChunkLength: 100,
@@ -215,6 +227,18 @@ describe("markdown-chunker", () => {
     });
 
     expect(chunks).toEqual(["prefix ", "`code` ", "suffix"]);
+  });
+
+  it("should not add inline code wrappers for escaped backticks", () => {
+    const input = "literal \\` backtick still text";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 12,
+      maxLastChunkLength: 12,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 12,
+    });
+
+    expect(chunks.join("")).toBe(input);
   });
 
   it("should not split surrogate pairs", () => {

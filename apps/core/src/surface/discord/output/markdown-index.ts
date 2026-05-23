@@ -317,7 +317,17 @@ function delimiterAt(raw: string, pos: number): MarkdownDelimiter | null {
   return null;
 }
 
+function isEscaped(raw: string, pos: number): boolean {
+  let count = 0;
+  for (let i = pos - 1; i >= 0 && raw[i] === "\\"; i--) {
+    count++;
+  }
+  return count % 2 === 1;
+}
+
 function canOpenDelimiter(raw: string, pos: number, delimiter: MarkdownDelimiter): boolean {
+  if (isEscaped(raw, pos)) return false;
+
   const before = raw[pos - 1] ?? "";
   const after = raw[pos + delimiter.length] ?? "";
   if (!after || /\s/u.test(after)) return false;
@@ -382,7 +392,7 @@ function scanInlineState(
     }
 
     const ch = raw[pos];
-    if (ch === "`") {
+    if (ch === "`" && !isEscaped(raw, pos)) {
       let runEnd = pos;
       while (raw[runEnd] === "`") runEnd++;
       const marker = raw.slice(pos, runEnd);
