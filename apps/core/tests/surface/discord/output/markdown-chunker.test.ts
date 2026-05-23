@@ -125,6 +125,29 @@ describe("markdown-chunker", () => {
     expect(chunks).toEqual(["```txt\nThe `​`` marker stays code\n```"]);
   });
 
+  it("should preserve tilde runs inside displayed code", () => {
+    const chunks = chunkMarkdownForEmbeds("```txt\nThe ~~~ marker stays literal\n```", {
+      maxChunkLength: 100,
+      maxLastChunkLength: 100,
+      useSmartSplitting: true,
+    });
+
+    expect(chunks).toEqual(["```txt\nThe ~~~ marker stays literal\n```"]);
+  });
+
+  it("should not close fences on mixed marker runs", () => {
+    const chunks = chunkMarkdownForEmbeds(
+      ["```txt", "```~~~", "still code", "```", "outside"].join("\n"),
+      {
+        maxChunkLength: 100,
+        maxLastChunkLength: 100,
+        useSmartSplitting: true,
+      },
+    );
+
+    expect(chunks).toEqual(["```txt\n`​``~~~\nstill code\n```\noutside"]);
+  });
+
   it("should close markdown fences after same-length nested language lines", () => {
     const chunks = chunkMarkdownForEmbeds(
       ["````md", "text", "````js", "code", "````", "outside"].join("\n"),

@@ -73,6 +73,14 @@ describe("markdown-index", () => {
     expect(index.getStateAt(6).fence).toEqual({ markerLength: 3, lang: "js" });
   });
 
+  it("should not close fences on mixed marker runs", () => {
+    const input = ["```txt", "```~~~", "still code", "```", "outside"].join("\n");
+    const index = buildMarkdownIndex(input);
+
+    expect(index.codeFences).toHaveLength(1);
+    expect(index.codeFences[0]?.closeStart).toBe(input.indexOf("```\noutside"));
+  });
+
   it("should preserve multi-backtick inline code marker state", () => {
     const input = "prefix ``code value`` suffix";
     const index = buildMarkdownIndex(input);

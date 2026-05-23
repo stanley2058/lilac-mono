@@ -95,7 +95,7 @@ function parseFenceOpener(
 
 function parseFenceCloser(line: string, marker: "`" | "~", markerLength: number): boolean {
   const withoutNewline = line.replace(/\n$/u, "");
-  const match = /^(?: {0,3})([`~]{3,})\s*$/u.exec(withoutNewline);
+  const match = /^(?: {0,3})((`{3,})|(~{3,}))\s*$/u.exec(withoutNewline);
   if ((match?.[1]?.[0] ?? "") !== marker) return false;
   return (match?.[1]?.length ?? 0) >= markerLength;
 }
