@@ -243,7 +243,11 @@ function scanCodeFences(raw: string, zones: UnsafeZone[]): CodeFenceRange[] {
         }
 
         const nestedOpener = parseFenceOpener(line);
-        if (nestedOpener && line.trim() !== opener.marker.repeat(opener.markerLength)) {
+        if (
+          nestedOpener &&
+          nestedOpener.markerLength < opener.markerLength &&
+          line.trim() !== opener.marker.repeat(opener.markerLength)
+        ) {
           nestedFence = {
             marker: nestedOpener.marker,
             markerLength: nestedOpener.markerLength,

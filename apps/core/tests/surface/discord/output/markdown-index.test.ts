@@ -15,12 +15,21 @@ describe("markdown-index", () => {
     expect(index.isSafeOffset(7)).toBe(true);
   });
 
-  it("should keep markdown fences outermost for markdown language blocks", () => {
+  it("should not let same-length language fence lines block markdown fence closure", () => {
     const input = ["```md", "```ts", "code", "```", "tail", "```"].join("\n");
     const index = buildMarkdownIndex(input);
 
+    expect(index.codeFences).toHaveLength(2);
+    expect(index.codeFences[0]?.closeStart).toBe(input.indexOf("```\ntail"));
+    expect(index.codeFences[1]).toMatchObject({ lang: "" });
+  });
+
+  it("should not leave same-length nested language fences unclosed", () => {
+    const input = ["````md", "text", "````js", "code", "````", "outside"].join("\n");
+    const index = buildMarkdownIndex(input);
+
     expect(index.codeFences).toHaveLength(1);
-    expect(index.codeFences[0]?.closeStart).toBe(input.lastIndexOf("```"));
+    expect(index.codeFences[0]?.closeStart).toBe(input.indexOf("````\noutside"));
   });
 
   it("should not let closed markdown fences absorb later code blocks", () => {

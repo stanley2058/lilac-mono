@@ -125,6 +125,19 @@ describe("markdown-chunker", () => {
     expect(chunks).toEqual(["```txt\nThe `​`` marker stays code\n```"]);
   });
 
+  it("should close markdown fences after same-length nested language lines", () => {
+    const chunks = chunkMarkdownForEmbeds(
+      ["````md", "text", "````js", "code", "````", "outside"].join("\n"),
+      {
+        maxChunkLength: 100,
+        maxLastChunkLength: 100,
+        useSmartSplitting: true,
+      },
+    );
+
+    expect(chunks).toEqual(["```md\ntext\n`​```js\ncode\n```\noutside"]);
+  });
+
   it("should not render original closer lines as standalone fence artifacts", () => {
     const chunks = chunkMarkdownForEmbeds("```js\none\n```\nafter", {
       maxChunkLength: 13,
