@@ -43,6 +43,20 @@ describe("core config versioning", () => {
     expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
   });
 
+  it("uses v2 subagent timeout defaults for partial v2 subagent configs", async () => {
+    const parsed = await parseCoreConfig({
+      configVersion: 2,
+      agent: {
+        subagents: {
+          enabled: true,
+        },
+      },
+    });
+
+    expect(parsed.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
+    expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
   it("parses v2 configs with universal field names", async () => {
     const parsed = await parseCoreConfig({
       configVersion: 2,

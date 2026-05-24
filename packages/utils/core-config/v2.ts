@@ -8,7 +8,7 @@ import {
   pluginsSchema,
   routerSchema,
   statsForNerdsSchema,
-  subagentsSchema,
+  subagentProfileSchema,
   webExtractConfigSchema,
 } from "./v1";
 
@@ -24,6 +24,42 @@ export const SUPPORTED_CORE_CONFIG_VERSIONS = [
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
+
+const subagentsSchemaV2 = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxDepth: z.number().int().min(0).max(2).default(2),
+    defaultTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(10 * 60 * 1000),
+    maxTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(20 * 60 * 1000),
+    profiles: z
+      .object({
+        explore: subagentProfileSchema.default({ modelSlot: "main" }),
+        general: subagentProfileSchema.default({ modelSlot: "main" }),
+        self: subagentProfileSchema.default({ modelSlot: "main" }),
+      })
+      .default({
+        explore: { modelSlot: "main" },
+        general: { modelSlot: "main" },
+        self: { modelSlot: "main" },
+      }),
+  })
+  .superRefine((input, ctx) => {
+    if (input.defaultTimeoutMs > input.maxTimeoutMs) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultTimeoutMs"],
+        message: "defaultTimeoutMs must be <= maxTimeoutMs",
+      });
+    }
+  });
 
 const discordMarkdownTableRenderSchema = z
   .object({
@@ -152,7 +188,7 @@ export const coreConfigInputSchemaV2 = z.object({
     .object({
       statsForNerds: statsForNerdsSchema,
       reasoningDisplay: reasoningDisplaySchema,
-      subagents: subagentsSchema.default({
+      subagents: subagentsSchemaV2.default({
         enabled: true,
         maxDepth: 2,
         defaultTimeoutMs: 10 * 60 * 1000,

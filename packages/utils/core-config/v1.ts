@@ -51,7 +51,7 @@ const discordSessionAliasSchema = z.union([
   }),
 ]);
 
-const subagentProfileSchema = z
+export const subagentProfileSchema = z
   .object({
     modelSlot: z.enum(["main", "fast"]).default("main"),
     /** Optional direct model ref (provider/model or alias from models.def). */
