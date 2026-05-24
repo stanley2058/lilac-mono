@@ -103,7 +103,7 @@ export async function startBusRequestRouter(params: {
     module: "bus-request-router",
   });
 
-  let cfg = params.config ? withDefaultToolsConfig(params.config) : await getCoreConfig();
+  let cfg = params.config ? await withDefaultToolsConfig(params.config) : await getCoreConfig();
   let coreConfigReloadHadError = false;
   let lastCoreConfigReloadError: string | null = null;
 

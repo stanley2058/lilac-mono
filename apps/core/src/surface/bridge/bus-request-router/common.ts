@@ -1,5 +1,9 @@
 import type { EvtAdapterMessageCreatedData } from "@stanley2058/lilac-event-bus";
-import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  getDiscordUserAliasValue,
+  parseCoreConfig,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 
 import type { MsgRef } from "../../types";
 
@@ -362,37 +366,22 @@ export function getDiscordFlags(raw: unknown): {
   };
 }
 
-export type RouterConfigOverride = Omit<CoreConfig, "tools" | "surface"> & {
-  tools?: CoreConfig["tools"];
-  surface: Omit<CoreConfig["surface"], "heartbeat"> & {
-    heartbeat?: CoreConfig["surface"]["heartbeat"];
-  };
-};
+export type RouterConfigOverride = Record<string, unknown>;
 
-export function withDefaultToolsConfig(config: RouterConfigOverride): CoreConfig {
+function isConfigRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export async function withDefaultToolsConfig(config: RouterConfigOverride): Promise<CoreConfig> {
+  const parsed = await parseCoreConfig(config);
+  const agent = isConfigRecord(config.agent) ? config.agent : {};
+  const systemPrompt = typeof agent.systemPrompt === "string" ? agent.systemPrompt : "";
+
   return {
-    ...config,
-    surface: {
-      ...config.surface,
-      heartbeat: config.surface.heartbeat ?? {
-        enabled: false,
-        cron: "*/30 * * * *",
-        quietAfterActivityMs: 5 * 60 * 1000,
-        retryBusyMs: 60 * 1000,
-        defaultOutputSession: undefined,
-        softQuietHours: undefined,
-      },
-    },
-    tools: config.tools ?? {
-      web: {
-        extract: {
-          providers: ["tavily"],
-        },
-        fetch: {
-          mode: "auto",
-        },
-      },
-      experimental_hashline_edit: false,
+    ...parsed,
+    agent: {
+      ...parsed.agent,
+      systemPrompt,
     },
   };
 }
