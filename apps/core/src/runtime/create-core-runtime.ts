@@ -4,6 +4,7 @@ import {
   createLogger,
   env,
   getCoreConfig,
+  readCoreConfigVersion,
   resolveCoreConfigPath,
   resolveCustomCommandsDir,
   resolveDiscoveryDbPath,
@@ -181,6 +182,15 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let coreConfigValidationHadError = false;
   let lastCoreConfigValidationError: string | null = null;
 
+  async function readCoreConfigParserVersion(configPath: string): Promise<number | "unknown"> {
+    try {
+      const raw = Bun.YAML.parse(await fs.readFile(configPath, "utf8")) as unknown;
+      return readCoreConfigVersion(raw);
+    } catch {
+      return "unknown";
+    }
+  }
+
   let toolServer: {
     init(): Promise<void>;
     start(port: number): Promise<void>;
@@ -318,17 +328,19 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     const configPath = resolveCoreConfigPath();
 
     try {
-      await getCoreConfig({ forceReload: true });
+      const config = await getCoreConfig({ forceReload: true });
 
       if (coreConfigValidationHadError) {
         logger.info("core-config hot-reload validation recovered", {
           reason,
           path: configPath,
+          parserVersion: config.configVersion,
         });
       } else {
         logger.info("core-config hot-reload validation succeeded", {
           reason,
           path: configPath,
+          parserVersion: config.configVersion,
         });
       }
 
@@ -337,9 +349,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!coreConfigValidationHadError || lastCoreConfigValidationError !== msg) {
+        const parserVersion = await readCoreConfigParserVersion(configPath);
         logger.warn("core-config hot-reload validation failed", {
           reason,
           path: configPath,
+          parserVersion,
           error: msg,
         });
       }
@@ -387,6 +401,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       logger.info("Core config hot-reload validator started", {
         path: configPath,
+        parserVersion: await readCoreConfigParserVersion(configPath),
       });
     } catch (e) {
       logger.warn("Core config hot-reload validator disabled", { path: configPath }, e);
