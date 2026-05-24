@@ -9,14 +9,21 @@ import {
   promptWorkspaceSignature,
 } from "./agent-prompts";
 import {
-  CURRENT_CORE_CONFIG_VERSION,
-  SUPPORTED_CORE_CONFIG_VERSIONS,
   V1CoreConfigParser,
   coreConfigInputSchemaV1,
   coreConfigSchema,
   parseCoreConfigV1,
   parseCoreConfigV1ToUniversal,
 } from "./core-config/v1";
+import {
+  CURRENT_CORE_CONFIG_VERSION,
+  DEFAULT_CORE_CONFIG_VERSION,
+  SUPPORTED_CORE_CONFIG_VERSIONS,
+  V2CoreConfigParser,
+  coreConfigInputSchemaV2,
+  parseCoreConfigV2,
+  parseCoreConfigV2ToUniversal,
+} from "./core-config/v2";
 import type {
   ConfigParser,
   CoreConfig,
@@ -28,8 +35,11 @@ import type {
 export {
   coreConfigInputSchemaV1,
   coreConfigSchema,
+  coreConfigInputSchemaV2,
   parseCoreConfigV1,
   parseCoreConfigV1ToUniversal,
+  parseCoreConfigV2,
+  parseCoreConfigV2ToUniversal,
 };
 export type {
   ConfigParser,
@@ -43,8 +53,12 @@ export type {
   UniversalCoreConfig,
 } from "./core-config/types";
 
-const CORE_CONFIG_PARSERS: ReadonlyMap<CoreConfigVersion, ConfigParser> = new Map([
+const CORE_CONFIG_PARSERS: ReadonlyMap<CoreConfigVersion, ConfigParser> = new Map<
+  CoreConfigVersion,
+  ConfigParser
+>([
   [1, new V1CoreConfigParser()],
+  [2, new V2CoreConfigParser()],
 ]);
 
 export function getDiscordUserAliasValue(alias: DiscordUserAliasConfig | undefined): {
@@ -138,12 +152,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function readCoreConfigVersion(raw: unknown): CoreConfigVersion {
-  if (!isRecord(raw)) return CURRENT_CORE_CONFIG_VERSION;
+  if (!isRecord(raw)) return DEFAULT_CORE_CONFIG_VERSION;
 
   const version = raw.configVersion;
-  if (version === undefined || version === null) return CURRENT_CORE_CONFIG_VERSION;
+  if (version === undefined || version === null) return DEFAULT_CORE_CONFIG_VERSION;
 
-  if (version === CURRENT_CORE_CONFIG_VERSION) return version;
+  if (version === 1 || version === CURRENT_CORE_CONFIG_VERSION) return version;
 
   throw new Error(
     `Unsupported core config version: ${String(version)} (supported: ${SUPPORTED_CORE_CONFIG_VERSIONS.join(", ")})`,

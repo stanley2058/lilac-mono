@@ -26,3 +26,24 @@ configVersion: 1
 ```
 
 No field migrations are required for v1.
+
+## v2
+
+`configVersion: 2` uses the universal runtime config field names directly and changes several defaults.
+
+Field renames from v1:
+
+- `tools.experimental_hashline_edit` -> `tools.editFile.hashline`
+- `surface.discord.previewFinalOutputStyle` -> `surface.discord.outputPreviewModeFinalStyle`
+- `surface.discord.experimental.markdownTableRender` -> `surface.discord.markdownTableRender`
+
+Default changes from v1:
+
+- `tools.editFile.hashline: true`
+- `surface.discord.outputMode: preview`
+- `surface.discord.outputPreviewModeFinalStyle: plain`
+- `surface.discord.outputNotification: true`
+- `surface.discord.markdownTableRender: { enabled: true, style: unicode, maxWidth: 50, fallbackMode: list }`
+- `agent.reasoningDisplay: detailed`
+- `agent.subagents.defaultTimeoutMs: 600000`
+- `agent.subagents.maxTimeoutMs: 1200000`

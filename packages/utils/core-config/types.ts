@@ -4,7 +4,7 @@ export type JSONObject = {
   [key: string]: JSONValue | undefined;
 };
 
-export type CoreConfigVersion = 1;
+export type CoreConfigVersion = 1 | 2;
 
 export type DiscordUserAliasConfig = {
   discord: string;

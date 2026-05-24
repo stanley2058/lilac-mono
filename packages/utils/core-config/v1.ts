@@ -23,10 +23,9 @@ const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
 
 const jsonObjectSchema: z.ZodType<JSONObject> = z.record(z.string(), jsonValueSchema);
 
-export const CURRENT_CORE_CONFIG_VERSION = 1 satisfies CoreConfigVersion;
-export const SUPPORTED_CORE_CONFIG_VERSIONS = [CURRENT_CORE_CONFIG_VERSION] as const;
+export const V1_CORE_CONFIG_VERSION = 1 satisfies CoreConfigVersion;
 
-const statsForNerdsSchema = z
+export const statsForNerdsSchema = z
   .union([
     z.boolean(),
     z.object({
@@ -71,7 +70,7 @@ const subagentProfileSchema = z
     }
   });
 
-const subagentsSchema = z
+export const subagentsSchema = z
   .object({
     enabled: z.boolean().default(true),
     maxDepth: z.number().int().min(0).max(2).default(2),
@@ -107,7 +106,7 @@ const subagentsSchema = z
     }
   });
 
-const routerSchema = z
+export const routerSchema = z
   .object({
     /** Default behavior for channels unless overridden by sessionModes. */
     defaultMode: z.enum(["mention", "active"]).default("mention"),
@@ -149,7 +148,7 @@ const routerSchema = z
     activeGate: { enabled: false, timeoutMs: 2500 },
   });
 
-const discordMarkdownTableRenderSchema = z
+export const discordMarkdownTableRenderSchema = z
   .object({
     enabled: z.boolean().default(false),
     style: z.enum(["unicode", "ascii"]).default("unicode"),
@@ -275,7 +274,7 @@ const webExtractConfigValueSchema = z.preprocess(
   }),
 );
 
-const webExtractConfigSchema = z
+export const webExtractConfigSchema = z
   .preprocess(
     (value) => {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -393,7 +392,7 @@ const modelCapabilityOverrideSchema = z
     }
   });
 
-const modelCapabilitySchema = z
+export const modelCapabilitySchema = z
   .object({
     /** Providers to always treat as unknown/unresolved capability. */
     forceUnknownProviders: z.array(z.string().trim().min(1)).default(["openai-compatible"]),
@@ -422,7 +421,7 @@ const toolsSchema = z
     experimental_hashline_edit: false,
   });
 
-const pluginsSchema = z
+export const pluginsSchema = z
   .object({
     disabled: z.array(z.string().min(1)).default([]),
     config: z.record(z.string(), z.unknown()).default({}),
@@ -442,7 +441,7 @@ const heartbeatOutputSessionSchema = z
   .trim()
   .regex(/^(discord|github)\/.+$/u, "expected <client>/<sessionIdOrAlias>");
 
-const heartbeatSchema = z
+export const heartbeatSchema = z
   .object({
     enabled: z.boolean().default(false),
     cron: cronExpr5Schema.default("*/30 * * * *"),
@@ -491,9 +490,7 @@ const heartbeatSchema = z
     defaultOutputSession: undefined,
     softQuietHours: undefined,
   });
-const configVersionSchema = z
-  .literal(CURRENT_CORE_CONFIG_VERSION)
-  .default(CURRENT_CORE_CONFIG_VERSION);
+const configVersionSchema = z.literal(V1_CORE_CONFIG_VERSION).default(V1_CORE_CONFIG_VERSION);
 
 export const coreConfigInputSchemaV1 = z.object({
   configVersion: configVersionSchema,
@@ -688,7 +685,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
 }
 
 export class V1CoreConfigParser implements ConfigParser {
-  readonly version = CURRENT_CORE_CONFIG_VERSION;
+  readonly version = V1_CORE_CONFIG_VERSION;
 
   async parse(input: object): Promise<UniversalCoreConfig> {
     return parseCoreConfigV1ToUniversal(input);

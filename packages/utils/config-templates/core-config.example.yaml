@@ -1,4 +1,4 @@
-configVersion: 1
+configVersion: 2
 
 basePrompt: "You are Lilac."
 
@@ -8,6 +8,8 @@ tools:
       providers: [tavily]
     fetch:
       mode: auto
+  editFile:
+    hashline: true
 
 plugins:
   disabled: []
@@ -28,17 +30,17 @@ surface:
     # sessionModes:
     #   "123456789012345678":
     #     # Optional: when omitted, this session inherits defaultMode.
-    #     # mode: active
+    #     mode: active
     #     # Optional: override the global activeGate.enabled for this channel.
-    #     # gate: false
+    #     gate: false
     #     # Optional: override the request model for this session.
     #     # Accepts an alias from models.def or provider/model.
-    #     # model: "sonnet"
+    #     model: "sonnet"
     #     # Optional: additional session memo entries appended to system prompt.
     #     # Entries can be literal text or file:// URLs.
-    #     # additionalPrompts:
-    #     #   - "Keep replies concise for this session."
-    #     #   - "file:///abs/path/to/session-memo.md"
+    #     additionalPrompts:
+    #       - "Keep replies concise for this session."
+    #       - "file:///abs/path/to/session-memo.md"
     #   "__heartbeat__":
     #     # Optional: override the internal heartbeat lane model.
     #     # The convenience alias "heartbeat" is also accepted.
@@ -69,43 +71,136 @@ surface:
     # Optional: Discord custom presence/status message.
     # statusMessage: "ready"
 
+    # Optional: enable Discord member presence intent.
+    # memberPresence: false
+
     # Discord output rendering mode:
     # - inline: stream directly in the final reply embed (legacy behavior)
     # - preview: stream a transient preview window, then post a full final reply and
     #   delete the preview window
-    outputMode: inline
+    outputMode: preview
 
     # Final reply style used after preview mode finishes:
-    # - embed: repost the final answer as embed(s) (legacy preview behavior)
+    # - embed: repost the final answer as embed(s)
     # - plain: repost the final answer as normal Discord text message(s)
     # Only applies when outputMode is preview.
-    previewFinalOutputStyle: embed
+    outputPreviewModeFinalStyle: plain
 
-    # Optional: global override for Discord notifications on output messages.
+    # Global override for Discord notifications on output messages.
     # - true: allow reply ping + @user mentions to notify
     # - false: suppress notifications by default
-    # If omitted, notifications are enabled unless a tool call uses --silent=true.
-    # outputNotification: false
+    outputNotification: true
 
     # Streaming embed title phrases for in-progress updates.
     # A random entry is selected and rotated periodically while the request is running.
-    # Keep this as a list so larger built-in banks can be managed as data.
-    # workingIndicators:
-    #   - "Working"
+    workingIndicators:
+      - "Alchemizing"
+      - "Aromatizing"
+      - "Assembling"
+      - "Bleeping"
+      - "Blooming"
+      - "Blooping"
+      - "Blossoming"
+      - "Bouqueting"
+      - "Brainstorming"
+      - "Bubbling"
+      - "Calibrating"
+      - "Carbonating"
+      - "Cascading"
+      - "Catalyzing"
+      - "Compiling"
+      - "Composing"
+      - "Crystallizing"
+      - "Daydreaming"
+      - "Dazzling"
+      - "Decanting"
+      - "Deducing"
+      - "Defragmenting"
+      - "Distilling"
+      - "Doodling"
+      - "Effervescing"
+      - "Embroidering"
+      - "Extrapolating"
+      - "Fascinating"
+      - "Fathoming"
+      - "Fermenting"
+      - "Fiddling"
+      - "Finessing"
+      - "Fizzing"
+      - "Flourishing"
+      - "Formulating"
+      - "Gallivanting"
+      - "Gesticulating"
+      - "Glimmering"
+      - "Harmonizing"
+      - "Humming"
+      - "Illuminating"
+      - "Infusing"
+      - "Investigating"
+      - "Juggling"
+      - "Lavenderizing"
+      - "Materializing"
+      - "Meandering"
+      - "Nebulizing"
+      - "Orchestrating"
+      - "Origami-ing"
+      - "Parsing"
+      - "Perambulating"
+      - "Perfuming"
+      - "Permutating"
+      - "Petalling"
+      - "Philosophizing"
+      - "Photosynthesizing"
+      - "Phytomerizing"
+      - "Ping-ponging"
+      - "Pinging"
+      - "Pirouetting"
+      - "Plucking"
+      - "Polishing"
+      - "Pollinating"
+      - "Pruning"
+      - "Radiating"
+      - "Recalibrating"
+      - "Resonating"
+      - "Reverberating"
+      - "Rummaging"
+      - "Sashaying"
+      - "Scenting"
+      - "Scrutinizing"
+      - "Shimmering"
+      - "Sifting"
+      - "Sparkling"
+      - "Spiraling"
+      - "Sprinkling"
+      - "Sprouting"
+      - "Steeping"
+      - "Sublimating"
+      - "Synchronizing"
+      - "Tessellating"
+      - "Tiptoeing"
+      - "Tuning"
+      - "Twiddling"
+      - "Twinkling"
+      - "Unscrambling"
+      - "Waltzing"
+      - "Weaving"
+      - "Whispering"
+      - "Whittling"
+      - "Whizzing"
+      - "Zesting"
 
-    # Experimental Discord-only output features.
-    experimental:
-      markdownTableRender:
-        # Convert markdown tables into fixed-width codeblock tables.
-        enabled: false
-        # Rendering style for generated codeblock tables: unicode | ascii.
-        style: unicode
-        # Max rendered table width (display cells, not bytes).
-        maxWidth: 80
-        # Fallback when a table cannot fit maxWidth:
-        # - list: render a wrapped row/key-value list in a text codeblock
-        # - passthrough: keep original markdown table unchanged
-        fallbackMode: list
+    # Discord-only markdown output features.
+    markdownTableRender:
+      # Convert markdown tables into fixed-width codeblock tables.
+      enabled: true
+      # Rendering style for generated codeblock tables: unicode | ascii.
+      style: unicode
+      # Max rendered table width (display cells, not bytes).
+      maxWidth: 50
+      # Fallback when a table cannot fit maxWidth:
+      # - list: render a wrapped row/key-value list in a text codeblock
+      # - passthrough: keep original markdown table unchanged
+      fallbackMode: list
 
   heartbeat:
     # Enable the internal autonomous heartbeat lane.
@@ -130,8 +225,7 @@ surface:
 
 agent:
   # Optional: include token/model timing stats in final response metadata.
-  #
-  # - false: disable stats metadata on response events (default)
+  # - false: disable stats metadata on response events
   # - true: enable concise stats line ([M], [T], [TTFT], [TPS])
   # - { verbose: true }: also include input composition ([IC] ...)
   statsForNerds: false
@@ -140,7 +234,7 @@ agent:
   # - none: hide reasoning lane content
   # - simple: show only the working title + elapsed request timer
   # - detailed: also show blockquoted reasoning content (clamped to 500 chars)
-  reasoningDisplay: simple
+  reasoningDisplay: detailed
 
   subagents:
     # Master switch for delegate-style subagents.
@@ -149,32 +243,32 @@ agent:
     # while explore/general remain non-delegating by policy.
     maxDepth: 2
     # Default timeout applied by subagent.delegate when timeoutMs is omitted.
-    defaultTimeoutMs: 180000
+    defaultTimeoutMs: 600000
     # Hard cap for subagent timeout.
-    maxTimeoutMs: 480000
+    maxTimeoutMs: 1200000
     profiles:
       explore:
-        # Which model to run explore subagents on.
-        # Can be provider/model or an alias from models.def.
-        model: "openrouter/openai/gpt-4o"
+        modelSlot: main
+        # Optional direct model override. Can be provider/model or an alias from models.def.
+        # model: "openrouter/openai/gpt-4o"
         # options:
         #   temperature: 0.0
         # Optional extra prompt fragment appended in explore mode.
         # promptOverlay: |
         #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
       general:
+        modelSlot: main
         # General subagent runs with full primary-equivalent tool access.
-        # Can be provider/model or an alias from models.def.
-        model: "openrouter/openai/gpt-4o"
+        # model: "openrouter/openai/gpt-4o"
         # options:
         #   temperature: 0.1
         # Optional extra prompt fragment appended in general mode.
         # promptOverlay: |
         #   Prioritize execution over discussion and report concrete outcomes.
       self:
+        modelSlot: main
         # Self subagent is an isolated fork of the primary agent prompt/tooling.
-        # Can be provider/model or an alias from models.def.
-        model: "openrouter/openai/gpt-4o"
+        # model: "openrouter/openai/gpt-4o"
         # options:
         #   temperature: 0.2
         # Optional extra prompt fragment appended in self mode.
@@ -187,7 +281,7 @@ agent:
 
 models:
   # Optional preset registry to make model selection ergonomic.
-  #
+  def: {}
   # def:
   #   sonnet:
   #     model: "openrouter/anthropic/claude-sonnet-4.5"
@@ -271,6 +365,10 @@ models:
 # - Matches are case-insensitive; the canonical casing is preserved from config.
 # - Tokens are sanitized (whitespace -> '_' and leading @/# stripped).
 # - Optional comments are injected into the system prompt alongside alias + raw id.
+entity:
+  users: {}
+  sessions:
+    discord: {}
 # entity:
 #   users:
 #     Stanley:
