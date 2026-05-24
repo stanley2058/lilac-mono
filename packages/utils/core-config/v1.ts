@@ -659,18 +659,38 @@ export function parseCoreConfigV1(raw: unknown): ParsedCoreConfigV1 {
   return coreConfigInputSchemaV1.parse(raw);
 }
 
+export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig {
+  const parsed = parseCoreConfigV1(raw);
+  const { experimental_hashline_edit: hashline, ...toolsRest } = parsed.tools;
+  const { previewFinalOutputStyle, experimental, ...discordRest } = parsed.surface.discord;
+
+  return {
+    ...parsed,
+    tools: {
+      ...toolsRest,
+      editFile: {
+        hashline,
+      },
+    },
+    surface: {
+      ...parsed.surface,
+      discord: {
+        ...discordRest,
+        outputPreviewModeFinalStyle: previewFinalOutputStyle,
+        markdownTableRender: experimental.markdownTableRender,
+      },
+    },
+    agent: {
+      ...parsed.agent,
+      systemPrompt: "",
+    },
+  };
+}
+
 export class V1CoreConfigParser implements ConfigParser {
   readonly version = CURRENT_CORE_CONFIG_VERSION;
 
   async parse(input: object): Promise<UniversalCoreConfig> {
-    const parsed = parseCoreConfigV1(input);
-
-    return {
-      ...parsed,
-      agent: {
-        ...parsed.agent,
-        systemPrompt: "",
-      },
-    };
+    return parseCoreConfigV1ToUniversal(input);
   }
 }

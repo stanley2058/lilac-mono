@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   CODEX_BASE_INSTRUCTIONS,
-  coreConfigSchema,
+  parseCoreConfigV1ToUniversal,
   providers,
   resolveModelRef,
   resolveModelSlot,
@@ -10,7 +10,7 @@ import {
 } from "../index";
 
 function baseConfig(): CoreConfig {
-  const parsed = coreConfigSchema.parse({});
+  const parsed = parseCoreConfigV1ToUniversal({});
   return {
     ...parsed,
     agent: { ...parsed.agent, systemPrompt: "test" },

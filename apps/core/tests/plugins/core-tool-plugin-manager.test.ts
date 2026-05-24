@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
-import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
+import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { createCoreToolPluginManager } from "../../src/plugins";
 import type { DiscoveryService } from "../../src/discovery/discovery-service";
@@ -93,7 +93,7 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
 const OPTIONAL_DYNAMIC_LEVEL2_CALLABLE_IDS = new Set(["generate.image", "generate.video"]);
 
 function testConfig(input: unknown): CoreConfig {
-  const cfg = coreConfigSchema.parse(input);
+  const cfg = parseCoreConfigV1ToUniversal(input);
   return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
 }
 
@@ -249,11 +249,8 @@ describe("core tool plugin manager", () => {
   it("switches non-openai edit toolsets to hashline mode when enabled in config", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");
-    const cfg = testConfig({
-      tools: {
-        experimental_hashline_edit: true,
-      },
-    });
+    const cfg = testConfig({});
+    cfg.tools.editFile.hashline = true;
 
     const manager = createCoreToolPluginManager({
       runtime: {
@@ -314,11 +311,8 @@ describe("core tool plugin manager", () => {
   it("rejects hashline edits when the file changed after the read", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");
-    const cfg = testConfig({
-      tools: {
-        experimental_hashline_edit: true,
-      },
-    });
+    const cfg = testConfig({});
+    cfg.tools.editFile.hashline = true;
 
     const manager = createCoreToolPluginManager({
       runtime: {

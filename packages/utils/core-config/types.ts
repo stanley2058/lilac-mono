@@ -63,7 +63,9 @@ export type UniversalCoreConfig = {
         mode: "auto" | "fetch" | "browser" | "extract" | "provider-only";
       };
     };
-    experimental_hashline_edit: boolean;
+    editFile: {
+      hashline: boolean;
+    };
   };
 
   plugins: {
@@ -99,16 +101,14 @@ export type UniversalCoreConfig = {
       statusMessage?: string;
       memberPresence?: boolean;
       outputMode: "inline" | "preview";
-      previewFinalOutputStyle: "embed" | "plain";
+      outputPreviewModeFinalStyle: "embed" | "plain";
       outputNotification?: boolean;
       workingIndicators: string[];
-      experimental: {
-        markdownTableRender: {
-          enabled: boolean;
-          style: "unicode" | "ascii";
-          maxWidth: number;
-          fallbackMode: "list" | "passthrough";
-        };
+      markdownTableRender: {
+        enabled: boolean;
+        style: "unicode" | "ascii";
+        maxWidth: number;
+        fallbackMode: "list" | "passthrough";
       };
     };
 

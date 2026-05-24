@@ -410,7 +410,7 @@ describe("preview final output style", () => {
       sessionRef: { platform: "discord", channelId: "chan" },
       useSmartSplitting: false,
       outputMode: "preview",
-      previewFinalOutputStyle: "plain",
+      outputPreviewModeFinalStyle: "plain",
       reasoningDisplayMode: "none",
       workingIndicators: ["Working"],
     });
@@ -443,7 +443,7 @@ describe("preview final output style", () => {
       sessionRef: { platform: "discord", channelId: "chan" },
       useSmartSplitting: false,
       outputMode: "preview",
-      previewFinalOutputStyle: "plain",
+      outputPreviewModeFinalStyle: "plain",
       reasoningDisplayMode: "none",
       workingIndicators: ["Working"],
     });

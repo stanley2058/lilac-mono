@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { coreConfigSchema, ensurePromptWorkspace, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  ensurePromptWorkspace,
+  parseCoreConfigV1ToUniversal,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 
 import { DiscoveryService } from "../src/discovery/discovery-service";
 import { DiscordSearchStore } from "../src/surface/store/discord-search-store";
@@ -10,7 +14,7 @@ import { Discovery } from "../src/tool-server/tools/discovery";
 import { SqliteTranscriptStore } from "../src/transcript/transcript-store";
 
 function testConfig(input: unknown): CoreConfig {
-  const cfg = coreConfigSchema.parse(input);
+  const cfg = parseCoreConfigV1ToUniversal(input);
   return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
 }
 

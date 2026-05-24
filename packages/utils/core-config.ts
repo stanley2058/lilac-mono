@@ -15,6 +15,7 @@ import {
   coreConfigInputSchemaV1,
   coreConfigSchema,
   parseCoreConfigV1,
+  parseCoreConfigV1ToUniversal,
 } from "./core-config/v1";
 import type {
   ConfigParser,
@@ -24,7 +25,12 @@ import type {
   DiscordUserAliasConfig,
 } from "./core-config/types";
 
-export { coreConfigInputSchemaV1, coreConfigSchema, parseCoreConfigV1 };
+export {
+  coreConfigInputSchemaV1,
+  coreConfigSchema,
+  parseCoreConfigV1,
+  parseCoreConfigV1ToUniversal,
+};
 export type {
   ConfigParser,
   CoreConfig,

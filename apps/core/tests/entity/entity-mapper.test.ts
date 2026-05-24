@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
+import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { createDiscordEntityMapper } from "../../src/entity/entity-mapper";
 import { DiscordSurfaceStore } from "../../src/surface/store/discord-surface-store";
 
 function buildCfg(): CoreConfig {
-  const base = coreConfigSchema.parse({});
+  const base = parseCoreConfigV1ToUniversal({});
 
   return {
     ...base,

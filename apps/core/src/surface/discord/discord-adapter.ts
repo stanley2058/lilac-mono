@@ -117,7 +117,7 @@ function asDiscordMsgRef(channelId: string, messageId: string): MsgRef {
 function resolveMarkdownTableRenderOptions(
   cfg: CoreConfig | null | undefined,
 ): MarkdownTableRenderOptions | undefined {
-  const tableRender = cfg?.surface.discord.experimental?.markdownTableRender;
+  const tableRender = cfg?.surface.discord.markdownTableRender;
   if (!tableRender || tableRender.enabled !== true) {
     return undefined;
   }
@@ -1075,7 +1075,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       markdownTableRender,
       reasoningDisplayMode: cfg.agent.reasoningDisplay ?? "simple",
       outputMode: cfg.surface.discord.outputMode ?? "inline",
-      previewFinalOutputStyle: cfg.surface.discord.previewFinalOutputStyle ?? "embed",
+      outputPreviewModeFinalStyle: cfg.surface.discord.outputPreviewModeFinalStyle ?? "embed",
       outputNotification: resolveOutputNotificationEnabled({
         configured: cfg.surface.discord.outputNotification,
         silent: opts?.silent,

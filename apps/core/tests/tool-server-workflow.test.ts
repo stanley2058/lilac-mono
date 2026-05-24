@@ -11,7 +11,7 @@ import {
   type RawBus,
   type SubscriptionOptions,
 } from "@stanley2058/lilac-event-bus";
-import { coreConfigSchema, type CoreConfig } from "@stanley2058/lilac-utils";
+import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../src/surface/adapter";
 import { Workflow } from "../src/tool-server/tools/workflow";
 import type { RequestContext } from "../src/tool-server/types";
@@ -28,7 +28,7 @@ import type {
 } from "../src/surface/types";
 
 function testConfig(input: unknown): CoreConfig {
-  const cfg = coreConfigSchema.parse(input);
+  const cfg = parseCoreConfigV1ToUniversal(input);
   return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
 }
 

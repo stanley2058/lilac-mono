@@ -313,7 +313,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       rewriteText?: (text: string) => string;
       markdownTableRender?: MarkdownTableRenderOptions;
       outputMode: DiscordOutputMode;
-      previewFinalOutputStyle?: DiscordPreviewFinalOutputStyle;
+      outputPreviewModeFinalStyle?: DiscordPreviewFinalOutputStyle;
       outputNotification?: boolean;
       reasoningDisplayMode: "none" | "simple" | "detailed";
       workingIndicators: readonly string[];
@@ -993,7 +993,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     if (this.isPreviewMode()) {
       const finalReplyPromise =
-        this.deps.previewFinalOutputStyle === "plain"
+        this.deps.outputPreviewModeFinalStyle === "plain"
           ? this.postFinalReplyPlain()
           : this.postFinalReplyEmbeds();
       const deletePreviewPromise = this.deleteTransientPreviewMessages().catch(() => undefined);

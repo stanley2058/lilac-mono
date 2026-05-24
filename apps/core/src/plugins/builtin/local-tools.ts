@@ -25,7 +25,7 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
     includeEditFile: true,
     experimentalHashlineEdit:
       context.editingToolMode === "edit_file" &&
-      context.runtime.config?.tools.experimental_hashline_edit === true,
+      context.runtime.config?.tools.editFile.hashline === true,
   });
   localFsToolsByBuildContext.set(context, tools);
   return tools;
