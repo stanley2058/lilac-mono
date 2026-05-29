@@ -49,7 +49,11 @@ cat payload.json | tools <tool> --stdin
 
 ### Built-in Tools
 
-- `fetch` — Fetch a web page
+- `fetch` — Extract agent-ready content from a web page (not raw content).
+  - Usage instruction:
+    - Read/summarize/extract information from a normal webpage -> `tools fetch`
+    - Raw HTML/raw response/status code -> `curl`, `urllib`, browser automation.
+  - For programmatic summarization/parsing, pipe this output directly.
 - `search` — Search the web
 - `summarize` — Summarize the input using Gemini AI
 - `generate.image` — Generate or edit an image with a configured provider and write it to a local file
