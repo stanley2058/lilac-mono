@@ -28,6 +28,8 @@ export type ResolvedModelSlot = {
   providerOptions?: { [x: string]: JSONObject };
   /** Optional Responses API commentary-phase behavior toggle for OpenAI/Codex providers. */
   responseCommentary?: boolean;
+  /** Opt-in Anthropic cache-control injection for system prompt + latest user message. */
+  anthropicPromptCache?: boolean;
 };
 
 export type ResolvedModelRef = Omit<ResolvedModelSlot, "slot">;
@@ -148,13 +150,16 @@ function withOpenAIParallelToolCallsDefault(
 function buildProviderOptions(params: { provider: string; options?: JSONObject }): {
   providerOptions?: { [x: string]: JSONObject };
   responseCommentary?: boolean;
+  anthropicPromptCache?: boolean;
 } {
   const options = params.options ?? {};
 
-  const { codex_instructions, response_commentary, ...rest } = options as JSONObject & {
-    codex_instructions?: JSONValue;
-    response_commentary?: JSONValue;
-  };
+  const { anthropic_prompt_cache, codex_instructions, response_commentary, ...rest } =
+    options as JSONObject & {
+      anthropic_prompt_cache?: JSONValue;
+      codex_instructions?: JSONValue;
+      response_commentary?: JSONValue;
+    };
 
   const hasRest = Object.keys(rest).length > 0;
   const codexInstructions =
@@ -166,6 +171,8 @@ function buildProviderOptions(params: { provider: string; options?: JSONObject }
     response_commentary === true && (params.provider === "openai" || params.provider === "codex")
       ? true
       : undefined;
+
+  const anthropicPromptCache = anthropic_prompt_cache === true ? true : undefined;
 
   const provider = params.provider;
   const ns = providerOptionsNamespace(provider);
@@ -183,6 +190,7 @@ function buildProviderOptions(params: { provider: string; options?: JSONObject }
     return {
       providerOptions: withOpenAIParallelToolCallsDefault(provider, providerOptions),
       responseCommentary,
+      anthropicPromptCache,
     };
   }
 
@@ -209,6 +217,7 @@ function buildProviderOptions(params: { provider: string; options?: JSONObject }
       [openaiKey]: nextOpenAI,
     }),
     responseCommentary,
+    anthropicPromptCache,
   };
 }
 
@@ -278,7 +287,7 @@ function resolveModel(params: {
   const parsed = parseModelSpecifier(params.spec);
   const provider = parsed.provider;
   const modelId = parsed.model;
-  const { providerOptions, responseCommentary } = buildProviderOptions({
+  const { providerOptions, responseCommentary, anthropicPromptCache } = buildProviderOptions({
     provider,
     options: params.options,
   });
@@ -304,6 +313,7 @@ function resolveModel(params: {
     model: p(modelId),
     providerOptions,
     responseCommentary,
+    anthropicPromptCache,
   };
 }
 

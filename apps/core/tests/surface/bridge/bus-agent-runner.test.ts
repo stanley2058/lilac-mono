@@ -37,6 +37,7 @@ import {
   resolveSessionAdditionalPrompts,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
+  shouldEnableAnthropicPromptCache,
   toOpenAIPromptCacheKey,
   withReasoningDisplayDefaultForAnthropicOpus47Models,
   withBlankLineBetweenTextParts,
@@ -489,6 +490,32 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
         },
       },
     });
+  });
+});
+
+describe("shouldEnableAnthropicPromptCache", () => {
+  it("keeps Anthropic prompt caching disabled by default", () => {
+    expect(
+      shouldEnableAnthropicPromptCache({
+        spec: "openrouter/anthropic/claude-sonnet-4.5",
+      }),
+    ).toBe(false);
+  });
+
+  it("enables Anthropic prompt caching only when explicitly opted in", () => {
+    expect(
+      shouldEnableAnthropicPromptCache({
+        spec: "openrouter/anthropic/claude-sonnet-4.5",
+        anthropicPromptCache: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldEnableAnthropicPromptCache({
+        spec: "openrouter/openai/gpt-4o",
+        anthropicPromptCache: true,
+      }),
+    ).toBe(false);
   });
 });
 
