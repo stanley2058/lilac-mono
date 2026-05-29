@@ -270,6 +270,13 @@ function isAnthropicOpus47Model(provider: string, modelId: string): boolean {
   );
 }
 
+export function shouldEnableAnthropicPromptCache(params: {
+  spec: string;
+  anthropicPromptCache?: boolean;
+}): boolean {
+  return params.anthropicPromptCache === true && isAnthropicModelSpec(params.spec);
+}
+
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE = "reasoning.encrypted_content";
 
@@ -3115,7 +3122,11 @@ export async function startBusAgentRunner(params: {
         modelId: resolved.modelId,
       });
 
-      const anthropicPromptCachingEnabled = isAnthropicModelSpec(resolved.spec);
+      const anthropicModel = isAnthropicModelSpec(resolved.spec);
+      const anthropicPromptCachingEnabled = shouldEnableAnthropicPromptCache({
+        spec: resolved.spec,
+        anthropicPromptCache: resolved.anthropicPromptCache,
+      });
 
       // Improve prompt caching stability by providing a session-scoped cache key.
       // This helps when many requests share a large common prefix (e.g. a long system prompt).
@@ -3158,7 +3169,7 @@ export async function startBusAgentRunner(params: {
         };
       })();
 
-      const providerOptionsForAgent = anthropicPromptCachingEnabled
+      const providerOptionsForAgent = anthropicModel
         ? withStableAnthropicUpstreamOrder(resolved.provider, providerOptionsWithPromptCacheKey)
         : providerOptionsWithPromptCacheKey;
       const experimentalDownloadForAgent = buildExperimentalDownloadForAnthropicFallback({

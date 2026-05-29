@@ -199,6 +199,36 @@ describe("resolveModelSlot", () => {
     expect(resolved.providerOptions?.response_commentary).toBeUndefined();
   });
 
+  it("uses anthropic_prompt_cache as a top-level meta option", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openrouter/anthropic/claude-sonnet-4.5",
+      options: {
+        anthropic_prompt_cache: true,
+        openrouter: {
+          route: "fallback",
+        },
+      },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.anthropicPromptCache).toBe(true);
+    expect(resolved.providerOptions?.openrouter?.route).toBe("fallback");
+
+    // Ensure the meta key is not forwarded.
+    expect(resolved.providerOptions?.anthropic_prompt_cache).toBeUndefined();
+  });
+
+  it("defaults anthropic_prompt_cache to disabled", () => {
+    const cfg = baseConfig();
+    cfg.models.main = {
+      model: "openrouter/anthropic/claude-sonnet-4.5",
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.anthropicPromptCache).toBeUndefined();
+  });
+
   it("uses response_commentary as a top-level meta option for codex", () => {
     const cfg = baseConfig();
     cfg.models.main = {

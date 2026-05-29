@@ -193,6 +193,10 @@ models:
   #   sonnet:
   #     model: "openrouter/anthropic/claude-sonnet-4.5"
   #     options:
+  #       # Opt in to Anthropic cache-control injection for the system prompt and
+  #       # latest user message. Disabled by default because cache writes can
+  #       # increase cost and are often ineffective with tool-result pruning.
+  #       anthropic_prompt_cache: true
   #       anthropic:
   #         thinking:
   #           type: enabled
