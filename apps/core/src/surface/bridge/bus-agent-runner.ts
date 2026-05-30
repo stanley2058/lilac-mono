@@ -266,7 +266,10 @@ function isAnthropicOpus47Model(provider: string, modelId: string): boolean {
 
   const normalizedModelId = modelId.toLowerCase();
   return (
-    normalizedModelId.includes("claude-opus-4.7") || normalizedModelId.includes("claude-opus-4-7")
+    normalizedModelId.includes("claude-opus-4.7") ||
+    normalizedModelId.includes("claude-opus-4-7") ||
+    normalizedModelId.includes("claude-opus-4.8") ||
+    normalizedModelId.includes("claude-opus-4-8")
   );
 }
 
