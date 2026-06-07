@@ -2,6 +2,7 @@ import type { MsgRef, SessionRef, SurfaceAttachment } from "../../types";
 import type { SurfaceOutputPart, SurfaceOutputResult, SurfaceOutputStream } from "../../adapter";
 
 import { createIssueComment } from "../../../github/github-api";
+import { markGithubAgentComment } from "../../../github/github-comment-marker";
 import { parseGithubSessionId } from "../../../github/github-ids";
 
 export class GithubOutputStream implements SurfaceOutputStream {
@@ -66,7 +67,7 @@ export class GithubOutputStream implements SurfaceOutputStream {
       return `In reply to ${replyTo.messageId}:\n\n`;
     })();
 
-    const body = `${replyPrefix}${this.text}`.trim();
+    const body = markGithubAgentComment(`${replyPrefix}${this.text}`);
     const res = await createIssueComment({
       owner: thread.owner,
       repo: thread.repo,
