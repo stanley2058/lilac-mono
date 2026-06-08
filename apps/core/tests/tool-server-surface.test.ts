@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Surface } from "../src/tool-server/tools/surface";
 import type { GithubSurfaceApi } from "../src/tool-server/tools/surface";
+import { GITHUB_AGENT_COMMENT_MARKER } from "../src/github/github-comment-marker";
 import {
   DiscordSearchService,
   DiscordSearchStore,
@@ -2106,6 +2107,64 @@ describe("tool-server surface", () => {
         sessionId: "OWNER/REPO#1",
       }),
     ).rejects.toThrow("Discord-only");
+  });
+
+  it("marks github surface send comments as agent-authored", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const calls: Array<Parameters<GithubSurfaceApi["createIssueComment"]>[0]> = [];
+    const githubApi: GithubSurfaceApi = {
+      getIssue: async () => {
+        throw new Error("not implemented");
+      },
+      listIssueComments: async () => [],
+      createIssueComment: async (input) => {
+        calls.push(input);
+        return { id: 678 };
+      },
+      getIssueComment: async () => {
+        throw new Error("not implemented");
+      },
+      editIssueComment: async () => undefined,
+      deleteIssueComment: async () => undefined,
+      createIssueReaction: async () => ({ id: 0 }),
+      createIssueCommentReaction: async () => ({ id: 0 }),
+      listIssueReactions: async () => [],
+      listIssueCommentReactions: async () => [],
+      deleteIssueReactionById: async () => undefined,
+      deleteIssueCommentReactionById: async () => undefined,
+      getGithubAppSlugOrNull: async () => null,
+    };
+
+    const adapter = new FakeAdapter([], {});
+    const tool = new Surface({ adapter, config: cfg, githubApi });
+
+    const res = (await tool.call("surface.messages.send", {
+      client: "github",
+      sessionId: "octo/repo#12",
+      text: "hello from lilac",
+    })) as { ok: true; ref: { platform: string; messageId: string } };
+
+    expect(res.ok).toBe(true);
+    expect(res.ref.platform).toBe("github");
+    expect(res.ref.messageId).toBe("678");
+    expect(calls).toEqual([
+      {
+        owner: "octo",
+        repo: "repo",
+        issueNumber: 12,
+        body: `${GITHUB_AGENT_COMMENT_MARKER}\nhello from lilac`,
+      },
+    ]);
   });
 
   it("defaults github sessionId/messageId from requestId", async () => {

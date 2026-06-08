@@ -23,6 +23,7 @@ import {
   getIssue,
   listIssueComments,
 } from "../../github/github-api";
+import { markGithubAgentComment } from "../../github/github-comment-marker";
 import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
 import { GithubOutputStream } from "./output/github-output-stream";
 
@@ -87,7 +88,7 @@ export class GithubAdapter implements SurfaceAdapter {
       owner: thread.owner,
       repo: thread.repo,
       issueNumber: thread.number,
-      body: text,
+      body: markGithubAgentComment(text),
     });
     return {
       platform: "github",
