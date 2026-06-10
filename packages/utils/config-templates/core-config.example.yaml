@@ -190,6 +190,18 @@ models:
   # Optional preset registry to make model selection ergonomic.
   def: {}
   # def:
+  #   opus:
+  #     model: vercel/anthropic/claude-opus-4.8
+  #     options:
+  #       anthropic:
+  #         thinking:
+  #           # newer Anthropic models use type: "adaptive" and display: "summarized"
+  #           type: adaptive
+  #           display: summarized
+  #           budgetTokens: 12000
+  #       gateway:
+  #         order: [anthropic, vertex, bedrock]
+  # def:
   #   sonnet:
   #     model: "openrouter/anthropic/claude-sonnet-4.5"
   #     options:

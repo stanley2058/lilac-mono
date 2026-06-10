@@ -39,7 +39,7 @@ import {
   shouldCancelIdleOnlyGlobalRequest,
   shouldEnableAnthropicPromptCache,
   toOpenAIPromptCacheKey,
-  withReasoningDisplayDefaultForAnthropicOpus47Models,
+  withReasoningDisplayDefaultForAnthropicModels,
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
@@ -358,12 +358,12 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
   });
 });
 
-describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
+describe("withReasoningDisplayDefaultForAnthropicModels", () => {
   it("does not inject summarized thinking when display is none", () => {
-    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+    const next = withReasoningDisplayDefaultForAnthropicModels({
       reasoningDisplay: "none",
       provider: "anthropic",
-      modelId: "claude-opus-4.7",
+      modelId: "claude-fable-5",
       providerOptions: {
         anthropic: {
           thinking: {
@@ -384,11 +384,11 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
     });
   });
 
-  it("upgrades enabled thinking to adaptive summarized for opus 4.7", () => {
-    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+  it("injects summarized display without changing thinking type", () => {
+    const next = withReasoningDisplayDefaultForAnthropicModels({
       reasoningDisplay: "simple",
       provider: "anthropic",
-      modelId: "claude-opus-4.7",
+      modelId: "claude-fable-5",
       providerOptions: {
         anthropic: {
           thinking: {
@@ -402,7 +402,7 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
     expect(next).toEqual({
       anthropic: {
         thinking: {
-          type: "adaptive",
+          type: "enabled",
           budgetTokens: 12000,
           display: "summarized",
         },
@@ -410,11 +410,11 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
     });
   });
 
-  it("injects summarized display for vercel/openrouter anthropic opus 4.7 models", () => {
-    const vercel = withReasoningDisplayDefaultForAnthropicOpus47Models({
+  it("injects summarized display for vercel/openrouter anthropic models", () => {
+    const vercel = withReasoningDisplayDefaultForAnthropicModels({
       reasoningDisplay: "detailed",
       provider: "vercel",
-      modelId: "anthropic/claude-opus-4.7",
+      modelId: "anthropic/claude-fable-5",
       providerOptions: {
         anthropic: {
           thinking: {
@@ -427,10 +427,10 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
       },
     });
 
-    const openrouter = withReasoningDisplayDefaultForAnthropicOpus47Models({
+    const openrouter = withReasoningDisplayDefaultForAnthropicModels({
       reasoningDisplay: "detailed",
       provider: "openrouter",
-      modelId: "anthropic/claude-opus-4-7",
+      modelId: "anthropic/claude-future-6",
       providerOptions: {
         anthropic: {
           thinking: {
@@ -468,10 +468,10 @@ describe("withReasoningDisplayDefaultForAnthropicOpus47Models", () => {
   });
 
   it("does not override explicit anthropic thinking display", () => {
-    const next = withReasoningDisplayDefaultForAnthropicOpus47Models({
+    const next = withReasoningDisplayDefaultForAnthropicModels({
       reasoningDisplay: "simple",
       provider: "anthropic",
-      modelId: "claude-opus-4.7",
+      modelId: "claude-future-6",
       providerOptions: {
         anthropic: {
           thinking: {

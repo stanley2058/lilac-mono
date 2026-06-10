@@ -261,18 +261,6 @@ function isAnthropicBackedModel(provider: string, modelId: string): boolean {
   return modelId.startsWith("anthropic/");
 }
 
-function isAnthropicOpus47Model(provider: string, modelId: string): boolean {
-  if (!isAnthropicBackedModel(provider, modelId)) return false;
-
-  const normalizedModelId = modelId.toLowerCase();
-  return (
-    normalizedModelId.includes("claude-opus-4.7") ||
-    normalizedModelId.includes("claude-opus-4-7") ||
-    normalizedModelId.includes("claude-opus-4.8") ||
-    normalizedModelId.includes("claude-opus-4-8")
-  );
-}
-
 export function shouldEnableAnthropicPromptCache(params: {
   spec: string;
   anthropicPromptCache?: boolean;
@@ -334,14 +322,14 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
   };
 }
 
-export function withReasoningDisplayDefaultForAnthropicOpus47Models(params: {
+export function withReasoningDisplayDefaultForAnthropicModels(params: {
   reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
   provider: string;
   modelId: string;
   providerOptions: { [x: string]: JSONObject } | undefined;
 }): { [x: string]: JSONObject } | undefined {
   if (params.reasoningDisplay === "none") return params.providerOptions;
-  if (!isAnthropicOpus47Model(params.provider, params.modelId)) return params.providerOptions;
+  if (!isAnthropicBackedModel(params.provider, params.modelId)) return params.providerOptions;
 
   const base = params.providerOptions ?? {};
   const rawAnthropic = base["anthropic"];
@@ -365,21 +353,14 @@ export function withReasoningDisplayDefaultForAnthropicOpus47Models(params: {
     return params.providerOptions;
   }
 
-  let nextThinking: JSONObject;
-  if (thinkingType === "adaptive") {
-    nextThinking = {
-      ...existingThinking,
-      display: "summarized",
-    };
-  } else if (thinkingType === "enabled") {
-    nextThinking = {
-      ...existingThinking,
-      type: "adaptive",
-      display: "summarized",
-    };
-  } else {
+  if (thinkingType !== "adaptive" && thinkingType !== "enabled") {
     return params.providerOptions;
   }
+
+  const nextThinking: JSONObject = {
+    ...existingThinking,
+    display: "summarized",
+  };
 
   return {
     ...base,
@@ -3142,17 +3123,15 @@ export async function startBusAgentRunner(params: {
         providerOptions: resolved.providerOptions,
       });
 
-      // Anthropic Opus 4.7 defaults to omitting thinking text unless
+      // Newer Anthropic models can default to omitting thinking text unless
       // anthropic.thinking.display="summarized" is set. When the user wants a
-      // reasoning lane and has thinking enabled, upgrade the legacy enabled mode
-      // to adaptive and request summarized thinking text.
-      const providerOptionsWithReasoningDisplay =
-        withReasoningDisplayDefaultForAnthropicOpus47Models({
-          reasoningDisplay: cfg.agent.reasoningDisplay,
-          provider: resolved.provider,
-          modelId: resolved.modelId,
-          providerOptions: providerOptionsWithOpenAIReasoningSummary,
-        });
+      // reasoning lane and has thinking enabled, request summarized thinking text.
+      const providerOptionsWithReasoningDisplay = withReasoningDisplayDefaultForAnthropicModels({
+        reasoningDisplay: cfg.agent.reasoningDisplay,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        providerOptions: providerOptionsWithOpenAIReasoningSummary,
+      });
 
       // Prompt cache key only applies for direct OpenAI/Codex providers.
       const providerOptionsWithPromptCacheKey = (() => {
