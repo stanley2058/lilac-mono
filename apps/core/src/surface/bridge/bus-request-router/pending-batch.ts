@@ -13,6 +13,7 @@ export type PendingMentionReplyBatchItem = {
 export type PendingMentionReplyBatch = {
   sourceRequestId: string;
   sessionConfigId: string;
+  parentChannelId?: string;
   sessionMode: SessionMode;
   modelOverride?: string;
   items: PendingMentionReplyBatchItem[];
@@ -24,6 +25,7 @@ export function enqueuePendingMentionReplyBatch(params: {
     sessionId: string;
     sourceRequestId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     sessionMode: SessionMode;
     modelOverride?: string;
     item: PendingMentionReplyBatchItem;
@@ -35,6 +37,7 @@ export function enqueuePendingMentionReplyBatch(params: {
     params.pendingMentionReplyBatchBySession.set(params.input.sessionId, {
       sourceRequestId: params.input.sourceRequestId,
       sessionConfigId: params.input.sessionConfigId,
+      parentChannelId: params.input.parentChannelId,
       sessionMode: params.input.sessionMode,
       modelOverride: params.input.modelOverride,
       items: [
@@ -65,6 +68,7 @@ export function enqueuePendingMentionReplyBatch(params: {
     existing.modelOverride = params.input.modelOverride;
   }
   existing.sessionConfigId = params.input.sessionConfigId;
+  existing.parentChannelId = params.input.parentChannelId;
   existing.sessionMode = params.input.sessionMode;
 }
 

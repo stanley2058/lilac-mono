@@ -23,6 +23,14 @@ export function parseSessionConfigIdFromRaw(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function parseParentChannelIdFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)["parentChannelId"];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function parseRequestModelOverrideFromRaw(raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const value = (raw as Record<string, unknown>)["modelOverride"];

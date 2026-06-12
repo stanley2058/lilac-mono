@@ -192,6 +192,42 @@ describe("core tool plugin manager", () => {
     expect([...exploreTools.specs.keys()].sort()).toEqual(["batch", "glob", "grep", "read_file"]);
   });
 
+  it("hides unsandboxed local tools in restricted mode", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({});
+
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
+        config: cfg,
+      },
+      dataDir,
+    });
+
+    await manager.init();
+
+    const restrictedTools = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "apply_patch",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents!,
+      requestContext: {
+        requestId: "req:restricted-tools",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 0,
+        subagentProfile: "primary",
+        safetyMode: "restricted",
+      },
+    });
+
+    expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch"]);
+  });
+
   it("shares local read state between read_file and edit_file within one toolset", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");

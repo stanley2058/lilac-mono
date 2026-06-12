@@ -75,19 +75,19 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     withBuiltinMetadata({
       name: "read_file",
       supportsBatch: true,
-      isEnabled: () => true,
+      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("read_file", context),
     }),
     withBuiltinMetadata({
       name: "glob",
       supportsBatch: true,
-      isEnabled: () => true,
+      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("glob", context),
     }),
     withBuiltinMetadata({
       name: "grep",
       supportsBatch: true,
-      isEnabled: () => true,
+      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
     withBuiltinMetadata({

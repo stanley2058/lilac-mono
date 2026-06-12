@@ -22,6 +22,7 @@ export type PublishBusRequestInput = {
   requestId: string;
   sessionId: string;
   sessionConfigId: string;
+  parentChannelId?: string;
   queue: RequestQueueMode;
   triggerType: "mention" | "reply" | "active";
   sessionMode: SessionMode;
@@ -66,6 +67,7 @@ export async function publishBusRequest(params: {
           : {}),
         sessionMode: params.input.sessionMode,
         sessionConfigId: params.input.sessionConfigId,
+        ...(params.input.parentChannelId ? { parentChannelId: params.input.parentChannelId } : {}),
         ...(params.input.modelOverride ? { modelOverride: params.input.modelOverride } : {}),
       },
     },
@@ -89,6 +91,7 @@ export async function publishComposedRequest(params: {
     requestId: string;
     sessionId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     queue: RequestQueueMode;
     triggerType: "mention" | "reply" | "active";
     msgRef: MsgRef;
@@ -123,6 +126,7 @@ export async function publishComposedRequest(params: {
       requestId: params.input.requestId,
       sessionId: params.input.sessionId,
       sessionConfigId: params.input.sessionConfigId,
+      parentChannelId: params.input.parentChannelId,
       queue: params.input.queue,
       triggerType: params.input.triggerType,
       sessionMode: params.input.sessionMode,
@@ -147,6 +151,7 @@ export async function publishActiveChannelPrompt(params: {
     requestId: string;
     sessionId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     triggerMsgRef: MsgRef | undefined;
     triggerType: "mention" | "reply" | undefined;
     sessionMode: SessionMode;
@@ -196,6 +201,7 @@ export async function publishActiveChannelPrompt(params: {
       requestId: params.input.requestId,
       sessionId: params.input.sessionId,
       sessionConfigId: params.input.sessionConfigId,
+      parentChannelId: params.input.parentChannelId,
       queue: "prompt",
       triggerType: params.input.triggerType ?? "active",
       sessionMode: params.input.sessionMode,
@@ -219,6 +225,7 @@ export async function publishSingleMessageToActiveRequest(params: {
     requestId: string;
     sessionId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     queue: "followUp" | "steer" | "interrupt";
     msgRef: MsgRef;
     sessionMode: SessionMode;
@@ -246,6 +253,7 @@ export async function publishSingleMessageToActiveRequest(params: {
       requestId: params.input.requestId,
       sessionId: params.input.sessionId,
       sessionConfigId: params.input.sessionConfigId,
+      parentChannelId: params.input.parentChannelId,
       queue: params.input.queue,
       triggerType: "active",
       sessionMode: params.input.sessionMode,
@@ -266,6 +274,7 @@ export async function publishSingleMessagePrompt(params: {
     requestId: string;
     sessionId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     msgRef: MsgRef;
     sessionMode: SessionMode;
     modelOverride?: string;
@@ -294,6 +303,7 @@ export async function publishSingleMessagePrompt(params: {
       requestId: params.input.requestId,
       sessionId: params.input.sessionId,
       sessionConfigId: params.input.sessionConfigId,
+      parentChannelId: params.input.parentChannelId,
       queue: "prompt",
       triggerType: "active",
       sessionMode: params.input.sessionMode,

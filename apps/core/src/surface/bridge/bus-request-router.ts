@@ -490,6 +490,7 @@ export async function startBusRequestRouter(params: {
           requestId,
           sessionId,
           sessionConfigId,
+          parentChannelId,
           msgRef,
           sessionMode: mode,
           modelOverride,
@@ -628,6 +629,7 @@ export async function startBusRequestRouter(params: {
         replyToBot: flags.replyToBot,
         replyToMessageId: flags.replyToMessageId,
         active,
+        parentChannelId,
         sessionMode: mode,
         sessionConfigId,
         modelOverride,
@@ -654,6 +656,7 @@ export async function startBusRequestRouter(params: {
     sessionId: string;
     sourceRequestId: string;
     sessionConfigId: string;
+    parentChannelId?: string;
     sessionMode: SessionMode;
     modelOverride?: string;
     item: PendingMentionReplyBatchItem;
@@ -695,6 +698,7 @@ export async function startBusRequestRouter(params: {
         requestId: input.sourceRequestId,
         sessionId: input.sessionId,
         sessionConfigId: batch.sessionConfigId,
+        parentChannelId: batch.parentChannelId,
         queue: "followUp",
         msgRef: item.msgRef,
         sessionMode: batch.sessionMode,
@@ -775,6 +779,7 @@ export async function startBusRequestRouter(params: {
       requestId,
       sessionId: input.sessionId,
       sessionConfigId: batch.sessionConfigId,
+      parentChannelId: batch.parentChannelId,
       queue: "prompt",
       triggerType: "reply",
       sessionMode: batch.sessionMode,
@@ -1086,6 +1091,7 @@ export async function startBusRequestRouter(params: {
             msgRef,
             sessionMode,
             sessionConfigId,
+            parentChannelId,
             transformUserText: combineTextTransforms(
               modelOverrideTransform,
               continueDirectiveTransform,
@@ -1111,6 +1117,7 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
+          parentChannelId,
           transformUserText: combineTextTransforms(
             modelOverrideTransform,
             continueDirectiveTransform,
@@ -1146,6 +1153,7 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode,
           sessionConfigId,
+          parentChannelId,
           transformUserText: combineTextTransforms(
             modelOverrideTransform,
             continueDirectiveTransform,
@@ -1174,6 +1182,7 @@ export async function startBusRequestRouter(params: {
           triggerType: "reply",
           sessionMode,
           sessionConfigId,
+          parentChannelId,
           botMentionNames,
           transformTriggerUserText: combineTextTransforms(
             modelOverrideTransform,
@@ -1193,6 +1202,7 @@ export async function startBusRequestRouter(params: {
         requestId: bufferedPromptRequestIdForActiveRequest(active.requestId),
         sessionId,
         sessionConfigId,
+        parentChannelId,
         msgRef,
         sessionMode,
         modelOverride,
@@ -1221,6 +1231,7 @@ export async function startBusRequestRouter(params: {
         triggerType: undefined,
         sessionMode,
         sessionConfigId,
+        parentChannelId,
         modelOverride,
         botMentionNames,
         transformTriggerUserText: combineTextTransforms(
@@ -1251,6 +1262,7 @@ export async function startBusRequestRouter(params: {
         triggerType,
         sessionMode,
         sessionConfigId,
+        parentChannelId,
         modelOverride,
         botMentionNames,
         transformTriggerUserText: combineTextTransforms(
@@ -1440,6 +1452,7 @@ export async function startBusRequestRouter(params: {
     replyToBot?: boolean;
     replyToMessageId?: string;
     active: ActiveSessionState | undefined;
+    parentChannelId?: string;
     sessionMode: SessionMode;
     sessionConfigId: string;
     modelOverride?: string;
@@ -1459,6 +1472,7 @@ export async function startBusRequestRouter(params: {
       mentionsBot,
       replyToBot,
       active,
+      parentChannelId,
       requestModelOverride,
       continueCount,
       botMentionNames,
@@ -1529,6 +1543,7 @@ export async function startBusRequestRouter(params: {
           msgRef,
           sessionMode: input.sessionMode,
           sessionConfigId: input.sessionConfigId,
+          parentChannelId,
           transformUserText: combineTextTransforms(
             modelOverrideTransform,
             continueDirectiveTransform,
@@ -1551,6 +1566,7 @@ export async function startBusRequestRouter(params: {
           sessionId,
           sourceRequestId: active.requestId,
           sessionConfigId: input.sessionConfigId,
+          parentChannelId,
           sessionMode: input.sessionMode,
           modelOverride: input.modelOverride,
           item: {
@@ -1585,6 +1601,7 @@ export async function startBusRequestRouter(params: {
       userId,
       sessionMode: input.sessionMode,
       sessionConfigId: input.sessionConfigId,
+      parentChannelId,
       modelOverride: input.modelOverride,
       transformTriggerUserText: combineTextTransforms(
         modelOverrideTransform,

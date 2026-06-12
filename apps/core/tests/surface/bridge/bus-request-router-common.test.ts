@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 
 import {
   parseLeadingContinueDirective,
+  resolveSessionSafetyMode,
   stripLeadingContinueDirective,
+  withDefaultToolsConfig,
 } from "../../../src/surface/bridge/bus-request-router/common";
 
 describe("continue directives", () => {
@@ -32,5 +34,22 @@ describe("continue directives", () => {
     expect(
       stripLeadingContinueDirective({ text: "<@bot> !continue resume please", botNames }),
     ).toBe("<@bot> resume please");
+  });
+});
+
+describe("session safety mode", () => {
+  it("inherits restricted safety mode from parent when child has local prompts", async () => {
+    const cfg = await withDefaultToolsConfig({
+      surface: {
+        router: {
+          sessionModes: {
+            parent: { safetyMode: "restricted" },
+            child: { additionalPrompts: ["child memo"] },
+          },
+        },
+      },
+    });
+
+    expect(resolveSessionSafetyMode(cfg, "child", "parent")).toBe("restricted");
   });
 });

@@ -94,6 +94,7 @@ import {
   type AgentRunProfile,
   parseCustomCommandFromRaw,
   parseBufferedForActiveRequestIdFromRaw,
+  parseParentChannelIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
   parseRouterSessionModeFromRaw,
@@ -101,10 +102,9 @@ import {
   parseSubagentMetaFromRaw,
   requestRawReferencesMessage,
 } from "./bus-agent-runner/raw";
+import { resolveSessionSafetyMode, type SessionSafetyMode } from "./bus-request-router/common";
 import { messagesContainSurfaceMetadata } from "./surface-metadata";
 import type { CustomCommandManager } from "../../custom-commands/manager";
-
-type SessionSafetyMode = "trusted" | "restricted";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -3191,8 +3191,12 @@ export async function startBusAgentRunner(params: {
       });
 
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
-      const safetyMode: SessionSafetyMode =
-        cfg.surface.router.sessionModes[sessionConfigId]?.safetyMode ?? "trusted";
+      const parentChannelId = parseParentChannelIdFromRaw(next.raw) ?? undefined;
+      const safetyMode: SessionSafetyMode = resolveSessionSafetyMode(
+        cfg,
+        sessionId,
+        parentChannelId,
+      );
 
       const additionalSessionPrompts = await resolveSessionAdditionalPrompts({
         entries: cfg.surface.router.sessionModes[sessionConfigId]?.additionalPrompts,
