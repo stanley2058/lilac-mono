@@ -82,6 +82,7 @@ export type UniversalCoreConfig = {
           mode?: "mention" | "active";
           gate?: boolean;
           model?: string;
+          safetyMode?: "trusted" | "restricted";
           additionalPrompts?: string[];
         }
       >;

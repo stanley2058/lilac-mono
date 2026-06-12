@@ -8,6 +8,7 @@ import {
 import type { MsgRef } from "../../types";
 
 export type SessionMode = "mention" | "active";
+export type SessionSafetyMode = "trusted" | "restricted";
 
 export function previewText(text: string, max = 200): string {
   const trimmed = text.trim();
@@ -256,7 +257,11 @@ export function resolveSessionConfigId(input: {
   parentChannelId?: string;
 }): string {
   const entry = input.cfg.surface.router.sessionModes[input.sessionId];
-  if (entry && Object.prototype.hasOwnProperty.call(entry, "additionalPrompts")) {
+  if (
+    entry &&
+    (Object.prototype.hasOwnProperty.call(entry, "additionalPrompts") ||
+      Object.prototype.hasOwnProperty.call(entry, "safetyMode"))
+  ) {
     return input.sessionId;
   }
 
@@ -264,7 +269,11 @@ export function resolveSessionConfigId(input: {
   if (!parentChannelId) return input.sessionId;
 
   const parentEntry = input.cfg.surface.router.sessionModes[parentChannelId];
-  if (parentEntry && Object.prototype.hasOwnProperty.call(parentEntry, "additionalPrompts")) {
+  if (
+    parentEntry &&
+    (Object.prototype.hasOwnProperty.call(parentEntry, "additionalPrompts") ||
+      Object.prototype.hasOwnProperty.call(parentEntry, "safetyMode"))
+  ) {
     return parentChannelId;
   }
 
@@ -301,6 +310,23 @@ export function resolveSessionGateEnabled(
   if (typeof parentGate === "boolean") return parentGate;
 
   return cfg.surface.router.activeGate.enabled;
+}
+
+export function resolveSessionSafetyMode(
+  cfg: CoreConfig,
+  sessionId: string,
+  parentChannelId?: string,
+): SessionSafetyMode {
+  const threadSafetyMode = cfg.surface.router.sessionModes[sessionId]?.safetyMode;
+  if (threadSafetyMode) return threadSafetyMode;
+
+  const parentId = parentChannelId?.trim();
+  if (parentId) {
+    const parentSafetyMode = cfg.surface.router.sessionModes[parentId]?.safetyMode;
+    if (parentSafetyMode) return parentSafetyMode;
+  }
+
+  return "trusted";
 }
 
 export function resolveSessionModelOverride(

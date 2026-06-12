@@ -7,6 +7,7 @@ export type RequestContext = {
   sessionId?: string;
   requestClient?: string;
   cwd?: string;
+  safetyMode?: "trusted" | "restricted";
 };
 
 export type ServerToolPrimaryPositional = {
@@ -65,6 +66,7 @@ export type Level1ExecutionRequestContext = {
   requestClient: string;
   subagentDepth: number;
   subagentProfile: Level1RunProfile;
+  safetyMode?: "trusted" | "restricted";
   metadata?: Readonly<Record<string, unknown>>;
 };
 

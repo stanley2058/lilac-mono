@@ -121,6 +121,8 @@ export const routerSchema = z
           gate: z.boolean().optional(),
           /** Optional per-session model override (alias from models.def or provider/model). */
           model: z.string().trim().min(1).optional(),
+          /** Optional per-session safety mode. Restricted mode is intended for public/untrusted channels. */
+          safetyMode: z.enum(["trusted", "restricted"]).optional(),
           /**
            * Optional extra session memo entries appended to the system prompt.
            *

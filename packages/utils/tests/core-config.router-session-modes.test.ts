@@ -60,6 +60,22 @@ describe("coreConfigSchema surface.router.sessionModes", () => {
     expect(parsed.surface.router.sessionModes.chan?.model).toBe("sonnet");
   });
 
+  it("accepts restricted safety mode session overrides", () => {
+    const parsed = coreConfigSchema.parse({
+      surface: {
+        router: {
+          sessionModes: {
+            public: {
+              safetyMode: "restricted",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.surface.router.sessionModes.public?.safetyMode).toBe("restricted");
+  });
+
   it("accepts canonical and alias heartbeat session keys", () => {
     const parsed = coreConfigSchema.parse({
       surface: {

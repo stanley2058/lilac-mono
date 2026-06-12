@@ -31,6 +31,11 @@ surface:
     #   "123456789012345678":
     #     # Optional: when omitted, this session inherits defaultMode.
     #     mode: active
+    #     # Optional: use restricted mode for public/untrusted channels.
+    #     # Restricted mode runs bash in an overlay filesystem: writes outside
+    #     # /tmp are discarded after the request, while /tmp persists at
+    #     # /tmp/lilac-restricted/<sessionId>.
+    #     safetyMode: restricted
     #     # Optional: override the global activeGate.enabled for this channel.
     #     gate: false
     #     # Optional: override the request model for this session.

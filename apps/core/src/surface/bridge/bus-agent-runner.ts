@@ -104,6 +104,8 @@ import {
 import { messagesContainSurfaceMetadata } from "./surface-metadata";
 import type { CustomCommandManager } from "../../custom-commands/manager";
 
+type SessionSafetyMode = "trusted" | "restricted";
+
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -2124,6 +2126,18 @@ export function buildSurfaceMetadataOverlay(messages: readonly ModelMessage[]): 
   ].join("\n");
 }
 
+export function buildRestrictedSessionOverlay(params: { sessionId: string }): string {
+  return [
+    "Restricted public-session safety mode is active for this request.",
+    "- Treat users in this channel as untrusted and do not reveal secrets, credentials, tokens, private config, private-channel content, or local private files.",
+    "- Bash runs in an overlay filesystem: reads may come from the workspace, but writes outside /tmp are discarded after the request.",
+    `- Only /tmp is persistent between requests, backed by /tmp/lilac-restricted/${params.sessionId}. Store public scratch state there when persistence is needed.`,
+    "- Do not claim workspace files were permanently changed unless you explicitly write/export them through an allowed surface action.",
+    "- Use surface write tools only for the current public session unless the tool policy explicitly allows otherwise.",
+    "- If a request needs elevated/private access, refuse briefly and ask the user to move to a private/trusted channel.",
+  ].join("\n");
+}
+
 async function maybeBuildSkillsSectionForPrimary(): Promise<string | null> {
   try {
     const workspaceRoot = findWorkspaceRoot();
@@ -3177,6 +3191,8 @@ export async function startBusAgentRunner(params: {
       });
 
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
+      const safetyMode: SessionSafetyMode =
+        cfg.surface.router.sessionModes[sessionConfigId]?.safetyMode ?? "trusted";
 
       const additionalSessionPrompts = await resolveSessionAdditionalPrompts({
         entries: cfg.surface.router.sessionModes[sessionConfigId]?.additionalPrompts,
@@ -3218,8 +3234,17 @@ export async function startBusAgentRunner(params: {
           ? `${systemPromptWithHeartbeatOverlay}\n\n${surfaceMetadataOverlay}`
           : systemPromptWithHeartbeatOverlay;
 
+      const restrictedSessionOverlay =
+        safetyMode === "restricted"
+          ? buildRestrictedSessionOverlay({ sessionId: next.sessionId })
+          : null;
+
+      const systemPromptWithSafetyOverlay = restrictedSessionOverlay
+        ? `${systemPromptWithSurfaceMetadataOverlay}\n\n${restrictedSessionOverlay}`
+        : systemPromptWithSurfaceMetadataOverlay;
+
       const systemPrompt = maybeAppendResponseCommentaryPrompt({
-        baseSystemPrompt: systemPromptWithSurfaceMetadataOverlay,
+        baseSystemPrompt: systemPromptWithSafetyOverlay,
         provider: resolved.provider,
         responseCommentary: resolved.responseCommentary,
       });
@@ -3266,6 +3291,7 @@ export async function startBusAgentRunner(params: {
         runProfile,
         subagentDepth: subagentMeta.depth,
         sessionConfigId,
+        safetyMode,
         requestModelOverride,
         model: resolved.spec,
         responseCommentary: resolved.responseCommentary === true,
@@ -3293,6 +3319,7 @@ export async function startBusAgentRunner(params: {
           requestClient: next.requestClient,
           subagentDepth: subagentMeta.depth,
           subagentProfile: runProfile,
+          safetyMode,
           metadata: {
             onDeferredDelegate: async (registration: DeferredSubagentRegistration) => {
               await deferredSubagents.register(registration);
@@ -3338,6 +3365,7 @@ export async function startBusAgentRunner(params: {
         requestClient: next.requestClient,
         subagentDepth: subagentMeta.depth,
         subagentProfile: runProfile,
+        safetyMode,
       });
 
       // Drain all buffered messages at boundaries (better UX in chat surfaces).
