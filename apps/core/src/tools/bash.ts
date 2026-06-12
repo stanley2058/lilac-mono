@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { executeBash } from "./bash-impl";
+import { executeRestrictedBash } from "./restricted-bash";
 
 export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
@@ -91,8 +92,24 @@ export function bashToolWithCwd(defaultCwd: string) {
         "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
-      execute: (input, { experimental_context: context, abortSignal, toolCallId }) =>
-        executeBash({ ...input, cwd: input.cwd ?? defaultCwd }, {
+      execute: (input, { experimental_context: context, abortSignal, toolCallId }) => {
+        const typedContext = context as
+          | {
+              requestId?: string;
+              sessionId?: string;
+              requestClient?: string;
+              safetyMode?: "trusted" | "restricted";
+            }
+          | undefined;
+        const payload = { ...input, cwd: input.cwd ?? defaultCwd };
+        if (typedContext?.safetyMode === "restricted") {
+          return executeRestrictedBash(payload, {
+            workspaceRoot: defaultCwd,
+            context: typedContext,
+            abortSignal,
+          });
+        }
+        return executeBash(payload, {
           context,
           abortSignal,
           toolCallId,
@@ -104,7 +121,8 @@ export function bashToolWithCwd(defaultCwd: string) {
           };
           abortSignal?: AbortSignal;
           toolCallId?: string;
-        }),
+        });
+      },
     }),
   };
 }

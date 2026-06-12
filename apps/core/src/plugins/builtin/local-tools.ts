@@ -93,8 +93,10 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     withBuiltinMetadata({
       name: "edit_file",
       supportsBatch: true,
-      isEnabled: ({ runProfile, editingToolMode }) =>
-        runProfile !== "explore" && editingToolMode === "edit_file",
+      isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
+        runProfile !== "explore" &&
+        editingToolMode === "edit_file" &&
+        requestContext?.safetyMode !== "restricted",
       createTool: (context) => getEditFileTool(context),
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;
@@ -107,8 +109,10 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     withBuiltinMetadata({
       name: "apply_patch",
       supportsBatch: true,
-      isEnabled: ({ runProfile, editingToolMode }) =>
-        runProfile !== "explore" && editingToolMode === "apply_patch",
+      isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
+        runProfile !== "explore" &&
+        editingToolMode === "apply_patch" &&
+        requestContext?.safetyMode !== "restricted",
       createTool: ({ cwd }) => applyPatchTool({ cwd }).apply_patch,
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;
@@ -120,11 +124,12 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     }),
     withBuiltinMetadata({
       name: "subagent_delegate",
-      isEnabled: ({ runProfile, runtime, subagentConfig, subagentDepth }) =>
+      isEnabled: ({ runProfile, runtime, subagentConfig, subagentDepth, requestContext }) =>
         runProfile !== "explore" &&
         Boolean(runtime.bus) &&
         subagentConfig.enabled &&
-        subagentDepth < subagentConfig.maxDepth,
+        subagentDepth < subagentConfig.maxDepth &&
+        requestContext?.safetyMode !== "restricted",
       createTool: ({ runtime, subagentConfig, requestContext }) => {
         if (!runtime.bus) {
           throw new Error("subagent_delegate requires bus");

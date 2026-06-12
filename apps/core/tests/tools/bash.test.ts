@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { executeBash } from "../../src/tools/bash-impl";
+import { executeRestrictedBash } from "../../src/tools/restricted-bash";
 import { analyzeBashCommand } from "../../src/tools/bash-safety";
 
 const STDIN_PROBE_COMMAND =
@@ -193,6 +194,66 @@ describe("executeBash", () => {
     expect(fullOutput).toContain("--- stderr ---");
 
     await fs.unlink(outPath).catch(() => undefined);
+  });
+});
+
+describe("executeRestrictedBash", () => {
+  it("uses an overlay workspace and persistent per-session /tmp", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-workspace-"),
+    );
+    const sessionId = "restricted-bash-test-session";
+    const sessionTmp = path.join("/tmp/lilac-restricted", sessionId);
+
+    try {
+      await fs.rm(sessionTmp, { recursive: true, force: true });
+      await fs.writeFile(path.join(workspace, "visible.txt"), "original\n", "utf8");
+      await fs.writeFile(path.join(workspace, ".env"), "SECRET=1\n", "utf8");
+
+      const first = await executeRestrictedBash(
+        {
+          command:
+            "cat visible.txt && echo changed > visible.txt && cat visible.txt && echo keep > /tmp/state.txt",
+          cwd: workspace,
+        },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-bash-test-req-1",
+            sessionId,
+            requestClient: "discord",
+          },
+        },
+      );
+
+      expect(first.exitCode).toBe(0);
+      expect(first.stdout).toContain("original");
+      expect(first.stdout).toContain("changed");
+      expect(await fs.readFile(path.join(workspace, "visible.txt"), "utf8")).toBe("original\n");
+
+      const second = await executeRestrictedBash(
+        {
+          command: "cat visible.txt && cat /tmp/state.txt && cat .env",
+          cwd: workspace,
+        },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-bash-test-req-2",
+            sessionId,
+            requestClient: "discord",
+          },
+        },
+      );
+
+      expect(second.exitCode).not.toBe(0);
+      expect(second.stdout).toContain("original");
+      expect(second.stdout).toContain("keep");
+      expect(second.stdout).not.toContain("SECRET=1");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(sessionTmp, { recursive: true, force: true });
+    }
   });
 });
 
