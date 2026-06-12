@@ -562,6 +562,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         }),
         healthProvider: getRuntimeHealthReport,
         onUnhealthy: opts.onUnhealthy,
+        getConfig: () => getCoreConfig(),
         requestMessageCache: {
           get: requestMessageCache.get,
         },

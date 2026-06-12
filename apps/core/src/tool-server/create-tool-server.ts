@@ -1,5 +1,5 @@
 import Elysia, { NotFoundError } from "elysia";
-import { createLogger, getBuildInfo } from "@stanley2058/lilac-utils";
+import { createLogger, getBuildInfo, type CoreConfig } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,7 +84,55 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
     sessionId: headerStr(headers["x-lilac-session-id"]),
     requestClient: headerStr(headers["x-lilac-request-client"]),
     cwd: headerStr(headers["x-lilac-cwd"]),
+    safetyMode:
+      headerStr(headers["x-lilac-safety-mode"]) === "restricted" ? "restricted" : undefined,
   };
+}
+
+type SafetyMode = "trusted" | "restricted";
+
+const RESTRICTED_LEVEL2_ALLOWED = new Set([
+  "fetch",
+  "search",
+  "skills.list",
+  "skills.brief",
+  "skills.full",
+  "summarize",
+  "surface.help",
+  "surface.sessions.listParticipants",
+  "surface.messages.list",
+  "surface.messages.read",
+  "surface.messages.send",
+  "surface.reactions.list",
+  "surface.reactions.listDetailed",
+  "surface.reactions.add",
+]);
+
+function isCurrentSessionScopedSurfaceCall(params: {
+  callableId: string;
+  input: unknown;
+  sessionId?: string;
+}): boolean {
+  if (!params.callableId.startsWith("surface.")) return true;
+  if (!params.sessionId) return false;
+  if (!params.input || typeof params.input !== "object" || Array.isArray(params.input)) return true;
+
+  const inputSessionId = Reflect.get(params.input, "sessionId");
+  if (inputSessionId === undefined || inputSessionId === null || inputSessionId === "") return true;
+  return inputSessionId === params.sessionId;
+}
+
+function isRestrictedCallableAllowed(params: {
+  callableId: string;
+  input?: unknown;
+  ctx: RequestContext;
+}): boolean {
+  if (!RESTRICTED_LEVEL2_ALLOWED.has(params.callableId)) return false;
+  return isCurrentSessionScopedSurfaceCall({
+    callableId: params.callableId,
+    input: params.input,
+    sessionId: params.ctx.sessionId,
+  });
 }
 
 function estimateJsonBytes(value: unknown): number {
@@ -104,6 +152,7 @@ export type ToolServerOptions = {
   healthConfig?: ToolServerHealthConfig;
   healthProvider?: () => ToolServerHealthProviderResult | Promise<ToolServerHealthProviderResult>;
   onUnhealthy?: (snapshot: ToolServerHealthSnapshot) => void | Promise<void>;
+  getConfig?: () => Promise<CoreConfig>;
   /** Optional cache to provide request-scoped messages to tools. */
   requestMessageCache?: {
     get(requestId: string): readonly unknown[] | undefined;
@@ -191,6 +240,53 @@ export function createToolServer(options: ToolServerOptions) {
     await refreshToolMapping();
   }
 
+  async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
+    if (ctx.safetyMode === "restricted") return "restricted";
+    const sessionId = ctx.sessionId;
+    if (!sessionId || !options.getConfig) return "trusted";
+    try {
+      const cfg = await options.getConfig();
+      return cfg.surface.router.sessionModes[sessionId]?.safetyMode ?? "trusted";
+    } catch (error) {
+      logger.warn("failed to resolve tool request safety mode", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "trusted";
+    }
+  }
+
+  async function listToolsForContext(ctx: RequestContext) {
+    const safetyMode = await resolveSafetyMode(ctx);
+    const tools = await getActiveTools();
+    const toolDescs = await Promise.allSettled(tools.map((t) => t.list()));
+    const succeeded = toolDescs
+      .filter(
+        (result): result is PromiseFulfilledResult<Awaited<ReturnType<ServerTool["list"]>>> =>
+          result.status === "fulfilled",
+      )
+      .map((result) => result.value);
+
+    return {
+      tools: succeeded.flatMap((s) =>
+        s
+          .filter(
+            (entry) =>
+              safetyMode !== "restricted" ||
+              isRestrictedCallableAllowed({ callableId: entry.callableId, ctx }),
+          )
+          .map((entry: Awaited<ReturnType<ServerTool["list"]>>[number]) => ({
+            callableId: entry.callableId,
+            name: entry.name,
+            description: entry.description,
+            shortInput: entry.shortInput,
+            primaryPositional: entry.primaryPositional,
+            hidden: entry.hidden,
+          })),
+      ),
+    };
+  }
+
   const app = options.app ?? new Elysia();
 
   app.onError(({ code, error }) => {
@@ -247,29 +343,9 @@ export function createToolServer(options: ToolServerOptions) {
 
   app.get(
     "/list",
-    async () => {
+    async ({ headers }) => {
       await ensureFreshToolMapping();
-      const tools = await getActiveTools();
-      const toolDescs = await Promise.allSettled(tools.map((t) => t.list()));
-      const succeeded = toolDescs
-        .filter(
-          (result): result is PromiseFulfilledResult<Awaited<ReturnType<ServerTool["list"]>>> =>
-            result.status === "fulfilled",
-        )
-        .map((result) => result.value);
-
-      return {
-        tools: succeeded.flatMap((s) =>
-          s.map((entry: Awaited<ReturnType<ServerTool["list"]>>[number]) => ({
-            callableId: entry.callableId,
-            name: entry.name,
-            description: entry.description,
-            shortInput: entry.shortInput,
-            primaryPositional: entry.primaryPositional,
-            hidden: entry.hidden,
-          })),
-        ),
-      };
+      return await listToolsForContext(parseRequestContext(headers));
     },
     {
       response: BridgeListResponse,
@@ -287,8 +363,16 @@ export function createToolServer(options: ToolServerOptions) {
     return { ok: true as const };
   });
 
-  app.get("/help/:callableId", async ({ params }) => {
+  app.get("/help/:callableId", async ({ params, headers }) => {
     await ensureFreshToolMapping();
+    const ctx = parseRequestContext(headers);
+    const safetyMode = await resolveSafetyMode(ctx);
+    if (
+      safetyMode === "restricted" &&
+      !isRestrictedCallableAllowed({ callableId: params.callableId, ctx })
+    ) {
+      throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
+    }
     const tool = callMapping.get(params.callableId);
     if (!tool) {
       throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
@@ -314,6 +398,17 @@ export function createToolServer(options: ToolServerOptions) {
       }
 
       const ctx = parseRequestContext(headers);
+      const safetyMode = await resolveSafetyMode(ctx);
+      ctx.safetyMode = safetyMode;
+      if (
+        safetyMode === "restricted" &&
+        !isRestrictedCallableAllowed({ callableId: body.callableId, input: body.input, ctx })
+      ) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' is not allowed in restricted public-session mode`,
+        };
+      }
       const inputBytes = estimateJsonBytes(body.input);
       const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
       const deadlineAt = Date.now() + timeoutMs;

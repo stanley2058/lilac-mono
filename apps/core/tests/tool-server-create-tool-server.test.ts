@@ -244,6 +244,138 @@ describe("createToolServer", () => {
     await server.stop();
   });
 
+  it("filters and rejects restricted public-session callables", async () => {
+    const calls: string[] = [];
+    const tool: ServerTool = {
+      id: "test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "fetch",
+            name: "Fetch",
+            description: "Fetch a web page",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "onboarding.restart",
+            name: "Restart",
+            description: "Restart",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "surface.messages.send",
+            name: "Send",
+            description: "Send",
+            shortInput: [],
+            input: [],
+          },
+        ];
+      },
+      async call(callableId) {
+        calls.push(callableId);
+        return { ok: true, callableId };
+      },
+    };
+
+    const server = createToolServer({
+      tools: [tool],
+    });
+
+    await server.init();
+
+    const restrictedHeaders = {
+      "x-lilac-safety-mode": "restricted",
+      "x-lilac-session-id": "chan",
+      "x-lilac-request-id": "req:1",
+      "x-lilac-request-client": "discord",
+    };
+
+    const listRes = await server.app.handle(
+      new Request("http://localhost/list", {
+        headers: restrictedHeaders,
+      }),
+    );
+    expect(listRes.status).toBe(200);
+    expect(await listRes.json()).toEqual({
+      tools: [
+        {
+          callableId: "fetch",
+          name: "Fetch",
+          description: "Fetch a web page",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "surface.messages.send",
+          name: "Send",
+          description: "Send",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+      ],
+    });
+
+    const blockedRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          ...restrictedHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "onboarding.restart", input: {} }),
+      }),
+    );
+    expect(blockedRes.status).toBe(200);
+    expect(await blockedRes.json()).toEqual({
+      isError: true,
+      output: "Tool 'onboarding.restart' is not allowed in restricted public-session mode",
+    });
+
+    const crossSessionRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          ...restrictedHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "surface.messages.send",
+          input: { sessionId: "other", text: "hi" },
+        }),
+      }),
+    );
+    expect(crossSessionRes.status).toBe(200);
+    expect(await crossSessionRes.json()).toEqual({
+      isError: true,
+      output: "Tool 'surface.messages.send' is not allowed in restricted public-session mode",
+    });
+
+    const allowedRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          ...restrictedHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "fetch", input: { url: "https://example.com" } }),
+      }),
+    );
+    expect(allowedRes.status).toBe(200);
+    expect(await allowedRes.json()).toEqual({
+      isError: false,
+      output: { ok: true, callableId: "fetch" },
+    });
+    expect(calls).toEqual(["fetch"]);
+
+    await server.stop();
+  });
+
   it("supports plugin-backed list/call/reload flows", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
     const dataDir = path.join(tmpRoot, "data");
