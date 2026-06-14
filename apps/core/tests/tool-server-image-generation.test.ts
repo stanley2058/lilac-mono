@@ -9,6 +9,7 @@ import {
   resolveImageEditInputs,
   videoGenerateInputSchema,
 } from "../src/tool-server/tools/generate";
+import { resolveRestrictedSessionTmpDir } from "../src/shared/attachment-utils";
 
 const ONE_BY_ONE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+9n0AAAAASUVORK5CYII=";
@@ -85,6 +86,51 @@ describe("tool-server image generation", () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("allows restricted image inputs from sandbox /tmp", async () => {
+    const sessionId = "restricted-image-test";
+    const restrictedTmp = resolveRestrictedSessionTmpDir(sessionId);
+    const imagePath = join(restrictedTmp, "input.png");
+
+    try {
+      await fs.mkdir(restrictedTmp, { recursive: true });
+      await fs.writeFile(imagePath, Buffer.from(ONE_BY_ONE_PNG_BASE64, "base64"));
+
+      const prompt = await buildImageGenerationPrompt(
+        "/tmp",
+        {
+          prompt: "Make this brighter",
+          inputImages: ["input.png"],
+        },
+        {
+          sessionId,
+          safetyMode: "restricted",
+        },
+      );
+
+      expect(typeof prompt).toBe("object");
+      if (typeof prompt === "string") return;
+      expect(prompt.images[0]).toBeInstanceOf(Uint8Array);
+    } finally {
+      await fs.rm(restrictedTmp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects restricted image inputs outside sandbox /tmp", async () => {
+    await expect(
+      buildImageGenerationPrompt(
+        "/workspace",
+        {
+          prompt: "Edit this image",
+          inputImages: ["private.png"],
+        },
+        {
+          sessionId: "restricted-image-test",
+          safetyMode: "restricted",
+        },
+      ),
+    ).rejects.toThrow("Restricted mode only allows file paths under /tmp");
   });
 
   it("rejects non-image files in inputImages", async () => {

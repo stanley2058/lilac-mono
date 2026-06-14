@@ -13,6 +13,7 @@ import {
 } from "@stanley2058/lilac-event-bus";
 import type { RequestContext } from "../src/tool-server/types";
 import { Attachment } from "../src/tool-server/tools/attachment";
+import { resolveRestrictedSessionTmpDir } from "../src/shared/attachment-utils";
 
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
@@ -100,6 +101,12 @@ function isAddFilesResult(
 }
 
 describe("tool-server attachment", () => {
+  it("uses collision-resistant restricted tmp directories", () => {
+    expect(resolveRestrictedSessionTmpDir(".")).not.toBe("/tmp/lilac-restricted");
+    expect(resolveRestrictedSessionTmpDir("..")).not.toBe("/tmp");
+    expect(resolveRestrictedSessionTmpDir("a/b")).not.toBe(resolveRestrictedSessionTmpDir("a_b"));
+  });
+
   it("accepts scalar paths and filenames", async () => {
     const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-tool-server-"));
     const p = join(tmp, "hello.txt");
@@ -168,6 +175,88 @@ describe("tool-server attachment", () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("allows restricted attachment reads from sandbox /tmp", async () => {
+    const sessionId = "restricted-attachment-test";
+    const restrictedTmp = resolveRestrictedSessionTmpDir(sessionId);
+    await fs.mkdir(restrictedTmp, { recursive: true });
+    await fs.writeFile(join(restrictedTmp, "hello.txt"), "hello", "utf8");
+
+    try {
+      const raw = createInMemoryRawBus();
+      const bus = createLilacBus(raw);
+      const tool = new Attachment({ bus });
+
+      const ctx: RequestContext = {
+        requestId: "discord:c1:m1",
+        sessionId,
+        requestClient: "discord",
+        cwd: "/tmp",
+        safetyMode: "restricted",
+      };
+
+      const res = await tool.call(
+        "attachment.add_files",
+        {
+          paths: "hello.txt",
+        },
+        { context: ctx },
+      );
+
+      expect(isAddFilesResult(res)).toBe(true);
+      if (!isAddFilesResult(res)) return;
+      expect(res.attachments[0]?.filename).toBe("hello.txt");
+    } finally {
+      await fs.rm(restrictedTmp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects restricted attachment reads outside sandbox /tmp", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tool = new Attachment({ bus });
+
+    const ctx: RequestContext = {
+      requestId: "discord:c1:m1",
+      sessionId: "restricted-attachment-test",
+      requestClient: "discord",
+      cwd: "/workspace",
+      safetyMode: "restricted",
+    };
+
+    await expect(
+      tool.call(
+        "attachment.add_files",
+        {
+          paths: "secret.txt",
+        },
+        { context: ctx },
+      ),
+    ).rejects.toThrow("Restricted mode only allows file paths under /tmp");
+  });
+
+  it("reports restricted attachment download paths as sandbox /tmp paths", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tool = new Attachment({ bus });
+
+    const res = await tool.call(
+      "attachment.download",
+      {},
+      {
+        context: {
+          requestId: "discord:c1:m1",
+          sessionId: "restricted-attachment-test",
+          requestClient: "discord",
+          cwd: "/workspace",
+          safetyMode: "restricted",
+        },
+        messages: [],
+      },
+    );
+
+    expect(res).toEqual({ ok: true, downloadDir: "/tmp", files: [] });
   });
 
   it("rejects attachment.download URLs outside Discord CDN hosts", async () => {

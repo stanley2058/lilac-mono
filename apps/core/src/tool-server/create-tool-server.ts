@@ -94,6 +94,11 @@ type SafetyMode = "trusted" | "restricted";
 const RESTRICTED_LEVEL2_ALLOWED = new Set([
   "fetch",
   "search",
+  "discovery.search",
+  "generate.image",
+  "generate.video",
+  "attachment.add_files",
+  "attachment.download",
   "skills.list",
   "skills.brief",
   "skills.full",
@@ -103,9 +108,12 @@ const RESTRICTED_LEVEL2_ALLOWED = new Set([
   "surface.messages.list",
   "surface.messages.read",
   "surface.messages.send",
+  "surface.messages.edit",
+  "surface.messages.delete",
   "surface.reactions.list",
   "surface.reactions.listDetailed",
   "surface.reactions.add",
+  "surface.reactions.remove",
 ]);
 
 function isCurrentSessionScopedSurfaceCall(params: {

@@ -13,11 +13,12 @@ import {
 } from "../../shared/tool-server-context";
 import {
   decodeDataUrl,
+  formatToolPathForRequestContext,
   inferExtensionFromMimeType,
   inferMimeTypeFromFilename,
   looksLikeDataUrl,
   looksLikeHttpUrl,
-  resolveToolPath,
+  resolveToolPathForRequestContext,
   sanitizeExtension,
 } from "../../shared/attachment-utils";
 import { expandTilde } from "../../tools/fs/fs-impl";
@@ -257,7 +258,7 @@ export class Attachment implements ServerTool {
           "attachment.download requires request messages, but none were available for this request. (Tool server caches cmd.request messages; ensure the tool server is connected to the bus and started before the request.)",
         );
       }
-      return await this.callDownload(input, messages);
+      return await this.callDownload(input, messages, opts?.context);
     }
 
     throw new Error(`Invalid callable ID '${callableId}'`);
@@ -279,16 +280,22 @@ export class Attachment implements ServerTool {
 
     for (let i = 0; i < input.paths.length; i++) {
       const p = input.paths[i]!;
-      const resolvedPath = resolveToolPath(cwd, p);
+      const resolvedPath = resolveToolPathForRequestContext({
+        cwd,
+        inputPath: p,
+        context: ctx,
+      });
 
       const st = await fs.stat(resolvedPath);
       if (!st.isFile()) {
-        throw new Error(`Not a file: ${resolvedPath}`);
+        throw new Error(
+          `Not a file: ${formatToolPathForRequestContext({ path: resolvedPath, context: ctx })}`,
+        );
       }
 
       if (st.size > DEFAULT_OUTBOUND_MAX_FILE_BYTES) {
         throw new Error(
-          `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${resolvedPath}`,
+          `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${formatToolPathForRequestContext({ path: resolvedPath, context: ctx })}`,
         );
       }
 
@@ -324,18 +331,30 @@ export class Attachment implements ServerTool {
     return { ok: true as const, attachments: out };
   }
 
-  private async callDownload(rawInput: Record<string, unknown>, messages: readonly ModelMessage[]) {
+  private async callDownload(
+    rawInput: Record<string, unknown>,
+    messages: readonly ModelMessage[],
+    ctx: RequestContext | undefined,
+  ) {
     const input = parseToolInput({
       callableId: "attachment.download",
       input: rawInput,
       schema: attachmentDownloadInputSchema,
     });
 
-    const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
+    const downloadDir =
+      ctx?.safetyMode === "restricted"
+        ? resolveToolPathForRequestContext({
+            cwd: ctx.cwd ?? "/tmp",
+            inputPath: input.downloadDir ?? "/tmp",
+            context: ctx,
+          })
+        : resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
 
     const attachments = collectUserAttachments(messages);
+    const outputDownloadDir = formatToolPathForRequestContext({ path: downloadDir, context: ctx });
     if (attachments.length === 0) {
-      return { ok: true as const, downloadDir, files: [] };
+      return { ok: true as const, downloadDir: outputDownloadDir, files: [] };
     }
 
     await fs.mkdir(downloadDir, { recursive: true });
@@ -401,7 +420,7 @@ export class Attachment implements ServerTool {
       }
 
       files.push({
-        path: target,
+        path: formatToolPathForRequestContext({ path: target, context: ctx }),
         sha10,
         bytes: downloaded.bytes.byteLength,
         sourceUrl: downloaded.sourceUrl ?? "inline",
@@ -409,6 +428,6 @@ export class Attachment implements ServerTool {
       });
     }
 
-    return { ok: true as const, downloadDir, files };
+    return { ok: true as const, downloadDir: outputDownloadDir, files };
   }
 }

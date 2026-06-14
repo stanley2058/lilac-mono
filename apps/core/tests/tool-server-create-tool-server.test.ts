@@ -253,9 +253,44 @@ describe("createToolServer", () => {
       async list() {
         return [
           {
+            callableId: "attachment.add_files",
+            name: "Attachment Add Files",
+            description: "Attachment add files",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "attachment.download",
+            name: "Attachment Download",
+            description: "Attachment download",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "discovery.search",
+            name: "Discovery Search",
+            description: "Discovery search",
+            shortInput: [],
+            input: [],
+          },
+          {
             callableId: "fetch",
             name: "Fetch",
             description: "Fetch a web page",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "generate.image",
+            name: "Generate Image",
+            description: "Generate image",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "generate.video",
+            name: "Generate Video",
+            description: "Generate video",
             shortInput: [],
             input: [],
           },
@@ -267,9 +302,30 @@ describe("createToolServer", () => {
             input: [],
           },
           {
+            callableId: "surface.messages.delete",
+            name: "Delete",
+            description: "Delete",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "surface.messages.edit",
+            name: "Edit",
+            description: "Edit",
+            shortInput: [],
+            input: [],
+          },
+          {
             callableId: "surface.messages.send",
             name: "Send",
             description: "Send",
+            shortInput: [],
+            input: [],
+          },
+          {
+            callableId: "surface.reactions.remove",
+            name: "Remove Reaction",
+            description: "Remove reaction",
             shortInput: [],
             input: [],
           },
@@ -303,6 +359,30 @@ describe("createToolServer", () => {
     expect(await listRes.json()).toEqual({
       tools: [
         {
+          callableId: "attachment.add_files",
+          name: "Attachment Add Files",
+          description: "Attachment add files",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "attachment.download",
+          name: "Attachment Download",
+          description: "Attachment download",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "discovery.search",
+          name: "Discovery Search",
+          description: "Discovery search",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
           callableId: "fetch",
           name: "Fetch",
           description: "Fetch a web page",
@@ -311,9 +391,49 @@ describe("createToolServer", () => {
           hidden: undefined,
         },
         {
+          callableId: "generate.image",
+          name: "Generate Image",
+          description: "Generate image",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "generate.video",
+          name: "Generate Video",
+          description: "Generate video",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "surface.messages.delete",
+          name: "Delete",
+          description: "Delete",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "surface.messages.edit",
+          name: "Edit",
+          description: "Edit",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
           callableId: "surface.messages.send",
           name: "Send",
           description: "Send",
+          shortInput: [],
+          primaryPositional: undefined,
+          hidden: undefined,
+        },
+        {
+          callableId: "surface.reactions.remove",
+          name: "Remove Reaction",
+          description: "Remove reaction",
           shortInput: [],
           primaryPositional: undefined,
           hidden: undefined,
@@ -356,6 +476,25 @@ describe("createToolServer", () => {
       output: "Tool 'surface.messages.send' is not allowed in restricted public-session mode",
     });
 
+    const crossSessionEditRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          ...restrictedHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          callableId: "surface.messages.edit",
+          input: { sessionId: "other", messageId: "m1", text: "hi" },
+        }),
+      }),
+    );
+    expect(crossSessionEditRes.status).toBe(200);
+    expect(await crossSessionEditRes.json()).toEqual({
+      isError: true,
+      output: "Tool 'surface.messages.edit' is not allowed in restricted public-session mode",
+    });
+
     const allowedRes = await server.app.handle(
       new Request("http://localhost/call", {
         method: "POST",
@@ -371,7 +510,23 @@ describe("createToolServer", () => {
       isError: false,
       output: { ok: true, callableId: "fetch" },
     });
-    expect(calls).toEqual(["fetch"]);
+    const discoveryRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          ...restrictedHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "discovery.search", input: { query: "context" } }),
+      }),
+    );
+    expect(discoveryRes.status).toBe(200);
+    expect(await discoveryRes.json()).toEqual({
+      isError: false,
+      output: { ok: true, callableId: "discovery.search" },
+    });
+
+    expect(calls).toEqual(["fetch", "discovery.search"]);
 
     await server.stop();
   });

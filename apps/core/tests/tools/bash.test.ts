@@ -6,6 +6,7 @@ import path from "node:path";
 import { executeBash } from "../../src/tools/bash-impl";
 import { executeRestrictedBash } from "../../src/tools/restricted-bash";
 import { analyzeBashCommand } from "../../src/tools/bash-safety";
+import { resolveRestrictedSessionTmpDir } from "../../src/shared/attachment-utils";
 
 const STDIN_PROBE_COMMAND =
   "if cat >/dev/null 2>&1; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi";
@@ -203,7 +204,7 @@ describe("executeRestrictedBash", () => {
       path.join(await fs.realpath("/tmp"), "lilac-restricted-workspace-"),
     );
     const sessionId = "restricted-bash-test-session";
-    const sessionTmp = path.join("/tmp/lilac-restricted", sessionId);
+    const sessionTmp = resolveRestrictedSessionTmpDir(sessionId);
 
     try {
       await fs.rm(sessionTmp, { recursive: true, force: true });

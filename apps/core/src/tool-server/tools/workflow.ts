@@ -318,6 +318,7 @@ export class Workflow implements ServerTool {
               paths,
               filenames: payload.filenames,
               mimeTypes: payload.mimeTypes,
+              context: opts?.context,
             })
           : [];
 

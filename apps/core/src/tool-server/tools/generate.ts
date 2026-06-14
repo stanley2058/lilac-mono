@@ -11,9 +11,10 @@ import fs from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { z } from "zod";
 import {
+  formatToolPathForRequestContext,
   inferExtensionFromMimeType,
   inferMimeTypeFromFilename,
-  resolveToolPath,
+  resolveToolPathForRequestContext,
 } from "../../shared/attachment-utils";
 import type { RequestContext, ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
@@ -526,7 +527,7 @@ function looksLikeSvg(bytes: Buffer): boolean {
   return prefix.startsWith("<svg") || prefix.startsWith("<?xml");
 }
 
-async function readImageDataFromPath(path: string): Promise<Buffer> {
+async function readImageDataFromPath(path: string, displayPath = path): Promise<Buffer> {
   const bytes = await fs.readFile(path);
   const typeFromBytes = await fileTypeFromBuffer(bytes);
 
@@ -539,7 +540,7 @@ async function readImageDataFromPath(path: string): Promise<Buffer> {
     return bytes;
   }
 
-  throw new Error(`Input file '${path}' is not a valid image file.`);
+  throw new Error(`Input file '${displayPath}' is not a valid image file.`);
 }
 
 export async function resolveImageEditInputs(
@@ -548,6 +549,7 @@ export async function resolveImageEditInputs(
     inputImages?: readonly string[];
     maskImage?: string;
   },
+  context?: RequestContext,
 ): Promise<
   | {
       images: DataContent[];
@@ -562,16 +564,28 @@ export async function resolveImageEditInputs(
   const images: DataContent[] = [];
 
   for (const imagePath of input.inputImages) {
-    const resolved = resolveToolPath(cwd, imagePath);
-    images.push(await readImageDataFromPath(resolved));
+    const resolved = resolveToolPathForRequestContext({ cwd, inputPath: imagePath, context });
+    images.push(
+      await readImageDataFromPath(
+        resolved,
+        formatToolPathForRequestContext({ path: resolved, context }),
+      ),
+    );
   }
 
   if (!input.maskImage) {
     return { images };
   }
 
-  const resolvedMask = resolveToolPath(cwd, input.maskImage);
-  const mask = await readImageDataFromPath(resolvedMask);
+  const resolvedMask = resolveToolPathForRequestContext({
+    cwd,
+    inputPath: input.maskImage,
+    context,
+  });
+  const mask = await readImageDataFromPath(
+    resolvedMask,
+    formatToolPathForRequestContext({ path: resolvedMask, context }),
+  );
   return { images, mask };
 }
 
@@ -582,11 +596,16 @@ export async function buildImageGenerationPrompt(
     inputImages?: readonly string[];
     maskImage?: string;
   },
+  context?: RequestContext,
 ): Promise<ImageGenerationPrompt> {
-  const editInputs = await resolveImageEditInputs(cwd, {
-    inputImages: input.inputImages,
-    maskImage: input.maskImage,
-  });
+  const editInputs = await resolveImageEditInputs(
+    cwd,
+    {
+      inputImages: input.inputImages,
+      maskImage: input.maskImage,
+    },
+    context,
+  );
 
   if (!editInputs) {
     return input.prompt;
@@ -605,13 +624,21 @@ export async function buildVideoGenerationPrompt(
     prompt: string;
     inputImage?: string;
   },
+  context?: RequestContext,
 ): Promise<GenerateVideoPrompt> {
   if (!input.inputImage) {
     return input.prompt;
   }
 
-  const resolvedImage = resolveToolPath(cwd, input.inputImage);
-  const image = await readImageDataFromPath(resolvedImage);
+  const resolvedImage = resolveToolPathForRequestContext({
+    cwd,
+    inputPath: input.inputImage,
+    context,
+  });
+  const image = await readImageDataFromPath(
+    resolvedImage,
+    formatToolPathForRequestContext({ path: resolvedImage, context }),
+  );
   return {
     text: input.prompt,
     image,
@@ -768,7 +795,11 @@ export class Generate implements ServerTool {
     descriptor.validateInput(payload);
 
     const cwd = opts?.context?.cwd ?? process.cwd();
-    const resolvedOutputDir = resolveToolPath(cwd, payload.outputDir ?? ".");
+    const resolvedOutputDir = resolveToolPathForRequestContext({
+      cwd,
+      inputPath: payload.outputDir ?? (opts?.context?.safetyMode === "restricted" ? "/tmp" : "."),
+      context: opts?.context,
+    });
 
     const size =
       payload.size && payload.size.length > 0
@@ -783,7 +814,7 @@ export class Generate implements ServerTool {
       !payload.size && payload.aspectRatio
         ? (payload.aspectRatio as `${number}:${number}`)
         : undefined;
-    const prompt = await buildImageGenerationPrompt(cwd, payload);
+    const prompt = await buildImageGenerationPrompt(cwd, payload, opts?.context);
 
     const res = await generateImageWithModel(picked.model, prompt, {
       abortSignal: opts?.signal,
@@ -800,7 +831,7 @@ export class Generate implements ServerTool {
 
     return {
       ok: true as const,
-      path: outPath,
+      path: formatToolPathForRequestContext({ path: outPath, context: opts?.context }),
       bytes: image.uint8Array.byteLength,
       mimeType: image.mediaType,
       model: picked.id,
@@ -831,12 +862,20 @@ export class Generate implements ServerTool {
     descriptor.validateInput(payload);
 
     const cwd = opts?.context?.cwd ?? process.cwd();
-    const resolvedTarget = resolveToolPath(cwd, payload.path);
-
-    const prompt = await buildVideoGenerationPrompt(cwd, {
-      prompt: payload.prompt,
-      inputImage: payload.inputImage,
+    const resolvedTarget = resolveToolPathForRequestContext({
+      cwd,
+      inputPath: payload.path,
+      context: opts?.context,
     });
+
+    const prompt = await buildVideoGenerationPrompt(
+      cwd,
+      {
+        prompt: payload.prompt,
+        inputImage: payload.inputImage,
+      },
+      opts?.context,
+    );
 
     const res = await generateVideoWithModel(picked.model, prompt, {
       abortSignal: opts?.signal,
@@ -856,7 +895,7 @@ export class Generate implements ServerTool {
 
     return {
       ok: true as const,
-      path: outPath,
+      path: formatToolPathForRequestContext({ path: outPath, context: opts?.context }),
       bytes: video.uint8Array.byteLength,
       mimeType: video.mediaType,
       model: picked.id,

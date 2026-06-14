@@ -26,7 +26,11 @@ import {
   resolveDiscordSessionId,
 } from "./resolve-discord-session-id";
 import { zodObjectToCliLines } from "./zod-cli";
-import { inferMimeTypeFromFilename, resolveToolPath } from "../../shared/attachment-utils";
+import {
+  formatToolPathForRequestContext,
+  inferMimeTypeFromFilename,
+  resolveToolPathForRequestContext,
+} from "../../shared/attachment-utils";
 import { getDiscordSurfaceDisplayText } from "../../surface/discord/discord-surface-display-text";
 
 import {
@@ -298,6 +302,7 @@ export async function loadLocalAttachments(params: {
   paths: string[];
   filenames?: string[];
   mimeTypes?: string[];
+  context?: RequestContext | undefined;
 }): Promise<SurfaceAttachment[]> {
   let totalBytes = 0;
 
@@ -305,16 +310,30 @@ export async function loadLocalAttachments(params: {
 
   for (let i = 0; i < params.paths.length; i++) {
     const inputPath = params.paths[i]!;
-    const resolvedPath = resolveToolPath(params.cwd, inputPath);
+    const resolvedPath = resolveToolPathForRequestContext({
+      cwd: params.cwd,
+      inputPath,
+      context: params.context,
+    });
 
     const st = await fs.stat(resolvedPath);
     if (!st.isFile()) {
-      throw new Error(`Not a file: ${resolvedPath}`);
+      throw new Error(
+        `Not a file: ${formatToolPathForRequestContext({
+          path: resolvedPath,
+          context: params.context,
+        })}`,
+      );
     }
 
     if (st.size > DEFAULT_OUTBOUND_MAX_FILE_BYTES) {
       throw new Error(
-        `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${resolvedPath}`,
+        `Attachment too large (${st.size} bytes). Max is ${DEFAULT_OUTBOUND_MAX_FILE_BYTES} bytes: ${formatToolPathForRequestContext(
+          {
+            path: resolvedPath,
+            context: params.context,
+          },
+        )}`,
       );
     }
 
@@ -2470,6 +2489,7 @@ export class Surface implements ServerTool {
             paths,
             filenames: input.filenames,
             mimeTypes: input.mimeTypes,
+            context: ctx,
           })
         : [];
 

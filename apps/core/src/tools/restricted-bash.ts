@@ -19,11 +19,11 @@ import {
 
 import type { BashToolInput, BashToolOutput } from "./bash-impl";
 import { expandTilde } from "./fs/fs-impl";
+import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
 const WORKSPACE_MOUNT = "/workspace";
 const TMP_MOUNT = "/tmp";
-const RESTRICTED_TMP_ROOT = "/tmp/lilac-restricted";
 const DEFAULT_RESTRICTED_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESTRICTED_OUTPUT_CHARS = 50 * 1024;
 const MAX_RESTRICTED_FILE_READ_BYTES = 10 * 1024 * 1024;
@@ -49,14 +49,6 @@ function pruneRestrictedBashCache(now: number): void {
       restrictedBashByRequest.delete(key);
     }
   }
-}
-
-function sanitizeSessionPathToken(value: string | undefined): string {
-  const raw = value?.trim() || "unknown-session";
-  return raw
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .replace(/_+/g, "_")
-    .slice(0, 120);
 }
 
 function normalizeVirtualPath(p: string): string {
@@ -246,7 +238,10 @@ function formatToolOutput(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-function buildToolServerHeaders(context: RestrictedBashContext): Record<string, string> {
+function buildToolServerHeaders(
+  context: RestrictedBashContext,
+  cwd: string,
+): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "x-lilac-safety-mode": "restricted",
@@ -254,7 +249,7 @@ function buildToolServerHeaders(context: RestrictedBashContext): Record<string, 
   if (context.requestId) headers["x-lilac-request-id"] = context.requestId;
   if (context.sessionId) headers["x-lilac-session-id"] = context.sessionId;
   if (context.requestClient) headers["x-lilac-request-client"] = context.requestClient;
-  headers["x-lilac-cwd"] = WORKSPACE_MOUNT;
+  headers["x-lilac-cwd"] = cwd;
   return headers;
 }
 
@@ -343,7 +338,7 @@ async function buildNestedToolInput(params: {
 
 function createToolsCommand(context: RestrictedBashContext) {
   return defineCommand("tools", async (args, ctx): Promise<ExecResult> => {
-    const headers = buildToolServerHeaders(context);
+    const headers = buildToolServerHeaders(context, ctx.cwd);
     const [first, ...rest] = args;
 
     try {
@@ -543,7 +538,7 @@ export async function executeRestrictedBash(
 
   const context = options.context ?? {};
   const workspaceRoot = path.resolve(expandTilde(options.workspaceRoot ?? process.cwd()));
-  const sessionTmpDir = path.join(RESTRICTED_TMP_ROOT, sanitizeSessionPathToken(context.sessionId));
+  const sessionTmpDir = resolveRestrictedSessionTmpDir(context.sessionId);
 
   let restrictedCwd: string;
   try {

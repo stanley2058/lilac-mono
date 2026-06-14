@@ -1,11 +1,88 @@
-import { isAbsolute, resolve, extname } from "node:path";
+import { createHash } from "node:crypto";
+import { isAbsolute, resolve, extname, relative, sep } from "node:path";
+import { posix as posixPath } from "node:path";
 import { expandTilde } from "../tools/fs/fs-impl";
+
+const RESTRICTED_TMP_ROOT = "/tmp/lilac-restricted";
+const RESTRICTED_TMP_MOUNT = "/tmp";
+
+type ToolPathRequestContext = {
+  sessionId?: string;
+  safetyMode?: "trusted" | "restricted";
+};
 
 export function resolveToolPath(toolRoot: string, inputPath: string): string {
   const expanded = expandTilde(inputPath);
   const root = resolve(expandTilde(toolRoot));
   if (isAbsolute(expanded)) return resolve(expanded);
   return resolve(root, expanded);
+}
+
+function restrictedSessionPathToken(value: string | undefined): string {
+  const raw = value?.trim() || "unknown-session";
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+export function resolveRestrictedSessionTmpDir(sessionId: string | undefined): string {
+  return resolve(RESTRICTED_TMP_ROOT, restrictedSessionPathToken(sessionId));
+}
+
+export function resolveToolPathForRequestContext(params: {
+  cwd: string;
+  inputPath: string;
+  context?: ToolPathRequestContext | undefined;
+}): string {
+  if (params.context?.safetyMode !== "restricted") {
+    return resolveToolPath(params.cwd, params.inputPath);
+  }
+
+  if (!params.context.sessionId) {
+    throw new Error("Restricted mode file paths require a session id.");
+  }
+
+  if (params.inputPath.startsWith("~")) {
+    throw new Error("Restricted mode only allows file paths under /tmp.");
+  }
+
+  const cwd = params.cwd.startsWith("/") ? params.cwd : `/${params.cwd}`;
+  const base = posixPath.normalize(cwd);
+  const input = params.inputPath.startsWith("/")
+    ? params.inputPath
+    : posixPath.join(base, params.inputPath);
+  const virtualPath = posixPath.normalize(input);
+
+  if (virtualPath !== RESTRICTED_TMP_MOUNT && !virtualPath.startsWith(`${RESTRICTED_TMP_MOUNT}/`)) {
+    throw new Error("Restricted mode only allows file paths under /tmp.");
+  }
+
+  const relativeToTmp = virtualPath === RESTRICTED_TMP_MOUNT ? "" : virtualPath.slice(5);
+  const tmpRoot = resolveRestrictedSessionTmpDir(params.context.sessionId);
+  const resolved = resolve(tmpRoot, relativeToTmp.split("/").join(sep));
+  if (!isPathInside(tmpRoot, resolved)) {
+    throw new Error("Restricted mode only allows file paths under /tmp.");
+  }
+
+  return resolved;
+}
+
+export function formatToolPathForRequestContext(params: {
+  path: string;
+  context?: ToolPathRequestContext | undefined;
+}): string {
+  if (params.context?.safetyMode !== "restricted") return params.path;
+
+  const tmpRoot = resolveRestrictedSessionTmpDir(params.context.sessionId);
+  const resolved = resolve(params.path);
+  if (!isPathInside(tmpRoot, resolved)) return RESTRICTED_TMP_MOUNT;
+
+  const rel = relative(tmpRoot, resolved);
+  if (rel === "") return RESTRICTED_TMP_MOUNT;
+  return `${RESTRICTED_TMP_MOUNT}/${rel.split(sep).join("/")}`;
 }
 
 export function inferMimeTypeFromFilename(filename: string): string {
