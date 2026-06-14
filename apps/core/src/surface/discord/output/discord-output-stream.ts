@@ -209,6 +209,32 @@ function buildFinalStatsFieldValue(line: string): string {
   return wrapped.slice(0, maxLength - overflow.length) + overflow;
 }
 
+function buildPlainFinalContentChunks(input: {
+  content: string;
+  statsLine: string | null;
+  maxChunkLength: number;
+  useSmartSplitting: boolean;
+  hardMaxChunkLength: number;
+}): string[] {
+  const statsSuffix = input.statsLine ? `\n\n${buildFinalStatsFieldValue(input.statsLine)}` : "";
+  const chunks = chunkMarkdownForEmbeds(input.content, {
+    maxChunkLength: input.maxChunkLength,
+    // Stats are appended after markdown chunk rendering so they stay outside the
+    // assistant answer body, while still reserving room under Discord's limit.
+    maxLastChunkLength: Math.max(1, input.maxChunkLength - statsSuffix.length),
+    useSmartSplitting: input.useSmartSplitting,
+    hardMaxChunkLength: input.hardMaxChunkLength,
+    completeLastChunk: true,
+  });
+
+  const displayChunks = chunks.length > 0 ? [...chunks] : ["*<empty_string>*"];
+  if (statsSuffix.length === 0) return displayChunks;
+
+  const lastIdx = displayChunks.length - 1;
+  displayChunks[lastIdx] = `${displayChunks[lastIdx] ?? "*<empty_string>*"}${statsSuffix}`;
+  return displayChunks;
+}
+
 async function fetchTextChannel(client: Client, channelId: string): Promise<TextBasedChannel> {
   const ch = (await client.channels.fetch(channelId).catch(() => null)) as TextBasedChannel | null;
   if (!ch || !("send" in ch)) {
@@ -922,19 +948,18 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const maxChunkLength =
       DISCORD_CONTENT_MAX_CHARS - (this.deps.useSmartSplitting ? CLOSING_TAG_BUFFER : 0);
-    const chunks = chunkMarkdownForEmbeds(content, {
+    const displayChunks = buildPlainFinalContentChunks({
+      content,
+      statsLine: this.statsForNerdsLine,
       maxChunkLength,
-      maxLastChunkLength: maxChunkLength,
       useSmartSplitting: this.deps.useSmartSplitting,
       hardMaxChunkLength: DISCORD_CONTENT_MAX_CHARS,
-      completeLastChunk: true,
     });
 
     const MAX_FILES = 10;
     const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
     const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
 
-    const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
     const createdMsgs: Message[] = [];
     let parent: Message | null = null;
 

@@ -422,7 +422,7 @@ describe("preview final output style", () => {
     const finalSend = operations.find(
       (op) =>
         op.kind === "send" &&
-        contentFromOptions(op.options) === "preview text" &&
+        contentFromOptions(op.options) === "preview text\n\n*nerd stats*" &&
         !hasEmbeds(op.options),
     );
 
@@ -430,9 +430,48 @@ describe("preview final output style", () => {
     if (!finalSend) {
       throw new Error("expected plain final send");
     }
-    expect(contentFromOptions(finalSend.options)).not.toContain("nerd stats");
     expect(deletedMessageIds.length).toBeGreaterThan(0);
     expect(res.last.messageId).toBe(finalSend.messageId);
+  });
+
+  it("reserves room for stats in the final plain preview chunk", async () => {
+    const { client, operations } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "x".repeat(1990) });
+    await out.push({ type: "meta.stats", line: "nerd stats" });
+    const res = await out.finish();
+
+    const plainFinalOps = operations.filter(
+      (op) =>
+        (op.kind === "send" || op.kind === "reply") &&
+        !hasEmbeds(op.options) &&
+        (contentFromOptions(op.options)?.startsWith("x") ?? false),
+    );
+
+    expect(plainFinalOps.length).toBe(2);
+    for (const op of plainFinalOps) {
+      expect(contentFromOptions(op.options)?.length).toBeLessThanOrEqual(2000);
+    }
+
+    const firstPlainFinal = plainFinalOps[0];
+    const lastPlainFinal = plainFinalOps[1];
+    if (!firstPlainFinal || !lastPlainFinal) {
+      throw new Error("expected split plain final chunks");
+    }
+    expect(contentFromOptions(firstPlainFinal.options)).not.toContain("nerd stats");
+    expect(contentFromOptions(lastPlainFinal.options)).toContain("\n\n*nerd stats*");
+    expect(lastPlainFinal.parentId).toBe(firstPlainFinal.messageId);
+    expect(res.last.messageId).toBe(lastPlainFinal.messageId);
   });
 
   it("splits plain preview final output into a normal reply chain", async () => {
