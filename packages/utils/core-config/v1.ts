@@ -408,10 +408,12 @@ export const modelCapabilitySchema = z
 
 const toolsSchema = z
   .object({
+    fsBackend: z.enum(["fff", "node-rg"]).default("node-rg"),
     web: webExtractConfigSchema,
     experimental_hashline_edit: z.boolean().default(false),
   })
   .default({
+    fsBackend: "node-rg",
     web: {
       extract: {
         providers: ["tavily"],
@@ -667,6 +669,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
     ...parsed,
     tools: {
       ...toolsRest,
+      fsBackend: parsed.tools.fsBackend,
       editFile: {
         hashline,
       },

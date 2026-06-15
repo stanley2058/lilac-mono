@@ -39,6 +39,7 @@ Field renames from v1:
 
 Default changes from v1:
 
+- `tools.fsBackend: fff`
 - `tools.editFile.hashline: true`
 - `surface.discord.outputMode: preview`
 - `surface.discord.outputPreviewModeFinalStyle: plain`

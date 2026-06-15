@@ -116,6 +116,7 @@ const discordSurfaceSchema = z
 
 const toolsSchema = z
   .object({
+    fsBackend: z.enum(["fff", "node-rg"]).default("fff"),
     web: webExtractConfigSchema,
     editFile: z
       .object({
@@ -126,6 +127,7 @@ const toolsSchema = z
       }),
   })
   .default({
+    fsBackend: "fff",
     web: {
       extract: {
         providers: ["tavily"],

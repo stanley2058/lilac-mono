@@ -55,6 +55,7 @@ export type UniversalCoreConfig = {
   configVersion: CoreConfigVersion;
 
   tools: {
+    fsBackend: "fff" | "node-rg";
     web: {
       extract: {
         providers: Array<"tavily" | "exa" | "firecrawl">;

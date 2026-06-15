@@ -20,6 +20,7 @@ describe("core config versioning", () => {
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("embed");
     expect(parsed.surface.discord.markdownTableRender.enabled).toBe(false);
     expect(parsed.agent.reasoningDisplay).toBe("simple");
+    expect(parsed.tools.fsBackend).toBe("node-rg");
     expect(parsed.tools.web.fetch.mode).toBe("auto");
     expect(parsed.tools.editFile.hashline).toBe(false);
   });
@@ -28,6 +29,7 @@ describe("core config versioning", () => {
     const parsed = await parseCoreConfig({ configVersion: 2 });
 
     expect(parsed.configVersion).toBe(2);
+    expect(parsed.tools.fsBackend).toBe("fff");
     expect(parsed.tools.editFile.hashline).toBe(true);
     expect(parsed.surface.discord.outputMode).toBe("preview");
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
@@ -61,6 +63,7 @@ describe("core config versioning", () => {
     const parsed = await parseCoreConfig({
       configVersion: 2,
       tools: {
+        fsBackend: "node-rg",
         editFile: {
           hashline: false,
         },
@@ -78,6 +81,7 @@ describe("core config versioning", () => {
       },
     });
 
+    expect(parsed.tools.fsBackend).toBe("node-rg");
     expect(parsed.tools.editFile.hashline).toBe(false);
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("embed");
     expect(parsed.surface.discord.markdownTableRender).toEqual({
@@ -92,6 +96,7 @@ describe("core config versioning", () => {
     const parsed = await parseCoreConfig({
       configVersion: 1,
       tools: {
+        fsBackend: "fff",
         experimental_hashline_edit: true,
       },
       surface: {
@@ -110,6 +115,7 @@ describe("core config versioning", () => {
       },
     });
 
+    expect(parsed.tools.fsBackend).toBe("fff");
     expect(parsed.tools.editFile.hashline).toBe(true);
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
     expect(parsed.surface.discord.markdownTableRender).toEqual({
