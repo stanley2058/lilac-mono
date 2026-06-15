@@ -5,6 +5,7 @@
   "packageManager": "bun@1.3.11",
   "scripts": {
     "build:info": "bun scripts/write-build-info.ts",
+    "build:remote-fs": "bun --cwd=apps/core run build:remote-runner && bun --cwd=packages/remote-fs-runner run build",
     "docker:build": "bun scripts/docker-build.ts build",
     "docker:compose:build": "bun scripts/docker-build.ts compose-build",
     "lint": "oxlint --tsconfig tsconfig.json apps packages examples __tests__",
