@@ -290,12 +290,7 @@ export const fuzzySearchInputZod = z.object({
     .describe(
       "Approximate filename/path query. Use this for fuzzy path discovery, not file content search.",
     ),
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Optional base directory to search from (supports ~). Remote SSH cwd is not supported.",
-    ),
+  cwd: z.string().optional().describe("Optional base directory to search from (supports ~)."),
   maxResults: z
     .number()
     .int()
