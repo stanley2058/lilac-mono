@@ -19,6 +19,7 @@ import path from "node:path";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import {
+  remoteFuzzySearch,
   remoteGrep,
   remoteGlob,
   remoteEditFile,
@@ -1332,27 +1333,41 @@ export function fsTool(
       ? {
           fuzzy_search: tool<FuzzySearchInput, FuzzySearchOutput>({
             description:
-              "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Doesn't work for remote files. Denylisted paths require dangerouslyAllow=true.",
+              "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Supports SSH cwd targets when the remote fff runner can be installed. Denylisted paths require dangerouslyAllow=true.",
             inputSchema: fuzzySearchInputZod,
             outputSchema: fuzzySearchOutputZod,
             execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
               const cwdTarget = parseSshCwdTarget(opCwd);
-              if (cwdTarget.kind === "ssh") {
-                return {
-                  results: [],
-                  totalMatched: 0,
-                  totalFiles: 0,
-                  truncated: false,
-                  error: "fuzzy_search is only available for local paths",
-                };
-              }
 
               logger.info("fs.fuzzySearch", {
                 query: input.query,
                 cwd: opCwd,
+                target: cwdTarget.kind,
                 maxResults: input.maxResults,
                 dangerouslyAllow: dangerouslyAllow === true,
               });
+
+              if (cwdTarget.kind === "ssh") {
+                const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
+                const res = await remoteFuzzySearch({
+                  host: cwdTarget.host,
+                  cwd: cwdTarget.cwd,
+                  input: {
+                    query: input.query,
+                    maxResults: input.maxResults,
+                  },
+                  denyPaths: remoteDenyPaths,
+                });
+
+                logger.info("fs.fuzzySearch done", {
+                  resultCount: res.results.length,
+                  totalMatched: res.totalMatched,
+                  truncated: res.truncated,
+                  error: res.error,
+                });
+
+                return res;
+              }
 
               const res = await fileSystem.fuzzySearchFiles({
                 query: input.query,

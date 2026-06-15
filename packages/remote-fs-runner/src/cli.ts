@@ -195,6 +195,13 @@ async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
     });
   }
 
+  if (envelope.op === "fs.fuzzy_search") {
+    return await fsTool.fuzzySearchFiles({
+      query: String(input["query"] ?? ""),
+      maxResults: numberOrUndefined(input["maxResults"]),
+    });
+  }
+
   if (envelope.op === "fs.edit") {
     const pathInput = String(input["path"] ?? "");
     const edits = Array.isArray(input["edits"]) ? input["edits"] : [];

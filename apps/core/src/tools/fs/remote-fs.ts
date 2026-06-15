@@ -1,4 +1,4 @@
-import type { FsBackend } from "@stanley2058/lilac-fs";
+import type { FsBackend, FuzzySearchResult } from "@stanley2058/lilac-fs";
 import { createRequire } from "node:module";
 
 import { sshExecBash, sshExecScriptJson } from "../../ssh/ssh-exec";
@@ -152,6 +152,8 @@ export type RemoteGrepOutput =
       }[];
       error?: string;
     };
+
+export type RemoteFuzzySearchOutput = FuzzySearchResult;
 
 export type RemoteEditInput =
   | {
@@ -519,6 +521,43 @@ export async function remoteGrep(params: {
   }
 
   return res.value;
+}
+
+export async function remoteFuzzySearch(params: {
+  host: string;
+  cwd: string;
+  input: {
+    query: string;
+    maxResults?: number;
+  };
+  denyPaths: readonly string[];
+  timeoutMs?: number;
+}): Promise<RemoteFuzzySearchOutput> {
+  const input = {
+    op: "fs.fuzzy_search",
+    denyPaths: params.denyPaths,
+    input: {
+      query: params.input.query,
+      maxResults: params.input.maxResults,
+    },
+  };
+
+  const runnerRes = await sshExecRemoteFsRunnerJson<RemoteFuzzySearchOutput>({
+    host: params.host,
+    cwd: params.cwd,
+    input,
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
+  });
+  if (runnerRes.ok) return runnerRes.value;
+
+  return {
+    results: [],
+    totalMatched: 0,
+    totalFiles: 0,
+    truncated: false,
+    error: `remote fff fuzzy_search unavailable: ${runnerRes.error}`,
+  };
 }
 
 export async function remoteEditFile(params: {
