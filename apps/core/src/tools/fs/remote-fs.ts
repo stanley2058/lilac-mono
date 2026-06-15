@@ -318,9 +318,11 @@ if [ -n "$REMOTE_CWD" ]; then
   fi
 fi
 
-cat <<'__LILAC_INPUT__' | (
+run_remote_fs_runner() {
 ${runnerCommand}
-)
+}
+
+run_remote_fs_runner <<'__LILAC_INPUT__'
 ${inputJson}
 __LILAC_INPUT__
 `;

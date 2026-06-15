@@ -5,16 +5,20 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { sshExecBash, sshExecScriptJson } from "../../src/ssh/ssh-exec";
+import { remoteFuzzySearch } from "../../src/tools/fs/remote-fs";
 
 describe("ssh exec transport", () => {
   let tempDir = "";
+  let binDir = "";
   let previousPath: string | undefined;
   let previousSshConfigPath: string | undefined;
+  let previousRemoteRunnerCommand: string | undefined;
+  let previousRemoteRunnerPackage: string | undefined;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(path.join(tmpdir(), "lilac-ssh-exec-"));
 
-    const binDir = path.join(tempDir, "bin");
+    binDir = path.join(tempDir, "bin");
     await mkdir(binDir, { recursive: true });
 
     const sshPath = path.join(binDir, "ssh");
@@ -49,8 +53,12 @@ exec "$@"
 
     previousPath = process.env.PATH;
     previousSshConfigPath = process.env.LILAC_SSH_CONFIG_PATH;
+    previousRemoteRunnerCommand = process.env.LILAC_REMOTE_FS_RUNNER_COMMAND;
+    previousRemoteRunnerPackage = process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE;
     process.env.PATH = `${binDir}:${previousPath ?? ""}`;
     process.env.LILAC_SSH_CONFIG_PATH = sshConfigPath;
+    delete process.env.LILAC_REMOTE_FS_RUNNER_COMMAND;
+    delete process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE;
   });
 
   afterEach(async () => {
@@ -60,6 +68,16 @@ exec "$@"
       delete process.env.LILAC_SSH_CONFIG_PATH;
     } else {
       process.env.LILAC_SSH_CONFIG_PATH = previousSshConfigPath;
+    }
+    if (previousRemoteRunnerCommand === undefined) {
+      delete process.env.LILAC_REMOTE_FS_RUNNER_COMMAND;
+    } else {
+      process.env.LILAC_REMOTE_FS_RUNNER_COMMAND = previousRemoteRunnerCommand;
+    }
+    if (previousRemoteRunnerPackage === undefined) {
+      delete process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE;
+    } else {
+      process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE = previousRemoteRunnerPackage;
     }
 
     await rm(tempDir, { recursive: true, force: true });
@@ -108,5 +126,47 @@ exec "$@"
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("missing");
+  });
+
+  it("passes JSON stdin to the default remote FFF runner command", async () => {
+    const npxPath = path.join(binDir, "npx");
+    await writeFile(
+      npxPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+payload=$(cat)
+if [[ "$payload" != *'"op":"fs.fuzzy_search"'* ]]; then
+  printf '%s' '{"ok":false,"error":"missing fuzzy op"}'
+  exit 0
+fi
+printf '%s' '{"ok":true,"value":{"results":[{"path":"package.json","fileName":"package.json","size":123,"gitStatus":"clean","score":1}],"totalMatched":1,"totalFiles":1,"truncated":false,"effectiveBackend":"fff"}}'
+`,
+      "utf8",
+    );
+    await chmod(npxPath, 0o755);
+
+    const result = await remoteFuzzySearch({
+      host: "fakehost",
+      cwd: tempDir,
+      input: { query: "package json", maxResults: 5 },
+      denyPaths: [],
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toEqual({
+      results: [
+        {
+          path: "package.json",
+          fileName: "package.json",
+          size: 123,
+          gitStatus: "clean",
+          score: 1,
+        },
+      ],
+      totalMatched: 1,
+      totalFiles: 1,
+      truncated: false,
+      effectiveBackend: "fff",
+    });
   });
 });
