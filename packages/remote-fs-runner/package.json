@@ -1,0 +1,25 @@
+{
+  "name": "@stanley2058/lilac-remote-fs-runner",
+  "version": "0.0.0",
+  "module": "src/cli.ts",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "bin": {
+    "lilac-remote-fs": "dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun run build.ts && chmod +x dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.11"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@ff-labs/fff-node": "^0.9.4",
+    "@stanley2058/lilac-fs": "workspace:*"
+  }
+}
