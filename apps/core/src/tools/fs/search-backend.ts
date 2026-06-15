@@ -36,8 +36,29 @@ type FffFinderEntry = {
   ready: Promise<boolean>;
 };
 
+const MAX_FFF_FINDER_CACHE_ENTRIES = 8;
 const fffFindersByBasePath = new Map<string, FffFinderEntry>();
 const FFF_NODE_PACKAGE = ["@ff-labs", "fff-node"].join("/");
+
+function destroyFffFinder(entry: FffFinderEntry): void {
+  try {
+    entry.finder.destroy();
+  } catch {
+    // Best effort: eviction should not break the caller's fallback path.
+  }
+}
+
+function cacheFffFinder(basePath: string, entry: FffFinderEntry): void {
+  fffFindersByBasePath.set(basePath, entry);
+
+  while (fffFindersByBasePath.size > MAX_FFF_FINDER_CACHE_ENTRIES) {
+    const oldest = fffFindersByBasePath.entries().next().value;
+    if (!oldest) return;
+    const [oldestBasePath, oldestEntry] = oldest;
+    fffFindersByBasePath.delete(oldestBasePath);
+    destroyFffFinder(oldestEntry);
+  }
+}
 
 function shouldFallbackForDenyPaths(params: {
   cwd: string;
@@ -59,6 +80,8 @@ function shouldFallbackForDenyPaths(params: {
 async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
   const cached = fffFindersByBasePath.get(basePath);
   if (cached) {
+    fffFindersByBasePath.delete(basePath);
+    fffFindersByBasePath.set(basePath, cached);
     await cached.ready;
     return cached.finder;
   }
@@ -70,12 +93,15 @@ async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
     const created = fff.FileFinder.create({
       basePath,
       aiMode: true,
+      // Keep cached indexes fresh after background edits. Eviction destroys
+      // the finder, which also stops the native watcher for that base path.
+      disableWatch: false,
     });
     if (!created.ok) return null;
 
     const finder = created.value;
     const ready = finder.waitForIndexReady(10_000).then((result) => result.ok && result.value);
-    fffFindersByBasePath.set(basePath, { finder, ready });
+    cacheFffFinder(basePath, { finder, ready });
 
     await ready;
     return finder;
