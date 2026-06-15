@@ -320,6 +320,30 @@ describe("fs tool search wrappers", () => {
     expect(out.paths[0]?.startsWith("aaa/")).toBe(false);
   });
 
+  it("fff backend preserves explicit node_modules glob results", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+    await mkdir(path.join(baseDir, "node_modules", "pkg"), { recursive: true });
+    await writeFile(
+      path.join(baseDir, "node_modules", "pkg", "types.ts"),
+      "export type T = string;\n",
+    );
+
+    const out = await resolveExecuteResult(
+      tools.glob.execute!(
+        {
+          patterns: ["node_modules/**/*.ts"],
+        },
+        { toolCallId: "fff-glob-node-modules", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("default");
+    if (out.mode !== "default") {
+      throw new Error("expected default glob output");
+    }
+    expect(out.paths).toEqual(["node_modules/pkg/types.ts"]);
+  });
+
   it("fff backend preserves directory-capable glob results", async () => {
     const tools = fsTool(baseDir, { fsBackend: "fff" });
     await mkdir(path.join(baseDir, "src", "nested"), { recursive: true });
@@ -369,6 +393,32 @@ describe("fs tool search wrappers", () => {
     expect(files).toContain("src/a.ts");
     expect(files).toContain("src/b.ts");
     expect(files).toContain("src/component.tsx");
+  });
+
+  it("fff backend preserves case-sensitive literal grep behavior", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+    await writeFile(path.join(baseDir, "src", "upper.ts"), "export const Alpha = 1;\n");
+
+    const out = await resolveExecuteResult(
+      tools.grep.execute!(
+        {
+          pattern: "alpha",
+          fileExtensions: ["ts"],
+          mode: "detailed",
+          maxResults: 10,
+        },
+        { toolCallId: "fff-grep-case", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("detailed");
+    if (out.mode !== "detailed") {
+      throw new Error("expected detailed grep output");
+    }
+    const files = out.results.map((result) => result.file.replace(/^\.\//, "")).sort();
+    expect(files).toContain("src/a.ts");
+    expect(files).toContain("src/b.ts");
+    expect(files).not.toContain("src/upper.ts");
   });
 
   it("fff backend preserves invalid regex errors", async () => {

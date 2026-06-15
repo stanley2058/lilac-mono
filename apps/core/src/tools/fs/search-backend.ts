@@ -262,6 +262,10 @@ function isFileLikeGlobPattern(pattern: string): boolean {
   return lastSegment.includes(".");
 }
 
+function targetsNodeModules(pattern: string): boolean {
+  return pattern.split(/[\\/]/u).includes("node_modules");
+}
+
 function mapFffGrepMatch(item: {
   relativePath: string;
   lineNumber: number;
@@ -306,7 +310,7 @@ const fffBackend: SearchBackend = {
     const limit = Math.max(1, options.maxMatches ?? 200);
     const result = finder.grep(buildFffGrepQuery(options.pattern, options.globs), {
       mode: options.regex ? "regex" : "plain",
-      smartCase: true,
+      smartCase: false,
       pageSize: limit + 1,
       beforeContext: options.contextLines ?? 0,
       afterContext: options.contextLines ?? 0,
@@ -345,6 +349,7 @@ const fffBackend: SearchBackend = {
     if (includes.length === 0) return { paths: [], truncated: false };
     if (excludes.length > 0) return null;
     if (!includes.every(isFileLikeGlobPattern)) return null;
+    if (includes.some(targetsNodeModules)) return null;
 
     const finder = await getFffFinder(options.cwd, options.cacheDir);
     if (!finder) return null;
