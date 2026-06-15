@@ -1296,6 +1296,7 @@ export function fsTool(
             maxEntries: input.maxEntries,
             mode,
             denyPaths: remoteDenyPaths,
+            fsBackend,
           });
 
           logger.info("fs.glob done", {
@@ -1409,6 +1410,7 @@ export function fsTool(
               mode,
             },
             denyPaths: remoteDenyPaths,
+            fsBackend,
           });
 
           if (res.mode === "hashline") {

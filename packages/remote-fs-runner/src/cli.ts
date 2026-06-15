@@ -196,7 +196,9 @@ async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
     const edits = Array.isArray(input["edits"]) ? input["edits"] : [];
     const expectedHashRaw = input["expectedHash"];
     const expectedHash =
-      typeof expectedHashRaw === "string" && expectedHashRaw.length > 0 ? expectedHashRaw : undefined;
+      typeof expectedHashRaw === "string" && expectedHashRaw.length > 0
+        ? expectedHashRaw
+        : undefined;
 
     if (input["mode"] === "hashline") {
       return normalizeEditOutput(
@@ -275,7 +277,10 @@ function spawnDaemon(): void {
   child.unref();
 }
 
-async function tryConnectUntil(deadline: number, payload: unknown): Promise<ResponseEnvelope | null> {
+async function tryConnectUntil(
+  deadline: number,
+  payload: unknown,
+): Promise<ResponseEnvelope | null> {
   while (Date.now() < deadline) {
     try {
       return await connectOnce(payload);

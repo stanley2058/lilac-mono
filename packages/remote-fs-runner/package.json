@@ -8,7 +8,9 @@
   "bin": {
     "lilac-remote-fs": "dist/cli.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "bun run build.ts && chmod +x dist/cli.js"
   },
