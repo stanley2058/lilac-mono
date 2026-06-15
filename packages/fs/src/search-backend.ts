@@ -132,7 +132,7 @@ async function getFffFinder(basePath: string, cacheDir?: string): Promise<FileFi
   if (cached) {
     fffFindersByBasePath.delete(cacheKey);
     fffFindersByBasePath.set(cacheKey, cached);
-    await cached.ready;
+    await cached.ready.catch(() => false);
     return cached.finder;
   }
 
@@ -152,7 +152,10 @@ async function getFffFinder(basePath: string, cacheDir?: string): Promise<FileFi
     if (!created.ok) return null;
 
     const finder = created.value;
-    const ready = finder.waitForIndexReady(10_000).then((result) => result.ok && result.value);
+    const ready = finder
+      .waitForIndexReady(10_000)
+      .then((result) => result.ok && result.value)
+      .catch(() => false);
     cacheFffFinder(cacheKey, { finder, ready });
 
     await ready;
@@ -351,37 +354,41 @@ const fffBackend: SearchBackend = {
     if (!includes.every(isFileLikeGlobPattern)) return null;
     if (includes.some(targetsNodeModules)) return null;
 
-    const finder = await getFffFinder(options.cwd, options.cacheDir);
-    if (!finder) return null;
+    try {
+      const finder = await getFffFinder(options.cwd, options.cacheDir);
+      if (!finder) return null;
 
-    const paths: string[] = [];
-    const seen = new Set<string>();
-    let truncated = false;
+      const paths: string[] = [];
+      const seen = new Set<string>();
+      let truncated = false;
 
-    for (const pattern of includes) {
-      const result = finder.glob(pattern, { pageSize: options.maxEntries + 1 });
-      if (!result.ok) return null;
+      for (const pattern of includes) {
+        const result = finder.glob(pattern, { pageSize: options.maxEntries + 1 });
+        if (!result.ok) return null;
 
-      for (const item of result.value.items) {
-        const relPath = item.relativePath;
-        if (seen.has(relPath)) continue;
+        for (const item of result.value.items) {
+          const relPath = item.relativePath;
+          if (seen.has(relPath)) continue;
 
-        const abs = join(options.cwd, relPath);
-        const stat = await fs.stat(abs).catch(() => null);
-        if (!stat?.isFile()) continue;
+          const abs = join(options.cwd, relPath);
+          const stat = await fs.stat(abs).catch(() => null);
+          if (!stat?.isFile()) continue;
 
-        seen.add(relPath);
-        if (paths.length >= options.maxEntries) {
-          truncated = true;
-          break;
+          seen.add(relPath);
+          if (paths.length >= options.maxEntries) {
+            truncated = true;
+            break;
+          }
+          paths.push(relPath);
         }
-        paths.push(relPath);
+
+        if (truncated) break;
       }
 
-      if (truncated) break;
+      return { paths, truncated };
+    } catch {
+      return null;
     }
-
-    return { paths, truncated };
   },
 };
 

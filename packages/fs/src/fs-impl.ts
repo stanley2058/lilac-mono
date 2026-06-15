@@ -2,7 +2,7 @@ import type { Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
+import { join, dirname, resolve, isAbsolute, sep, relative, matchesGlob } from "node:path";
 
 import {
   applyHashlineEdits,
@@ -25,6 +25,23 @@ export function expandTilde(input: string) {
   if (input === "~") return homedir();
   if (input.startsWith("~/")) return join(homedir(), input.slice(2));
   return input;
+}
+
+function getErrorCode(e: unknown): string | undefined {
+  if (!e || typeof e !== "object" || !("code" in e)) return undefined;
+  const code = e.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isSkippableTraversalError(e: unknown): boolean {
+  const code = getErrorCode(e);
+  return code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "ENOTDIR";
+}
+
+function matchesAnyGlob(entryPath: string, patterns: readonly string[]): boolean {
+  return patterns.some(
+    (pattern) => matchesGlob(entryPath, pattern) || matchesGlob(`${entryPath}/`, pattern),
+  );
 }
 
 export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
@@ -1340,38 +1357,14 @@ export class FileSystem {
         }
       }
 
-      const paths: string[] = [];
-      const entries: GlobEntry[] = [];
-      const seen = new Set<string>();
-      let truncated = false;
-      for await (const entry of fs.glob(includes, {
-        cwd: resolvedBaseDir,
-        exclude: excludes.length > 0 ? excludes : undefined,
-      })) {
-        if (seen.has(entry)) continue;
-        seen.add(entry);
-
-        const abs = resolve(join(resolvedBaseDir, entry));
-        if (!dangerouslyAllow && this.isDeniedPath(abs)) continue;
-
-        const count = mode === "default" ? paths.length : entries.length;
-        if (count >= maxEntries) {
-          truncated = true;
-          break;
-        }
-
-        if (mode === "default") {
-          paths.push(entry);
-          continue;
-        }
-
-        const stats = await fs.stat(join(resolvedBaseDir, entry));
-        entries.push({
-          path: entry,
-          type: this.getFileTypeFromStats(stats),
-          size: stats.size,
-        });
-      }
+      const { paths, entries, truncated } = await this.collectGlobMatches({
+        resolvedBaseDir,
+        includes,
+        excludes,
+        maxEntries,
+        mode,
+        dangerouslyAllow,
+      });
 
       if (mode === "default") {
         return {
@@ -1630,6 +1623,88 @@ export class FileSystem {
         return "unknown";
       }
     }
+  }
+
+  private async collectGlobMatches(params: {
+    resolvedBaseDir: string;
+    includes: readonly string[];
+    excludes: readonly string[];
+    maxEntries: number;
+    mode: SearchMode;
+    dangerouslyAllow: boolean;
+  }): Promise<{ paths: string[]; entries: GlobEntry[]; truncated: boolean }> {
+    const paths: string[] = [];
+    const entries: GlobEntry[] = [];
+    const seen = new Set<string>();
+    let truncated = false;
+
+    const addMatch = async (entry: string, abs: string): Promise<void> => {
+      if (seen.has(entry)) return;
+      seen.add(entry);
+
+      const count = params.mode === "default" ? paths.length : entries.length;
+      if (count >= params.maxEntries) {
+        truncated = true;
+        return;
+      }
+
+      if (params.mode === "default") {
+        paths.push(entry);
+        return;
+      }
+
+      try {
+        const stats = await fs.stat(abs);
+        entries.push({
+          path: entry,
+          type: this.getFileTypeFromStats(stats),
+          size: stats.size,
+        });
+      } catch (e) {
+        if (isSkippableTraversalError(e)) return;
+        throw e;
+      }
+    };
+
+    const walk = async (relDir: string): Promise<void> => {
+      if (truncated) return;
+
+      const absDir = relDir ? join(params.resolvedBaseDir, relDir) : params.resolvedBaseDir;
+      let dir: Awaited<ReturnType<typeof fs.opendir>>;
+      try {
+        dir = await fs.opendir(absDir);
+      } catch (e) {
+        if (isSkippableTraversalError(e)) return;
+        throw e;
+      }
+
+      try {
+        for await (const dirent of dir) {
+          if (truncated) break;
+
+          const relPath = relDir ? `${relDir}/${dirent.name}` : dirent.name;
+          const abs = join(params.resolvedBaseDir, relPath);
+
+          if (!params.dangerouslyAllow && this.isDeniedPath(abs)) continue;
+          if (matchesAnyGlob(relPath, params.excludes)) continue;
+
+          if (matchesAnyGlob(relPath, params.includes)) {
+            await addMatch(relPath, abs);
+          }
+
+          if (dirent.isDirectory()) {
+            await walk(relPath);
+          }
+        }
+      } catch (e) {
+        if (isSkippableTraversalError(e)) return;
+        throw e;
+      }
+    };
+
+    await walk("");
+
+    return { paths, entries, truncated };
   }
 
   private fireEvent(event: FileSystemEvent) {
