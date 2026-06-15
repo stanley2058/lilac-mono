@@ -14,7 +14,12 @@ import {
   formatHashlineWindow,
 } from "./hashline";
 
-import { getSearchBackend, type FsBackend } from "./search-backend";
+import {
+  fuzzyFileSearch,
+  getSearchBackend,
+  type FsBackend,
+  type FuzzyFileSearchResult,
+} from "./search-backend";
 
 export function expandTilde(input: string) {
   if (input === "~") return homedir();
@@ -298,6 +303,18 @@ export type GrepResult =
         text: string;
       }[];
       error?: string;
+    };
+
+export type FuzzySearchResult =
+  | (FuzzyFileSearchResult & {
+      error?: undefined;
+    })
+  | {
+      results: [];
+      totalMatched: 0;
+      totalFiles: 0;
+      truncated: false;
+      error: string;
     };
 
 export type GlobOpts = {
@@ -1372,6 +1389,62 @@ export class FileSystem {
         return { mode, truncated: false, paths: [], error: msg };
       }
       return { mode, truncated: false, entries: [], error: msg };
+    }
+  }
+
+  async fuzzySearchFiles({
+    query,
+    ...opts
+  }: {
+    query: string;
+    baseDir?: string;
+    maxResults?: number;
+    dangerouslyAllow?: boolean;
+  }): Promise<FuzzySearchResult> {
+    try {
+      const { baseDir = this.root, maxResults = 50, dangerouslyAllow = false } = opts;
+      const resolvedBaseDir = this.resolvePath(baseDir);
+
+      this.assertAllowed(resolvedBaseDir, "fuzzySearch", dangerouslyAllow);
+
+      if (this.fsBackend !== "fff") {
+        return {
+          results: [],
+          totalMatched: 0,
+          totalFiles: 0,
+          truncated: false,
+          error: "fuzzy_search requires tools.fsBackend='fff'",
+        };
+      }
+
+      const result = await fuzzyFileSearch({
+        cwd: resolvedBaseDir,
+        query,
+        maxResults,
+        denyPaths: this.denyPaths,
+        dangerouslyAllow,
+      });
+
+      if (!result) {
+        return {
+          results: [],
+          totalMatched: 0,
+          totalFiles: 0,
+          truncated: false,
+          error: "fff fuzzy file search is unavailable for this path",
+        };
+      }
+
+      return result;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        results: [],
+        totalMatched: 0,
+        totalFiles: 0,
+        truncated: false,
+        error: msg,
+      };
     }
   }
 

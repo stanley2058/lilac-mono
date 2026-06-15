@@ -292,4 +292,32 @@ describe("fs tool search wrappers", () => {
     const files = grepOut.results.map((r: { file: string }) => r.file.replace(/^\.\//, "")).sort();
     expect(files).toEqual(["src/a.ts", "src/b.ts"]);
   });
+
+  it("exposes fuzzy_search only for the fff backend", async () => {
+    const defaultTools = fsTool(baseDir);
+    expect("fuzzy_search" in defaultTools).toBe(false);
+
+    const fffTools = fsTool(baseDir, { fsBackend: "fff" }) as Record<string, unknown>;
+    expect("fuzzy_search" in fffTools).toBe(true);
+
+    const fuzzySearch = fffTools["fuzzy_search"] as {
+      execute?: (input: unknown, options: { toolCallId: string; messages: [] }) => unknown;
+    };
+    if (!fuzzySearch.execute) {
+      throw new Error("expected fuzzy_search execute");
+    }
+
+    const out = await resolveExecuteResult(
+      fuzzySearch.execute(
+        { query: "a ts", maxResults: 5 },
+        { toolCallId: "fuzzy-1", messages: [] },
+      ),
+    );
+
+    expect(out).toMatchObject({
+      truncated: false,
+    });
+    const result = out as { results: { path: string }[] };
+    expect(result.results.some((entry) => entry.path === "src/a.ts")).toBe(true);
+  });
 });

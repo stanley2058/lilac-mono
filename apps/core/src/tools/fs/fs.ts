@@ -280,6 +280,49 @@ const globOutputZod = z.discriminatedUnion("mode", [
 
 type GlobOutput = z.infer<typeof globOutputZod>;
 
+export const fuzzySearchInputZod = z.object({
+  query: z
+    .string()
+    .min(1)
+    .describe(
+      "Approximate filename/path query. Use this for fuzzy path discovery, not file content search.",
+    ),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Optional base directory to search from (supports ~). Remote SSH cwd is not supported.",
+    ),
+  maxResults: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum number of ranked files to return (default: 50)."),
+  dangerouslyAllow: z.boolean().optional().describe("Bypass filesystem denylist guardrails."),
+});
+
+type FuzzySearchInput = z.infer<typeof fuzzySearchInputZod>;
+
+const fuzzySearchOutputZod = z.object({
+  results: z.array(
+    z.object({
+      path: z.string(),
+      fileName: z.string(),
+      size: z.number(),
+      gitStatus: z.string(),
+      score: z.number().optional(),
+      matchType: z.string().optional(),
+    }),
+  ),
+  totalMatched: z.number(),
+  totalFiles: z.number(),
+  truncated: z.boolean(),
+  error: z.string().optional(),
+});
+
+type FuzzySearchOutput = z.infer<typeof fuzzySearchOutputZod>;
+
 function buildGrepInputZod(hashlineEnabled: boolean) {
   return z.object({
     pattern: z.string().min(1).describe("Search pattern. Literal by default unless regex=true."),
@@ -1280,6 +1323,52 @@ export function fsTool(
         return res;
       },
     }),
+
+    ...(fsBackend === "fff"
+      ? {
+          fuzzy_search: tool<FuzzySearchInput, FuzzySearchOutput>({
+            description:
+              "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Denylisted paths require dangerouslyAllow=true.",
+            inputSchema: fuzzySearchInputZod,
+            outputSchema: fuzzySearchOutputZod,
+            execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
+              const cwdTarget = parseSshCwdTarget(opCwd);
+              if (cwdTarget.kind === "ssh") {
+                return {
+                  results: [],
+                  totalMatched: 0,
+                  totalFiles: 0,
+                  truncated: false,
+                  error: "fuzzy_search is only available for local paths",
+                };
+              }
+
+              logger.info("fs.fuzzySearch", {
+                query: input.query,
+                cwd: opCwd,
+                maxResults: input.maxResults,
+                dangerouslyAllow: dangerouslyAllow === true,
+              });
+
+              const res = await fileSystem.fuzzySearchFiles({
+                query: input.query,
+                maxResults: input.maxResults,
+                baseDir: opCwd,
+                dangerouslyAllow,
+              });
+
+              logger.info("fs.fuzzySearch done", {
+                resultCount: res.results.length,
+                totalMatched: res.totalMatched,
+                truncated: res.truncated,
+                error: res.error,
+              });
+
+              return res;
+            },
+          }),
+        }
+      : {}),
 
     grep: tool<GrepInput, GrepOutput>({
       description: hashlineEnabled

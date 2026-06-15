@@ -13,6 +13,26 @@ export type GlobSearchResult = {
   truncated: boolean;
 };
 
+export type FuzzyFileSearchResult = {
+  results: {
+    path: string;
+    fileName: string;
+    size: number;
+    gitStatus: string;
+    score?: number;
+    matchType?: string;
+  }[];
+  totalMatched: number;
+  totalFiles: number;
+  truncated: boolean;
+};
+
+export type FffPrewarmResult = {
+  basePath: string;
+  ok: boolean;
+  skipped?: "not-directory" | "deny-path" | "unavailable";
+};
+
 export type SearchBackend = {
   grep(options: GrepOptions): Promise<RipgrepResult>;
   glob(options: {
@@ -108,6 +128,88 @@ async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
   } catch {
     return null;
   }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  const stat = await fs.stat(path).catch(() => null);
+  return stat?.isDirectory() === true;
+}
+
+export async function prewarmFffFinders(params: {
+  basePaths: readonly string[];
+  denyPaths: readonly string[];
+}): Promise<FffPrewarmResult[]> {
+  const results: FffPrewarmResult[] = [];
+  const seen = new Set<string>();
+
+  for (const basePath of params.basePaths) {
+    if (seen.has(basePath)) continue;
+    seen.add(basePath);
+
+    if (!(await isDirectory(basePath))) {
+      results.push({ basePath, ok: false, skipped: "not-directory" });
+      continue;
+    }
+
+    if (
+      shouldFallbackForDenyPaths({
+        cwd: basePath,
+        denyPaths: params.denyPaths,
+        dangerouslyAllow: false,
+      })
+    ) {
+      results.push({ basePath, ok: false, skipped: "deny-path" });
+      continue;
+    }
+
+    const finder = await getFffFinder(basePath);
+    results.push(finder ? { basePath, ok: true } : { basePath, ok: false, skipped: "unavailable" });
+  }
+
+  return results;
+}
+
+export async function fuzzyFileSearch(params: {
+  cwd: string;
+  query: string;
+  maxResults: number;
+  denyPaths: readonly string[];
+  dangerouslyAllow: boolean;
+}): Promise<FuzzyFileSearchResult | null> {
+  if (
+    shouldFallbackForDenyPaths({
+      cwd: params.cwd,
+      denyPaths: params.denyPaths,
+      dangerouslyAllow: params.dangerouslyAllow,
+    })
+  ) {
+    return null;
+  }
+
+  const finder = await getFffFinder(params.cwd);
+  if (!finder) return null;
+
+  const limit = Math.max(1, params.maxResults);
+  const result = finder.fileSearch(params.query, { pageSize: limit + 1 });
+  if (!result.ok) return null;
+
+  const items = result.value.items.slice(0, limit);
+  return {
+    results: items.map((item, index) => {
+      const score = result.value.scores[index];
+      return {
+        path: item.relativePath,
+        fileName: item.fileName,
+        size: item.size,
+        gitStatus: item.gitStatus,
+        score: score?.total,
+        matchType: score?.matchType,
+      };
+    }),
+    totalMatched: result.value.totalMatched,
+    totalFiles: result.value.totalFiles,
+    truncated: result.value.items.length > limit || result.value.totalMatched > limit,
+  };
 }
 
 function buildFffGrepQuery(pattern: string, globs: readonly string[] | undefined): string {
