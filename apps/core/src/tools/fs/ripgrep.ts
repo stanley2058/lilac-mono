@@ -39,6 +39,9 @@ export type GrepOptions = {
    * Limit number of matches (guardrail)
    */
   maxMatches?: number;
+  denyPaths?: readonly string[];
+  dangerouslyAllow?: boolean;
+  contextLines?: number;
 };
 
 export type RipgrepResult = {

@@ -257,4 +257,39 @@ describe("fs tool search wrappers", () => {
     expect(defaults.results.length).toBe(2);
     expect(defaults.truncated).toBe(true);
   });
+
+  it("supports the fff backend for local glob and grep", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+
+    const globOut = await resolveExecuteResult(
+      tools.glob.execute!({ patterns: ["src/**/*.ts"] }, { toolCallId: "fff-glob", messages: [] }),
+    );
+
+    expect(globOut.mode).toBe("default");
+    expect(globOut.error).toBeUndefined();
+    if (globOut.mode !== "default") {
+      throw new Error("expected default glob output");
+    }
+    expect(globOut.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+
+    const grepOut = await resolveExecuteResult(
+      tools.grep.execute!(
+        {
+          pattern: "alpha",
+          fileExtensions: ["ts"],
+          mode: "detailed",
+        },
+        { toolCallId: "fff-grep", messages: [] },
+      ),
+    );
+
+    expect(grepOut.mode).toBe("detailed");
+    expect(grepOut.error).toBeUndefined();
+    if (grepOut.mode !== "detailed") {
+      throw new Error("expected detailed grep output");
+    }
+
+    const files = grepOut.results.map((r: { file: string }) => r.file.replace(/^\.\//, "")).sort();
+    expect(files).toEqual(["src/a.ts", "src/b.ts"]);
+  });
 });

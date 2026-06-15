@@ -2,19 +2,10 @@ import { tool } from "ai";
 import { z } from "zod/v4";
 import { createLogger, env } from "@stanley2058/lilac-utils";
 import { fileTypeFromBuffer } from "file-type";
-import {
-  EDIT_ERROR_CODES,
-  READ_ERROR_CODES,
-  FileSystem,
-  expandTilde,
-  type FileEdit,
-  type GrepMode,
-} from "./fs-impl";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
-import { type HashlineEdit, type HashlineWarning } from "./hashline";
 
+import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import {
   remoteGrep,
@@ -24,6 +15,16 @@ import {
   remoteReadTextFile,
   toRemoteDebugPath,
 } from "./remote-fs";
+import {
+  EDIT_ERROR_CODES,
+  READ_ERROR_CODES,
+  FileSystem,
+  expandTilde,
+  type FileEdit,
+  type GrepMode,
+} from "./fs-impl";
+import type { FsBackend } from "./search-backend";
+import { type HashlineEdit, type HashlineWarning } from "./hashline";
 
 const pathSchema = z
   .string()
@@ -763,13 +764,14 @@ function normalizeEditOutput(output: {
 
 export function fsTool(
   cwd: string,
-  opts?: { includeEditFile?: boolean; experimentalHashlineEdit?: boolean },
+  opts?: { includeEditFile?: boolean; experimentalHashlineEdit?: boolean; fsBackend?: FsBackend },
 ) {
   const logger = createLogger({
     module: "tool:fs",
   });
   const includeEditFile = opts?.includeEditFile ?? false;
   const hashlineEnabled = opts?.experimentalHashlineEdit === true;
+  const fsBackend = opts?.fsBackend ?? "node-rg";
   const readFileSchema = buildReadFileInputZod(hashlineEnabled);
   const readFileOutputSchema = buildReadFileOutputZod(hashlineEnabled);
   const grepInputSchema = buildGrepInputZod(hashlineEnabled);
@@ -780,6 +782,7 @@ export function fsTool(
 
   const fileSystem = new FileSystem(cwd, {
     denyPaths: [path.join(env.dataDir, "secret"), "~/.ssh", "~/.aws", "~/.gnupg"],
+    fsBackend,
   });
 
   const attachmentExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
@@ -1280,8 +1283,8 @@ export function fsTool(
 
     grep: tool<GrepInput, GrepOutput>({
       description: hashlineEnabled
-        ? "Search file contents with ripgrep. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning that tells you to use bash instead. Denylisted paths require dangerouslyAllow=true."
-        : "Search file contents with ripgrep. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
+        ? "Search file contents. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning that tells you to use bash instead. Denylisted paths require dangerouslyAllow=true."
+        : "Search file contents. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: grepInputSchema,
       outputSchema: grepOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {

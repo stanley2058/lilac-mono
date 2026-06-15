@@ -14,7 +14,7 @@ import {
   formatHashlineWindow,
 } from "./hashline";
 
-import { ripgrep } from "./ripgrep";
+import { getSearchBackend, type FsBackend } from "./search-backend";
 
 export function expandTilde(input: string) {
   if (input === "~") return homedir();
@@ -354,15 +354,18 @@ export class FileSystem {
   private readonly listeners = new Set<Listener>();
 
   private readonly denyPaths: readonly string[];
+  private readonly fsBackend: FsBackend;
 
   constructor(
     private root: string,
     opts?: {
       /** Absolute or ~ paths that are blocked for all operations. */
       denyPaths?: readonly string[];
+      fsBackend?: FsBackend;
     },
   ) {
     this.denyPaths = (opts?.denyPaths ?? []).map((p) => resolve(expandTilde(p)));
+    this.fsBackend = opts?.fsBackend ?? "node-rg";
   }
 
   private isDeniedPath(resolvedPath: string): boolean {
@@ -1280,6 +1283,42 @@ export class FileSystem {
         };
       }
 
+      if (this.fsBackend === "fff") {
+        const fffResult = await getSearchBackend("fff").glob({
+          cwd: resolvedBaseDir,
+          patterns,
+          maxEntries,
+          denyPaths: this.denyPaths,
+          dangerouslyAllow,
+        });
+
+        if (fffResult) {
+          if (mode === "default") {
+            return {
+              mode,
+              truncated: fffResult.truncated,
+              paths: fffResult.paths,
+            };
+          }
+
+          const entries: GlobEntry[] = [];
+          for (const entry of fffResult.paths) {
+            const stats = await fs.stat(join(resolvedBaseDir, entry));
+            entries.push({
+              path: entry,
+              type: this.getFileTypeFromStats(stats),
+              size: stats.size,
+            });
+          }
+
+          return {
+            mode,
+            truncated: fffResult.truncated,
+            entries,
+          };
+        }
+      }
+
       const paths: string[] = [];
       const entries: GlobEntry[] = [];
       const seen = new Set<string>();
@@ -1370,13 +1409,16 @@ export class FileSystem {
         extraArgs.push("--context", String(includeContextLines));
       }
 
-      const ripgrepResult = await ripgrep({
+      const ripgrepResult = await getSearchBackend(this.fsBackend).grep({
         pattern,
         regex,
         cwd: resolvedBaseDir,
         maxMatches: maxResults,
         globs: globs.length > 0 ? globs : undefined,
         extraArgs,
+        denyPaths: this.denyPaths,
+        dangerouslyAllow,
+        contextLines: includeContextLines,
       });
 
       if (mode === "hashline") {
