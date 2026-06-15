@@ -252,6 +252,16 @@ function buildFffGrepQuery(pattern: string, globs: readonly string[] | undefined
   return `${constraints.join(" ")} ${pattern}`;
 }
 
+function hasMultiplePositiveGlobConstraints(globs: readonly string[] | undefined): boolean {
+  const constraints = globs?.filter((glob) => glob.length > 0 && !glob.startsWith("!")) ?? [];
+  return constraints.length > 1;
+}
+
+function isFileLikeGlobPattern(pattern: string): boolean {
+  const lastSegment = pattern.split(/[\\/]/u).pop() ?? pattern;
+  return lastSegment.includes(".");
+}
+
 function mapFffGrepMatch(item: {
   relativePath: string;
   lineNumber: number;
@@ -286,6 +296,10 @@ const fffBackend: SearchBackend = {
       return await nodeRgBackend.grep(options);
     }
 
+    if (hasMultiplePositiveGlobConstraints(options.globs)) {
+      return await nodeRgBackend.grep(options);
+    }
+
     const finder = await getFffFinder(options.cwd, options.fffCacheDir);
     if (!finder) return await nodeRgBackend.grep(options);
 
@@ -299,6 +313,7 @@ const fffBackend: SearchBackend = {
     });
 
     if (!result.ok) return await nodeRgBackend.grep(options);
+    if (options.regex && result.value.regexFallbackError) return await nodeRgBackend.grep(options);
 
     const matches = result.value.items.map(mapFffGrepMatch);
     const truncated = matches.length > limit;
@@ -319,9 +334,6 @@ const fffBackend: SearchBackend = {
       return null;
     }
 
-    const finder = await getFffFinder(options.cwd, options.cacheDir);
-    if (!finder) return null;
-
     const includes = options.patterns.filter(
       (pattern) => pattern.length > 0 && !pattern.startsWith("!"),
     );
@@ -331,15 +343,11 @@ const fffBackend: SearchBackend = {
       .filter((pattern) => pattern.length > 0);
 
     if (includes.length === 0) return { paths: [], truncated: false };
+    if (excludes.length > 0) return null;
+    if (!includes.every(isFileLikeGlobPattern)) return null;
 
-    const excluded = new Set<string>();
-    for (const pattern of excludes) {
-      const result = finder.glob(pattern, { pageSize: 1_000_000 });
-      if (!result.ok) return null;
-      for (const item of result.value.items) {
-        excluded.add(item.relativePath);
-      }
-    }
+    const finder = await getFffFinder(options.cwd, options.cacheDir);
+    if (!finder) return null;
 
     const paths: string[] = [];
     const seen = new Set<string>();
@@ -351,7 +359,7 @@ const fffBackend: SearchBackend = {
 
       for (const item of result.value.items) {
         const relPath = item.relativePath;
-        if (seen.has(relPath) || excluded.has(relPath)) continue;
+        if (seen.has(relPath)) continue;
 
         const abs = join(options.cwd, relPath);
         const stat = await fs.stat(abs).catch(() => null);

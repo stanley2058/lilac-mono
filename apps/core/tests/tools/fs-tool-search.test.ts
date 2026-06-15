@@ -293,6 +293,103 @@ describe("fs tool search wrappers", () => {
     expect(files).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
+  it("fff backend preserves glob exclusions when early matches are excluded", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+    await mkdir(path.join(baseDir, "aaa"), { recursive: true });
+    await mkdir(path.join(baseDir, "zzz"), { recursive: true });
+    for (let i = 0; i < 10; i++) {
+      await writeFile(path.join(baseDir, "aaa", `${i}.ts`), "export const excluded = true;\n");
+    }
+    await writeFile(path.join(baseDir, "zzz", "keep.ts"), "export const kept = true;\n");
+
+    const out = await resolveExecuteResult(
+      tools.glob.execute!(
+        {
+          patterns: ["**/*.ts", "!aaa/**"],
+          maxEntries: 1,
+        },
+        { toolCallId: "fff-glob-exclude", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("default");
+    if (out.mode !== "default") {
+      throw new Error("expected default glob output");
+    }
+    expect(out.paths.length).toBe(1);
+    expect(out.paths[0]?.startsWith("aaa/")).toBe(false);
+  });
+
+  it("fff backend preserves directory-capable glob results", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+    await mkdir(path.join(baseDir, "src", "nested"), { recursive: true });
+    await writeFile(path.join(baseDir, "src", "nested", "c.ts"), "export const gamma = 1;\n");
+
+    const out = await resolveExecuteResult(
+      tools.glob.execute!(
+        {
+          patterns: ["src/**"],
+          mode: "detailed",
+          maxEntries: 20,
+        },
+        { toolCallId: "fff-glob-dir", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("detailed");
+    if (out.mode !== "detailed") {
+      throw new Error("expected detailed glob output");
+    }
+    expect(
+      out.entries.some((entry) => entry.path === "src/nested" && entry.type === "directory"),
+    ).toBe(true);
+  });
+
+  it("fff backend preserves multi-extension grep behavior", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+    await writeFile(path.join(baseDir, "src", "component.tsx"), "export const alphaView = true;\n");
+
+    const out = await resolveExecuteResult(
+      tools.grep.execute!(
+        {
+          pattern: "alpha",
+          fileExtensions: ["ts", "tsx"],
+          mode: "detailed",
+          maxResults: 10,
+        },
+        { toolCallId: "fff-grep-exts", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("detailed");
+    if (out.mode !== "detailed") {
+      throw new Error("expected detailed grep output");
+    }
+    const files = out.results.map((result) => result.file.replace(/^\.\//, "")).sort();
+    expect(files).toContain("src/a.ts");
+    expect(files).toContain("src/b.ts");
+    expect(files).toContain("src/component.tsx");
+  });
+
+  it("fff backend preserves invalid regex errors", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff" });
+
+    const out = await resolveExecuteResult(
+      tools.grep.execute!(
+        {
+          pattern: "[",
+          regex: true,
+          mode: "default",
+        },
+        { toolCallId: "fff-grep-bad-regex", messages: [] },
+      ),
+    );
+
+    expect(out.mode).toBe("default");
+    expect(out.error).toBeDefined();
+    expect(out.results).toEqual([]);
+  });
+
   it("exposes fuzzy_search only for the fff backend", async () => {
     const defaultTools = fsTool(baseDir);
     expect("fuzzy_search" in defaultTools).toBe(false);
