@@ -1,15 +1,30 @@
 {
   "name": "@stanley2058/lilac-remote-fs-runner",
   "version": "0.0.0",
-  "module": "src/cli.ts",
+  "description": "Short-lived remote filesystem runner for Lilac SSH tools.",
+  "main": "dist/cli.js",
   "type": "module",
   "private": false,
   "license": "MIT",
+  "homepage": "https://github.com/stanley2058/lilac-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stanley2058/lilac-mcp.git",
+    "directory": "packages/remote-fs-runner"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "bin": {
     "lilac-remote-fs": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
     "build": "bun run build.ts && chmod +x dist/cli.js"
