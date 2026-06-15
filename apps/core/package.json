@@ -8,6 +8,7 @@
   "private": true,
   "license": "MIT",
   "scripts": {
+    "bench:fs-search": "bun scripts/bench-fs-search.ts",
     "build:remote-runner": "bun run build-remote-runner.ts"
   },
   "devDependencies": {
