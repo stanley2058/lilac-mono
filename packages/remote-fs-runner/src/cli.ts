@@ -101,6 +101,10 @@ function writeJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value));
 }
 
+function writeLine(value: string): void {
+  process.stdout.write(`${value}\n`);
+}
+
 function responseError(error: unknown): ResponseEnvelope {
   return { ok: false, error: error instanceof Error ? error.message : String(error) };
 }
@@ -425,6 +429,10 @@ async function runDaemon(): Promise<void> {
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "request";
+  if (command === "--version" || command === "-v" || command === "version") {
+    writeLine(RUNNER_PACKAGE_VERSION);
+    return;
+  }
   if (command === "daemon") {
     await runDaemon();
     return;
