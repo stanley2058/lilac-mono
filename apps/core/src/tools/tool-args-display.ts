@@ -167,6 +167,15 @@ function getGrepArgs(value: unknown): { pattern: string; cwd?: string } | null {
   };
 }
 
+function getFuzzySearchArgs(value: unknown): { query: string; cwd?: string } | null {
+  const record = getRecord(value);
+  if (!record || typeof record["query"] !== "string") return null;
+  return {
+    query: record["query"],
+    cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined,
+  };
+}
+
 const readFileToolArgsFormatter: ToolArgsFormatter = (args) => {
   const parsedPath = getPathArg(args);
   if (!parsedPath) return "";
@@ -226,6 +235,20 @@ export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatt
       .replace(/\s+/g, " ")
       .trim();
     const raw = cwd ? `${pattern} ${cwd}` : pattern;
+    return " " + truncateEnd(raw, DISPLAY_MAX_LEN);
+  },
+
+  fuzzy_search: (args) => {
+    const parsed = getFuzzySearchArgs(args);
+    if (!parsed) return "";
+
+    const query = parsed.query.replace(/\s+/g, " ").trim();
+    if (!query) return "";
+
+    const cwd = normalizeRemoteCwdDisplay(parsed.cwd ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const raw = cwd ? `${query} ${cwd}` : query;
     return " " + truncateEnd(raw, DISPLAY_MAX_LEN);
   },
 

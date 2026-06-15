@@ -104,6 +104,24 @@ describe("formatToolArgsForDisplay", () => {
     ).toBe(" a,b /c");
   });
 
+  it("formats fuzzy_search as query + cwd", () => {
+    expect(
+      formatToolArgsForDisplay("fuzzy_search", {
+        query: "agent runner",
+        cwd: "/repo/apps/core",
+      }),
+    ).toBe(" agent runner /repo/apps/core");
+  });
+
+  it("formats fuzzy_search remote cwd with host initials", () => {
+    expect(
+      formatToolArgsForDisplay("fuzzy_search", {
+        query: "agent",
+        cwd: "stanley-server:/repo/apps/core",
+      }),
+    ).toBe(" agent @SS:/repo/apps/core");
+  });
+
   it("formats subagent_delegate task regardless of profile", () => {
     const display = formatToolArgsForDisplay("subagent_delegate", {
       profile: "general",
@@ -128,6 +146,7 @@ describe("formatToolArgsForDisplay", () => {
     expect(formatToolArgsForDisplay("read_file", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("apply_patch", { nope: true })).toBe("");
     expect(formatToolArgsForDisplay("edit_file", { nope: true })).toBe("");
+    expect(formatToolArgsForDisplay("fuzzy_search", { nope: true })).toBe("");
   });
 
   it("prefers plugin metadata formatter when provided", () => {
