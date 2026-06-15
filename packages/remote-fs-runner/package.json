@@ -1,6 +1,6 @@
 {
   "name": "@stanley2058/lilac-remote-fs-runner",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Short-lived remote filesystem runner for Lilac SSH tools.",
   "main": "dist/cli.js",
   "type": "module",
