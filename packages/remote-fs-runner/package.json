@@ -6,10 +6,10 @@
   "type": "module",
   "private": false,
   "license": "MIT",
-  "homepage": "https://github.com/stanley2058/lilac-mcp#readme",
+  "homepage": "https://github.com/stanley2058/lilac-mono#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stanley2058/lilac-mcp.git",
+    "url": "git+https://github.com/stanley2058/lilac-mono.git",
     "directory": "packages/remote-fs-runner"
   },
   "publishConfig": {
