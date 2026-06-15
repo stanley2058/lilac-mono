@@ -1,4 +1,4 @@
-import type { FsBackend, FuzzySearchResult } from "@stanley2058/lilac-fs";
+import type { EffectiveSearchBackend, FsBackend, FuzzySearchResult } from "@stanley2058/lilac-fs";
 import { createRequire } from "node:module";
 
 import { sshExecBash, sshExecScriptJson } from "../../ssh/ssh-exec";
@@ -100,12 +100,14 @@ export type RemoteGlobOutput =
       mode: "default";
       truncated: boolean;
       paths: string[];
+      effectiveBackend?: EffectiveSearchBackend;
       error?: string;
     }
   | {
       mode: "detailed";
       truncated: boolean;
       entries: RemoteGlobEntry[];
+      effectiveBackend?: EffectiveSearchBackend;
       error?: string;
     };
 
@@ -123,6 +125,7 @@ export type RemoteGrepOutput =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: {
         file: string;
         line: number;
@@ -135,6 +138,7 @@ export type RemoteGrepOutput =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: RemoteGrepMatch[];
       error?: string;
     }
@@ -143,6 +147,7 @@ export type RemoteGrepOutput =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: {
         file: string;
         resolvedPath: string;

@@ -17,6 +17,7 @@ import {
 import {
   fuzzyFileSearch,
   getSearchBackend,
+  type EffectiveSearchBackend,
   type FsBackend,
   type FuzzyFileSearchResult,
 } from "./search-backend";
@@ -267,12 +268,14 @@ export type GlobResult =
       mode: "default";
       truncated: boolean;
       paths: string[];
+      effectiveBackend?: EffectiveSearchBackend;
       error?: string;
     }
   | {
       mode: "detailed";
       truncated: boolean;
       entries: GlobEntry[];
+      effectiveBackend?: EffectiveSearchBackend;
       error?: string;
     };
 
@@ -282,6 +285,7 @@ export type GrepResult =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: {
         file: string;
         line: number;
@@ -294,6 +298,7 @@ export type GrepResult =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: {
         file: string;
         line: number;
@@ -312,6 +317,7 @@ export type GrepResult =
       truncated: boolean;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
+      effectiveBackend?: EffectiveSearchBackend;
       results: {
         file: string;
         resolvedPath: string;
@@ -331,6 +337,7 @@ export type FuzzySearchResult =
       totalMatched: 0;
       totalFiles: 0;
       truncated: false;
+      effectiveBackend?: EffectiveSearchBackend;
       error: string;
     };
 
@@ -1336,6 +1343,7 @@ export class FileSystem {
               mode,
               truncated: fffResult.truncated,
               paths: fffResult.paths,
+              effectiveBackend: fffResult.effectiveBackend,
             };
           }
 
@@ -1353,6 +1361,7 @@ export class FileSystem {
             mode,
             truncated: fffResult.truncated,
             entries,
+            effectiveBackend: fffResult.effectiveBackend,
           };
         }
       }
@@ -1371,6 +1380,7 @@ export class FileSystem {
           mode,
           truncated,
           paths,
+          effectiveBackend: "node-fs",
         };
       }
 
@@ -1378,6 +1388,7 @@ export class FileSystem {
         mode,
         truncated,
         entries,
+        effectiveBackend: "node-fs",
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1543,6 +1554,7 @@ export class FileSystem {
             mode: "default",
             truncated: ripgrepResult.truncated,
             results: rawResults,
+            effectiveBackend: ripgrepResult.effectiveBackend,
             warnings,
             degradedFromHashline: true,
           };
@@ -1552,6 +1564,7 @@ export class FileSystem {
           mode,
           truncated: ripgrepResult.truncated,
           results: hashlineResults,
+          effectiveBackend: ripgrepResult.effectiveBackend,
         };
       }
 
@@ -1565,6 +1578,7 @@ export class FileSystem {
           mode,
           truncated: ripgrepResult.truncated,
           results,
+          effectiveBackend: ripgrepResult.effectiveBackend,
         };
       }
 
@@ -1572,6 +1586,7 @@ export class FileSystem {
         mode,
         truncated: ripgrepResult.truncated,
         results: ripgrepResult.matches,
+        effectiveBackend: ripgrepResult.effectiveBackend,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

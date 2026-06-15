@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { z } from "zod";
 
+import type { EffectiveSearchBackend } from "./search-backend";
+
 export type GrepMatch = {
   file: string;
   line: number;
@@ -48,6 +50,7 @@ export type GrepOptions = {
 export type RipgrepResult = {
   matches: GrepMatch[];
   truncated: boolean;
+  effectiveBackend: EffectiveSearchBackend;
 };
 
 const ripgrepSubmatchSchema = z.object({
@@ -227,6 +230,7 @@ export async function ripgrep(options: GrepOptions): Promise<RipgrepResult> {
         settleResolve({
           matches: truncated ? matches.slice(0, limit) : matches,
           truncated,
+          effectiveBackend: "node-rg",
         });
         return;
       }

@@ -5,6 +5,7 @@ import {
   FileSystem,
   READ_ERROR_CODES,
   expandTilde,
+  type EffectiveSearchBackend,
   type FileEdit,
   type FsBackend,
   type GrepMode,
@@ -637,6 +638,25 @@ function countGlobItems(output: GlobOutput): number {
 
 function countGrepItems(output: GrepOutput): number {
   return output.results.length;
+}
+
+type SearchBackendMetadata = { effectiveBackend?: EffectiveSearchBackend };
+
+function stripGlobMetadata(output: GlobOutput & SearchBackendMetadata): GlobOutput {
+  const { effectiveBackend: _effectiveBackend, ...rest } = output;
+  return rest;
+}
+
+function stripFuzzySearchMetadata(
+  output: FuzzySearchOutput & SearchBackendMetadata,
+): FuzzySearchOutput {
+  const { effectiveBackend: _effectiveBackend, ...rest } = output;
+  return rest;
+}
+
+function stripGrepMetadata(output: GrepOutput & SearchBackendMetadata): GrepOutput {
+  const { effectiveBackend: _effectiveBackend, ...rest } = output;
+  return rest;
 }
 
 const instructionFieldsZod = z.object({
@@ -1300,9 +1320,10 @@ export function fsTool(
             truncated: res.truncated,
             error: res.error,
             mode: res.mode,
+            effectiveBackend: res.effectiveBackend,
           });
 
-          return res;
+          return stripGlobMetadata(res);
         }
 
         const res = await fileSystem.glob({
@@ -1318,9 +1339,10 @@ export function fsTool(
           truncated: res.truncated,
           error: res.error,
           mode: res.mode,
+          effectiveBackend: res.effectiveBackend,
         });
 
-        return res;
+        return stripGlobMetadata(res);
       },
     }),
 
@@ -1359,9 +1381,10 @@ export function fsTool(
                   totalMatched: res.totalMatched,
                   truncated: res.truncated,
                   error: res.error,
+                  effectiveBackend: res.effectiveBackend,
                 });
 
-                return res;
+                return stripFuzzySearchMetadata(res);
               }
 
               const res = await fileSystem.fuzzySearchFiles({
@@ -1376,9 +1399,10 @@ export function fsTool(
                 totalMatched: res.totalMatched,
                 truncated: res.truncated,
                 error: res.error,
+                effectiveBackend: res.effectiveBackend,
               });
 
-              return res;
+              return stripFuzzySearchMetadata(res);
             },
           }),
         }
@@ -1440,9 +1464,10 @@ export function fsTool(
             truncated: res.truncated,
             error: res.error,
             mode: res.mode,
+            effectiveBackend: res.effectiveBackend,
           });
 
-          return res;
+          return stripGrepMetadata(res);
         }
 
         const res = await fileSystem.grep({
@@ -1461,9 +1486,10 @@ export function fsTool(
           truncated: res.truncated,
           error: res.error,
           mode: res.mode,
+          effectiveBackend: res.effectiveBackend,
         });
 
-        return res;
+        return stripGrepMetadata(res);
       },
     }),
   };

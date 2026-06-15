@@ -45,6 +45,16 @@ describe("search permission handling", () => {
       }
       expect(result.paths.map((p) => p.replace(/^\.\//, "")).sort()).toEqual(["ok/package.json"]);
       expect(result.truncated).toBe(false);
+      expect(result.effectiveBackend).toBeDefined();
+      const effectiveBackend = result.effectiveBackend;
+      if (!effectiveBackend) {
+        throw new Error("expected effective backend");
+      }
+      if (backend === "fff") {
+        expect(["fff", "node-fs"]).toContain(effectiveBackend);
+      } else {
+        expect(effectiveBackend).toBe("node-fs");
+      }
     }
   });
 });

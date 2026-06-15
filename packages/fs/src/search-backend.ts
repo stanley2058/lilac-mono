@@ -8,10 +8,12 @@ import { ripgrep, type GrepMatch, type GrepOptions, type RipgrepResult } from ".
 
 export const FS_BACKENDS = ["fff", "node-rg"] as const;
 export type FsBackend = (typeof FS_BACKENDS)[number];
+export type EffectiveSearchBackend = FsBackend | "node-fs";
 
 export type GlobSearchResult = {
   paths: string[];
   truncated: boolean;
+  effectiveBackend: "fff";
 };
 
 export type FuzzyFileSearchResult = {
@@ -26,6 +28,7 @@ export type FuzzyFileSearchResult = {
   totalMatched: number;
   totalFiles: number;
   truncated: boolean;
+  effectiveBackend: "fff";
 };
 
 export type FffPrewarmResult = {
@@ -246,6 +249,7 @@ export async function fuzzyFileSearch(params: {
     totalMatched: result.value.totalMatched,
     totalFiles: result.value.totalFiles,
     truncated: result.value.items.length > limit || result.value.totalMatched > limit,
+    effectiveBackend: "fff",
   };
 }
 
@@ -327,6 +331,7 @@ const fffBackend: SearchBackend = {
     return {
       matches: truncated ? matches.slice(0, limit) : matches,
       truncated,
+      effectiveBackend: "fff",
     };
   },
 
@@ -349,7 +354,7 @@ const fffBackend: SearchBackend = {
       .map((pattern) => pattern.slice(1))
       .filter((pattern) => pattern.length > 0);
 
-    if (includes.length === 0) return { paths: [], truncated: false };
+    if (includes.length === 0) return { paths: [], truncated: false, effectiveBackend: "fff" };
     if (excludes.length > 0) return null;
     if (!includes.every(isFileLikeGlobPattern)) return null;
     if (includes.some(targetsNodeModules)) return null;
@@ -385,7 +390,7 @@ const fffBackend: SearchBackend = {
         if (truncated) break;
       }
 
-      return { paths, truncated };
+      return { paths, truncated, effectiveBackend: "fff" };
     } catch {
       return null;
     }
