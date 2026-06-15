@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { z } from "zod/v4";
-import { expandTilde } from "./fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 import {
   decodeDataUrl,
   inferExtensionFromMimeType,

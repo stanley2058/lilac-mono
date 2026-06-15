@@ -3,10 +3,14 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
+import {
+  FileSystem,
+  type EditFileResult,
+  type FileEdit,
+  type HashlineEdit,
+} from "@stanley2058/lilac-fs";
 
 import { applyHunks, parsePatch } from "../../tools/apply-patch/apply-patch-core";
-import { FileSystem, type FileEdit, type EditFileResult } from "../../tools/fs/fs-impl";
-import type { HashlineEdit } from "../../tools/fs/hashline";
 
 function ok(value: unknown): void {
   process.stdout.write(JSON.stringify({ ok: true, value }));

@@ -4,7 +4,7 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { EditingToolMode } from "@stanley2058/lilac-utils";
 import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
-import { expandTilde } from "./fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 import { parsePatch } from "./apply-patch/apply-patch-core";
 import {
   formatBatchChildValidationError,

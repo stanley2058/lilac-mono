@@ -8,7 +8,7 @@ import {
   type EditFileResult,
   type GlobResult,
   type GrepResult,
-} from "../../src/tools/fs/fs-impl";
+} from "@stanley2058/lilac-fs";
 
 const runnerPath = path.resolve(import.meta.dir, "../../src/ssh/remote-js/remote-runner.cjs");
 

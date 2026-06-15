@@ -21,7 +21,7 @@ import {
   resolveToolPathForRequestContext,
   sanitizeExtension,
 } from "../../shared/attachment-utils";
-import { expandTilde } from "../../tools/fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 
 const DEFAULT_OUTBOUND_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_OUTBOUND_MAX_TOTAL_BYTES = 16 * 1024 * 1024;

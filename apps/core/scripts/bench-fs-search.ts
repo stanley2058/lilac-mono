@@ -1,8 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 
-import { FileSystem, expandTilde } from "../src/tools/fs/fs-impl";
-import type { FsBackend } from "../src/tools/fs/search-backend";
+import { FileSystem, expandTilde, type FsBackend } from "@stanley2058/lilac-fs";
 
 type BackendSelection = FsBackend | "all";
 

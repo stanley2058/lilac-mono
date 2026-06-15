@@ -1,7 +1,6 @@
 import { sshExecScriptJson } from "../../ssh/ssh-exec";
 import { getRemoteRunnerJsText } from "../../ssh/remote-js";
-import type { FileEdit } from "./fs-impl";
-import type { HashlineEdit, HashlineWarning } from "./hashline";
+import type { FileEdit, HashlineEdit, HashlineWarning } from "@stanley2058/lilac-fs";
 
 export type RemoteReadTextInput = {
   path: string;

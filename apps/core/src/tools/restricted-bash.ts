@@ -18,7 +18,7 @@ import {
 } from "just-bash";
 
 import type { BashToolInput, BashToolOutput } from "./bash-impl";
-import { expandTilde } from "./fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 

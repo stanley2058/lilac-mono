@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve, extname, relative, sep } from "node:path";
 import { posix as posixPath } from "node:path";
-import { expandTilde } from "../tools/fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 
 const RESTRICTED_TMP_ROOT = "/tmp/lilac-restricted";
 const RESTRICTED_TMP_MOUNT = "/tmp";

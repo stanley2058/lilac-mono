@@ -37,6 +37,7 @@
         "@octokit/auth-app": "^8.2.0",
         "@stanley2058/lilac-agent": "workspace:*",
         "@stanley2058/lilac-event-bus": "workspace:*",
+        "@stanley2058/lilac-fs": "workspace:*",
         "@stanley2058/lilac-plugin-runtime": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.4",
@@ -114,6 +115,20 @@
         "ai": "^6.0.199",
         "ioredis": "^5.10.1",
         "superjson": "^2.2.6",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.11",
+      },
+      "peerDependencies": {
+        "typescript": "^6.0.2",
+      },
+    },
+    "packages/fs": {
+      "name": "@stanley2058/lilac-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ff-labs/fff-node": "^0.9.4",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/bun": "^1.3.11",
@@ -369,6 +384,8 @@
     "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
 
     "@stanley2058/lilac-event-bus": ["@stanley2058/lilac-event-bus@workspace:packages/event-bus"],
+
+    "@stanley2058/lilac-fs": ["@stanley2058/lilac-fs@workspace:packages/fs"],
 
     "@stanley2058/lilac-plugin-runtime": ["@stanley2058/lilac-plugin-runtime@workspace:packages/plugin-runtime"],
 

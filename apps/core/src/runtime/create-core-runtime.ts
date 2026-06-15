@@ -53,7 +53,7 @@ import { createCoreToolPluginManager, type CoreToolPluginManager } from "../plug
 import { CustomCommandManager } from "../custom-commands/manager";
 import { handleCoreConfigWatchEvent } from "./core-config-watch";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
-import { prewarmFffFinders } from "../tools/fs/search-backend";
+import { prewarmFffFinders } from "@stanley2058/lilac-fs";
 
 export type CoreRuntime = {
   start(): Promise<void>;

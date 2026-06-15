@@ -1,5 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
+import {
+  EDIT_ERROR_CODES,
+  FileSystem,
+  READ_ERROR_CODES,
+  expandTilde,
+  type FileEdit,
+  type FsBackend,
+  type GrepMode,
+  type HashlineEdit,
+  type HashlineWarning,
+} from "@stanley2058/lilac-fs";
 import { createLogger, env } from "@stanley2058/lilac-utils";
 import { fileTypeFromBuffer } from "file-type";
 import fsp from "node:fs/promises";
@@ -15,16 +26,6 @@ import {
   remoteReadTextFile,
   toRemoteDebugPath,
 } from "./remote-fs";
-import {
-  EDIT_ERROR_CODES,
-  READ_ERROR_CODES,
-  FileSystem,
-  expandTilde,
-  type FileEdit,
-  type GrepMode,
-} from "./fs-impl";
-import type { FsBackend } from "./search-backend";
-import { type HashlineEdit, type HashlineWarning } from "./hashline";
 
 const pathSchema = z
   .string()

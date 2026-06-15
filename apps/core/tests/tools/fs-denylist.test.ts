@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "../../src/tools/fs/fs-impl";
+import { FileSystem } from "@stanley2058/lilac-fs";
 
 describe("fs denylist", () => {
   let baseDir: string;

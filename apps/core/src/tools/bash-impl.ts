@@ -5,7 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
-import { expandTilde } from "./fs/fs-impl";
+import { expandTilde } from "@stanley2058/lilac-fs";
 
 import { getGithubEnvForBash } from "../github/github-auth";
 
