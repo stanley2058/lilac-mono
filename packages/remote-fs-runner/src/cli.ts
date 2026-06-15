@@ -18,6 +18,7 @@ type RequestEnvelope = {
   op: string;
   input: JsonObject;
   denyPaths: string[];
+  cwd: string;
 };
 
 type ResponseEnvelope = { ok: true; value: unknown } | { ok: false; error: string };
@@ -49,6 +50,7 @@ function parseEnvelope(value: unknown): RequestEnvelope {
     op: String(value["op"] ?? ""),
     input: isRecord(input) ? input : {},
     denyPaths: stringArray(value["denyPaths"]),
+    cwd: typeof value["cwd"] === "string" ? value["cwd"] : process.cwd(),
   };
 }
 
@@ -123,7 +125,7 @@ function normalizeEditOutput(result: unknown): unknown {
 }
 
 async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
-  const fsTool = new FileSystem(process.cwd(), {
+  const fsTool = new FileSystem(envelope.cwd, {
     denyPaths: envelope.denyPaths,
     fsBackend: "fff",
     fffCacheDir: fffCacheDir(),
@@ -292,7 +294,7 @@ async function tryConnectUntil(
 }
 
 async function runRequest(): Promise<void> {
-  const payload = parseEnvelope(await readStdinJson());
+  const payload = { ...parseEnvelope(await readStdinJson()), cwd: process.cwd() };
   await ensureRuntimeDir();
 
   const direct = await tryConnectUntil(Date.now() + CONNECT_RETRY_MS, payload);

@@ -157,7 +157,6 @@
       },
       "dependencies": {
         "@ff-labs/fff-node": "^0.9.4",
-        "@stanley2058/lilac-fs": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "^1.3.11",
