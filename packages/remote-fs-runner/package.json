@@ -22,7 +22,7 @@
     "lilac-remote-fs": "dist/cli.js"
   },
   "files": [
-    "dist",
+    "dist/cli.js",
     "LICENSE",
     "README.md"
   ],

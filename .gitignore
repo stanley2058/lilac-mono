@@ -4,6 +4,7 @@ node_modules
 # output
 out
 *.tgz
+packages/remote-fs-runner/dist/cli.js
 
 # code coverage
 coverage
