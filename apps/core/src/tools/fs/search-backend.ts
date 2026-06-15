@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, relative, sep } from "node:path";
 
 import type { FileFinderApi } from "@ff-labs/fff-node";
@@ -41,6 +42,7 @@ export type SearchBackend = {
     maxEntries: number;
     denyPaths: readonly string[];
     dangerouslyAllow: boolean;
+    cacheDir?: string;
   }): Promise<GlobSearchResult | null>;
 };
 
@@ -56,9 +58,18 @@ type FffFinderEntry = {
   ready: Promise<boolean>;
 };
 
+type FffStoragePaths = {
+  frecencyDbPath?: string;
+  historyDbPath?: string;
+};
+
 const MAX_FFF_FINDER_CACHE_ENTRIES = 8;
 const fffFindersByBasePath = new Map<string, FffFinderEntry>();
 const FFF_NODE_PACKAGE = ["@ff-labs", "fff-node"].join("/");
+
+function fffFinderCacheKey(basePath: string, cacheDir?: string): string {
+  return `${cacheDir ?? ""}\0${basePath}`;
+}
 
 function destroyFffFinder(entry: FffFinderEntry): void {
   try {
@@ -68,16 +79,34 @@ function destroyFffFinder(entry: FffFinderEntry): void {
   }
 }
 
-function cacheFffFinder(basePath: string, entry: FffFinderEntry): void {
-  fffFindersByBasePath.set(basePath, entry);
+function cacheFffFinder(cacheKey: string, entry: FffFinderEntry): void {
+  fffFindersByBasePath.set(cacheKey, entry);
 
   while (fffFindersByBasePath.size > MAX_FFF_FINDER_CACHE_ENTRIES) {
     const oldest = fffFindersByBasePath.entries().next().value;
     if (!oldest) return;
-    const [oldestBasePath, oldestEntry] = oldest;
-    fffFindersByBasePath.delete(oldestBasePath);
+    const [oldestCacheKey, oldestEntry] = oldest;
+    fffFindersByBasePath.delete(oldestCacheKey);
     destroyFffFinder(oldestEntry);
   }
+}
+
+function rootStorageKey(basePath: string): string {
+  return createHash("sha256").update(basePath).digest("hex").slice(0, 16);
+}
+
+async function resolveFffStoragePaths(
+  cacheDir: string | undefined,
+  basePath: string,
+): Promise<FffStoragePaths> {
+  if (!cacheDir) return {};
+
+  const rootDir = join(cacheDir, "roots", rootStorageKey(basePath));
+  const frecencyDbPath = join(rootDir, "frecency");
+  const historyDbPath = join(rootDir, "history");
+  await fs.mkdir(frecencyDbPath, { recursive: true });
+  await fs.mkdir(historyDbPath, { recursive: true });
+  return { frecencyDbPath, historyDbPath };
 }
 
 function shouldFallbackForDenyPaths(params: {
@@ -97,11 +126,12 @@ function shouldFallbackForDenyPaths(params: {
   return false;
 }
 
-async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
-  const cached = fffFindersByBasePath.get(basePath);
+async function getFffFinder(basePath: string, cacheDir?: string): Promise<FileFinderApi | null> {
+  const cacheKey = fffFinderCacheKey(basePath, cacheDir);
+  const cached = fffFindersByBasePath.get(cacheKey);
   if (cached) {
-    fffFindersByBasePath.delete(basePath);
-    fffFindersByBasePath.set(basePath, cached);
+    fffFindersByBasePath.delete(cacheKey);
+    fffFindersByBasePath.set(cacheKey, cached);
     await cached.ready;
     return cached.finder;
   }
@@ -110,9 +140,11 @@ async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
     const fff = (await import(FFF_NODE_PACKAGE)) as typeof import("@ff-labs/fff-node");
     if (!fff.FileFinder.isAvailable()) return null;
 
+    const storagePaths = await resolveFffStoragePaths(cacheDir, basePath);
     const created = fff.FileFinder.create({
       basePath,
       aiMode: true,
+      ...storagePaths,
       // Keep cached indexes fresh after background edits. Eviction destroys
       // the finder, which also stops the native watcher for that base path.
       disableWatch: false,
@@ -121,7 +153,7 @@ async function getFffFinder(basePath: string): Promise<FileFinderApi | null> {
 
     const finder = created.value;
     const ready = finder.waitForIndexReady(10_000).then((result) => result.ok && result.value);
-    cacheFffFinder(basePath, { finder, ready });
+    cacheFffFinder(cacheKey, { finder, ready });
 
     await ready;
     return finder;
@@ -138,6 +170,7 @@ async function isDirectory(path: string): Promise<boolean> {
 export async function prewarmFffFinders(params: {
   basePaths: readonly string[];
   denyPaths: readonly string[];
+  cacheDir?: string;
 }): Promise<FffPrewarmResult[]> {
   const results: FffPrewarmResult[] = [];
   const seen = new Set<string>();
@@ -162,7 +195,7 @@ export async function prewarmFffFinders(params: {
       continue;
     }
 
-    const finder = await getFffFinder(basePath);
+    const finder = await getFffFinder(basePath, params.cacheDir);
     results.push(finder ? { basePath, ok: true } : { basePath, ok: false, skipped: "unavailable" });
   }
 
@@ -175,6 +208,7 @@ export async function fuzzyFileSearch(params: {
   maxResults: number;
   denyPaths: readonly string[];
   dangerouslyAllow: boolean;
+  cacheDir?: string;
 }): Promise<FuzzyFileSearchResult | null> {
   if (
     shouldFallbackForDenyPaths({
@@ -186,7 +220,7 @@ export async function fuzzyFileSearch(params: {
     return null;
   }
 
-  const finder = await getFffFinder(params.cwd);
+  const finder = await getFffFinder(params.cwd, params.cacheDir);
   if (!finder) return null;
 
   const limit = Math.max(1, params.maxResults);
@@ -252,7 +286,7 @@ const fffBackend: SearchBackend = {
       return await nodeRgBackend.grep(options);
     }
 
-    const finder = await getFffFinder(options.cwd);
+    const finder = await getFffFinder(options.cwd, options.fffCacheDir);
     if (!finder) return await nodeRgBackend.grep(options);
 
     const limit = Math.max(1, options.maxMatches ?? 200);
@@ -285,7 +319,7 @@ const fffBackend: SearchBackend = {
       return null;
     }
 
-    const finder = await getFffFinder(options.cwd);
+    const finder = await getFffFinder(options.cwd, options.cacheDir);
     if (!finder) return null;
 
     const includes = options.patterns.filter(

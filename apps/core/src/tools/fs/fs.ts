@@ -49,6 +49,7 @@ const MAX_INSTRUCTION_CHARS = 20_000;
 
 const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
 const REMOTE_MAX_ATTACHMENT_BYTES = 10_000_000;
+const FFF_CACHE_DIR = path.join(env.dataDir, ".cache", "fff");
 
 function resolveRemoteDenyPaths(dangerouslyAllow?: boolean): readonly string[] {
   return dangerouslyAllow === true ? [] : REMOTE_DENY_PATHS;
@@ -826,6 +827,7 @@ export function fsTool(
   const fileSystem = new FileSystem(cwd, {
     denyPaths: [path.join(env.dataDir, "secret"), "~/.ssh", "~/.aws", "~/.gnupg"],
     fsBackend,
+    fffCacheDir: FFF_CACHE_DIR,
   });
 
   const attachmentExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
@@ -1328,7 +1330,7 @@ export function fsTool(
       ? {
           fuzzy_search: tool<FuzzySearchInput, FuzzySearchOutput>({
             description:
-              "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Denylisted paths require dangerouslyAllow=true.",
+              "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Doesn't work for remote files. Denylisted paths require dangerouslyAllow=true.",
             inputSchema: fuzzySearchInputZod,
             outputSchema: fuzzySearchOutputZod,
             execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {

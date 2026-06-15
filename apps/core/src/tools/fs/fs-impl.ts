@@ -372,6 +372,7 @@ export class FileSystem {
 
   private readonly denyPaths: readonly string[];
   private readonly fsBackend: FsBackend;
+  private readonly fffCacheDir: string | undefined;
 
   constructor(
     private root: string,
@@ -379,10 +380,12 @@ export class FileSystem {
       /** Absolute or ~ paths that are blocked for all operations. */
       denyPaths?: readonly string[];
       fsBackend?: FsBackend;
+      fffCacheDir?: string;
     },
   ) {
     this.denyPaths = (opts?.denyPaths ?? []).map((p) => resolve(expandTilde(p)));
     this.fsBackend = opts?.fsBackend ?? "node-rg";
+    this.fffCacheDir = opts?.fffCacheDir ? resolve(expandTilde(opts.fffCacheDir)) : undefined;
   }
 
   private isDeniedPath(resolvedPath: string): boolean {
@@ -1307,6 +1310,7 @@ export class FileSystem {
           maxEntries,
           denyPaths: this.denyPaths,
           dangerouslyAllow,
+          cacheDir: this.fffCacheDir,
         });
 
         if (fffResult) {
@@ -1423,6 +1427,7 @@ export class FileSystem {
         maxResults,
         denyPaths: this.denyPaths,
         dangerouslyAllow,
+        cacheDir: this.fffCacheDir,
       });
 
       if (!result) {
@@ -1492,6 +1497,7 @@ export class FileSystem {
         denyPaths: this.denyPaths,
         dangerouslyAllow,
         contextLines: includeContextLines,
+        fffCacheDir: this.fffCacheDir,
       });
 
       if (mode === "hashline") {

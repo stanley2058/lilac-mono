@@ -84,6 +84,10 @@ function runtimeFsDenyPaths(): readonly string[] {
   ];
 }
 
+function fffCacheDir(): string {
+  return path.join(env.dataDir, ".cache", "fff");
+}
+
 export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<CoreRuntime> {
   const logger = createLogger({
     logLevel: opts.logLevel,
@@ -467,6 +471,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         void prewarmFffFinders({
           basePaths: ["/data", "/data/workspace", "/app", cwd],
           denyPaths: runtimeFsDenyPaths(),
+          cacheDir: fffCacheDir(),
         }).then((results) => {
           logger.info("fff finder prewarm completed", {
             results,

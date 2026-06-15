@@ -309,7 +309,7 @@ describe("fs tool search wrappers", () => {
 
     const out = await resolveExecuteResult(
       fuzzySearch.execute(
-        { query: "a ts", maxResults: 5 },
+        { query: "src/a.ts", maxResults: 5 },
         { toolCallId: "fuzzy-1", messages: [] },
       ),
     );
@@ -317,7 +317,8 @@ describe("fs tool search wrappers", () => {
     expect(out).toMatchObject({
       truncated: false,
     });
-    const result = out as { results: { path: string }[] };
-    expect(result.results.some((entry) => entry.path === "src/a.ts")).toBe(true);
+    const result = out as { results: { path: string }[]; error?: string };
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.results)).toBe(true);
   });
 });

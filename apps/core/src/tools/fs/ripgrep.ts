@@ -42,6 +42,7 @@ export type GrepOptions = {
   denyPaths?: readonly string[];
   dangerouslyAllow?: boolean;
   contextLines?: number;
+  fffCacheDir?: string;
 };
 
 export type RipgrepResult = {
