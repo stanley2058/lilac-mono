@@ -128,18 +128,33 @@ exec "$@"
     expect(result.stdout).toBe("missing");
   });
 
-  it("passes JSON stdin to the default remote FFF runner command", async () => {
-    const npxPath = path.join(binDir, "npx");
+  it("prefers bunx and passes JSON stdin to the default remote FFF runner command", async () => {
+    const bunxPath = path.join(binDir, "bunx");
     await writeFile(
-      npxPath,
+      bunxPath,
       `#!/usr/bin/env bash
 set -euo pipefail
+if [ "\${2:-}" != "request" ]; then
+  printf '%s' '{"ok":false,"error":"unexpected bunx invocation"}'
+  exit 0
+fi
 payload=$(cat)
 if [[ "$payload" != *'"op":"fs.fuzzy_search"'* ]]; then
   printf '%s' '{"ok":false,"error":"missing fuzzy op"}'
   exit 0
 fi
 printf '%s' '{"ok":true,"value":{"results":[{"path":"package.json","fileName":"package.json","size":123,"gitStatus":"clean","score":1}],"totalMatched":1,"totalFiles":1,"truncated":false,"effectiveBackend":"fff"}}'
+`,
+      "utf8",
+    );
+    await chmod(bunxPath, 0o755);
+
+    const npxPath = path.join(binDir, "npx");
+    await writeFile(
+      npxPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' '{"ok":false,"error":"npx should not be used when bunx exists"}'
 `,
       "utf8",
     );
