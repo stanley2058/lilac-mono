@@ -293,6 +293,28 @@ async function tryConnectUntil(
   return null;
 }
 
+async function tryAcquireStartupLock(): Promise<boolean> {
+  const target = lockPath();
+  try {
+    await fs.mkdir(target);
+    return true;
+  } catch {
+    const stat = await fs.stat(target).catch(() => null);
+    if (!stat) return false;
+
+    const lockAgeMs = Date.now() - stat.mtimeMs;
+    if (lockAgeMs <= STARTUP_TIMEOUT_MS) return false;
+
+    await fs.rm(target, { recursive: true, force: true }).catch(() => undefined);
+    try {
+      await fs.mkdir(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function runRequest(): Promise<void> {
   const payload = { ...parseEnvelope(await readStdinJson()), cwd: process.cwd() };
   await ensureRuntimeDir();
@@ -304,12 +326,9 @@ async function runRequest(): Promise<void> {
   }
 
   let acquiredLock = false;
-  try {
-    await fs.mkdir(lockPath());
-    acquiredLock = true;
+  acquiredLock = await tryAcquireStartupLock();
+  if (acquiredLock) {
     spawnDaemon();
-  } catch {
-    // Another client is starting the daemon.
   }
 
   try {
