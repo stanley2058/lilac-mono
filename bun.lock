@@ -39,6 +39,7 @@
         "@stanley2058/lilac-event-bus": "workspace:*",
         "@stanley2058/lilac-fs": "workspace:*",
         "@stanley2058/lilac-plugin-runtime": "workspace:*",
+        "@stanley2058/lilac-remote-fs-runner": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.4",
         "@tavily/core": "^0.7.2",

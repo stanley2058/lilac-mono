@@ -7,7 +7,9 @@ import { spawn } from "node:child_process";
 
 import { FileSystem, type FileEdit, type HashlineEdit } from "@stanley2058/lilac-fs";
 
-const PACKAGE_VERSION = "0.0.0";
+declare const PACKAGE_VERSION: string;
+
+const RUNNER_PACKAGE_VERSION = typeof PACKAGE_VERSION === "string" ? PACKAGE_VERSION : "dev";
 const DEFAULT_IDLE_MS = 5 * 60 * 1000;
 const STARTUP_TIMEOUT_MS = 15_000;
 const CONNECT_RETRY_MS = 100;
@@ -59,12 +61,12 @@ function runtimeBaseDir(): string {
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv);
 
   const cacheHome = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
-  return path.join(cacheHome, "lilac", "remote-fs-runner", PACKAGE_VERSION);
+  return path.join(cacheHome, "lilac", "remote-fs-runner", RUNNER_PACKAGE_VERSION);
 }
 
 function socketPath(baseDir = runtimeBaseDir()): string {
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\lilac-remote-fs-${PACKAGE_VERSION.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    return `\\\\.\\pipe\\lilac-remote-fs-${RUNNER_PACKAGE_VERSION.replace(/[^a-zA-Z0-9]/g, "-")}`;
   }
   return path.join(baseDir, "daemon.sock");
 }

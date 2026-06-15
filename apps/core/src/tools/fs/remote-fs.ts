@@ -1,8 +1,11 @@
 import type { FsBackend } from "@stanley2058/lilac-fs";
+import { createRequire } from "node:module";
 
 import { sshExecBash, sshExecScriptJson } from "../../ssh/ssh-exec";
 import { getRemoteRunnerJsText } from "../../ssh/remote-js";
 import type { FileEdit, HashlineEdit, HashlineWarning } from "@stanley2058/lilac-fs";
+
+const requirePackageJson = createRequire(import.meta.url);
 
 export type RemoteReadTextInput = {
   path: string;
@@ -198,7 +201,25 @@ export type RemoteEditOutput =
 
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 500_000;
-const REMOTE_FS_RUNNER_PACKAGE = "@stanley2058/lilac-remote-fs-runner@0.0.0";
+
+function readRemoteFsRunnerPackageSpec(): string {
+  const rawPackageJson = requirePackageJson(
+    "@stanley2058/lilac-remote-fs-runner/package.json",
+  ) as unknown;
+  if (!rawPackageJson || typeof rawPackageJson !== "object" || Array.isArray(rawPackageJson)) {
+    throw new Error("remote fs runner package.json must be an object");
+  }
+
+  const { name, version } = rawPackageJson as { name?: unknown; version?: unknown };
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("remote fs runner package.json name must be a non-empty string");
+  }
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error("remote fs runner package.json version must be a non-empty string");
+  }
+
+  return `${name}@${version}`;
+}
 
 function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -243,7 +264,7 @@ function buildRemoteFsRunnerCommand(): string {
   if (override && override.trim().length > 0) return override;
 
   const packageSpec = shellSingleQuote(
-    process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE ?? REMOTE_FS_RUNNER_PACKAGE,
+    process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE ?? readRemoteFsRunnerPackageSpec(),
   );
   return `if command -v npx >/dev/null 2>&1; then
   npx -y ${packageSpec} request
