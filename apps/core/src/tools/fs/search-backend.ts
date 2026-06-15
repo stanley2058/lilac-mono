@@ -160,7 +160,9 @@ const fffBackend: SearchBackend = {
     const finder = await getFffFinder(options.cwd);
     if (!finder) return null;
 
-    const includes = options.patterns.filter((pattern) => pattern.length > 0 && !pattern.startsWith("!"));
+    const includes = options.patterns.filter(
+      (pattern) => pattern.length > 0 && !pattern.startsWith("!"),
+    );
     const excludes = options.patterns
       .filter((pattern) => pattern.startsWith("!"))
       .map((pattern) => pattern.slice(1))
