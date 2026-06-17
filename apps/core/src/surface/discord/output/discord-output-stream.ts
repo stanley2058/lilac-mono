@@ -942,11 +942,22 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       const chunk = displayChunks[i] ?? "";
       const isLast = i === displayChunks.length - 1;
       const contentChunk = chunk || "*<empty_string>*";
+      const embeds =
+        isLast && this.statsForNerdsLine
+          ? [
+              new EmbedBuilder().setColor(Colors.Blue).addFields({
+                name: " ",
+                value: buildFinalStatsFieldValue(this.statsForNerdsLine),
+                inline: false,
+              }),
+            ]
+          : undefined;
 
       const msg: Message =
         parent === null
           ? await sendChannel.send({
               content: contentChunk,
+              embeds,
               files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
               reply:
                 this.deps.opts?.replyTo && this.deps.opts.replyTo.platform === "discord"
@@ -956,6 +967,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
             })
           : await parent.reply({
               content: contentChunk,
+              embeds,
               files: isLast ? toDiscordFiles(filesForLastMessage) : undefined,
               allowedMentions: this.getAllowedMentions({ isReply: false, isFinalLane: true }),
             });

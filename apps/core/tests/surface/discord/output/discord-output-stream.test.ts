@@ -189,6 +189,35 @@ function hasEmbeds(options: unknown): boolean {
   return Array.isArray(embeds) && embeds.length > 0;
 }
 
+function embedFieldValuesFromOptions(options: unknown): string[] {
+  if (!options || typeof options !== "object") return [];
+  const embeds = (options as { embeds?: unknown }).embeds;
+  if (!Array.isArray(embeds)) return [];
+
+  const values: string[] = [];
+  for (const embed of embeds) {
+    let serialized: unknown = embed;
+    if (embed && typeof embed === "object") {
+      const toJSON = (embed as { toJSON?: unknown }).toJSON;
+      if (typeof toJSON === "function") {
+        serialized = toJSON.call(embed);
+      }
+    }
+
+    if (!serialized || typeof serialized !== "object") continue;
+    const fields = (serialized as { fields?: unknown }).fields;
+    if (!Array.isArray(fields)) continue;
+
+    for (const field of fields) {
+      if (!field || typeof field !== "object") continue;
+      const value = (field as { value?: unknown }).value;
+      if (typeof value === "string") values.push(value);
+    }
+  }
+
+  return values;
+}
+
 function filesCount(options: unknown): number {
   if (!options || typeof options !== "object") return 0;
   const files = (options as { files?: unknown }).files;
@@ -402,7 +431,7 @@ describe("attachment finalization", () => {
 });
 
 describe("preview final output style", () => {
-  it("posts preview final output as normal Discord content when configured", async () => {
+  it("posts preview final output as content and stats as metadata when configured", async () => {
     const { client, operations, deletedMessageIds } = createFakeDiscordClient();
 
     const out = new DiscordOutputStream({
@@ -423,7 +452,7 @@ describe("preview final output style", () => {
       (op) =>
         op.kind === "send" &&
         contentFromOptions(op.options) === "preview text" &&
-        !hasEmbeds(op.options),
+        hasEmbeds(op.options),
     );
 
     expect(finalSend).toBeDefined();
@@ -431,8 +460,47 @@ describe("preview final output style", () => {
       throw new Error("expected plain final send");
     }
     expect(contentFromOptions(finalSend.options)).not.toContain("nerd stats");
+    expect(embedFieldValuesFromOptions(finalSend.options)).toEqual(["*nerd stats*"]);
     expect(deletedMessageIds.length).toBeGreaterThan(0);
     expect(res.last.messageId).toBe(finalSend.messageId);
+  });
+
+  it("attaches stats metadata only to the final plain preview chunk", async () => {
+    const { client, operations } = createFakeDiscordClient();
+
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "x".repeat(4500) });
+    await out.push({ type: "meta.stats", line: "nerd stats" });
+    const res = await out.finish();
+
+    const plainFinalOps = operations.filter(
+      (op) =>
+        (op.kind === "send" || op.kind === "reply") &&
+        (contentFromOptions(op.options)?.startsWith("x") ?? false),
+    );
+
+    expect(plainFinalOps.length).toBe(3);
+    const lastPlainFinal = plainFinalOps[2];
+    if (!lastPlainFinal) {
+      throw new Error("expected third plain final chunk");
+    }
+    expect(contentFromOptions(plainFinalOps[0]?.options)?.length).toBe(2000);
+    expect(contentFromOptions(plainFinalOps[1]?.options)?.length).toBe(2000);
+    expect(contentFromOptions(lastPlainFinal.options)?.length).toBe(500);
+    expect(hasEmbeds(plainFinalOps[0]?.options)).toBe(false);
+    expect(hasEmbeds(plainFinalOps[1]?.options)).toBe(false);
+    expect(embedFieldValuesFromOptions(lastPlainFinal.options)).toEqual(["*nerd stats*"]);
+    expect(contentFromOptions(lastPlainFinal.options)).not.toContain("nerd stats");
+    expect(res.last.messageId).toBe(lastPlainFinal.messageId);
   });
 
   it("splits plain preview final output into a normal reply chain", async () => {

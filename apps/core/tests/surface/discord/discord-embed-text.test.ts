@@ -131,4 +131,21 @@ describe("discord-embed-text", () => {
     expect(text).toBe(["embed-title", "embed-description"].join("\n\n"));
     expect(text).not.toContain("[discord_embed]");
   });
+
+  it("excludes metadata-only embeds from adapter stored text", () => {
+    const embeds = normalizeDiscordEmbeds([
+      {
+        fields: [{ name: " ", value: "*nerd stats*" }],
+      },
+    ]);
+
+    const text = buildDiscordTaggedTextFromContentAndEmbeds({
+      content: "assistant answer",
+      embeds,
+    });
+
+    expect(text).toBe("assistant answer");
+    expect(text).not.toContain("nerd stats");
+    expect(text).not.toContain("[discord_embed]");
+  });
 });

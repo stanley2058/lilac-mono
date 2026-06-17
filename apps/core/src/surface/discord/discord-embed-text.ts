@@ -147,19 +147,22 @@ export function buildDiscordTaggedTextFromContentAndEmbeds(params: {
   if (content) blocks.push(content);
 
   for (const embed of params.embeds ?? []) {
+    const title = asNonEmptyString(embed.title);
+    const description = asNonEmptyString(embed.description);
+    const imageUrl = asNonEmptyString(embed.imageUrl);
+    const embedContentBlocks = [title, description, imageUrl].filter(
+      (block): block is string => typeof block === "string",
+    );
+
+    if (embedContentBlocks.length === 0) continue;
+
     const embedBlocks: string[] = [];
 
     if (labelEmbeds) {
       embedBlocks.push("[discord_embed]");
     }
 
-    const title = asNonEmptyString(embed.title);
-    const description = asNonEmptyString(embed.description);
-    const imageUrl = asNonEmptyString(embed.imageUrl);
-
-    if (title) embedBlocks.push(title);
-    if (description) embedBlocks.push(description);
-    if (imageUrl) embedBlocks.push(imageUrl);
+    embedBlocks.push(...embedContentBlocks);
 
     blocks.push(embedBlocks.join("\n\n"));
   }
