@@ -26,6 +26,7 @@ import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-
 
 import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
+import { normalizeDiscordBlockquotes } from "./discord-markdown-normalize";
 import { renderMarkdownTablesAsCodeBlocks } from "../../../shared/markdown-table-renderer";
 import { buildCancelCustomId } from "../discord-cancel";
 
@@ -370,6 +371,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const rewrite = this.deps.rewriteText;
     let rendered = rewrite ? rewrite(this.textAcc) : this.textAcc;
+    rendered = normalizeDiscordBlockquotes(rendered);
 
     const tableRender = this.deps.markdownTableRender;
     if (tableRender) {

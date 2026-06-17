@@ -602,6 +602,49 @@ describe("attachment single-event safety", () => {
   });
 });
 
+describe("discord blockquote normalization", () => {
+  function getRenderedText(stream: DiscordOutputStream): string {
+    const method = Reflect.get(stream as object, "getRenderedText");
+    if (typeof method !== "function") {
+      throw new Error("getRenderedText is unavailable");
+    }
+    return method.call(stream) as string;
+  }
+
+  it("normalizes bare blockquote continuation lines before rendering", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    Reflect.set(out as object, "textAcc", "> first\n>\n> second");
+
+    expect(getRenderedText(out)).toBe("> first\n> \n> second");
+  });
+
+  it("does not normalize bare markers inside fenced code in rendered text", () => {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+    const input = ["```md", ">", "```", ">"].join("\n");
+
+    Reflect.set(out as object, "textAcc", input);
+
+    expect(getRenderedText(out)).toBe(["```md", ">", "```", "> "].join("\n"));
+  });
+});
+
 describe("experimental markdown table rendering", () => {
   const markdownTable = [
     "| Name | Score |",
