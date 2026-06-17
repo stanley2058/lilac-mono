@@ -307,6 +307,100 @@ describe("tool-server discovery", () => {
     }
   });
 
+  it("filters conversation search by platform, session, and author", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      const byAuthor = (await fixture.tool.call("discovery.search", {
+        query: "deploy",
+        sources: ["conversation", "prompt", "heartbeat"],
+        authorId: "u2",
+        groupBy: "origin",
+        limit: 10,
+      })) as {
+        meta: { authorId?: string };
+        groups: Array<{
+          origin?: { kind: string; platform?: string; sessionId?: string };
+          entries: Array<Array<{ text: string; matched?: boolean; author?: string }>>;
+        }>;
+      };
+
+      expect(byAuthor.meta.authorId).toBe("u2");
+      expect(byAuthor.groups).toHaveLength(1);
+      expect(byAuthor.groups[0]?.origin).toMatchObject({
+        kind: "session",
+        platform: "discord",
+        sessionId: "c1",
+      });
+      expect(byAuthor.groups[0]?.entries[0]?.map((entry) => entry.text)).toEqual([
+        "start release prep",
+        "deploy completed successfully",
+        "post deploy checklist pending",
+      ]);
+      expect(
+        byAuthor.groups[0]?.entries[0]
+          ?.filter((entry) => entry.matched)
+          .map((entry) => entry.author),
+      ).toEqual(["releaseCaptain (bob; u2)"]);
+
+      const byPlatform = (await fixture.tool.call("discovery.search", {
+        query: "deploy",
+        platform: "github",
+        groupBy: "none",
+        limit: 10,
+      })) as {
+        meta: { platform?: string };
+        groups: Array<{
+          origin?: { kind: string; platform?: string; sessionId?: string; filePath?: string };
+        }>;
+      };
+
+      expect(byPlatform.meta.platform).toBe("github");
+      expect(byPlatform.groups).toHaveLength(1);
+      expect(byPlatform.groups[0]?.origin).toMatchObject({
+        kind: "session",
+        platform: "github",
+        sessionId: "owner/repo#12",
+      });
+
+      const bySession = (await fixture.tool.call("discovery.search", {
+        query: "deploy",
+        sessionId: "c3",
+        groupBy: "none",
+        limit: 10,
+      })) as {
+        meta: { sessionId?: string };
+        groups: Array<{
+          origin?: { kind: string; platform?: string; sessionId?: string; filePath?: string };
+          entries: Array<Array<{ text: string }>>;
+        }>;
+      };
+
+      expect(bySession.meta.sessionId).toBe("c3");
+      expect(bySession.groups).toHaveLength(1);
+      expect(bySession.groups[0]?.origin).toMatchObject({
+        kind: "session",
+        platform: "discord",
+        sessionId: "c3",
+      });
+      expect(bySession.groups[0]?.entries[0]?.[0]?.text).toBe(
+        "deploy retrospective summary followup",
+      );
+
+      const unknownAuthor = (await fixture.tool.call("discovery.search", {
+        query: "deploy",
+        authorId: "missing-user",
+        limit: 10,
+      })) as { groups: unknown[] };
+
+      expect(unknownAuthor.groups).toHaveLength(0);
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
   it("applies limit after origin grouping", async () => {
     const fixture = await makeFixture();
 

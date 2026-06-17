@@ -14,6 +14,26 @@ const discoverySearchInputSchema = z.object({
     .array(z.enum(["conversation", "prompt", "heartbeat"]))
     .optional()
     .describe("Optional source filters. Defaults to conversation + prompt + heartbeat."),
+  platform: z
+    .enum(["discord", "github", "whatsapp", "slack", "telegram", "web", "unknown"])
+    .optional()
+    .describe(
+      "Optional conversation platform filter. Excludes non-conversation sources like prompt and heartbeat.",
+    ),
+  sessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional conversation session/channel filter. Excludes non-conversation sources like prompt and heartbeat.",
+    ),
+  authorId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional conversation author user id filter. Excludes sources without indexed authors.",
+    ),
   orderBy: z
     .enum(["relevance", "time"])
     .optional()

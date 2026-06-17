@@ -39,6 +39,9 @@ export type DiscoveryOrigin =
 export type DiscoverySearchInput = {
   query: string;
   sources?: readonly DiscoverySource[];
+  platform?: AdapterPlatform;
+  sessionId?: string;
+  authorId?: string;
   orderBy?: DiscoveryOrderBy;
   direction?: DiscoveryDirection;
   groupBy?: DiscoveryGroupBy;
@@ -103,6 +106,9 @@ export type DiscoverySearchResult = {
     surrounding: number;
     limit: number;
     verbose: boolean;
+    platform?: AdapterPlatform;
+    sessionId?: string;
+    authorId?: string;
     window?: {
       startTime: string;
       endTime: string;
@@ -688,6 +694,11 @@ class SqliteDiscoveryStore {
     `);
 
     this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discovery_documents_platform_session_author_ts
+      ON discovery_documents(platform, session_id, author_id, ts DESC);
+    `);
+
+    this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_discovery_documents_session_ts
       ON discovery_documents(platform, session_id, ts ASC, doc_key ASC);
     `);
@@ -835,10 +846,30 @@ class SqliteDiscoveryStore {
     ftsQuery: string;
     sources: readonly DiscoverySource[];
     limit: number;
+    platform?: AdapterPlatform;
+    sessionId?: string;
+    authorId?: string;
     window?: TimeWindow;
   }): IndexedDocumentRow[] {
     const sourcePlaceholders = params.sources.map(() => "?").join(", ");
     const values: Array<string | number> = [params.ftsQuery, ...params.sources];
+
+    const filterClauses: string[] = [];
+    if (params.platform) {
+      filterClauses.push("AND d.platform = ?");
+      values.push(params.platform);
+    }
+    if (params.sessionId) {
+      filterClauses.push("AND d.session_id = ?");
+      values.push(params.sessionId);
+    }
+    if (params.authorId) {
+      filterClauses.push("AND d.author_id = ?");
+      values.push(params.authorId);
+    }
+
+    const filterClause =
+      filterClauses.length === 0 ? "" : `\n          ${filterClauses.join("\n          ")}`;
     const timeClause = params.window === undefined ? "" : " AND d.ts >= ? AND d.ts <= ?";
     if (params.window) {
       values.push(params.window.startTs, params.window.endTs);
@@ -872,6 +903,7 @@ class SqliteDiscoveryStore {
         WHERE discovery_documents_fts MATCH ?
           AND d.deleted = 0
           AND d.source IN (${sourcePlaceholders})
+          ${filterClause}
           ${timeClause}
         ORDER BY bm25_score ASC, d.ts DESC, d.doc_key ASC
         LIMIT ?
@@ -1301,6 +1333,9 @@ export class DiscoveryService {
       ftsQuery,
       sources,
       limit: candidateLimit,
+      platform: input.platform,
+      sessionId: input.sessionId,
+      authorId: input.authorId,
       window,
     });
 
@@ -1376,6 +1411,9 @@ export class DiscoveryService {
         surrounding,
         limit,
         verbose,
+        platform: input.platform,
+        sessionId: input.sessionId,
+        authorId: input.authorId,
         window:
           window === undefined
             ? undefined
