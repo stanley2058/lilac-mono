@@ -3,12 +3,12 @@ import { ToolPluginSkipError, type ServerTool } from "@stanley2058/lilac-plugin-
 import {
   Attachment,
   Codex,
+  ContentInspect,
   Discovery,
   Generate,
   Onboarding,
   SSH,
   Skills,
-  Summarize,
   Surface,
   Web,
   Workflow,
@@ -64,8 +64,19 @@ export function createBuiltinGeneratePlugin(): CoreToolPlugin {
   return singletonLevel2("generate", () => new Generate());
 }
 
-export function createBuiltinSummarizePlugin(): CoreToolPlugin {
-  return singletonLevel2("summarize", () => new Summarize());
+export function createBuiltinContentInspectPlugin(): CoreToolPlugin {
+  return {
+    meta: {
+      id: "content.inspect",
+    },
+    create({ runtime }) {
+      const config = runtime.config;
+      const getConfig = runtime.getConfig ?? (config ? async () => config : undefined);
+      return {
+        level2: [new ContentInspect({ getConfig })],
+      };
+    },
+  };
 }
 
 export function createBuiltinSshPlugin(): CoreToolPlugin {

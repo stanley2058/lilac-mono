@@ -118,6 +118,13 @@ const toolsSchema = z
   .object({
     fsBackend: z.enum(["fff", "node-rg"]).default("fff"),
     web: webExtractConfigSchema,
+    inspect: z
+      .object({
+        model: z.string().trim().min(1).default("google/gemini-3.5-flash"),
+      })
+      .default({
+        model: "google/gemini-3.5-flash",
+      }),
     editFile: z
       .object({
         hashline: z.boolean().default(true),
@@ -135,6 +142,9 @@ const toolsSchema = z
       fetch: {
         mode: "auto",
       },
+    },
+    inspect: {
+      model: "google/gemini-3.5-flash",
     },
     editFile: {
       hashline: true,

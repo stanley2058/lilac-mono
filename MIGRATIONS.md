@@ -37,10 +37,15 @@ Field renames from v1:
 - `surface.discord.previewFinalOutputStyle` -> `surface.discord.outputPreviewModeFinalStyle`
 - `surface.discord.experimental.markdownTableRender` -> `surface.discord.markdownTableRender`
 
+New v2 fields:
+
+- `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
+
 Default changes from v1:
 
 - `tools.fsBackend: fff`
 - `tools.editFile.hashline: true`
+- `tools.inspect.model: google/gemini-3.5-flash` (`configVersion: 1` always uses `google/gemini-3-flash`)
 - `surface.discord.outputMode: preview`
 - `surface.discord.outputPreviewModeFinalStyle: plain`
 - `surface.discord.outputNotification: true`

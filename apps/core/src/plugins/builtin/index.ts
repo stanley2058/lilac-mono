@@ -3,12 +3,12 @@ import { createBuiltinLocalToolsPlugin } from "./local-tools";
 import {
   createBuiltinAttachmentPlugin,
   createBuiltinCodexPlugin,
+  createBuiltinContentInspectPlugin,
   createBuiltinDiscoveryPlugin,
   createBuiltinGeneratePlugin,
   createBuiltinOnboardingPlugin,
   createBuiltinSkillsPlugin,
   createBuiltinSshPlugin,
-  createBuiltinSummarizePlugin,
   createBuiltinSurfacePlugin,
   createBuiltinWebPlugin,
   createBuiltinWorkflowPlugin,
@@ -26,7 +26,7 @@ export function createBuiltinCoreToolPlugins(): CoreToolPlugin[] {
     createBuiltinOnboardingPlugin(),
     createBuiltinGeneratePlugin(),
     createBuiltinCodexPlugin(),
-    createBuiltinSummarizePlugin(),
+    createBuiltinContentInspectPlugin(),
     createBuiltinSshPlugin(),
   ];
 }

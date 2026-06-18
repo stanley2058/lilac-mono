@@ -9,12 +9,25 @@ import {
 import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
 import { google, type GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
+import { createLogger, providers, type CoreConfig } from "@stanley2058/lilac-utils";
+
 import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
-import { providers } from "@stanley2058/lilac-utils";
 
-export class Summarize implements ServerTool {
-  id = "summarize";
+const V2_CONTENT_INSPECT_DEFAULT_MODEL = "google/gemini-3.5-flash";
+
+type ContentInspectOptions = {
+  getConfig?: () => Promise<CoreConfig>;
+};
+
+const logger = createLogger({
+  module: "tool-server:content.inspect",
+});
+
+export class ContentInspect implements ServerTool {
+  id = "content.inspect";
+
+  constructor(private readonly options: ContentInspectOptions = {}) {}
 
   init(): Promise<void> {
     return Promise.resolve();
@@ -27,11 +40,12 @@ export class Summarize implements ServerTool {
   async list() {
     return [
       {
-        callableId: "summarize",
-        name: "Summarize Content",
-        description: "Summarize the input using Gemini AI. Use --help to see all options.",
+        callableId: "content.inspect",
+        name: "Inspect Content",
+        description:
+          "Inspect, transcribe, and summarize text, URLs, files, images, and videos using Gemini AI. Use --help to see all options.",
         shortInput: ["--text=<string> OR --url=<string> OR --path=<string> OR --base64=<base64>"],
-        input: zodObjectToCliLines(agentSummarizeInputSchema),
+        input: zodObjectToCliLines(contentInspectInputSchema),
       },
     ];
   }
@@ -45,11 +59,12 @@ export class Summarize implements ServerTool {
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
-    if (callableId !== "summarize") throw new Error("Invalid callable ID");
+    if (callableId !== "content.inspect") throw new Error("Invalid callable ID");
 
-    const payload = agentSummarizeInputSchema.parse(input);
+    const payload = contentInspectInputSchema.parse(input);
     try {
-      const text = await summarize(payload, { abortSignal: opts?.signal });
+      const model = await resolveContentInspectModel(this.options.getConfig);
+      const text = await inspectContent(payload, { abortSignal: opts?.signal, model });
       return {
         isError: false,
         text,
@@ -66,7 +81,7 @@ export class Summarize implements ServerTool {
 // Hard limit for output token is 64k
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
-function inferSummarizeType(input: {
+function inferContentInspectType(input: {
   readonly type?: unknown;
   readonly text?: unknown;
   readonly url?: unknown;
@@ -88,7 +103,7 @@ function inferSummarizeType(input: {
   return undefined;
 }
 
-export const agentSummarizeInputSchema = z
+export const contentInspectInputSchema = z
   .object({
     type: z
       .enum(["text", "binary"])
@@ -118,7 +133,7 @@ export const agentSummarizeInputSchema = z
       .describe(`Max output token, defaults to ${DEFAULT_MAX_OUTPUT_TOKENS}, max is 64k.`),
   })
   .superRefine((input, ctx) => {
-    const type = inferSummarizeType(input);
+    const type = inferContentInspectType(input);
     if (!type) {
       ctx.addIssue({
         code: "custom",
@@ -166,7 +181,7 @@ export const agentSummarizeInputSchema = z
     }
   })
   .transform((input) => {
-    const type = inferSummarizeType(input);
+    const type = inferContentInspectType(input);
     if (type === "text") {
       return {
         type: "text",
@@ -202,15 +217,31 @@ export const agentSummarizeInputSchema = z
     } as const;
   })
   .describe(
-    "Anything to get summarized.\n" +
+    "Anything to inspect.\n" +
       "- Use `text` for plain text or websites (pass URL in the `text` field).\n" +
       "- Use `binary` for images/files/videos via exactly one of: `url`, `path`, or `base64`.\n" +
       "- If `type` is omitted, it is inferred from provided fields.\n",
   );
 
-export async function summarize(
-  input: z.infer<typeof agentSummarizeInputSchema>,
-  { abortSignal }: { abortSignal?: AbortSignal },
+async function resolveContentInspectModel(
+  getConfig: ContentInspectOptions["getConfig"],
+): Promise<string> {
+  const configured = getConfig
+    ? (await getConfig()).tools.inspect.model
+    : V2_CONTENT_INSPECT_DEFAULT_MODEL;
+
+  if (configured.startsWith("google/")) return configured;
+
+  logger.error("content.inspect configured model must start with google/; using default", {
+    configuredModel: configured,
+    fallbackModel: V2_CONTENT_INSPECT_DEFAULT_MODEL,
+  });
+  return V2_CONTENT_INSPECT_DEFAULT_MODEL;
+}
+
+export async function inspectContent(
+  input: z.infer<typeof contentInspectInputSchema>,
+  { abortSignal, model }: { abortSignal?: AbortSignal; model?: string },
 ) {
   let prompt: ModelMessage[];
 
@@ -221,7 +252,7 @@ export async function summarize(
         content.push({ type: "text", text: input.additionalInstructions });
       }
       content.push({ type: "text", text: input.text });
-      prompt = buildSummarizePrompt({ role: "user", content });
+      prompt = buildContentInspectPrompt({ role: "user", content });
       break;
     }
     case "binary": {
@@ -267,7 +298,7 @@ export async function summarize(
         content.push({ type: "file", data, mediaType: mime });
       }
 
-      prompt = buildSummarizePrompt({
+      prompt = buildContentInspectPrompt({
         role: "user",
         content,
       });
@@ -279,7 +310,7 @@ export async function summarize(
   if (!gateway) throw new Error("AI-GATEWAY not configured");
 
   const res = await generateText({
-    model: gateway("google/gemini-3-flash"),
+    model: gateway(model ?? V2_CONTENT_INSPECT_DEFAULT_MODEL),
     prompt,
     maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     abortSignal,
@@ -300,7 +331,7 @@ export async function summarize(
   return res.text;
 }
 
-function buildSummarizePrompt(input: UserModelMessage) {
+function buildContentInspectPrompt(input: UserModelMessage) {
   const prompts: ModelMessage[] = [
     {
       role: "system",

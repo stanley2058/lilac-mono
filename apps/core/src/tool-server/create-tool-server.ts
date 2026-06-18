@@ -102,7 +102,7 @@ const RESTRICTED_LEVEL2_ALLOWED = new Set([
   "skills.list",
   "skills.brief",
   "skills.full",
-  "summarize",
+  "content.inspect",
   "surface.help",
   "surface.sessions.listParticipants",
   "surface.messages.list",

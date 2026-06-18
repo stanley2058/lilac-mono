@@ -64,6 +64,9 @@ export type UniversalCoreConfig = {
         mode: "auto" | "fetch" | "browser" | "extract" | "provider-only";
       };
     };
+    inspect: {
+      model: string;
+    };
     editFile: {
       hashline: boolean;
     };

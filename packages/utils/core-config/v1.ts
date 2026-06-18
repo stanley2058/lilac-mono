@@ -670,6 +670,9 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
     tools: {
       ...toolsRest,
       fsBackend: parsed.tools.fsBackend,
+      inspect: {
+        model: "google/gemini-3-flash",
+      },
       editFile: {
         hashline,
       },
