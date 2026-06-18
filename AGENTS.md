@@ -113,6 +113,13 @@ Before wrapping up any task that changes code/config/docs, run lint + format che
 - Keep tests deterministic and fast.
 - Prefer narrow unit tests over integration tests.
 
+## Core Config
+
+- `core-config.yaml` is parsed by versioned parsers in `packages/utils/core-config/*` into `UniversalCoreConfig`.
+- v1 file shape is frozen: do not add keys to `coreConfigInputSchemaV1`; if `UniversalCoreConfig` gains fields, add v1 fallbacks in `parseCoreConfigV1ToUniversal`.
+- When v1 and v2 shape/defaults diverge, update `MIGRATIONS.md`.
+- When adding config options, update `packages/utils/config-templates/core-config.example.yaml`.
+
 ## Monorepo / references
 
 - `ref/` is for reference material and vendored upstreams.
