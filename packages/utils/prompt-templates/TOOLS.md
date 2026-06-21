@@ -55,7 +55,6 @@ cat payload.json | tools <tool> --stdin
     - Raw HTML/raw response/status code -> `curl`, `urllib`, browser automation.
   - For programmatic summarization/parsing, pipe this output directly.
 - `search` — Search the web
-- `content.inspect` — Inspect, transcribe, and summarize text, URLs, files, images, and videos using Gemini AI
 - `generate.image` — Generate or edit an image with a configured provider and write it to a local file
 - `generate.video` — Generate a video with a configured provider and write it to a local file
 - `skills.list` — List and search skills discovered from common directories
