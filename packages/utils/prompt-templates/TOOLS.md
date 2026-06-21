@@ -71,7 +71,7 @@ cat payload.json | tools <tool> --stdin
 - `surface.activities.recentAgentWrites` — List recent visible writes produced by the agent, with message ids and thin previews.
 - `surface.sessions.list` — List cached sessions.
 - `surface.sessions.listParticipants` — List participants in a session (Discord only).
-- `surface.messages.list` — List messages for a session (defaults: limit=50,order=ts_desc; use  --help  to see all options).
+- `surface.messages.list` — List messages for a session (defaults: limit=50,order=ts_desc; use --help to see all options).
 - `surface.messages.read` — Read a message by id
 - `surface.messages.send` — Send a message to a session.
 - `surface.messages.edit` — Edit a message.
@@ -95,6 +95,10 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 3. You create a workflow task that waits for a reply to that messageId via `workflow.wait_for_reply.create`
 4. The workflow service will resume you with the context you set when you created the task after a reply is received from B
    (In the above example, 2 and 3 can be simplified with `workflow.wait_for_reply.send_and_wait`)
+
+### Surface tool notes
+
+- Discord links are `https://discord.com/channels/<guildId-or-@me>/<channelId>/<messageId?>`. Use `<channelId>` as `sessionId` and `<messageId>` as `messageId` when present; do not pass the whole URL.
 
 ## Memory retrieval
 
