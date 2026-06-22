@@ -107,6 +107,20 @@ describe("tool-server attachment", () => {
     expect(resolveRestrictedSessionTmpDir("a/b")).not.toBe(resolveRestrictedSessionTmpDir("a_b"));
   });
 
+  it("advertises paths as variadic primary positional input", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const tool = new Attachment({ bus });
+
+    const entries = await tool.list();
+    const addFiles = entries.find((entry) => entry.callableId === "attachment.add_files");
+
+    expect(addFiles?.primaryPositional).toEqual({
+      field: "paths",
+      variadic: true,
+    });
+  });
+
   it("accepts scalar paths and filenames", async () => {
     const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-tool-server-"));
     const p = join(tmp, "hello.txt");

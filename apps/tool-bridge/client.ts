@@ -63,10 +63,13 @@ type ToolOutputFull = {
   description: string;
   shortInput: string[];
   input: string[];
-  primaryPositional?: {
-    field: string;
-  };
+  primaryPositional?: PrimaryPositional;
   hidden?: boolean;
+};
+
+type PrimaryPositional = {
+  field: string;
+  variadic?: boolean;
 };
 
 type LocalVersionInfo = BuildInfo & {
@@ -626,7 +629,7 @@ function formatToolBlock(
     const args = "input" in tool ? tool.input : tool.shortInput;
     if (tool.primaryPositional) {
       lines.push(
-        ...formatBullets([formatPrimaryPositionalSummary(tool.primaryPositional.field)], {
+        ...formatBullets([formatPrimaryPositionalSummary(tool.primaryPositional)], {
           indent: 2,
           dim: true,
         }),
@@ -649,9 +652,17 @@ const commonOptions = [
   "--<field>:json=@file.json | --<field>:json='<json>' | --<field>:json=@-",
 ];
 
-function formatPrimaryPositionalSummary(field: string): string {
-  const display = camelToKebabCase(field);
+function formatPrimaryPositionalSummary(primaryPositional: PrimaryPositional): string {
+  const display = camelToKebabCase(primaryPositional.field);
+  if (primaryPositional.variadic === true) {
+    return `<${display}...> (primary positional; same as --${display}:json=[...])`;
+  }
   return `<${display}> (primary positional; same as --${display}=...)`;
+}
+
+function formatPrimaryPositionalUsage(primaryPositional: PrimaryPositional): string {
+  const display = camelToKebabCase(primaryPositional.field);
+  return primaryPositional.variadic === true ? `<${display}...>` : `<${display}>`;
 }
 
 function buildUsageLinesForTool(
@@ -659,7 +670,9 @@ function buildUsageLinesForTool(
 ): string[] {
   const usageLines: string[] = [];
   if (tool.primaryPositional) {
-    usageLines.push(`tools ${tool.callableId} <${camelToKebabCase(tool.primaryPositional.field)}>`);
+    usageLines.push(
+      `tools ${tool.callableId} ${formatPrimaryPositionalUsage(tool.primaryPositional)}`,
+    );
   }
   usageLines.push(
     `tools ${tool.callableId} --arg1=value --arg2=value`,
@@ -1192,7 +1205,7 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
 
 export async function buildToolInput(
   parsed: Extract<ParsedArgs, { type: "call" }>,
-  primaryPositional?: { field: string },
+  primaryPositional?: PrimaryPositional,
 ) {
   let input: Record<string, unknown> = {};
 
@@ -1217,6 +1230,24 @@ export async function buildToolInput(
     }
 
     const displayField = camelToKebabCase(primaryPositional.field);
+    const hasToolInputFlags =
+      parsed.baseInput !== undefined ||
+      parsed.fieldInputs.length > 0 ||
+      parsed.jsonFieldInputs.length > 0;
+
+    if (primaryPositional.variadic === true) {
+      if (hasToolInputFlags) {
+        throw new Error(
+          `Tool '${parsed.callableId}' does not support mixing variadic positional <${displayField}...> with flags or JSON input. Use either positional paths or --input/--flags, not both.`,
+        );
+      }
+
+      input[primaryPositional.field] = parsed.positionalArgs.map((arg) =>
+        normalizeMaybePath(primaryPositional.field, arg),
+      );
+      return input;
+    }
+
     if (parsed.positionalArgs.length > 1) {
       throw new Error(
         `Tool '${parsed.callableId}' accepts at most one positional argument: <${displayField}>.`,

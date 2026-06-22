@@ -131,6 +131,46 @@ describe("tool-bridge positional input", () => {
     });
   });
 
+  it("keeps scalar primary positionals limited to one argument", async () => {
+    const parsed = parseArgs(["fetch", "https://example.com", "extra"]);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed, { field: "url" })).rejects.toThrow(
+      "Tool 'fetch' accepts at most one positional argument: <url>.",
+    );
+  });
+
+  it("maps variadic primary positionals into an array", async () => {
+    const parsed = parseArgs(["attachment.add_files", "a.png", "b.png"]);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed, { field: "paths", variadic: true })).resolves.toEqual({
+      paths: ["a.png", "b.png"],
+    });
+  });
+
+  it("rejects mixed flags with variadic primary positionals", async () => {
+    const parsed = parseArgs(["attachment.add_files", "a.png", "--filenames=renamed.png"]);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed, { field: "paths", variadic: true })).rejects.toThrow(
+      "does not support mixing variadic positional <paths...> with flags or JSON input",
+    );
+  });
+
+  it("rejects mixed JSON input with variadic primary positionals", async () => {
+    const parsed = parseArgs(["attachment.add_files", "a.png", '--input={"paths":["b.png"]}']);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed, { field: "paths", variadic: true })).rejects.toThrow(
+      "does not support mixing variadic positional <paths...> with flags or JSON input",
+    );
+  });
+
   it("rejects positional input for tools without primary positional metadata", async () => {
     const parsed = parseArgs(["search", "llms"]);
     expect(parsed.type).toBe("call");

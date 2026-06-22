@@ -269,12 +269,17 @@ async function readHttpErrorMessage(res: Response): Promise<string> {
   return body;
 }
 
+type PrimaryPositional = {
+  field: string;
+  variadic?: boolean;
+};
+
 async function fetchToolHelp(callableId: string, headers: Record<string, string>) {
   const res = await fetch(`${TOOL_SERVER_BACKEND_URL}/help/${encodeURIComponent(callableId)}`, {
     headers,
   });
   if (!res.ok) throw new Error(await readHttpErrorMessage(res));
-  return (await res.json()) as { primaryPositional?: { field: string } };
+  return (await res.json()) as { primaryPositional?: PrimaryPositional };
 }
 
 async function buildNestedToolInput(params: {
@@ -285,14 +290,17 @@ async function buildNestedToolInput(params: {
 }): Promise<Record<string, unknown>> {
   let input: Record<string, unknown> = {};
   const positionals: string[] = [];
+  let hasToolInputFlags = false;
 
   for (let i = 0; i < params.args.length; i++) {
     const arg = params.args[i] ?? "";
     if (arg === "--stdin") {
+      hasToolInputFlags = true;
       input = JSON.parse(decodeBytesToUtf8(params.ctx.stdin)) as Record<string, unknown>;
       continue;
     }
     if (arg === "--input" || arg.startsWith("--input=")) {
+      hasToolInputFlags = true;
       const value = arg === "--input" ? (params.args[++i] ?? "") : arg.slice("--input=".length);
       input = (await readJsonSource(value, params.ctx)) as Record<string, unknown>;
       continue;
@@ -314,23 +322,35 @@ async function buildNestedToolInput(params: {
     const isJson = rawKey.endsWith(":json");
     const field = kebabToCamelCase(isJson ? rawKey.slice(0, -":json".length) : rawKey);
     if (isJson) {
+      hasToolInputFlags = true;
       input[field] = await readJsonSource(rawValue, params.ctx);
       continue;
     }
 
+    hasToolInputFlags = true;
     input[field] = parseBooleanLike(rawValue) ?? rawValue;
   }
 
   if (positionals.length > 0) {
     const help = await fetchToolHelp(params.callableId, params.headers);
-    const field = help.primaryPositional?.field;
-    if (!field) {
+    const primaryPositional = help.primaryPositional;
+    if (!primaryPositional) {
       throw new Error(`Tool '${params.callableId}' does not support positional input`);
     }
+    if (primaryPositional.variadic === true) {
+      if (hasToolInputFlags) {
+        throw new Error(
+          `Tool '${params.callableId}' does not support mixing variadic positional input with flags or JSON input`,
+        );
+      }
+      input[primaryPositional.field] = positionals;
+      return input;
+    }
+
     if (positionals.length > 1) {
       throw new Error(`Tool '${params.callableId}' accepts at most one positional argument`);
     }
-    input[field] = positionals[0] ?? "";
+    input[primaryPositional.field] = positionals[0] ?? "";
   }
 
   return input;

@@ -226,6 +226,10 @@ export class Attachment implements ServerTool {
           "--filenames=<string | string[]> | Optional filenames (same length as paths)",
           "--mimeTypes=<string | string[]> | Optional mime types (same length as paths)",
         ],
+        primaryPositional: {
+          field: "paths",
+          variadic: true,
+        },
       },
       {
         callableId: "attachment.download",

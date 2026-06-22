@@ -12,6 +12,7 @@ export type RequestContext = {
 
 export type ServerToolPrimaryPositional = {
   field: string;
+  variadic?: boolean;
 };
 
 export type ServerToolHelpEntry = {

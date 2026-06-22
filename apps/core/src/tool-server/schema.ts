@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const PrimaryPositionalSchema = z.object({
   field: z.string(),
+  variadic: z.boolean().optional(),
 });
 
 export const BridgeListResponse = z.object({

@@ -196,6 +196,7 @@ describe("createToolServer", () => {
             input: ["--url=<string>"],
             primaryPositional: {
               field: "url",
+              variadic: true,
             },
           },
         ];
@@ -222,6 +223,7 @@ describe("createToolServer", () => {
           shortInput: ["--url=<string>"],
           primaryPositional: {
             field: "url",
+            variadic: true,
           },
           hidden: undefined,
         },
@@ -238,6 +240,7 @@ describe("createToolServer", () => {
       input: ["--url=<string>"],
       primaryPositional: {
         field: "url",
+        variadic: true,
       },
     });
 
