@@ -43,6 +43,7 @@ export type ModelCapabilityInfo = {
   env?: string[];
   npm?: string;
   doc?: string;
+  attachment?: boolean;
   cost?: ModelCost;
   limit: ModelLimits;
   modalities?: {
@@ -61,6 +62,8 @@ export type ModelCapabilityOverride = {
     context?: number;
     output?: number;
   };
+  /** Whether the model accepts file/image attachments as input. */
+  attachment?: boolean;
   /** Optional partial modalities patch merged onto inherited/base modalities. */
   modalities?: {
     input?: ModelModality[];
@@ -486,6 +489,7 @@ export class ModelCapability {
       env: providerEntry.env,
       npm: providerEntry.npm,
       doc: providerEntry.doc,
+      attachment: modelEntry.attachment,
       cost,
       limit: modelEntry.limit,
       modalities: modelEntry.modalities,
@@ -541,6 +545,7 @@ export class ModelCapability {
       env: base?.env,
       npm: base?.npm,
       doc: base?.doc,
+      attachment: override.attachment ?? base?.attachment,
       cost: mergedCost,
       limit: {
         context: mergedContext,

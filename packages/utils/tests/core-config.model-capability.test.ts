@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema } from "../core-config";
+import { coreConfigInputSchemaV2, coreConfigSchema } from "../core-config";
 
 describe("coreConfigSchema models.capability", () => {
   it("defaults forceUnknownProviders and empty overrides", () => {
@@ -90,6 +90,35 @@ describe("coreConfigSchema models.capability", () => {
 
     expect(parsed.models.capability.overrides["custom/private-model"]?.limit?.context).toBe(131072);
     expect(parsed.models.capability.overrides["custom/private-model"]?.cost?.input).toBe(0.6);
+  });
+
+  it("accepts attachment support in v2 overrides", () => {
+    const parsed = coreConfigInputSchemaV2.parse({
+      configVersion: 2,
+      models: {
+        capability: {
+          overrides: {
+            "custom/private-model": {
+              limit: {
+                context: 131072,
+                output: 8192,
+              },
+              cost: {
+                input: 0.6,
+                output: 2.4,
+              },
+              attachment: true,
+              modalities: {
+                input: ["text", "image", "pdf"],
+                output: ["text"],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.models.capability.overrides["custom/private-model"]?.attachment).toBe(true);
   });
 
   it("rejects direct override without limit.context", () => {

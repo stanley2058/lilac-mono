@@ -38,12 +38,38 @@ describe("read_file attachments", () => {
     );
   }
 
+  function getToolDescription(toolValue: unknown): string {
+    if (!toolValue || typeof toolValue !== "object") {
+      throw new Error("missing tool object");
+    }
+
+    const description = (toolValue as { description?: unknown }).description;
+    if (typeof description !== "string") {
+      throw new Error("missing tool description");
+    }
+
+    return description;
+  }
+
   beforeEach(async () => {
     baseDir = await mkdtemp(path.join(tmpdir(), "lilac-read-file-att-"));
   });
 
   afterEach(async () => {
     await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it("advertises direct image and PDF reads only when enabled", () => {
+    const unsupportedDescription = getToolDescription(fsTool(baseDir).read_file);
+    expect(unsupportedDescription).not.toContain("image");
+    expect(unsupportedDescription).not.toContain("PDF");
+    expect(unsupportedDescription).not.toContain("attachment");
+
+    const supportedDescription = getToolDescription(
+      fsTool(baseDir, { readFileDirectAttachmentSupported: true }).read_file,
+    );
+    expect(supportedDescription).toContain("Reading image files and PDFs directly is supported.");
+    expect(supportedDescription).not.toContain("upstream provider");
   });
 
   it("returns images as image-data tool-result content", async () => {

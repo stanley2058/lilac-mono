@@ -5,6 +5,10 @@ import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicat
 import {
   coreConfigInputSchemaV1,
   heartbeatSchema,
+  jsonObjectSchema,
+  modelCapabilityCostPatchSchema,
+  modelCapabilityLimitPatchSchema,
+  modelCapabilityModalitiesPatchSchema,
   pluginsSchema,
   routerSchema,
   statsForNerdsSchema,
@@ -24,6 +28,73 @@ export const SUPPORTED_CORE_CONFIG_VERSIONS = [
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
+
+const modelCapabilityOverrideSchemaV2 = z
+  .object({
+    /** Optional base model capability spec to inherit from (provider/model). */
+    inherit: z.string().trim().min(1).optional(),
+    /** Optional partial cost patch merged onto inherited/base cost. */
+    cost: modelCapabilityCostPatchSchema.optional(),
+    /** Optional partial limit patch merged onto inherited/base limits. */
+    limit: modelCapabilityLimitPatchSchema.optional(),
+    /** Optional attachment input support patch merged onto inherited/base capability. */
+    attachment: z.boolean().optional(),
+    /** Optional partial modalities patch merged onto inherited/base modalities. */
+    modalities: modelCapabilityModalitiesPatchSchema.optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (
+      !input.inherit &&
+      !input.cost &&
+      !input.limit &&
+      input.attachment === undefined &&
+      !input.modalities
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "override must set at least one of inherit, cost, limit, attachment, or modalities",
+      });
+    }
+
+    if (!input.inherit) {
+      if (input.limit?.context === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["limit", "context"],
+          message: "limit.context is required when inherit is not set",
+        });
+      }
+
+      if (input.cost && (input.cost.input === undefined || input.cost.output === undefined)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["cost"],
+          message: "cost.input and cost.output are required when inherit is not set",
+        });
+      }
+
+      if (input.modalities && input.modalities.input === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["modalities", "input"],
+          message: "modalities.input is required when inherit is not set",
+        });
+      }
+    }
+  });
+
+const modelCapabilitySchemaV2 = z
+  .object({
+    /** Providers to always treat as unknown/unresolved capability. */
+    forceUnknownProviders: z.array(z.string().trim().min(1)).default(["openai-compatible"]),
+    /** Optional capability overrides keyed by provider/model spec. */
+    overrides: z.record(z.string().trim().min(1), modelCapabilityOverrideSchemaV2).default({}),
+  })
+  .default({
+    forceUnknownProviders: ["openai-compatible"],
+    overrides: {},
+  });
 
 const subagentsSchemaV2 = z
   .object({
@@ -151,6 +222,54 @@ const toolsSchema = z
     },
   });
 
+const modelsSchemaV2 = z
+  .object({
+    /** Optional registry of reusable model presets, referenced by alias. */
+    def: z
+      .record(
+        z.string().min(1),
+        z.object({
+          /** Canonical model spec in provider/model format. */
+          model: z.string().min(1),
+          /** AI SDK providerOptions-style object (nested JSON allowed). */
+          options: jsonObjectSchema.optional(),
+        }),
+      )
+      .default({}),
+
+    main: z
+      .object({
+        /** Model spec in provider/model format OR an alias from models.def. */
+        model: z.string().min(1).default("openrouter/openai/gpt-4o"),
+        /** Provider-specific model options. */
+        options: jsonObjectSchema.optional(),
+      })
+      .default({
+        model: "openrouter/openai/gpt-4o",
+      }),
+
+    /** Fast/cheap model for lightweight features (router gate, etc.). */
+    fast: z
+      .object({
+        model: z.string().min(1).default("openrouter/openai/gpt-4o-mini"),
+        options: jsonObjectSchema.optional(),
+      })
+      .default({
+        model: "openrouter/openai/gpt-4o-mini",
+      }),
+
+    capability: modelCapabilitySchemaV2,
+  })
+  .default({
+    def: {},
+    main: { model: "openrouter/openai/gpt-4o" },
+    fast: { model: "openrouter/openai/gpt-4o-mini" },
+    capability: {
+      forceUnknownProviders: ["openai-compatible"],
+      overrides: {},
+    },
+  });
+
 export const coreConfigInputSchemaV2 = z.object({
   configVersion: configVersionSchema,
 
@@ -228,7 +347,7 @@ export const coreConfigInputSchemaV2 = z.object({
       },
     }),
 
-  models: coreConfigInputSchemaV1.shape.models,
+  models: modelsSchemaV2,
   entity: coreConfigInputSchemaV1.shape.entity,
   basePrompt: z.string().optional(),
 });

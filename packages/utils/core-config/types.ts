@@ -45,6 +45,7 @@ export type ModelCapabilityOverride = {
     context?: number;
     output?: number;
   };
+  attachment?: boolean;
   modalities?: {
     input?: Array<"text" | "image" | "audio" | "video" | "pdf">;
     output?: Array<"text" | "image" | "audio" | "video" | "pdf">;

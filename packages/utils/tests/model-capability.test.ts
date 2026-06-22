@@ -344,7 +344,8 @@ describe("ModelCapability", () => {
             id: "gpt-4o-mini",
             name: "GPT-4o mini",
             family: "gpt-4o",
-            modalities: { input: ["text"], output: ["text"] },
+            attachment: true,
+            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
             limit: { context: 200_000, output: 16_384 },
             cost: {
               input: 0.15,
@@ -373,7 +374,46 @@ describe("ModelCapability", () => {
     expect(info.model).toBe("my-new-model");
     expect(info.limit).toEqual({ context: 262_144, output: 16_384 });
     expect(info.cost).toEqual({ input: 0.15, output: 0.6 });
-    expect(info.modalities).toEqual({ input: ["text"], output: ["text"] });
+    expect(info.attachment).toBe(true);
+    expect(info.modalities).toEqual({ input: ["text", "image", "pdf"], output: ["text"] });
+  });
+
+  it("allows overrides to patch inherited attachment support", async () => {
+    const registry = {
+      openai: {
+        id: "openai",
+        npm: "@ai-sdk/openai",
+        name: "OpenAI",
+        models: {
+          "gpt-4o": {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            family: "gpt-4o",
+            attachment: true,
+            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+            limit: { context: 128_000, output: 16_384 },
+          },
+        },
+      },
+    };
+
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+      overrides: {
+        "custom/no-attachments": {
+          inherit: "openai/gpt-4o",
+          attachment: false,
+        },
+      },
+    });
+
+    const inherited = await mc.resolve("openai/gpt-4o");
+    expect(inherited.attachment).toBe(true);
+
+    const patched = await mc.resolve("custom/no-attachments");
+    expect(patched.attachment).toBe(false);
+    expect(patched.modalities).toEqual({ input: ["text", "image", "pdf"], output: ["text"] });
   });
 
   it("preserves tiered cost when an override inherits a base model", async () => {

@@ -106,6 +106,13 @@ import { resolveSessionSafetyMode, type SessionSafetyMode } from "./bus-request-
 import { messagesContainSurfaceMetadata } from "./surface-metadata";
 import type { CustomCommandManager } from "../../custom-commands/manager";
 
+function supportsReadFileDirectAttachments(info: ModelCapabilityInfo | null): boolean {
+  if (info?.attachment !== true) return false;
+  const inputModalities = info?.modalities?.input;
+  if (!inputModalities) return false;
+  return inputModalities.includes("image") && inputModalities.includes("pdf");
+}
+
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
@@ -3325,6 +3332,8 @@ export async function startBusAgentRunner(params: {
           subagentProfile: runProfile,
           safetyMode,
           metadata: {
+            readFileDirectAttachmentSupported:
+              supportsReadFileDirectAttachments(modelCapabilityInfo),
             onDeferredDelegate: async (registration: DeferredSubagentRegistration) => {
               await deferredSubagents.register(registration);
             },

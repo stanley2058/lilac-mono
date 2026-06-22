@@ -40,6 +40,7 @@ Field renames from v1:
 New v2 fields:
 
 - `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
+- `models.capability.overrides.<provider/model>.attachment`: optional manual override for model attachment input support.
 
 Default changes from v1:
 

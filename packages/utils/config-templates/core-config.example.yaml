@@ -271,8 +271,9 @@ models:
     #       input: 0.6
     #       output: 2.4
     #     modalities:
-    #       input: [text]
+    #       input: [text, image, pdf]
     #       output: [text]
+    #     attachment: true
     #
     #   # Inherited override with an explicit over-200k pricing tier patch.
     #   # Note: this only affects cost estimation; limit.context remains what

@@ -10,7 +10,7 @@ import type {
   UniversalCoreConfig,
 } from "./types";
 
-const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
+export const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
   z.union([
     z.null(),
     z.string(),
@@ -21,7 +21,7 @@ const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
   ]),
 );
 
-const jsonObjectSchema: z.ZodType<JSONObject> = z.record(z.string(), jsonValueSchema);
+export const jsonObjectSchema: z.ZodType<JSONObject> = z.record(z.string(), jsonValueSchema);
 
 export const V1_CORE_CONFIG_VERSION = 1 satisfies CoreConfigVersion;
 
@@ -319,16 +319,16 @@ export const webExtractConfigSchema = z
     },
   });
 
-const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
+export const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
 
-const modelCapabilityOver200kCostPatchSchema = z.object({
+export const modelCapabilityOver200kCostPatchSchema = z.object({
   input: z.number().nonnegative(),
   output: z.number().nonnegative(),
   cache_read: z.number().nonnegative().optional(),
   cache_write: z.number().nonnegative().optional(),
 });
 
-const modelCapabilityCostPatchSchema = z.object({
+export const modelCapabilityCostPatchSchema = z.object({
   input: z.number().nonnegative().optional(),
   output: z.number().nonnegative().optional(),
   cache_read: z.number().nonnegative().optional(),
@@ -338,12 +338,12 @@ const modelCapabilityCostPatchSchema = z.object({
   context_over_200k: modelCapabilityOver200kCostPatchSchema.optional(),
 });
 
-const modelCapabilityLimitPatchSchema = z.object({
+export const modelCapabilityLimitPatchSchema = z.object({
   context: z.number().int().positive().optional(),
   output: z.number().int().nonnegative().optional(),
 });
 
-const modelCapabilityModalitiesPatchSchema = z.object({
+export const modelCapabilityModalitiesPatchSchema = z.object({
   input: z.array(modelCapabilityModalitySchema).optional(),
   output: z.array(modelCapabilityModalitySchema).optional(),
 });

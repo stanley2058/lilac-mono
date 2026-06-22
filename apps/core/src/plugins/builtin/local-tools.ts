@@ -17,6 +17,10 @@ type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
 
 const localFsToolsByBuildContext = new WeakMap<CoreToolBuildContext, ReturnType<typeof fsTool>>();
 
+function getReadFileDirectAttachmentSupported(context: CoreToolBuildContext): boolean {
+  return context.requestContext?.metadata?.["readFileDirectAttachmentSupported"] === true;
+}
+
 function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
   const cached = localFsToolsByBuildContext.get(context);
   if (cached) return cached;
@@ -27,6 +31,7 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
       context.editingToolMode === "edit_file" &&
       context.runtime.config?.tools.editFile.hashline === true,
     fsBackend: context.runtime.config?.tools.fsBackend,
+    readFileDirectAttachmentSupported: getReadFileDirectAttachmentSupported(context),
   });
   localFsToolsByBuildContext.set(context, tools);
   return tools;

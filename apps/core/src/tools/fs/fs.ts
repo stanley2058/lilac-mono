@@ -825,7 +825,12 @@ function normalizeEditOutput(output: {
 
 export function fsTool(
   cwd: string,
-  opts?: { includeEditFile?: boolean; experimentalHashlineEdit?: boolean; fsBackend?: FsBackend },
+  opts?: {
+    includeEditFile?: boolean;
+    experimentalHashlineEdit?: boolean;
+    fsBackend?: FsBackend;
+    readFileDirectAttachmentSupported?: boolean;
+  },
 ) {
   const logger = createLogger({
     module: "tool:fs",
@@ -833,6 +838,7 @@ export function fsTool(
   const includeEditFile = opts?.includeEditFile ?? false;
   const hashlineEnabled = opts?.experimentalHashlineEdit === true;
   const fsBackend = opts?.fsBackend ?? "node-rg";
+  const readFileDirectAttachmentSupported = opts?.readFileDirectAttachmentSupported === true;
   const readFileSchema = buildReadFileInputZod(hashlineEnabled);
   const readFileOutputSchema = buildReadFileOutputZod(hashlineEnabled);
   const grepInputSchema = buildGrepInputZod(hashlineEnabled);
@@ -861,6 +867,21 @@ export function fsTool(
       fileHash: string;
     }
   >();
+
+  function buildReadFileDescription(): string {
+    const parts = [
+      hashlineEnabled
+        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead."
+        : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
+    ];
+
+    if (readFileDirectAttachmentSupported) {
+      parts.push("Reading image files and PDFs directly is supported.");
+    }
+
+    parts.push("Denylisted paths require dangerouslyAllow=true.");
+    return parts.join(" ");
+  }
 
   const remoteFileAccessByResolvedPath = new Map<string, string>();
   const remoteResolvedPathByLookup = new Map<string, string>();
@@ -1001,9 +1022,7 @@ export function fsTool(
 
   const baseTools = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
-      description: hashlineEnabled
-        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true."
-        : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation. Images and PDFs are returned as attachments when supported by the upstream provider. Denylisted paths require dangerouslyAllow=true.",
+      description: buildReadFileDescription(),
       inputSchema: readFileSchema,
       outputSchema: readFileOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }, options) => {

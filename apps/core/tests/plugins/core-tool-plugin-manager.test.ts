@@ -41,6 +41,20 @@ function getExecutableTool(
   return { execute: tool.execute };
 }
 
+function getToolDescription(tools: Record<string, unknown>, name: string): string {
+  const tool = tools[name];
+  if (!tool || typeof tool !== "object") {
+    throw new Error(`missing tool: ${name}`);
+  }
+
+  const description = (tool as { description?: unknown }).description;
+  if (typeof description !== "string") {
+    throw new Error(`missing tool description: ${name}`);
+  }
+
+  return description;
+}
+
 const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "attachment.add_files",
   "attachment.download",
@@ -226,6 +240,46 @@ describe("core tool plugin manager", () => {
     });
 
     expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch"]);
+  });
+
+  it("threads direct attachment support metadata into read_file description", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({});
+
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        adapter: {} as SurfaceAdapter,
+        discovery: {} as DiscoveryService,
+        config: cfg,
+      },
+      dataDir,
+    });
+
+    await manager.init();
+
+    const toolset = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "apply_patch",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents!,
+      requestContext: {
+        requestId: "req:read-file-attachments",
+        sessionId: "test-session",
+        requestClient: "test",
+        subagentDepth: 0,
+        subagentProfile: "primary",
+        metadata: {
+          readFileDirectAttachmentSupported: true,
+        },
+      },
+    });
+
+    expect(getToolDescription(toolset.tools, "read_file")).toContain(
+      "Reading image files and PDFs directly is supported.",
+    );
   });
 
   it("shares local read state between read_file and edit_file within one toolset", async () => {
