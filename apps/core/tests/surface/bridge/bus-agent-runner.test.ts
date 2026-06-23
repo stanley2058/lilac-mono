@@ -25,11 +25,15 @@ import {
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   consumeAssistantTextDelta,
+  computeTransientRetryDelayMs,
   createAssistantTextPartBoundaryState,
   createDeferredSubagentManager,
+  createTransientModelRetryController,
+  formatUnknownErrorForDisplay,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
   buildSurfaceMetadataOverlay,
+  isRetryableTransientModelError,
   markAssistantTextPartEnded,
   markAssistantTextPartStarted,
   mergeToSingleUserMessage,
@@ -252,6 +256,109 @@ async function waitFor(predicate: () => boolean, timeoutMs = 100): Promise<void>
     await Bun.sleep(1);
   }
 }
+
+describe("transient model retry", () => {
+  const retry = {
+    enabled: true,
+    maxRetries: 2,
+    baseDelayMs: 0,
+    maxDelayMs: 0,
+  } satisfies CoreConfig["agent"]["retry"];
+
+  it("classifies Codex overload stream errors as retryable", () => {
+    expect(
+      isRetryableTransientModelError({
+        type: "error",
+        sequence_number: 2,
+        error: {
+          type: "service_unavailable_error",
+          code: "server_is_overloaded",
+          message: "Our servers are currently overloaded. Please try again later.",
+          param: null,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("formats Codex overload stream errors for display", () => {
+    expect(
+      formatUnknownErrorForDisplay({
+        type: "error",
+        sequence_number: 2,
+        error: {
+          type: "service_unavailable_error",
+          code: "server_is_overloaded",
+          message: "Our servers are currently overloaded. Please try again later.",
+          param: null,
+        },
+      }),
+    ).toBe("server_is_overloaded: Our servers are currently overloaded. Please try again later.");
+  });
+
+  it("classifies transient errors inside arrays", () => {
+    expect(
+      isRetryableTransientModelError({
+        errors: [{ code: "server_is_overloaded" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify context overflow or exhausted AI SDK retries", () => {
+    expect(isRetryableTransientModelError("maximum context length is 128000 tokens")).toBe(false);
+    expect(
+      isRetryableTransientModelError({
+        name: "AI_RetryError",
+        reason: "maxRetriesExceeded",
+        lastError: { statusCode: 503, message: "Service unavailable" },
+      }),
+    ).toBe(false);
+  });
+
+  it("computes capped exponential backoff", () => {
+    expect(
+      computeTransientRetryDelayMs({ attempt: 1, baseDelayMs: 2_000, maxDelayMs: 30_000 }),
+    ).toBe(2_000);
+    expect(
+      computeTransientRetryDelayMs({ attempt: 5, baseDelayMs: 2_000, maxDelayMs: 30_000 }),
+    ).toBe(30_000);
+  });
+
+  it("retries transient errors up to the configured max and resets after success", async () => {
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+    const error = { statusCode: 503, message: "Service unavailable" };
+    const controller = createTransientModelRetryController({
+      retry,
+      logger,
+      requestId: "request-1",
+      sessionId: "session-1",
+      modelSpec: "codex/gpt-5.5",
+      hasStartedOutput: () => false,
+    });
+
+    await expect(controller.handler(error, {})).resolves.toBe("retry");
+    await expect(controller.handler(error, {})).resolves.toBe("retry");
+    await expect(controller.handler(error, {})).resolves.toBe("fail");
+
+    controller.reset();
+    await expect(controller.handler(error, {})).resolves.toBe("retry");
+  });
+
+  it("does not retry after assistant output has started", async () => {
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+    const controller = createTransientModelRetryController({
+      retry,
+      logger,
+      requestId: "request-1",
+      sessionId: "session-1",
+      modelSpec: "codex/gpt-5.5",
+      hasStartedOutput: () => true,
+    });
+
+    await expect(
+      controller.handler({ statusCode: 503, message: "Service unavailable" }, {}),
+    ).resolves.toBe("fail");
+  });
+});
 
 describe("toOpenAIPromptCacheKey", () => {
   it("returns the session id when it fits provider limits", () => {
