@@ -4,6 +4,7 @@ import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicat
 
 import {
   coreConfigInputSchemaV1,
+  agentRetrySchema,
   heartbeatSchema,
   jsonObjectSchema,
   modelCapabilityCostPatchSchema,
@@ -319,6 +320,7 @@ export const coreConfigInputSchemaV2 = z.object({
     .object({
       statsForNerds: statsForNerdsSchema,
       reasoningDisplay: reasoningDisplaySchema,
+      retry: agentRetrySchema,
       subagents: subagentsSchemaV2.default({
         enabled: true,
         maxDepth: 2,
@@ -334,6 +336,12 @@ export const coreConfigInputSchemaV2 = z.object({
     .default({
       statsForNerds: false,
       reasoningDisplay: "detailed",
+      retry: {
+        enabled: true,
+        maxRetries: 3,
+        baseDelayMs: 2_000,
+        maxDelayMs: 30_000,
+      },
       subagents: {
         enabled: true,
         maxDepth: 2,

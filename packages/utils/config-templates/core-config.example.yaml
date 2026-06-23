@@ -151,6 +151,13 @@ agent:
   # - detailed: also show blockquoted reasoning content (clamped to 500 chars)
   reasoningDisplay: detailed
 
+  retry:
+    # Retry transient upstream failures such as overloaded/503/rate-limit stream errors.
+    enabled: true
+    maxRetries: 3
+    baseDelayMs: 2000
+    maxDelayMs: 30000
+
   subagents:
     # Master switch for delegate-style subagents.
     enabled: true

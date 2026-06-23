@@ -136,6 +136,12 @@ export type UniversalCoreConfig = {
     systemPrompt: string;
     statsForNerds: boolean | { verbose: boolean };
     reasoningDisplay: "none" | "simple" | "detailed";
+    retry: {
+      enabled: boolean;
+      maxRetries: number;
+      baseDelayMs: number;
+      maxDelayMs: number;
+    };
     subagents: {
       enabled: boolean;
       maxDepth: number;

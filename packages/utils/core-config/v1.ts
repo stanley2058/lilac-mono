@@ -496,6 +496,27 @@ export const heartbeatSchema = z
   });
 const configVersionSchema = z.literal(V1_CORE_CONFIG_VERSION).default(V1_CORE_CONFIG_VERSION);
 
+export const agentRetrySchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxRetries: z.number().int().min(0).default(3),
+    baseDelayMs: z.number().int().nonnegative().default(2_000),
+    maxDelayMs: z.number().int().nonnegative().default(30_000),
+  })
+  .default({
+    enabled: true,
+    maxRetries: 3,
+    baseDelayMs: 2_000,
+    maxDelayMs: 30_000,
+  });
+
+const DEFAULT_AGENT_RETRY = {
+  enabled: false,
+  maxRetries: 0,
+  baseDelayMs: 2_000,
+  maxDelayMs: 30_000,
+};
+
 export const coreConfigInputSchemaV1 = z.object({
   configVersion: configVersionSchema,
 
@@ -688,6 +709,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
     agent: {
       ...parsed.agent,
       systemPrompt: "",
+      retry: { ...DEFAULT_AGENT_RETRY },
     },
   };
 }

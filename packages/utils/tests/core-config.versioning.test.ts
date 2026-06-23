@@ -20,6 +20,12 @@ describe("core config versioning", () => {
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("embed");
     expect(parsed.surface.discord.markdownTableRender.enabled).toBe(false);
     expect(parsed.agent.reasoningDisplay).toBe("simple");
+    expect(parsed.agent.retry).toEqual({
+      enabled: false,
+      maxRetries: 0,
+      baseDelayMs: 2_000,
+      maxDelayMs: 30_000,
+    });
     expect(parsed.tools.fsBackend).toBe("node-rg");
     expect(parsed.tools.web.fetch.mode).toBe("auto");
     expect(parsed.tools.inspect.model).toBe("google/gemini-3-flash");
@@ -43,6 +49,12 @@ describe("core config versioning", () => {
       fallbackMode: "list",
     });
     expect(parsed.agent.reasoningDisplay).toBe("detailed");
+    expect(parsed.agent.retry).toEqual({
+      enabled: true,
+      maxRetries: 3,
+      baseDelayMs: 2_000,
+      maxDelayMs: 30_000,
+    });
     expect(parsed.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
     expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
   });
