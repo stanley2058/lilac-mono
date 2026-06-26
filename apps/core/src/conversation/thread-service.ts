@@ -1,4 +1,4 @@
-import { generateText, Output, type ModelMessage } from "ai";
+import { generateText, Output, streamText, type ModelMessage } from "ai";
 import { z } from "zod";
 import {
   createLogger,
@@ -26,11 +26,11 @@ const SUMMARY_MAX_MESSAGES = SUMMARY_HEAD_MESSAGES + SUMMARY_TAIL_MESSAGES;
 const DEFAULT_READ_LIMIT = 50;
 
 const threadSummarySchema = z.object({
-  title: z.string().min(1).max(160),
-  brief: z.string().max(1400),
-  topics: z.array(z.string().min(1).max(120)).max(12).default([]),
+  title: z.string(),
+  brief: z.string(),
+  topics: z.array(z.string()),
   importance: z.enum(["low", "medium", "high"]),
-  importanceReasons: z.array(z.string().min(1).max(220)).max(5).default([]),
+  importanceReasons: z.array(z.string()),
 });
 
 export type ConversationThreadRunSummarizationInput = {
@@ -239,6 +239,76 @@ function applyImportanceNudge(hit: ConversationThreadSearchHit, baseScore: numbe
   return baseScore * importanceMultiplier(hit.importance);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function readStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readNumberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function truncateErrorDetail(input: string): string {
+  return input.length > 2000 ? `${input.slice(0, 2000)}...` : input;
+}
+
+function parseProviderResponseMessage(responseBody: string): string | undefined {
+  try {
+    const parsed = JSON.parse(responseBody) as unknown;
+    if (!isRecord(parsed)) return undefined;
+    const error = parsed.error;
+    if (isRecord(error)) return readStringField(error, "message");
+    return readStringField(parsed, "message");
+  } catch {
+    return undefined;
+  }
+}
+
+function extractJsonObject(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/u);
+  if (fenced?.[1]) {
+    const inner = fenced[1].trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
+
+  return trimmed;
+}
+
+function parseSummaryJson(text: string): ConversationThreadSummaryInput {
+  const parsed = JSON.parse(extractJsonObject(text)) as unknown;
+  return threadSummarySchema.parse(parsed);
+}
+
+function summarizeProviderError(error: unknown): {
+  message: string;
+  statusCode?: number;
+  providerMessage?: string;
+  responseBody?: string;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!isRecord(error)) return { message };
+
+  const responseBody = readStringField(error, "responseBody");
+  return {
+    message,
+    statusCode: readNumberField(error, "statusCode"),
+    providerMessage: responseBody ? parseProviderResponseMessage(responseBody) : undefined,
+    responseBody: responseBody ? truncateErrorDetail(responseBody) : undefined,
+  };
+}
+
 function resolveSummarizationModel(cfg: CoreConfig) {
   const model = cfg.conversation.thread.summarization.model.trim();
   if (model === "main" || model === "fast") return resolveModelSlot(cfg, model);
@@ -311,6 +381,7 @@ async function defaultSummarizer(input: {
         "Use high for decisions, architecture, implementation plans, incident/root-cause analysis, or reusable project knowledge.",
         "Use low for casual chat, shallow reactions, external-link-only discussion, or transient coordination.",
         "Importance reasons should briefly explain the rating for debugging.",
+        'Return only a JSON object shaped like: {"title":"...","brief":"...","topics":["..."],"importance":"low|medium|high","importanceReasons":["..."]}',
         "",
         "Previous summary:",
         previous,
@@ -321,10 +392,25 @@ async function defaultSummarizer(input: {
     },
   ] satisfies ModelMessage[];
 
+  const instructions =
+    "You create compact, stable thread summaries for a conversation memory index.";
+
+  if (resolved.provider === "codex") {
+    const result = streamText({
+      model: resolved.model,
+      instructions,
+      messages,
+      reasoning: resolved.reasoning,
+      providerOptions: resolved.providerOptions,
+    });
+
+    return parseSummaryJson(await result.text);
+  }
+
   const result = await generateText({
     model: resolved.model,
     output: Output.object({ schema: threadSummarySchema }),
-    instructions: "You create compact, stable thread summaries for a conversation memory index.",
+    instructions,
     messages,
     maxOutputTokens: 1200,
     reasoning: resolved.reasoning,
@@ -587,10 +673,33 @@ export class ConversationThreadService {
           summarized: summaryIsStale,
         });
       } catch (e) {
-        const error = e instanceof Error ? e.message : String(e);
-        this.logger.error("thread summarization failed", { jobId, threadId: thread.thread_id }, e);
+        const error = summarizeProviderError(e);
+        const failureMessage = error.providerMessage
+          ? `${error.message}: ${error.providerMessage}`
+          : error.message;
+        this.logger.error(
+          "thread summarization failed",
+          {
+            jobId,
+            threadId: thread.thread_id,
+            statusCode: error.statusCode,
+            providerMessage: error.providerMessage,
+            responseBody: error.responseBody,
+          },
+          e,
+        );
         result.failed += 1;
-        result.failures.push({ threadId: thread.thread_id, error });
+        result.failures.push({ threadId: thread.thread_id, error: failureMessage });
+        this.logger.error("thread summarization run aborted after hard failure", {
+          jobId,
+          threadId: thread.thread_id,
+          eligible: result.eligible,
+          summarized: result.summarized,
+          failed: result.failed,
+        });
+        throw new Error(
+          `thread summarization aborted after failure in ${thread.thread_id}: ${failureMessage}`,
+        );
       }
     }
 

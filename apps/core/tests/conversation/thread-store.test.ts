@@ -334,6 +334,46 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("aborts summarization run after first summarizer failure", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "a1",
+        userId: "u1",
+        text: "first eligible thread",
+        ts: 1,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "b1",
+        userId: "u1",
+        text: "second eligible thread",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+    ]);
+
+    const attemptedThreadIds: string[] = [];
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async ({ threadId }) => {
+        attemptedThreadIds.push(threadId);
+        throw new Error("model rejected request");
+      },
+    });
+
+    await expect(
+      service.runSummarization({ now: Date.now() + 3 * 60 * 60 * 1000 }),
+    ).rejects.toThrow("thread summarization aborted after failure");
+    expect(attemptedThreadIds).toEqual(["discord:channel:c1:a1"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("uses importance as a small ranking nudge", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
