@@ -325,6 +325,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     const result = streamText({
       model: openai.responses("gpt-5-mini"),
       prompt: "hi",
+      onError: () => {},
     });
 
     const partsPromise = withTimeout(
