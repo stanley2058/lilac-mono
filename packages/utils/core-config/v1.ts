@@ -698,6 +698,18 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
         hashline,
       },
     },
+    conversation: {
+      thread: {
+        summarization: {
+          enabled: false,
+          model: "fast",
+        },
+        embedding: {
+          enabled: false,
+          model: "openai/text-embedding-3-small",
+        },
+      },
+    },
     surface: {
       ...parsed.surface,
       discord: {

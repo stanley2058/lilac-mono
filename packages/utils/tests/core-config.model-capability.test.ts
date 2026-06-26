@@ -1,8 +1,53 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigInputSchemaV2, coreConfigSchema } from "../core-config";
+import {
+  coreConfigInputSchemaV2,
+  coreConfigSchema,
+  parseCoreConfigV1ToUniversal,
+} from "../core-config";
 
 describe("coreConfigSchema models.capability", () => {
+  it("defaults conversation thread summarization and embedding config", () => {
+    const v1 = parseCoreConfigV1ToUniversal({});
+    expect(v1.conversation.thread.summarization).toEqual({
+      enabled: false,
+      model: "fast",
+    });
+    expect(v1.conversation.thread.embedding).toEqual({
+      enabled: false,
+      model: "openai/text-embedding-3-small",
+    });
+
+    const v2 = coreConfigInputSchemaV2.parse({ configVersion: 2 });
+    expect(v2.conversation.thread.summarization).toEqual({
+      enabled: false,
+      model: "fast",
+    });
+    expect(v2.conversation.thread.embedding).toEqual({
+      enabled: false,
+      model: "openai/text-embedding-3-small",
+    });
+  });
+
+  it("accepts conversation thread summarization model override", () => {
+    const parsed = coreConfigInputSchemaV2.parse({
+      configVersion: 2,
+      conversation: {
+        thread: {
+          summarization: {
+            enabled: true,
+            model: "openrouter/openai/gpt-4o-mini",
+          },
+        },
+      },
+    });
+
+    expect(parsed.conversation.thread.summarization).toEqual({
+      enabled: true,
+      model: "openrouter/openai/gpt-4o-mini",
+    });
+  });
+
   it("defaults forceUnknownProviders and empty overrides", () => {
     const parsed = coreConfigSchema.parse({});
     expect(parsed.models.capability.forceUnknownProviders).toEqual(["openai-compatible"]);

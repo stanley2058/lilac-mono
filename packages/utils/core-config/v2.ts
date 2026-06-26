@@ -253,6 +253,35 @@ const toolsSchema = z
     },
   });
 
+const conversationSchemaV2 = z
+  .object({
+    thread: z
+      .object({
+        summarization: z
+          .object({
+            enabled: z.boolean().default(false),
+            model: z.string().trim().min(1).default("fast"),
+          })
+          .default({ enabled: false, model: "fast" }),
+        embedding: z
+          .object({
+            enabled: z.boolean().default(false),
+            model: z.string().trim().min(1).default("openai/text-embedding-3-small"),
+          })
+          .default({ enabled: false, model: "openai/text-embedding-3-small" }),
+      })
+      .default({
+        summarization: { enabled: false, model: "fast" },
+        embedding: { enabled: false, model: "openai/text-embedding-3-small" },
+      }),
+  })
+  .default({
+    thread: {
+      summarization: { enabled: false, model: "fast" },
+      embedding: { enabled: false, model: "openai/text-embedding-3-small" },
+    },
+  });
+
 const modelsSchemaV2 = z
   .object({
     /** Optional registry of reusable model presets, referenced by alias. */
@@ -311,6 +340,7 @@ export const coreConfigInputSchemaV2 = z.object({
 
   tools: toolsSchema,
   plugins: pluginsSchema,
+  conversation: conversationSchemaV2,
 
   surface: z
     .object({

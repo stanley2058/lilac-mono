@@ -88,6 +88,19 @@ export type UniversalCoreConfig = {
     config: Record<string, unknown>;
   };
 
+  conversation: {
+    thread: {
+      summarization: {
+        enabled: boolean;
+        model: string;
+      };
+      embedding: {
+        enabled: boolean;
+        model: string;
+      };
+    };
+  };
+
   surface: {
     router: {
       defaultMode: "mention" | "active";

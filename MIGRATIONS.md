@@ -41,6 +41,9 @@ New v2 fields:
 
 - `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
 - `models.capability.overrides.<provider/model>.attachment`: optional manual override for model attachment input support.
+- `conversation.thread.summarization.enabled`: default-false gate for background conversation thread summarization.
+- `conversation.thread.summarization.model`: model used for conversation thread summaries; defaults to `fast`.
+- `conversation.thread.embedding.enabled` and `conversation.thread.embedding.model`: default-false semantic thread embedding generation using an AI SDK embedding model ref.
 
 Default changes from v1:
 

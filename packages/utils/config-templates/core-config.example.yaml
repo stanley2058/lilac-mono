@@ -18,6 +18,22 @@ plugins:
   disabled: []
   config: {}
 
+conversation:
+  thread:
+    summarization:
+      # Enable the background thread summarization worker. The hidden
+      # conversation.thread.runSummarization tool can still be called manually.
+      enabled: false
+      # Model used to summarize threads. Accepts main, fast, a models.def alias,
+      # or a direct provider/model ref.
+      model: fast
+    embedding:
+      # Enable semantic thread embeddings. Summaries and lexical search still work
+      # when this is disabled or when embedding generation fails.
+      enabled: false
+      # Provider/model ref or models.def alias for an AI SDK embedding model.
+      model: openai/text-embedding-3-small
+
 surface:
   # Router behavior is surface-wide (not per-adapter).
   router:
