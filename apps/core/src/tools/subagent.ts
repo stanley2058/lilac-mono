@@ -263,7 +263,7 @@ export function subagentTools(params: {
   });
 
   return {
-    subagent_delegate: tool<SubagentDelegateInput, SubagentDelegateOutput>({
+    subagent_delegate: tool({
       description: [
         "Delegate work to a subagent profile (explore, general, self).",
         "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
@@ -273,11 +273,8 @@ export function subagentTools(params: {
       ].join("\n"),
       inputSchema: subagentDelegateInputSchema,
       outputSchema: subagentDelegateOutputSchema,
-      execute: async (input, { abortSignal, experimental_context, toolCallId }) => {
-        const ctx = requireRequestContext(
-          experimental_context,
-          "subagent_delegate",
-        ) as RequestContextLike;
+      execute: async (input: SubagentDelegateInput, { abortSignal, context, toolCallId }) => {
+        const ctx = requireRequestContext(context, "subagent_delegate") as RequestContextLike;
         const profile = input.profile ?? "explore";
         const mode = input.mode ?? "deferred";
         const blockingReason = input.blockingReason?.trim() || undefined;
@@ -286,9 +283,9 @@ export function subagentTools(params: {
           throw new Error('blockingReason is required when mode is "sync"');
         }
 
-        const depth = parseDepth(experimental_context);
+        const depth = parseDepth(context);
 
-        const currentRunProfile = parseCurrentRunProfile(experimental_context);
+        const currentRunProfile = parseCurrentRunProfile(context);
         if (currentRunProfile === "explore" || currentRunProfile === "general") {
           throw new Error(`subagent_delegate is disabled in ${currentRunProfile} subagent runs`);
         }

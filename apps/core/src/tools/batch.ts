@@ -65,7 +65,7 @@ type ToolLike = {
       toolCallId: string;
       messages: readonly unknown[];
       abortSignal?: AbortSignal;
-      experimental_context?: unknown;
+      context?: unknown;
     },
   ) => unknown;
 };
@@ -468,7 +468,7 @@ export function batchTool(params: {
                 toolCallId,
                 messages: options.messages,
                 abortSignal: options.abortSignal,
-                experimental_context: options.experimental_context,
+                context: options.context,
               });
 
               child.status = "done";

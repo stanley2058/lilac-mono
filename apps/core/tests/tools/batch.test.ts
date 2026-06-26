@@ -18,7 +18,7 @@ type ExecTool = {
       toolCallId: string;
       messages: readonly unknown[];
       abortSignal?: AbortSignal;
-      experimental_context?: unknown;
+      context?: unknown;
     },
   ) => Promise<unknown> | unknown;
 };
@@ -143,7 +143,7 @@ describe("batch tool", () => {
             toolCallId: "batch-1",
             messages: [],
             abortSignal: undefined,
-            experimental_context: undefined,
+            context: undefined,
           },
         ),
       ),
@@ -193,7 +193,7 @@ describe("batch tool", () => {
             toolCallId: "batch-remote-1",
             messages: [],
             abortSignal: undefined,
-            experimental_context: undefined,
+            context: undefined,
           },
         ),
       ),
@@ -242,7 +242,7 @@ describe("batch tool", () => {
         toolCallId: "batch-2",
         messages: [],
         abortSignal: undefined,
-        experimental_context: undefined,
+        context: undefined,
       },
     );
 
@@ -269,7 +269,7 @@ describe("batch tool", () => {
         toolCallId: "batch-3",
         messages: [],
         abortSignal: undefined,
-        experimental_context: undefined,
+        context: undefined,
       },
     );
 
@@ -302,7 +302,7 @@ describe("batch tool", () => {
         toolCallId: "batch-3b",
         messages: [],
         abortSignal: undefined,
-        experimental_context: undefined,
+        context: undefined,
       },
     );
 
@@ -333,7 +333,7 @@ describe("batch tool", () => {
         toolCallId: "batch-4",
         messages: [],
         abortSignal: undefined,
-        experimental_context: undefined,
+        context: undefined,
       },
     );
 
@@ -371,7 +371,7 @@ describe("batch tool", () => {
         toolCallId: "batch-empty-params-1",
         messages: [],
         abortSignal: undefined,
-        experimental_context: undefined,
+        context: undefined,
       },
     );
 
@@ -450,7 +450,7 @@ describe("batch tool", () => {
             toolCallId: "batch-edit-overlap",
             messages: [],
             abortSignal: undefined,
-            experimental_context: undefined,
+            context: undefined,
           },
         ),
       ),
@@ -557,7 +557,7 @@ describe("batch tool", () => {
             toolCallId: "batch-custom-edit",
             messages: [],
             abortSignal: undefined,
-            experimental_context: undefined,
+            context: undefined,
           },
         ),
       ),

@@ -136,11 +136,11 @@ describe("subagent_delegate tool", () => {
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        { profile: "explore", task: "Map auth flow", mode: "deferred" },
         {
           toolCallId: "tool-deferred-1",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:deferred-1",
             sessionId: "s:deferred-1",
             requestClient: "discord",
@@ -185,7 +185,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: "tool-sync-validation",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:sync-validation",
             sessionId: "s:sync-validation",
             requestClient: "discord",
@@ -305,7 +305,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: "tool-1",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:1",
             sessionId: "s:1",
             requestClient: "discord",
@@ -416,7 +416,7 @@ describe("subagent_delegate tool", () => {
           {
             toolCallId: `tool-${profile}`,
             messages: [],
-            experimental_context: {
+            context: {
               requestId: `r:${profile}`,
               sessionId: `s:${profile}`,
               requestClient: "discord",
@@ -524,7 +524,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: "tool-continued-session",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:continued-session",
             sessionId: "s:parent",
             requestClient: "discord",
@@ -554,12 +554,13 @@ describe("subagent_delegate tool", () => {
         {
           profile: "explore",
           task: "Continue prior work",
+          mode: "deferred",
           sessionId: "sub:s:someone-else:session-1",
         },
         {
           toolCallId: "tool-invalid-continued-session",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:invalid-continued-session",
             sessionId: "s:parent",
             requestClient: "discord",
@@ -582,11 +583,11 @@ describe("subagent_delegate tool", () => {
 
     await expect(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        { profile: "explore", task: "Map auth flow", mode: "deferred" },
         {
           toolCallId: "tool-2",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:2",
             sessionId: "s:2",
             requestClient: "discord",
@@ -609,11 +610,11 @@ describe("subagent_delegate tool", () => {
 
     await expect(
       tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow" },
+        { profile: "explore", task: "Map auth flow", mode: "deferred" },
         {
           toolCallId: "tool-no-nest-explore",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:no-nest-explore",
             sessionId: "s:no-nest-explore",
             requestClient: "discord",
@@ -626,11 +627,11 @@ describe("subagent_delegate tool", () => {
 
     await expect(
       tools.subagent_delegate.execute!(
-        { profile: "general", task: "Fix lint" },
+        { profile: "general", task: "Fix lint", mode: "deferred" },
         {
           toolCallId: "tool-no-nest-general",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:no-nest-general",
             sessionId: "s:no-nest-general",
             requestClient: "discord",
@@ -654,11 +655,11 @@ describe("subagent_delegate tool", () => {
 
     await expect(
       tools.subagent_delegate.execute!(
-        { profile: "self", task: "Spawn self again" },
+        { profile: "self", task: "Spawn self again", mode: "deferred" },
         {
           toolCallId: "tool-self-self",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:self-self",
             sessionId: "s:self-self",
             requestClient: "discord",
@@ -739,7 +740,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: "tool-self-explore",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:self-explore",
             sessionId: "s:self-explore",
             requestClient: "discord",
@@ -839,7 +840,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: "tool-3",
           messages: [],
-          experimental_context: {
+          context: {
             requestId: "r:3",
             sessionId: "s:3",
             requestClient: "discord",
@@ -998,7 +999,7 @@ describe("subagent_delegate tool", () => {
         {
           toolCallId: parentToolCallId,
           messages: [],
-          experimental_context: {
+          context: {
             requestId: parentRequestId,
             sessionId: "s:4",
             requestClient: "discord",

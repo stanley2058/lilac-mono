@@ -123,7 +123,7 @@ describe("workflow tool", () => {
         ],
       },
       {
-        experimental_context: {
+        context: {
           requestId: "discord:chanX:orig",
           sessionId: "chanX",
           requestClient: "discord",

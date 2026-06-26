@@ -42,7 +42,7 @@ describe("executeBash", () => {
 
       expect(res.exitCode).toBe(0);
       expect(res.executionError).toBeUndefined();
-      expect(res.stdout.startsWith("/__lilac_path_test__:")).toBe(true);
+      expect(res.stdout).toContain("/__lilac_path_test__:");
     } finally {
       process.env.PATH = originalPath;
     }

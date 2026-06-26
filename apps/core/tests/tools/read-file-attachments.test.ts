@@ -86,7 +86,7 @@ describe("read_file attachments", () => {
     expect(readFile.toModelOutput).toBeDefined();
 
     const output = await resolveExecuteResult(
-      readFile.execute!({ path: "img.png" }, { toolCallId: "t1", messages: [] }),
+      readFile.execute!({ path: "img.png" }, { toolCallId: "t1", messages: [], context: {} }),
     );
 
     expect(isAttachmentResult(output)).toBe(true);
@@ -123,7 +123,7 @@ describe("read_file attachments", () => {
     expect(readFile.toModelOutput).toBeDefined();
 
     const output = await resolveExecuteResult(
-      readFile.execute!({ path: "doc.pdf" }, { toolCallId: "t2", messages: [] }),
+      readFile.execute!({ path: "doc.pdf" }, { toolCallId: "t2", messages: [], context: {} }),
     );
 
     expect(isAttachmentResult(output)).toBe(true);

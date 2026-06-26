@@ -26,8 +26,6 @@ function makeUsage(params: {
     inputTokens: params.inputTokens,
     outputTokens: params.outputTokens,
     totalTokens: params.inputTokens + params.outputTokens,
-    reasoningTokens: 0,
-    cachedInputTokens: cacheReadTokens,
     inputTokenDetails: {
       noCacheTokens: params.noCacheTokens,
       cacheReadTokens,

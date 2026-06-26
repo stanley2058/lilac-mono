@@ -29,6 +29,10 @@ async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable
   return await value;
 }
 
+function toolOptions(toolCallId: string) {
+  return { toolCallId, messages: [], context: {} };
+}
+
 describe("fs tool search wrappers", () => {
   let baseDir: string;
 
@@ -55,7 +59,7 @@ describe("fs tool search wrappers", () => {
     const tools = fsTool(baseDir);
 
     const out = await resolveExecuteResult(
-      tools.glob.execute!({ patterns: ["src/**/*.ts"] }, { toolCallId: "g1", messages: [] }),
+      tools.glob.execute!({ patterns: ["src/**/*.ts"] }, toolOptions("g1")),
     );
 
     expect(out.mode).toBe("default");
@@ -75,7 +79,7 @@ describe("fs tool search wrappers", () => {
           patterns: ["src/**/*.ts"],
           mode: "detailed",
         },
-        { toolCallId: "g2", messages: [] },
+        toolOptions("g2"),
       ),
     );
 
@@ -102,7 +106,7 @@ describe("fs tool search wrappers", () => {
         {
           patterns: ["**/*.ts", "src/**/*.ts", "!**/node_modules/**"],
         },
-        { toolCallId: "g2b", messages: [] },
+        toolOptions("g2b"),
       ),
     );
 
@@ -119,7 +123,7 @@ describe("fs tool search wrappers", () => {
         {
           patterns: ["**/*.ts", "!node_modules/**"],
         },
-        { toolCallId: "g2c", messages: [] },
+        toolOptions("g2c"),
       ),
     );
 
@@ -140,7 +144,7 @@ describe("fs tool search wrappers", () => {
           fileExtensions: ["ts"],
           maxResults: 2,
         },
-        { toolCallId: "g3", messages: [] },
+        toolOptions("g3"),
       ),
     );
 
@@ -171,7 +175,7 @@ describe("fs tool search wrappers", () => {
           fileExtensions: ["ts"],
           mode: "detailed",
         },
-        { toolCallId: "g4", messages: [] },
+        toolOptions("g4"),
       ),
     );
 
@@ -195,7 +199,7 @@ describe("fs tool search wrappers", () => {
           fileExtensions: ["ts"],
           mode: "hashline",
         },
-        { toolCallId: "g4b", messages: [] },
+        toolOptions("g4b"),
       ),
     );
 
@@ -228,7 +232,7 @@ describe("fs tool search wrappers", () => {
           mode: "detailed",
           maxResults: 3,
         },
-        { toolCallId: "g5", messages: [] },
+        toolOptions("g5"),
       ),
     );
 
@@ -246,7 +250,7 @@ describe("fs tool search wrappers", () => {
           fileExtensions: ["ts"],
           maxResults: 2,
         },
-        { toolCallId: "g6", messages: [] },
+        toolOptions("g6"),
       ),
     );
 
@@ -262,7 +266,7 @@ describe("fs tool search wrappers", () => {
     const tools = fsTool(baseDir, { fsBackend: "fff" });
 
     const globOut = await resolveExecuteResult(
-      tools.glob.execute!({ patterns: ["src/**/*.ts"] }, { toolCallId: "fff-glob", messages: [] }),
+      tools.glob.execute!({ patterns: ["src/**/*.ts"] }, toolOptions("fff-glob")),
     );
 
     expect(globOut.mode).toBe("default");
@@ -279,7 +283,7 @@ describe("fs tool search wrappers", () => {
           fileExtensions: ["ts"],
           mode: "detailed",
         },
-        { toolCallId: "fff-grep", messages: [] },
+        toolOptions("fff-grep"),
       ),
     );
 
@@ -308,7 +312,7 @@ describe("fs tool search wrappers", () => {
           patterns: ["**/*.ts", "!aaa/**"],
           maxEntries: 1,
         },
-        { toolCallId: "fff-glob-exclude", messages: [] },
+        toolOptions("fff-glob-exclude"),
       ),
     );
 
@@ -333,7 +337,7 @@ describe("fs tool search wrappers", () => {
         {
           patterns: ["node_modules/**/*.ts"],
         },
-        { toolCallId: "fff-glob-node-modules", messages: [] },
+        toolOptions("fff-glob-node-modules"),
       ),
     );
 
@@ -356,7 +360,7 @@ describe("fs tool search wrappers", () => {
           mode: "detailed",
           maxEntries: 20,
         },
-        { toolCallId: "fff-glob-dir", messages: [] },
+        toolOptions("fff-glob-dir"),
       ),
     );
 
@@ -381,7 +385,7 @@ describe("fs tool search wrappers", () => {
           mode: "detailed",
           maxResults: 10,
         },
-        { toolCallId: "fff-grep-exts", messages: [] },
+        toolOptions("fff-grep-exts"),
       ),
     );
 
@@ -407,7 +411,7 @@ describe("fs tool search wrappers", () => {
           mode: "detailed",
           maxResults: 10,
         },
-        { toolCallId: "fff-grep-case", messages: [] },
+        toolOptions("fff-grep-case"),
       ),
     );
 
@@ -431,7 +435,7 @@ describe("fs tool search wrappers", () => {
           regex: true,
           mode: "default",
         },
-        { toolCallId: "fff-grep-bad-regex", messages: [] },
+        toolOptions("fff-grep-bad-regex"),
       ),
     );
 
@@ -448,17 +452,14 @@ describe("fs tool search wrappers", () => {
     expect("fuzzy_search" in fffTools).toBe(true);
 
     const fuzzySearch = fffTools["fuzzy_search"] as {
-      execute?: (input: unknown, options: { toolCallId: string; messages: [] }) => unknown;
+      execute?: (input: unknown, options: ReturnType<typeof toolOptions>) => unknown;
     };
     if (!fuzzySearch.execute) {
       throw new Error("expected fuzzy_search execute");
     }
 
     const out = await resolveExecuteResult(
-      fuzzySearch.execute(
-        { query: "src/a.ts", maxResults: 5 },
-        { toolCallId: "fuzzy-1", messages: [] },
-      ),
+      fuzzySearch.execute({ query: "src/a.ts", maxResults: 5 }, toolOptions("fuzzy-1")),
     );
 
     expect(out).toMatchObject({

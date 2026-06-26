@@ -28,6 +28,25 @@ async function resolveExecuteResult<T>(value: T | PromiseLike<T> | AsyncIterable
   return await value;
 }
 
+function toolOptions(toolCallId: string, messages: ModelMessage[] = []) {
+  return { toolCallId, messages, context: {} };
+}
+
+function getInstructionFields(output: unknown): {
+  loadedInstructions?: string[];
+  instructionsText?: string;
+} {
+  if (!output || typeof output !== "object") return {};
+  const record = output as Record<string, unknown>;
+  return {
+    loadedInstructions: Array.isArray(record.loadedInstructions)
+      ? record.loadedInstructions.filter((value): value is string => typeof value === "string")
+      : undefined,
+    instructionsText:
+      typeof record.instructionsText === "string" ? record.instructionsText : undefined,
+  };
+}
+
 describe("read_file auto-loads AGENTS.md instructions", () => {
   let baseDir: string;
 
@@ -50,19 +69,17 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
     const readFile = tools.read_file;
 
     const out = await resolveExecuteResult(
-      readFile.execute!(
-        { path: path.join("sub", "nested", "file.txt") },
-        { toolCallId: "t1", messages: [] },
-      ),
+      readFile.execute!({ path: path.join("sub", "nested", "file.txt") }, toolOptions("t1")),
     );
 
     expect(out.success).toBe(true);
     if (!out.success) return;
-    expect(out.loadedInstructions).toBeDefined();
-    expect(out.loadedInstructions).toContain(path.join(baseDir, "sub", "AGENTS.md"));
-    expect(out.loadedInstructions).toContain(path.join(baseDir, "AGENTS.md"));
-    expect(out.instructionsText).toContain("Root rules.");
-    expect(out.instructionsText).toContain("Sub rules.");
+    const instructions = getInstructionFields(out);
+    expect(instructions.loadedInstructions).toBeDefined();
+    expect(instructions.loadedInstructions).toContain(path.join(baseDir, "sub", "AGENTS.md"));
+    expect(instructions.loadedInstructions).toContain(path.join(baseDir, "AGENTS.md"));
+    expect(instructions.instructionsText).toContain("Root rules.");
+    expect(instructions.instructionsText).toContain("Sub rules.");
   });
 
   it("when file is not under cwd, stops at git root derived from cwd", async () => {
@@ -81,16 +98,17 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
           path: path.join(baseDir, "b", "file.txt"),
           cwd: path.join(baseDir, "a"),
         },
-        { toolCallId: "t2", messages: [] },
+        toolOptions("t2"),
       ),
     );
 
     expect(out.success).toBe(true);
     if (!out.success) return;
-    expect(out.loadedInstructions).toContain(path.join(baseDir, "b", "AGENTS.md"));
-    expect(out.loadedInstructions).toContain(path.join(baseDir, "AGENTS.md"));
-    expect(out.instructionsText).toContain("B rules.");
-    expect(out.instructionsText).toContain("Root rules.");
+    const instructions = getInstructionFields(out);
+    expect(instructions.loadedInstructions).toContain(path.join(baseDir, "b", "AGENTS.md"));
+    expect(instructions.loadedInstructions).toContain(path.join(baseDir, "AGENTS.md"));
+    expect(instructions.instructionsText).toContain("B rules.");
+    expect(instructions.instructionsText).toContain("Root rules.");
   });
 
   it("does not reload AGENTS.md that were already loaded in prior read_file tool results", async () => {
@@ -103,10 +121,7 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
     const readFile = tools.read_file;
 
     const first = await resolveExecuteResult(
-      readFile.execute!(
-        { path: path.join("sub", "nested", "file.txt") },
-        { toolCallId: "t3", messages: [] },
-      ),
+      readFile.execute!({ path: path.join("sub", "nested", "file.txt") }, toolOptions("t3")),
     );
 
     expect(first.success).toBe(true);
@@ -133,14 +148,15 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
     const second = await resolveExecuteResult(
       readFile.execute!(
         { path: path.join("sub", "nested", "file.txt") },
-        { toolCallId: "t4", messages: [prior] },
+        toolOptions("t4", [prior]),
       ),
     );
 
     expect(second.success).toBe(true);
     if (!second.success) return;
-    expect(second.loadedInstructions ?? []).toEqual([]);
-    expect(second.instructionsText ?? "").toBe("");
+    const instructions = getInstructionFields(second);
+    expect(instructions.loadedInstructions ?? []).toEqual([]);
+    expect(instructions.instructionsText ?? "").toBe("");
   });
 
   it("does not auto-load instructions when reading AGENTS.md directly", async () => {
@@ -152,15 +168,13 @@ describe("read_file auto-loads AGENTS.md instructions", () => {
     const readFile = tools.read_file;
 
     const out = await resolveExecuteResult(
-      readFile.execute!(
-        { path: path.join("sub", "AGENTS.md") },
-        { toolCallId: "t5", messages: [] },
-      ),
+      readFile.execute!({ path: path.join("sub", "AGENTS.md") }, toolOptions("t5")),
     );
 
     expect(out.success).toBe(true);
     if (!out.success) return;
-    expect(out.loadedInstructions ?? []).toEqual([]);
-    expect(out.instructionsText ?? "").toBe("");
+    const instructions = getInstructionFields(out);
+    expect(instructions.loadedInstructions ?? []).toEqual([]);
+    expect(instructions.instructionsText ?? "").toBe("");
   });
 });

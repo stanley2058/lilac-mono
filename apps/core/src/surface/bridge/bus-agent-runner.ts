@@ -1756,6 +1756,8 @@ function formatCallWarning(warning: CallWarning): string {
         : `compatibility ${warning.feature}`;
     case "other":
       return warning.message;
+    case "deprecated":
+      return warning.message;
     default: {
       const _exhaustive: never = warning;
       return String(_exhaustive);

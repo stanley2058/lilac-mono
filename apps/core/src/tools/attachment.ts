@@ -237,8 +237,8 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
       description: "Reads local files and attaches them to the current reply.",
       inputSchema: attachmentAddFilesInputSchema,
       outputSchema: attachmentAddOutputSchema,
-      execute: async (input, { experimental_context }) => {
-        const ctx = requireRequestContext(experimental_context, "attachment.add_files");
+      execute: async (input, { context }) => {
+        const ctx = requireRequestContext(context, "attachment.add_files");
         const startedAt = Date.now();
 
         logger.info("attachment.add_files", {
@@ -350,8 +350,8 @@ export function attachmentTools(params: { bus: LilacBus; cwd: string }) {
         const startedAt = Date.now();
         const downloadDir = resolve(expandTilde(input.downloadDir ?? "~/Downloads"));
         const context =
-          options.experimental_context && typeof options.experimental_context === "object"
-            ? (options.experimental_context as Record<string, unknown>)
+          options.context && typeof options.context === "object"
+            ? (options.context as Record<string, unknown>)
             : undefined;
         const requestId =
           typeof context?.["requestId"] === "string" ? context["requestId"] : undefined;

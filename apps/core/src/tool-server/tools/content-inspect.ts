@@ -1,6 +1,6 @@
 import {
   generateText,
-  stepCountIs,
+  isStepCount,
   type ModelMessage,
   type ToolSet,
   type UserContent,
@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
-import { google, type GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
+import { google, type GoogleLanguageModelOptions } from "@ai-sdk/google";
 import { createLogger, providers, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import type { ServerTool } from "../types";
@@ -23,6 +23,27 @@ type ContentInspectOptions = {
 const logger = createLogger({
   module: "tool-server:content.inspect",
 });
+
+const CONTENT_INSPECT_INSTRUCTIONS = [
+  "You are a forensic content summarizer. Your job is fidelity, not helpfulness.",
+  "",
+  "RULES (non-negotiable):",
+  "1) Do NOT add information not directly present in the provided source.",
+  "2) Separate OBSERVATIONS from SUMMARY. OBSERVATIONS must be literal and verifiable.",
+  "3) If something is unclear, say so. Never guess. Use: UNREADABLE / PARTIALLY READABLE / NOT PRESENT.",
+  "4) For images: transcribe all visible text verbatim (preserve line breaks when possible).",
+  "5) Do not infer app/platform/filetype unless explicitly shown in the source.",
+  "",
+  "OUTPUT FORMAT (use exactly):",
+  "OBSERVATIONS:",
+  "- Modality: (text/image/mixed)",
+  "- Verbatim text: (if any; else NOT PRESENT)",
+  "- Visible UI/scene elements: (only what is clearly visible)",
+  "- Uncertainty notes: (what you cannot read/confirm)",
+  "",
+  "SUMMARY:",
+  "(2-5 sentences; must be fully supported by OBSERVATIONS; no new entities)",
+].join("\n");
 
 export class ContentInspect implements ServerTool {
   id = "content.inspect";
@@ -243,7 +264,7 @@ export async function inspectContent(
   input: z.infer<typeof contentInspectInputSchema>,
   { abortSignal, model }: { abortSignal?: AbortSignal; model?: string },
 ) {
-  let prompt: ModelMessage[];
+  let messages: ModelMessage[];
 
   switch (input.type) {
     case "text": {
@@ -252,7 +273,7 @@ export async function inspectContent(
         content.push({ type: "text", text: input.additionalInstructions });
       }
       content.push({ type: "text", text: input.text });
-      prompt = buildContentInspectPrompt({ role: "user", content });
+      messages = buildContentInspectMessages({ role: "user", content });
       break;
     }
     case "binary": {
@@ -292,13 +313,9 @@ export async function inspectContent(
         content.push({ type: "text", text: input.additionalInstructions });
       }
 
-      if (mime.startsWith("image/")) {
-        content.push({ type: "image", image: data, mediaType: mime });
-      } else {
-        content.push({ type: "file", data, mediaType: mime });
-      }
+      content.push({ type: "file", data, mediaType: mime });
 
-      prompt = buildContentInspectPrompt({
+      messages = buildContentInspectMessages({
         role: "user",
         content,
       });
@@ -311,7 +328,8 @@ export async function inspectContent(
 
   const res = await generateText({
     model: gateway(model ?? V2_CONTENT_INSPECT_DEFAULT_MODEL),
-    prompt,
+    instructions: CONTENT_INSPECT_INSTRUCTIONS,
+    messages,
     maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     abortSignal,
     tools: {
@@ -324,42 +342,15 @@ export async function inspectContent(
           thinkingLevel: "high",
           includeThoughts: true,
         },
-      } satisfies GoogleGenerativeAIProviderOptions,
+      } satisfies GoogleLanguageModelOptions,
     },
-    stopWhen: stepCountIs(10),
+    stopWhen: isStepCount(10),
   });
   return res.text;
 }
 
-function buildContentInspectPrompt(input: UserModelMessage) {
-  const prompts: ModelMessage[] = [
-    {
-      role: "system",
-      content: [
-        "You are a forensic content summarizer. Your job is fidelity, not helpfulness.",
-        "",
-        "RULES (non-negotiable):",
-        "1) Do NOT add information not directly present in the provided source.",
-        "2) Separate OBSERVATIONS from SUMMARY. OBSERVATIONS must be literal and verifiable.",
-        "3) If something is unclear, say so. Never guess. Use: UNREADABLE / PARTIALLY READABLE / NOT PRESENT.",
-        "4) For images: transcribe all visible text verbatim (preserve line breaks when possible).",
-        "5) Do not infer app/platform/filetype unless explicitly shown in the source.",
-        "",
-        "OUTPUT FORMAT (use exactly):",
-        "OBSERVATIONS:",
-        "- Modality: (text/image/mixed)",
-        "- Verbatim text: (if any; else NOT PRESENT)",
-        "- Visible UI/scene elements: (only what is clearly visible)",
-        "- Uncertainty notes: (what you cannot read/confirm)",
-        "",
-        "SUMMARY:",
-        "(2–5 sentences; must be fully supported by OBSERVATIONS; no new entities)",
-      ].join("\n"),
-    },
-  ];
-
-  prompts.push(input);
-  return prompts;
+function buildContentInspectMessages(input: UserModelMessage): ModelMessage[] {
+  return [input];
 }
 
 function isYouTubeURL(url: string) {

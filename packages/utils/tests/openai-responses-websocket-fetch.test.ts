@@ -330,7 +330,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     const partsPromise = withTimeout(
       (async () => {
         const parts: Array<{ type: string }> = [];
-        for await (const part of result.fullStream) {
+        for await (const part of result.stream) {
           parts.push({ type: part.type });
         }
         return parts;

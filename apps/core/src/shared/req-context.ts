@@ -9,9 +9,7 @@ export type RequiredRequestContext = {
 
 export function requireRequestContext(ctx: unknown, label: string): RequiredRequestContext {
   if (!ctx || typeof ctx !== "object") {
-    throw new Error(
-      `${label} requires experimental_context { requestId, sessionId, requestClient }`,
-    );
+    throw new Error(`${label} requires context { requestId, sessionId, requestClient }`);
   }
 
   const o = ctx as Record<string, unknown>;
@@ -24,9 +22,7 @@ export function requireRequestContext(ctx: unknown, label: string): RequiredRequ
     typeof sessionId !== "string" ||
     !isAdapterPlatform(requestClient)
   ) {
-    throw new Error(
-      `${label} requires experimental_context { requestId, sessionId, requestClient }`,
-    );
+    throw new Error(`${label} requires context { requestId, sessionId, requestClient }`);
   }
 
   return { requestId, sessionId, requestClient };

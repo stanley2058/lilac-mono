@@ -39,8 +39,8 @@ export function workflowTool(params: { bus: LilacBus }) {
       ].join("\n"),
       inputSchema: workflowCreateInputSchema,
       outputSchema: workflowCreateOutputSchema,
-      execute: async (input, { experimental_context }) => {
-        const ctx = requireRequestContext(experimental_context, "workflow");
+      execute: async (input, { context }) => {
+        const ctx = requireRequestContext(context, "workflow");
         const startedAt = Date.now();
 
         logger.info("workflow.create", {

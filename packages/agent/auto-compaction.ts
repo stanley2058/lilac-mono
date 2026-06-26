@@ -638,7 +638,7 @@ async function summarizePrompt(options: {
 }): Promise<string> {
   const res = streamText({
     model: options.model,
-    system: options.system,
+    instructions: options.system,
     messages: [{ role: "user", content: options.prompt }],
     providerOptions: options.providerOptions,
     abortSignal: options.abortSignal,

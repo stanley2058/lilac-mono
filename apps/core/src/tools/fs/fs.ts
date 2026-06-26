@@ -1021,11 +1021,11 @@ export function fsTool(
   }
 
   const baseTools = {
-    read_file: tool<ReadFileInput, ReadFileOutput>({
+    read_file: tool({
       description: buildReadFileDescription(),
       inputSchema: readFileSchema,
       outputSchema: readFileOutputSchema,
-      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }, options) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: ReadFileInput, options) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
 
@@ -1304,12 +1304,12 @@ export function fsTool(
       },
     }),
 
-    glob: tool<GlobInput, GlobOutput>({
+    glob: tool({
       description:
         "Match filesystem paths using glob patterns. Recommended mode='default' for paths only; use mode='detailed' only when you need type/size. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
-      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: GlobInput) => {
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -1367,12 +1367,12 @@ export function fsTool(
 
     ...(fsBackend === "fff"
       ? {
-          fuzzy_search: tool<FuzzySearchInput, FuzzySearchOutput>({
+          fuzzy_search: tool({
             description:
               "Fuzzy-ranked file/path search powered by FFF. Use this when you know an approximate filename, symbol-adjacent path, or path fragment and want likely files. Use grep instead when searching file contents or exact text inside files. Supports SSH cwd targets when the remote fff runner can be installed. Denylisted paths require dangerouslyAllow=true.",
             inputSchema: fuzzySearchInputZod,
             outputSchema: fuzzySearchOutputZod,
-            execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
+            execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: FuzzySearchInput) => {
               const cwdTarget = parseSshCwdTarget(opCwd);
 
               logger.info("fs.fuzzySearch", {
@@ -1427,13 +1427,13 @@ export function fsTool(
         }
       : {}),
 
-    grep: tool<GrepInput, GrepOutput>({
+    grep: tool({
       description: hashlineEnabled
         ? "Search file contents. Recommended mode='default'; use mode='hashline' when you want grep output that can be turned into edit anchors. Use mode='detailed' only when you need column/submatches metadata. Very long lines may downgrade hashline output back to default with a warning that tells you to use bash instead. Denylisted paths require dangerouslyAllow=true."
         : "Search file contents. Recommended mode='default'; use mode='detailed' only when you need column/submatches metadata. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: grepInputSchema,
       outputSchema: grepOutputSchema,
-      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: GrepInput) => {
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -1519,13 +1519,13 @@ export function fsTool(
 
   return {
     ...baseTools,
-    edit_file: tool<EditFileInput, EditFileOutput>({
+    edit_file: tool({
       description: hashlineEnabled
         ? "Edit an existing file using hashline anchors from read_file(format='hashline') or grep(mode='hashline'). Batch all edits for the file into one call, then re-read before any further edits. edit_file also checks the file hash from your prior read so unrelated external modifications are rejected. Very long lines may prevent hashline anchoring and require bash instead. Denylisted paths require dangerouslyAllow=true."
         : "Edit a file by find-and-replace. By default, oldText must be unique in the file. Set replaceAll=true to update all matches. Denylisted paths require dangerouslyAllow=true.",
       inputSchema: editFileSchema,
       outputSchema: editFileOutputZod,
-      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }) => {
+      execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: EditFileInput) => {
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
         const isLegacy = isLegacyEditFileInput(input);

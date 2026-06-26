@@ -45,7 +45,7 @@ describe("apply_patch remote denylist", () => {
           toolCallId: "ap-remote-deny-1",
           messages: [],
           abortSignal: undefined,
-          experimental_context: undefined,
+          context: {},
         },
       ),
     );
@@ -72,7 +72,7 @@ describe("apply_patch remote denylist", () => {
           toolCallId: "ap-remote-allow-1",
           messages: [],
           abortSignal: undefined,
-          experimental_context: undefined,
+          context: {},
         },
       ),
     );

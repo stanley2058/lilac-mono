@@ -68,10 +68,7 @@ export function localApplyPatchTool(defaultCwd: string) {
         "Apply a patch in '*** Begin Patch' format (*** Add/Update/Delete File, optional *** Move to:, @@ context blocks). Remote denylisted paths require dangerouslyAllow=true.",
       inputSchema,
       outputSchema,
-      execute: async (
-        input: PatchInput,
-        { experimental_context: context }: { experimental_context?: unknown },
-      ) => {
+      execute: async (input: PatchInput, { context }: { context?: unknown }) => {
         const ctx =
           context && typeof context === "object" ? (context as Partial<ToolContext>) : undefined;
         try {
