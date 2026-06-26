@@ -107,6 +107,28 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("treats old never-summarized backfill threads as eligible immediately", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "old-1",
+        userId: "u1",
+        text: "old architecture discussion",
+        ts: 1,
+      }),
+    ]);
+
+    threadStore.refreshInferredThreads();
+    const eligible = threadStore.listEligibleForSummarization({ now: Date.now() });
+    expect(eligible.map((thread) => thread.thread_id)).toEqual(["discord:channel:c1:old-1"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("forms native Discord threads and follows reply relations for inferred threads", async () => {
     const searchDbPath = await createDbPath();
     const surfaceDbPath = await createDbPath();

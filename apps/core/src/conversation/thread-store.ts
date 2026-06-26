@@ -867,7 +867,10 @@ export class ConversationThreadStore {
           OR t.last_summarized_at < t.updated_at
           OR t.summary_version != ${CONVERSATION_THREAD_SUMMARY_VERSION}
         )`;
-    const clauses = ["t.updated_at <= ?", staleClause];
+    const clauses = [
+      "(CASE WHEN t.last_summarized_at IS NULL THEN t.end_ts ELSE t.updated_at END) <= ?",
+      staleClause,
+    ];
 
     if (input?.threadId) {
       clauses.push("t.thread_id = ?");
