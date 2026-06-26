@@ -66,6 +66,8 @@ cat payload.json | tools <tool> --stdin
 - `attachment.add_files` — Reads local files and attaches them to the current reply.
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
 - `discovery.search` — Primary memory retrieval entry. Search unified agent memory across conversations, prompts, and heartbeat files with grouped origins, time windows, and surrounding context.
+- `conversation.thread.search` — Search summarized Discord conversation threads by meaning/topic; returns compact thread summaries, importance, topics, and ids for follow-up reading.
+- `conversation.thread.read` — Read a conversation thread transcript by `threadId` with offset/limit pagination.
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
 - `surface.activities.recentAgentWrites` — List recent visible writes produced by the agent, with message ids and thin previews.
 - `surface.sessions.list` — List cached sessions.
@@ -105,6 +107,7 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 - Prefer `groupBy=origin` so conversation hits stay grouped by session and file hits stay grouped by source file.
 - Use `surrounding` to expand local context around a match: surrounding messages for conversations, surrounding lines for files.
 - Use `offsetTime` + `lookbackTime` for time-bounded memory retrieval.
+- Use `conversation.thread.search` when you want coherent summarized Discord threads instead of raw message hits, then `conversation.thread.read` to inspect the transcript.
 - Reach for `surface.messages.search` only for legacy compatibility or when you intentionally want the old Discord-only behavior.
 
 ## Skills
