@@ -57,6 +57,52 @@ describe("resolveModelSlot", () => {
     expect(opts?.anthropic?.thinking).toEqual({ type: "enabled" });
   });
 
+  it("inherits model alias reasoning and lets slots override it", () => {
+    const cfg = baseConfig();
+
+    cfg.models.def = {
+      "gpt-5.5": {
+        model: "openai/gpt-5.5",
+        reasoning: "high",
+      },
+    };
+
+    cfg.models.main = {
+      model: "gpt-5.5",
+    };
+
+    expect(resolveModelSlot(cfg, "main").reasoning).toBe("high");
+
+    cfg.models.main = {
+      model: "gpt-5.5",
+      reasoning: "medium",
+    };
+
+    expect(resolveModelSlot(cfg, "main").reasoning).toBe("medium");
+  });
+
+  it("lets direct model refs override alias reasoning", () => {
+    const cfg = baseConfig();
+
+    cfg.models.def = {
+      "gpt-5.5": {
+        model: "openai/gpt-5.5",
+        reasoning: "high",
+      },
+    };
+
+    const resolved = resolveModelRef(
+      cfg,
+      {
+        model: "gpt-5.5",
+        reasoning: "low",
+      },
+      "agent.subagents.profiles.explore.model",
+    );
+
+    expect(resolved.reasoning).toBe("low");
+  });
+
   it("treats top-level scalar options as shorthand and wraps under provider namespace", () => {
     const cfg = baseConfig();
     cfg.models.main = {

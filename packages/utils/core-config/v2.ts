@@ -13,7 +13,6 @@ import {
   pluginsSchema,
   routerSchema,
   statsForNerdsSchema,
-  subagentProfileSchema,
   webExtractConfigSchema,
 } from "./v1";
 
@@ -29,6 +28,37 @@ export const SUPPORTED_CORE_CONFIG_VERSIONS = [
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
+
+const modelReasoningEffortSchema = z.enum([
+  "provider-default",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+
+const subagentProfileSchemaV2 = z
+  .object({
+    modelSlot: z.enum(["main", "fast"]).default("main"),
+    /** Optional direct model ref (provider/model or alias from models.def). */
+    model: z.string().min(1).optional(),
+    /** Optional portable AI SDK reasoning effort. */
+    reasoning: modelReasoningEffortSchema.optional(),
+    /** Optional providerOptions override merged onto models.def.<alias>.options. */
+    options: jsonObjectSchema.optional(),
+    promptOverlay: z.string().min(1).optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.options && !input.model) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["options"],
+        message: "options requires model to be set",
+      });
+    }
+  });
 
 const modelCapabilityOverrideSchemaV2 = z
   .object({
@@ -113,9 +143,9 @@ const subagentsSchemaV2 = z
       .default(20 * 60 * 1000),
     profiles: z
       .object({
-        explore: subagentProfileSchema.default({ modelSlot: "main" }),
-        general: subagentProfileSchema.default({ modelSlot: "main" }),
-        self: subagentProfileSchema.default({ modelSlot: "main" }),
+        explore: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+        general: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+        self: subagentProfileSchemaV2.default({ modelSlot: "main" }),
       })
       .default({
         explore: { modelSlot: "main" },
@@ -232,6 +262,8 @@ const modelsSchemaV2 = z
         z.object({
           /** Canonical model spec in provider/model format. */
           model: z.string().min(1),
+          /** Portable AI SDK reasoning effort. */
+          reasoning: modelReasoningEffortSchema.optional(),
           /** AI SDK providerOptions-style object (nested JSON allowed). */
           options: jsonObjectSchema.optional(),
         }),
@@ -242,6 +274,8 @@ const modelsSchemaV2 = z
       .object({
         /** Model spec in provider/model format OR an alias from models.def. */
         model: z.string().min(1).default("openrouter/openai/gpt-4o"),
+        /** Portable AI SDK reasoning effort. */
+        reasoning: modelReasoningEffortSchema.optional(),
         /** Provider-specific model options. */
         options: jsonObjectSchema.optional(),
       })
@@ -253,6 +287,7 @@ const modelsSchemaV2 = z
     fast: z
       .object({
         model: z.string().min(1).default("openrouter/openai/gpt-4o-mini"),
+        reasoning: modelReasoningEffortSchema.optional(),
         options: jsonObjectSchema.optional(),
       })
       .default({

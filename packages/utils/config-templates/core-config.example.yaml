@@ -173,6 +173,8 @@ agent:
         modelSlot: main
         # Optional direct model override. Can be provider/model or an alias from models.def.
         # model: "openrouter/openai/gpt-4o"
+        # Optional portable reasoning override for this subagent profile.
+        # reasoning: low
         # options:
         #   temperature: 0.0
         # Optional extra prompt fragment appended in explore mode.
@@ -182,6 +184,7 @@ agent:
         modelSlot: main
         # General subagent runs with full primary-equivalent tool access.
         # model: "openrouter/openai/gpt-4o"
+        # reasoning: medium
         # options:
         #   temperature: 0.1
         # Optional extra prompt fragment appended in general mode.
@@ -191,6 +194,7 @@ agent:
         modelSlot: main
         # Self subagent is an isolated fork of the primary agent prompt/tooling.
         # model: "openrouter/openai/gpt-4o"
+        # reasoning: high
         # options:
         #   temperature: 0.2
         # Optional extra prompt fragment appended in self mode.
@@ -205,8 +209,19 @@ models:
   # Optional preset registry to make model selection ergonomic.
   def: {}
   # def:
+  #   gpt-5.5:
+  #     model: openai/gpt-5.5
+  #     # Portable AI SDK reasoning effort:
+  #     # provider-default | none | minimal | low | medium | high | xhigh
+  #     reasoning: high
+  #     # Provider-specific options are still supported and take precedence for
+  #     # exact provider-native reasoning controls.
+  #     options:
+  #       reasoningEffort: high
+  # def:
   #   opus:
   #     model: vercel/anthropic/claude-opus-4.8
+  #     reasoning: high
   #     options:
   #       anthropic:
   #         thinking:
@@ -233,6 +248,8 @@ models:
   main:
     # Can be either a full spec (provider/model) or an alias from models.def.
     model: "openrouter/openai/gpt-4o"
+    # Optional portable AI SDK reasoning effort.
+    # reasoning: provider-default
     # For non-official OpenAI-compatible upstreams, use:
     # model: "openai-compatible/your-model-id"
     # options:
@@ -251,6 +268,8 @@ models:
   # Fast/cheap model for lightweight features (router gate, etc.)
   fast:
     model: "openrouter/openai/gpt-4o-mini"
+    # Optional: disable reasoning for lightweight gate/router work.
+    # reasoning: none
     # options:
     #   temperature: 0.0
 

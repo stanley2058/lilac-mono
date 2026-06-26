@@ -9,6 +9,7 @@ describe("core config versioning", () => {
     const parsed = await parseCoreConfig({});
     expect(parsed.configVersion).toBe(1);
     expect(parsed.models.main.model).toBe("openrouter/openai/gpt-4o");
+    expect(parsed.models.main.reasoning).toBeUndefined();
     expect(parsed.agent.systemPrompt).toBe("");
   });
 
@@ -57,6 +58,58 @@ describe("core config versioning", () => {
     });
     expect(parsed.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
     expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
+    expect(parsed.models.main.reasoning).toBeUndefined();
+  });
+
+  it("parses v2 portable model reasoning fields", async () => {
+    const parsed = await parseCoreConfig({
+      configVersion: 2,
+      models: {
+        def: {
+          "gpt-5.5": {
+            model: "openai/gpt-5.5",
+            reasoning: "high",
+          },
+        },
+        main: {
+          model: "gpt-5.5",
+          reasoning: "medium",
+        },
+        fast: {
+          model: "openai/gpt-5.5-mini",
+          reasoning: "none",
+        },
+      },
+      agent: {
+        subagents: {
+          profiles: {
+            explore: {
+              modelSlot: "fast",
+              reasoning: "minimal",
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.models.def["gpt-5.5"]?.reasoning).toBe("high");
+    expect(parsed.models.main.reasoning).toBe("medium");
+    expect(parsed.models.fast.reasoning).toBe("none");
+    expect(parsed.agent.subagents.profiles.explore.reasoning).toBe("minimal");
+  });
+
+  it("rejects invalid v2 model reasoning values", async () => {
+    await expect(
+      parseCoreConfig({
+        configVersion: 2,
+        models: {
+          main: {
+            model: "openai/gpt-5.5",
+            reasoning: "extreme",
+          },
+        },
+      }),
+    ).rejects.toThrow();
   });
 
   it("uses v2 subagent timeout defaults for partial v2 subagent configs", async () => {

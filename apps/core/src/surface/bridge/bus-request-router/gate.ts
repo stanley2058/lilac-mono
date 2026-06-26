@@ -156,6 +156,7 @@ export async function shouldForwardByGate(params: {
       messages: prompt.messages,
       abortSignal: abort.signal,
       maxOutputTokens: 1024,
+      reasoning: resolved.reasoning,
       providerOptions: resolved.providerOptions,
     });
 

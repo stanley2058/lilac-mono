@@ -3343,11 +3343,20 @@ export async function startBusAgentRunner(params: {
               cfg,
               {
                 model: subagentProfileConfig.model,
+                reasoning: subagentProfileConfig.reasoning,
                 options: subagentProfileConfig.options,
               },
               `agent.subagents.profiles.${runProfile}.model`,
             )
-          : resolveModelSlot(cfg, subagentProfileConfig?.modelSlot ?? "main");
+          : (() => {
+              const slotResolved = resolveModelSlot(
+                cfg,
+                subagentProfileConfig?.modelSlot ?? "main",
+              );
+              return subagentProfileConfig?.reasoning
+                ? { ...slotResolved, reasoning: subagentProfileConfig.reasoning }
+                : slotResolved;
+            })();
       resolvedModelLabel = resolved.modelId;
       try {
         modelCapabilityInfo = await modelCapability.resolve(resolved.spec);
@@ -3616,6 +3625,7 @@ export async function startBusAgentRunner(params: {
         messages: next.recovery?.checkpointMessages ?? seededSessionMessages,
         tools,
         providerOptions: providerOptionsForAgent,
+        reasoning: resolved.reasoning,
         turnErrorHandler: transientRetryController.handler,
         experimentalDownload: experimentalDownloadForAgent,
         debug: {
@@ -3788,6 +3798,7 @@ export async function startBusAgentRunner(params: {
           },
           system: agent.state.system,
           providerOptions: agent.state.providerOptions,
+          reasoning: agent.state.reasoning,
           tools: {
             names: Object.keys(agent.state.tools ?? {}),
           },

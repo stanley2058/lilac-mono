@@ -23,6 +23,7 @@ import {
   type ToolSet,
 } from "ai";
 import {
+  type ModelReasoningEffort,
   normalizeReplayMessages,
   normalizeAssistantToolCallInputMessage,
   normalizeToolCallInputValue,
@@ -229,6 +230,8 @@ export interface AiSdkPiAgentState<TOOLS extends ToolSet> {
   error?: string;
   /** Provider-specific options. */
   providerOptions?: { [x: string]: JSONObject };
+  /** Portable AI SDK reasoning effort. */
+  reasoning?: ModelReasoningEffort;
 
   /** Debug-only state (optional, can be large). */
   debug?: {
@@ -298,6 +301,8 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   providerOptions?: {
     [x: string]: JSONObject;
   };
+  /** Optional portable AI SDK reasoning effort. */
+  reasoning?: ModelReasoningEffort;
 
   /** Optional custom URL download hook forwarded to AI SDK. */
   experimentalDownload?: DownloadFunction;
@@ -608,6 +613,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       tools: (options.tools ?? ({} as TOOLS)) as TOOLS,
       messages: normalizeReplayMessages(options.messages ?? []),
       providerOptions: options.providerOptions,
+      reasoning: options.reasoning,
       isStreaming: false,
       streamMessage: null,
       pendingToolCalls: new Set<string>(),
@@ -636,12 +642,14 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     model: LanguageModel,
     providerOptions?: { [x: string]: JSONObject },
     modelSpecifier?: string,
+    reasoning?: ModelReasoningEffort,
   ) {
     this.state.model = model;
     this.state.modelSpecifier = modelSpecifier;
 
     // (When not provided) Reset provider options in case incompatible.
     this.state.providerOptions = providerOptions;
+    this.state.reasoning = reasoning;
   }
 
   /** Replace the toolset used for subsequent turns. */
@@ -1073,6 +1081,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       instructions: this.state.system,
       messages: messagesForModel,
       tools: toolsForModel,
+      reasoning: this.state.reasoning,
       providerOptions: this.state.providerOptions,
       experimental_download: this.experimentalDownload,
       abortSignal,

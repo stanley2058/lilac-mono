@@ -50,6 +50,7 @@ export type {
   JSONValue,
   JSONArray,
   JSONObject,
+  ModelReasoningEffort,
   UniversalCoreConfig,
 } from "./core-config/types";
 

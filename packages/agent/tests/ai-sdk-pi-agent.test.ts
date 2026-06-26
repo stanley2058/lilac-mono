@@ -13,15 +13,19 @@ describe("AiSdkPiAgent model spec tracking", () => {
       system: "test",
       model: fakeModel(),
       modelSpecifier: "anthropic/claude-sonnet-4-5",
+      reasoning: "high",
     });
 
     expect(agent.state.modelSpecifier).toBe("anthropic/claude-sonnet-4-5");
+    expect(agent.state.reasoning).toBe("high");
 
-    agent.setModel(fakeModel(), undefined, "openai/gpt-4.1-mini");
+    agent.setModel(fakeModel(), undefined, "openai/gpt-4.1-mini", "low");
     expect(agent.state.modelSpecifier).toBe("openai/gpt-4.1-mini");
+    expect(agent.state.reasoning).toBe("low");
 
     agent.setModel(fakeModel());
     expect(agent.state.modelSpecifier).toBeUndefined();
+    expect(agent.state.reasoning).toBeUndefined();
   });
 
   it("normalizes stringified assistant tool-call inputs from constructor messages", () => {

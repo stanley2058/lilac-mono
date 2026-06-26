@@ -21,9 +21,19 @@ export type DiscordSessionAliasConfig =
 export type SubagentProfileConfig = {
   modelSlot: "main" | "fast";
   model?: string;
+  reasoning?: ModelReasoningEffort;
   options?: JSONObject;
   promptOverlay?: string;
 };
+
+export type ModelReasoningEffort =
+  | "provider-default"
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
 
 export type ModelCapabilityOverride = {
   inherit?: string;
@@ -160,15 +170,18 @@ export type UniversalCoreConfig = {
       string,
       {
         model: string;
+        reasoning?: ModelReasoningEffort;
         options?: JSONObject;
       }
     >;
     main: {
       model: string;
+      reasoning?: ModelReasoningEffort;
       options?: JSONObject;
     };
     fast: {
       model: string;
+      reasoning?: ModelReasoningEffort;
       options?: JSONObject;
     };
     capability: {

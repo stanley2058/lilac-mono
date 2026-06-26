@@ -2,7 +2,7 @@ import type { LanguageModel } from "ai";
 
 import { providers, type Providers } from "./model-provider";
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
-import type { CoreConfig, JSONObject, JSONValue } from "./core-config";
+import type { CoreConfig, JSONObject, JSONValue, ModelReasoningEffort } from "./core-config";
 import { parseModelSpecifier } from "./model-capability";
 
 export type ModelSlot = "main" | "fast";
@@ -10,6 +10,8 @@ export type ModelSlot = "main" | "fast";
 export type ConfiguredModelRef = {
   /** Model ref in provider/model format or alias from models.def. */
   model: string;
+  /** Optional portable AI SDK reasoning effort. */
+  reasoning?: ModelReasoningEffort;
   /** Optional providerOptions override. */
   options?: JSONObject;
 };
@@ -26,6 +28,8 @@ export type ResolvedModelSlot = {
   model: LanguageModel;
   /** AI SDK providerOptions; may include multiple provider namespaces. */
   providerOptions?: { [x: string]: JSONObject };
+  /** Portable AI SDK reasoning effort. */
+  reasoning?: ModelReasoningEffort;
   /** Optional Responses API commentary-phase behavior toggle for OpenAI/Codex providers. */
   responseCommentary?: boolean;
   /** Opt-in Anthropic cache-control injection for system prompt + latest user message. */
@@ -229,6 +233,7 @@ function resolveModelSpecFromRaw(
   spec: string;
   alias?: string;
   presetOptions?: JSONObject;
+  presetReasoning?: ModelReasoningEffort;
 } {
   if (raw.includes("/")) {
     return { spec: raw };
@@ -255,6 +260,7 @@ function resolveModelSpecFromRaw(
     spec: preset.model,
     alias,
     presetOptions: preset.options,
+    presetReasoning: preset.reasoning,
   };
 }
 
@@ -265,7 +271,9 @@ function resolveSlotSpec(
   spec: string;
   alias?: string;
   presetOptions?: JSONObject;
+  presetReasoning?: ModelReasoningEffort;
   slotOptions?: JSONObject;
+  slotReasoning?: ModelReasoningEffort;
 } {
   const slotCfg = cfg.models[slot];
   const base = resolveModelSpecFromRaw(cfg, slotCfg.model, `models.${slot}.model`);
@@ -274,7 +282,9 @@ function resolveSlotSpec(
     spec: base.spec,
     alias: base.alias,
     presetOptions: base.presetOptions,
+    presetReasoning: base.presetReasoning,
     slotOptions: slotCfg.options,
+    slotReasoning: slotCfg.reasoning,
   };
 }
 
@@ -283,6 +293,7 @@ function resolveModel(params: {
   spec: string;
   alias?: string;
   options?: JSONObject;
+  reasoning?: ModelReasoningEffort;
 }): ResolvedModelRef {
   const parsed = parseModelSpecifier(params.spec);
   const provider = parsed.provider;
@@ -312,6 +323,7 @@ function resolveModel(params: {
     modelId,
     model: p(modelId),
     providerOptions,
+    reasoning: params.reasoning,
     responseCommentary,
     anthropicPromptCache,
   };
@@ -324,22 +336,27 @@ export function resolveModelRef(
 ): ResolvedModelRef {
   const base = resolveModelSpecFromRaw(cfg, ref.model, source);
   const mergedOptions = deepMergeObjects(base.presetOptions, ref.options);
+  const reasoning = ref.reasoning ?? base.presetReasoning;
   return resolveModel({
     source,
     spec: base.spec,
     alias: base.alias,
     options: mergedOptions,
+    reasoning,
   });
 }
 
 export function resolveModelSlot(cfg: CoreConfig, slot: ModelSlot): ResolvedModelSlot {
-  const { spec, alias, presetOptions, slotOptions } = resolveSlotSpec(cfg, slot);
+  const { spec, alias, presetOptions, presetReasoning, slotOptions, slotReasoning } =
+    resolveSlotSpec(cfg, slot);
   const mergedOptions = deepMergeObjects(presetOptions, slotOptions);
+  const reasoning = slotReasoning ?? presetReasoning;
   const resolved = resolveModel({
     source: `models.${slot}.model`,
     spec,
     alias,
     options: mergedOptions,
+    reasoning,
   });
 
   return {
