@@ -3,6 +3,7 @@ import { ToolPluginSkipError, type ServerTool } from "@stanley2058/lilac-plugin-
 import {
   Attachment,
   Codex,
+  ConversationThread,
   ContentInspect,
   Discovery,
   Generate,
@@ -47,6 +48,22 @@ export function createBuiltinDiscoveryPlugin(): CoreToolPlugin {
       }
       return {
         level2: [new Discovery({ discovery: runtime.discovery })],
+      };
+    },
+  };
+}
+
+export function createBuiltinConversationThreadPlugin(): CoreToolPlugin {
+  return {
+    meta: {
+      id: "conversation.thread",
+    },
+    create({ runtime }) {
+      if (!runtime.conversationThreads) {
+        throw new ToolPluginSkipError("conversation.thread requires conversation thread service");
+      }
+      return {
+        level2: [new ConversationThread({ service: runtime.conversationThreads })],
       };
     },
   };

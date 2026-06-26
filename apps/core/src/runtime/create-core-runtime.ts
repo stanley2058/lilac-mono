@@ -5,6 +5,7 @@ import {
   env,
   getCoreConfig,
   readCoreConfigVersion,
+  resolveDiscordDbPath,
   resolveCoreConfigPath,
   resolveCustomCommandsDir,
   resolveDiscoveryDbPath,
@@ -25,6 +26,16 @@ import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
 import { DiscordSearchService, DiscordSearchStore } from "../surface/store/discord-search-store";
 import { DiscoveryService } from "../discovery/discovery-service";
+import {
+  ConversationThreadService,
+  type ConversationThreadToolService,
+} from "../conversation/thread-service";
+import { ConversationThreadStore } from "../conversation/thread-store";
+import { createConversationThreadEmbeddingAdapter } from "../conversation/thread-embedding";
+import {
+  startConversationThreadSummarizationWorker,
+  startConversationThreadWorker,
+} from "../conversation/thread-worker";
 
 import { readGithubAppSecret } from "../github/github-app";
 import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
@@ -171,6 +182,8 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let discordSearchStore: DiscordSearchStore | null = null;
   let discordSearchService: DiscordSearchService | null = null;
   let discoveryService: DiscoveryService | null = null;
+  let conversationThreadStore: ConversationThreadStore | null = null;
+  let conversationThreadService: ConversationThreadService | null = null;
 
   let started = false;
 
@@ -183,6 +196,12 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let stopGithubBusToAdapter: Awaited<ReturnType<typeof bridgeBusToAdapter>> | null = null;
   let stopAgentRunner: Awaited<ReturnType<typeof startBusAgentRunner>> | null = null;
   let stopHeartbeat: Awaited<ReturnType<typeof startHeartbeatService>> | null = null;
+  let stopConversationThreadWorker: Awaited<
+    ReturnType<typeof startConversationThreadWorker>
+  > | null = null;
+  let stopConversationThreadSummarizationWorker: Awaited<
+    ReturnType<typeof startConversationThreadSummarizationWorker>
+  > | null = null;
 
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
@@ -485,11 +504,35 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         path.join(env.dataDir, "graceful-restart.db"),
       );
 
+      const discordSearchDbPath = resolveDiscordSearchDbPath();
+      const discordSurfaceDbPath = resolveDiscordDbPath(startupConfig);
       transcriptStore = new SqliteTranscriptStore(resolveTranscriptDbPath());
-      discordSearchStore = new DiscordSearchStore(resolveDiscordSearchDbPath());
+      discordSearchStore = new DiscordSearchStore(discordSearchDbPath);
+      conversationThreadStore = new ConversationThreadStore(discordSearchDbPath, {
+        surfaceDbPath: discordSurfaceDbPath,
+      });
+      const conversationThreadEmbeddingAdapter = (() => {
+        try {
+          return createConversationThreadEmbeddingAdapter(startupConfig) ?? undefined;
+        } catch (e) {
+          logger.warn("conversation thread embeddings disabled", {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          return undefined;
+        }
+      })();
       discordSearchService = new DiscordSearchService({
         adapter,
         store: discordSearchStore,
+      });
+      conversationThreadService = new ConversationThreadService({
+        store: conversationThreadStore,
+        getConfig: () => getCoreConfig(),
+        embeddingAdapter: conversationThreadEmbeddingAdapter,
+      });
+      stopConversationThreadSummarizationWorker = startConversationThreadSummarizationWorker({
+        searchDbPath: discordSearchDbPath,
+        surfaceDbPath: discordSurfaceDbPath,
       });
       discoveryService = new DiscoveryService({
         dbPath: resolveDiscoveryDbPath(),
@@ -502,10 +545,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopDiscordSearchIndexer = await startDiscordSearchIndexer({
         adapter,
         search: discordSearchService,
+        conversationThreads: conversationThreadService ?? undefined,
       });
 
       logger.info("Discord search indexer started", {
-        dbPath: resolveDiscordSearchDbPath(),
+        dbPath: discordSearchDbPath,
       });
 
       // Subscribe to adapter events before connecting, so we don't miss early messages.
@@ -568,6 +612,21 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         subscriptionId: subId(subscriptionPrefix, "tool-request-cache"),
       });
 
+      const conversationThreadToolService: ConversationThreadToolService | undefined =
+        conversationThreadService
+          ? (() => {
+              const service = conversationThreadService;
+              return {
+                search: (input) => service.search(input),
+                read: (input) => service.read(input),
+                runSummarization: (input) =>
+                  input?.dryRun === true || !stopConversationThreadSummarizationWorker
+                    ? service.runSummarization(input)
+                    : stopConversationThreadSummarizationWorker.runSummarization(input),
+              };
+            })()
+          : undefined;
+
       pluginManager = createCoreToolPluginManager({
         runtime: {
           bus,
@@ -575,6 +634,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           getConfig: () => getCoreConfig(),
           workflowStore,
           discovery: discoveryService ?? undefined,
+          conversationThreads: conversationThreadToolService,
           discordSearch: discordSearchService ?? undefined,
           transcriptStore: transcriptStore ?? undefined,
         },
@@ -699,6 +759,14 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         subscriptionId: subId(subscriptionPrefix, "heartbeat"),
       });
 
+      if (conversationThreadService) {
+        stopConversationThreadWorker = startConversationThreadWorker({
+          runner: stopConversationThreadSummarizationWorker ?? conversationThreadService,
+          getConfig: () => getCoreConfig(),
+        });
+        logger.info("Conversation thread worker started");
+      }
+
       runtimeFullyStarted = true;
 
       logger.info(
@@ -756,6 +824,18 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       await safe("graceful.heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
       stopHeartbeat = null;
 
+      await safe(
+        "graceful.conversationThreadWorker.stop",
+        () => stopConversationThreadWorker?.stop() ?? Promise.resolve(),
+      );
+      stopConversationThreadWorker = null;
+
+      await safe(
+        "graceful.conversationThreadSummarizationWorker.stop",
+        () => stopConversationThreadSummarizationWorker?.stop() ?? Promise.resolve(),
+      );
+      stopConversationThreadSummarizationWorker = null;
+
       await safe("graceful.agentRunner.beginDrain", () =>
         agentRunner.beginDrain({ deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS }),
       );
@@ -806,6 +886,14 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
     // Stop in reverse order (best-effort).
     await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
+    await safe(
+      "conversationThreadWorker.stop",
+      () => stopConversationThreadWorker?.stop() ?? Promise.resolve(),
+    );
+    await safe(
+      "conversationThreadSummarizationWorker.stop",
+      () => stopConversationThreadSummarizationWorker?.stop() ?? Promise.resolve(),
+    );
     await safe("heartbeat.stop", () => stopHeartbeat?.stop() ?? Promise.resolve());
     await safe(
       "discordSearchIndexer.stop",
@@ -840,6 +928,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       discordSearchStore?.close();
       discordSearchStore = null;
       discordSearchService = null;
+    });
+    await safe("conversationThreadStore.close", async () => {
+      conversationThreadStore?.close();
+      conversationThreadStore = null;
+      conversationThreadService = null;
     });
     await safe("gracefulRestartStore.close", async () => {
       gracefulRestartStore?.close();

@@ -6,6 +6,7 @@ import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { createCoreToolPluginManager } from "../../src/plugins";
+import type { ConversationThreadService } from "../../src/conversation/thread-service";
 import type { DiscoveryService } from "../../src/discovery/discovery-service";
 import type { SurfaceAdapter } from "../../src/surface/adapter";
 
@@ -61,6 +62,9 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "codex.login",
   "codex.logout",
   "codex.status",
+  "conversation.thread.read",
+  "conversation.thread.runSummarization",
+  "conversation.thread.search",
   "content.inspect",
   "discovery.search",
   "fetch",
@@ -155,6 +159,7 @@ describe("core tool plugin manager", () => {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
         discovery: {} as DiscoveryService,
+        conversationThreads: {} as ConversationThreadService,
         config: cfg,
       },
       dataDir,
@@ -216,6 +221,7 @@ describe("core tool plugin manager", () => {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
         discovery: {} as DiscoveryService,
+        conversationThreads: {} as ConversationThreadService,
         config: cfg,
       },
       dataDir,
@@ -470,6 +476,7 @@ describe("core tool plugin manager", () => {
         bus: {} as LilacBus,
         adapter: {} as SurfaceAdapter,
         discovery: {} as DiscoveryService,
+        conversationThreads: {} as ConversationThreadService,
         config: cfg,
       },
       dataDir,

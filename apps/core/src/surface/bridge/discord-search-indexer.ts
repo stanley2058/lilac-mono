@@ -6,6 +6,9 @@ import { DiscordSearchService } from "../store/discord-search-store";
 export async function startDiscordSearchIndexer(params: {
   adapter: SurfaceAdapter;
   search: DiscordSearchService;
+  conversationThreads?: {
+    refreshThreads(): { channels: number; threads: number; messages: number };
+  };
 }) {
   const logger = createLogger({
     module: "surface:discord-search-indexer",
@@ -14,13 +17,24 @@ export async function startDiscordSearchIndexer(params: {
   const handleEvent = async (evt: AdapterEvent): Promise<void> => {
     if (evt.platform !== "discord") return;
 
+    const refreshThreads = () => {
+      if (!params.conversationThreads) return;
+      try {
+        params.conversationThreads.refreshThreads();
+      } catch (e) {
+        logger.error("conversation thread refresh after discord indexing failed", e);
+      }
+    };
+
     switch (evt.type) {
       case "adapter.message.created": {
         await params.search.onMessageCreated(evt.message);
+        refreshThreads();
         return;
       }
       case "adapter.message.updated": {
         params.search.onMessageUpdated(evt.message);
+        refreshThreads();
         return;
       }
       case "adapter.message.deleted": {
@@ -29,6 +43,7 @@ export async function startDiscordSearchIndexer(params: {
           channelId: evt.session.channelId,
           messageId: evt.messageRef.messageId,
         });
+        refreshThreads();
         return;
       }
       case "adapter.reaction.added":

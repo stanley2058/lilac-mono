@@ -3,6 +3,7 @@ export * from "./content-inspect";
 export * from "./attachment";
 export * from "./workflow";
 export * from "./discovery";
+export * from "./conversation-thread";
 export * from "./surface";
 export * from "./skills";
 export * from "./codex";
