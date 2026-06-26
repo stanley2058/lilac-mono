@@ -811,6 +811,30 @@ function buildCustomCommandToolCallId(requestId: string, name: string): string {
   });
 }
 
+function formatCompactCount(count: number | undefined): string {
+  if (typeof count !== "number" || !Number.isFinite(count)) return "?";
+  return String(Math.max(0, Math.trunc(count)));
+}
+
+export function formatAutoCompactionToolDisplay(
+  input:
+    | { phase: "start"; messageCountBefore: number }
+    | {
+        phase: "end";
+        ok: boolean;
+        messageCountBefore: number;
+        messageCountAfter?: number;
+      },
+): string {
+  if (input.phase === "start") {
+    return `compact context (${formatCompactCount(input.messageCountBefore)} msgs)`;
+  }
+
+  if (!input.ok) return "compact context failed";
+
+  return `compact context (${formatCompactCount(input.messageCountBefore)}->${formatCompactCount(input.messageCountAfter)} msgs)`;
+}
+
 function buildCustomCommandMessages(params: {
   toolCallId: string;
   name: string;
@@ -3669,6 +3693,38 @@ export async function startBusAgentRunner(params: {
         );
       };
 
+      let autoCompactionSeq = 0;
+      let activeAutoCompactionToolCallId: string | null = null;
+      let autoCompactionPublishChain = Promise.resolve();
+      const publishAutoCompactionToolStatus = (update: {
+        toolCallId: string;
+        status: "start" | "end";
+        display: string;
+        ok?: boolean;
+        error?: string;
+      }) => {
+        const publishOne = async () => {
+          try {
+            await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
+              headers,
+            });
+          } catch (e: unknown) {
+            logger.error(
+              "failed to publish auto-compaction tool status",
+              {
+                requestId: headers.request_id,
+                sessionId: headers.session_id,
+                toolCallId: update.toolCallId,
+                status: update.status,
+              },
+              e,
+            );
+          }
+        };
+
+        autoCompactionPublishChain = autoCompactionPublishChain.then(publishOne, publishOne);
+      };
+
       unsubscribeCompaction = await attachAutoCompaction(agent, {
         model: resolved.spec,
         modelCapability,
@@ -3706,6 +3762,21 @@ export async function startBusAgentRunner(params: {
           });
         },
         onCompactionStart: ({ spec, reason, messageCountBefore, estimatedInputTokens, budget }) => {
+          autoCompactionSeq += 1;
+          activeAutoCompactionToolCallId = buildSyntheticToolCallId({
+            prefix: "auto_compaction",
+            seed: `${headers.request_id}:${autoCompactionSeq}`,
+          });
+
+          publishAutoCompactionToolStatus({
+            toolCallId: activeAutoCompactionToolCallId,
+            status: "start",
+            display: formatAutoCompactionToolDisplay({
+              phase: "start",
+              messageCountBefore,
+            }),
+          });
+
           logger.info("auto-compaction start", {
             requestId: headers.request_id,
             sessionId: headers.session_id,
@@ -3730,6 +3801,27 @@ export async function startBusAgentRunner(params: {
           status,
           error,
         }) => {
+          const toolCallId =
+            activeAutoCompactionToolCallId ??
+            buildSyntheticToolCallId({
+              prefix: "auto_compaction",
+              seed: `${headers.request_id}:orphan-end`,
+            });
+          activeAutoCompactionToolCallId = null;
+
+          publishAutoCompactionToolStatus({
+            toolCallId,
+            status: "end",
+            display: formatAutoCompactionToolDisplay({
+              phase: "end",
+              ok: status === "completed",
+              messageCountBefore,
+              messageCountAfter,
+            }),
+            ok: status === "completed",
+            error: status === "completed" ? undefined : "auto compaction failed",
+          });
+
           const payload = {
             requestId: headers.request_id,
             sessionId: headers.session_id,

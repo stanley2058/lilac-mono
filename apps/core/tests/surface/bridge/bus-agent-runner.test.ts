@@ -29,6 +29,7 @@ import {
   createAssistantTextPartBoundaryState,
   createDeferredSubagentManager,
   createTransientModelRetryController,
+  formatAutoCompactionToolDisplay,
   formatUnknownErrorForDisplay,
   buildHeartbeatOverlayForRequest,
   buildPersistedHeartbeatMessages,
@@ -256,6 +257,36 @@ async function waitFor(predicate: () => boolean, timeoutMs = 100): Promise<void>
     await Bun.sleep(1);
   }
 }
+
+describe("formatAutoCompactionToolDisplay", () => {
+  it("keeps start and successful end displays compact", () => {
+    expect(
+      formatAutoCompactionToolDisplay({
+        phase: "start",
+        messageCountBefore: 42,
+      }),
+    ).toBe("compact context (42 msgs)");
+
+    expect(
+      formatAutoCompactionToolDisplay({
+        phase: "end",
+        ok: true,
+        messageCountBefore: 42,
+        messageCountAfter: 9,
+      }),
+    ).toBe("compact context (42->9 msgs)");
+  });
+
+  it("keeps failed end display compact", () => {
+    expect(
+      formatAutoCompactionToolDisplay({
+        phase: "end",
+        ok: false,
+        messageCountBefore: 42,
+      }),
+    ).toBe("compact context failed");
+  });
+});
 
 describe("transient model retry", () => {
   const retry = {
