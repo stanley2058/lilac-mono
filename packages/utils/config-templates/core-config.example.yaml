@@ -18,6 +18,7 @@ plugins:
   disabled: []
   config: {}
 
+# WARN: This is an experimental feature, use at your own risk. Config, DB schema, and behavior may change.
 conversation:
   thread:
     summarization:
