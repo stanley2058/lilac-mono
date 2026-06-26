@@ -168,6 +168,55 @@ describe("subagent_delegate tool", () => {
     ]);
   });
 
+  it("ignores legacy raw sessionId input and creates an anonymous child session", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const launches: Array<{ childRequestId: string; childSessionId: string }> = [];
+
+    const tools = subagentTools({
+      bus,
+      defaultTimeoutMs: 2_000,
+      maxTimeoutMs: 4_000,
+      maxDepth: 1,
+      onDeferredDelegate: async (registration) => {
+        launches.push({
+          childRequestId: registration.childRequestId,
+          childSessionId: registration.childSessionId,
+        });
+      },
+    });
+
+    const inputWithLegacySessionId = {
+      profile: "explore" as const,
+      task: "Map auth flow",
+      mode: "deferred" as const,
+      sessionId: "sub:dummy",
+    };
+
+    const res = await resolveExecuteResult(
+      tools.subagent_delegate.execute!(inputWithLegacySessionId, {
+        toolCallId: "tool-legacy-session-id",
+        messages: [],
+        context: {
+          requestId: "r:legacy-session-id",
+          sessionId: "s:legacy-session-id",
+          requestClient: "discord",
+          subagentDepth: 0,
+        },
+      }),
+    );
+
+    expect(res.status).toBe("accepted");
+    expect(res.childSessionId).toBe(`sub:s:legacy-session-id:${res.childRequestId}`);
+    expect(launches).toEqual([
+      {
+        childRequestId: res.childRequestId,
+        childSessionId: res.childSessionId,
+      },
+    ]);
+  });
+
   it("requires blockingReason for sync mode", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -437,7 +486,7 @@ describe("subagent_delegate tool", () => {
     expect(seenProfiles).toEqual(["general", "self"]);
   });
 
-  it("reuses provided child session id for continuation", async () => {
+  it("derives child session id from sessionName for continuation", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
 
@@ -448,7 +497,8 @@ describe("subagent_delegate tool", () => {
       maxDepth: 1,
     });
 
-    const continuedSessionId = "sub:s:parent:session-1";
+    const sessionName = "session-1";
+    const expectedSessionId = `sub:s:parent:named:${sessionName}`;
     let seenChildSessionId: string | null = null;
 
     await bus.subscribeTopic(
@@ -519,7 +569,7 @@ describe("subagent_delegate tool", () => {
           task: "Continue prior work",
           mode: "sync",
           blockingReason: "need child result immediately",
-          sessionId: continuedSessionId,
+          sessionName,
         },
         {
           toolCallId: "tool-continued-session",
@@ -535,11 +585,11 @@ describe("subagent_delegate tool", () => {
     );
 
     expect(res.status).toBe("resolved");
-    expect(res.childSessionId).toBe(continuedSessionId);
-    expect(seenChildSessionId === continuedSessionId).toBe(true);
+    expect(res.childSessionId).toBe(expectedSessionId);
+    expect(seenChildSessionId === expectedSessionId).toBe(true);
   });
 
-  it("rejects continued session ids outside parent session namespace", async () => {
+  it("rejects invalid continuation session names", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
     const tools = subagentTools({
@@ -555,7 +605,7 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Continue prior work",
           mode: "deferred",
-          sessionId: "sub:s:someone-else:session-1",
+          sessionName: "../someone-else",
         },
         {
           toolCallId: "tool-invalid-continued-session",
@@ -568,7 +618,7 @@ describe("subagent_delegate tool", () => {
           },
         },
       ),
-    ).rejects.toThrow(/must belong to the current parent session/i);
+    ).rejects.toThrow(/sessionName must be a short slug/i);
   });
 
   it("rejects delegation when depth limit is reached", async () => {

@@ -11,6 +11,11 @@ import { requireRequestContext } from "../shared/req-context";
 
 const subagentProfileSchema = z.enum(["explore", "general", "self"]);
 const subagentModeSchema = z.enum(["deferred", "sync"]);
+const subagentSessionNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
 
 const subagentDelegateInputSchema = z
   .object({
@@ -30,12 +35,10 @@ const subagentDelegateInputSchema = z
       .describe(
         'Required when mode is "sync". Explain why the child result is immediately required before continuing.',
       ),
-    sessionId: z
-      .string()
-      .min(1)
+    sessionName: subagentSessionNameSchema
       .optional()
       .describe(
-        "Optional existing subagent session id to continue. Must belong to the current parent session.",
+        "Optional stable short slug for continuing a subagent session within this parent session/channel.",
       ),
     timeoutMs: z
       .number()
@@ -162,12 +165,6 @@ function clampTimeoutMs(
   return Math.min(normalized, defaults.maxTimeoutMs);
 }
 
-function normalizeSessionId(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function truncateEnd(input: string, maxLen: number): string {
   if (input.length <= maxLen) return input;
   if (maxLen <= 3) return "...".slice(0, maxLen);
@@ -274,10 +271,11 @@ export function subagentTools(params: {
       inputSchema: subagentDelegateInputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input: SubagentDelegateInput, { abortSignal, context, toolCallId }) => {
+        const parsed = subagentDelegateInputSchema.parse(input);
         const ctx = requireRequestContext(context, "subagent_delegate") as RequestContextLike;
-        const profile = input.profile ?? "explore";
-        const mode = input.mode ?? "deferred";
-        const blockingReason = input.blockingReason?.trim() || undefined;
+        const profile = parsed.profile;
+        const mode = parsed.mode;
+        const blockingReason = parsed.blockingReason?.trim() || undefined;
 
         if (mode === "sync" && !blockingReason) {
           throw new Error('blockingReason is required when mode is "sync"');
@@ -298,21 +296,16 @@ export function subagentTools(params: {
           throw new Error("subagent_delegate is disabled in subagent runs (depth limit reached)");
         }
 
-        const timeoutMs = clampTimeoutMs(input.timeoutMs, {
+        const timeoutMs = clampTimeoutMs(parsed.timeoutMs, {
           defaultTimeoutMs: params.defaultTimeoutMs,
           maxTimeoutMs: params.maxTimeoutMs,
         });
 
-        const continuedSessionId = normalizeSessionId(input.sessionId);
-        if (continuedSessionId && !continuedSessionId.startsWith(`sub:${ctx.sessionId}:`)) {
-          throw new Error(
-            "subagent sessionId must belong to the current parent session (expected prefix sub:<parent-session-id>:)",
-          );
-        }
-
         const startedAt = Date.now();
         const childRequestId = `sub:${ctx.requestId}:${crypto.randomUUID()}`;
-        const childSessionId = continuedSessionId ?? `sub:${ctx.sessionId}:${childRequestId}`;
+        const childSessionId = parsed.sessionName
+          ? `sub:${ctx.sessionId}:named:${parsed.sessionName}`
+          : `sub:${ctx.sessionId}:${childRequestId}`;
 
         const childHeaders = {
           request_id: childRequestId,
@@ -338,10 +331,10 @@ export function subagentTools(params: {
           profile,
           parentDepth: depth,
           childDepth: depth + 1,
-          continuedSessionId: continuedSessionId ?? null,
+          sessionName: parsed.sessionName ?? null,
           timeoutMs,
           blockingReason: mode === "sync" ? blockingReason : undefined,
-          task: truncateEnd(input.task.replace(/\s+/g, " ").trim(), 240),
+          task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
         });
 
         const subId = `${childRequestId}:${Math.random().toString(16).slice(2)}`;
@@ -353,7 +346,7 @@ export function subagentTools(params: {
 
           await params.onDeferredDelegate({
             profile,
-            task: input.task,
+            task: parsed.task,
             timeoutMs,
             depth: depth + 1,
             parentRequestId: ctx.requestId,
@@ -364,7 +357,7 @@ export function subagentTools(params: {
             childSessionId,
             parentHeaders,
             childHeaders,
-            initialMessages: [buildDelegatedTaskPrompt(input.task)],
+            initialMessages: [buildDelegatedTaskPrompt(parsed.task)],
           });
 
           logger.info("subagent delegate accepted", {
@@ -373,7 +366,7 @@ export function subagentTools(params: {
             parentToolCallId: toolCallId,
             childRequestId,
             childSessionId,
-            profile: input.profile,
+            profile,
             mode: "deferred",
             timeoutMs,
           });
@@ -589,7 +582,7 @@ export function subagentTools(params: {
             lilacEventTypes.CmdRequestMessage,
             {
               queue: "prompt",
-              messages: [buildDelegatedTaskPrompt(input.task)],
+              messages: [buildDelegatedTaskPrompt(parsed.task)],
               raw: {
                 subagent: {
                   profile,
