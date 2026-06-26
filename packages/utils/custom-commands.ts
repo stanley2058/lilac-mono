@@ -42,7 +42,7 @@ export const customCommandDefSchema = z
       if (!key) continue;
       if (key === CUSTOM_COMMAND_PROMPT_ARG_KEY) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["args", i, "key"],
           message: `'${CUSTOM_COMMAND_PROMPT_ARG_KEY}' is reserved for transcript prompts`,
         });
@@ -51,7 +51,7 @@ export const customCommandDefSchema = z
         seen.add(key);
       } else {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["args", i, "key"],
           message: `duplicate arg key '${key}'`,
         });
@@ -61,7 +61,7 @@ export const customCommandDefSchema = z
       if (!choices) continue;
       if (value.args[i]?.type !== "string") {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["args", i, "choices"],
           message: "choices are only supported for string args",
         });

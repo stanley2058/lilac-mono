@@ -52,7 +52,7 @@ const subagentDelegateInputSchema = z
   .superRefine((value, ctx) => {
     if (value.mode === "sync" && !value.blockingReason?.trim()) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["blockingReason"],
         message: 'blockingReason is required when mode is "sync"',
       });
