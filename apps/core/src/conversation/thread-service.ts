@@ -881,7 +881,7 @@ function buildQueryAboutnessInstructions(): string {
     "",
     "- domains: broad real-world or project domains requested by the query, such as workplace, Discord social conflict, React debugging, architecture, deployment, finance, or career planning.",
     "- situations: concrete situations, actions, or events the user wants, such as fixing a websocket stream, reviewing a PR, clarifying a social misunderstanding, or planning a migration.",
-    "- targets: objects of the request, complaint, frustration, or investigation, such as company process, coworker handoff, DF's accusation, sqlite-vec indexing, a broken API, or Slack standup coordination.",
+    "- targets: objects of the request, complaint, frustration, or investigation, such as company process, coworker handoff, sqlite-vec indexing, a broken API, or Slack standup coordination.",
     "- entities: named people, projects, tools, files, APIs, organizations, commands, errors, or quoted phrases in the request.",
     "- userWouldAskForThisAs: natural query phrasings for this same request, preserving specific subject/domain/target words.",
     "- intentSummary: one sentence describing the user's intended subject of retrieval.",

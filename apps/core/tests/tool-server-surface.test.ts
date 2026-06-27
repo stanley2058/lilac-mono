@@ -975,8 +975,8 @@ describe("tool-server surface", () => {
         guildId: "g",
         parentChannelId,
       },
-      userId: "df",
-      userName: "DF",
+      userId: "foo",
+      userName: "Foo",
       text: "",
       ts: 200,
       raw: {

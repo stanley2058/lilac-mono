@@ -967,14 +967,14 @@ describe("conversation thread store", () => {
       msg({ channelId: "c1", messageId: "job-2", userId: "u2", text: "coworker handoff", ts: 2 }),
       msg({
         channelId: "c1",
-        messageId: "df-1",
+        messageId: "social-1",
         userId: "u1",
         text: "social misunderstanding",
         ts: 2 * 60 * 60 * 1000,
       }),
       msg({
         channelId: "c1",
-        messageId: "df-2",
+        messageId: "social-2",
         userId: "u2",
         text: "friend worried about offense",
         ts: 2 * 60 * 60 * 1000 + 1,
@@ -1001,44 +1001,44 @@ describe("conversation thread store", () => {
           domains: ["day job", "workplace"],
           situations: ["complaining about current job", "workplace frustration"],
           targets: ["coworker handoff", "company process"],
-          entities: ["Stanley"],
-          userWouldAskForThisAs: ["Stanley complaining about day job"],
-          intentSummary: "Find threads where Stanley complains about workplace problems.",
+          entities: ["employee"],
+          userWouldAskForThisAs: ["employee complaining about day job"],
+          intentSummary: "Find threads where an employee complains about workplace problems.",
         };
       },
       summarizer: async ({ threadId }) =>
-        threadId.endsWith(":df-1")
+        threadId.endsWith(":social-1")
           ? {
-              title: "DF social misunderstanding",
-              brief: "DF worried about offending Stanley in a Discord interaction.",
-              topics: ["DF anxiety about offending Stanley"],
-              retrievalHints: ["DF worried offended Stanley"],
+              title: "Social misunderstanding",
+              brief: "A friend worried about offending an employee in a team chat interaction.",
+              topics: ["friend anxiety about offense"],
+              retrievalHints: ["friend worried employee was offended"],
               aboutness: {
-                domains: ["Discord social conflict", "friend communication"],
-                situations: ["DF suspected Stanley was offended"],
+                domains: ["team chat social conflict", "friend communication"],
+                situations: ["friend suspected the employee was offended"],
                 complaintTargets: [],
-                entities: ["DF", "Stanley", "Discord"],
-                userWouldAskForThisAs: ["DF worried offended Stanley"],
+                entities: ["friend", "employee", "team chat"],
+                userWouldAskForThisAs: ["friend worried employee was offended"],
               },
             }
           : {
               title: "Workplace PR handoff complaint",
-              brief: "Stanley complained about coworker PR handoff problems at his day job.",
+              brief: "An employee complained about coworker PR handoff problems at their day job.",
               topics: ["workplace PR review frustration"],
               retrievalHints: ["work complaint about coworker PR"],
               aboutness: {
                 domains: ["day job", "workplace", "software engineering"],
-                situations: ["Stanley complained about current job PR handoff"],
+                situations: ["employee complained about current job PR handoff"],
                 complaintTargets: ["coworker handoff", "company process"],
-                entities: ["Stanley", "coworker", "PR"],
-                userWouldAskForThisAs: ["Stanley complaining about day job PR handoff"],
+                entities: ["employee", "coworker", "PR"],
+                userWouldAskForThisAs: ["employee complaining about day job PR handoff"],
               },
             },
     });
 
     await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
     const result = await service.search({
-      query: ["Stanley complaining about his day job", "Stanley venting about work stress"],
+      query: ["employee complaining about their day job", "employee venting about work stress"],
       mode: "hybrid",
       limit: 2,
       verbose: true,
@@ -1046,13 +1046,13 @@ describe("conversation thread store", () => {
 
     expect(queryCaptureCalls).toBe(1);
     expect(capturedQueries).toEqual([
-      "Stanley complaining about his day job",
-      "Stanley venting about work stress",
+      "employee complaining about their day job",
+      "employee venting about work stress",
     ]);
     expect(result.meta.queryAboutness?.domains).toEqual(["day job", "workplace"]);
     expect(result.results.map((item) => item.title)).toEqual([
       "Workplace PR handoff complaint",
-      "DF social misunderstanding",
+      "Social misunderstanding",
     ]);
     expect(result.results[0]?.aboutnessCoverage?.matched).toBe(true);
     expect(result.results[1]?.aboutnessCoverage?.matched).toBe(false);
