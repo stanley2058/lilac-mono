@@ -160,7 +160,7 @@ Add positive-only aboutness fields to summaries:
 
 - `domains`: broad real-world or project domains, such as day job, workplace, Discord social conflict, architecture, debugging, or career planning.
 - `situations`: concrete situations in the thread, such as false accusation, design handoff issue, review frustration, or migration planning.
-- `complaintTargets`: what frustration, venting, or criticism is directed at when present, such as company process, coworker handoff, DF's accusation, or a flaky API.
+- `complaintTargets`: what frustration, venting, or criticism is directed at when present, such as company process, coworker handoff, or a flaky API.
 - `entities`: important people, projects, tools, organizations, files, commands, or named concepts.
 - `userWouldAskForThisAs`: natural future-search phrases someone might type to find this thread.
 
