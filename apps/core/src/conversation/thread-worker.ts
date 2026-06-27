@@ -36,6 +36,7 @@ function queuedResult(jobId: string): ConversationThreadRunSummarizationResult {
     dryRun: false,
     refreshed: { channels: 0, threads: 0, messages: 0 },
     eligible: 0,
+    cleared: 0,
     summarized: 0,
     failed: 0,
     failures: [],
@@ -67,6 +68,7 @@ export function startConversationThreadSummarizationWorker(params: {
       startedAt: number;
       wait: boolean;
       dryRun: boolean;
+      clear: boolean;
       threadId?: string;
     }
   >();
@@ -130,12 +132,14 @@ export function startConversationThreadSummarizationWorker(params: {
         startedAt: Date.now(),
         wait,
         dryRun: input.dryRun === true,
+        clear: input.clear === true,
         threadId: input.threadId,
       });
       logger.info("conversation thread summarization job queued", {
         jobId,
         wait,
         dryRun: input.dryRun === true,
+        clear: input.clear === true,
         threadId: input.threadId,
         beforeTs: input.beforeTs,
         afterTs: input.afterTs,

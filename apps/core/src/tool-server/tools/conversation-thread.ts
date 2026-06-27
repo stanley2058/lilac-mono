@@ -5,7 +5,9 @@ import type { ConversationThreadToolService } from "../../conversation/thread-se
 import { zodObjectToCliLines } from "./zod-cli";
 
 const searchInputSchema = z.object({
-  query: z.string().min(1).describe("Search query."),
+  query: z
+    .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)])
+    .describe("Search query, or multiple query variants to combine."),
   mode: z
     .enum(["hybrid", "semantic", "lexical"])
     .optional()
@@ -46,6 +48,12 @@ const runSummarizationInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Rerun summaries for quiet eligible threads even when fresh."),
+  clear: z
+    .boolean()
+    .optional()
+    .describe(
+      "Clear existing summaries, facets, and embeddings before summarizing matching threads.",
+    ),
   wait: z
     .boolean()
     .optional()
@@ -83,11 +91,12 @@ export class ConversationThread implements ServerTool {
         callableId: "conversation.thread.search",
         name: "Conversation Thread Search",
         description:
-          "Search summarized conversation threads. Returns compact title, brief, topics, importance, and metadata; use conversation.thread.read to expand a result.",
+          "Search summarized conversation threads. Returns compact threadId, title, and brief by default; use verbose for metadata/diagnostics or conversation.thread.read to expand a result.",
         shortInput: zodObjectToCliLines(searchInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(searchInputSchema),
         primaryPositional: {
           field: "query",
+          variadic: true,
         },
       },
       {
@@ -96,6 +105,9 @@ export class ConversationThread implements ServerTool {
         description: "Read a conversation thread transcript by id with offset/limit pagination.",
         shortInput: zodObjectToCliLines(readInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(readInputSchema),
+        primaryPositional: {
+          field: "threadId",
+        },
       },
       {
         callableId: "conversation.thread.runSummarization",

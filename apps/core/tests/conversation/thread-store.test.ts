@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import {
+  buildThreadSummaryInstructions,
   ConversationThreadService,
   ConversationThreadSummaryParseError,
 } from "../../src/conversation/thread-service";
@@ -60,12 +61,47 @@ function testConfigWithThreadConcurrency(concurrency: number): CoreConfig {
   };
 }
 
+function testConfigWithPromptContext(): CoreConfig {
+  const cfg = testConfig();
+  return {
+    ...cfg,
+    conversation: {
+      ...cfg.conversation,
+      thread: {
+        ...cfg.conversation.thread,
+        summarization: {
+          ...cfg.conversation.thread.summarization,
+          includePromptContext: true,
+        },
+      },
+    },
+  };
+}
+
+async function createDataDirWithPromptContext(input: {
+  memory: string;
+  user: string;
+  entities?: string;
+}): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-thread-data-test-"));
+  tmpDirs.push(dir);
+  const promptDir = path.join(dir, "prompts");
+  await fs.mkdir(promptDir, { recursive: true });
+  await fs.writeFile(path.join(promptDir, "MEMORY.md"), input.memory);
+  await fs.writeFile(path.join(promptDir, "USER.md"), input.user);
+  if (input.entities !== undefined) {
+    await fs.writeFile(path.join(promptDir, "ENTITIES.md"), input.entities);
+  }
+  return dir;
+}
+
 function msg(input: {
   channelId: string;
   guildId?: string;
   parentChannelId?: string;
   messageId: string;
   userId: string;
+  userName?: string;
   text: string;
   ts: number;
 }): SurfaceMessage {
@@ -78,7 +114,7 @@ function msg(input: {
       parentChannelId: input.parentChannelId,
     },
     userId: input.userId,
-    userName: `user-${input.userId}`,
+    userName: input.userName ?? `user-${input.userId}`,
     text: input.text,
     ts: input.ts,
   };
@@ -97,6 +133,15 @@ const fakeEmbeddingAdapter: ConversationThreadEmbeddingAdapter = {
 };
 
 describe("conversation thread store", () => {
+  it("instructs summaries to avoid first-person retrieval hints", () => {
+    const instructions = buildThreadSummaryInstructions();
+    expect(instructions).toContain("Never use first-person pronouns");
+    expect(instructions).toContain("I, me, my, mine, we, us, our, or ours");
+    expect(instructions).toContain("Avoid ambiguous pronouns in retrievalHints");
+    expect(instructions).toContain("aboutness.userWouldAskForThisAs");
+    expect(instructions).toContain("Do not create negative aboutness fields");
+  });
+
   it("groups indexed messages into inferred threads and reads stable membership", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
@@ -122,6 +167,39 @@ describe("conversation thread store", () => {
 
     const second = threadStore.readThread("discord:channel:c1:m3", 0, 10);
     expect(second?.messages.map((item) => item.messageId)).toEqual(["m3"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("only forms threads that include the main agent when configured", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath, { mainAgentUserNames: ["agent"] });
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "h1", userId: "u1", text: "human only", ts: 1 }),
+      msg({ channelId: "c1", messageId: "h2", userId: "u2", text: "human reply", ts: 2 }),
+      msg({
+        channelId: "c2",
+        messageId: "a1",
+        userId: "u1",
+        text: "human asks agent",
+        ts: 1,
+      }),
+      msg({
+        channelId: "c2",
+        messageId: "a2",
+        userId: "bot",
+        userName: "agent",
+        text: "agent answers",
+        ts: 2,
+      }),
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads();
+    expect(refreshed.threads).toBe(1);
+    expect(threadStore.readThread("discord:channel:c1:h1", 0, 10)).toBeNull();
+    expect(threadStore.readThread("discord:channel:c2:a1", 0, 10)?.messages).toHaveLength(2);
 
     searchStore.close();
     threadStore.close();
@@ -330,6 +408,13 @@ describe("conversation thread store", () => {
           "Discussion about retrieving prior conversations with thread summaries and vector search.",
         topics: ["memory retrieval", "thread summaries", "vector search"],
         retrievalHints: ["conversation memory retrieval architecture"],
+        aboutness: {
+          domains: ["conversation memory"],
+          situations: ["thread retrieval architecture planning"],
+          complaintTargets: [],
+          entities: ["sqlite-vec"],
+          userWouldAskForThisAs: ["conversation thread search design"],
+        },
         importance: "high",
         importanceReasons: ["Captures reusable architecture decisions for conversation retrieval."],
       }),
@@ -344,13 +429,31 @@ describe("conversation thread store", () => {
     const run = await service.runSummarization({ now: eligibleNow });
     expect(run.summarized).toBe(1);
 
-    const search = (await tool.call("conversation.thread.search", {
+    const compactSearch = (await tool.call("conversation.thread.search", {
       query: "vector retrieval",
     })) as {
       results: Array<{
         threadId: string;
         title: string;
+        brief: string;
+      }>;
+    };
+    expect(Object.keys(compactSearch.results[0] ?? {}).sort()).toEqual([
+      "brief",
+      "threadId",
+      "title",
+    ]);
+    expect(compactSearch.results[0]?.title).toBe("Memory search architecture");
+
+    const search = (await tool.call("conversation.thread.search", {
+      query: "vector retrieval",
+      verbose: true,
+    })) as {
+      results: Array<{
+        threadId: string;
+        title: string;
         retrievalHints: string[];
+        aboutness: { userWouldAskForThisAs: string[] };
         importance: string;
         importanceReasons: string[];
       }>;
@@ -358,6 +461,9 @@ describe("conversation thread store", () => {
     expect(search.results[0]?.title).toBe("Memory search architecture");
     expect(search.results[0]?.retrievalHints).toEqual([
       "conversation memory retrieval architecture",
+    ]);
+    expect(search.results[0]?.aboutness.userWouldAskForThisAs).toEqual([
+      "conversation thread search design",
     ]);
     expect(search.results[0]?.importance).toBe("high");
     expect(search.results[0]?.importanceReasons).toEqual([
@@ -369,17 +475,28 @@ describe("conversation thread store", () => {
       offset: 1,
       limit: 1,
     })) as {
-      thread: { retrievalHints?: string[]; importance?: string; importanceReasons?: string[] };
+      thread: {
+        retrievalHints?: string[];
+        aboutness?: { domains: string[] };
+        importance?: string;
+        importanceReasons?: string[];
+      };
       page: { total: number; hasMore: boolean };
       messages: Array<{ messageId: string }>;
     };
     expect(read.thread.retrievalHints).toEqual(["conversation memory retrieval architecture"]);
+    expect(read.thread.aboutness?.domains).toEqual(["conversation memory"]);
     expect(read.thread.importance).toBe("high");
     expect(read.page.total).toBe(2);
     expect(read.page.hasMore).toBe(false);
     expect(read.messages.map((item) => item.messageId)).toEqual(["m2"]);
 
-    const entry = (await tool.list()).find(
+    const entries = await tool.list();
+    const searchEntry = entries.find((item) => item.callableId === "conversation.thread.search");
+    expect(searchEntry?.primaryPositional).toEqual({ field: "query", variadic: true });
+    const readEntry = entries.find((item) => item.callableId === "conversation.thread.read");
+    expect(readEntry?.primaryPositional).toEqual({ field: "threadId" });
+    const entry = entries.find(
       (item) => item.callableId === "conversation.thread.runSummarization",
     );
     expect(entry?.hidden).toBe(true);
@@ -609,9 +726,9 @@ describe("conversation thread store", () => {
       entityMapper: {
         normalizeIncomingText: (text) =>
           text
-            .replace("<@u1>", "@Stanley")
-            .replace("<@u2>", "@Lilac")
-            .replace("<@123>", "@Stanley")
+            .replace("<@u1>", "@Developer")
+            .replace("<@u2>", "@Assistant")
+            .replace("<@123>", "@Developer")
             .replace("<#456>", "#work"),
       },
       summarizer: async ({ messages }) => {
@@ -626,8 +743,8 @@ describe("conversation thread store", () => {
     });
 
     await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
-    expect(summarizedTexts).toEqual(["hello @Stanley", "see #work"]);
-    expect(summarizedUserNames).toEqual(["@Stanley", "@Lilac"]);
+    expect(summarizedTexts).toEqual(["hello @Developer", "see #work"]);
+    expect(summarizedUserNames).toEqual(["@Developer", "@Assistant"]);
 
     searchStore.close();
     threadStore.close();
@@ -711,7 +828,14 @@ describe("conversation thread store", () => {
       title: "Designer workflow constraints",
       brief: "Discussion of legacy frontend design specs.",
       topics: ["designer workflow"],
-      retrievalHints: ["Stanley's job rant about designer process"],
+      retrievalHints: ["developer job rant about designer process"],
+      aboutness: {
+        domains: ["day job", "workplace"],
+        situations: ["design handoff frustration"],
+        complaintTargets: ["designer process"],
+        entities: ["designer"],
+        userWouldAskForThisAs: ["day job complaint about designer process"],
+      },
     });
 
     const service = new ConversationThreadService({
@@ -722,7 +846,467 @@ describe("conversation thread store", () => {
     const result = await service.search({ query: "job rant", mode: "lexical" });
     expect(result.results[0]?.threadId).toBe("discord:channel:c1:r1");
 
+    const aboutnessResult = await service.search({
+      query: "day job",
+      mode: "lexical",
+      verbose: true,
+    });
+    expect(aboutnessResult.results[0]?.aboutness?.userWouldAskForThisAs).toEqual([
+      "day job complaint about designer process",
+    ]);
+
     searchStore.close();
+    threadStore.close();
+  });
+
+  it("combines multiple query variants with verbose-only attribution", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "mq1", userId: "u1", text: "alpha beta topic", ts: 1 }),
+      msg({ channelId: "c1", messageId: "mq2", userId: "u2", text: "alpha beta reply", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "mq3",
+        userId: "u1",
+        text: "alpha only topic",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "mq4",
+        userId: "u2",
+        text: "alpha only reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    threadStore.refreshInferredThreads();
+    threadStore.upsertSummary("discord:channel:c1:mq1", "mq1", {
+      title: "Two query match",
+      brief: "Thread matched by both query variants.",
+      topics: [],
+      retrievalHints: ["alpha beta"],
+    });
+    threadStore.upsertSummary("discord:channel:c1:mq3", "mq3", {
+      title: "One query match",
+      brief: "Thread matched by one query variant.",
+      topics: [],
+      retrievalHints: ["alpha"],
+    });
+
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+    });
+
+    const compact = await service.search({ query: ["alpha", "beta"], mode: "lexical", limit: 2 });
+    expect(compact.results.map((item) => item.title)).toEqual([
+      "Two query match",
+      "One query match",
+    ]);
+    expect(compact.results[0]).not.toHaveProperty("queryAttribution");
+
+    const verbose = await service.search({
+      query: ["alpha", "beta"],
+      mode: "lexical",
+      limit: 2,
+      verbose: true,
+    });
+    expect(verbose.meta).toMatchObject({ query: "alpha", queries: ["alpha", "beta"] });
+    expect(verbose.results[0]?.score).toBe(1);
+    expect(verbose.results[1]?.score).toBe(0.5);
+    expect(verbose.results[0]?.queryAttribution).toEqual([
+      {
+        query: "alpha",
+        rank: 2,
+        selfScore: 1,
+        contribution: 0.5,
+        lexicalScore: 1,
+        semanticScore: 0,
+      },
+      {
+        query: "beta",
+        rank: 1,
+        selfScore: 1,
+        contribution: 0.5,
+        lexicalScore: 1,
+        semanticScore: 0,
+      },
+    ]);
+    expect(verbose.results[1]?.queryAttribution).toEqual([
+      {
+        query: "alpha",
+        rank: 1,
+        selfScore: 1,
+        contribution: 0.5,
+        lexicalScore: 1,
+        semanticScore: 0,
+      },
+    ]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("uses one request-time aboutness capture to rerank subject coverage", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "job-1", userId: "u1", text: "work PR complaint", ts: 1 }),
+      msg({ channelId: "c1", messageId: "job-2", userId: "u2", text: "coworker handoff", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "df-1",
+        userId: "u1",
+        text: "social misunderstanding",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "df-2",
+        userId: "u2",
+        text: "friend worried about offense",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    const equalEmbeddingAdapter: ConversationThreadEmbeddingAdapter = {
+      modelId: "equal-2d",
+      dimensions: 2,
+      async embed() {
+        return new Float32Array([1, 0]);
+      },
+    };
+    let queryCaptureCalls = 0;
+    let capturedQueries: readonly string[] = [];
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      embeddingAdapter: equalEmbeddingAdapter,
+      queryAboutnessSummarizer: async ({ queries }) => {
+        queryCaptureCalls += 1;
+        capturedQueries = queries;
+        return {
+          domains: ["day job", "workplace"],
+          situations: ["complaining about current job", "workplace frustration"],
+          targets: ["coworker handoff", "company process"],
+          entities: ["Stanley"],
+          userWouldAskForThisAs: ["Stanley complaining about day job"],
+          intentSummary: "Find threads where Stanley complains about workplace problems.",
+        };
+      },
+      summarizer: async ({ threadId }) =>
+        threadId.endsWith(":df-1")
+          ? {
+              title: "DF social misunderstanding",
+              brief: "DF worried about offending Stanley in a Discord interaction.",
+              topics: ["DF anxiety about offending Stanley"],
+              retrievalHints: ["DF worried offended Stanley"],
+              aboutness: {
+                domains: ["Discord social conflict", "friend communication"],
+                situations: ["DF suspected Stanley was offended"],
+                complaintTargets: [],
+                entities: ["DF", "Stanley", "Discord"],
+                userWouldAskForThisAs: ["DF worried offended Stanley"],
+              },
+            }
+          : {
+              title: "Workplace PR handoff complaint",
+              brief: "Stanley complained about coworker PR handoff problems at his day job.",
+              topics: ["workplace PR review frustration"],
+              retrievalHints: ["work complaint about coworker PR"],
+              aboutness: {
+                domains: ["day job", "workplace", "software engineering"],
+                situations: ["Stanley complained about current job PR handoff"],
+                complaintTargets: ["coworker handoff", "company process"],
+                entities: ["Stanley", "coworker", "PR"],
+                userWouldAskForThisAs: ["Stanley complaining about day job PR handoff"],
+              },
+            },
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    const result = await service.search({
+      query: ["Stanley complaining about his day job", "Stanley venting about work stress"],
+      mode: "hybrid",
+      limit: 2,
+      verbose: true,
+    });
+
+    expect(queryCaptureCalls).toBe(1);
+    expect(capturedQueries).toEqual([
+      "Stanley complaining about his day job",
+      "Stanley venting about work stress",
+    ]);
+    expect(result.meta.queryAboutness?.domains).toEqual(["day job", "workplace"]);
+    expect(result.results.map((item) => item.title)).toEqual([
+      "Workplace PR handoff complaint",
+      "DF social misunderstanding",
+    ]);
+    expect(result.results[0]?.aboutnessCoverage?.matched).toBe(true);
+    expect(result.results[1]?.aboutnessCoverage?.matched).toBe(false);
+    expect(result.results[1]?.aboutnessCoverage?.domainCoverage).toBe(0);
+    expect(result.results[1]?.aboutnessCoverage?.highPrecisionCoverage).toBeLessThan(0.45);
+    expect(result.results[1]?.aboutnessCoverage?.multiplier).toBe(0.35);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("falls back safely when request-time aboutness capture fails", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "fb-1", userId: "u1", text: "fallback topic", ts: 1 }),
+      msg({ channelId: "c1", messageId: "fb-2", userId: "u2", text: "fallback reply", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "fb-3",
+        userId: "u1",
+        text: "fallback later",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "fb-4",
+        userId: "u2",
+        text: "fallback later reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    const equalEmbeddingAdapter: ConversationThreadEmbeddingAdapter = {
+      modelId: "equal-2d",
+      dimensions: 2,
+      async embed() {
+        return new Float32Array([1, 0]);
+      },
+    };
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      embeddingAdapter: equalEmbeddingAdapter,
+      queryAboutnessSummarizer: async () => {
+        throw new Error("query capture unavailable");
+      },
+      summarizer: async ({ threadId }) => ({
+        title: threadId.endsWith(":fb-3") ? "Newer fallback" : "Older fallback",
+        brief: "Fallback summary",
+        topics: [],
+      }),
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    const result = await service.search({
+      query: ["fallback topic", "fallback later"],
+      verbose: true,
+    });
+    expect(result.meta.queryAboutnessError).toContain("query capture unavailable");
+    expect(result.results).toHaveLength(2);
+    expect(result.results.every((item) => item.aboutnessCoverage?.multiplier === 1)).toBe(true);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("clears matching summaries through the summarization runner", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "clear-1", userId: "u1", text: "clear topic", ts: 1 }),
+      msg({ channelId: "c1", messageId: "clear-2", userId: "u2", text: "clear reply", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "clear-other-1",
+        userId: "u1",
+        text: "other clear topic",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "clear-other-2",
+        userId: "u2",
+        text: "other clear reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    let calls = 0;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async () => {
+        calls += 1;
+        return {
+          title: `Clear summary ${calls}`,
+          brief: `Clear summary ${calls}`,
+          topics: ["clear topic"],
+          retrievalHints: [`clear hint ${calls}`],
+        };
+      },
+    });
+
+    const now = Date.now() + 2 * 60 * 60 * 1000;
+    expect((await service.runSummarization({ now })).summarized).toBe(2);
+    expect(threadStore.readThread("discord:channel:c1:clear-1")?.summary?.title).toBe(
+      "Clear summary 1",
+    );
+
+    const dryRun = await service.runSummarization({
+      clear: true,
+      dryRun: true,
+      threadId: "discord:channel:c1:clear-1",
+      now,
+    });
+    expect(dryRun.cleared).toBe(0);
+    expect(dryRun.threadIds).toEqual([
+      "discord:channel:c1:clear-1",
+      "discord:channel:c1:clear-other-1",
+    ]);
+    expect(threadStore.readThread("discord:channel:c1:clear-1")?.summary?.title).toBe(
+      "Clear summary 1",
+    );
+
+    const rerun = await service.runSummarization({
+      clear: true,
+      threadId: "discord:channel:c1:clear-1",
+      now,
+    });
+    expect(rerun.cleared).toBe(2);
+    expect(rerun.summarized).toBe(1);
+    expect(threadStore.readThread("discord:channel:c1:clear-1")?.summary?.title).toBe(
+      "Clear summary 3",
+    );
+    expect(threadStore.readThread("discord:channel:c1:clear-other-1")?.summary).toBeNull();
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("passes gated prompt context to summarization in file order", async () => {
+    const previousDataDir = process.env.DATA_DIR;
+    const dataDir = await createDataDirWithPromptContext({
+      memory: "---\nprivate: true\n---\nMemory context",
+      user: "User context",
+      entities: "Entity context",
+    });
+    process.env.DATA_DIR = dataDir;
+
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    try {
+      searchStore.upsertMessages([
+        msg({ channelId: "c1", messageId: "p1", userId: "u1", text: "prompt topic", ts: 1 }),
+        msg({ channelId: "c1", messageId: "p2", userId: "u2", text: "prompt reply", ts: 2 }),
+      ]);
+
+      let promptContextText = "";
+      const service = new ConversationThreadService({
+        store: threadStore,
+        getConfig: async () => testConfigWithPromptContext(),
+        summarizer: async ({ promptContext }) => {
+          promptContextText = promptContext?.text ?? "";
+          return {
+            title: "Prompt context thread",
+            brief: "Prompt context summary",
+            topics: [],
+          };
+        },
+      });
+
+      await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+      expect(promptContextText).toBe(
+        [
+          "### MEMORY.md\nMemory context",
+          "### USER.md\nUser context",
+          "### ENTITIES.md\nEntity context",
+        ].join("\n\n"),
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = previousDataDir;
+      searchStore.close();
+      threadStore.close();
+    }
+  });
+
+  it("treats prompt context changes as summary-stale when enabled", async () => {
+    const previousDataDir = process.env.DATA_DIR;
+    const dataDir = await createDataDirWithPromptContext({
+      memory: "Memory context v1",
+      user: "User context",
+    });
+    process.env.DATA_DIR = dataDir;
+
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    try {
+      searchStore.upsertMessages([
+        msg({ channelId: "c1", messageId: "pc1", userId: "u1", text: "context topic", ts: 1 }),
+        msg({ channelId: "c1", messageId: "pc2", userId: "u2", text: "context reply", ts: 2 }),
+      ]);
+
+      let calls = 0;
+      const service = new ConversationThreadService({
+        store: threadStore,
+        getConfig: async () => testConfigWithPromptContext(),
+        summarizer: async () => {
+          calls += 1;
+          return {
+            title: `Prompt stale ${calls}`,
+            brief: `Prompt stale ${calls}`,
+            topics: [],
+          };
+        },
+      });
+
+      const now = Date.now() + 2 * 60 * 60 * 1000;
+      expect((await service.runSummarization({ now })).summarized).toBe(1);
+      expect((await service.runSummarization({ now: now + 1 })).eligible).toBe(0);
+
+      await fs.writeFile(path.join(dataDir, "prompts", "MEMORY.md"), "Memory context v2");
+      const rerun = await service.runSummarization({ now: now + 2 });
+      expect(rerun.eligible).toBe(1);
+      expect(rerun.summarized).toBe(1);
+      expect(calls).toBe(2);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = previousDataDir;
+      searchStore.close();
+      threadStore.close();
+    }
+  });
+
+  it("drops legacy persisted facet weights during migration", async () => {
+    const dbPath = await createDbPath();
+    const db = new Database(dbPath);
+    db.run(`
+      CREATE TABLE conversation_thread_facets (
+        thread_id TEXT NOT NULL,
+        facet TEXT NOT NULL,
+        text TEXT NOT NULL,
+        weight REAL NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, facet)
+      );
+    `);
+    db.close();
+
+    const threadStore = new ConversationThreadStore(dbPath);
+    const migrated = new Database(dbPath);
+    const columns = migrated.query("PRAGMA table_info(conversation_thread_facets)").all() as Array<{
+      name: string;
+    }>;
+    expect(columns.map((column) => column.name)).not.toContain("weight");
+
+    migrated.close();
     threadStore.close();
   });
 
@@ -923,6 +1507,14 @@ describe("conversation thread store", () => {
       store: threadStore,
       getConfig: async () => testConfig(),
       embeddingAdapter: fakeEmbeddingAdapter,
+      queryAboutnessSummarizer: async ({ queries }) => ({
+        domains: [],
+        situations: [],
+        targets: [],
+        entities: [],
+        userWouldAskForThisAs: [...queries],
+        intentSummary: queries.join("; "),
+      }),
       summarizer: async ({ threadId }) =>
         threadId.endsWith(":m3")
           ? {
@@ -964,7 +1556,92 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
-  it("aggregates semantic facet scores with weighted sum", async () => {
+  it("embeds summary facets and query text directly", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "e1", userId: "u1", text: "design handoff", ts: 1 }),
+      msg({ channelId: "c1", messageId: "e2", userId: "u2", text: "legacy frontend", ts: 2 }),
+    ]);
+
+    const embedded: Array<{ facet: string | undefined; text: string }> = [];
+    const recordingAdapter: ConversationThreadEmbeddingAdapter = {
+      modelId: "recording-2d",
+      dimensions: 2,
+      async embed(input) {
+        embedded.push({ facet: input.facet, text: input.text });
+        return new Float32Array([1, 0]);
+      },
+    };
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      embeddingAdapter: recordingAdapter,
+      queryAboutnessSummarizer: async ({ queries }) => ({
+        domains: [],
+        situations: [],
+        targets: [],
+        entities: [],
+        userWouldAskForThisAs: [...queries],
+        intentSummary: queries.join("; "),
+      }),
+      summarizer: async () => ({
+        title: "Design handoff problem",
+        brief: "A designer prototype does not match the production frontend.",
+        topics: ["designer workflow"],
+        retrievalHints: ["design handoff rant", "legacy frontend complaint"],
+        aboutness: {
+          domains: ["day job", "frontend work"],
+          situations: ["design handoff mismatch"],
+          complaintTargets: ["designer prototype", "legacy frontend process"],
+          entities: ["designer", "frontend"],
+          userWouldAskForThisAs: ["job rant about design handoff"],
+        },
+      }),
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    expect(embedded).toEqual([
+      {
+        facet: "combined",
+        text: [
+          "Design handoff problem",
+          "A designer prototype does not match the production frontend.",
+          "design handoff rant\nlegacy frontend complaint",
+          "job rant about design handoff",
+          "designer prototype\nlegacy frontend process",
+          "day job\nfrontend work",
+          "design handoff mismatch",
+          "designer\nfrontend",
+          "designer workflow",
+        ].join("\n\n"),
+      },
+      { facet: "userWouldAskForThisAs", text: "job rant about design handoff" },
+      {
+        facet: "aboutnessComplaintTargets",
+        text: "designer prototype\nlegacy frontend process",
+      },
+      { facet: "aboutnessDomains", text: "day job\nfrontend work" },
+      { facet: "aboutnessSituations", text: "design handoff mismatch" },
+      { facet: "aboutnessEntities", text: "designer\nfrontend" },
+      { facet: "retrievalHints", text: "design handoff rant\nlegacy frontend complaint" },
+      { facet: "title", text: "Design handoff problem" },
+      {
+        facet: "brief",
+        text: "A designer prototype does not match the production frontend.",
+      },
+      { facet: "topics", text: "designer workflow" },
+    ]);
+
+    await service.search({ query: "design handoff complaint", mode: "semantic" });
+    expect(embedded.at(-1)).toEqual({ facet: "query", text: "design handoff complaint" });
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("aggregates semantic facet scores with normalized runtime weights", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
     const threadStore = new ConversationThreadStore(dbPath);
@@ -1030,6 +1707,7 @@ describe("conversation thread store", () => {
       "discord:channel:c1:a1",
     ]);
     expect(results[0]?.semanticScore).toBeGreaterThan(results[1]?.semanticScore ?? 0);
+    expect(results[0]?.semanticScore).toBeLessThanOrEqual(1);
 
     searchStore.close();
     threadStore.close();

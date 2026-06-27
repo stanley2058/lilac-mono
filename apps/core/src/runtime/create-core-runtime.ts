@@ -514,6 +514,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       discordSurfaceStore = new DiscordSurfaceStore(discordSurfaceDbPath);
       conversationThreadStore = new ConversationThreadStore(discordSearchDbPath, {
         surfaceDbPath: discordSurfaceDbPath,
+        mainAgentUserNames: [startupConfig.surface.discord.botName],
       });
       const conversationThreadEntityMapper = createDiscordEntityMapper({
         cfg: startupConfig,

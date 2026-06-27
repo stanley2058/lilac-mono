@@ -38,6 +38,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
       jobId: request.id,
       dryRun: request.input.dryRun === true,
       force: request.input.force === true,
+      clear: request.input.clear === true,
       threadId: request.input.threadId,
       beforeTs: request.input.beforeTs,
       afterTs: request.input.afterTs,
@@ -55,6 +56,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
 
     store = new ConversationThreadStore(request.searchDbPath, {
       surfaceDbPath: request.surfaceDbPath,
+      mainAgentUserNames: [cfg.surface.discord.botName],
     });
     const entityMapper = request.surfaceDbPath
       ? (() => {
@@ -73,6 +75,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
       jobId: request.id,
       durationMs: Date.now() - startedAt,
       eligible: result.eligible,
+      cleared: result.cleared,
       summarized: result.summarized,
       failed: result.failed,
     });

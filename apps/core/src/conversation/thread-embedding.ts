@@ -8,6 +8,11 @@ import {
 
 export type ConversationThreadEmbeddingFacet =
   | "combined"
+  | "aboutnessDomains"
+  | "aboutnessSituations"
+  | "aboutnessComplaintTargets"
+  | "aboutnessEntities"
+  | "userWouldAskForThisAs"
   | "brief"
   | "retrievalHints"
   | "topics"
@@ -16,7 +21,6 @@ export type ConversationThreadEmbeddingFacet =
 export type ConversationThreadFacetInput = {
   facet: ConversationThreadEmbeddingFacet;
   text: string;
-  weight: number;
 };
 
 export type ConversationThreadEmbeddingAdapter = {

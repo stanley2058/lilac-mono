@@ -10,7 +10,7 @@ import type {
 const SEARCH_LIMIT_MAX = 50;
 const THREAD_DISCOVERY_GAP_MS = 60 * 60 * 1000;
 
-export const CONVERSATION_THREAD_SUMMARY_VERSION = 3;
+export const CONVERSATION_THREAD_SUMMARY_VERSION = 4;
 export const CONVERSATION_THREAD_EMBEDDING_VERSION = 1;
 
 export type ConversationThreadKind = "discord_thread" | "inferred_channel_thread";
@@ -30,6 +30,7 @@ export type ConversationThreadRow = {
   last_summarized_at: number | null;
   last_embedded_at: number | null;
   summary_input_hash: string | null;
+  summary_prompt_context_hash: string | null;
   embedding_input_hash: string | null;
   summary_version: number;
   embedding_version: number;
@@ -41,6 +42,7 @@ export type ConversationThreadSummaryRow = {
   brief: string;
   topics_json: string;
   retrieval_hints_json: string;
+  aboutness_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   created_at: number;
@@ -59,11 +61,28 @@ export type ConversationThreadMessage = {
 
 export type ConversationThreadImportance = "low" | "medium" | "high";
 
+export type ConversationThreadAboutnessInput = {
+  domains?: string[];
+  situations?: string[];
+  complaintTargets?: string[];
+  entities?: string[];
+  userWouldAskForThisAs?: string[];
+};
+
+export type ConversationThreadAboutness = {
+  domains: string[];
+  situations: string[];
+  complaintTargets: string[];
+  entities: string[];
+  userWouldAskForThisAs: string[];
+};
+
 export type ConversationThreadSummaryInput = {
   title: string;
   brief: string;
   topics: string[];
   retrievalHints?: string[];
+  aboutness?: ConversationThreadAboutnessInput;
   importance?: ConversationThreadImportance;
   importanceReasons?: string[];
 };
@@ -73,6 +92,7 @@ export type ConversationThreadSummary = {
   brief: string;
   topics: string[];
   retrievalHints: string[];
+  aboutness: ConversationThreadAboutness;
   importance: ConversationThreadImportance;
   importanceReasons: string[];
 };
@@ -87,6 +107,7 @@ export type ConversationThreadSearchHit = {
   brief: string;
   topics: string[];
   retrievalHints: string[];
+  aboutness: ConversationThreadAboutness;
   importance: ConversationThreadImportance;
   importanceReasons: string[];
   startTs: number;
@@ -141,6 +162,7 @@ type ThreadSearchRow = ConversationThreadRow & {
   brief: string;
   topics_json: string;
   retrieval_hints_json: string;
+  aboutness_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   lexical_score: number;
@@ -151,6 +173,7 @@ type ThreadSemanticSearchRow = ConversationThreadRow & {
   brief: string;
   topics_json: string;
   retrieval_hints_json: string;
+  aboutness_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   semantic_score: number;
@@ -159,11 +182,26 @@ type ThreadSemanticSearchRow = ConversationThreadRow & {
 type FacetRow = {
   facet: ConversationThreadEmbeddingFacet;
   text: string;
-  weight: number;
 };
+
+const FACET_WEIGHTS = {
+  combined: 0.2,
+  aboutnessDomains: 0.85,
+  aboutnessSituations: 0.7,
+  aboutnessComplaintTargets: 1.1,
+  aboutnessEntities: 0.55,
+  userWouldAskForThisAs: 1.25,
+  retrievalHints: 1,
+  title: 0.6,
+  brief: 0.45,
+  topics: 0.3,
+} satisfies Record<ConversationThreadEmbeddingFacet, number>;
+
+const SEMANTIC_SIMILARITY_FLOOR = 0.15;
 
 export type ConversationThreadStoreOptions = {
   surfaceDbPath?: string;
+  mainAgentUserNames?: readonly string[];
 };
 
 function stableHash(input: string): string {
@@ -188,25 +226,90 @@ function safeImportance(input: unknown): ConversationThreadImportance {
   return input === "low" || input === "high" || input === "medium" ? input : "medium";
 }
 
+function emptyAboutness(): ConversationThreadAboutness {
+  return {
+    domains: [],
+    situations: [],
+    complaintTargets: [],
+    entities: [],
+    userWouldAskForThisAs: [],
+  };
+}
+
+function safeAboutnessFromJson(raw: string): ConversationThreadAboutness {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return emptyAboutness();
+    const record = parsed as Record<string, unknown>;
+    return {
+      domains: Array.isArray(record.domains)
+        ? record.domains.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [],
+      situations: Array.isArray(record.situations)
+        ? record.situations.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [],
+      complaintTargets: Array.isArray(record.complaintTargets)
+        ? record.complaintTargets.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [],
+      entities: Array.isArray(record.entities)
+        ? record.entities.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [],
+      userWouldAskForThisAs: Array.isArray(record.userWouldAskForThisAs)
+        ? record.userWouldAskForThisAs.filter(
+            (item): item is string => typeof item === "string" && item.length > 0,
+          )
+        : [],
+    };
+  } catch {
+    return emptyAboutness();
+  }
+}
+
 function truncate(input: string, maxLength: number): string {
   const normalized = input.trim().replace(/\s+/gu, " ");
   return normalized.length > maxLength ? normalized.slice(0, maxLength).trimEnd() : normalized;
+}
+
+function normalizeStringList(
+  values: readonly string[] | undefined,
+  maxItems: number,
+  maxLength: number,
+): string[] {
+  return (values ?? [])
+    .map((value) => truncate(value, maxLength))
+    .filter((value) => value.length > 0)
+    .slice(0, maxItems);
+}
+
+function normalizeAboutness(
+  aboutness: ConversationThreadAboutnessInput | undefined,
+): ConversationThreadAboutness {
+  return {
+    domains: normalizeStringList(aboutness?.domains, 8, 80),
+    situations: normalizeStringList(aboutness?.situations, 8, 120),
+    complaintTargets: normalizeStringList(aboutness?.complaintTargets, 8, 160),
+    entities: normalizeStringList(aboutness?.entities, 20, 80),
+    userWouldAskForThisAs: normalizeStringList(aboutness?.userWouldAskForThisAs, 8, 160),
+  };
 }
 
 function normalizeSummary(summary: ConversationThreadSummaryInput): ConversationThreadSummary {
   return {
     title: truncate(summary.title, 120) || "Untitled conversation",
     brief: truncate(summary.brief, 1024),
-    topics: summary.topics.map((topic) => truncate(topic, 80)).filter((topic) => topic.length > 0),
-    retrievalHints: (summary.retrievalHints ?? [])
-      .map((hint) => truncate(hint, 160))
-      .filter((hint) => hint.length > 0)
-      .slice(0, 8),
+    topics: normalizeStringList(summary.topics, 12, 80),
+    retrievalHints: normalizeStringList(summary.retrievalHints, 8, 160),
+    aboutness: normalizeAboutness(summary.aboutness),
     importance: safeImportance(summary.importance),
-    importanceReasons: (summary.importanceReasons ?? [])
-      .map((reason) => truncate(reason, 180))
-      .filter((reason) => reason.length > 0)
-      .slice(0, 5),
+    importanceReasons: normalizeStringList(summary.importanceReasons, 5, 180),
   };
 }
 
@@ -222,14 +325,29 @@ function computeThreadInputHash(messages: readonly IndexedMessageRow[]): string 
 
 function computeSummaryHash(summary: ConversationThreadSummary): string {
   return stableHash(
-    [summary.title, summary.brief, ...summary.topics, ...summary.retrievalHints].join("\u001f"),
+    [
+      summary.title,
+      summary.brief,
+      ...summary.topics,
+      ...summary.retrievalHints,
+      ...summary.aboutness.domains,
+      ...summary.aboutness.situations,
+      ...summary.aboutness.complaintTargets,
+      ...summary.aboutness.entities,
+      ...summary.aboutness.userWouldAskForThisAs,
+    ].join("\u001f"),
   );
 }
 
 function computeFacetHash(facets: readonly ConversationThreadFacetInput[]): string {
-  return stableHash(
-    facets.map((facet) => [facet.facet, facet.weight, facet.text].join("\u001f")).join("\u001e"),
-  );
+  return stableHash(facets.map((facet) => [facet.facet, facet.text].join("\u001f")).join("\u001e"));
+}
+
+function facetWeightSql(alias: string): string {
+  const clauses = Object.entries(FACET_WEIGHTS)
+    .map(([facet, weight]) => `WHEN ${sqlString(facet)} THEN ${weight}`)
+    .join(" ");
+  return `CASE ${alias}.facet ${clauses} ELSE 0 END`;
 }
 
 function messageKey(channelId: string, messageId: string): string {
@@ -300,6 +418,7 @@ export class ConversationThreadStore {
   private readonly db: Database;
   private readonly searchDbPath: string;
   private readonly surfaceDbPath?: string;
+  private readonly mainAgentUserNames: ReadonlySet<string>;
   private hasSurfaceDb: boolean;
   private vectorLoadError: string | null = null;
   private vectorLoaded = false;
@@ -308,6 +427,11 @@ export class ConversationThreadStore {
     this.db = new Database(dbPath);
     this.searchDbPath = dbPath;
     this.surfaceDbPath = options.surfaceDbPath;
+    this.mainAgentUserNames = new Set(
+      (options.mainAgentUserNames ?? [])
+        .map((name) => name.trim().toLowerCase())
+        .filter((name) => name.length > 0),
+    );
     this.hasSurfaceDb = this.attachSurfaceDb();
     this.loadVectorExtension();
     this.migrate();
@@ -375,7 +499,13 @@ export class ConversationThreadStore {
     return this.hasSurfaceDb;
   }
 
-  private tableHasColumn(tableName: "conversation_thread_summaries", columnName: string): boolean {
+  private tableHasColumn(
+    tableName:
+      | "conversation_threads"
+      | "conversation_thread_summaries"
+      | "conversation_thread_facets",
+    columnName: string,
+  ): boolean {
     const rows = this.db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
     return rows.some((row) => row.name === columnName);
   }
@@ -397,6 +527,7 @@ export class ConversationThreadStore {
         last_summarized_at INTEGER,
         last_embedded_at INTEGER,
         summary_input_hash TEXT,
+        summary_prompt_context_hash TEXT,
         embedding_input_hash TEXT,
         summary_version INTEGER NOT NULL DEFAULT ${CONVERSATION_THREAD_SUMMARY_VERSION},
         embedding_version INTEGER NOT NULL DEFAULT ${CONVERSATION_THREAD_EMBEDDING_VERSION}
@@ -412,6 +543,13 @@ export class ConversationThreadStore {
       CREATE INDEX IF NOT EXISTS idx_conversation_threads_updated_at
       ON conversation_threads(updated_at ASC);
     `);
+
+    if (!this.tableHasColumn("conversation_threads", "summary_prompt_context_hash")) {
+      this.db.run(`
+        ALTER TABLE conversation_threads
+        ADD COLUMN summary_prompt_context_hash TEXT;
+      `);
+    }
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_thread_messages (
@@ -436,6 +574,7 @@ export class ConversationThreadStore {
         brief TEXT NOT NULL,
         topics_json TEXT NOT NULL,
         retrieval_hints_json TEXT NOT NULL DEFAULT '[]',
+        aboutness_json TEXT NOT NULL DEFAULT '{}',
         importance TEXT NOT NULL DEFAULT 'medium',
         importance_reasons_json TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
@@ -464,16 +603,29 @@ export class ConversationThreadStore {
       `);
     }
 
+    if (!this.tableHasColumn("conversation_thread_summaries", "aboutness_json")) {
+      this.db.run(`
+        ALTER TABLE conversation_thread_summaries
+        ADD COLUMN aboutness_json TEXT NOT NULL DEFAULT '{}';
+      `);
+    }
+
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_thread_facets (
         thread_id TEXT NOT NULL,
         facet TEXT NOT NULL,
         text TEXT NOT NULL,
-        weight REAL NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (thread_id, facet)
       );
     `);
+
+    if (this.tableHasColumn("conversation_thread_facets", "weight")) {
+      this.db.run(`
+        ALTER TABLE conversation_thread_facets
+        DROP COLUMN weight;
+      `);
+    }
 
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS conversation_thread_facets_fts
@@ -596,6 +748,7 @@ export class ConversationThreadStore {
 
     const tx = this.db.transaction(() => {
       for (const messages of nativeByChannel.values()) {
+        if (!this.hasMainAgentMessage(messages)) continue;
         const threadId = this.upsertDiscordThread(messages);
         activeThreadIds.add(threadId);
         threadCount += 1;
@@ -603,6 +756,7 @@ export class ConversationThreadStore {
 
       for (const messages of inferredByChannel.values()) {
         for (const group of groupInferredMessages(messages)) {
+          if (!this.hasMainAgentMessage(group)) continue;
           const threadId = this.upsertInferredThread(group);
           activeThreadIds.add(threadId);
           threadCount += 1;
@@ -628,6 +782,14 @@ export class ConversationThreadStore {
       threads: threadCount,
       messages: rows.length,
     };
+  }
+
+  private hasMainAgentMessage(messages: readonly IndexedMessageRow[]): boolean {
+    if (this.mainAgentUserNames.size === 0) return true;
+    return messages.some((message) => {
+      const userName = message.user_name?.trim().toLowerCase();
+      return !!userName && this.mainAgentUserNames.has(userName);
+    });
   }
 
   private upsertInferredThread(messages: readonly IndexedMessageRow[]): string {
@@ -685,10 +847,11 @@ export class ConversationThreadStore {
         last_summarized_at,
         last_embedded_at,
         summary_input_hash,
+        summary_prompt_context_hash,
         embedding_input_hash,
         summary_version,
         embedding_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         channel_id=excluded.channel_id,
         guild_id=excluded.guild_id,
@@ -709,6 +872,10 @@ export class ConversationThreadStore {
           ELSE NULL
         END,
         summary_input_hash=excluded.summary_input_hash,
+        summary_prompt_context_hash=CASE
+          WHEN excluded.summary_input_hash = conversation_threads.summary_input_hash THEN conversation_threads.summary_prompt_context_hash
+          ELSE NULL
+        END,
         embedding_input_hash=CASE
           WHEN excluded.summary_input_hash = conversation_threads.summary_input_hash THEN conversation_threads.embedding_input_hash
           ELSE NULL
@@ -731,6 +898,7 @@ export class ConversationThreadStore {
         existing?.last_summarized_at ?? null,
         existing?.last_embedded_at ?? null,
         inputHash,
+        existing?.summary_prompt_context_hash ?? null,
         existing?.embedding_input_hash ?? null,
         CONVERSATION_THREAD_SUMMARY_VERSION,
         CONVERSATION_THREAD_EMBEDDING_VERSION,
@@ -776,6 +944,7 @@ export class ConversationThreadStore {
       brief: row.brief,
       topics: safeStringArrayFromJson(row.topics_json),
       retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
+      aboutness: safeAboutnessFromJson(row.aboutness_json),
       importance: safeImportance(row.importance),
       importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
     };
@@ -858,6 +1027,84 @@ export class ConversationThreadStore {
     };
   }
 
+  listThreadsForSummarizationClear(input?: {
+    threadId?: string;
+    beforeTs?: number;
+    afterTs?: number;
+  }): ConversationThreadRow[] {
+    const filter = buildThreadScopeClause(input);
+    return this.db
+      .query(
+        `
+        SELECT t.*
+        FROM conversation_threads t
+        WHERE ${filter.sql}
+        ORDER BY t.updated_at ASC, t.thread_id ASC
+        `,
+      )
+      .all(...filter.values) as ConversationThreadRow[];
+  }
+
+  clearSummarizationState(input?: {
+    threadId?: string;
+    beforeTs?: number;
+    afterTs?: number;
+  }): string[] {
+    const threads = this.listThreadsForSummarizationClear(input);
+    if (threads.length === 0) return [];
+
+    const filter = buildThreadScopeClause(input);
+    const tx = this.db.transaction(() => {
+      this.db.run(
+        `
+        DELETE FROM conversation_thread_embeddings
+        WHERE thread_id IN (
+          SELECT t.thread_id FROM conversation_threads t WHERE ${filter.sql}
+        )
+        `,
+        filter.values,
+      );
+      this.db.run(
+        `
+        DELETE FROM conversation_thread_facets
+        WHERE thread_id IN (
+          SELECT t.thread_id FROM conversation_threads t WHERE ${filter.sql}
+        )
+        `,
+        filter.values,
+      );
+      this.db.run(
+        `
+        DELETE FROM conversation_thread_summaries
+        WHERE thread_id IN (
+          SELECT t.thread_id FROM conversation_threads t WHERE ${filter.sql}
+        )
+        `,
+        filter.values,
+      );
+      this.db.run(
+        `
+        UPDATE conversation_threads AS t
+        SET last_summarized_at = NULL,
+            last_embedded_at = NULL,
+            summary_prompt_context_hash = NULL,
+            embedding_input_hash = NULL,
+            summary_version = ?,
+            embedding_version = ?
+        WHERE ${filter.sql}
+        `,
+        [
+          CONVERSATION_THREAD_SUMMARY_VERSION,
+          CONVERSATION_THREAD_EMBEDDING_VERSION,
+          ...filter.values,
+        ],
+      );
+    });
+
+    tx();
+    return threads.map((thread) => thread.thread_id);
+  }
+
   listEligibleForSummarization(input?: {
     now?: number;
     quietMs?: number;
@@ -865,11 +1112,17 @@ export class ConversationThreadStore {
     beforeTs?: number;
     afterTs?: number;
     includeEmbeddingStale?: boolean;
+    summaryPromptContextHash?: string;
     force?: boolean;
   }): ConversationThreadRow[] {
     const now = input?.now ?? Date.now();
     const quietMs = input?.quietMs ?? 60 * 60 * 1000;
     const values: Array<string | number> = [now - quietMs];
+    const shouldCheckPromptContext = input?.force !== true && !!input?.summaryPromptContextHash;
+    const promptContextClause = shouldCheckPromptContext
+      ? "OR t.summary_prompt_context_hash IS NULL OR t.summary_prompt_context_hash != ?"
+      : "";
+    if (shouldCheckPromptContext) values.push(input.summaryPromptContextHash!);
     const staleClause = input?.force
       ? "1 = 1"
       : input?.includeEmbeddingStale
@@ -877,6 +1130,7 @@ export class ConversationThreadStore {
           t.last_summarized_at IS NULL
           OR t.last_summarized_at < t.updated_at
           OR t.summary_version != ${CONVERSATION_THREAD_SUMMARY_VERSION}
+          ${promptContextClause}
           OR (
             t.last_summarized_at IS NOT NULL
             AND (
@@ -890,6 +1144,7 @@ export class ConversationThreadStore {
           t.last_summarized_at IS NULL
           OR t.last_summarized_at < t.updated_at
           OR t.summary_version != ${CONVERSATION_THREAD_SUMMARY_VERSION}
+          ${promptContextClause}
         )`;
     const clauses = [
       "(CASE WHEN t.last_summarized_at IS NULL THEN t.end_ts ELSE t.updated_at END) <= ?",
@@ -926,11 +1181,13 @@ export class ConversationThreadStore {
     threadId: string,
     summaryInputHash: string,
     summary: ConversationThreadSummaryInput,
+    promptContextHash: string | null = null,
   ): ConversationThreadSummaryWriteResult {
     const normalized = normalizeSummary(summary);
     const now = Date.now();
     const topicsJson = JSON.stringify(normalized.topics);
     const retrievalHintsJson = JSON.stringify(normalized.retrievalHints);
+    const aboutnessJson = JSON.stringify(normalized.aboutness);
     const importanceReasonsJson = JSON.stringify(normalized.importanceReasons);
     const embeddingHash = computeSummaryHash(normalized);
     const facets: ConversationThreadFacetInput[] = [
@@ -940,27 +1197,43 @@ export class ConversationThreadStore {
           normalized.title,
           normalized.brief,
           normalized.retrievalHints.join("\n"),
+          normalized.aboutness.userWouldAskForThisAs.join("\n"),
+          normalized.aboutness.complaintTargets.join("\n"),
+          normalized.aboutness.domains.join("\n"),
+          normalized.aboutness.situations.join("\n"),
+          normalized.aboutness.entities.join("\n"),
           normalized.topics.join("\n"),
         ].join("\n\n"),
-        weight: 1,
       },
-      { facet: "brief", text: normalized.brief, weight: 0.8 },
-      { facet: "retrievalHints", text: normalized.retrievalHints.join("\n"), weight: 0.6 },
-      { facet: "topics", text: normalized.topics.join("\n"), weight: 0.35 },
-      { facet: "title", text: normalized.title, weight: 0.15 },
+      {
+        facet: "userWouldAskForThisAs",
+        text: normalized.aboutness.userWouldAskForThisAs.join("\n"),
+      },
+      {
+        facet: "aboutnessComplaintTargets",
+        text: normalized.aboutness.complaintTargets.join("\n"),
+      },
+      { facet: "aboutnessDomains", text: normalized.aboutness.domains.join("\n") },
+      { facet: "aboutnessSituations", text: normalized.aboutness.situations.join("\n") },
+      { facet: "aboutnessEntities", text: normalized.aboutness.entities.join("\n") },
+      { facet: "retrievalHints", text: normalized.retrievalHints.join("\n") },
+      { facet: "title", text: normalized.title },
+      { facet: "brief", text: normalized.brief },
+      { facet: "topics", text: normalized.topics.join("\n") },
     ];
 
     const tx = this.db.transaction(() => {
       this.db.run(
         `
         INSERT INTO conversation_thread_summaries (
-          thread_id, title, brief, topics_json, retrieval_hints_json, importance, importance_reasons_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          thread_id, title, brief, topics_json, retrieval_hints_json, aboutness_json, importance, importance_reasons_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           title=excluded.title,
           brief=excluded.brief,
           topics_json=excluded.topics_json,
           retrieval_hints_json=excluded.retrieval_hints_json,
+          aboutness_json=excluded.aboutness_json,
           importance=excluded.importance,
           importance_reasons_json=excluded.importance_reasons_json,
           updated_at=excluded.updated_at
@@ -971,6 +1244,7 @@ export class ConversationThreadStore {
           normalized.brief,
           topicsJson,
           retrievalHintsJson,
+          aboutnessJson,
           normalized.importance,
           importanceReasonsJson,
           now,
@@ -984,10 +1258,10 @@ export class ConversationThreadStore {
         if (facet.text.trim().length === 0) continue;
         this.db.run(
           `
-          INSERT INTO conversation_thread_facets (thread_id, facet, text, weight, updated_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO conversation_thread_facets (thread_id, facet, text, updated_at)
+          VALUES (?, ?, ?, ?)
           `,
-          [threadId, facet.facet, facet.text, facet.weight, now],
+          [threadId, facet.facet, facet.text, now],
         );
       }
 
@@ -997,6 +1271,7 @@ export class ConversationThreadStore {
         SET last_summarized_at = ?,
             last_embedded_at = NULL,
             summary_input_hash = ?,
+            summary_prompt_context_hash = ?,
             embedding_input_hash = NULL,
             summary_version = ?,
             embedding_version = ?
@@ -1005,6 +1280,7 @@ export class ConversationThreadStore {
         [
           now,
           summaryInputHash,
+          promptContextHash,
           CONVERSATION_THREAD_SUMMARY_VERSION,
           CONVERSATION_THREAD_EMBEDDING_VERSION,
           threadId,
@@ -1024,17 +1300,16 @@ export class ConversationThreadStore {
     const rows = this.db
       .query(
         `
-        SELECT facet, text, weight
+        SELECT facet, text
         FROM conversation_thread_facets
         WHERE thread_id = ?
-        ORDER BY weight DESC, facet ASC
+        ORDER BY ${facetWeightSql("conversation_thread_facets")} DESC, facet ASC
         `,
       )
       .all(threadId) as FacetRow[];
     return rows.map((row) => ({
       facet: row.facet,
       text: row.text,
-      weight: row.weight,
     }));
   }
 
@@ -1104,13 +1379,14 @@ export class ConversationThreadStore {
           s.brief,
           s.topics_json,
           s.retrieval_hints_json,
+          s.aboutness_json,
           s.importance,
           s.importance_reasons_json,
           max(fm.facet_score) AS lexical_score
         FROM (
           SELECT
             f.thread_id,
-            f.weight AS facet_score
+            ${facetWeightSql("f")} AS facet_score
           FROM conversation_thread_facets_fts
           JOIN conversation_thread_facets f ON f.rowid = conversation_thread_facets_fts.rowid
           WHERE conversation_thread_facets_fts MATCH ?
@@ -1141,6 +1417,7 @@ export class ConversationThreadStore {
         brief: row.brief,
         topics: safeStringArrayFromJson(row.topics_json),
         retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
+        aboutness: safeAboutnessFromJson(row.aboutness_json),
         importance: safeImportance(row.importance),
         importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
         startTs: row.start_ts,
@@ -1178,9 +1455,16 @@ export class ConversationThreadStore {
           s.brief,
           s.topics_json,
           s.retrieval_hints_json,
+          s.aboutness_json,
           s.importance,
           s.importance_reasons_json,
-          sum(max(0.0, 1.0 - vec_distance_cosine(e.embedding, ?)) * f.weight) AS semantic_score
+          sum(
+            max(
+              0.0,
+              ((1.0 - vec_distance_cosine(e.embedding, ?)) - ${SEMANTIC_SIMILARITY_FLOOR})
+                / ${1 - SEMANTIC_SIMILARITY_FLOOR}
+            ) * ${facetWeightSql("f")}
+          ) / nullif(sum(${facetWeightSql("f")}), 0) AS semantic_score
         FROM conversation_thread_embeddings e
         JOIN conversation_thread_facets f
           ON f.thread_id = e.thread_id
@@ -1219,6 +1503,7 @@ export class ConversationThreadStore {
         brief: row.brief,
         topics: safeStringArrayFromJson(row.topics_json),
         retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
+        aboutness: safeAboutnessFromJson(row.aboutness_json),
         importance: safeImportance(row.importance),
         importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
         startTs: row.start_ts,
@@ -1291,6 +1576,33 @@ function buildSearchFilterClause(
     values.push(filters.beforeTs);
   }
 
+  if (filters?.afterTs !== undefined) {
+    clauses.push("t.end_ts >= ?");
+    values.push(filters.afterTs);
+  }
+
+  return {
+    sql: clauses.length > 0 ? clauses.join(" AND ") : "1 = 1",
+    values,
+  };
+}
+
+function buildThreadScopeClause(filters?: {
+  threadId?: string;
+  beforeTs?: number;
+  afterTs?: number;
+}): { sql: string; values: Array<string | number> } {
+  const clauses: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (filters?.threadId) {
+    clauses.push("t.thread_id = ?");
+    values.push(filters.threadId);
+  }
+  if (filters?.beforeTs !== undefined) {
+    clauses.push("t.end_ts <= ?");
+    values.push(filters.beforeTs);
+  }
   if (filters?.afterTs !== undefined) {
     clauses.push("t.end_ts >= ?");
     values.push(filters.afterTs);
