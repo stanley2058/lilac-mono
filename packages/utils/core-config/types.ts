@@ -94,6 +94,7 @@ export type UniversalCoreConfig = {
         enabled: boolean;
         model: string;
         concurrency: number;
+        includePromptContext: boolean;
       };
       embedding: {
         enabled: boolean;

@@ -704,6 +704,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
           enabled: false,
           model: "fast",
           concurrency: 1,
+          includePromptContext: false,
         },
         embedding: {
           enabled: false,

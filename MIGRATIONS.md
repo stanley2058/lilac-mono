@@ -44,6 +44,7 @@ New v2 fields:
 - `conversation.thread.summarization.enabled`: default-false gate for background conversation thread summarization.
 - `conversation.thread.summarization.model`: model used for conversation thread summaries; defaults to `fast`.
 - `conversation.thread.summarization.concurrency`: number of threads to summarize concurrently inside one run; defaults to `1`.
+- `conversation.thread.summarization.includePromptContext`: default-false option to include `MEMORY.md`, `USER.md`, and optional `ENTITIES.md` as background-only summarization context.
 - `conversation.thread.embedding.enabled` and `conversation.thread.embedding.model`: default-false semantic thread embedding generation using an AI SDK embedding model ref.
 
 Default changes from v1:
