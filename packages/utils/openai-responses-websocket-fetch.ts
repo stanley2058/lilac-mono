@@ -384,7 +384,9 @@ export function createOpenAIResponsesWebSocketFetch(
 
         const onMessage = (event: Event) => {
           void (async () => {
+            if (cleanedUp) return;
             const text = await decodeWebSocketData(event);
+            if (cleanedUp) return;
             if (!text) return;
 
             let eventJson: Record<string, unknown>;
@@ -410,7 +412,12 @@ export function createOpenAIResponsesWebSocketFetch(
 
             const normalized = normalizeResponsesEvent(eventJson, options.normalizeEvent);
 
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
+            try {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
+            } catch {
+              cleanup({ closeConnection: true });
+              return;
+            }
 
             const type = typeof normalized.type === "string" ? normalized.type : "";
             if (type === "error") {
@@ -430,11 +437,21 @@ export function createOpenAIResponsesWebSocketFetch(
                   outputItems,
                 };
               }
-              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              try {
+                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              } catch {
+                cleanup({ closeConnection: true });
+                return;
+              }
               cleanup();
-              controller.close();
+              try {
+                controller.close();
+              } catch {}
             }
-          })();
+          })().catch(() => {
+            canPersistContinuation = false;
+            cleanup({ closeConnection: true });
+          });
         };
 
         const onError = (event: Event) => {

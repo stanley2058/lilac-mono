@@ -78,6 +78,29 @@ export function normalizeCodexResponsesRequestRecord(
   return normalized;
 }
 
+function normalizeCodexResponsesEvent(event: Record<string, unknown>): Record<string, unknown> {
+  if (event.type === "response.done") {
+    return {
+      ...event,
+      type: "response.completed",
+    };
+  }
+
+  // Codex can emit reasoning-summary done events without the corresponding
+  // reasoning output item state expected by @ai-sdk/openai's Responses stream
+  // transform. We don't consume reasoning in these summarization calls, so
+  // normalize the event into a no-op delta that keeps the stream parser alive.
+  if (event.type === "response.reasoning_summary_part.done") {
+    return {
+      ...event,
+      type: "response.reasoning_summary_text.delta",
+      delta: "",
+    };
+  }
+
+  return event;
+}
+
 export function getModelProviders() {
   let codexRefreshInFlight: Promise<void> | null = null;
   const logger = createLogger({
@@ -104,13 +127,7 @@ export function getModelProviders() {
     mode: env.providers.codex.responsesTransport,
     url: "wss://chatgpt.com/backend-api/codex/responses",
     completionEventTypes: ["response.completed", "response.done"],
-    normalizeEvent: (event) => {
-      if (event.type !== "response.done") return event;
-      return {
-        ...event,
-        type: "response.completed",
-      };
-    },
+    normalizeEvent: normalizeCodexResponsesEvent,
     onTransportSelected: (details) => {
       logger.info("responses transport selected", {
         provider: "codex",
