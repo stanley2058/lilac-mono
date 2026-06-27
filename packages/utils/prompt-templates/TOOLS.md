@@ -66,7 +66,7 @@ cat payload.json | tools <tool> --stdin
 - `attachment.add_files` — Reads local files and attaches them to the current reply.
 - `attachment.download` — Download inbound user message attachments into the sandbox (i.e., download the files and images you "see" into the sandbox)
 - `discovery.search` — Primary memory retrieval entry. Search unified agent memory across conversations, prompts, and heartbeat files with grouped origins, time windows, and surrounding context.
-- `conversation.thread.search` — Search summarized Discord conversation threads by meaning/topic; returns compact thread summaries, importance, topics, and ids for follow-up reading.
+- `conversation.thread.search` — Search summarized Discord conversation threads by meaning/topic; returns compact threadId, title, and brief by default, with verbose metadata available for diagnostics.
 - `conversation.thread.read` — Read a conversation thread transcript by `threadId` with offset/limit pagination.
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
 - `surface.activities.recentAgentWrites` — List recent visible writes produced by the agent, with message ids and thin previews.

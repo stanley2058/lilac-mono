@@ -35,3 +35,7 @@
 - [x] Exclude one-message threads from summarization eligibility.
 - [x] Normalize Discord entities before thread summarization.
 - [x] Add English-first summarizer guidance and retrieval hints for colloquial search.
+- [x] Add positive-only aboutness summary fields and weighted semantic facets.
+- [ ] Retest job/work complaint queries against DF/interpersonal false positives after clearing and re-summarizing.
+- [x] If aboutness facets are insufficient, add one request-time LLM aboutness interpretation pass over all query variants plus generic coverage scoring.
+- [ ] If query interpretation is insufficient, add a top-N LLM reranker for subject-level relevance judgment.

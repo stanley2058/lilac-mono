@@ -132,11 +132,18 @@ Storage:
 Embedding granularity:
 
 - Multiple embeddings per thread are allowed and preferred.
-- Initial facets:
+- Summary facets:
   - `combined`: title plus brief plus topics
   - `brief`
   - `topics`
   - `title`
+  - `retrievalHints`
+  - positive-only aboutness facets:
+    - `domains`
+    - `situations`
+    - `complaintTargets`
+    - `entities`
+    - `userWouldAskForThisAs`
 
 Ranking aggregation:
 
@@ -144,6 +151,28 @@ Ranking aggregation:
   - combined > brief >> topics >>> title
 - If a facet has no embedding or embedding search fails, that facet contributes 0.
 - Lexical fallback over title, brief, and topics should still work when embeddings are unavailable.
+
+## Aboutness Retrieval Plan
+
+Encode what a thread is about, not what it is not about. The summarizer sees the full thread context, so it should materialize positive retrieval evidence that future search can compare against the user's query.
+
+Add positive-only aboutness fields to summaries:
+
+- `domains`: broad real-world or project domains, such as day job, workplace, Discord social conflict, architecture, debugging, or career planning.
+- `situations`: concrete situations in the thread, such as false accusation, design handoff issue, review frustration, or migration planning.
+- `complaintTargets`: what frustration, venting, or criticism is directed at when present, such as company process, coworker handoff, DF's accusation, or a flaky API.
+- `entities`: important people, projects, tools, organizations, files, commands, or named concepts.
+- `userWouldAskForThisAs`: natural future-search phrases someone might type to find this thread.
+
+Do not add precomputed `explicitExcludes` or other negative facets. Negative relevance is query-dependent and hard to enumerate without knowing the future query.
+
+Incremental ladder:
+
+1. Index the new positive aboutness fields as semantic facets. Weight `userWouldAskForThisAs` and `complaintTargets` highest, and keep score aggregation normalized so longer summaries do not win by having more fields.
+2. If this does not separate emotionally similar but topically different threads, add request-time LLM aboutness interpretation into the same positive dimensions. For multi-query input, join all query variants and capture aboutness once for the whole request, not once per query.
+3. Apply generic aboutness coverage scoring over the recall candidates. Reward positive evidence for the request's subject/domain/target/situation and penalize entity-only or mood-only matches when the request has specific aboutness.
+4. If retrieval is still poor, add a top-N LLM reranker that judges whether each candidate is about the original query's intended subject, not merely emotionally similar.
+5. Keep verbose attribution/debug output sufficient to inspect which query variants, aboutness fields, and coverage multipliers caused bad matches before adding more heuristics.
 
 ## Search Tool
 
@@ -154,11 +183,8 @@ Default output should be compact and token efficient:
 - `threadId`
 - `title`
 - `brief`
-- `topics`
-- `timeRange`
-- `messageCount`
 
-Do not include transcripts or raw score details by default.
+Do not include transcripts, topics, aboutness, importance, time ranges, message counts, session ids, or raw score details by default.
 
 Inputs to consider:
 
@@ -174,6 +200,7 @@ Inputs to consider:
 Verbose output can include:
 
 - score components
+- topics, retrieval hints, aboutness, importance, time ranges, and message counts
 - channel/session ids
 - start/end message ids
 - summary and embedding version metadata
