@@ -39,6 +39,20 @@ conversation:
       enabled: false
       # Provider/model ref or models.def alias for an AI SDK embedding model.
       model: openai/text-embedding-3-small
+    autoInject:
+      # Enable automatic injection of related thread title metadata before answers
+      # to long, meaningful user messages.
+      enabled: false
+      # Minimum authored text mass after removing URLs, Discord syntax, punctuation,
+      # and discounting code blocks. 80 is a moderate Discord default.
+      minTextUnits: 80
+      # Max thread titles to inject.
+      limit: 3
+      # Search mode for auto-injected metadata: hybrid, semantic, or lexical.
+      mode: hybrid
+      # Only inject threads containing at least one user visible in the composed
+      # request/reply-chain context.
+      filterCurrentParticipants: false
 
 surface:
   # Router behavior is surface-wide (not per-adapter).

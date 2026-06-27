@@ -91,12 +91,23 @@ const queryAboutnessSchema = z.object({
   intentSummary: z.string(),
 });
 
+const autoInjectQueryPlanSchema = z.object({
+  queries: z.array(z.string()).min(1).max(MULTI_QUERY_MAX),
+  aboutness: queryAboutnessSchema,
+});
+
 export type ConversationThreadQueryAboutness = z.infer<typeof queryAboutnessSchema>;
+export type ConversationThreadAutoInjectQueryPlan = z.infer<typeof autoInjectQueryPlanSchema>;
 
 export type ConversationThreadQueryAboutnessSummarizer = (input: {
   cfg: CoreConfig;
   queries: readonly string[];
 }) => Promise<ConversationThreadQueryAboutness>;
+
+export type ConversationThreadAutoInjectQueryPlanner = (input: {
+  cfg: CoreConfig;
+  text: string;
+}) => Promise<ConversationThreadAutoInjectQueryPlan>;
 
 export type ConversationThreadRunSummarizationInput = {
   jobId?: string;
@@ -129,7 +140,7 @@ export type ConversationThreadRunSummarizationResult = {
 
 export type ConversationThreadToolService = Pick<
   ConversationThreadService,
-  "search" | "read" | "runSummarization"
+  "search" | "read" | "runSummarization" | "planAutoInjectSearch"
 >;
 
 export type ConversationThreadSearchResult = {
@@ -369,6 +380,16 @@ function normalizeQueryAboutness(
     userWouldAskForThisAs: list(aboutness.userWouldAskForThisAs, 8, 160),
     intentSummary:
       intentSummary.length > 300 ? intentSummary.slice(0, 300).trimEnd() : intentSummary,
+  };
+}
+
+function normalizeAutoInjectQueryPlan(
+  plan: ConversationThreadAutoInjectQueryPlan,
+): ConversationThreadAutoInjectQueryPlan {
+  const queries = normalizeSearchQueries(plan.queries);
+  return {
+    queries,
+    aboutness: normalizeQueryAboutness(plan.aboutness),
   };
 }
 
@@ -668,6 +689,22 @@ function parseQueryAboutnessJson(text: string): ConversationThreadQueryAboutness
   }
 }
 
+function parseAutoInjectQueryPlanJson(text: string): ConversationThreadAutoInjectQueryPlan {
+  try {
+    const parsed = JSON.parse(extractJsonObject(text)) as unknown;
+    return normalizeAutoInjectQueryPlan(autoInjectQueryPlanSchema.parse(parsed));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ConversationThreadSummaryParseError(
+      `auto-inject query plan JSON parse failed: ${message}`,
+      {
+        cause: e,
+        rawOutput: truncateErrorDetail(text),
+      },
+    );
+  }
+}
+
 function isSummaryStreamDecodeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -718,12 +755,14 @@ function shouldAllowDiscordThread(
 function buildSearchFilters(input: {
   sessionId?: string;
   participantId?: string;
+  participantIdsAny?: readonly string[];
   beforeTs?: number;
   afterTs?: number;
 }): ConversationThreadSearchFilters {
   return {
     sessionId: input.sessionId?.trim() || undefined,
     participantId: input.participantId?.trim() || undefined,
+    participantIdsAny: input.participantIdsAny,
     beforeTs: input.beforeTs,
     afterTs: input.afterTs,
   };
@@ -871,6 +910,50 @@ async function defaultQueryAboutnessSummarizer(input: {
   return normalizeQueryAboutness(result.output);
 }
 
+async function defaultAutoInjectQueryPlanner(input: {
+  cfg: CoreConfig;
+  text: string;
+}): Promise<ConversationThreadAutoInjectQueryPlan> {
+  const resolved = resolveSummarizationModel(input.cfg);
+  const messages = [
+    {
+      role: "user",
+      content: [
+        "Create compact conversation-memory search queries for this new user message.",
+        "Do not answer the message. Extract what prior conversation threads would be relevant context for responding.",
+        "Return search queries and positive aboutness evidence only.",
+        "",
+        "## User message",
+        input.text,
+      ].join("\n"),
+    },
+  ] satisfies ModelMessage[];
+  const instructions = buildAutoInjectQueryPlanInstructions();
+
+  if (resolved.provider === "codex") {
+    const result = streamText({
+      model: resolved.model,
+      instructions,
+      messages,
+      reasoning: resolved.reasoning,
+      providerOptions: resolved.providerOptions,
+    });
+    return parseAutoInjectQueryPlanJson(await result.text);
+  }
+
+  const result = await generateText({
+    model: resolved.model,
+    output: Output.object({ schema: autoInjectQueryPlanSchema }),
+    instructions,
+    messages,
+    maxOutputTokens: 2048,
+    reasoning: resolved.reasoning,
+    providerOptions: resolved.providerOptions,
+  });
+
+  return normalizeAutoInjectQueryPlan(result.output);
+}
+
 function buildQueryAboutnessInstructions(): string {
   return [
     "You interpret search requests for a conversation memory index.",
@@ -887,6 +970,23 @@ function buildQueryAboutnessInstructions(): string {
     "- intentSummary: one sentence describing the user's intended subject of retrieval.",
     "Do not let entity names or emotional tone alone become the whole intent when the query has a concrete subject, domain, or target.",
     "Write primarily in English. Preserve exact names, code identifiers, error messages, and useful source-language phrases.",
+  ].join("\n");
+}
+
+function buildAutoInjectQueryPlanInstructions(): string {
+  return [
+    "You create retrieval queries for an automatic conversation-memory lookup.",
+    "Return exactly one JSON object and nothing else.",
+    'Shape: {"queries":["..."],"aboutness":{"domains":["..."],"situations":["..."],"targets":["..."],"entities":["..."],"userWouldAskForThisAs":["..."],"intentSummary":"..."}}',
+    "",
+    "The input is a newly received user message, possibly a long article or essay.",
+    "Do not summarize the article for the final answer. Instead, generate semantic search queries that would find prior conversation threads useful for responding to it.",
+    "Use 2-6 query variants for substantive long input. Prefer compact natural phrases over dense paragraphs.",
+    "Queries should name the durable subject, task, decision, complaint target, project, technology, entities, or situation.",
+    "Avoid copying long passages. Preserve exact names, code identifiers, errors, and source-language phrases only when central.",
+    "Use only positive aboutness evidence: what relevant prior threads would be about, not what should be excluded.",
+    "The aboutness object follows the same meaning as conversation-thread search query aboutness.",
+    "Write primarily in English.",
   ].join("\n");
 }
 
@@ -966,6 +1066,7 @@ export class ConversationThreadService {
       getConfig: () => Promise<CoreConfig>;
       summarizer?: ConversationThreadSummarizer;
       queryAboutnessSummarizer?: ConversationThreadQueryAboutnessSummarizer;
+      autoInjectQueryPlanner?: ConversationThreadAutoInjectQueryPlanner;
       embeddingAdapter?: ConversationThreadEmbeddingAdapter;
       entityMapper?: Pick<EntityMapper, "normalizeIncomingText">;
     },
@@ -980,10 +1081,12 @@ export class ConversationThreadService {
     limit?: number;
     sessionId?: string;
     participantId?: string;
+    participantIdsAny?: readonly string[];
     beforeTs?: number;
     afterTs?: number;
     mode?: "hybrid" | "semantic" | "lexical";
     verbose?: boolean;
+    queryAboutness?: ConversationThreadQueryAboutness;
   }): Promise<ConversationThreadSearchResult> {
     this.refreshThreads();
     const limit = Math.min(50, Math.max(1, Math.floor(input.limit ?? 5)));
@@ -1001,13 +1104,14 @@ export class ConversationThreadService {
       filters,
       allowlist: buildSearchAllowlist(cfg),
     });
-    const { aboutness: queryAboutness, error: queryAboutnessError } =
-      await this.captureQueryAboutness({
-        queries,
-        cfg,
-        mode,
-        candidateCount: recallHits.length,
-      });
+    const { aboutness: queryAboutness, error: queryAboutnessError } = input.queryAboutness
+      ? { aboutness: normalizeQueryAboutness(input.queryAboutness), error: undefined }
+      : await this.captureQueryAboutness({
+          queries,
+          cfg,
+          mode,
+          candidateCount: recallHits.length,
+        });
     const hits = this.applyAboutnessCoverage(recallHits, queryAboutness).slice(0, limit);
     return {
       meta: {
@@ -1024,6 +1128,16 @@ export class ConversationThreadService {
       },
       results: hits.map((hit) => this.formatSearchHit(hit, input.verbose ?? false)),
     };
+  }
+
+  async planAutoInjectSearch(input: {
+    text: string;
+  }): Promise<ConversationThreadAutoInjectQueryPlan> {
+    const text = input.text.trim();
+    if (!text) throw new Error("auto-inject query planning text is required");
+    const cfg = await this.params.getConfig();
+    const planner = this.params.autoInjectQueryPlanner ?? defaultAutoInjectQueryPlanner;
+    return normalizeAutoInjectQueryPlan(await planner({ cfg, text }));
   }
 
   async read(input: {

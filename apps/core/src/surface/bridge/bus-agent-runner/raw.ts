@@ -80,6 +80,20 @@ export function getChainMessageIdsFromRaw(raw: unknown): readonly string[] {
   return value.filter((id): id is string => typeof id === "string");
 }
 
+export function getParticipantUserIdsFromRaw(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const value = (raw as Record<string, unknown>)["participantUserIds"];
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0),
+    ),
+  ];
+}
+
 export function requestRawReferencesMessage(raw: unknown, messageId: string): boolean {
   return getChainMessageIdsFromRaw(raw).includes(messageId);
 }

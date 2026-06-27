@@ -80,6 +80,7 @@ import {
   HEARTBEAT_HANDOFF_SESSION_ID,
 } from "../../transcript/heartbeat-handoff";
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import type { ConversationThreadToolService } from "../../conversation/thread-service";
 import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { buildSystemPromptForProfile } from "./bus-agent-runner/subagent-prompt";
@@ -97,6 +98,7 @@ import {
   type AgentRunProfile,
   parseCustomCommandFromRaw,
   parseBufferedForActiveRequestIdFromRaw,
+  getParticipantUserIdsFromRaw,
   parseParentChannelIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -186,6 +188,73 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function userContentText(content: ModelMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as Record<string, unknown>;
+    if (record.type !== "text") continue;
+    const text = record.text;
+    if (typeof text === "string") parts.push(text);
+  }
+  return parts.join("\n");
+}
+
+function latestUserText(messages: readonly ModelMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    if (message.role !== "user") continue;
+    const text = userContentText(message.content).trim();
+    if (text.length > 0) return text;
+  }
+  return "";
+}
+
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>()]+/giu;
+const DISCORD_TOKEN_RE = /<(?:(?:a?:\w+:\d+)|(?:[@#]&?\d+)|(?:t:\d+(?::[tTdDfFR])?))>/gu;
+const CODE_BLOCK_RE = /```[\s\S]*?```/gu;
+const INLINE_CODE_RE = /`[^`]*`/gu;
+const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
+const CODE_TEXT_UNITS_CAP = 20;
+
+function countMeaningfulTextUnits(text: string): number {
+  let units = 0;
+  for (const char of text) {
+    if (!WORD_CHAR_RE.test(char)) continue;
+    units += CJK_RE.test(char) ? 2 : 1;
+  }
+  return units;
+}
+
+export function measureMeaningfulTextUnits(raw: string): number {
+  let text = raw.normalize("NFKC");
+  text = text.replace(URL_RE, " ");
+  text = text.replace(DISCORD_TOKEN_RE, " ");
+
+  let codeUnits = 0;
+  text = text.replace(CODE_BLOCK_RE, (match) => {
+    codeUnits += countMeaningfulTextUnits(match) * 0.2;
+    return " ";
+  });
+  text = text.replace(INLINE_CODE_RE, (match) => {
+    codeUnits += countMeaningfulTextUnits(match) * 0.3;
+    return " ";
+  });
+
+  return countMeaningfulTextUnits(text) + Math.min(codeUnits, CODE_TEXT_UNITS_CAP);
+}
+
+export function shouldRunAutoInjectedThreadSearch(input: {
+  text: string;
+  minTextUnits: number;
+}): boolean {
+  return measureMeaningfulTextUnits(input.text) >= input.minTextUnits;
 }
 
 function readNonEmptyString(value: unknown): string | undefined {
@@ -811,6 +880,13 @@ function buildCustomCommandToolCallId(requestId: string, name: string): string {
   });
 }
 
+function buildAutoInjectedThreadSearchToolCallId(requestId: string): string {
+  return buildSyntheticToolCallId({
+    prefix: "conversation_thread_search",
+    seed: `${requestId}:auto-inject`,
+  });
+}
+
 function formatCompactCount(count: number | undefined): string {
   if (typeof count !== "number" || !Number.isFinite(count)) return "?";
   return String(Math.max(0, Math.trunc(count)));
@@ -874,6 +950,145 @@ function buildCustomCommandMessages(params: {
       ],
     },
   ];
+}
+
+const AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME = "conversation_thread_search";
+const AUTO_INJECTED_THREAD_SEARCH_NOTICE =
+  "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.";
+
+export type AutoInjectedThreadSearchPayload = {
+  note: string;
+  entries: Array<{
+    threadId: string;
+    title: string;
+  }>;
+};
+
+export function buildAutoInjectedThreadSearchMessages(params: {
+  toolCallId: string;
+  entries: readonly { threadId: string; title: string }[];
+}): ModelMessage[] {
+  const payload: AutoInjectedThreadSearchPayload = {
+    note: AUTO_INJECTED_THREAD_SEARCH_NOTICE,
+    entries: params.entries.map((entry) => ({
+      threadId: entry.threadId,
+      title: entry.title,
+    })),
+  };
+
+  return [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: params.toolCallId,
+          toolName: AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME,
+          input: {
+            note: "auto-injected after long user input",
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: params.toolCallId,
+          toolName: AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME,
+          output: {
+            type: "json",
+            value: payload,
+          },
+        },
+      ],
+    },
+  ];
+}
+
+export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
+  cfg: CoreConfig;
+  conversationThreads?: ConversationThreadToolService;
+  requestId: string;
+  raw?: unknown;
+  userMessages: readonly ModelMessage[];
+  publishToolStatus: (update: {
+    toolCallId: string;
+    status: "start" | "end";
+    display: string;
+    ok?: boolean;
+    error?: string;
+  }) => Promise<void>;
+  onError: (message: string, error: unknown) => void;
+}): Promise<ModelMessage[]> {
+  const autoInject = params.cfg.conversation.thread.autoInject;
+  if (!autoInject.enabled) return [];
+  if (!params.conversationThreads) return [];
+
+  const text = latestUserText(params.userMessages);
+  if (!shouldRunAutoInjectedThreadSearch({ text, minTextUnits: autoInject.minTextUnits })) {
+    return [];
+  }
+
+  const participantIds = autoInject.filterCurrentParticipants
+    ? getParticipantUserIdsFromRaw(params.raw)
+    : [];
+  if (autoInject.filterCurrentParticipants && participantIds.length === 0) return [];
+
+  const toolCallId = buildAutoInjectedThreadSearchToolCallId(params.requestId);
+  const display = `${AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME} auto-injected metadata`;
+  const publishToolStatusBestEffort = async (update: {
+    toolCallId: string;
+    status: "start" | "end";
+    display: string;
+    ok?: boolean;
+    error?: string;
+  }) => {
+    try {
+      await params.publishToolStatus(update);
+    } catch (error) {
+      params.onError("auto-injected thread search status publish failed; continuing", error);
+    }
+  };
+
+  await publishToolStatusBestEffort({ toolCallId, status: "start", display });
+
+  try {
+    const plan = await params.conversationThreads.planAutoInjectSearch({ text });
+    const search = await params.conversationThreads.search({
+      query: plan.queries,
+      queryAboutness: plan.aboutness,
+      limit: autoInject.limit,
+      mode: autoInject.mode,
+      ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
+    });
+    const entries = search.results.map((result) => ({
+      threadId: result.threadId,
+      title: result.title,
+    }));
+
+    await publishToolStatusBestEffort({
+      toolCallId,
+      status: "end",
+      display,
+      ok: true,
+    });
+
+    if (entries.length === 0) return [];
+    return buildAutoInjectedThreadSearchMessages({ toolCallId, entries });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await publishToolStatusBestEffort({
+      toolCallId,
+      status: "end",
+      display,
+      ok: false,
+      error: message,
+    });
+    params.onError("auto-injected thread search failed; continuing without metadata", error);
+    return [];
+  }
 }
 
 function buildDeferredSubagentResultMessages(
@@ -2510,6 +2725,7 @@ export async function startBusAgentRunner(params: {
   config?: CoreConfig;
   pluginManager: CoreToolPluginManager;
   customCommands?: CustomCommandManager;
+  conversationThreads?: ConversationThreadToolService;
   /** Where core tools operate (fs tool root). */
   cwd?: string;
   transcriptStore?: TranscriptStore;
@@ -3182,6 +3398,7 @@ export async function startBusAgentRunner(params: {
     let initialMessages: ModelMessage[] = [];
     const parsedCustomCommand = next.recovery ? null : parseCustomCommandFromRaw(next.raw);
     let customCommandMessages: ModelMessage[] = [];
+    let initialMessagesEndWithInjectedTool = false;
     let responseStartIndex = 0;
     const runStats: {
       totalUsage?: LanguageModelUsage;
@@ -4290,11 +4507,42 @@ export async function startBusAgentRunner(params: {
         // If additional messages for the same request id were queued before the run started,
         // merge them into the initial prompt so they don't become separate runs.
         const mergedInitial = mergeQueuedForSameRequest(next, state.queue);
-        initialMessages = [...mergedInitial];
+        const control = parseRequestControlFromRaw(next.raw);
+        const autoInjectedThreadSearchMessages =
+          runProfile === "primary" &&
+          !isHeartbeatSessionId(headers.session_id) &&
+          !control.cancel &&
+          !control.requiresActive
+            ? await maybeBuildAutoInjectedThreadSearchMessages({
+                cfg,
+                conversationThreads: params.conversationThreads,
+                requestId: headers.request_id,
+                raw: next.raw,
+                userMessages: mergedInitial,
+                publishToolStatus: async (update) => {
+                  await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, update, { headers });
+                },
+                onError: (message, error) => {
+                  logger.warn(
+                    message,
+                    {
+                      requestId: headers.request_id,
+                      sessionId: headers.session_id,
+                    },
+                    error,
+                  );
+                },
+              })
+            : [];
+        initialMessages = [...mergedInitial, ...autoInjectedThreadSearchMessages];
+        initialMessagesEndWithInjectedTool = autoInjectedThreadSearchMessages.length > 0;
         responseStartIndex = agent.state.messages.length + initialMessages.length;
       }
 
       if (parsedCustomCommand) {
+        await agent.continue();
+      } else if (initialMessagesEndWithInjectedTool) {
+        agent.appendMessages(initialMessages);
         await agent.continue();
       } else {
         await agent.prompt(initialMessages);

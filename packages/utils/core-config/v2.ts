@@ -276,6 +276,21 @@ const conversationSchemaV2 = z
             model: z.string().trim().min(1).default("openai/text-embedding-3-small"),
           })
           .default({ enabled: false, model: "openai/text-embedding-3-small" }),
+        autoInject: z
+          .object({
+            enabled: z.boolean().default(false),
+            minTextUnits: z.number().int().positive().default(80),
+            limit: z.number().int().positive().max(10).default(3),
+            mode: z.enum(["hybrid", "semantic", "lexical"]).default("hybrid"),
+            filterCurrentParticipants: z.boolean().default(false),
+          })
+          .default({
+            enabled: false,
+            minTextUnits: 80,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          }),
       })
       .default({
         summarization: {
@@ -285,6 +300,13 @@ const conversationSchemaV2 = z
           includePromptContext: false,
         },
         embedding: { enabled: false, model: "openai/text-embedding-3-small" },
+        autoInject: {
+          enabled: false,
+          minTextUnits: 80,
+          limit: 3,
+          mode: "hybrid",
+          filterCurrentParticipants: false,
+        },
       }),
   })
   .default({
@@ -296,6 +318,13 @@ const conversationSchemaV2 = z
         includePromptContext: false,
       },
       embedding: { enabled: false, model: "openai/text-embedding-3-small" },
+      autoInject: {
+        enabled: false,
+        minTextUnits: 80,
+        limit: 3,
+        mode: "hybrid",
+        filterCurrentParticipants: false,
+      },
     },
   });
 

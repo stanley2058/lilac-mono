@@ -40,6 +40,20 @@ function getLastUserPreview(messages: readonly ModelMessage[]): string | undefin
   return undefined;
 }
 
+function uniqueNonEmptyStrings(
+  values: readonly (string | undefined)[],
+  options: { exclude?: string } = {},
+): string[] {
+  const exclude = options.exclude?.trim();
+  return [
+    ...new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => !!value && value !== exclude),
+    ),
+  ];
+}
+
 export async function publishBusRequest(params: {
   logger: Logger;
   bus: LilacBus;
@@ -136,6 +150,10 @@ export async function publishComposedRequest(params: {
         triggerType: params.input.triggerType,
         chainMessageIds: composed.chainMessageIds,
         mergedGroups: composed.mergedGroups,
+        participantUserIds: uniqueNonEmptyStrings(
+          composed.mergedGroups.map((group) => group.authorId),
+          { exclude: self.userId },
+        ),
       },
     },
   });
@@ -211,6 +229,10 @@ export async function publishActiveChannelPrompt(params: {
         triggerType: params.input.triggerType ?? "active",
         chainMessageIds: composed.chainMessageIds,
         mergedGroups: composed.mergedGroups,
+        participantUserIds: uniqueNonEmptyStrings(
+          composed.mergedGroups.map((group) => group.authorId),
+          { exclude: self.userId },
+        ),
       },
     },
   });
@@ -246,6 +268,8 @@ export async function publishSingleMessageToActiveRequest(params: {
 
   if (!msg) return;
 
+  const surfaceMessage = await params.adapter.readMsg(params.input.msgRef);
+
   await publishBusRequest({
     logger: params.logger,
     bus: params.bus,
@@ -260,6 +284,9 @@ export async function publishSingleMessageToActiveRequest(params: {
       messages: [msg],
       raw: {
         triggerType: "active",
+        participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
+          exclude: self.userId,
+        }),
       },
     },
   });
@@ -296,6 +323,8 @@ export async function publishSingleMessagePrompt(params: {
 
   if (!msg) return;
 
+  const surfaceMessage = await params.adapter.readMsg(params.input.msgRef);
+
   await publishBusRequest({
     logger: params.logger,
     bus: params.bus,
@@ -312,6 +341,9 @@ export async function publishSingleMessagePrompt(params: {
       raw: {
         triggerType: "active",
         chainMessageIds: [params.input.msgRef.messageId],
+        participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
+          exclude: self.userId,
+        }),
         ...params.input.raw,
       },
     },

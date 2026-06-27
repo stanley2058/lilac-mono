@@ -235,9 +235,39 @@ Use offset/limit for phase 1 simplicity.
 - Summary and embedding jobs should be idempotent.
 - Store data versions so prompt/schema/model changes can mark old summaries or embeddings stale.
 
+## Automatic Thread Metadata Injection
+
+Automatic similar-thread metadata injection is implemented behind default-false config:
+
+- `conversation.thread.autoInject.enabled`: default `false`.
+- `conversation.thread.autoInject.minTextUnits`: default `80`; only run when the latest real user input has enough meaningful authored text so short prompts stay fast.
+- `conversation.thread.autoInject.limit`: max injected title entries.
+- `conversation.thread.autoInject.mode`: `hybrid`, `semantic`, or `lexical`.
+- `conversation.thread.autoInject.filterCurrentParticipants`: when enabled, keep only candidate threads that contain at least one Discord user visible in the composed request/reply-chain context. The main agent participant is already required by thread formation and is not part of this filter.
+
+The input gate measures meaningful text units instead of raw characters:
+
+- URLs, Discord mentions/channels/roles/timestamps/custom emoji, whitespace, punctuation, and Markdown syntax do not count.
+- Latin letters/numbers count as 1 unit.
+- Han, Hiragana, Katakana, and Hangul characters count as 2 units.
+- Fenced code blocks count at 0.2x and inline code counts at 0.3x, with total code-derived units capped at 20.
+- Attachments/embeds by themselves do not count; only accompanying authored text can trigger injection.
+
+The injection path fabricates a `conversation.thread.search` tool-call/result before the model answers. It first plans compact semantic query variants plus positive aboutness from the long input, then searches with the precomputed aboutness so request-time query interpretation is not duplicated.
+
+Injected result shape is intentionally minimal:
+
+```json
+{
+  "note": "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
+  "entries": [{ "threadId": "...", "title": "..." }]
+}
+```
+
+Search or planning failures fail open: no metadata is injected and the normal answer proceeds.
+
 ## Deferred
 
-- Automatic similar-thread injection after each user turn.
 - Canonical tags or graph-like topic systems.
 - Model-based boundary classification.
 - Merging inferred thread fragments.

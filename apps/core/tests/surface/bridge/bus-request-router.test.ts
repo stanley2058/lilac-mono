@@ -4060,6 +4060,7 @@ describe("startBusRequestRouter", () => {
     expect(received[0].data.queue).toBe("prompt");
     expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${followMsgId}`);
     expect(received[0].data.raw?.pendingMentionReplyBatch?.size).toBe(1);
+    expect(received[0].data.raw?.participantUserIds).toEqual(["u1"]);
     expect(collectUserText(received[0].data.messages)).toContain("B one");
 
     await sub.stop();
@@ -4241,6 +4242,7 @@ describe("startBusRequestRouter", () => {
     expect(received[0].data.queue).toBe("prompt");
     expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${followMsgTwo}`);
     expect(received[0].data.raw?.pendingMentionReplyBatch?.size).toBe(2);
+    expect([...(received[0].data.raw?.participantUserIds ?? [])].sort()).toEqual(["u1", "u2"]);
 
     const userText = collectUserText(received[0].data.messages);
     expect(userText).toContain("B one");

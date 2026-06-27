@@ -710,6 +710,13 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
           enabled: false,
           model: "openai/text-embedding-3-small",
         },
+        autoInject: {
+          enabled: false,
+          minTextUnits: 80,
+          limit: 3,
+          mode: "hybrid",
+          filterCurrentParticipants: false,
+        },
       },
     },
     surface: {

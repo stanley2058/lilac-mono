@@ -1065,6 +1065,126 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("filters thread search by any visible participant", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "p1", userId: "u1", text: "shared topic alpha", ts: 1 }),
+      msg({ channelId: "c1", messageId: "p2", userId: "u2", text: "shared topic reply", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "p3",
+        userId: "u3",
+        text: "shared topic beta",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "p4",
+        userId: "u4",
+        text: "shared topic reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async ({ threadId }) => ({
+        title: threadId.endsWith(":p1") ? "Thread with u1 and u2" : "Thread with u3 and u4",
+        brief: "Shared topic summary",
+        topics: ["shared topic"],
+        retrievalHints: ["shared topic"],
+      }),
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    const u1OrU2 = await service.search({
+      query: "shared topic",
+      mode: "lexical",
+      limit: 10,
+      participantIdsAny: ["u1", "u2"],
+    });
+    expect(u1OrU2.results.map((item) => item.title)).toEqual(["Thread with u1 and u2"]);
+
+    const u2OrU3 = await service.search({
+      query: "shared topic",
+      mode: "lexical",
+      limit: 10,
+      participantIdsAny: ["u2", "u3"],
+    });
+    expect(u2OrU3.results.map((item) => item.title).sort()).toEqual([
+      "Thread with u1 and u2",
+      "Thread with u3 and u4",
+    ]);
+
+    const unrelated = await service.search({
+      query: "shared topic",
+      mode: "lexical",
+      limit: 10,
+      participantIdsAny: ["u5"],
+    });
+    expect(unrelated.results).toEqual([]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("uses precomputed query aboutness without a second capture", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "pre-1", userId: "u1", text: "precomputed topic", ts: 1 }),
+      msg({ channelId: "c1", messageId: "pre-2", userId: "u2", text: "precomputed reply", ts: 2 }),
+    ]);
+
+    let queryCaptureCalls = 0;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      queryAboutnessSummarizer: async () => {
+        queryCaptureCalls += 1;
+        throw new Error("should not be called");
+      },
+      autoInjectQueryPlanner: async () => ({
+        queries: ["precomputed topic"],
+        aboutness: {
+          domains: ["conversation memory"],
+          situations: ["precomputed search"],
+          targets: ["thread lookup"],
+          entities: ["precomputed topic"],
+          userWouldAskForThisAs: ["precomputed topic"],
+          intentSummary: "Find the precomputed topic thread.",
+        },
+      }),
+      summarizer: async () => ({
+        title: "Precomputed topic thread",
+        brief: "A thread about a precomputed topic.",
+        topics: ["precomputed topic"],
+        retrievalHints: ["precomputed topic"],
+      }),
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    const plan = await service.planAutoInjectSearch({
+      text: "Long message about precomputed topic",
+    });
+    const result = await service.search({
+      query: plan.queries,
+      queryAboutness: plan.aboutness,
+      verbose: true,
+    });
+
+    expect(queryCaptureCalls).toBe(0);
+    expect(result.results[0]?.title).toBe("Precomputed topic thread");
+    expect(result.meta.queryAboutness?.intentSummary).toBe("Find the precomputed topic thread.");
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("falls back safely when request-time aboutness capture fails", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);

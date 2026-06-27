@@ -100,6 +100,13 @@ export type UniversalCoreConfig = {
         enabled: boolean;
         model: string;
       };
+      autoInject: {
+        enabled: boolean;
+        minTextUnits: number;
+        limit: number;
+        mode: "hybrid" | "semantic" | "lexical";
+        filterCurrentParticipants: boolean;
+      };
     };
   };
 

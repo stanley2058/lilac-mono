@@ -629,6 +629,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
               return {
                 search: (input) => service.search(input),
                 read: (input) => service.read(input),
+                planAutoInjectSearch: (input) => service.planAutoInjectSearch(input),
                 runSummarization: (input) =>
                   input?.dryRun === true || !stopConversationThreadSummarizationWorker
                     ? service.runSummarization(input)
@@ -723,6 +724,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         customCommands,
         cwd,
         transcriptStore: transcriptStore ?? undefined,
+        conversationThreads: conversationThreadToolService,
       });
 
       logger.info("Bus agent runner started", {

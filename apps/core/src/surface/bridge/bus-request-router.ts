@@ -71,6 +71,20 @@ type ActiveSessionState = {
   activeOutputMessageIds: Set<string>;
 };
 
+function uniqueParticipantUserIds(input: {
+  values: readonly (string | undefined)[];
+  exclude: string;
+}): string[] {
+  const exclude = input.exclude.trim();
+  return [
+    ...new Set(
+      input.values
+        .map((value) => value?.trim())
+        .filter((value): value is string => !!value && value !== exclude),
+    ),
+  ];
+}
+
 type DebounceBuffer = {
   sessionId: string;
   sessionConfigId: string;
@@ -736,8 +750,11 @@ export async function startBusRequestRouter(params: {
 
     const chainMessageIds = new Set(composed.chainMessageIds);
     const extraMessages: ModelMessage[] = [];
+    const batchParticipantUserIds: string[] = [];
 
     for (const item of batch.items) {
+      const surfaceMessage = await adapter.readMsg(item.msgRef);
+      if (surfaceMessage?.userId) batchParticipantUserIds.push(surfaceMessage.userId);
       if (chainMessageIds.has(item.msgRef.messageId)) continue;
       const extra = await composeSingleMessage(adapter, {
         platform: "discord",
@@ -789,6 +806,13 @@ export async function startBusRequestRouter(params: {
         triggerType: "reply",
         chainMessageIds: [...chainMessageIds],
         mergedGroups: composed.mergedGroups,
+        participantUserIds: uniqueParticipantUserIds({
+          values: [
+            ...composed.mergedGroups.map((group) => group.authorId),
+            ...batchParticipantUserIds,
+          ],
+          exclude: self.userId,
+        }),
         pendingMentionReplyBatch: {
           sourceRequestId: batch.sourceRequestId,
           size: batch.items.length,

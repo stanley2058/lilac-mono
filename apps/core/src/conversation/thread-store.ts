@@ -125,6 +125,7 @@ export type ConversationThreadSearchHit = {
 export type ConversationThreadSearchFilters = {
   sessionId?: string;
   participantId?: string;
+  participantIdsAny?: readonly string[];
   beforeTs?: number;
   afterTs?: number;
 };
@@ -1569,6 +1570,28 @@ function buildSearchFilterClause(
       )
     `);
     values.push(filters.participantId);
+  }
+
+  const participantIdsAny = [
+    ...new Set(
+      (filters?.participantIdsAny ?? []).map((id) => id.trim()).filter((id) => id.length > 0),
+    ),
+  ];
+  if (participantIdsAny.length > 0) {
+    const placeholders = participantIdsAny.map(() => "?").join(", ");
+    clauses.push(`
+      EXISTS (
+        SELECT 1
+        FROM conversation_thread_messages tm
+        JOIN discord_search_messages m
+          ON m.channel_id = tm.channel_id
+         AND m.message_id = tm.message_id
+        WHERE tm.thread_id = t.thread_id
+          AND m.deleted = 0
+          AND m.user_id IN (${placeholders})
+      )
+    `);
+    values.push(...participantIdsAny);
   }
 
   if (filters?.beforeTs !== undefined) {

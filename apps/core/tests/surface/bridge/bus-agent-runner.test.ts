@@ -15,6 +15,7 @@ import {
 import {
   RESPONSE_COMMENTARY_INSTRUCTIONS,
   createLogger,
+  parseCoreConfigV1ToUniversal,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 import { AiSdkPiAgent } from "@stanley2058/lilac-agent";
@@ -32,14 +33,18 @@ import {
   formatAutoCompactionToolDisplay,
   formatUnknownErrorForDisplay,
   buildHeartbeatOverlayForRequest,
+  buildAutoInjectedThreadSearchMessages,
+  maybeBuildAutoInjectedThreadSearchMessages,
   buildPersistedHeartbeatMessages,
   buildSurfaceMetadataOverlay,
   isRetryableTransientModelError,
   markAssistantTextPartEnded,
   markAssistantTextPartStarted,
+  measureMeaningfulTextUnits,
   mergeToSingleUserMessage,
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
+  shouldRunAutoInjectedThreadSearch,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
   shouldEnableAnthropicPromptCache,
@@ -285,6 +290,239 @@ describe("formatAutoCompactionToolDisplay", () => {
         messageCountBefore: 42,
       }),
     ).toBe("compact context failed");
+  });
+});
+
+describe("buildAutoInjectedThreadSearchMessages", () => {
+  it("builds slim auto-injected thread search metadata messages", () => {
+    const messages = buildAutoInjectedThreadSearchMessages({
+      toolCallId: "auto-thread-1",
+      entries: [{ threadId: "thread-1", title: "Short thread title" }],
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.role).toBe("assistant");
+    expect(messages[1]?.role).toBe("tool");
+    const assistantMessage = messages[0];
+    if (assistantMessage?.role !== "assistant" || typeof assistantMessage.content === "string") {
+      throw new Error("expected assistant tool-call message");
+    }
+    const toolCall = assistantMessage.content[0];
+    expect(toolCall?.type).toBe("tool-call");
+    if (toolCall?.type !== "tool-call") throw new Error("expected tool call");
+    expect(toolCall.toolName).toBe("conversation_thread_search");
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    expect(result?.type).toBe("tool-result");
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.toolName).toBe("conversation_thread_search");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
+        entries: [{ threadId: "thread-1", title: "Short thread title" }],
+      },
+    });
+  });
+});
+
+describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
+  it("skips injection when participant filtering is enabled without visible participants", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: true,
+          },
+        },
+      },
+    };
+    let plannerCalls = 0;
+    let searchCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-1",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => {
+          plannerCalls += 1;
+          return {
+            queries: ["meaningful message"],
+            aboutness: {
+              domains: [],
+              situations: [],
+              targets: [],
+              entities: [],
+              userWouldAskForThisAs: ["meaningful message"],
+              intentSummary: "Find meaningful message threads.",
+            },
+          };
+        },
+        search: async () => {
+          searchCalls += 1;
+          return {
+            meta: {
+              query: "meaningful message",
+              limit: 3,
+              mode: "hybrid",
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [{ threadId: "thread-1", title: "Should not appear", brief: "" }],
+          };
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(messages).toEqual([]);
+    expect(plannerCalls).toBe(0);
+    expect(searchCalls).toBe(0);
+  });
+
+  it("continues injecting metadata when optional status publishing fails", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const errors: string[] = [];
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-1",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          queries: ["meaningful message"],
+          aboutness: {
+            domains: [],
+            situations: [],
+            targets: [],
+            entities: [],
+            userWouldAskForThisAs: ["meaningful message"],
+            intentSummary: "Find meaningful message threads.",
+          },
+        }),
+        search: async () => ({
+          meta: {
+            query: "meaningful message",
+            limit: 3,
+            mode: "hybrid",
+            count: 1,
+            vectorAvailable: false,
+          },
+          results: [{ threadId: "thread-1", title: "Related title", brief: "" }],
+        }),
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {
+        throw new Error("status bus unavailable");
+      },
+      onError: (message) => {
+        errors.push(message);
+      },
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(errors).toEqual([
+      "auto-injected thread search status publish failed; continuing",
+      "auto-injected thread search status publish failed; continuing",
+    ]);
+  });
+});
+
+describe("shouldRunAutoInjectedThreadSearch", () => {
+  const shouldRun = (text: string) => shouldRunAutoInjectedThreadSearch({ text, minTextUnits: 80 });
+
+  it("skips short and Discord-syntax-heavy messages", () => {
+    expect(shouldRun("lol")).toBe(false);
+    expect(shouldRun("wtf is this")).toBe(false);
+    expect(shouldRun("https://x.com/foo lmao")).toBe(false);
+    expect(shouldRun("<@123> thoughts? <#456> <:blob:789> <t:1710000000:R>")).toBe(false);
+  });
+
+  it("runs for enough authored Latin text", () => {
+    expect(
+      shouldRun(
+        "I keep getting logged out after the OAuth callback, but only on mobile. It started after I changed the cookie settings and now Safari loops back to the login page.",
+      ),
+    ).toBe(true);
+  });
+
+  it("weights CJK text enough to trigger on shorter authored messages", () => {
+    expect(
+      shouldRun(
+        "我登入後一直被踢回登入頁，只有手機版會發生，改 cookie 設定之後才開始，想知道是不是 SameSite 或 secure 設定造成的",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not let giant code blocks dominate the gate", () => {
+    const code =
+      "```ts\n" + "const value = computeBrokenOAuthCookieState();\n".repeat(50) + "```\nwhy";
+    expect(measureMeaningfulTextUnits(code)).toBeLessThan(80);
+    expect(shouldRun(code)).toBe(false);
+  });
+
+  it("counts prose around inline code while discounting code syntax", () => {
+    expect(
+      shouldRun(
+        "The OAuth callback works on desktop, but mobile Safari loses the session after `setCookie` runs. I changed `sameSite`, `secure`, and the callback domain yesterday.",
+      ),
+    ).toBe(true);
   });
 });
 
