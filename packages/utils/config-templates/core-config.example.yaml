@@ -28,6 +28,8 @@ conversation:
       # Model used to summarize threads. Accepts main, fast, a models.def alias,
       # or a direct provider/model ref.
       model: fast
+      # Number of threads to summarize concurrently inside one run.
+      concurrency: 1
     embedding:
       # Enable semantic thread embeddings. Summaries and lexical search still work
       # when this is disabled or when embedding generation fails.

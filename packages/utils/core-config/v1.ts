@@ -703,6 +703,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
         summarization: {
           enabled: false,
           model: "fast",
+          concurrency: 1,
         },
         embedding: {
           enabled: false,

@@ -25,6 +25,8 @@ import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
 import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
 import { DiscordSearchService, DiscordSearchStore } from "../surface/store/discord-search-store";
+import { DiscordSurfaceStore } from "../surface/store/discord-surface-store";
+import { createDiscordEntityMapper } from "../entity/entity-mapper";
 import { DiscoveryService } from "../discovery/discovery-service";
 import {
   ConversationThreadService,
@@ -180,6 +182,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
   let transcriptStore: SqliteTranscriptStore | null = null;
   let discordSearchStore: DiscordSearchStore | null = null;
+  let discordSurfaceStore: DiscordSurfaceStore | null = null;
   let discordSearchService: DiscordSearchService | null = null;
   let discoveryService: DiscoveryService | null = null;
   let conversationThreadStore: ConversationThreadStore | null = null;
@@ -508,8 +511,13 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       const discordSurfaceDbPath = resolveDiscordDbPath(startupConfig);
       transcriptStore = new SqliteTranscriptStore(resolveTranscriptDbPath());
       discordSearchStore = new DiscordSearchStore(discordSearchDbPath);
+      discordSurfaceStore = new DiscordSurfaceStore(discordSurfaceDbPath);
       conversationThreadStore = new ConversationThreadStore(discordSearchDbPath, {
         surfaceDbPath: discordSurfaceDbPath,
+      });
+      const conversationThreadEntityMapper = createDiscordEntityMapper({
+        cfg: startupConfig,
+        store: discordSurfaceStore,
       });
       const conversationThreadEmbeddingAdapter = (() => {
         try {
@@ -529,6 +537,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: conversationThreadStore,
         getConfig: () => getCoreConfig(),
         embeddingAdapter: conversationThreadEmbeddingAdapter,
+        entityMapper: conversationThreadEntityMapper,
       });
       stopConversationThreadSummarizationWorker = startConversationThreadSummarizationWorker({
         searchDbPath: discordSearchDbPath,
@@ -928,6 +937,10 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       discordSearchStore?.close();
       discordSearchStore = null;
       discordSearchService = null;
+    });
+    await safe("discordSurfaceStore.close", async () => {
+      discordSurfaceStore?.close();
+      discordSurfaceStore = null;
     });
     await safe("conversationThreadStore.close", async () => {
       conversationThreadStore?.close();

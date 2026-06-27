@@ -18,17 +18,20 @@ import {
   CONVERSATION_THREAD_SUMMARY_VERSION,
 } from "./thread-store";
 import type { ConversationThreadEmbeddingAdapter } from "./thread-embedding";
+import type { EntityMapper } from "../entity/entity-mapper";
 
 const SUMMARY_QUIET_MS = 60 * 60 * 1000;
 const SUMMARY_HEAD_MESSAGES = 40;
 const SUMMARY_TAIL_MESSAGES = 160;
 const SUMMARY_MAX_MESSAGES = SUMMARY_HEAD_MESSAGES + SUMMARY_TAIL_MESSAGES;
 const DEFAULT_READ_LIMIT = 50;
+const SUMMARY_PARSE_MAX_ATTEMPTS = 3;
 
 const threadSummarySchema = z.object({
   title: z.string(),
   brief: z.string(),
   topics: z.array(z.string()),
+  retrievalHints: z.array(z.string()),
   importance: z.enum(["low", "medium", "high"]),
   importanceReasons: z.array(z.string()),
 });
@@ -37,6 +40,7 @@ export type ConversationThreadRunSummarizationInput = {
   jobId?: string;
   dryRun?: boolean;
   wait?: boolean;
+  force?: boolean;
   threadId?: string;
   beforeTs?: number;
   afterTs?: number;
@@ -78,6 +82,7 @@ export type ConversationThreadSearchResult = {
     title: string;
     brief: string;
     topics: string[];
+    retrievalHints: string[];
     timeRange: {
       start: string;
       end: string;
@@ -111,6 +116,7 @@ export type ConversationThreadReadOutput = {
     title?: string;
     brief?: string;
     topics?: string[];
+    retrievalHints?: string[];
     importance?: "low" | "medium" | "high";
     importanceReasons?: string[];
     session: {
@@ -153,6 +159,16 @@ export type ConversationThreadSummarizer = (input: {
   messages: readonly ConversationThreadMessage[];
   omittedMessages?: number;
 }) => Promise<ConversationThreadSummaryInput>;
+
+export class ConversationThreadSummaryParseError extends Error {
+  readonly rawOutput?: string;
+
+  constructor(message: string, options?: { cause?: unknown; rawOutput?: string }) {
+    super(message, { cause: options?.cause });
+    this.name = "ConversationThreadSummaryParseError";
+    this.rawOutput = options?.rawOutput;
+  }
+}
 
 function formatTime(ts: number): string {
   return new Date(ts).toISOString();
@@ -224,6 +240,7 @@ function buildFallbackSummary(
     title,
     brief,
     topics: [],
+    retrievalHints: firstText ? [firstText] : [],
     importance: "medium",
     importanceReasons: [],
   };
@@ -287,8 +304,26 @@ function extractJsonObject(text: string): string {
 }
 
 function parseSummaryJson(text: string): ConversationThreadSummaryInput {
-  const parsed = JSON.parse(extractJsonObject(text)) as unknown;
-  return threadSummarySchema.parse(parsed);
+  try {
+    const parsed = JSON.parse(extractJsonObject(text)) as unknown;
+    return threadSummarySchema.parse(parsed);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ConversationThreadSummaryParseError(`summary JSON parse failed: ${message}`, {
+      cause: e,
+      rawOutput: truncateErrorDetail(text),
+    });
+  }
+}
+
+function isSummaryStreamDecodeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("activeReasoning") ||
+    message.includes("summaryParts") ||
+    message.includes("Controller is already closed") ||
+    message.includes("Invalid state")
+  );
 }
 
 function summarizeProviderError(error: unknown): {
@@ -349,6 +384,10 @@ function buildSearchAllowlist(cfg: CoreConfig): ConversationThreadSearchAllowlis
   };
 }
 
+function clampSummarizationConcurrency(input: number): number {
+  return Math.min(128, Math.max(1, Math.floor(input)));
+}
+
 async function defaultSummarizer(input: {
   cfg: CoreConfig;
   threadId: string;
@@ -363,6 +402,7 @@ async function defaultSummarizer(input: {
         `Previous title: ${input.previousSummary.title}`,
         `Previous brief: ${input.previousSummary.brief}`,
         `Previous topics: ${input.previousSummary.topics.join(", ") || "(none)"}`,
+        `Previous retrieval hints: ${input.previousSummary.retrievalHints.join("; ") || "(none)"}`,
         `Previous importance: ${input.previousSummary.importance}`,
         `Previous importance reasons: ${input.previousSummary.importanceReasons.join("; ") || "(none)"}`,
       ].join("\n")
@@ -371,29 +411,52 @@ async function defaultSummarizer(input: {
   const messages = [
     {
       role: "user",
-      content: [
-        `threadId=${input.threadId}`,
-        "Summarize this conversation thread for future semantic retrieval.",
-        "Keep stable wording when the previous summary is still accurate; avoid unnecessary drift after small updates.",
-        "Return title (<120 chars), brief (<1024 chars), short topic phrases, importance, and importance reasons.",
-        "Topics are descriptive phrases, not canonical tags.",
-        "Importance is low, medium, or high based on durable future value, not just message count.",
-        "Use high for decisions, architecture, implementation plans, incident/root-cause analysis, or reusable project knowledge.",
-        "Use low for casual chat, shallow reactions, external-link-only discussion, or transient coordination.",
-        "Importance reasons should briefly explain the rating for debugging.",
-        'Return only a JSON object shaped like: {"title":"...","brief":"...","topics":["..."],"importance":"low|medium|high","importanceReasons":["..."]}',
-        "",
-        "Previous summary:",
-        previous,
-        "",
-        "Transcript:",
-        transcript,
-      ].join("\n"),
+      content: ["## Previous summary", previous, "", "## Transcript", transcript].join("\n"),
     },
   ] satisfies ModelMessage[];
 
-  const instructions =
-    "You create compact, stable thread summaries for a conversation memory index.";
+  const instructions = [
+    "You create compact, stable thread summaries for a conversation memory index.",
+    "",
+    "# Task",
+    "Summarize the conversation thread in user's input for future semantic retrieval.",
+    "Keep stable wording when the previous summary is still accurate; avoid unnecessary drift after small updates.",
+    "",
+    "## Format",
+    "Return exactly one JSON object and nothing else.",
+    "",
+    'Shape: {"title":"...","brief":"...","topics":["..."],"retrievalHints":["..."],"importance":"low|medium|high","importanceReasons":["..."]}',
+    "",
+    "- title: concise thread title, under 120 characters.",
+    "- brief: compact summary, under 1024 characters.",
+    "- topics: short descriptive subject phrases, not canonical tags.",
+    "- retrievalHints: short search-query-like phrases a future user might type to find this thread.",
+    "- importance: low, medium, or high, based on durable future value.",
+    "- importanceReasons: brief reasons explaining the rating for debugging.",
+    "",
+    "Write title, brief, topics, retrieval hints, and importance reasons primarily in English, regardless of the thread language.",
+    "Preserve exact names, code identifiers, product names, error messages, quoted phrases, and useful source-language wording when they improve retrieval.",
+    "",
+    "## Retrieval hints",
+    "- Retrieval hints are alternate semantic access paths, not tags or summaries.",
+    "- Use 4-8 hints for substantive threads; use fewer for shallow threads.",
+    "- Each hint should usually be 2-12 words.",
+    "- Include distinct ways the user might search for this thread later:",
+    "  - the user's goal, task, or question",
+    "  - the concrete problem, symptom, decision, tradeoff, or outcome",
+    "  - exact tools, APIs, files, commands, identifiers, errors, quotes, or product names",
+    "  - alternate wording, aliases, abbreviations, colloquial phrasing, or source-language phrases",
+    "  - emotional or personal framing when clearly present, such as rant, vent, frustration, career, job, compensation, debugging, architecture, incident, or process",
+    "- Avoid generic standalone hints like help, code, app, bug, AI, question, discussion, or notes.",
+    "- Avoid near-duplicates; each hint should add a meaningfully different retrieval path.",
+    "- Do not invent context, labels, emotions, tools, or technologies not present or strongly implied.",
+    "- When updating an existing summary, keep accurate previous hints stable; only change hints that are stale, misleading, redundant, or clearly improved by new transcript content.",
+    "",
+    "## Importance",
+    "- Use high for durable decisions, architecture, implementation plans, incident/root-cause analysis, reusable project knowledge, or important personal/career context.",
+    "- Use medium for useful but limited troubleshooting, explanations, comparisons, planning, or non-critical project context.",
+    "- Use low for casual chat, shallow reactions, external-link-only discussion, transient coordination, or low-reuse content.",
+  ].join("\n");
 
   if (resolved.provider === "codex") {
     const result = streamText({
@@ -404,7 +467,18 @@ async function defaultSummarizer(input: {
       providerOptions: resolved.providerOptions,
     });
 
-    return parseSummaryJson(await result.text);
+    try {
+      return parseSummaryJson(await result.text);
+    } catch (e) {
+      if (e instanceof ConversationThreadSummaryParseError) throw e;
+      if (isSummaryStreamDecodeError(e)) {
+        const message = e instanceof Error ? e.message : String(e);
+        throw new ConversationThreadSummaryParseError(`summary stream decode failed: ${message}`, {
+          cause: e,
+        });
+      }
+      throw e;
+    }
   }
 
   const result = await generateText({
@@ -412,7 +486,7 @@ async function defaultSummarizer(input: {
     output: Output.object({ schema: threadSummarySchema }),
     instructions,
     messages,
-    maxOutputTokens: 1200,
+    maxOutputTokens: 4096,
     reasoning: resolved.reasoning,
     providerOptions: resolved.providerOptions,
   });
@@ -431,6 +505,7 @@ export class ConversationThreadService {
       getConfig: () => Promise<CoreConfig>;
       summarizer?: ConversationThreadSummarizer;
       embeddingAdapter?: ConversationThreadEmbeddingAdapter;
+      entityMapper?: Pick<EntityMapper, "normalizeIncomingText">;
     },
   ) {}
 
@@ -506,6 +581,7 @@ export class ConversationThreadService {
               title: result.summary.title,
               brief: result.summary.brief,
               topics: result.summary.topics,
+              retrievalHints: result.summary.retrievalHints,
               importance: result.summary.importance,
               importanceReasons: result.summary.importanceReasons,
             }
@@ -559,6 +635,7 @@ export class ConversationThreadService {
       afterTs: input.afterTs,
       includeEmbeddingStale:
         !!this.params.embeddingAdapter && this.params.store.isVectorSearchAvailable(),
+      force: input.force === true,
     });
     this.logger.info("thread summarization eligibility completed", {
       jobId,
@@ -567,6 +644,7 @@ export class ConversationThreadService {
       threadId: input.threadId,
       beforeTs: input.beforeTs,
       afterTs: input.afterTs,
+      force: input.force === true,
     });
 
     const result: ConversationThreadRunSummarizationResult = {
@@ -589,8 +667,20 @@ export class ConversationThreadService {
 
     const cfg = await this.params.getConfig();
     const summarize = this.params.summarizer ?? defaultSummarizer;
+    const concurrency = clampSummarizationConcurrency(
+      cfg.conversation.thread.summarization.concurrency,
+    );
+    this.logger.info("thread summarization processing started", {
+      jobId,
+      eligible: eligible.length,
+      concurrency,
+      force: input.force === true,
+    });
 
-    for (const thread of eligible) {
+    let nextIndex = 0;
+    let abortError: Error | null = null;
+
+    const processThread = async (thread: (typeof eligible)[number]): Promise<void> => {
       const threadStartedAt = Date.now();
       this.logger.info("thread summarization thread started", {
         jobId,
@@ -608,11 +698,13 @@ export class ConversationThreadService {
           threadId: thread.thread_id,
         });
         this.params.store.deleteThread(thread.thread_id);
-        continue;
+        return;
       }
+      const summaryMessages = this.normalizeMessagesForSummarization(summaryRead.messages);
 
       try {
         const summaryIsStale =
+          input.force === true ||
           thread.last_summarized_at === null ||
           thread.last_summarized_at < thread.updated_at ||
           thread.summary_version !== CONVERSATION_THREAD_SUMMARY_VERSION;
@@ -634,16 +726,19 @@ export class ConversationThreadService {
                 totalMessages: summaryRead.totalMessages,
                 includedMessages: summaryRead.messages.length,
               });
+              const summary = await this.summarizeWithParseRetries({
+                jobId,
+                threadId: thread.thread_id,
+                summarize,
+                cfg,
+                previousSummary,
+                messages: summaryMessages,
+                omittedMessages: summaryRead.omittedMessages,
+              });
               return this.params.store.upsertSummary(
                 thread.thread_id,
                 thread.summary_input_hash ?? "",
-                (await summarize({
-                  cfg,
-                  threadId: thread.thread_id,
-                  previousSummary,
-                  messages: summaryRead.messages,
-                  omittedMessages: summaryRead.omittedMessages,
-                })) ?? buildFallbackSummary(summaryRead.messages),
+                summary ?? buildFallbackSummary(summaryMessages),
               );
             })()
           : {
@@ -690,6 +785,17 @@ export class ConversationThreadService {
         );
         result.failed += 1;
         result.failures.push({ threadId: thread.thread_id, error: failureMessage });
+        if (e instanceof ConversationThreadSummaryParseError) {
+          this.logger.warn("thread summarization continuing after parse failure", {
+            jobId,
+            threadId: thread.thread_id,
+            eligible: result.eligible,
+            summarized: result.summarized,
+            failed: result.failed,
+          });
+          return;
+        }
+
         this.logger.error("thread summarization run aborted after hard failure", {
           jobId,
           threadId: thread.thread_id,
@@ -701,15 +807,81 @@ export class ConversationThreadService {
           `thread summarization aborted after failure in ${thread.thread_id}: ${failureMessage}`,
         );
       }
-    }
+    };
+
+    const workerCount = Math.min(concurrency, eligible.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (!abortError) {
+        const thread = eligible[nextIndex];
+        nextIndex += 1;
+        if (!thread) return;
+        try {
+          await processThread(thread);
+        } catch (e) {
+          abortError = e instanceof Error ? e : new Error(String(e));
+          return;
+        }
+      }
+    });
+    await Promise.all(workers);
+    if (abortError) throw abortError;
 
     this.logger.info("thread summarization run completed", {
       jobId,
       eligible: result.eligible,
       summarized: result.summarized,
       failed: result.failed,
+      concurrency,
     });
     return result;
+  }
+
+  private async summarizeWithParseRetries(input: {
+    jobId?: string;
+    threadId: string;
+    summarize: ConversationThreadSummarizer;
+    cfg: CoreConfig;
+    previousSummary: ConversationThreadSummary | null;
+    messages: readonly ConversationThreadMessage[];
+    omittedMessages: number;
+  }): Promise<ConversationThreadSummaryInput> {
+    let lastError: ConversationThreadSummaryParseError | null = null;
+    for (let attempt = 1; attempt <= SUMMARY_PARSE_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await input.summarize({
+          cfg: input.cfg,
+          threadId: input.threadId,
+          previousSummary: input.previousSummary,
+          messages: input.messages,
+          omittedMessages: input.omittedMessages,
+        });
+      } catch (e) {
+        if (!(e instanceof ConversationThreadSummaryParseError)) throw e;
+        lastError = e;
+        this.logger.warn("thread summary parse failed", {
+          jobId: input.jobId,
+          threadId: input.threadId,
+          attempt,
+          maxAttempts: SUMMARY_PARSE_MAX_ATTEMPTS,
+          error: e.message,
+          rawOutput: e.rawOutput,
+        });
+      }
+    }
+
+    throw lastError ?? new ConversationThreadSummaryParseError("summary JSON parse failed");
+  }
+
+  private normalizeMessagesForSummarization(
+    messages: readonly ConversationThreadMessage[],
+  ): ConversationThreadMessage[] {
+    const mapper = this.params.entityMapper;
+    if (!mapper) return [...messages];
+    return messages.map((message) => ({
+      ...message,
+      userName: mapper.normalizeIncomingText(`<@${message.userId}>`),
+      text: mapper.normalizeIncomingText(message.text),
+    }));
   }
 
   private async tryEmbedThread(input: {
@@ -859,6 +1031,7 @@ export class ConversationThreadService {
       title: hit.title,
       brief: hit.brief,
       topics: hit.topics,
+      retrievalHints: hit.retrievalHints,
       importance: hit.importance,
       importanceReasons: hit.importanceReasons,
       timeRange: {

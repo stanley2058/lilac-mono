@@ -93,6 +93,7 @@ export type UniversalCoreConfig = {
       summarization: {
         enabled: boolean;
         model: string;
+        concurrency: number;
       };
       embedding: {
         enabled: boolean;

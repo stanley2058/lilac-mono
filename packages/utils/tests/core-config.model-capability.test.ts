@@ -12,6 +12,7 @@ describe("coreConfigSchema models.capability", () => {
     expect(v1.conversation.thread.summarization).toEqual({
       enabled: false,
       model: "fast",
+      concurrency: 1,
     });
     expect(v1.conversation.thread.embedding).toEqual({
       enabled: false,
@@ -22,6 +23,7 @@ describe("coreConfigSchema models.capability", () => {
     expect(v2.conversation.thread.summarization).toEqual({
       enabled: false,
       model: "fast",
+      concurrency: 1,
     });
     expect(v2.conversation.thread.embedding).toEqual({
       enabled: false,
@@ -37,6 +39,7 @@ describe("coreConfigSchema models.capability", () => {
           summarization: {
             enabled: true,
             model: "openrouter/openai/gpt-4o-mini",
+            concurrency: 4,
           },
         },
       },
@@ -45,6 +48,7 @@ describe("coreConfigSchema models.capability", () => {
     expect(parsed.conversation.thread.summarization).toEqual({
       enabled: true,
       model: "openrouter/openai/gpt-4o-mini",
+      concurrency: 4,
     });
   });
 

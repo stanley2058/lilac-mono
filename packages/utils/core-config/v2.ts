@@ -261,8 +261,9 @@ const conversationSchemaV2 = z
           .object({
             enabled: z.boolean().default(false),
             model: z.string().trim().min(1).default("fast"),
+            concurrency: z.number().int().min(1).max(128).default(1),
           })
-          .default({ enabled: false, model: "fast" }),
+          .default({ enabled: false, model: "fast", concurrency: 1 }),
         embedding: z
           .object({
             enabled: z.boolean().default(false),
@@ -271,13 +272,13 @@ const conversationSchemaV2 = z
           .default({ enabled: false, model: "openai/text-embedding-3-small" }),
       })
       .default({
-        summarization: { enabled: false, model: "fast" },
+        summarization: { enabled: false, model: "fast", concurrency: 1 },
         embedding: { enabled: false, model: "openai/text-embedding-3-small" },
       }),
   })
   .default({
     thread: {
-      summarization: { enabled: false, model: "fast" },
+      summarization: { enabled: false, model: "fast", concurrency: 1 },
       embedding: { enabled: false, model: "openai/text-embedding-3-small" },
     },
   });

@@ -6,7 +6,12 @@ import {
   type JSONObject,
 } from "@stanley2058/lilac-utils";
 
-export type ConversationThreadEmbeddingFacet = "combined" | "brief" | "topics" | "title";
+export type ConversationThreadEmbeddingFacet =
+  | "combined"
+  | "brief"
+  | "retrievalHints"
+  | "topics"
+  | "title";
 
 export type ConversationThreadFacetInput = {
   facet: ConversationThreadEmbeddingFacet;

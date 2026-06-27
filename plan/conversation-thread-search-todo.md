@@ -31,3 +31,7 @@
 - [x] Push Discord allowlist filtering into store-level thread search before SQL `LIMIT`.
 - [x] Add thread summary importance metadata and a small ranking nudge.
 - [x] Add configurable `conversation.thread.summarization.model`.
+- [x] Add configurable summarization concurrency and force reruns.
+- [x] Exclude one-message threads from summarization eligibility.
+- [x] Normalize Discord entities before thread summarization.
+- [x] Add English-first summarizer guidance and retrieval hints for colloquial search.

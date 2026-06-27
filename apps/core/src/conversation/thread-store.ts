@@ -10,7 +10,7 @@ import type {
 const SEARCH_LIMIT_MAX = 50;
 const THREAD_DISCOVERY_GAP_MS = 60 * 60 * 1000;
 
-export const CONVERSATION_THREAD_SUMMARY_VERSION = 2;
+export const CONVERSATION_THREAD_SUMMARY_VERSION = 3;
 export const CONVERSATION_THREAD_EMBEDDING_VERSION = 1;
 
 export type ConversationThreadKind = "discord_thread" | "inferred_channel_thread";
@@ -40,6 +40,7 @@ export type ConversationThreadSummaryRow = {
   title: string;
   brief: string;
   topics_json: string;
+  retrieval_hints_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   created_at: number;
@@ -62,6 +63,7 @@ export type ConversationThreadSummaryInput = {
   title: string;
   brief: string;
   topics: string[];
+  retrievalHints?: string[];
   importance?: ConversationThreadImportance;
   importanceReasons?: string[];
 };
@@ -70,6 +72,7 @@ export type ConversationThreadSummary = {
   title: string;
   brief: string;
   topics: string[];
+  retrievalHints: string[];
   importance: ConversationThreadImportance;
   importanceReasons: string[];
 };
@@ -83,6 +86,7 @@ export type ConversationThreadSearchHit = {
   title: string;
   brief: string;
   topics: string[];
+  retrievalHints: string[];
   importance: ConversationThreadImportance;
   importanceReasons: string[];
   startTs: number;
@@ -136,6 +140,7 @@ type ThreadSearchRow = ConversationThreadRow & {
   title: string;
   brief: string;
   topics_json: string;
+  retrieval_hints_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   lexical_score: number;
@@ -145,6 +150,7 @@ type ThreadSemanticSearchRow = ConversationThreadRow & {
   title: string;
   brief: string;
   topics_json: string;
+  retrieval_hints_json: string;
   importance: ConversationThreadImportance;
   importance_reasons_json: string;
   semantic_score: number;
@@ -192,6 +198,10 @@ function normalizeSummary(summary: ConversationThreadSummaryInput): Conversation
     title: truncate(summary.title, 120) || "Untitled conversation",
     brief: truncate(summary.brief, 1024),
     topics: summary.topics.map((topic) => truncate(topic, 80)).filter((topic) => topic.length > 0),
+    retrievalHints: (summary.retrievalHints ?? [])
+      .map((hint) => truncate(hint, 160))
+      .filter((hint) => hint.length > 0)
+      .slice(0, 8),
     importance: safeImportance(summary.importance),
     importanceReasons: (summary.importanceReasons ?? [])
       .map((reason) => truncate(reason, 180))
@@ -211,7 +221,9 @@ function computeThreadInputHash(messages: readonly IndexedMessageRow[]): string 
 }
 
 function computeSummaryHash(summary: ConversationThreadSummary): string {
-  return stableHash([summary.title, summary.brief, ...summary.topics].join("\u001f"));
+  return stableHash(
+    [summary.title, summary.brief, ...summary.topics, ...summary.retrievalHints].join("\u001f"),
+  );
 }
 
 function computeFacetHash(facets: readonly ConversationThreadFacetInput[]): string {
@@ -423,6 +435,7 @@ export class ConversationThreadStore {
         title TEXT NOT NULL,
         brief TEXT NOT NULL,
         topics_json TEXT NOT NULL,
+        retrieval_hints_json TEXT NOT NULL DEFAULT '[]',
         importance TEXT NOT NULL DEFAULT 'medium',
         importance_reasons_json TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
@@ -434,6 +447,13 @@ export class ConversationThreadStore {
       this.db.run(`
         ALTER TABLE conversation_thread_summaries
         ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium';
+      `);
+    }
+
+    if (!this.tableHasColumn("conversation_thread_summaries", "retrieval_hints_json")) {
+      this.db.run(`
+        ALTER TABLE conversation_thread_summaries
+        ADD COLUMN retrieval_hints_json TEXT NOT NULL DEFAULT '[]';
       `);
     }
 
@@ -755,6 +775,7 @@ export class ConversationThreadStore {
       title: row.title,
       brief: row.brief,
       topics: safeStringArrayFromJson(row.topics_json),
+      retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
       importance: safeImportance(row.importance),
       importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
     };
@@ -844,12 +865,15 @@ export class ConversationThreadStore {
     beforeTs?: number;
     afterTs?: number;
     includeEmbeddingStale?: boolean;
+    force?: boolean;
   }): ConversationThreadRow[] {
     const now = input?.now ?? Date.now();
     const quietMs = input?.quietMs ?? 60 * 60 * 1000;
     const values: Array<string | number> = [now - quietMs];
-    const staleClause = input?.includeEmbeddingStale
-      ? `(
+    const staleClause = input?.force
+      ? "1 = 1"
+      : input?.includeEmbeddingStale
+        ? `(
           t.last_summarized_at IS NULL
           OR t.last_summarized_at < t.updated_at
           OR t.summary_version != ${CONVERSATION_THREAD_SUMMARY_VERSION}
@@ -862,13 +886,14 @@ export class ConversationThreadStore {
             )
           )
         )`
-      : `(
+        : `(
           t.last_summarized_at IS NULL
           OR t.last_summarized_at < t.updated_at
           OR t.summary_version != ${CONVERSATION_THREAD_SUMMARY_VERSION}
         )`;
     const clauses = [
       "(CASE WHEN t.last_summarized_at IS NULL THEN t.end_ts ELSE t.updated_at END) <= ?",
+      "t.message_count > 1",
       staleClause,
     ];
 
@@ -905,15 +930,22 @@ export class ConversationThreadStore {
     const normalized = normalizeSummary(summary);
     const now = Date.now();
     const topicsJson = JSON.stringify(normalized.topics);
+    const retrievalHintsJson = JSON.stringify(normalized.retrievalHints);
     const importanceReasonsJson = JSON.stringify(normalized.importanceReasons);
     const embeddingHash = computeSummaryHash(normalized);
     const facets: ConversationThreadFacetInput[] = [
       {
         facet: "combined",
-        text: [normalized.title, normalized.brief, normalized.topics.join("\n")].join("\n\n"),
+        text: [
+          normalized.title,
+          normalized.brief,
+          normalized.retrievalHints.join("\n"),
+          normalized.topics.join("\n"),
+        ].join("\n\n"),
         weight: 1,
       },
       { facet: "brief", text: normalized.brief, weight: 0.8 },
+      { facet: "retrievalHints", text: normalized.retrievalHints.join("\n"), weight: 0.6 },
       { facet: "topics", text: normalized.topics.join("\n"), weight: 0.35 },
       { facet: "title", text: normalized.title, weight: 0.15 },
     ];
@@ -922,12 +954,13 @@ export class ConversationThreadStore {
       this.db.run(
         `
         INSERT INTO conversation_thread_summaries (
-          thread_id, title, brief, topics_json, importance, importance_reasons_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          thread_id, title, brief, topics_json, retrieval_hints_json, importance, importance_reasons_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           title=excluded.title,
           brief=excluded.brief,
           topics_json=excluded.topics_json,
+          retrieval_hints_json=excluded.retrieval_hints_json,
           importance=excluded.importance,
           importance_reasons_json=excluded.importance_reasons_json,
           updated_at=excluded.updated_at
@@ -937,6 +970,7 @@ export class ConversationThreadStore {
           normalized.title,
           normalized.brief,
           topicsJson,
+          retrievalHintsJson,
           normalized.importance,
           importanceReasonsJson,
           now,
@@ -1069,6 +1103,7 @@ export class ConversationThreadStore {
           s.title,
           s.brief,
           s.topics_json,
+          s.retrieval_hints_json,
           s.importance,
           s.importance_reasons_json,
           max(fm.facet_score) AS lexical_score
@@ -1105,6 +1140,7 @@ export class ConversationThreadStore {
         title: row.title,
         brief: row.brief,
         topics: safeStringArrayFromJson(row.topics_json),
+        retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
         importance: safeImportance(row.importance),
         importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
         startTs: row.start_ts,
@@ -1141,6 +1177,7 @@ export class ConversationThreadStore {
           s.title,
           s.brief,
           s.topics_json,
+          s.retrieval_hints_json,
           s.importance,
           s.importance_reasons_json,
           sum(max(0.0, 1.0 - vec_distance_cosine(e.embedding, ?)) * f.weight) AS semantic_score
@@ -1181,6 +1218,7 @@ export class ConversationThreadStore {
         title: row.title,
         brief: row.brief,
         topics: safeStringArrayFromJson(row.topics_json),
+        retrievalHints: safeStringArrayFromJson(row.retrieval_hints_json),
         importance: safeImportance(row.importance),
         importanceReasons: safeStringArrayFromJson(row.importance_reasons_json),
         startTs: row.start_ts,

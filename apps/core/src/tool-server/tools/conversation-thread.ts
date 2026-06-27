@@ -42,6 +42,10 @@ const readInputSchema = z.object({
 
 const runSummarizationInputSchema = z.object({
   dryRun: z.boolean().optional().describe("Only report eligible threads without summarizing."),
+  force: z
+    .boolean()
+    .optional()
+    .describe("Rerun summaries for quiet eligible threads even when fresh."),
   wait: z
     .boolean()
     .optional()

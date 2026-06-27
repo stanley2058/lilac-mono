@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
-import { ConversationThreadService } from "../../src/conversation/thread-service";
+import {
+  ConversationThreadService,
+  ConversationThreadSummaryParseError,
+} from "../../src/conversation/thread-service";
 import type { ConversationThreadEmbeddingAdapter } from "../../src/conversation/thread-embedding";
 import {
   CONVERSATION_THREAD_SUMMARY_VERSION,
@@ -38,6 +41,23 @@ function testConfig(): CoreConfig {
     },
   });
   return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
+}
+
+function testConfigWithThreadConcurrency(concurrency: number): CoreConfig {
+  const cfg = testConfig();
+  return {
+    ...cfg,
+    conversation: {
+      ...cfg.conversation,
+      thread: {
+        ...cfg.conversation.thread,
+        summarization: {
+          ...cfg.conversation.thread.summarization,
+          concurrency,
+        },
+      },
+    },
+  };
 }
 
 function msg(input: {
@@ -119,11 +139,39 @@ describe("conversation thread store", () => {
         text: "old architecture discussion",
         ts: 1,
       }),
+      msg({
+        channelId: "c1",
+        messageId: "old-2",
+        userId: "u2",
+        text: "old architecture follow-up",
+        ts: 2,
+      }),
     ]);
 
     threadStore.refreshInferredThreads();
     const eligible = threadStore.listEligibleForSummarization({ now: Date.now() });
     expect(eligible.map((thread) => thread.thread_id)).toEqual(["discord:channel:c1:old-1"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("does not consider one-message threads eligible for summarization", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "solo",
+        userId: "u1",
+        text: "single message thread",
+        ts: 1,
+      }),
+    ]);
+
+    threadStore.refreshInferredThreads();
+    expect(threadStore.listEligibleForSummarization({ now: Date.now() })).toEqual([]);
 
     searchStore.close();
     threadStore.close();
@@ -281,6 +329,7 @@ describe("conversation thread store", () => {
         brief:
           "Discussion about retrieving prior conversations with thread summaries and vector search.",
         topics: ["memory retrieval", "thread summaries", "vector search"],
+        retrievalHints: ["conversation memory retrieval architecture"],
         importance: "high",
         importanceReasons: ["Captures reusable architecture decisions for conversation retrieval."],
       }),
@@ -301,11 +350,15 @@ describe("conversation thread store", () => {
       results: Array<{
         threadId: string;
         title: string;
+        retrievalHints: string[];
         importance: string;
         importanceReasons: string[];
       }>;
     };
     expect(search.results[0]?.title).toBe("Memory search architecture");
+    expect(search.results[0]?.retrievalHints).toEqual([
+      "conversation memory retrieval architecture",
+    ]);
     expect(search.results[0]?.importance).toBe("high");
     expect(search.results[0]?.importanceReasons).toEqual([
       "Captures reusable architecture decisions for conversation retrieval.",
@@ -316,10 +369,11 @@ describe("conversation thread store", () => {
       offset: 1,
       limit: 1,
     })) as {
-      thread: { importance?: string; importanceReasons?: string[] };
+      thread: { retrievalHints?: string[]; importance?: string; importanceReasons?: string[] };
       page: { total: number; hasMore: boolean };
       messages: Array<{ messageId: string }>;
     };
+    expect(read.thread.retrievalHints).toEqual(["conversation memory retrieval architecture"]);
     expect(read.thread.importance).toBe("high");
     expect(read.page.total).toBe(2);
     expect(read.page.hasMore).toBe(false);
@@ -348,10 +402,24 @@ describe("conversation thread store", () => {
       }),
       msg({
         channelId: "c1",
+        messageId: "a2",
+        userId: "u2",
+        text: "first eligible reply",
+        ts: 2,
+      }),
+      msg({
+        channelId: "c1",
         messageId: "b1",
         userId: "u1",
         text: "second eligible thread",
         ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "b2",
+        userId: "u2",
+        text: "second eligible reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
       }),
     ]);
 
@@ -369,6 +437,197 @@ describe("conversation thread store", () => {
       service.runSummarization({ now: Date.now() + 3 * 60 * 60 * 1000 }),
     ).rejects.toThrow("thread summarization aborted after failure");
     expect(attemptedThreadIds).toEqual(["discord:channel:c1:a1"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("retries parse failures without aborting the summarization run", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "a1",
+        userId: "u1",
+        text: "first parse failure thread",
+        ts: 1,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "a2",
+        userId: "u2",
+        text: "first parse failure reply",
+        ts: 2,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "b1",
+        userId: "u1",
+        text: "second successful thread",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "b2",
+        userId: "u2",
+        text: "second successful reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    const attemptedThreadIds: string[] = [];
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async ({ threadId }) => {
+        attemptedThreadIds.push(threadId);
+        if (threadId === "discord:channel:c1:a1") {
+          throw new ConversationThreadSummaryParseError("JSON Parse error: Unterminated string");
+        }
+        return {
+          title: "Recovered thread",
+          brief: "The run continued after a parse failure.",
+          topics: [],
+        };
+      },
+    });
+
+    const run = await service.runSummarization({ now: Date.now() + 3 * 60 * 60 * 1000 });
+    expect(run.failed).toBe(1);
+    expect(run.summarized).toBe(1);
+    expect(run.failures[0]?.threadId).toBe("discord:channel:c1:a1");
+    expect(attemptedThreadIds).toEqual([
+      "discord:channel:c1:a1",
+      "discord:channel:c1:a1",
+      "discord:channel:c1:a1",
+      "discord:channel:c1:b1",
+    ]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("uses configured summarization concurrency", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages(
+      Array.from({ length: 4 }, (_, index) => [
+        msg({
+          channelId: "c1",
+          messageId: `c${index}-1`,
+          userId: "u1",
+          text: `concurrent thread ${index} start`,
+          ts: index * 2 * 60 * 60 * 1000 + 1,
+        }),
+        msg({
+          channelId: "c1",
+          messageId: `c${index}-2`,
+          userId: "u2",
+          text: `concurrent thread ${index} reply`,
+          ts: index * 2 * 60 * 60 * 1000 + 2,
+        }),
+      ]).flat(),
+    );
+
+    let active = 0;
+    let maxActive = 0;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfigWithThreadConcurrency(2),
+      summarizer: async ({ threadId }) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return {
+          title: threadId,
+          brief: "Concurrent summary",
+          topics: [],
+        };
+      },
+    });
+
+    const run = await service.runSummarization({ now: Date.now() + 10 * 60 * 60 * 1000 });
+    expect(run.summarized).toBe(4);
+    expect(maxActive).toBe(2);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("force reruns fresh quiet summaries", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "f1", userId: "u1", text: "force start", ts: 1 }),
+      msg({ channelId: "c1", messageId: "f2", userId: "u2", text: "force reply", ts: 2 }),
+    ]);
+
+    let calls = 0;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async () => {
+        calls += 1;
+        return {
+          title: `Force summary ${calls}`,
+          brief: "Force rerun summary",
+          topics: [],
+        };
+      },
+    });
+
+    const now = Date.now() + 2 * 60 * 60 * 1000;
+    expect((await service.runSummarization({ now })).summarized).toBe(1);
+    expect((await service.runSummarization({ now: now + 1 })).eligible).toBe(0);
+    const forced = await service.runSummarization({ now: now + 2 * 60 * 60 * 1000, force: true });
+    expect(forced.summarized).toBe(1);
+    expect(calls).toBe(2);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("normalizes entities before summarization", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "e1", userId: "u1", text: "hello <@123>", ts: 1 }),
+      msg({ channelId: "c1", messageId: "e2", userId: "u2", text: "see <#456>", ts: 2 }),
+    ]);
+
+    let summarizedTexts: string[] = [];
+    let summarizedUserNames: Array<string | undefined> = [];
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      entityMapper: {
+        normalizeIncomingText: (text) =>
+          text
+            .replace("<@u1>", "@Stanley")
+            .replace("<@u2>", "@Lilac")
+            .replace("<@123>", "@Stanley")
+            .replace("<#456>", "#work"),
+      },
+      summarizer: async ({ messages }) => {
+        summarizedTexts = messages.map((message) => message.text);
+        summarizedUserNames = messages.map((message) => message.userName);
+        return {
+          title: "Entity normalized",
+          brief: "Entity normalized summary",
+          topics: [],
+        };
+      },
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    expect(summarizedTexts).toEqual(["hello @Stanley", "see #work"]);
+    expect(summarizedUserNames).toEqual(["@Stanley", "@Lilac"]);
 
     searchStore.close();
     threadStore.close();
@@ -421,6 +680,47 @@ describe("conversation thread store", () => {
       "discord:channel:c1:high",
       "discord:channel:c1:low",
     ]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("indexes retrieval hints for colloquial search phrases", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "r1",
+        userId: "u1",
+        text: "designer workflow constraints",
+        ts: 1,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "r2",
+        userId: "u2",
+        text: "legacy frontend spec ambiguity",
+        ts: 2,
+      }),
+    ]);
+
+    threadStore.refreshInferredThreads();
+    threadStore.upsertSummary("discord:channel:c1:r1", "r", {
+      title: "Designer workflow constraints",
+      brief: "Discussion of legacy frontend design specs.",
+      topics: ["designer workflow"],
+      retrievalHints: ["Stanley's job rant about designer process"],
+    });
+
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+    });
+
+    const result = await service.search({ query: "job rant", mode: "lexical" });
+    expect(result.results[0]?.threadId).toBe("discord:channel:c1:r1");
 
     searchStore.close();
     threadStore.close();
@@ -528,6 +828,7 @@ describe("conversation thread store", () => {
     const threadStore = new ConversationThreadStore(dbPath);
     searchStore.upsertMessages([
       msg({ channelId: "c1", messageId: "m1", userId: "u1", text: "versioned thread", ts: 1 }),
+      msg({ channelId: "c1", messageId: "m2", userId: "u2", text: "versioned reply", ts: 2 }),
     ]);
     threadStore.refreshInferredThreads();
     threadStore.upsertSummary("discord:channel:c1:m1", "hash", {
@@ -608,6 +909,13 @@ describe("conversation thread store", () => {
         userId: "u1",
         text: "later cooking discussion",
         ts: 2 + 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "m4",
+        userId: "u3",
+        text: "banana dessert follow-up",
+        ts: 3 + 2 * 60 * 60 * 1000,
       }),
     ]);
 
