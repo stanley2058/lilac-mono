@@ -482,7 +482,7 @@ describe("conversation thread store", () => {
         importanceReasons?: string[];
       };
       page: { total: number; hasMore: boolean };
-      messages: Array<{ messageId: string }>;
+      messages: Array<{ messageId: string; content: string; text?: string }>;
     };
     expect(read.thread.retrievalHints).toEqual(["conversation memory retrieval architecture"]);
     expect(read.thread.aboutness?.domains).toEqual(["conversation memory"]);
@@ -490,6 +490,8 @@ describe("conversation thread store", () => {
     expect(read.page.total).toBe(2);
     expect(read.page.hasMore).toBe(false);
     expect(read.messages.map((item) => item.messageId)).toEqual(["m2"]);
+    expect(read.messages[0]?.content).toBe("sqlite vec can back thread embeddings");
+    expect(read.messages[0]?.text).toBeUndefined();
 
     const entries = await tool.list();
     const searchEntry = entries.find((item) => item.callableId === "conversation.thread.search");
@@ -500,6 +502,12 @@ describe("conversation thread store", () => {
       (item) => item.callableId === "conversation.thread.runSummarization",
     );
     expect(entry?.hidden).toBe(true);
+
+    await expect(
+      tool.call("conversation.thread.read", {
+        offset: 0,
+      }),
+    ).rejects.toThrow("conversation.thread.read has invalid input.");
 
     searchStore.close();
     threadStore.close();
@@ -1048,6 +1056,7 @@ describe("conversation thread store", () => {
     ]);
     expect(result.results[0]?.aboutnessCoverage?.matched).toBe(true);
     expect(result.results[1]?.aboutnessCoverage?.matched).toBe(false);
+    expect(result.results[1]?.aboutnessCoverage?.matchReason).toBe("domain-mismatch");
     expect(result.results[1]?.aboutnessCoverage?.domainCoverage).toBe(0);
     expect(result.results[1]?.aboutnessCoverage?.highPrecisionCoverage).toBeLessThan(0.45);
     expect(result.results[1]?.aboutnessCoverage?.multiplier).toBe(0.35);
@@ -1108,6 +1117,11 @@ describe("conversation thread store", () => {
     expect(result.meta.queryAboutnessError).toContain("query capture unavailable");
     expect(result.results).toHaveLength(2);
     expect(result.results.every((item) => item.aboutnessCoverage?.multiplier === 1)).toBe(true);
+    expect(
+      result.results.every(
+        (item) => item.aboutnessCoverage?.matchReason === "no-specific-aboutness",
+      ),
+    ).toBe(true);
 
     searchStore.close();
     threadStore.close();

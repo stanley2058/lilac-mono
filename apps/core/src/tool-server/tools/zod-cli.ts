@@ -410,8 +410,14 @@ function renderType(schema: z.ZodTypeAny): string {
       return `${renderType(left)} & ${renderType(right)}`;
     }
 
-    case "array":
-      return `${renderType((def as any).element)}[]`;
+    case "array": {
+      const elementType = renderType((def as any).element);
+      const wrapped =
+        elementType.includes(" | ") || elementType.includes(" & ")
+          ? `(${elementType})`
+          : elementType;
+      return `${wrapped}[]`;
+    }
 
     case "object":
       return "object";

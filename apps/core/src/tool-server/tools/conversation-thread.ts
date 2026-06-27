@@ -2,12 +2,15 @@ import { z } from "zod";
 
 import type { ServerTool } from "../types";
 import type { ConversationThreadToolService } from "../../conversation/thread-service";
+import { parseToolInput } from "../validation-error-message";
 import { zodObjectToCliLines } from "./zod-cli";
 
 const searchInputSchema = z.object({
   query: z
     .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)])
-    .describe("Search query, or multiple query variants to combine."),
+    .describe(
+      "Search query, or multiple query variants/facets of the same intent to combine into one merged ranking. Multi-query is not parallel independent searches.",
+    ),
   mode: z
     .enum(["hybrid", "semantic", "lexical"])
     .optional()
@@ -91,7 +94,7 @@ export class ConversationThread implements ServerTool {
         callableId: "conversation.thread.search",
         name: "Conversation Thread Search",
         description:
-          "Search summarized conversation threads. Returns compact threadId, title, and brief by default; use verbose for metadata/diagnostics or conversation.thread.read to expand a result.",
+          "Search summarized conversation threads. Returns compact threadId, title, and brief by default; use verbose for metadata/diagnostics or conversation.thread.read to expand a result. Multi-query combines variants of one intent into one merged ranking.",
         shortInput: zodObjectToCliLines(searchInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(searchInputSchema),
         primaryPositional: {
@@ -102,7 +105,8 @@ export class ConversationThread implements ServerTool {
       {
         callableId: "conversation.thread.read",
         name: "Conversation Thread Read",
-        description: "Read a conversation thread transcript by id with offset/limit pagination.",
+        description:
+          "Read a conversation thread transcript by id with offset/limit pagination. Output messages use content for message text.",
         shortInput: zodObjectToCliLines(readInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(readInputSchema),
         primaryPositional: {
@@ -122,17 +126,21 @@ export class ConversationThread implements ServerTool {
 
   async call(callableId: string, rawInput: Record<string, unknown>): Promise<unknown> {
     if (callableId === "conversation.thread.search") {
-      const input = searchInputSchema.parse(rawInput);
+      const input = parseToolInput({ callableId, input: rawInput, schema: searchInputSchema });
       return await this.params.service.search(input);
     }
 
     if (callableId === "conversation.thread.read") {
-      const input = readInputSchema.parse(rawInput);
+      const input = parseToolInput({ callableId, input: rawInput, schema: readInputSchema });
       return await this.params.service.read(input);
     }
 
     if (callableId === "conversation.thread.runSummarization") {
-      const input = runSummarizationInputSchema.parse(rawInput);
+      const input = parseToolInput({
+        callableId,
+        input: rawInput,
+        schema: runSummarizationInputSchema,
+      });
       return await this.params.service.runSummarization(input);
     }
 

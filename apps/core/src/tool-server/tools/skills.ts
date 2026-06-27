@@ -26,9 +26,15 @@ const listInputSchema = z.object({
     .describe("Max results (default: 50)")
     .default(50),
   sources: z
-    .array(z.string())
+    .union([z.string().min(1), z.array(z.string().min(1))])
     .optional()
-    .describe('Optional source filter (e.g. ["lilac-data", "claude-project"])'),
+    .transform((value) => {
+      if (value === undefined) return undefined;
+      return Array.isArray(value) ? value : [value];
+    })
+    .describe(
+      'Optional source filter(s), e.g. --sources=lilac-data or --sources:json=["lilac-data","claude-project"].',
+    ),
 });
 
 const readInputSchema = z.object({

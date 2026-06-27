@@ -430,6 +430,62 @@ describe("tool-server discovery", () => {
     }
   });
 
+  it("accepts scalar source shorthand", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      const result = (await fixture.tool.call("discovery.search", {
+        query: "deploy",
+        sources: "conversation",
+        limit: 10,
+      })) as {
+        meta: { sources: string[] };
+        groups: Array<{ source: string }>;
+      };
+
+      expect(result.meta.sources).toEqual(["conversation"]);
+      expect(result.groups.every((group) => group.source === "conversation")).toBe(true);
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("renders source array help clearly", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      const entry = (await fixture.tool.list()).find(
+        (item) => item.callableId === "discovery.search",
+      );
+      expect(entry?.input.find((line) => line.startsWith("--sources="))).toContain(
+        '("conversation" | "prompt" | "heartbeat")[]',
+      );
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("returns guided validation errors for invalid input", async () => {
+    const fixture = await makeFixture();
+
+    try {
+      await expect(
+        fixture.tool.call("discovery.search", {
+          query: "deploy",
+          sources: "missing",
+        }),
+      ).rejects.toThrow("discovery.search has invalid input.");
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
   it("declares query as the primary positional argument", async () => {
     const fixture = await makeFixture();
 

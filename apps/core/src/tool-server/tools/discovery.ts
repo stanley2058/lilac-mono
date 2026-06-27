@@ -6,14 +6,24 @@ import {
   DISCOVERY_SURROUNDING_MAX,
   type DiscoveryService,
 } from "../../discovery/discovery-service";
+import { parseToolInput } from "../validation-error-message";
 import { zodObjectToCliLines } from "./zod-cli";
+
+const discoverySourceSchema = z.enum(["conversation", "prompt", "heartbeat"]);
+
+const discoverySourcesInputSchema = z
+  .union([discoverySourceSchema, z.array(discoverySourceSchema)])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return undefined;
+    return Array.isArray(value) ? value : [value];
+  });
 
 const discoverySearchInputSchema = z.object({
   query: z.string().min(1).describe("Search query (BM25 full-text)."),
-  sources: z
-    .array(z.enum(["conversation", "prompt", "heartbeat"]))
-    .optional()
-    .describe("Optional source filters. Defaults to conversation + prompt + heartbeat."),
+  sources: discoverySourcesInputSchema.describe(
+    "Optional source filter(s). Accepts a scalar like --sources=conversation or an array via --sources:json. Defaults to conversation + prompt + heartbeat.",
+  ),
   platform: z
     .enum(["discord", "github", "whatsapp", "slack", "telegram", "web", "unknown"])
     .optional()
@@ -98,7 +108,7 @@ export class Discovery implements ServerTool {
         callableId: "discovery.search",
         name: "Discovery Search",
         description:
-          "Search unified agent memory across conversations, prompts, and heartbeat files with grouped origins and surrounding context.",
+          "Search unified agent memory across conversations, prompts, and heartbeat files. Output is { meta, groups }, where groups[].entries[][] contains matched message/file entries plus surrounding context windows.",
         shortInput: zodObjectToCliLines(discoverySearchInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(discoverySearchInputSchema),
         primaryPositional: {
@@ -113,7 +123,11 @@ export class Discovery implements ServerTool {
       throw new Error(`Invalid callable ID '${callableId}'`);
     }
 
-    const input = discoverySearchInputSchema.parse(rawInput);
+    const input = parseToolInput({
+      callableId,
+      input: rawInput,
+      schema: discoverySearchInputSchema,
+    });
     return await this.params.discovery.search(input);
   }
 }

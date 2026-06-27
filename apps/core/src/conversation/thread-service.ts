@@ -205,6 +205,13 @@ type ConversationThreadAboutnessCoverage = {
   askPhraseCoverage: number;
   entityCoverage: number;
   matched: boolean;
+  matchReason:
+    | "no-specific-aboutness"
+    | "domain-mismatch"
+    | "weak-coverage"
+    | "partial-coverage"
+    | "sufficient-coverage"
+    | "strong-coverage";
 };
 
 type ConversationThreadSearchHitWithAttribution = ConversationThreadSearchHit & {
@@ -257,7 +264,7 @@ export type ConversationThreadReadOutput = {
     userId: string;
     userName?: string;
     time: string;
-    text: string;
+    content: string;
   }>;
 };
 
@@ -550,17 +557,29 @@ function computeAboutnessCoverage(
   const hasSpecificAboutness = hasSpecificQueryAboutness(queryAboutness);
   const hasDomainMismatch =
     queryAboutness.domains.length > 0 && domainCoverage === 0 && targetCoverage < 0.6;
-  const multiplier = !hasSpecificAboutness
-    ? 1
+  const matchReason = !hasSpecificAboutness
+    ? "no-specific-aboutness"
     : hasDomainMismatch
-      ? DOMAIN_MISMATCH_COVERAGE_MULTIPLIER
+      ? "domain-mismatch"
       : highPrecisionCoverage < 0.25
-        ? WEAK_COVERAGE_MULTIPLIER
+        ? "weak-coverage"
         : highPrecisionCoverage < 0.45
-          ? PARTIAL_COVERAGE_MULTIPLIER
+          ? "partial-coverage"
           : highPrecisionCoverage < 0.65
-            ? 1
-            : 1.05 + Math.min(0.1, ((highPrecisionCoverage - 0.65) / 0.35) * 0.1);
+            ? "sufficient-coverage"
+            : "strong-coverage";
+  const multiplier =
+    matchReason === "no-specific-aboutness"
+      ? 1
+      : matchReason === "domain-mismatch"
+        ? DOMAIN_MISMATCH_COVERAGE_MULTIPLIER
+        : matchReason === "weak-coverage"
+          ? WEAK_COVERAGE_MULTIPLIER
+          : matchReason === "partial-coverage"
+            ? PARTIAL_COVERAGE_MULTIPLIER
+            : matchReason === "sufficient-coverage"
+              ? 1
+              : 1.05 + Math.min(0.1, ((highPrecisionCoverage - 0.65) / 0.35) * 0.1);
 
   return {
     preCoverageScore: hit.score,
@@ -572,6 +591,7 @@ function computeAboutnessCoverage(
     askPhraseCoverage,
     entityCoverage,
     matched: !hasSpecificAboutness || (!hasDomainMismatch && highPrecisionCoverage >= 0.45),
+    matchReason,
   };
 }
 
@@ -1072,7 +1092,7 @@ export class ConversationThreadService {
         userId: message.userId,
         userName: message.userName,
         time: formatTime(message.ts),
-        text: message.text,
+        content: message.text,
       })),
     };
   }

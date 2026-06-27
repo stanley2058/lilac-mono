@@ -69,7 +69,7 @@ cat payload.json | tools <tool> --stdin
   - When to use: Find exact phrases, identifiers, or nearby raw transcript/file context.
 - `conversation.thread.search` — (Template setup: remove this bullet and its sub-bullets if conversation thread indexing/summarization is not enabled in core config; if enabled, delete this parenthetical.) Search summarized Discord conversation threads by semantic queries.
   - When to use: Search with semantic sentences and conceptual intents. Best for retrieving coherent conversations around a topic rather than exact transcript matches.
-  - Supports multi-query input. For positional CLI use, pass multiple quoted queries like: `"query1" "query2"`.
+  - Multi-query input is for multiple phrasings/facets of the same intent, merged into one ranking; it is not parallel independent searches. For positional CLI use, pass multiple quoted queries like: `"query1" "query2"`.
   - When combining multi-query input with options, prefer JSON input with `--input` and `query` as an array.
 - `conversation.thread.read` — (Template setup: remove this bullet if conversation thread indexing/summarization is not enabled in core config; if enabled, delete this parenthetical.) Read a conversation thread transcript by `threadId` with offset/limit pagination. Use after `conversation.thread.search` returns a relevant `threadId`.
 - `surface.help` — Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.
