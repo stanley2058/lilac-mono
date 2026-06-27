@@ -111,6 +111,25 @@ describe("tool-bridge positional input", () => {
     expect(parsed.fieldInputs).toEqual([{ field: "mode", value: "browser" }]);
   });
 
+  it("treats bare tool flags as boolean true without consuming the next token", () => {
+    const parsed = parseArgs(["search", "query", "--case-sensitive", "next"]);
+
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    expect(parsed.positionalArgs).toEqual(["query", "next"]);
+    expect(parsed.fieldInputs).toEqual([{ field: "caseSensitive", value: true }]);
+  });
+
+  it("requires equals syntax for value-required control flags", () => {
+    expect(() => parseArgs(["fetch", "--output", "json"])).toThrow(
+      "--output requires a value: --output=compact|json",
+    );
+    expect(() => parseArgs(["fetch", "--input", "payload.json"])).toThrow(
+      "--input requires a value",
+    );
+  });
+
   it("supports `--` for positional values that begin with dashes", () => {
     const parsed = parseArgs(["fetch", "--", "--literal-value"]);
 
@@ -151,23 +170,29 @@ describe("tool-bridge positional input", () => {
     });
   });
 
-  it("rejects mixed flags with variadic primary positionals", async () => {
-    const parsed = parseArgs(["attachment.add_files", "a.png", "--filenames=renamed.png"]);
+  it("allows flags alongside variadic primary positionals", async () => {
+    const parsed = parseArgs([
+      "attachment.add_files",
+      "a.png",
+      "b.png",
+      '--filenames:json=["renamed-a.png","renamed-b.png"]',
+    ]);
     expect(parsed.type).toBe("call");
     if (parsed.type !== "call") return;
 
-    await expect(buildToolInput(parsed, { field: "paths", variadic: true })).rejects.toThrow(
-      "does not support mixing variadic positional <paths...> with flags or JSON input",
-    );
+    await expect(buildToolInput(parsed, { field: "paths", variadic: true })).resolves.toEqual({
+      paths: ["a.png", "b.png"],
+      filenames: ["renamed-a.png", "renamed-b.png"],
+    });
   });
 
-  it("rejects mixed JSON input with variadic primary positionals", async () => {
+  it("rejects duplicate variadic positional and named input for the same field", async () => {
     const parsed = parseArgs(["attachment.add_files", "a.png", '--input={"paths":["b.png"]}']);
     expect(parsed.type).toBe("call");
     if (parsed.type !== "call") return;
 
     await expect(buildToolInput(parsed, { field: "paths", variadic: true })).rejects.toThrow(
-      "does not support mixing variadic positional <paths...> with flags or JSON input",
+      "Primary positional <paths...> conflicts with an existing 'paths' value",
     );
   });
 

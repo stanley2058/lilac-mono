@@ -290,18 +290,22 @@ async function buildNestedToolInput(params: {
 }): Promise<Record<string, unknown>> {
   let input: Record<string, unknown> = {};
   const positionals: string[] = [];
-  let hasToolInputFlags = false;
 
   for (let i = 0; i < params.args.length; i++) {
     const arg = params.args[i] ?? "";
-    if (arg === "--stdin") {
-      hasToolInputFlags = true;
+    if (arg === "--stdin" || arg.startsWith("--stdin=")) {
+      const value = arg === "--stdin" ? true : parseBooleanLike(arg.slice("--stdin=".length));
+      if (value === false) continue;
       input = JSON.parse(decodeBytesToUtf8(params.ctx.stdin)) as Record<string, unknown>;
       continue;
     }
-    if (arg === "--input" || arg.startsWith("--input=")) {
-      hasToolInputFlags = true;
-      const value = arg === "--input" ? (params.args[++i] ?? "") : arg.slice("--input=".length);
+    if (arg === "--input") {
+      throw new Error(
+        "--input requires a value: --input=@file.json, --input=@-, or --input='<json>'",
+      );
+    }
+    if (arg.startsWith("--input=")) {
+      const value = arg.slice("--input=".length);
       input = (await readJsonSource(value, params.ctx)) as Record<string, unknown>;
       continue;
     }
@@ -316,19 +320,20 @@ async function buildNestedToolInput(params: {
 
     const eq = arg.indexOf("=");
     const rawKey = (eq === -1 ? arg.slice(2) : arg.slice(2, eq)).trim();
-    const rawValue = eq === -1 ? (params.args[++i] ?? "") : arg.slice(eq + 1);
+    const rawValue = eq === -1 ? "" : arg.slice(eq + 1);
     if (rawKey.length === 0) continue;
 
     const isJson = rawKey.endsWith(":json");
     const field = kebabToCamelCase(isJson ? rawKey.slice(0, -":json".length) : rawKey);
     if (isJson) {
-      hasToolInputFlags = true;
+      if (eq === -1) {
+        throw new Error(`--${field}:json requires a value`);
+      }
       input[field] = await readJsonSource(rawValue, params.ctx);
       continue;
     }
 
-    hasToolInputFlags = true;
-    input[field] = parseBooleanLike(rawValue) ?? rawValue;
+    input[field] = eq === -1 ? true : (parseBooleanLike(rawValue) ?? rawValue);
   }
 
   if (positionals.length > 0) {
@@ -337,12 +342,12 @@ async function buildNestedToolInput(params: {
     if (!primaryPositional) {
       throw new Error(`Tool '${params.callableId}' does not support positional input`);
     }
+    if (Object.hasOwn(input, primaryPositional.field)) {
+      throw new Error(
+        `Primary positional conflicts with an existing '${primaryPositional.field}' value from flags or JSON input`,
+      );
+    }
     if (primaryPositional.variadic === true) {
-      if (hasToolInputFlags) {
-        throw new Error(
-          `Tool '${params.callableId}' does not support mixing variadic positional input with flags or JSON input`,
-        );
-      }
       input[primaryPositional.field] = positionals;
       return input;
     }

@@ -940,22 +940,13 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
         continue;
       }
       if (!a || !a.startsWith("--")) {
-        throw new Error(`Unexpected argument '${a ?? ""}'. Expected --key=value or --key value`);
+        throw new Error(`Unexpected argument '${a ?? ""}'. Expected --key=value`);
       }
 
       const eq = a.indexOf("=");
       const k = eq === -1 ? a : a.slice(0, eq);
-      let v = eq === -1 ? "" : a.slice(eq + 1);
-      let hasValue = eq !== -1;
-
-      if (!hasValue) {
-        const next = restArgs[i + 1];
-        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
-          v = next;
-          hasValue = true;
-          i++;
-        }
-      }
+      const v = eq === -1 ? "" : a.slice(eq + 1);
+      const hasValue = eq !== -1;
 
       if (k === "--help") {
         const value = hasValue ? parseBooleanLike(v) : true;
@@ -965,9 +956,7 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
 
       if (k === "--output") {
         if (!hasValue) {
-          throw new Error(
-            "--output requires a value: --output=compact|json or --output compact|json",
-          );
+          throw new Error("--output requires a value: --output=compact|json");
         }
         if (v !== "compact" && v !== "json") {
           throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
@@ -983,19 +972,19 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
       }
 
       if (k === "--data-dir") {
-        if (!hasValue) throw new Error("--data-dir requires a value");
+        if (!hasValue) throw new Error("--data-dir requires a value: --data-dir=<path>");
         dataDir = normalizeMaybePath("dataDir", v);
         continue;
       }
 
       if (k === "--name") {
-        if (!hasValue) throw new Error("--name requires a value");
+        if (!hasValue) throw new Error("--name requires a value: --name=<string>");
         userName = v;
         continue;
       }
 
       if (k === "--email") {
-        if (!hasValue) throw new Error("--email requires a value");
+        if (!hasValue) throw new Error("--email requires a value: --email=<string>");
         userEmail = v;
         continue;
       }
@@ -1065,18 +1054,9 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
       }
 
       const eq = a.indexOf("=");
-      let k = eq === -1 ? a : a.slice(0, eq);
-      let v = eq === -1 ? "" : a.slice(eq + 1);
-      let hasValue = eq !== -1;
-
-      if (!hasValue) {
-        const next = restArgs[i + 1];
-        if (typeof next === "string" && next.length > 0 && !next.startsWith("--")) {
-          v = next;
-          hasValue = true;
-          i++;
-        }
-      }
+      const k = eq === -1 ? a : a.slice(0, eq);
+      const v = eq === -1 ? "" : a.slice(eq + 1);
+      const hasValue = eq !== -1;
       if (!k || k === "--") continue;
 
       // Special-case: tools <tool> --help / --help=true
@@ -1088,9 +1068,7 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
 
       if (k === "--output") {
         if (!hasValue) {
-          throw new Error(
-            "--output requires a value: --output=compact|json or --output compact|json",
-          );
+          throw new Error("--output requires a value: --output=compact|json");
         }
         if (v !== "compact" && v !== "json") {
           throw new Error(`Invalid --output value '${v}' (expected compact|json)`);
@@ -1115,7 +1093,7 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
       if (k === "--input") {
         if (!hasValue) {
           throw new Error(
-            "--input requires a value: --input=@file.json, --input @file.json, --input=@-, or --input='<json>'",
+            "--input requires a value: --input=@file.json, --input=@-, or --input='<json>'",
           );
         }
 
@@ -1148,7 +1126,7 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
         if (!previous) seenCanonicalFields.set(field, rawField);
 
         if (!hasValue) {
-          throw new Error(`--${field}:json requires a value`);
+          throw new Error(`--${field}:json requires a value: --${rawField}:json=<json|@file|@->`);
         }
 
         const source = parseJsonSource(v);
@@ -1168,17 +1146,11 @@ export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
       }
       if (!previous) seenCanonicalFields.set(field, fieldRaw);
 
-      let parsedValue: string | boolean = v;
+      let parsedValue: string | boolean = true;
 
-      if (!hasValue) {
-        // Preserve existing behavior for unknown --flag (it becomes empty-string).
-        // The only exception is --help handled above.
-        parsedValue = "";
-      } else {
+      if (hasValue) {
         const boolValue = parseBooleanLike(v);
-        if (boolValue !== undefined) {
-          parsedValue = boolValue;
-        }
+        parsedValue = boolValue ?? v;
       }
 
       if (typeof parsedValue === "string") {
@@ -1230,15 +1202,11 @@ export async function buildToolInput(
     }
 
     const displayField = camelToKebabCase(primaryPositional.field);
-    const hasToolInputFlags =
-      parsed.baseInput !== undefined ||
-      parsed.fieldInputs.length > 0 ||
-      parsed.jsonFieldInputs.length > 0;
 
     if (primaryPositional.variadic === true) {
-      if (hasToolInputFlags) {
+      if (Object.hasOwn(input, primaryPositional.field)) {
         throw new Error(
-          `Tool '${parsed.callableId}' does not support mixing variadic positional <${displayField}...> with flags or JSON input. Use either positional paths or --input/--flags, not both.`,
+          `Primary positional <${displayField}...> conflicts with an existing '${primaryPositional.field}' value from flags or JSON input.`,
         );
       }
 

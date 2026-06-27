@@ -42,7 +42,7 @@ describe("heartbeat handoff transcripts", () => {
             type: "tool-call",
             toolCallId: "bash-2",
             toolName: "bash",
-            input: { command: 'tools surface.messages.send --text "Heads up"' },
+            input: { command: 'tools surface.messages.send --text="Heads up"' },
           },
         ],
       },
@@ -96,7 +96,7 @@ describe("heartbeat handoff transcripts", () => {
             toolName: "bash",
             input: {
               command:
-                'tools surface.messages.send --text "one" && tools surface.messages.send --text "two"',
+                'tools surface.messages.send --text="one" && tools surface.messages.send --text="two"',
             },
           },
         ],

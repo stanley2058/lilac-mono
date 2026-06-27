@@ -315,19 +315,19 @@ describe("executeRestrictedBash", () => {
     }
   });
 
-  it("rejects mixed flags with variadic positionals in the nested tools command", async () => {
+  it("allows mixed flags with variadic positionals in the nested tools command", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-restricted-tools-workspace-"),
     );
-    let calledTool = false;
+    let capturedCallInput: unknown;
 
-    const restoreFetch = installMockFetch(async (input) => {
+    const restoreFetch = installMockFetch(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/help/attachment.add_files")) {
         return Response.json({ primaryPositional: { field: "paths", variadic: true } });
       }
       if (url.endsWith("/call")) {
-        calledTool = true;
+        capturedCallInput = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
         return Response.json({ isError: false, output: { ok: true } });
       }
       return new Response("not found", { status: 404 });
@@ -336,7 +336,8 @@ describe("executeRestrictedBash", () => {
     try {
       const result = await executeRestrictedBash(
         {
-          command: "tools attachment.add_files a.png --filenames=renamed.png",
+          command:
+            'tools attachment.add_files a.png b.png --filenames:json=\'["renamed-a.png","renamed-b.png"]\'',
           cwd: workspace,
         },
         {
@@ -349,9 +350,59 @@ describe("executeRestrictedBash", () => {
         },
       );
 
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain("does not support mixing variadic positional input");
-      expect(calledTool).toBe(false);
+      expect(result.exitCode).toBe(0);
+      expect(capturedCallInput).toEqual({
+        callableId: "attachment.add_files",
+        input: {
+          paths: ["a.png", "b.png"],
+          filenames: ["renamed-a.png", "renamed-b.png"],
+        },
+      });
+    } finally {
+      restoreFetch();
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps bare nested tool flags boolean without consuming following positionals", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-tools-workspace-"),
+    );
+    let capturedCallInput: unknown;
+
+    const restoreFetch = installMockFetch(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/help/attachment.add_files")) {
+        return Response.json({ primaryPositional: { field: "paths", variadic: true } });
+      }
+      if (url.endsWith("/call")) {
+        capturedCallInput = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        return Response.json({ isError: false, output: { ok: true } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    try {
+      const result = await executeRestrictedBash(
+        {
+          command: "tools attachment.add_files --dry-run a.png",
+          cwd: workspace,
+        },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-tools-bare-flag-test-req",
+            sessionId: "restricted-tools-bare-flag-test-session",
+            requestClient: "discord",
+          },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(capturedCallInput).toEqual({
+        callableId: "attachment.add_files",
+        input: { dryRun: true, paths: ["a.png"] },
+      });
     } finally {
       restoreFetch();
       await fs.rm(workspace, { recursive: true, force: true });
