@@ -28,7 +28,7 @@ import {
   type ConversationThreadSummaryInput,
   CONVERSATION_THREAD_SUMMARY_VERSION,
 } from "./thread-store";
-import type { ConversationThreadEmbeddingAdapter } from "./thread-embedding";
+import type { ConversationThreadEmbeddingAdapterResolver } from "./thread-embedding";
 import type { EntityMapper } from "../entity/entity-mapper";
 
 const SUMMARY_QUIET_MS = 60 * 60 * 1000;
@@ -1159,7 +1159,7 @@ export class ConversationThreadService {
       summarizer?: ConversationThreadSummarizer;
       queryAboutnessSummarizer?: ConversationThreadQueryAboutnessSummarizer;
       autoInjectQueryPlanner?: ConversationThreadAutoInjectQueryPlanner;
-      embeddingAdapter?: ConversationThreadEmbeddingAdapter;
+      getEmbeddingAdapter?: ConversationThreadEmbeddingAdapterResolver;
       entityMapper?: Pick<EntityMapper, "normalizeIncomingText">;
     },
   ) {}
@@ -1185,6 +1185,9 @@ export class ConversationThreadService {
     const mode = input.mode ?? "hybrid";
     const queries = normalizeSearchQueries(input.query);
     const cfg = await this.params.getConfig();
+    const embeddingAdapter = this.params.getEmbeddingAdapter
+      ? await this.params.getEmbeddingAdapter()
+      : null;
     const filters = buildSearchFilters(input);
     const recallLimit =
       mode === "lexical" ? limit : Math.min(50, Math.max(limit * COVERAGE_RECALL_MULTIPLIER, 10));
@@ -1193,6 +1196,7 @@ export class ConversationThreadService {
       limit: recallLimit,
       mode,
       cfg,
+      embeddingAdapter,
       filters,
       allowlist: buildSearchAllowlist(cfg),
     });
@@ -1212,8 +1216,7 @@ export class ConversationThreadService {
         limit,
         mode,
         count: hits.length,
-        vectorAvailable:
-          this.params.store.isVectorSearchAvailable() && !!this.params.embeddingAdapter,
+        vectorAvailable: this.params.store.isVectorSearchAvailable() && !!embeddingAdapter,
         vectorError: this.params.store.getVectorLoadError() ?? undefined,
         ...(input.verbose && queryAboutness ? { queryAboutness } : {}),
         ...(input.verbose && queryAboutnessError ? { queryAboutnessError } : {}),
@@ -1345,6 +1348,9 @@ export class ConversationThreadService {
     }
 
     const cfg = await this.params.getConfig();
+    const embeddingAdapter = this.params.getEmbeddingAdapter
+      ? await this.params.getEmbeddingAdapter()
+      : null;
     const promptContext = cfg.conversation.thread.summarization.includePromptContext
       ? await loadPromptContext()
       : null;
@@ -1361,8 +1367,8 @@ export class ConversationThreadService {
       threadId: input.threadId,
       beforeTs: input.beforeTs,
       afterTs: input.afterTs,
-      includeEmbeddingStale:
-        !!this.params.embeddingAdapter && this.params.store.isVectorSearchAvailable(),
+      includeEmbeddingStale: !!embeddingAdapter && this.params.store.isVectorSearchAvailable(),
+      embeddingModelId: embeddingAdapter?.modelId,
       summaryPromptContextHash: promptContext?.hash,
       force: input.force === true,
     });
@@ -1491,6 +1497,7 @@ export class ConversationThreadService {
         await this.tryEmbedThread({
           jobId,
           threadId: thread.thread_id,
+          embeddingAdapter,
           embeddingInputHash: summaryWrite.embeddingInputHash,
           facets: summaryWrite.facets,
         });
@@ -1625,10 +1632,11 @@ export class ConversationThreadService {
   private async tryEmbedThread(input: {
     jobId?: string;
     threadId: string;
+    embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     embeddingInputHash: string;
     facets: ReturnType<ConversationThreadStore["listFacets"]>;
   }): Promise<void> {
-    const adapter = this.params.embeddingAdapter;
+    const adapter = input.embeddingAdapter;
     if (!adapter) return;
     if (!this.params.store.isVectorSearchAvailable()) {
       const err = this.params.store.getVectorLoadError();
@@ -1742,6 +1750,7 @@ export class ConversationThreadService {
     limit: number;
     mode: "hybrid" | "semantic" | "lexical";
     cfg: CoreConfig;
+    embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
   }): Promise<ConversationThreadSearchHit[]> {
@@ -1784,7 +1793,7 @@ export class ConversationThreadService {
       }
     }
 
-    const adapter = this.params.embeddingAdapter;
+    const adapter = input.embeddingAdapter;
     if (input.mode !== "lexical" && adapter && this.params.store.isVectorSearchAvailable()) {
       try {
         const queryEmbedding = await adapter.embed({ text: input.query, facet: "query" });
@@ -1822,6 +1831,7 @@ export class ConversationThreadService {
     limit: number;
     mode: "hybrid" | "semantic" | "lexical";
     cfg: CoreConfig;
+    embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
   }): Promise<ConversationThreadSearchHitWithAttribution[]> {
@@ -1831,6 +1841,7 @@ export class ConversationThreadService {
         limit: input.limit,
         mode: input.mode,
         cfg: input.cfg,
+        embeddingAdapter: input.embeddingAdapter,
         filters: input.filters,
         allowlist: input.allowlist,
       });
@@ -1845,6 +1856,7 @@ export class ConversationThreadService {
           limit: perQueryLimit,
           mode: input.mode,
           cfg: input.cfg,
+          embeddingAdapter: input.embeddingAdapter,
           filters: input.filters,
           allowlist: input.allowlist,
         }),

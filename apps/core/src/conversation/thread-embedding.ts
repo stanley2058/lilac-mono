@@ -2,6 +2,7 @@ import { embed, type EmbeddingModel } from "ai";
 import {
   createLogger,
   providers,
+  type ResolvedModelRef,
   resolveModelRef,
   type CoreConfig,
   type JSONObject,
@@ -37,6 +38,9 @@ export type ConversationThreadEmbeddingAdapter = {
   }): Promise<Float32Array>;
 };
 
+export type ConversationThreadEmbeddingAdapterResolver =
+  () => Promise<ConversationThreadEmbeddingAdapter | null>;
+
 type EmbeddingProvider = {
   embeddingModel(modelId: string): EmbeddingModel;
 };
@@ -54,17 +58,32 @@ function getProvider(providerId: string): unknown {
   return null;
 }
 
-export function createConversationThreadEmbeddingAdapter(
-  cfg: CoreConfig,
-): ConversationThreadEmbeddingAdapter | null {
+function resolveConversationThreadEmbeddingModel(cfg: CoreConfig): ResolvedModelRef | null {
   const embeddingConfig = cfg.conversation.thread.embedding;
   if (!embeddingConfig.enabled) return null;
 
-  const resolved = resolveModelRef(
+  return resolveModelRef(
     cfg,
     { model: embeddingConfig.model },
     "conversation.thread.embedding.model",
   );
+}
+
+function embeddingAdapterCacheKey(resolved: ResolvedModelRef | null): string {
+  if (!resolved) return "disabled";
+  return JSON.stringify({
+    provider: resolved.provider,
+    modelId: resolved.modelId,
+    spec: resolved.spec,
+    providerOptions: resolved.providerOptions ?? null,
+  });
+}
+
+function createConversationThreadEmbeddingAdapterFromResolved(
+  resolved: ResolvedModelRef | null,
+): ConversationThreadEmbeddingAdapter | null {
+  if (!resolved) return null;
+
   const provider = getProvider(resolved.provider);
   if (!hasEmbeddingModel(provider)) {
     throw new Error(`Provider '${resolved.provider}' does not expose embedding models`);
@@ -92,5 +111,49 @@ export function createConversationThreadEmbeddingAdapter(
       });
       return Float32Array.from(result.embedding);
     },
+  };
+}
+
+export function createConversationThreadEmbeddingAdapter(
+  cfg: CoreConfig,
+): ConversationThreadEmbeddingAdapter | null {
+  return createConversationThreadEmbeddingAdapterFromResolved(
+    resolveConversationThreadEmbeddingModel(cfg),
+  );
+}
+
+export function createConversationThreadEmbeddingAdapterResolver(
+  getConfig: () => Promise<CoreConfig>,
+): ConversationThreadEmbeddingAdapterResolver {
+  let cached: {
+    key: string;
+    adapter: ConversationThreadEmbeddingAdapter | null;
+  } | null = null;
+  let pending: Promise<ConversationThreadEmbeddingAdapter | null> | null = null;
+
+  const resolve = async (): Promise<ConversationThreadEmbeddingAdapter | null> => {
+    const cfg = await getConfig();
+    try {
+      const resolved = resolveConversationThreadEmbeddingModel(cfg);
+      const key = embeddingAdapterCacheKey(resolved);
+      if (cached?.key === key) return cached.adapter;
+
+      const adapter = createConversationThreadEmbeddingAdapterFromResolved(resolved);
+      cached = { key, adapter };
+      return adapter;
+    } catch (e) {
+      logger.warn("conversation thread embeddings disabled", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return null;
+    }
+  };
+
+  return async () => {
+    if (pending) return pending;
+    pending = resolve().finally(() => {
+      pending = null;
+    });
+    return pending;
   };
 }

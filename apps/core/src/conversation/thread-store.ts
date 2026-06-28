@@ -1113,6 +1113,7 @@ export class ConversationThreadStore {
     beforeTs?: number;
     afterTs?: number;
     includeEmbeddingStale?: boolean;
+    embeddingModelId?: string;
     summaryPromptContextHash?: string;
     force?: boolean;
   }): ConversationThreadRow[] {
@@ -1124,6 +1125,17 @@ export class ConversationThreadStore {
       ? "OR t.summary_prompt_context_hash IS NULL OR t.summary_prompt_context_hash != ?"
       : "";
     if (shouldCheckPromptContext) values.push(input.summaryPromptContextHash!);
+    const shouldCheckEmbeddingModel =
+      input?.force !== true && input?.includeEmbeddingStale && !!input.embeddingModelId;
+    const embeddingModelClause = shouldCheckEmbeddingModel
+      ? `OR NOT EXISTS (
+          SELECT 1
+          FROM conversation_thread_embeddings e
+          WHERE e.thread_id = t.thread_id
+            AND e.model_id = ?
+        )`
+      : "";
+    if (shouldCheckEmbeddingModel) values.push(input.embeddingModelId!);
     const staleClause = input?.force
       ? "1 = 1"
       : input?.includeEmbeddingStale
@@ -1138,6 +1150,7 @@ export class ConversationThreadStore {
               t.last_embedded_at IS NULL
               OR t.last_embedded_at < t.last_summarized_at
               OR t.embedding_version != ${CONVERSATION_THREAD_EMBEDDING_VERSION}
+              ${embeddingModelClause}
             )
           )
         )`

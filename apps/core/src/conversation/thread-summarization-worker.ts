@@ -1,6 +1,6 @@
 import { createLogger, getCoreConfig } from "@stanley2058/lilac-utils";
 
-import { createConversationThreadEmbeddingAdapter } from "./thread-embedding";
+import { createConversationThreadEmbeddingAdapterResolver } from "./thread-embedding";
 import { createSerialJobQueue } from "./thread-job-queue";
 import { ConversationThreadService } from "./thread-service";
 import type { ConversationThreadRunSummarizationInput } from "./thread-service";
@@ -45,14 +45,9 @@ async function runJob(request: WorkerRequest): Promise<void> {
       queuedJobs: jobQueue.depth,
     });
     const cfg = await getCoreConfig({ forceReload: true });
-    let embeddingAdapter;
-    try {
-      embeddingAdapter = createConversationThreadEmbeddingAdapter(cfg) ?? undefined;
-    } catch (e) {
-      logger.warn("conversation thread embeddings disabled in worker", {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
+    const getEmbeddingAdapter = createConversationThreadEmbeddingAdapterResolver(() =>
+      getCoreConfig(),
+    );
 
     store = new ConversationThreadStore(request.searchDbPath, {
       surfaceDbPath: request.surfaceDbPath,
@@ -67,7 +62,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
     const service = new ConversationThreadService({
       store,
       getConfig: () => getCoreConfig(),
-      embeddingAdapter,
+      getEmbeddingAdapter,
       entityMapper,
     });
     const result = await service.runSummarization({ ...request.input, jobId: request.id });

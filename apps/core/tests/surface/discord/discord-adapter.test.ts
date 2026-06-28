@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { ApplicationCommandOptionType, MessageType, type Message } from "discord.js";
+import { ActivityType, ApplicationCommandOptionType, MessageType, type Message } from "discord.js";
+import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import {
   DiscordAdapter,
@@ -11,6 +12,20 @@ import {
   resolveOutputNotificationEnabled,
   resolveEffectiveSessionModelOverride,
 } from "../../../src/surface/discord/discord-adapter";
+
+function testConfigWithStatusMessage(statusMessage?: string): CoreConfig {
+  const discord = {
+    botName: "lilac",
+    allowedChannelIds: ["c1"],
+    ...(statusMessage === undefined ? {} : { statusMessage }),
+  };
+  const cfg = parseCoreConfigV1ToUniversal({
+    surface: {
+      discord,
+    },
+  });
+  return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
+}
 
 function makeMessage(input: { bot: boolean; system: boolean; type: MessageType }): Message {
   return {
@@ -310,6 +325,61 @@ describe("DiscordAdapter.getHealthSnapshot", () => {
 
     expect(snapshot.gatewayPingMs).toBe(123);
     expect(snapshot.lastGatewayPingAt).toBe(2_000);
+  });
+});
+
+describe("DiscordAdapter.refreshCoreConfig", () => {
+  it("applies, changes, and clears configured presence", async () => {
+    let cfg = testConfigWithStatusMessage("reading threads");
+    const presenceCalls: unknown[] = [];
+    const adapter = new DiscordAdapter({
+      getConfig: async () => cfg,
+    });
+    (
+      adapter as unknown as {
+        client: {
+          user: {
+            setPresence(options: unknown): void;
+          };
+        } | null;
+      }
+    ).client = {
+      user: {
+        setPresence(options: unknown) {
+          presenceCalls.push(options);
+        },
+      },
+    };
+
+    await adapter.refreshCoreConfig();
+    cfg = testConfigWithStatusMessage("summarizing threads");
+    await adapter.refreshCoreConfig();
+    cfg = testConfigWithStatusMessage();
+    await adapter.refreshCoreConfig();
+
+    expect(presenceCalls).toEqual([
+      {
+        activities: [
+          {
+            name: "reading threads",
+            state: "reading threads",
+            type: ActivityType.Custom,
+          },
+        ],
+        status: "online",
+      },
+      {
+        activities: [
+          {
+            name: "summarizing threads",
+            state: "summarizing threads",
+            type: ActivityType.Custom,
+          },
+        ],
+        status: "online",
+      },
+      { activities: [], status: "online" },
+    ]);
   });
 });
 

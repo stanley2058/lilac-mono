@@ -683,6 +683,52 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("resolves the embedding adapter once per summarization run", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages(
+      Array.from({ length: 4 }, (_, index) => [
+        msg({
+          channelId: "c1",
+          messageId: `embed-once-${index}-1`,
+          userId: "u1",
+          text: `embedding resolver thread ${index} start`,
+          ts: index * 2 * 60 * 60 * 1000 + 1,
+        }),
+        msg({
+          channelId: "c1",
+          messageId: `embed-once-${index}-2`,
+          userId: "u2",
+          text: `embedding resolver thread ${index} reply`,
+          ts: index * 2 * 60 * 60 * 1000 + 2,
+        }),
+      ]).flat(),
+    );
+
+    let adapterCalls = 0;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfigWithThreadConcurrency(2),
+      getEmbeddingAdapter: async () => {
+        adapterCalls += 1;
+        return fakeEmbeddingAdapter;
+      },
+      summarizer: async ({ threadId }) => ({
+        title: threadId,
+        brief: "Embedding resolver summary",
+        topics: [],
+      }),
+    });
+
+    const run = await service.runSummarization({ now: Date.now() + 10 * 60 * 60 * 1000 });
+    expect(run.summarized).toBe(4);
+    expect(adapterCalls).toBe(1);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("force reruns fresh quiet summaries", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
@@ -993,7 +1039,7 @@ describe("conversation thread store", () => {
     const service = new ConversationThreadService({
       store: threadStore,
       getConfig: async () => testConfig(),
-      embeddingAdapter: equalEmbeddingAdapter,
+      getEmbeddingAdapter: async () => equalEmbeddingAdapter,
       queryAboutnessSummarizer: async ({ queries }) => {
         queryCaptureCalls += 1;
         capturedQueries = queries;
@@ -1218,7 +1264,7 @@ describe("conversation thread store", () => {
     const service = new ConversationThreadService({
       store: threadStore,
       getConfig: async () => testConfig(),
-      embeddingAdapter: equalEmbeddingAdapter,
+      getEmbeddingAdapter: async () => equalEmbeddingAdapter,
       queryAboutnessSummarizer: async () => {
         throw new Error("query capture unavailable");
       },
@@ -1640,7 +1686,7 @@ describe("conversation thread store", () => {
     const service = new ConversationThreadService({
       store: threadStore,
       getConfig: async () => testConfig(),
-      embeddingAdapter: fakeEmbeddingAdapter,
+      getEmbeddingAdapter: async () => fakeEmbeddingAdapter,
       queryAboutnessSummarizer: async ({ queries }) => ({
         domains: [],
         situations: [],
@@ -1690,6 +1736,104 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("uses the latest embedding adapter on subsequent runs", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "hot-a1", userId: "u1", text: "sqlite storage", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "hot-a2",
+        userId: "u2",
+        text: "database indexing",
+        ts: 2,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "hot-b1",
+        userId: "u1",
+        text: "cooking discussion",
+        ts: 2 + 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "hot-b2",
+        userId: "u3",
+        text: "banana dessert follow-up",
+        ts: 3 + 2 * 60 * 60 * 1000,
+      }),
+    ]);
+
+    let currentAdapter: ConversationThreadEmbeddingAdapter | null = null;
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      getEmbeddingAdapter: async () => currentAdapter,
+      queryAboutnessSummarizer: async ({ queries }) => ({
+        domains: [],
+        situations: [],
+        targets: [],
+        entities: [],
+        userWouldAskForThisAs: [...queries],
+        intentSummary: queries.join("; "),
+      }),
+      summarizer: async ({ threadId }) =>
+        threadId.endsWith(":hot-b1")
+          ? {
+              title: "Dessert planning",
+              brief: "Conversation about making a banana dessert recipe.",
+              topics: ["dessert recipe"],
+            }
+          : {
+              title: "Database storage",
+              brief: "Conversation about sqlite storage and indexing tradeoffs.",
+              topics: ["database indexing"],
+            },
+    });
+
+    const now = Date.now() + 2 * 60 * 60 * 1000;
+    expect((await service.runSummarization({ now })).summarized).toBe(2);
+    const disabled = await service.search({
+      query: "yellow fruit",
+      mode: "semantic",
+      verbose: true,
+    });
+    expect(disabled.meta.vectorAvailable).toBe(false);
+
+    currentAdapter = fakeEmbeddingAdapter;
+    expect((await service.runSummarization({ now: now + 1, force: true })).summarized).toBe(2);
+    const enabled = await service.search({
+      query: "yellow fruit",
+      mode: "semantic",
+      verbose: true,
+    });
+    expect(enabled.meta.vectorAvailable).toBe(true);
+    expect(enabled.results[0]?.title).toBe("Dessert planning");
+
+    currentAdapter = { ...fakeEmbeddingAdapter, modelId: "fake-2d-v2" };
+    const beforeReembed = await service.search({
+      query: "yellow fruit",
+      mode: "semantic",
+      verbose: true,
+    });
+    expect(beforeReembed.meta.vectorAvailable).toBe(true);
+    expect(beforeReembed.results).toEqual([]);
+
+    const reembedded = await service.runSummarization({ now: now + 2 });
+    expect(reembedded.eligible).toBe(2);
+    expect(reembedded.summarized).toBe(0);
+    const afterReembed = await service.search({
+      query: "yellow fruit",
+      mode: "semantic",
+      verbose: true,
+    });
+    expect(afterReembed.results[0]?.title).toBe("Dessert planning");
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("embeds summary facets and query text directly", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
@@ -1711,7 +1855,7 @@ describe("conversation thread store", () => {
     const service = new ConversationThreadService({
       store: threadStore,
       getConfig: async () => testConfig(),
-      embeddingAdapter: recordingAdapter,
+      getEmbeddingAdapter: async () => recordingAdapter,
       queryAboutnessSummarizer: async ({ queries }) => ({
         domains: [],
         situations: [],

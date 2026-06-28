@@ -33,7 +33,7 @@ import {
   type ConversationThreadToolService,
 } from "../conversation/thread-service";
 import { ConversationThreadStore } from "../conversation/thread-store";
-import { createConversationThreadEmbeddingAdapter } from "../conversation/thread-embedding";
+import { createConversationThreadEmbeddingAdapterResolver } from "../conversation/thread-embedding";
 import {
   startConversationThreadSummarizationWorker,
   startConversationThreadWorker,
@@ -381,6 +381,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       coreConfigValidationHadError = false;
       lastCoreConfigValidationError = null;
+      await adapter.refreshCoreConfig();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!coreConfigValidationHadError || lastCoreConfigValidationError !== msg) {
@@ -520,16 +521,8 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         cfg: startupConfig,
         store: discordSurfaceStore,
       });
-      const conversationThreadEmbeddingAdapter = (() => {
-        try {
-          return createConversationThreadEmbeddingAdapter(startupConfig) ?? undefined;
-        } catch (e) {
-          logger.warn("conversation thread embeddings disabled", {
-            error: e instanceof Error ? e.message : String(e),
-          });
-          return undefined;
-        }
-      })();
+      const getConversationThreadEmbeddingAdapter =
+        createConversationThreadEmbeddingAdapterResolver(() => getCoreConfig());
       discordSearchService = new DiscordSearchService({
         adapter,
         store: discordSearchStore,
@@ -537,7 +530,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       conversationThreadService = new ConversationThreadService({
         store: conversationThreadStore,
         getConfig: () => getCoreConfig(),
-        embeddingAdapter: conversationThreadEmbeddingAdapter,
+        getEmbeddingAdapter: getConversationThreadEmbeddingAdapter,
         entityMapper: conversationThreadEntityMapper,
       });
       stopConversationThreadSummarizationWorker = startConversationThreadSummarizationWorker({

@@ -80,6 +80,7 @@ import { getSessionMode, resolveSessionConfigId } from "../bridge/bus-request-ro
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
   config?: CoreConfig;
+  getConfig?: () => Promise<CoreConfig>;
   customCommands?: CustomCommandManager;
 };
 
@@ -651,6 +652,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
   private self: SurfaceSelf | null = null;
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private appliedStatusMessage: string | null | undefined;
   private healthState: DiscordAdapterHealthSnapshot = {
     connectionState: "idle",
     isReady: false,
@@ -666,7 +668,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       isReady: false,
     };
 
-    const cfg = this.opts?.config ?? (await getCoreConfig());
+    const cfg = this.opts?.config ?? (await this.resolveCoreConfig());
     this.cfg = cfg;
 
     this.logger.info("connecting", {
@@ -759,36 +761,15 @@ export class DiscordAdapter implements SurfaceAdapter {
         this.logger.error("slash command registration failed", e);
       });
 
-      const statusMessage = cfg.surface.discord.statusMessage;
-      const applyPresence = () => {
-        if (!statusMessage) return;
-        try {
-          client.user?.setPresence({
-            activities: [
-              {
-                name: statusMessage,
-                state: statusMessage,
-                type: ActivityType.Custom,
-              },
-            ],
-            status: "online",
-          });
-        } catch {
-          // ignore
-        }
-      };
-
-      applyPresence();
+      this.applyConfiguredPresence({ client, force: true });
 
       // Discord can clear custom presence over time; refresh periodically.
-      if (statusMessage) {
-        this.presenceTimer = setInterval(
-          () => {
-            applyPresence();
-          },
-          30 * 60 * 1000,
-        );
-      }
+      this.presenceTimer = setInterval(
+        () => {
+          this.applyConfiguredPresence({ client, force: true });
+        },
+        30 * 60 * 1000,
+      );
     });
 
     client.on("shardReady", () => {
@@ -934,6 +915,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     return { ...this.healthState };
   }
 
+  async refreshCoreConfig(): Promise<void> {
+    await this.reloadCoreConfigIfNeeded();
+  }
+
   async getSelf(): Promise<SurfaceSelf> {
     if (this.self) return this.self;
     if (!this.client?.user || !this.cfg) {
@@ -977,8 +962,9 @@ export class DiscordAdapter implements SurfaceAdapter {
     if (this.opts?.config) return;
 
     try {
-      const cfg = await getCoreConfig();
+      const cfg = await this.resolveCoreConfig();
       this.cfg = cfg;
+      this.applyConfiguredPresence();
 
       if (this.coreConfigReloadHadError) {
         this.logger.info("core-config reload recovered", {
@@ -999,6 +985,38 @@ export class DiscordAdapter implements SurfaceAdapter {
 
       this.coreConfigReloadHadError = true;
       this.lastCoreConfigReloadError = msg;
+    }
+  }
+
+  private async resolveCoreConfig(): Promise<CoreConfig> {
+    return this.opts?.getConfig ? this.opts.getConfig() : getCoreConfig();
+  }
+
+  private applyConfiguredPresence(input: { client?: Client; force?: boolean } = {}): void {
+    const client = input.client ?? this.client;
+    if (!client?.user || !this.cfg) return;
+
+    const statusMessage = this.cfg.surface.discord.statusMessage?.trim() || null;
+    if (!input.force && this.appliedStatusMessage === statusMessage) return;
+
+    try {
+      if (statusMessage) {
+        client.user.setPresence({
+          activities: [
+            {
+              name: statusMessage,
+              state: statusMessage,
+              type: ActivityType.Custom,
+            },
+          ],
+          status: "online",
+        });
+      } else {
+        client.user.setPresence({ activities: [], status: "online" });
+      }
+      this.appliedStatusMessage = statusMessage;
+    } catch {
+      // Presence updates are best-effort; failures are usually transient Discord client state.
     }
   }
 
