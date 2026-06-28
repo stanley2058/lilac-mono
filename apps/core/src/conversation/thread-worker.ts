@@ -54,7 +54,7 @@ export function startConversationThreadSummarizationWorker(params: {
   const worker = new Worker(new URL("./thread-summarization-worker.ts", import.meta.url), {
     type: "module",
   });
-  logger.info("conversation thread summarization worker client started");
+  logger.debug("conversation thread summarization worker client started");
   const pending = new Map<
     string,
     {
@@ -87,7 +87,7 @@ export function startConversationThreadSummarizationWorker(params: {
     const durationMs = job ? Date.now() - job.startedAt : undefined;
 
     if (response.ok) {
-      logger.info("conversation thread summarization job completed", {
+      logger.debug("conversation thread summarization job completed", {
         jobId: response.id,
         wait: job?.wait,
         dryRun: job?.dryRun,
@@ -135,7 +135,7 @@ export function startConversationThreadSummarizationWorker(params: {
         clear: input.clear === true,
         threadId: input.threadId,
       });
-      logger.info("conversation thread summarization job queued", {
+      logger.debug("conversation thread summarization job queued", {
         jobId,
         wait,
         dryRun: input.dryRun === true,
@@ -168,7 +168,7 @@ export function startConversationThreadSummarizationWorker(params: {
       return queuedResult(jobId);
     },
     async stop() {
-      logger.info("conversation thread summarization worker client stopping", {
+      logger.debug("conversation thread summarization worker client stopping", {
         pendingJobs: jobs.size,
         waiters: pending.size,
       });
@@ -177,7 +177,7 @@ export function startConversationThreadSummarizationWorker(params: {
       for (const waiter of pending.values()) waiter.reject(error);
       pending.clear();
       jobs.clear();
-      logger.info("conversation thread summarization worker client stopped");
+      logger.debug("conversation thread summarization worker client stopped");
     },
   };
 }
@@ -187,7 +187,7 @@ export function startConversationThreadWorker(params: {
   getConfig: () => Promise<CoreConfig>;
 }): { stop(): Promise<void> } {
   const logger = createLogger({ module: "conversation-thread-worker" });
-  logger.info("conversation thread periodic worker started", {
+  logger.debug("conversation thread periodic worker started", {
     checkIntervalMs: CHECK_INTERVAL_MS,
   });
   let stopped = false;
@@ -218,9 +218,9 @@ export function startConversationThreadWorker(params: {
         return;
       }
 
-      logger.info("conversation thread summarization tick started");
+      logger.debug("conversation thread summarization tick started");
       const result = await params.runner.runSummarization({ wait: true });
-      logger.info("conversation thread summarization tick completed", {
+      logger.debug("conversation thread summarization tick completed", {
         eligible: result.eligible,
         summarized: result.summarized,
         failed: result.failed,
@@ -238,10 +238,10 @@ export function startConversationThreadWorker(params: {
 
   return {
     async stop() {
-      logger.info("conversation thread periodic worker stopping");
+      logger.debug("conversation thread periodic worker stopping");
       stopped = true;
       if (timer) clearTimeout(timer);
-      logger.info("conversation thread periodic worker stopped");
+      logger.debug("conversation thread periodic worker stopped");
     },
   };
 }

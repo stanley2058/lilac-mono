@@ -1310,13 +1310,13 @@ export class ConversationThreadService {
     input: ConversationThreadRunSummarizationInput = {},
   ): Promise<ConversationThreadRunSummarizationResult> {
     const jobId = input.jobId;
-    this.logger.info("thread summarization refresh started", { jobId });
+    this.logger.debug("thread summarization refresh started", { jobId });
     const refreshed = this.refreshThreads();
-    this.logger.info("thread summarization refresh completed", { jobId, refreshed });
+    this.logger.debug("thread summarization refresh completed", { jobId, refreshed });
 
     if (input.clear === true && input.dryRun === true) {
       const clearTargets = this.params.store.listThreadsForSummarizationClear();
-      this.logger.info("thread summarization clear dry run completed", {
+      this.logger.debug("thread summarization clear dry run completed", {
         jobId,
         clearTargets: clearTargets.length,
         threadId: input.threadId,
@@ -1338,7 +1338,7 @@ export class ConversationThreadService {
     const clearedThreadIds =
       input.clear === true ? this.params.store.clearSummarizationState() : [];
     if (input.clear === true) {
-      this.logger.info("thread summarization state cleared", {
+      this.logger.debug("thread summarization state cleared", {
         jobId,
         cleared: clearedThreadIds.length,
         threadId: input.threadId,
@@ -1355,7 +1355,7 @@ export class ConversationThreadService {
       ? await loadPromptContext()
       : null;
     if (promptContext) {
-      this.logger.info("thread summarization prompt context loaded", {
+      this.logger.debug("thread summarization prompt context loaded", {
         jobId,
         hash: promptContext.hash,
       });
@@ -1372,7 +1372,7 @@ export class ConversationThreadService {
       summaryPromptContextHash: promptContext?.hash,
       force: input.force === true,
     });
-    this.logger.info("thread summarization eligibility completed", {
+    this.logger.debug("thread summarization eligibility completed", {
       jobId,
       eligible: eligible.length,
       dryRun: input.dryRun === true,
@@ -1396,9 +1396,18 @@ export class ConversationThreadService {
     };
 
     if (input.dryRun) {
-      this.logger.info("thread summarization dry run completed", {
+      this.logger.debug("thread summarization dry run completed", {
         jobId,
         eligible: result.eligible,
+      });
+      return result;
+    }
+
+    if (eligible.length === 0) {
+      this.logger.debug("thread summarization skipped: no eligible threads", {
+        jobId,
+        force: input.force === true,
+        clear: input.clear === true,
       });
       return result;
     }
@@ -1419,7 +1428,7 @@ export class ConversationThreadService {
 
     const processThread = async (thread: (typeof eligible)[number]): Promise<void> => {
       const threadStartedAt = Date.now();
-      this.logger.info("thread summarization thread started", {
+      this.logger.debug("thread summarization thread started", {
         jobId,
         threadId: thread.thread_id,
         kind: thread.kind,
@@ -1430,7 +1439,7 @@ export class ConversationThreadService {
       });
       const summaryRead = readSummaryMessages(this.params.store, thread.thread_id);
       if (summaryRead.totalMessages === 0) {
-        this.logger.info("thread summarization deleting empty thread", {
+        this.logger.debug("thread summarization deleting empty thread", {
           jobId,
           threadId: thread.thread_id,
         });
@@ -1448,7 +1457,7 @@ export class ConversationThreadService {
           (promptContext !== null && thread.summary_prompt_context_hash !== promptContext.hash);
         const previousSummary = this.params.store.getSummary(thread.thread_id);
         if (summaryRead.omittedMessages > 0) {
-          this.logger.info("thread summarization transcript truncated", {
+          this.logger.debug("thread summarization transcript truncated", {
             jobId,
             threadId: thread.thread_id,
             totalMessages: summaryRead.totalMessages,
@@ -1458,7 +1467,7 @@ export class ConversationThreadService {
         }
         const summaryWrite = summaryIsStale
           ? await (async () => {
-              this.logger.info("thread summary generation started", {
+              this.logger.debug("thread summary generation started", {
                 jobId,
                 threadId: thread.thread_id,
                 totalMessages: summaryRead.totalMessages,
@@ -1487,7 +1496,7 @@ export class ConversationThreadService {
                 this.params.store.computeEmbeddingInputHash(thread.thread_id) ?? "",
             };
         if (summaryIsStale) {
-          this.logger.info("thread summary generation completed", {
+          this.logger.debug("thread summary generation completed", {
             jobId,
             threadId: thread.thread_id,
             facets: summaryWrite.facets.length,
@@ -1502,7 +1511,7 @@ export class ConversationThreadService {
           facets: summaryWrite.facets,
         });
         if (summaryIsStale) result.summarized += 1;
-        this.logger.info("thread summarization thread completed", {
+        this.logger.debug("thread summarization thread completed", {
           jobId,
           threadId: thread.thread_id,
           durationMs: Date.now() - threadStartedAt,
@@ -1650,7 +1659,7 @@ export class ConversationThreadService {
 
     const embeddings = [];
     let dimensions: number | null = null;
-    this.logger.info("thread embedding generation started", {
+    this.logger.debug("thread embedding generation started", {
       jobId: input.jobId,
       threadId: input.threadId,
       facets: input.facets.length,
@@ -1671,7 +1680,7 @@ export class ConversationThreadService {
     }
 
     if (dimensions === null) {
-      this.logger.info("thread embedding generation skipped: no facets", {
+      this.logger.debug("thread embedding generation skipped: no facets", {
         jobId: input.jobId,
         threadId: input.threadId,
       });
@@ -1685,7 +1694,7 @@ export class ConversationThreadService {
       dimensions,
       embeddings,
     });
-    this.logger.info("thread embedding generation completed", {
+    this.logger.debug("thread embedding generation completed", {
       jobId: input.jobId,
       threadId: input.threadId,
       facets: embeddings.length,

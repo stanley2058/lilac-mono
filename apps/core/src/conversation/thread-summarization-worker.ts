@@ -16,7 +16,7 @@ type WorkerRequest = {
 };
 
 const logger = createLogger({ module: "conversation-thread-worker-isolate" });
-logger.info("conversation thread summarization worker isolate booted");
+logger.debug("conversation thread summarization worker isolate booted");
 
 function isWorkerRequest(input: unknown): input is WorkerRequest {
   if (!input || typeof input !== "object") return false;
@@ -34,7 +34,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
   let store: ConversationThreadStore | null = null;
   let surfaceStore: DiscordSurfaceStore | null = null;
   try {
-    logger.info("conversation thread summarization worker job started", {
+    logger.debug("conversation thread summarization worker job started", {
       jobId: request.id,
       dryRun: request.input.dryRun === true,
       force: request.input.force === true,
@@ -66,7 +66,7 @@ async function runJob(request: WorkerRequest): Promise<void> {
       entityMapper,
     });
     const result = await service.runSummarization({ ...request.input, jobId: request.id });
-    logger.info("conversation thread summarization worker job completed", {
+    logger.debug("conversation thread summarization worker job completed", {
       jobId: request.id,
       durationMs: Date.now() - startedAt,
       eligible: result.eligible,
@@ -104,7 +104,7 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
 
   jobQueue.enqueue(request);
-  logger.info("conversation thread summarization worker job enqueued", {
+  logger.debug("conversation thread summarization worker job enqueued", {
     jobId: request.id,
     queueDepth: jobQueue.depth,
     running: jobQueue.running,
