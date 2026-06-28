@@ -106,15 +106,6 @@ Workflow tools are designed to be used in conjunction with the `surface` tool. I
 
 - Discord links are `https://discord.com/channels/<guildId-or-@me>/<channelId>/<messageId?>`. Use `<channelId>` as `sessionId` and `<messageId>` as `messageId` when present; do not pass the whole URL.
 
-## Memory retrieval
-
-- Use `discovery.search` as the default memory/discovery entry.
-- Prefer `groupBy=origin` so conversation hits stay grouped by session and file hits stay grouped by source file.
-- Use `surrounding` to expand local context around a match: surrounding messages for conversations, surrounding lines for files.
-- Use `offsetTime` + `lookbackTime` for time-bounded memory retrieval.
-- Use `conversation.thread.search` when you want coherent summarized Discord threads instead of raw message hits, then `conversation.thread.metadata` to inspect candidate summaries, then `conversation.thread.read` only when transcript details are needed.
-- Reach for `surface.messages.search` only for legacy compatibility or when you intentionally want the old Discord-only behavior.
-
 ## Skills
 
 - Tools that don't fit in the `tools` cli are packaged as skills, search here first if `tools` doesn't immediately contains what you are looking for.
