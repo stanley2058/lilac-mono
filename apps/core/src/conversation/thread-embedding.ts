@@ -1,10 +1,15 @@
 import { embed, type EmbeddingModel } from "ai";
 import {
+  createLogger,
   providers,
   resolveModelRef,
   type CoreConfig,
   type JSONObject,
 } from "@stanley2058/lilac-utils";
+
+const logger = createLogger({
+  module: "conversation-thread",
+});
 
 export type ConversationThreadEmbeddingFacet =
   | "combined"
@@ -75,6 +80,15 @@ export function createConversationThreadEmbeddingAdapter(
         model,
         value: input.text,
         providerOptions,
+      });
+      logger.info("conversation.thread.embedding.usage", {
+        modelSpec: resolved.spec,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        facet: input.facet,
+        inputChars: input.text.length,
+        tokens: result.usage.tokens,
+        warnings: result.warnings.length,
       });
       return Float32Array.from(result.embedding);
     },

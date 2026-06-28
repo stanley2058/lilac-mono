@@ -1,4 +1,11 @@
-import { generateText, Output, streamText, type ModelMessage } from "ai";
+import {
+  generateText,
+  Output,
+  streamText,
+  type FinishReason,
+  type LanguageModelUsage,
+  type ModelMessage,
+} from "ai";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -37,6 +44,10 @@ const COVERAGE_RECALL_MULTIPLIER = 5;
 const WEAK_COVERAGE_MULTIPLIER = 0.25;
 const DOMAIN_MISMATCH_COVERAGE_MULTIPLIER = 0.35;
 const PARTIAL_COVERAGE_MULTIPLIER = 0.55;
+
+const threadLogger = createLogger({
+  module: "conversation-thread",
+});
 
 const COVERAGE_STOP_WORDS = new Set([
   "a",
@@ -281,7 +292,9 @@ export type ConversationThreadReadOutput = {
 
 export type ConversationThreadSummarizer = (input: {
   cfg: CoreConfig;
+  jobId?: string;
   threadId: string;
+  attempt?: number;
   previousSummary: ConversationThreadSummary | null;
   promptContext: ConversationThreadPromptContext | null;
   messages: readonly ConversationThreadMessage[];
@@ -292,6 +305,60 @@ type ConversationThreadPromptContext = {
   hash: string;
   text: string;
 };
+
+type ThreadLanguageModelUsageOperation = "summary" | "query_aboutness" | "auto_inject_query_plan";
+
+type ThreadLanguageModelCallEndEvent = {
+  provider: string;
+  modelId: string;
+  finishReason: FinishReason;
+  usage: LanguageModelUsage;
+  performance: {
+    responseTimeMs: number;
+    outputTokensPerSecond: number | undefined;
+    timeToFirstOutputMs: number | undefined;
+  };
+};
+
+function createThreadLanguageModelUsageLogger(input: {
+  operation: ThreadLanguageModelUsageOperation;
+  modelSpec: string;
+  jobId?: string;
+  threadId?: string;
+  attempt?: number;
+  messageCount?: number;
+  omittedMessages?: number;
+  queryCount?: number;
+  inputChars?: number;
+}) {
+  return (event: ThreadLanguageModelCallEndEvent) => {
+    threadLogger.info("conversation.thread.llm.usage", {
+      operation: input.operation,
+      jobId: input.jobId,
+      threadId: input.threadId,
+      attempt: input.attempt,
+      messageCount: input.messageCount,
+      omittedMessages: input.omittedMessages,
+      queryCount: input.queryCount,
+      inputChars: input.inputChars,
+      modelSpec: input.modelSpec,
+      provider: event.provider,
+      modelId: event.modelId,
+      finishReason: event.finishReason,
+      inputTokens: event.usage.inputTokens,
+      outputTokens: event.usage.outputTokens,
+      totalTokens: event.usage.totalTokens,
+      cacheReadTokens: event.usage.inputTokenDetails.cacheReadTokens,
+      cacheWriteTokens: event.usage.inputTokenDetails.cacheWriteTokens,
+      noCacheTokens: event.usage.inputTokenDetails.noCacheTokens,
+      reasoningTokens: event.usage.outputTokenDetails.reasoningTokens,
+      textTokens: event.usage.outputTokenDetails.textTokens,
+      responseTimeMs: event.performance.responseTimeMs,
+      timeToFirstOutputMs: event.performance.timeToFirstOutputMs,
+      outputTokensPerSecond: event.performance.outputTokensPerSecond,
+    });
+  };
+}
 
 export class ConversationThreadSummaryParseError extends Error {
   readonly rawOutput?: string;
@@ -781,7 +848,9 @@ function clampSummarizationConcurrency(input: number): number {
 
 async function defaultSummarizer(input: {
   cfg: CoreConfig;
+  jobId?: string;
   threadId: string;
+  attempt?: number;
   previousSummary: ConversationThreadSummary | null;
   promptContext: ConversationThreadPromptContext | null;
   messages: readonly ConversationThreadMessage[];
@@ -830,6 +899,15 @@ async function defaultSummarizer(input: {
   ] satisfies ModelMessage[];
 
   const instructions = buildThreadSummaryInstructions();
+  const onLanguageModelCallEnd = createThreadLanguageModelUsageLogger({
+    operation: "summary",
+    modelSpec: resolved.spec,
+    jobId: input.jobId,
+    threadId: input.threadId,
+    attempt: input.attempt,
+    messageCount: input.messages.length,
+    omittedMessages: input.omittedMessages ?? 0,
+  });
 
   if (resolved.provider === "codex") {
     const result = streamText({
@@ -838,6 +916,7 @@ async function defaultSummarizer(input: {
       messages,
       reasoning: resolved.reasoning,
       providerOptions: resolved.providerOptions,
+      onLanguageModelCallEnd,
     });
 
     try {
@@ -862,6 +941,7 @@ async function defaultSummarizer(input: {
     maxOutputTokens: 4096,
     reasoning: resolved.reasoning,
     providerOptions: resolved.providerOptions,
+    onLanguageModelCallEnd,
   });
 
   return result.output;
@@ -885,6 +965,11 @@ async function defaultQueryAboutnessSummarizer(input: {
     },
   ] satisfies ModelMessage[];
   const instructions = buildQueryAboutnessInstructions();
+  const onLanguageModelCallEnd = createThreadLanguageModelUsageLogger({
+    operation: "query_aboutness",
+    modelSpec: resolved.spec,
+    queryCount: input.queries.length,
+  });
 
   if (resolved.provider === "codex") {
     const result = streamText({
@@ -893,6 +978,7 @@ async function defaultQueryAboutnessSummarizer(input: {
       messages,
       reasoning: resolved.reasoning,
       providerOptions: resolved.providerOptions,
+      onLanguageModelCallEnd,
     });
     return parseQueryAboutnessJson(await result.text);
   }
@@ -905,6 +991,7 @@ async function defaultQueryAboutnessSummarizer(input: {
     maxOutputTokens: 2048,
     reasoning: resolved.reasoning,
     providerOptions: resolved.providerOptions,
+    onLanguageModelCallEnd,
   });
 
   return normalizeQueryAboutness(result.output);
@@ -929,6 +1016,11 @@ async function defaultAutoInjectQueryPlanner(input: {
     },
   ] satisfies ModelMessage[];
   const instructions = buildAutoInjectQueryPlanInstructions();
+  const onLanguageModelCallEnd = createThreadLanguageModelUsageLogger({
+    operation: "auto_inject_query_plan",
+    modelSpec: resolved.spec,
+    inputChars: input.text.length,
+  });
 
   if (resolved.provider === "codex") {
     const result = streamText({
@@ -937,6 +1029,7 @@ async function defaultAutoInjectQueryPlanner(input: {
       messages,
       reasoning: resolved.reasoning,
       providerOptions: resolved.providerOptions,
+      onLanguageModelCallEnd,
     });
     return parseAutoInjectQueryPlanJson(await result.text);
   }
@@ -949,6 +1042,7 @@ async function defaultAutoInjectQueryPlanner(input: {
     maxOutputTokens: 2048,
     reasoning: resolved.reasoning,
     providerOptions: resolved.providerOptions,
+    onLanguageModelCallEnd,
   });
 
   return normalizeAutoInjectQueryPlan(result.output);
@@ -1056,9 +1150,7 @@ export function buildThreadSummaryInstructions(): string {
 }
 
 export class ConversationThreadService {
-  private readonly logger = createLogger({
-    module: "conversation-thread",
-  });
+  private readonly logger = threadLogger;
 
   constructor(
     private readonly params: {
@@ -1493,7 +1585,9 @@ export class ConversationThreadService {
       try {
         return await input.summarize({
           cfg: input.cfg,
+          jobId: input.jobId,
           threadId: input.threadId,
+          attempt,
           promptContext: input.promptContext,
           previousSummary: input.previousSummary,
           messages: input.messages,

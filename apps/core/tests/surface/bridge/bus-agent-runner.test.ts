@@ -433,6 +433,14 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       },
     };
     const errors: string[] = [];
+    const injectedEvents: Array<{
+      toolCallId: string;
+      mode: "hybrid" | "semantic" | "lexical";
+      limit: number;
+      queries: readonly string[];
+      participantFilterUserCount: number;
+      entries: readonly { threadId: string; title: string }[];
+    }> = [];
 
     const messages = await maybeBuildAutoInjectedThreadSearchMessages({
       cfg: autoInjectCfg,
@@ -474,9 +482,22 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       onError: (message) => {
         errors.push(message);
       },
+      onInjected: (event) => {
+        injectedEvents.push(event);
+      },
     });
 
     expect(messages).toHaveLength(2);
+    expect(injectedEvents).toHaveLength(1);
+    const injectedEvent = injectedEvents[0];
+    expect(injectedEvent?.toolCallId.startsWith("conversation_thread_")).toBe(true);
+    expect(injectedEvent).toMatchObject({
+      mode: "hybrid",
+      limit: 3,
+      queries: ["meaningful message"],
+      participantFilterUserCount: 0,
+      entries: [{ threadId: "thread-1", title: "Related title" }],
+    });
     expect(errors).toEqual([
       "auto-injected thread search status publish failed; continuing",
       "auto-injected thread search status publish failed; continuing",

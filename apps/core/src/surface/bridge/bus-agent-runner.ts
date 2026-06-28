@@ -964,6 +964,15 @@ export type AutoInjectedThreadSearchPayload = {
   }>;
 };
 
+type AutoInjectedThreadSearchAppendedEvent = {
+  toolCallId: string;
+  mode: "hybrid" | "semantic" | "lexical";
+  limit: number;
+  queries: readonly string[];
+  participantFilterUserCount: number;
+  entries: readonly { threadId: string; title: string }[];
+};
+
 export function buildAutoInjectedThreadSearchMessages(params: {
   toolCallId: string;
   entries: readonly { threadId: string; title: string }[];
@@ -1020,6 +1029,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
     ok?: boolean;
     error?: string;
   }) => Promise<void>;
+  onInjected?: (event: AutoInjectedThreadSearchAppendedEvent) => void;
   onError: (message: string, error: unknown) => void;
 }): Promise<ModelMessage[]> {
   const autoInject = params.cfg.conversation.thread.autoInject;
@@ -1076,6 +1086,18 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
     });
 
     if (entries.length === 0) return [];
+    try {
+      params.onInjected?.({
+        toolCallId,
+        mode: autoInject.mode,
+        limit: autoInject.limit,
+        queries: plan.queries,
+        participantFilterUserCount: participantIds.length,
+        entries,
+      });
+    } catch (error) {
+      params.onError("auto-injected thread search append log failed; continuing", error);
+    }
     return buildAutoInjectedThreadSearchMessages({ toolCallId, entries });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -4531,6 +4553,20 @@ export async function startBusAgentRunner(params: {
                     },
                     error,
                   );
+                },
+                onInjected: (event) => {
+                  logger.info("conversation.thread.auto_inject.appended", {
+                    requestId: headers.request_id,
+                    sessionId: headers.session_id,
+                    toolCallId: event.toolCallId,
+                    mode: event.mode,
+                    limit: event.limit,
+                    queryCount: event.queries.length,
+                    queries: event.queries,
+                    participantFilterUserCount: event.participantFilterUserCount,
+                    appendedCount: event.entries.length,
+                    entries: event.entries,
+                  });
                 },
               })
             : [];
