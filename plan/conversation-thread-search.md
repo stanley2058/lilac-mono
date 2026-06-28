@@ -253,7 +253,9 @@ The input gate measures meaningful text units instead of raw characters:
 - Fenced code blocks count at 0.2x and inline code counts at 0.3x, with total code-derived units capped at 20.
 - Attachments/embeds by themselves do not count; only accompanying authored text can trigger injection.
 
-The injection path fabricates a `conversation.thread.search` tool-call/result before the model answers. It first plans compact semantic query variants plus positive aboutness from the long input, then searches with the precomputed aboutness so request-time query interpretation is not duplicated.
+The injection path fabricates a `conversation.thread.search` tool-call/result before the model answers. It first plans compact semantic query variants plus positive aboutness from the latest real user message in the prompt request, then searches with the precomputed aboutness so request-time query interpretation is not duplicated. The generated search query must not use prior assistant output, prior tool results, previous auto-injected metadata, or auto-compaction summaries.
+
+Auto-injection is only considered when starting a `queue: "prompt"` request/run. It intentionally does not run for `followUp`, `steer`, or `interrupt` messages delivered into an already-running request. Those queue modes are stronger real-time control signals to continue, redirect, or interrupt the active response without adding background memory-search latency or extra synthetic context.
 
 Injected result shape is intentionally minimal:
 
