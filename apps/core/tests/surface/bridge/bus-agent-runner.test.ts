@@ -330,6 +330,180 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
 });
 
 describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
+  it("ignores surface metadata when deciding whether to auto-inject", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 80,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    let plannerCalls = 0;
+    let searchCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-1",
+      raw: {},
+      userMessages: [
+        {
+          role: "user",
+          content: `${formatSurfaceMetadataLine({
+            platform: "discord",
+            user_id: "u1",
+            user_name: "Alice",
+            message_id: "m1",
+            message_time: new Date(1_234).toISOString(),
+          })}\nlol`,
+        },
+      ],
+      conversationThreads: {
+        planAutoInjectSearch: async () => {
+          plannerCalls += 1;
+          return {
+            queries: ["lol"],
+            aboutness: {
+              domains: [],
+              situations: [],
+              targets: [],
+              entities: [],
+              userWouldAskForThisAs: ["lol"],
+              intentSummary: "Short message.",
+            },
+          };
+        },
+        search: async () => {
+          searchCalls += 1;
+          return {
+            meta: {
+              query: "lol",
+              limit: 3,
+              mode: "hybrid",
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [{ threadId: "thread-1", title: "Should not appear", brief: "" }],
+          };
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(messages).toEqual([]);
+    expect(plannerCalls).toBe(0);
+    expect(searchCalls).toBe(0);
+  });
+
+  it("passes stripped user text to auto-inject query planning", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 80,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const body =
+      "I keep getting logged out after the OAuth callback, but only on mobile. It started after I changed the cookie settings and now Safari loops back to the login page.";
+    let plannedText = "";
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-1",
+      raw: {},
+      userMessages: [
+        {
+          role: "user",
+          content: `${formatSurfaceMetadataLine({
+            platform: "discord",
+            user_id: "u1",
+            user_name: "Alice",
+            message_id: "m1",
+            message_time: new Date(1_234).toISOString(),
+          })}\n${body}`,
+        },
+      ],
+      conversationThreads: {
+        planAutoInjectSearch: async (input) => {
+          plannedText = input.text;
+          return {
+            queries: ["OAuth callback mobile login loop"],
+            aboutness: {
+              domains: ["OAuth debugging"],
+              situations: ["mobile login loop after callback"],
+              targets: ["cookie settings"],
+              entities: ["Safari", "SameSite", "secure"],
+              userWouldAskForThisAs: ["OAuth callback mobile login loop"],
+              intentSummary: "Find prior threads about OAuth callback login loops on mobile.",
+            },
+          };
+        },
+        search: async () => ({
+          meta: {
+            query: "OAuth callback mobile login loop",
+            limit: 3,
+            mode: "hybrid",
+            count: 1,
+            vectorAvailable: false,
+          },
+          results: [{ threadId: "thread-1", title: "OAuth callback login loop", brief: "" }],
+        }),
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(plannedText).toBe(body);
+    expect(plannedText).not.toContain("LILAC_META");
+    expect(messages).toHaveLength(2);
+  });
+
   it("skips injection when participant filtering is enabled without visible participants", async () => {
     const cfg = parseCoreConfigV1ToUniversal({
       surface: {
