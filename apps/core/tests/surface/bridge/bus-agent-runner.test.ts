@@ -402,6 +402,9 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             results: [{ threadId: "thread-1", title: "Should not appear", brief: "" }],
           };
         },
+        metadata: async () => {
+          throw new Error("not used");
+        },
         read: async () => {
           throw new Error("not used");
         },
@@ -488,6 +491,9 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           },
           results: [{ threadId: "thread-1", title: "OAuth callback login loop", brief: "" }],
         }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
         read: async () => {
           throw new Error("not used");
         },
@@ -564,6 +570,9 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             },
             results: [{ threadId: "thread-1", title: "Should not appear", brief: "" }],
           };
+        },
+        metadata: async () => {
+          throw new Error("not used");
         },
         read: async () => {
           throw new Error("not used");
@@ -643,6 +652,9 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           },
           results: [{ threadId: "thread-1", title: "Related title", brief: "" }],
         }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
         read: async () => {
           throw new Error("not used");
         },

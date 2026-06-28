@@ -470,6 +470,39 @@ describe("conversation thread store", () => {
       "Captures reusable architecture decisions for conversation retrieval.",
     ]);
 
+    const metadata = (await tool.call("conversation.thread.metadata", {
+      threadIds: [search.results[0]!.threadId, "missing-thread"],
+    })) as {
+      threads: Array<{
+        threadId: string;
+        title?: string;
+        brief?: string;
+        retrievalHints?: string[];
+        aboutness?: { domains: string[] };
+        importance?: string;
+        importanceReasons?: string[];
+        messageCount: number;
+        messages?: unknown;
+      }>;
+      missing: string[];
+    };
+    expect(metadata.missing).toEqual(["missing-thread"]);
+    expect(metadata.threads).toHaveLength(1);
+    expect(metadata.threads[0]?.title).toBe("Memory search architecture");
+    expect(metadata.threads[0]?.brief).toBe(
+      "Discussion about retrieving prior conversations with thread summaries and vector search.",
+    );
+    expect(metadata.threads[0]?.retrievalHints).toEqual([
+      "conversation memory retrieval architecture",
+    ]);
+    expect(metadata.threads[0]?.aboutness?.domains).toEqual(["conversation memory"]);
+    expect(metadata.threads[0]?.importance).toBe("high");
+    expect(metadata.threads[0]?.importanceReasons).toEqual([
+      "Captures reusable architecture decisions for conversation retrieval.",
+    ]);
+    expect(metadata.threads[0]?.messageCount).toBe(2);
+    expect(metadata.threads[0]?.messages).toBeUndefined();
+
     const read = (await tool.call("conversation.thread.read", {
       threadId: search.results[0]!.threadId,
       offset: 1,
@@ -496,6 +529,10 @@ describe("conversation thread store", () => {
     const entries = await tool.list();
     const searchEntry = entries.find((item) => item.callableId === "conversation.thread.search");
     expect(searchEntry?.primaryPositional).toEqual({ field: "query", variadic: true });
+    const metadataEntry = entries.find(
+      (item) => item.callableId === "conversation.thread.metadata",
+    );
+    expect(metadataEntry?.primaryPositional).toEqual({ field: "threadIds", variadic: true });
     const readEntry = entries.find((item) => item.callableId === "conversation.thread.read");
     expect(readEntry?.primaryPositional).toEqual({ field: "threadId" });
     const entry = entries.find(
@@ -508,6 +545,9 @@ describe("conversation thread store", () => {
         offset: 0,
       }),
     ).rejects.toThrow("conversation.thread.read has invalid input.");
+    await expect(tool.call("conversation.thread.metadata", {})).rejects.toThrow(
+      "conversation.thread.metadata has invalid input.",
+    );
 
     searchStore.close();
     threadStore.close();

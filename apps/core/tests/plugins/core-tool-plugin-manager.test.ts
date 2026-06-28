@@ -62,6 +62,7 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "codex.login",
   "codex.logout",
   "codex.status",
+  "conversation.thread.metadata",
   "conversation.thread.read",
   "conversation.thread.runSummarization",
   "conversation.thread.search",

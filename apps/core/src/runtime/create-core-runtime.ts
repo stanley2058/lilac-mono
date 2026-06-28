@@ -621,6 +621,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
               const service = conversationThreadService;
               return {
                 search: (input) => service.search(input),
+                metadata: (input) => service.metadata(input),
                 read: (input) => service.read(input),
                 planAutoInjectSearch: (input) => service.planAutoInjectSearch(input),
                 runSummarization: (input) =>

@@ -45,6 +45,10 @@ const readInputSchema = z.object({
   limit: z.coerce.number().int().positive().max(200).optional().describe("Max messages."),
 });
 
+const metadataInputSchema = z.object({
+  threadIds: z.array(z.string().min(1)).min(1).max(20).describe("Conversation thread ids."),
+});
+
 const runSummarizationInputSchema = z.object({
   dryRun: z.boolean().optional().describe("Only report eligible threads without summarizing."),
   force: z
@@ -103,6 +107,18 @@ export class ConversationThread implements ServerTool {
         },
       },
       {
+        callableId: "conversation.thread.metadata",
+        name: "Conversation Thread Metadata",
+        description:
+          "Read conversation thread summary metadata by ids without loading transcript messages. Supports up to 20 threadIds for candidate comparison.",
+        shortInput: zodObjectToCliLines(metadataInputSchema, { mode: "required" }),
+        input: zodObjectToCliLines(metadataInputSchema),
+        primaryPositional: {
+          field: "threadIds",
+          variadic: true,
+        },
+      },
+      {
         callableId: "conversation.thread.read",
         name: "Conversation Thread Read",
         description:
@@ -133,6 +149,11 @@ export class ConversationThread implements ServerTool {
     if (callableId === "conversation.thread.read") {
       const input = parseToolInput({ callableId, input: rawInput, schema: readInputSchema });
       return await this.params.service.read(input);
+    }
+
+    if (callableId === "conversation.thread.metadata") {
+      const input = parseToolInput({ callableId, input: rawInput, schema: metadataInputSchema });
+      return await this.params.service.metadata(input);
     }
 
     if (callableId === "conversation.thread.runSummarization") {

@@ -20,6 +20,7 @@ import {
 
 import {
   type ConversationThreadMessage,
+  type ConversationThreadRow,
   type ConversationThreadSearchFilters,
   type ConversationThreadSearchAllowlist,
   type ConversationThreadSearchHit,
@@ -151,7 +152,7 @@ export type ConversationThreadRunSummarizationResult = {
 
 export type ConversationThreadToolService = Pick<
   ConversationThreadService,
-  "search" | "read" | "runSummarization" | "planAutoInjectSearch"
+  "search" | "metadata" | "read" | "runSummarization" | "planAutoInjectSearch"
 >;
 
 export type ConversationThreadSearchResult = {
@@ -288,6 +289,11 @@ export type ConversationThreadReadOutput = {
     time: string;
     content: string;
   }>;
+};
+
+export type ConversationThreadMetadataOutput = {
+  threads: ConversationThreadReadOutput["thread"][];
+  missing: string[];
 };
 
 export type ConversationThreadSummarizer = (input: {
@@ -1259,35 +1265,11 @@ export class ConversationThreadService {
     const nextOffset = offset + result.messages.length;
     const hasMore = nextOffset < result.totalMessages;
     return {
-      thread: {
-        threadId: result.thread.thread_id,
-        ...(result.summary
-          ? {
-              title: result.summary.title,
-              brief: result.summary.brief,
-              topics: result.summary.topics,
-              retrievalHints: result.summary.retrievalHints,
-              aboutness: result.summary.aboutness,
-              importance: result.summary.importance,
-              importanceReasons: result.summary.importanceReasons,
-            }
-          : {}),
-        session: {
-          platform: "discord",
-          channelId: result.thread.channel_id,
-          guildId: result.thread.guild_id ?? undefined,
-          parentChannelId: result.thread.parent_channel_id ?? undefined,
-        },
-        anchors: {
-          startMessageId: result.thread.start_message_id,
-          endMessageId: result.thread.end_message_id,
-        },
-        timeRange: {
-          start: formatTime(result.thread.start_ts),
-          end: formatTime(result.thread.end_ts),
-        },
+      thread: this.formatMetadataThread({
+        thread: result.thread,
+        summary: result.summary,
         messageCount: result.totalMessages,
-      },
+      }),
       page: {
         offset,
         limit,
@@ -1304,6 +1286,44 @@ export class ConversationThreadService {
         content: message.text,
       })),
     };
+  }
+
+  async metadata(input: {
+    threadIds: readonly string[];
+  }): Promise<ConversationThreadMetadataOutput> {
+    this.refreshThreads();
+    const threadIds = normalizeMetadataThreadIds(input);
+    const cfg = await this.params.getConfig();
+    const threads: ConversationThreadMetadataOutput["threads"] = [];
+    const missing: string[] = [];
+
+    for (const threadId of threadIds) {
+      const thread = this.params.store.getThread(threadId);
+      if (!thread) {
+        missing.push(threadId);
+        continue;
+      }
+
+      if (
+        !shouldAllowDiscordThread(cfg, {
+          channelId: thread.channel_id,
+          parentChannelId: thread.parent_channel_id,
+          guildId: thread.guild_id,
+        })
+      ) {
+        throw new Error(`Not allowed: conversation thread '${threadId}'`);
+      }
+
+      threads.push(
+        this.formatMetadataThread({
+          thread,
+          summary: this.params.store.getSummary(threadId),
+          messageCount: this.params.store.countThreadMessages(threadId),
+        }),
+      );
+    }
+
+    return { threads, missing };
   }
 
   async runSummarization(
@@ -1971,4 +1991,47 @@ export class ConversationThreadService {
         : {}),
     };
   }
+
+  private formatMetadataThread(input: {
+    thread: ConversationThreadRow;
+    summary: ConversationThreadSummary | null;
+    messageCount: number;
+  }): ConversationThreadReadOutput["thread"] {
+    return {
+      threadId: input.thread.thread_id,
+      ...(input.summary
+        ? {
+            title: input.summary.title,
+            brief: input.summary.brief,
+            topics: input.summary.topics,
+            retrievalHints: input.summary.retrievalHints,
+            aboutness: input.summary.aboutness,
+            importance: input.summary.importance,
+            importanceReasons: input.summary.importanceReasons,
+          }
+        : {}),
+      session: {
+        platform: "discord",
+        channelId: input.thread.channel_id,
+        guildId: input.thread.guild_id ?? undefined,
+        parentChannelId: input.thread.parent_channel_id ?? undefined,
+      },
+      anchors: {
+        startMessageId: input.thread.start_message_id,
+        endMessageId: input.thread.end_message_id,
+      },
+      timeRange: {
+        start: formatTime(input.thread.start_ts),
+        end: formatTime(input.thread.end_ts),
+      },
+      messageCount: input.messageCount,
+    };
+  }
+}
+
+function normalizeMetadataThreadIds(input: { threadIds: readonly string[] }): string[] {
+  const raw = input.threadIds;
+  const threadIds = [...new Set(raw.map((id) => id.trim()).filter((id) => id.length > 0))];
+  if (threadIds.length === 0) throw new Error("conversation thread metadata requires threadIds");
+  return threadIds;
 }
