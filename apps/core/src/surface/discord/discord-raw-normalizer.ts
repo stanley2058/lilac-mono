@@ -10,6 +10,7 @@ export const DISCORD_REFERENCE_TYPE_FORWARD = 1;
 export type NormalizedDiscordReference = {
   messageId?: string;
   channelId?: string;
+  guildId?: string;
   type?: number;
 };
 
@@ -29,6 +30,7 @@ export type NormalizedDiscordRaw = {
   replyReference?: {
     messageId: string;
     channelId?: string;
+    guildId?: string;
   };
   forwardSnapshot?: NormalizedDiscordForwardSnapshot;
 };
@@ -46,6 +48,7 @@ const discordReferenceSchema = z
   .object({
     messageId: maybeStringSchema,
     channelId: maybeStringSchema,
+    guildId: maybeStringSchema,
     type: maybeFiniteNumberSchema,
   })
   .passthrough();
@@ -66,6 +69,8 @@ const discordEnvelopeSchema = z
     attachments: z.unknown().optional(),
     referenceType: maybeFiniteNumberSchema,
     replyToMessageId: maybeStringSchema,
+    replyToChannelId: maybeStringSchema,
+    guildId: maybeStringSchema,
     messageSnapshots: z.unknown().optional(),
   })
   .passthrough();
@@ -130,6 +135,7 @@ function normalizeReference(
   const out: NormalizedDiscordReference = {};
   if (reference.messageId) out.messageId = reference.messageId;
   if (reference.channelId) out.channelId = reference.channelId;
+  if (reference.guildId) out.guildId = reference.guildId;
   if (reference.type !== undefined) out.type = reference.type;
 
   return Object.keys(out).length > 0 ? out : undefined;
@@ -168,6 +174,8 @@ export function normalizeDiscordRaw(raw: unknown): NormalizedDiscordRaw | null {
     referenceType !== DISCORD_REFERENCE_TYPE_FORWARD
       ? (reference?.messageId ?? discord?.replyToMessageId)
       : undefined;
+  const replyToChannelId = reference?.channelId ?? discord?.replyToChannelId;
+  const replyToGuildId = reference?.guildId ?? discord?.guildId;
 
   return {
     ...(content !== undefined ? { content } : {}),
@@ -179,7 +187,8 @@ export function normalizeDiscordRaw(raw: unknown): NormalizedDiscordRaw | null {
       ? {
           replyReference: {
             messageId: replyToMessageId,
-            ...(reference?.channelId ? { channelId: reference.channelId } : {}),
+            ...(replyToChannelId ? { channelId: replyToChannelId } : {}),
+            ...(replyToGuildId ? { guildId: replyToGuildId } : {}),
           },
         }
       : {}),

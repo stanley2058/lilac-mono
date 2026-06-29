@@ -16,6 +16,7 @@ import {
   Partials,
   type Presence,
   type Interaction,
+  type RepliableInteraction,
   type Message,
   type MessageReaction,
   type PartialMessage,
@@ -523,6 +524,69 @@ function isTextSendableChannel(ch: unknown): ch is SendableDiscordChannel {
   if (!("send" in ch)) return false;
   const send = (ch as Record<string, unknown>)["send"];
   return typeof send === "function";
+}
+
+async function resolveTextSendableChannel(
+  client: Client,
+  channelId: string,
+): Promise<SendableDiscordChannel | null> {
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  return isTextSendableChannel(channel) ? channel : null;
+}
+
+async function replyEphemeral(
+  interaction: RepliableInteraction<CacheType>,
+  content: string,
+): Promise<void> {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp({
+      content,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function editOrReplyEphemeral(
+  interaction: RepliableInteraction<CacheType>,
+  content: string,
+): Promise<void> {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({ content });
+    return;
+  }
+
+  await interaction.reply({
+    content,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function tryReplyEphemeral(
+  interaction: RepliableInteraction<CacheType>,
+  content: string,
+): Promise<void> {
+  try {
+    await replyEphemeral(interaction, content);
+  } catch {
+    // Best-effort interaction acknowledgements should not fail event handling.
+  }
+}
+
+async function tryEditOrReplyEphemeral(
+  interaction: RepliableInteraction<CacheType>,
+  content: string,
+): Promise<void> {
+  try {
+    await editOrReplyEphemeral(interaction, content);
+  } catch {
+    // Best-effort interaction acknowledgements should not fail event handling.
+  }
 }
 
 export function isRoutableDiscordUserMessage(msg: Message): boolean {
@@ -1966,21 +2030,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     // Guard against mismatched sessions (e.g. copied components).
     if (interaction.channelId && parsed.sessionId !== interaction.channelId) {
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp({
-            content: "This cancel button is not for this channel.",
-            flags: MessageFlags.Ephemeral,
-          });
-        } else {
-          await interaction.reply({
-            content: "This cancel button is not for this channel.",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "This cancel button is not for this channel.");
       return;
     }
 
@@ -1997,21 +2047,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     });
 
     // Acknowledge quickly; actual cancellation is handled asynchronously via the bus.
-    try {
-      if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({
-          content: "Cancel requested.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } else {
-        await interaction.reply({
-          content: "Cancel requested.",
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-    } catch {
-      // ignore
-    }
+    await tryReplyEphemeral(interaction, "Cancel requested.");
   }
 
   private async onMessageContextMenuCommand(
@@ -2021,53 +2057,25 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const cfg = this.cfg;
     if (!cfg) {
-      try {
-        await interaction.reply({
-          content: "Bot is not ready yet.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Bot is not ready yet.");
       return;
     }
 
     const channelId = interaction.channelId;
     const guildId = interaction.guildId;
     if (!channelId) {
-      try {
-        await interaction.reply({
-          content: "This command must be used in a channel.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "This command must be used in a channel.");
       return;
     }
 
     if (!shouldAllowMessage({ cfg, channelId, guildId })) {
-      try {
-        await interaction.reply({
-          content: "Not allowed in this channel.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Not allowed in this channel.");
       return;
     }
 
     const targetMessageId = interaction.targetMessage?.id;
     if (!targetMessageId) {
-      try {
-        await interaction.reply({
-          content: "Could not resolve target message.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Could not resolve target message.");
       return;
     }
 
@@ -2083,14 +2091,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       messageId: targetMessageId,
     });
 
-    try {
-      await interaction.reply({
-        content: "Cancel requested.",
-        flags: MessageFlags.Ephemeral,
-      });
-    } catch {
-      // ignore
-    }
+    await tryReplyEphemeral(interaction, "Cancel requested.");
   }
 
   private async registerSlashCommands(): Promise<void> {
@@ -2208,14 +2209,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     if (!cfg || !client || !self) {
       // Not ready; best-effort ack.
-      try {
-        await interaction.reply({
-          content: "Bot is not ready yet.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Bot is not ready yet.");
       return;
     }
 
@@ -2230,26 +2224,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     const guildId = interaction.guildId;
 
     if (!channelId) {
-      try {
-        await interaction.reply({
-          content: "This command must be used in a channel.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "This command must be used in a channel.");
       return;
     }
 
     if (!shouldAllowMessage({ cfg, channelId, guildId })) {
-      try {
-        await interaction.reply({
-          content: "Not allowed in this channel.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Not allowed in this channel.");
       return;
     }
 
@@ -2279,18 +2259,9 @@ export class DiscordAdapter implements SurfaceAdapter {
           // ignore
         }
 
-        const ch = await client.channels.fetch(channelId).catch(() => null);
-        if (!isTextSendableChannel(ch)) {
-          if (interaction.deferred || interaction.replied) {
-            await interaction.editReply({
-              content: "Channel not found or not text-based.",
-            });
-          } else {
-            await interaction.reply({
-              content: "Channel not found or not text-based.",
-              flags: MessageFlags.Ephemeral,
-            });
-          }
+        const ch = await resolveTextSendableChannel(client, channelId);
+        if (!ch) {
+          await editOrReplyEphemeral(interaction, "Channel not found or not text-based.");
           return;
         }
 
@@ -2299,44 +2270,17 @@ export class DiscordAdapter implements SurfaceAdapter {
           allowedMentions: { parse: [] },
         });
 
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: "Inserted session divider." });
-        } else {
-          await interaction.reply({
-            content: "Inserted session divider.",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+        await editOrReplyEphemeral(interaction, "Inserted session divider.");
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        try {
-          if (interaction.deferred || interaction.replied) {
-            await interaction.editReply({
-              content: `Failed to insert divider: ${msg}`,
-            });
-          } else {
-            await interaction.reply({
-              content: `Failed to insert divider: ${msg}`,
-              flags: MessageFlags.Ephemeral,
-            });
-          }
-        } catch {
-          // ignore
-        }
+        await tryEditOrReplyEphemeral(interaction, `Failed to insert divider: ${msg}`);
       }
       return;
     }
 
     const custom = this.opts?.customCommands?.get(sub ?? "");
     if (!custom) {
-      try {
-        await interaction.reply({
-          content: "Unknown subcommand.",
-          flags: MessageFlags.Ephemeral,
-        });
-      } catch {
-        // ignore
-      }
+      await tryReplyEphemeral(interaction, "Unknown subcommand.");
       return;
     }
 
@@ -2403,19 +2347,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({
-            content: `Failed to run custom command: ${msg}`,
-          });
-        } else {
-          await interaction.reply({
-            content: `Failed to run custom command: ${msg}`,
-          });
-        }
-      } catch {
-        // ignore
-      }
+      await tryEditOrReplyEphemeral(interaction, `Failed to run custom command: ${msg}`);
     }
   }
 
@@ -2478,22 +2410,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     const guildId = interaction.guildId;
 
     if (!channelId) {
-      await interaction
-        .reply({
-          content: "This command must be used in a channel.",
-          flags: MessageFlags.Ephemeral,
-        })
-        .catch(() => {});
+      await tryReplyEphemeral(interaction, "This command must be used in a channel.");
       return;
     }
 
     if (!shouldAllowMessage({ cfg, channelId, guildId })) {
-      await interaction
-        .reply({
-          content: "Not allowed in this channel.",
-          flags: MessageFlags.Ephemeral,
-        })
-        .catch(() => {});
+      await tryReplyEphemeral(interaction, "Not allowed in this channel.");
       return;
     }
 
@@ -2520,12 +2442,10 @@ export class DiscordAdapter implements SurfaceAdapter {
         // Keep best-effort display when config changed and override is stale.
       }
 
-      await interaction
-        .reply({
-          content: `Current model for this session: \`${currentRef}\` (resolved: \`${resolvedDisplay}\`)`,
-          flags: MessageFlags.Ephemeral,
-        })
-        .catch(() => {});
+      await tryReplyEphemeral(
+        interaction,
+        `Current model for this session: \`${currentRef}\` (resolved: \`${resolvedDisplay}\`)`,
+      );
       return;
     }
 
@@ -2539,23 +2459,16 @@ export class DiscordAdapter implements SurfaceAdapter {
       resolvedSpec = resolved.spec;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      await interaction
-        .reply({
-          content: `Invalid model: ${msg}`,
-          flags: MessageFlags.Ephemeral,
-        })
-        .catch(() => {});
+      await tryReplyEphemeral(interaction, `Invalid model: ${msg}`);
       return;
     }
 
     this.sessionModelOverrides.set(channelId, trimmedModelInput);
 
-    await interaction
-      .reply({
-        content: `Session model set to \`${trimmedModelInput}\` (resolved: \`${resolvedSpec}\`)`,
-        flags: MessageFlags.Ephemeral,
-      })
-      .catch(() => {});
+    await tryReplyEphemeral(
+      interaction,
+      `Session model set to \`${trimmedModelInput}\` (resolved: \`${resolvedSpec}\`)`,
+    );
   }
 
   private async fetchDiscordMessage(input: {

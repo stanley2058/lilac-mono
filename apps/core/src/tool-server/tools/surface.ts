@@ -32,6 +32,11 @@ import {
   resolveToolPathForRequestContext,
 } from "../../shared/attachment-utils";
 import { getDiscordSurfaceDisplayText } from "../../surface/discord/discord-surface-display-text";
+import {
+  DISCORD_REFERENCE_TYPE_DEFAULT,
+  DISCORD_REFERENCE_TYPE_FORWARD,
+  normalizeDiscordRaw,
+} from "../../surface/discord/discord-raw-normalizer";
 
 import {
   isGithubIssueTriggerId,
@@ -543,9 +548,6 @@ type SurfaceMessageReference = {
   type?: number;
 };
 
-const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
-const DISCORD_REFERENCE_TYPE_FORWARD = 1;
-
 function normalizeMimeTypeForAttachment(mimeType: string): string | undefined {
   const normalized = mimeType.split(";")[0]?.trim().toLowerCase();
   return normalized && normalized.length > 0 ? normalized : undefined;
@@ -635,126 +637,27 @@ function extractAttachmentMetaFromList(list: readonly unknown[]): SurfaceMessage
   return out;
 }
 
-function getDiscordReferenceTypeFromRaw(raw: unknown): number | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const o = raw as Record<string, unknown>;
-
-  if ("reference" in o) {
-    const ref = o.reference;
-    if (ref && typeof ref === "object") {
-      const type = (ref as Record<string, unknown>).type;
-      if (typeof type === "number") return type;
-    }
-  }
-
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-
-  return discord && typeof discord.referenceType === "number" ? discord.referenceType : undefined;
-}
-
 function getDiscordReferenceFromRaw(raw: unknown): SurfaceMessageReference | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
+  const normalized = normalizeDiscordRaw(raw);
+  if (!normalized) return null;
 
-  if ("reference" in o) {
-    const ref = o.reference;
-    if (ref && typeof ref === "object") {
-      const r = ref as Record<string, unknown>;
-      const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
-      const channelId = typeof r.channelId === "string" ? r.channelId : undefined;
-      const guildId = typeof r.guildId === "string" ? r.guildId : undefined;
-      const type = typeof r.type === "number" ? r.type : undefined;
-      if (messageId || channelId || guildId || type !== undefined) {
-        return { messageId, channelId, guildId, type };
-      }
-    }
-  }
+  const ref = normalized.replyReference ?? normalized.reference;
+  if (!ref) return null;
 
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-  if (!discord) return null;
-
-  const messageId =
-    typeof discord.replyToMessageId === "string" ? discord.replyToMessageId : undefined;
-  const channelId =
-    typeof discord.replyToChannelId === "string" ? discord.replyToChannelId : undefined;
-  const guildId = typeof discord.guildId === "string" ? discord.guildId : undefined;
-  const type = typeof discord.referenceType === "number" ? discord.referenceType : undefined;
-
-  if (!messageId && !channelId && !guildId && type === undefined) return null;
-  return { messageId, channelId, guildId, type };
-}
-
-function getForwardSnapshotMessageFromRaw(raw: unknown): Record<string, unknown> | null {
-  if (!raw || typeof raw !== "object") return null;
-
-  const referenceType = getDiscordReferenceTypeFromRaw(raw) ?? DISCORD_REFERENCE_TYPE_DEFAULT;
-  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
-
-  const o = raw as Record<string, unknown>;
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-
-  const resolveSnapshotMessage = (value: unknown): Record<string, unknown> | null => {
-    if (!Array.isArray(value) || value.length === 0) return null;
-    const first = value[0];
-    if (!first || typeof first !== "object") return null;
-
-    const firstObj = first as Record<string, unknown>;
-    const nestedMessage = firstObj.message;
-    if (nestedMessage && typeof nestedMessage === "object") {
-      return nestedMessage as Record<string, unknown>;
-    }
-
-    return firstObj;
+  return {
+    ...(ref.messageId ? { messageId: ref.messageId } : {}),
+    ...(ref.channelId ? { channelId: ref.channelId } : {}),
+    ...(ref.guildId ? { guildId: ref.guildId } : {}),
+    type: normalized.referenceType,
   };
-
-  return (
-    resolveSnapshotMessage(o.messageSnapshots) ?? resolveSnapshotMessage(discord?.messageSnapshots)
-  );
 }
 
 function extractDiscordAttachmentMetaFromRaw(raw: unknown): SurfaceMessageAttachmentMeta[] {
-  if (!raw || typeof raw !== "object") return [];
+  const normalized = normalizeDiscordRaw(raw);
+  if (!normalized) return [];
 
-  const forwardSnapshot = getForwardSnapshotMessageFromRaw(raw);
-  if (forwardSnapshot) {
-    const snapshotList =
-      "attachments" in forwardSnapshot && Array.isArray(forwardSnapshot.attachments)
-        ? forwardSnapshot.attachments
-        : null;
-    if (snapshotList) {
-      const fromSnapshot = extractAttachmentMetaFromList(snapshotList);
-      if (fromSnapshot.length > 0) return fromSnapshot;
-    }
-  }
-
-  const o = raw as Record<string, unknown>;
-
-  const listFromTopLevel =
-    "attachments" in o && Array.isArray(o.attachments) ? o.attachments : null;
-
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-
-  const listFromDiscord =
-    discord && "attachments" in discord && Array.isArray(discord.attachments)
-      ? discord.attachments
-      : null;
-
-  const list = listFromDiscord ?? listFromTopLevel;
-  if (!list) return [];
-
-  return extractAttachmentMetaFromList(list);
+  const attachments = normalized.forwardSnapshot?.attachments ?? normalized.attachments;
+  return extractAttachmentMetaFromList(attachments);
 }
 
 function getMessageAttachmentMeta(msg: SurfaceMessage): SurfaceMessageAttachmentMeta[] {
@@ -1412,6 +1315,24 @@ export type GithubSurfaceApi = Omit<
   getPreferredGithubActorLoginOrNull?: typeof getPreferredGithubActorLoginOrNull;
 };
 
+type SurfaceCallOptions = {
+  signal?: AbortSignal;
+  context?: RequestContext;
+  messages?: readonly unknown[];
+};
+
+type SurfaceCallableEntry = {
+  callableId: string;
+  name: string;
+  description: string;
+  inputSchema: z.ZodTypeAny;
+  primaryPositional?: {
+    field: string;
+  };
+  hidden?: boolean;
+  handler: (input: Record<string, unknown>, opts: SurfaceCallOptions) => Promise<unknown>;
+};
+
 export class Surface implements ServerTool {
   id = "surface";
 
@@ -1430,143 +1351,129 @@ export class Surface implements ServerTool {
   async destroy(): Promise<void> {}
 
   async list() {
+    return this.surfaceCallableEntries().map((entry) => ({
+      callableId: entry.callableId,
+      name: entry.name,
+      description: entry.description,
+      shortInput: zodObjectToCliLines(entry.inputSchema, {
+        mode: "required",
+      }),
+      input: zodObjectToCliLines(entry.inputSchema),
+      ...(entry.primaryPositional ? { primaryPositional: entry.primaryPositional } : {}),
+      ...(entry.hidden !== undefined ? { hidden: entry.hidden } : {}),
+    }));
+  }
+
+  private surfaceCallableEntries(): SurfaceCallableEntry[] {
     return [
       {
         callableId: "surface.help",
         name: "Surface Help",
         description:
           "Explain surface terminology (client/platform/sessionId/messageId) and common sessionId formats.",
-        shortInput: zodObjectToCliLines(helpInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(helpInputSchema),
+        inputSchema: helpInputSchema,
+        handler: (input, opts) => this.callHelp(input, opts.context),
       },
       {
         callableId: "surface.activities.recentAgentWrites",
         name: "Surface Activities Recent Agent Writes",
         description:
           "List recent visible writes produced by the agent, with session ids, message ids, and thin previews.",
-        shortInput: zodObjectToCliLines(activitiesRecentAgentWritesInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(activitiesRecentAgentWritesInputSchema),
+        inputSchema: activitiesRecentAgentWritesInputSchema,
+        handler: (input) => this.callActivitiesRecentAgentWrites(input),
       },
       {
         callableId: "surface.sessions.list",
         name: "Surface Sessions List",
         description: "List cached sessions. Provide --client if request client is unknown.",
-        shortInput: zodObjectToCliLines(sessionsListInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(sessionsListInputSchema),
+        inputSchema: sessionsListInputSchema,
+        handler: (input, opts) => this.callSessionsList(input, opts.context),
       },
       {
         callableId: "surface.sessions.listParticipants",
         name: "Surface Sessions List Participants",
         description:
           "List current Discord session participants (thread members when available; otherwise guild members).",
-        shortInput: zodObjectToCliLines(sessionsListParticipantsInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(sessionsListParticipantsInputSchema),
+        inputSchema: sessionsListParticipantsInputSchema,
+        handler: (input, opts) => this.callSessionsListParticipants(input, opts.context),
       },
       {
         callableId: "surface.messages.list",
         name: "Surface Messages List",
         description: "List messages for a session.",
-        shortInput: zodObjectToCliLines(messagesListInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesListInputSchema),
+        inputSchema: messagesListInputSchema,
+        handler: (input, opts) => this.callMessagesList(input, opts.context),
       },
       {
         callableId: "surface.messages.read",
         name: "Surface Messages Read",
         description: "Read a message by id.",
-        shortInput: zodObjectToCliLines(messagesReadInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesReadInputSchema),
+        inputSchema: messagesReadInputSchema,
+        handler: (input, opts) => this.callMessagesRead(input, opts.context),
       },
       {
         callableId: "surface.messages.search",
         name: "Surface Messages Search",
         description:
           "Deprecated: search indexed messages in a single Discord session. Prefer discovery.search for memory retrieval.",
-        shortInput: zodObjectToCliLines(messagesSearchInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesSearchInputSchema),
+        inputSchema: messagesSearchInputSchema,
         primaryPositional: {
           field: "query",
         },
         hidden: true,
+        handler: (input, opts) => this.callMessagesSearch(input, opts.context),
       },
       {
         callableId: "surface.messages.send",
         name: "Surface Messages Send",
         description: "Send a message to a session.",
-        shortInput: zodObjectToCliLines(messagesSendInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesSendInputSchema),
+        inputSchema: messagesSendInputSchema,
         primaryPositional: {
           field: "text",
         },
+        handler: (input, opts) => this.callMessagesSend(input, opts.context),
       },
       {
         callableId: "surface.messages.edit",
         name: "Surface Messages Edit",
         description: "Edit a message.",
-        shortInput: zodObjectToCliLines(messagesEditInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesEditInputSchema),
+        inputSchema: messagesEditInputSchema,
+        handler: (input, opts) => this.callMessagesEdit(input, opts.context),
       },
       {
         callableId: "surface.messages.delete",
         name: "Surface Messages Delete",
         description: "Delete a message.",
-        shortInput: zodObjectToCliLines(messagesDeleteInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(messagesDeleteInputSchema),
+        inputSchema: messagesDeleteInputSchema,
+        handler: (input, opts) => this.callMessagesDelete(input, opts.context),
       },
       {
         callableId: "surface.reactions.list",
         name: "Surface Reactions List",
         description: "List reactions for a message (emoji + count).",
-        shortInput: zodObjectToCliLines(reactionsListInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(reactionsListInputSchema),
+        inputSchema: reactionsListInputSchema,
+        handler: (input, opts) => this.callReactionsList(input, opts.context),
       },
       {
         callableId: "surface.reactions.listDetailed",
         name: "Surface Reactions List Detailed",
         description: "List reactions for a message with per-user details.",
-        shortInput: zodObjectToCliLines(reactionsListDetailedInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(reactionsListDetailedInputSchema),
+        inputSchema: reactionsListDetailedInputSchema,
+        handler: (input, opts) => this.callReactionsListDetailed(input, opts.context),
       },
       {
         callableId: "surface.reactions.add",
         name: "Surface Reactions Add",
         description: "Add a reaction to a message.",
-        shortInput: zodObjectToCliLines(reactionsAddInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(reactionsAddInputSchema),
+        inputSchema: reactionsAddInputSchema,
+        handler: (input, opts) => this.callReactionsAdd(input, opts.context),
       },
       {
         callableId: "surface.reactions.remove",
         name: "Surface Reactions Remove",
         description: "Remove a reaction from a message.",
-        shortInput: zodObjectToCliLines(reactionsRemoveInputSchema, {
-          mode: "required",
-        }),
-        input: zodObjectToCliLines(reactionsRemoveInputSchema),
+        inputSchema: reactionsRemoveInputSchema,
+        handler: (input, opts) => this.callReactionsRemove(input, opts.context),
       },
     ];
   }
@@ -1574,56 +1481,11 @@ export class Surface implements ServerTool {
   async call(
     callableId: string,
     input: Record<string, unknown>,
-    opts?: {
-      signal?: AbortSignal;
-      context?: RequestContext;
-      messages?: readonly unknown[];
-    },
+    opts?: SurfaceCallOptions,
   ): Promise<unknown> {
-    if (callableId === "surface.help") {
-      return await this.callHelp(input, opts?.context);
-    }
-    if (callableId === "surface.activities.recentAgentWrites") {
-      return await this.callActivitiesRecentAgentWrites(input);
-    }
-    if (callableId === "surface.sessions.list") {
-      return await this.callSessionsList(input, opts?.context);
-    }
-    if (callableId === "surface.sessions.listParticipants") {
-      return await this.callSessionsListParticipants(input, opts?.context);
-    }
-    if (callableId === "surface.messages.list") {
-      return await this.callMessagesList(input, opts?.context);
-    }
-    if (callableId === "surface.messages.read") {
-      return await this.callMessagesRead(input, opts?.context);
-    }
-    if (callableId === "surface.messages.search") {
-      return await this.callMessagesSearch(input, opts?.context);
-    }
-    if (callableId === "surface.messages.send") {
-      return await this.callMessagesSend(input, opts?.context);
-    }
-    if (callableId === "surface.messages.edit") {
-      return await this.callMessagesEdit(input, opts?.context);
-    }
-    if (callableId === "surface.messages.delete") {
-      return await this.callMessagesDelete(input, opts?.context);
-    }
-    if (callableId === "surface.reactions.list") {
-      return await this.callReactionsList(input, opts?.context);
-    }
-    if (callableId === "surface.reactions.listDetailed") {
-      return await this.callReactionsListDetailed(input, opts?.context);
-    }
-    if (callableId === "surface.reactions.add") {
-      return await this.callReactionsAdd(input, opts?.context);
-    }
-    if (callableId === "surface.reactions.remove") {
-      return await this.callReactionsRemove(input, opts?.context);
-    }
-
-    throw new Error(`Invalid callable ID '${callableId}'`);
+    const entry = this.surfaceCallableEntries().find((item) => item.callableId === callableId);
+    if (!entry) throw new Error(`Invalid callable ID '${callableId}'`);
+    return await entry.handler(input, opts ?? {});
   }
 
   private async callHelp(rawInput: Record<string, unknown>, ctx: RequestContext | undefined) {
