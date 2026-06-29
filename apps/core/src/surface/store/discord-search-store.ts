@@ -7,6 +7,7 @@ import {
 } from "../adapter";
 import { getDiscordSurfaceDisplayText } from "../discord/discord-surface-display-text";
 import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
+import { configureSqliteConnection } from "../../shared/sqlite";
 
 const SEARCH_LIMIT_MAX = 100;
 
@@ -111,6 +112,7 @@ export class DiscordSearchStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
+    configureSqliteConnection(this.db);
     this.migrate();
   }
 

@@ -34,6 +34,7 @@ import type {
   ConversationThreadEmbeddingUsageEvent,
 } from "./thread-embedding";
 import type { EntityMapper } from "../entity/entity-mapper";
+import { isSqliteBusyError } from "../shared/sqlite";
 
 const SUMMARY_QUIET_MS = 60 * 60 * 1000;
 const SUMMARY_HEAD_MESSAGES = 40;
@@ -1541,18 +1542,17 @@ export class ConversationThreadService {
         summaryVersion: thread.summary_version,
         embeddingVersion: thread.embedding_version,
       });
-      const summaryRead = readSummaryMessages(this.params.store, thread.thread_id);
-      if (summaryRead.totalMessages === 0) {
-        this.logger.debug("thread summarization deleting empty thread", {
-          jobId,
-          threadId: thread.thread_id,
-        });
-        this.params.store.deleteThread(thread.thread_id);
-        return;
-      }
-      const summaryMessages = this.normalizeMessagesForSummarization(summaryRead.messages);
-
       try {
+        const summaryRead = readSummaryMessages(this.params.store, thread.thread_id);
+        if (summaryRead.totalMessages === 0) {
+          this.logger.debug("thread summarization deleting empty thread", {
+            jobId,
+            threadId: thread.thread_id,
+          });
+          this.params.store.deleteThread(thread.thread_id);
+          return;
+        }
+        const summaryMessages = this.normalizeMessagesForSummarization(summaryRead.messages);
         const summaryIsStale =
           input.force === true ||
           thread.last_summarized_at === null ||
@@ -1646,6 +1646,18 @@ export class ConversationThreadService {
             eligible: result.eligible,
             summarized: result.summarized,
             failed: result.failed,
+          });
+          return;
+        }
+
+        if (isSqliteBusyError(e)) {
+          this.logger.warn("thread summarization continuing after sqlite busy failure", {
+            jobId,
+            threadId: thread.thread_id,
+            eligible: result.eligible,
+            summarized: result.summarized,
+            failed: result.failed,
+            error: failureMessage,
           });
           return;
         }

@@ -821,6 +821,75 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("continues summarization after sqlite busy failures", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "busy-a1",
+        userId: "u1",
+        text: "first eligible thread",
+        ts: 1,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "busy-a2",
+        userId: "u2",
+        text: "first eligible reply",
+        ts: 2,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "busy-b1",
+        userId: "u1",
+        text: "second eligible thread",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "busy-b2",
+        userId: "u2",
+        text: "second eligible reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
+    ]);
+
+    const attemptedThreadIds: string[] = [];
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async ({ threadId }) => {
+        attemptedThreadIds.push(threadId);
+        if (threadId === "discord:channel:c1:busy-a1") {
+          throw new Error("SQLITE_BUSY: database is locked");
+        }
+        return {
+          title: threadId,
+          brief: threadId,
+          topics: [],
+          retrievalHints: [],
+        };
+      },
+    });
+
+    const run = await service.runSummarization({ now: Date.now() + 3 * 60 * 60 * 1000 });
+    expect(run.failed).toBe(1);
+    expect(run.summarized).toBe(1);
+    expect(run.failures[0]?.threadId).toBe("discord:channel:c1:busy-a1");
+    expect(attemptedThreadIds).toEqual([
+      "discord:channel:c1:busy-a1",
+      "discord:channel:c1:busy-b1",
+    ]);
+    expect(threadStore.readThread("discord:channel:c1:busy-b1")?.summary?.title).toBe(
+      "discord:channel:c1:busy-b1",
+    );
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("retries parse failures without aborting the summarization run", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);

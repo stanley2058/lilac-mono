@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 
 import { dropLegacyDiscordMessageCacheTables } from "./migrations/drop-legacy-discord-message-cache-tables";
+import { configureSqliteConnection } from "../../shared/sqlite";
 
 export type DbDiscordSession = {
   channel_id: string;
@@ -58,6 +59,7 @@ export class DiscordSurfaceStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
+    configureSqliteConnection(this.db);
     this.migrate();
   }
 

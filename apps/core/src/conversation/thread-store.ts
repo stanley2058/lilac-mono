@@ -8,6 +8,7 @@ import type {
   ConversationThreadFacetInput,
 } from "./thread-embedding";
 import { splitByDiscordWindowOldestToNewest } from "../surface/discord/merge-window";
+import { configureSqliteConnection } from "../shared/sqlite";
 
 const SEARCH_LIMIT_MAX = 50;
 const THREAD_DISCOVERY_GAP_MS = 60 * 60 * 1000;
@@ -483,6 +484,7 @@ export class ConversationThreadStore {
 
   constructor(dbPath: string, options: ConversationThreadStoreOptions = {}) {
     this.db = new Database(dbPath);
+    configureSqliteConnection(this.db);
     this.searchDbPath = dbPath;
     this.surfaceDbPath = options.surfaceDbPath;
     this.mainAgentUserNames = new Set(
