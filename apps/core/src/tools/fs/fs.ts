@@ -1285,7 +1285,12 @@ export function fsTool(
             value: [
               { type: "text", text: intro },
               ...instructionParts,
-              { type: "image-data", mediaType: mimeType, data: base64 },
+              {
+                type: "file",
+                mediaType: mimeType,
+                filename,
+                data: { type: "data", data: base64 },
+              },
             ],
           };
         }
@@ -1296,10 +1301,10 @@ export function fsTool(
             { type: "text", text: intro },
             ...instructionParts,
             {
-              type: "file-data",
+              type: "file",
               mediaType: mimeType,
               filename,
-              data: base64,
+              data: { type: "data", data: base64 },
             },
           ],
         };

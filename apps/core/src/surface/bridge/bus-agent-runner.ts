@@ -727,11 +727,13 @@ function scrubLargeBinaryForModelView(messages: readonly ModelMessage[]): ModelM
         const item = value[j];
         if (!item || typeof item !== "object" || Array.isArray(item)) continue;
 
-        const t = item.type;
-        if (t !== "image-data" && t !== "file-data") continue;
+        if (item.type !== "file") continue;
 
-        const data = item.data;
-        if (typeof data !== "string") continue;
+        const fileData = item.data;
+        if (!fileData || typeof fileData !== "object" || Array.isArray(fileData)) continue;
+        if (fileData.type !== "data" || typeof fileData.data !== "string") continue;
+
+        const data = fileData.data;
 
         const bytes = estimateBase64Bytes(data);
         const tooBig = bytes > MODEL_VIEW_MAX_BINARY_BYTES_PER_PART;

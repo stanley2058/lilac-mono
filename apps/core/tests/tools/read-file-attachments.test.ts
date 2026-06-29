@@ -74,7 +74,7 @@ describe("read_file attachments", () => {
     expect(supportedDescription).not.toContain("upstream provider");
   });
 
-  it("returns images as image-data tool-result content", async () => {
+  it("returns images as file tool-result content", async () => {
     const pngBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axh8h0AAAAASUVORK5CYII=";
     const pngBytes = Buffer.from(pngBase64, "base64");
@@ -105,13 +105,14 @@ describe("read_file attachments", () => {
 
     const parts = modelOut.value;
     expect(parts.length).toBe(2);
-    expect(parts[1]!.type).toBe("image-data");
-    if (parts[1]!.type !== "image-data") return;
+    expect(parts[1]!.type).toBe("file");
+    if (parts[1]!.type !== "file") return;
     expect(parts[1]!.mediaType).toBe("image/png");
-    expect(parts[1]!.data).toBe(pngBase64);
+    expect(parts[1]!.filename).toBe("img.png");
+    expect(parts[1]!.data).toEqual({ type: "data", data: pngBase64 });
   });
 
-  it("returns PDFs as file-data tool-result content", async () => {
+  it("returns PDFs as file tool-result content", async () => {
     const pdf = Buffer.from(
       "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n",
       "utf8",
@@ -142,11 +143,11 @@ describe("read_file attachments", () => {
 
     const parts = modelOut.value;
     expect(parts.length).toBe(2);
-    expect(parts[1]!.type).toBe("file-data");
-    if (parts[1]!.type !== "file-data") return;
+    expect(parts[1]!.type).toBe("file");
+    if (parts[1]!.type !== "file") return;
 
     expect(parts[1]!.mediaType).toBe("application/pdf");
     expect(parts[1]!.filename).toBe("doc.pdf");
-    expect(parts[1]!.data).toBe(pdf.toString("base64"));
+    expect(parts[1]!.data).toEqual({ type: "data", data: pdf.toString("base64") });
   });
 });

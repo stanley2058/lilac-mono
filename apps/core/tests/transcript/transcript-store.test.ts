@@ -119,10 +119,10 @@ describe("SqliteTranscriptStore", () => {
               value: [
                 { type: "text", text: "Attached file from read_file" },
                 {
-                  type: "file-data",
+                  type: "file",
                   mediaType: "application/pdf",
                   filename: "doc.pdf",
-                  data: hugeBase64,
+                  data: { type: "data", data: hugeBase64 },
                 },
               ],
             },
@@ -171,13 +171,12 @@ describe("SqliteTranscriptStore", () => {
 
     // The binary data should be preserved in the persisted transcript.
     const filePart = value.find(
-      (v) => !!v && typeof v === "object" && (v as Record<string, unknown>)["type"] === "file-data",
+      (v) => !!v && typeof v === "object" && (v as Record<string, unknown>)["type"] === "file",
     ) as Record<string, unknown> | undefined;
 
     expect(filePart).toBeDefined();
     expect(filePart?.["filename"]).toBe("doc.pdf");
-    expect(typeof filePart?.["data"]).toBe("string");
-    expect(String(filePart?.["data"]).length).toBe(hugeBase64.length);
+    expect(filePart?.["data"]).toEqual({ type: "data", data: hugeBase64 });
 
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
