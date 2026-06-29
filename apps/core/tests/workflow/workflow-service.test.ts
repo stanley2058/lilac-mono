@@ -329,6 +329,176 @@ describe("workflow-service (v2)", () => {
     await svc.stop();
   });
 
+  it("retries resume publish when a resolved workflow has no resumePublishedAt", async () => {
+    const baseRaw = createInMemoryRawBus();
+    let failNextResumePublish = true;
+    const raw: RawBus = {
+      ...baseRaw,
+      publish: async (msg, opts) => {
+        if (opts.type === lilacEventTypes.CmdRequestMessage && failNextResumePublish) {
+          failNextResumePublish = false;
+          throw new Error("injected resume publish failure");
+        }
+        return baseRaw.publish(msg, opts);
+      },
+    };
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test-resume-retry",
+      pollTimeouts: { enabled: false },
+    });
+
+    const receivedReq: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-resume-retry",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          receivedReq.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_resume_retry";
+
+    await bus.publish(lilacEventTypes.CmdWorkflowCreate, {
+      workflowId,
+      definition: {
+        version: 2,
+        origin: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        resumeTarget: {
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        summary: "wait for reply",
+        completion: "all",
+      },
+    });
+
+    await bus.publish(lilacEventTypes.CmdWorkflowTaskCreate, {
+      workflowId,
+      taskId: "t1",
+      kind: "discord.wait_for_reply",
+      description: "wait",
+      input: {
+        channelId: "dmY",
+        messageId: "anchor1",
+        fromUserId: "userB",
+      },
+    });
+
+    const evt = {
+      platform: "discord" as const,
+      channelId: "dmY",
+      channelName: "dm",
+      messageId: "reply2",
+      userId: "userB",
+      userName: "B",
+      text: "same event",
+      ts: Date.now(),
+      raw: { discord: { replyToMessageId: "anchor1" } },
+    };
+
+    let failed = false;
+    try {
+      await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, evt);
+    } catch (e) {
+      failed = e instanceof Error && e.message === "injected resume publish failure";
+    }
+
+    expect(failed).toBe(true);
+    expect(receivedReq.length).toBe(0);
+
+    const afterFailure = store.getWorkflow(workflowId);
+    expect(afterFailure?.state).toBe("resolved");
+    expect(afterFailure?.resumeSeq).toBe(1);
+    expect(afterFailure?.resumePublishedAt).toBeUndefined();
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, evt);
+
+    expect(receivedReq.length).toBe(1);
+    expect(receivedReq[0]?.headers?.request_id).toBe("wf:wf_resume_retry:1");
+    expect(store.getWorkflow(workflowId)?.resumePublishedAt).toBeDefined();
+
+    await reqSub.stop();
+    await svc.stop();
+  });
+
+  it("does not create tasks for terminal workflows", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test-terminal-task-create",
+      pollTimeouts: { enabled: false },
+    });
+
+    for (const state of ["resolved", "failed", "cancelled"] as const) {
+      const workflowId = `wf_terminal_task_create_${state}`;
+
+      await bus.publish(lilacEventTypes.CmdWorkflowCreate, {
+        workflowId,
+        definition: {
+          version: 2,
+          origin: {
+            request_id: "discord:chanX:orig",
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          resumeTarget: {
+            session_id: "chanX",
+            request_client: "discord",
+          },
+          summary: "already done",
+          completion: "all",
+        },
+      });
+
+      const workflow = store.getWorkflow(workflowId);
+      if (!workflow) throw new Error("expected workflow");
+      store.upsertWorkflow({
+        ...workflow,
+        state,
+        ...(state === "resolved" ? { resolvedAt: Date.now() } : {}),
+        updatedAt: Date.now(),
+      });
+
+      await bus.publish(lilacEventTypes.CmdWorkflowTaskCreate, {
+        workflowId,
+        taskId: "late",
+        kind: "discord.wait_for_reply",
+        description: "late task",
+        input: {
+          channelId: "dmY",
+          messageId: "anchor-late",
+          fromUserId: "userB",
+        },
+      });
+
+      expect(store.getTask(workflowId, "late")).toBeNull();
+      expect(store.getWorkflow(workflowId)?.state).toBe(state);
+    }
+
+    await svc.stop();
+  });
+
   it("publishes resume from the already parsed task snapshot", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

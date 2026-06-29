@@ -7,7 +7,7 @@ import {
 import type { WorkflowTaskRecord } from "./types";
 import type { WorkflowStore } from "./workflow-store";
 import type { WorkflowStoreQueries } from "./workflow-store-queries";
-import { matchDiscordWaitForReply } from "./discord-wait-for-reply";
+import { getDiscordReplyToMessageId, matchDiscordWaitForReply } from "./discord-wait-for-reply";
 import type { WorkflowTimeoutResult } from "./timeout";
 
 async function publishTaskLifecycle(params: {
@@ -60,9 +60,18 @@ export async function resolveDiscordWaitForReplyFromAdapterEvent(params: {
   if (evt.platform !== "discord") return;
 
   const candidates = queries.listActiveDiscordWaitForReplyTasksByChannelId(evt.channelId);
-  if (candidates.length === 0) return;
+  const replyToMessageId = getDiscordReplyToMessageId(evt.raw);
+  const exactCandidates = replyToMessageId
+    ? queries.listDiscordWaitForReplyTasksByChannelIdAndMessageId(evt.channelId, replyToMessageId)
+    : [];
+  const candidateByKey = new Map<string, WorkflowTaskRecord>();
+  for (const task of [...candidates, ...exactCandidates]) {
+    candidateByKey.set(`${task.workflowId}:${task.taskId}`, task);
+  }
+  const tasks = [...candidateByKey.values()];
+  if (tasks.length === 0) return;
 
-  for (const task of candidates) {
+  for (const task of tasks) {
     if (task.kind !== "discord.wait_for_reply") continue;
     if (task.discordChannelId !== evt.channelId) continue;
     if (!task.discordMessageId) continue;
@@ -82,6 +91,7 @@ export async function resolveDiscordWaitForReplyFromAdapterEvent(params: {
 
     // Idempotency: already resolved by this message.
     if (fresh.state === "resolved" && fresh.resolvedBy === matched.resolvedBy) {
+      await params.onTaskResolved(fresh.workflowId, { evt, text: matched.result.text });
       continue;
     }
 

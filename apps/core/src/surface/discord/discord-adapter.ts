@@ -1875,6 +1875,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
       await interaction.reply({
         content: preview,
+        allowedMentions: { parse: [] },
       });
 
       this.emit({

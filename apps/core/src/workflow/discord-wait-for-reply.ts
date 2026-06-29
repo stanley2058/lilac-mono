@@ -17,7 +17,7 @@ export type DiscordWaitForReplyResult = {
   raw?: unknown;
 };
 
-function getReplyToMessageId(raw: unknown): string | undefined {
+export function getDiscordReplyToMessageId(raw: unknown): string | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const discord = (raw as { discord?: unknown }).discord;
   if (!discord || typeof discord !== "object") return undefined;
@@ -34,7 +34,7 @@ export function matchDiscordWaitForReply(params: {
   if (evt.platform !== "discord") return null;
   if (evt.channelId !== input.channelId) return null;
 
-  const replyTo = getReplyToMessageId(evt.raw);
+  const replyTo = getDiscordReplyToMessageId(evt.raw);
   if (!replyTo || replyTo !== input.messageId) return null;
 
   if (input.fromUserId && evt.userId !== input.fromUserId) return null;

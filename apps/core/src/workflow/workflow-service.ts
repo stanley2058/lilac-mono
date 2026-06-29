@@ -36,6 +36,10 @@ function now(): number {
   return Date.now();
 }
 
+function isTerminalWorkflowState(state: WorkflowState | WorkflowTaskState): boolean {
+  return state === "resolved" || state === "failed" || state === "cancelled";
+}
+
 const cronExpr5Schema = z
   .string()
   .min(1)
@@ -275,6 +279,17 @@ export async function startWorkflowService(params: {
           throw new Error(`Unknown workflow '${workflowId}'`);
         }
 
+        if (isTerminalWorkflowState(w.state)) {
+          logger.info("workflow task create skipped", {
+            workflowId,
+            taskId,
+            reason: "terminal_workflow_state",
+            state: w.state,
+          });
+          await ctx.commit();
+          return;
+        }
+
         const existingTask = store.getTask(workflowId, taskId);
         if (existingTask) {
           await ctx.commit();
@@ -347,7 +362,7 @@ export async function startWorkflowService(params: {
           return;
         }
 
-        if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") {
+        if (isTerminalWorkflowState(w.state)) {
           await ctx.commit();
           return;
         }
@@ -371,7 +386,7 @@ export async function startWorkflowService(params: {
 
         const tasks = store.listTasks(workflowId);
         for (const t of tasks) {
-          if (t.state === "resolved" || t.state === "failed" || t.state === "cancelled") continue;
+          if (isTerminalWorkflowState(t.state)) continue;
           const tu: WorkflowTaskRecord = {
             ...t,
             state: "cancelled",
@@ -515,7 +530,8 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  if (w.state === "resolved" || w.state === "failed" || w.state === "cancelled") {
+  const retryUnpublishedResume = w.state === "resolved" && !w.resumePublishedAt;
+  if (isTerminalWorkflowState(w.state) && !retryUnpublishedResume) {
     logger.info("workflow.resolve.skip", {
       workflowId,
       reason: "terminal_workflow_state",
@@ -546,35 +562,37 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  // Mark resolved and bump resume seq.
-  const wResolved: WorkflowRecord = {
-    ...w,
-    state: "resolved",
-    resolvedAt: now(),
-    updatedAt: now(),
-  };
-  store.upsertWorkflow(wResolved);
+  let wResolved = w;
+  if (w.state !== "resolved") {
+    wResolved = {
+      ...w,
+      state: "resolved",
+      resolvedAt: now(),
+      updatedAt: now(),
+    };
+    store.upsertWorkflow(wResolved);
 
-  logger.info("workflow resolved", {
-    workflowId,
-    taskCount: tasks.length,
-    completion: w.definition.completion,
-  });
+    logger.info("workflow resolved", {
+      workflowId,
+      taskCount: tasks.length,
+      completion: w.definition.completion,
+    });
 
-  await publishWorkflowLifecycle({
-    bus,
-    headers: undefined,
-    workflowId,
-    state: "resolved",
-    detail: "workflow resolved",
-  });
+    await publishWorkflowLifecycle({
+      bus,
+      headers: undefined,
+      workflowId,
+      state: "resolved",
+      detail: "workflow resolved",
+    });
 
-  await publishWorkflowResolved({
-    bus,
-    headers: undefined,
-    workflowId,
-    result: { tasks },
-  });
+    await publishWorkflowResolved({
+      bus,
+      headers: undefined,
+      workflowId,
+      result: { tasks },
+    });
+  }
 
   // Do not publish resume twice.
   if (wResolved.resumePublishedAt) {
@@ -586,8 +604,8 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  const bumped = store.bumpResumeSeq(workflowId);
-  if (!bumped) {
+  const resumeWorkflow = wResolved.resumeSeq > 0 ? wResolved : store.bumpResumeSeq(workflowId);
+  if (!resumeWorkflow) {
     logger.warn("workflow.resolve.skip", {
       workflowId,
       reason: "failed_to_bump_resume_seq",
@@ -595,36 +613,36 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  if (bumped.definition.version !== 2) {
+  if (resumeWorkflow.definition.version !== 2) {
     // Defensive: should not happen since we only resolve v2 workflows here.
     logger.warn("workflow.resolve.skip", {
       workflowId,
       reason: "bumped_definition_not_v2",
-      version: bumped.definition.version,
+      version: resumeWorkflow.definition.version,
     });
     return;
   }
 
-  const bumpedV2 = bumped as WorkflowRecord & { definition: WorkflowDefinitionV2 };
+  const resumeWorkflowV2 = resumeWorkflow as WorkflowRecord & { definition: WorkflowDefinitionV2 };
 
   const requestId = formatWorkflowRequestId({
     workflowId,
-    sequence: bumped.resumeSeq,
+    sequence: resumeWorkflow.resumeSeq,
   });
   ensureNonDiscordRequestId(requestId);
 
   logger.info("publishing resume request", {
     workflowId,
     requestId,
-    sessionId: bumpedV2.definition.resumeTarget.session_id,
-    requestClient: bumpedV2.definition.resumeTarget.request_client,
-    resumeSeq: bumped.resumeSeq,
-    completion: bumpedV2.definition.completion,
+    sessionId: resumeWorkflowV2.definition.resumeTarget.session_id,
+    requestClient: resumeWorkflowV2.definition.resumeTarget.request_client,
+    resumeSeq: resumeWorkflow.resumeSeq,
+    completion: resumeWorkflowV2.definition.completion,
     taskCount: tasks.length,
   });
 
   const resume = buildResumeRequest({
-    workflow: bumpedV2,
+    workflow: resumeWorkflowV2,
     tasks,
     triggerUserText: params.triggerUserText,
     triggerMeta: {
@@ -665,8 +683,8 @@ async function tryResolveWorkflow(params: {
       requestId: resume.requestId,
       sessionId: resume.sessionId,
       requestClient: resume.requestClient,
-      resumeSeq: bumped.resumeSeq,
-      completion: bumpedV2.definition.completion,
+      resumeSeq: resumeWorkflow.resumeSeq,
+      completion: resumeWorkflowV2.definition.completion,
     });
   }
 }
