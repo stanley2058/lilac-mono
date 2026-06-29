@@ -15,9 +15,11 @@ class FakeWebSocket {
   static readonly CLOSED = 3;
 
   static instances: FakeWebSocket[] = [];
+  static nextResponseHeaders: unknown;
 
   readonly url: string;
   readonly init?: WebSocketInit;
+  readonly responseHeaders?: unknown;
   readyState = FakeWebSocket.CONNECTING;
   readonly sent: string[] = [];
 
@@ -31,12 +33,17 @@ class FakeWebSocket {
   constructor(url: string | URL, init?: WebSocketInit) {
     this.url = String(url);
     this.init = init;
+    if (FakeWebSocket.nextResponseHeaders !== undefined) {
+      this.responseHeaders = FakeWebSocket.nextResponseHeaders;
+      FakeWebSocket.nextResponseHeaders = undefined;
+    }
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.emitOpen());
   }
 
   static reset(): void {
     FakeWebSocket.instances.length = 0;
+    FakeWebSocket.nextResponseHeaders = undefined;
   }
 
   addEventListener(type: string, listener: (event: Event) => void): void {
@@ -575,12 +582,17 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     wsFetch.close();
   });
 
-  it("reuses previous response id for codex store=false requests", async () => {
+  it("acknowledges and reuses previous response id for codex store=false requests", async () => {
     globals.fetch = (async () => {
       throw new Error("should not fallback");
     }) as unknown as typeof globalThis.fetch;
 
-    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-1"]]);
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      responseProcessed: true,
+      turnStateHeaderName: "x-codex-turn-state",
+    });
 
     const firstResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
       method: "POST",
@@ -623,6 +635,10 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     );
     socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await firstTextPromise;
+    expect(sentBody(socket, 1)).toEqual({
+      type: "response.processed",
+      response_id: "resp_1",
+    });
 
     const secondResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
       method: "POST",
@@ -644,7 +660,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     });
 
     expect(FakeWebSocket.instances.length).toBe(1);
-    expect(sentBody(socket, 1)).toEqual({
+    expect(sentBody(socket, 2)).toEqual({
       type: "response.create",
       store: false,
       previous_response_id: "resp_1",
@@ -655,6 +671,96 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_2" } }));
     socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await secondTextPromise;
+    wsFetch.close();
+  });
+
+  it("replays codex turn state on websocket reconnects when upgrade headers are exposed", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-1"]]);
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      turnStateHeaderName: "x-codex-turn-state",
+    });
+
+    const firstResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+      }),
+    });
+
+    const firstSocket = FakeWebSocket.instances[0];
+    expect(firstSocket).toBeDefined();
+    expect(firstSocket?.init?.headers?.["x-codex-turn-state"]).toBeUndefined();
+
+    const firstTextPromise = firstResponse.text();
+    firstSocket?.emitMessage(
+      JSON.stringify({ type: "response.created", response: { id: "resp_1" } }),
+    );
+    firstSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    await firstTextPromise;
+    firstSocket?.close();
+
+    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-2"]]);
+    const secondResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [{ role: "user", content: [{ type: "input_text", text: "different" }] }],
+      }),
+    });
+
+    const secondSocket = FakeWebSocket.instances[1];
+    expect(secondSocket).toBeDefined();
+    expect(secondSocket?.init?.headers?.["x-codex-turn-state"]).toBe("turn-state-1");
+
+    const secondTextPromise = secondResponse.text();
+    secondSocket?.emitMessage(
+      JSON.stringify({ type: "response.created", response: { id: "resp_2" } }),
+    );
+    secondSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    await secondTextPromise;
+    wsFetch.close();
+  });
+
+  it("warns when codex websocket turn state upgrade headers are unavailable", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const warnings: unknown[] = [];
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      turnStateHeaderName: "x-codex-turn-state",
+      onTurnStateUnavailable: (details) => warnings.push(details),
+    });
+
+    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+      }),
+    });
+
+    expect(warnings).toEqual([
+      {
+        reason: "headers_not_exposed",
+        requestUrl: "https://chatgpt.com/backend-api/codex/responses",
+      },
+    ]);
+
+    const socket = FakeWebSocket.instances[0];
+    const textPromise = response.text();
+    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    await textPromise;
     wsFetch.close();
   });
 

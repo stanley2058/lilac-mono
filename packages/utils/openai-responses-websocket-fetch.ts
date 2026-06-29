@@ -13,12 +13,19 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
   idleTimeoutMs?: number;
+  responseProcessed?: boolean;
+  turnStateHeaderName?: string;
   onTransportSelected?: (details: ResponsesTransportSelectionDetails) => void;
   onAutoFallback?: (details: {
     reason: "websocket_connect_failed";
     requestUrl: string;
     errorMessage?: string;
   }) => void;
+  onTurnStateUnavailable?: (details: {
+    reason: "headers_not_exposed" | "header_not_present";
+    requestUrl: string;
+  }) => void;
+  onResponseProcessedFailed?: (details: { requestUrl: string; errorMessage: string }) => void;
 };
 
 export type OpenAIResponsesWebSocketFetch = typeof globalThis.fetch & {
@@ -90,6 +97,9 @@ export function createOpenAIResponsesWebSocketFetch(
   let reusableBusy = false;
   let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let connectionHeadersKey: string | null = null;
+  let turnStateHeaderValue: string | null = null;
+  let turnStateUnavailableReported = false;
+  const turnStateInspectedSockets = new WeakSet<WebSocket>();
   const reusableContinuationCache = new Map<string, ResponsesContinuationCacheEntry>();
 
   function reportAutoFallback(details: {
@@ -175,6 +185,44 @@ export function createOpenAIResponsesWebSocketFetch(
     reusableContinuationCache.clear();
   }
 
+  function reportTurnStateUnavailable(details: {
+    reason: "headers_not_exposed" | "header_not_present";
+    requestUrl: URL;
+  }): void {
+    if (turnStateUnavailableReported) return;
+    turnStateUnavailableReported = true;
+    options.onTurnStateUnavailable?.({
+      reason: details.reason,
+      requestUrl: details.requestUrl.toString(),
+    });
+  }
+
+  function applyTurnStateHeader(headers: Record<string, string>): Record<string, string> {
+    const headerName = options.turnStateHeaderName;
+    if (!headerName || !turnStateHeaderValue) return headers;
+
+    const next = { ...headers };
+    next[headerName.toLowerCase()] = turnStateHeaderValue;
+    return next;
+  }
+
+  function inspectTurnStateHeader(socket: WebSocket, requestUrl: URL): void {
+    const headerName = options.turnStateHeaderName;
+    if (!headerName || turnStateInspectedSockets.has(socket)) return;
+    turnStateInspectedSockets.add(socket);
+
+    const headerValue = readWebSocketUpgradeHeader(socket, headerName);
+    if (typeof headerValue === "string" && headerValue.length > 0) {
+      turnStateHeaderValue = headerValue;
+      return;
+    }
+
+    reportTurnStateUnavailable({
+      requestUrl,
+      reason: headerValue === undefined ? "headers_not_exposed" : "header_not_present",
+    });
+  }
+
   function pruneContinuationCache(now: number): void {
     for (const [key, entry] of reusableContinuationCache) {
       if (now - entry.createdAt > CONTINUATION_CACHE_TTL_MS) {
@@ -238,10 +286,19 @@ export function createOpenAIResponsesWebSocketFetch(
     });
   }
 
-  function getConnection(socketUrl: string, headers: Record<string, string>): Promise<WebSocket> {
-    const key = `${socketUrl}|${JSON.stringify(
-      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
+  function getConnectionKey(socketUrl: string, headers: Record<string, string>): string {
+    const turnStateHeaderName = options.turnStateHeaderName?.toLowerCase();
+    const comparableHeaders = Object.entries(headers).filter(
+      ([key]) => key.toLowerCase() !== turnStateHeaderName,
+    );
+
+    return `${socketUrl}|${JSON.stringify(
+      comparableHeaders.sort(([a], [b]) => a.localeCompare(b)),
     )}`;
+  }
+
+  function getConnection(socketUrl: string, headers: Record<string, string>): Promise<WebSocket> {
+    const key = getConnectionKey(socketUrl, headers);
 
     if (ws?.readyState === WebSocket.OPEN && connectionHeadersKey === key) {
       return Promise.resolve(ws);
@@ -329,7 +386,7 @@ export function createOpenAIResponsesWebSocketFetch(
       return forwardWithSseNormalization();
     }
 
-    const wsHeaders = toWebSocketHeaders(getRequestHeaders(input, init));
+    const wsHeaders = applyTurnStateHeader(toWebSocketHeaders(getRequestHeaders(input, init)));
     const socketUrl = getWebSocketUrl(requestUrl);
 
     let connection: WebSocket;
@@ -355,6 +412,7 @@ export function createOpenAIResponsesWebSocketFetch(
       }
       throw error;
     }
+    inspectTurnStateHeader(connection, requestUrl);
 
     if (useReusableConnection) {
       reusableBusy = true;
@@ -397,6 +455,20 @@ export function createOpenAIResponsesWebSocketFetch(
 
         const sendPayload = (payload: ResponsesRequestBody) => {
           connection.send(JSON.stringify({ type: "response.create", ...payload }));
+        };
+
+        const sendResponseProcessed = (processedResponseId: string) => {
+          if (!options.responseProcessed) return;
+          try {
+            connection.send(
+              JSON.stringify({ type: "response.processed", response_id: processedResponseId }),
+            );
+          } catch (error) {
+            options.onResponseProcessedFailed?.({
+              requestUrl: requestUrl.toString(),
+              errorMessage: error instanceof Error ? error.message : String(error),
+            });
+          }
         };
 
         const retryWithoutOptimization = (): boolean => {
@@ -533,6 +605,9 @@ export function createOpenAIResponsesWebSocketFetch(
                   responseId,
                   outputItems,
                 });
+              }
+              if (canPersistContinuation && responseId && type === "response.completed") {
+                sendResponseProcessed(responseId);
               }
               try {
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -750,7 +825,15 @@ function isCodexResponsesRequest(requestUrl: URL): boolean {
 }
 
 function extractResponseId(event: Record<string, unknown>): string | null {
-  if (readString(event.type) !== "response.created") return null;
+  const type = readString(event.type);
+  if (
+    type !== "response.created" &&
+    type !== "response.completed" &&
+    type !== "response.done" &&
+    type !== "response.incomplete"
+  ) {
+    return null;
+  }
   return readString(asRecord(event.response)?.id) ?? null;
 }
 
@@ -1510,6 +1593,65 @@ function toWebSocketHeaders(headers: Record<string, string>): Record<string, str
   }
 
   return wsHeaders;
+}
+
+function readWebSocketUpgradeHeader(socket: WebSocket, name: string): string | null | undefined {
+  const socketRecord = asRecord(socket);
+  if (!socketRecord) return undefined;
+
+  const headerContainers = [
+    socketRecord.responseHeaders,
+    socketRecord.upgradeHeaders,
+    socketRecord.upgradeResponseHeaders,
+    asRecord(socketRecord.response)?.headers,
+    asRecord(socketRecord.upgradeResponse)?.headers,
+    asRecord(socketRecord._response)?.headers,
+  ];
+
+  let sawHeaders = false;
+  for (const headers of headerContainers) {
+    if (headers === undefined || headers === null) continue;
+    sawHeaders = true;
+    const value = readHeaderValue(headers, name);
+    if (value !== undefined && value !== null) return value;
+  }
+
+  return sawHeaders ? null : undefined;
+}
+
+function readHeaderValue(headers: unknown, name: string): string | null | undefined {
+  if (headers instanceof Headers) return headers.get(name);
+
+  const record = asRecord(headers);
+  if (!record) return undefined;
+
+  const getter = record.get;
+  if (typeof getter === "function") {
+    const value = (getter as (headerName: string) => unknown).call(headers, name);
+    if (typeof value === "string") return value;
+    if (value === null) return null;
+    if (value !== undefined) return String(value);
+  }
+
+  const lowerName = name.toLowerCase();
+  const directValue = record[name] ?? record[lowerName];
+  if (typeof directValue === "string") return directValue;
+  if (Array.isArray(directValue)) {
+    const firstString = directValue.find((entry) => typeof entry === "string");
+    return typeof firstString === "string" ? firstString : null;
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (key.toLowerCase() !== lowerName) continue;
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      const firstString = value.find((entry) => typeof entry === "string");
+      return typeof firstString === "string" ? firstString : null;
+    }
+    return value === undefined ? undefined : String(value);
+  }
+
+  return null;
 }
 
 async function decodeRequestBody(input: FetchInput, init?: FetchInit): Promise<string | undefined> {
