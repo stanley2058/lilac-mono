@@ -1016,11 +1016,41 @@ export function buildAutoInjectedThreadSearchMessages(params: {
   ];
 }
 
+function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<string> {
+  const threadIds = new Set<string>();
+
+  for (const message of messages) {
+    const content: unknown = message.content;
+    if (message.role !== "tool" || !Array.isArray(content)) continue;
+
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      if (part.type !== "tool-result" || part.toolName !== AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME) {
+        continue;
+      }
+
+      const output = part.output;
+      const payload = isRecord(output) && output.type === "json" ? output.value : output;
+      const entries = isRecord(payload) ? payload.entries : undefined;
+      if (!Array.isArray(entries)) continue;
+
+      for (const entry of entries) {
+        if (!isRecord(entry)) continue;
+        const threadId = entry.threadId;
+        if (typeof threadId === "string" && threadId.length > 0) threadIds.add(threadId);
+      }
+    }
+  }
+
+  return threadIds;
+}
+
 export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   cfg: CoreConfig;
   conversationThreads?: ConversationThreadToolService;
   requestId: string;
   raw?: unknown;
+  previousMessages?: readonly ModelMessage[];
   userMessages: readonly ModelMessage[];
   publishToolStatus: (update: {
     toolCallId: string;
@@ -1073,10 +1103,13 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
       mode: autoInject.mode,
       ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
     });
-    const entries = search.results.map((result) => ({
-      threadId: result.threadId,
-      title: result.title,
-    }));
+    const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
+    const entries = search.results
+      .filter((result) => !previouslyInjectedThreadIds.has(result.threadId))
+      .map((result) => ({
+        threadId: result.threadId,
+        title: result.title,
+      }));
 
     await publishToolStatusBestEffort({
       toolCallId,
@@ -4540,6 +4573,7 @@ export async function startBusAgentRunner(params: {
                 conversationThreads: params.conversationThreads,
                 requestId: headers.request_id,
                 raw: next.raw,
+                previousMessages: agent.state.messages,
                 userMessages: mergedInitial,
                 publishToolStatus: async (update) => {
                   await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, update, { headers });

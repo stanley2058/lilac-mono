@@ -510,6 +510,89 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(messages).toHaveLength(2);
   });
 
+  it("skips injection when all search results were already auto-injected", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const statuses: Array<"start" | "end"> = [];
+    let injectedCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-2",
+      raw: {},
+      previousMessages: buildAutoInjectedThreadSearchMessages({
+        toolCallId: "conversation_thread_previous",
+        entries: [{ threadId: "thread-1", title: "Previously injected" }],
+      }),
+      userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          queries: ["meaningful message"],
+          aboutness: {
+            domains: [],
+            situations: [],
+            targets: [],
+            entities: [],
+            userWouldAskForThisAs: ["meaningful message"],
+            intentSummary: "Find meaningful message threads.",
+          },
+        }),
+        search: async () => ({
+          meta: {
+            query: "meaningful message",
+            limit: 3,
+            mode: "hybrid",
+            count: 1,
+            vectorAvailable: false,
+          },
+          results: [{ threadId: "thread-1", title: "Previously injected", brief: "" }],
+        }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async (update) => {
+        statuses.push(update.status);
+      },
+      onError: () => {},
+      onInjected: () => {
+        injectedCalls += 1;
+      },
+    });
+
+    expect(messages).toEqual([]);
+    expect(statuses).toEqual(["start", "end"]);
+    expect(injectedCalls).toBe(0);
+  });
+
   it("skips injection when participant filtering is enabled without visible participants", async () => {
     const cfg = parseCoreConfigV1ToUniversal({
       surface: {
