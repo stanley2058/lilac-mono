@@ -285,7 +285,7 @@ describe("core tool plugin manager", () => {
     });
 
     expect(getToolDescription(toolset.tools, "read_file")).toContain(
-      "Reading image files and PDFs directly is supported.",
+      "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
     );
   });
 

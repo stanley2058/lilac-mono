@@ -876,7 +876,9 @@ export function fsTool(
     ];
 
     if (readFileDirectAttachmentSupported) {
-      parts.push("Reading image files and PDFs directly is supported.");
+      parts.push(
+        "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
+      );
     }
 
     parts.push("Denylisted paths require dangerouslyAllow=true.");

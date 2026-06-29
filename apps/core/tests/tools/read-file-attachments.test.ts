@@ -68,7 +68,9 @@ describe("read_file attachments", () => {
     const supportedDescription = getToolDescription(
       fsTool(baseDir, { readFileDirectAttachmentSupported: true }).read_file,
     );
-    expect(supportedDescription).toContain("Reading image files and PDFs directly is supported.");
+    expect(supportedDescription).toContain(
+      "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
+    );
     expect(supportedDescription).not.toContain("upstream provider");
   });
 
