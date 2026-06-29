@@ -45,6 +45,48 @@ function matchesAnyGlob(entryPath: string, patterns: readonly string[]): boolean
   );
 }
 
+function normalizeGlobPatternForBase(pattern: string, resolvedBaseDir: string): string {
+  const expanded = expandTilde(pattern);
+  if (!isAbsolute(expanded)) return expanded.split(sep).join("/");
+
+  const rel = relative(resolvedBaseDir, expanded);
+  return (rel.length === 0 ? "." : rel).split(sep).join("/");
+}
+
+function hasGlobMeta(segment: string): boolean {
+  return /[*?[\]{}()!+@]/.test(segment);
+}
+
+function getLiteralSearchRoot(pattern: string): string {
+  const segments = pattern.split("/").filter((segment) => segment.length > 0);
+  const prefix: string[] = [];
+
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") return "";
+    if (hasGlobMeta(segment)) return prefix.join("/");
+    prefix.push(segment);
+  }
+
+  return prefix.slice(0, -1).join("/");
+}
+
+function isSameOrChildPath(path: string, parent: string): boolean {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+function getGlobSearchRoots(patterns: readonly string[]): string[] {
+  const roots = patterns.map(getLiteralSearchRoot).sort((a, b) => a.length - b.length);
+  const deduped: string[] = [];
+
+  for (const root of roots) {
+    if (root.length === 0) return [""];
+    if (deduped.some((existing) => isSameOrChildPath(root, existing))) continue;
+    deduped.push(root);
+  }
+
+  return deduped.length > 0 ? deduped : [""];
+}
+
 export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
 export type ReadErrorCode = (typeof READ_ERROR_CODES)[number];
 
@@ -1307,13 +1349,13 @@ export class FileSystem {
       for (const pattern of patterns) {
         if (!pattern) continue;
         if (pattern.startsWith("!")) {
-          const negated = pattern.slice(1);
+          const negated = normalizeGlobPatternForBase(pattern.slice(1), resolvedBaseDir);
           if (negated.length > 0) {
             excludes.push(negated);
           }
           continue;
         }
-        includes.push(pattern);
+        includes.push(normalizeGlobPatternForBase(pattern, resolvedBaseDir));
       }
 
       if (includes.length === 0) {
@@ -1332,9 +1374,10 @@ export class FileSystem {
       }
 
       if (this.fsBackend === "fff") {
+        const normalizedPatterns = [...includes, ...excludes.map((pattern) => `!${pattern}`)];
         const fffResult = await getSearchBackend("fff").glob({
           cwd: resolvedBaseDir,
-          patterns,
+          patterns: normalizedPatterns,
           maxEntries,
           denyPaths: this.denyPaths,
           dangerouslyAllow,
@@ -1689,6 +1732,13 @@ export class FileSystem {
       if (truncated) return;
 
       const absDir = relDir ? join(params.resolvedBaseDir, relDir) : params.resolvedBaseDir;
+      if (!params.dangerouslyAllow && this.isDeniedPath(absDir)) return;
+      if (relDir && matchesAnyGlob(relDir, params.excludes)) return;
+      if (relDir && matchesAnyGlob(relDir, params.includes)) {
+        await addMatch(relDir, absDir);
+        if (truncated) return;
+      }
+
       let dir: Awaited<ReturnType<typeof fs.opendir>>;
       try {
         dir = await fs.opendir(absDir);
@@ -1721,7 +1771,9 @@ export class FileSystem {
       }
     };
 
-    await walk("");
+    for (const root of getGlobSearchRoots(params.includes)) {
+      await walk(root);
+    }
 
     return { paths, entries, truncated };
   }

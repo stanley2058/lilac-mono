@@ -210,6 +210,29 @@ describe("fs search parity (local vs remote runner)", () => {
     expect(localPaths).toEqual(remotePaths);
   });
 
+  it("glob absolute patterns match", async () => {
+    const absolutePattern = path.join(baseDir, "src", "*.ts");
+    const local = await fsTool.glob({
+      patterns: [absolutePattern],
+      mode: "default",
+    });
+    const remote = await runRemoteOp<GlobResult>({
+      cwd: baseDir,
+      op: "fs.glob",
+      input: { patterns: [absolutePattern], mode: "default" },
+    });
+
+    expect(local.mode).toBe("default");
+    expect(remote.mode).toBe("default");
+    if (local.mode !== "default" || remote.mode !== "default") {
+      throw new Error("expected default glob outputs");
+    }
+
+    const expected = ["src/a.ts", "src/b.ts", "src/c.ts"];
+    expect(local.paths.map(normalizePathPrefix).sort()).toEqual(expected);
+    expect(remote.paths.map(normalizePathPrefix).sort()).toEqual(expected);
+  });
+
   it("grep default and detailed outputs match", async () => {
     const localLean = await fsTool.grep({
       pattern: "alpha",
