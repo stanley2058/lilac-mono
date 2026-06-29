@@ -392,6 +392,7 @@ export function createOpenAIResponsesWebSocketFetch(
         let outputItemDrafts = new Map<string, JsonObject>();
         let canPersistContinuation = true;
         let forwardedEventCount = 0;
+        let pendingPreOutputEvents: Record<string, unknown>[] = [];
         let stalePreviousResponseRetryAttempted = false;
 
         const sendPayload = (payload: ResponsesRequestBody) => {
@@ -410,6 +411,7 @@ export function createOpenAIResponsesWebSocketFetch(
           outputItems = [];
           outputItemDrafts = new Map<string, JsonObject>();
           canPersistContinuation = true;
+          pendingPreOutputEvents = [];
           reportTransportSelected({
             requestUrl,
             transport: "websocket",
@@ -417,6 +419,26 @@ export function createOpenAIResponsesWebSocketFetch(
             optimizationReason: "stale_previous_response_id_retry",
           });
           sendPayload(websocketPayload);
+          return true;
+        };
+
+        const enqueueNormalizedEvent = (event: Record<string, unknown>): boolean => {
+          const bytes = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+          try {
+            controller.enqueue(bytes);
+            forwardedEventCount++;
+            return true;
+          } catch {
+            cleanup({ closeConnection: true });
+            return false;
+          }
+        };
+
+        const flushPendingPreOutputEvents = (): boolean => {
+          for (const event of pendingPreOutputEvents) {
+            if (!enqueueNormalizedEvent(event)) return false;
+          }
+          pendingPreOutputEvents = [];
           return true;
         };
 
@@ -485,15 +507,15 @@ export function createOpenAIResponsesWebSocketFetch(
               return;
             }
 
-            try {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
-              forwardedEventCount++;
-            } catch {
-              cleanup({ closeConnection: true });
+            const type = typeof normalized.type === "string" ? normalized.type : "";
+            if (forwardedEventCount === 0 && isPreOutputMetadataEvent(type)) {
+              pendingPreOutputEvents.push(normalized);
               return;
             }
 
-            const type = typeof normalized.type === "string" ? normalized.type : "";
+            if (!flushPendingPreOutputEvents()) return;
+            if (!enqueueNormalizedEvent(normalized)) return;
+
             if (type === "error") {
               canPersistContinuation = false;
             }
@@ -1353,6 +1375,10 @@ function isPreviousResponseNotFoundError(event: Record<string, unknown>): boolea
     param === "previous_response_id" ||
     (lowerMessage.includes("previous response") && lowerMessage.includes("not found"))
   );
+}
+
+function isPreOutputMetadataEvent(type: string): boolean {
+  return type === "response.created" || type === "response.in_progress";
 }
 
 function extractErrorDetails(

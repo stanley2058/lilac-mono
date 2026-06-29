@@ -721,6 +721,9 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     const secondTextPromise = secondResponse.text();
     socket?.emitMessage(
+      JSON.stringify({ type: "response.created", response: { id: "resp_stale_attempt" } }),
+    );
+    socket?.emitMessage(
       JSON.stringify({
         type: "error",
         error: {
@@ -748,6 +751,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     const secondText = await secondTextPromise;
     expect(secondText).not.toContain("previous_response_not_found");
+    expect(secondText).not.toContain("resp_stale_attempt");
     expect(secondText).toContain("resp_2");
     expect(secondText).toContain("[DONE]");
     expect(selections).toEqual([
