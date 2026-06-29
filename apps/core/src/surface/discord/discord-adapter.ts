@@ -3,20 +3,18 @@ import {
   ApplicationCommandType,
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
+  type CacheType,
   Client,
   EmbedBuilder,
   type GuildMember,
-  type CacheType,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
   MessageFlags,
   type MessageContextMenuCommandInteraction,
-  MessageType,
   PermissionFlagsBits,
   Partials,
   type Presence,
   type Interaction,
-  type RepliableInteraction,
   type Message,
   type MessageReaction,
   type PartialMessage,
@@ -48,7 +46,6 @@ import type {
   SessionRef,
   SurfaceMessage,
   SurfaceSessionParticipant,
-  SurfaceSessionParticipantActivity,
   SurfaceSessionParticipantsResult,
   SurfaceReactionDetail,
   SurfaceSelf,
@@ -71,13 +68,50 @@ import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
-  buildDiscordTaggedTextFromContentAndEmbeds,
-  normalizeDiscordEmbeds,
-  type DiscordEmbedTextMeta,
-} from "./discord-embed-text";
+  editOrReplyEphemeral,
+  hasExplicitDiscordUserMentionInContent,
+  isExplicitDiscordUserMention,
+  isRoutableDiscordUserMessage,
+  resolveTextSendableChannel,
+  shouldAllowMessage,
+  tryEditOrReplyEphemeral,
+  tryReplyEphemeral,
+} from "./discord-channel-guards";
+import {
+  buildForwardMessageSnapshots,
+  collectDiscordAttachmentMeta,
+  getChannelName,
+  getDiscordMessageTypeName,
+  getDisplayName,
+  getForwardSnapshotPayload,
+  getMessageEditedTs,
+  getMessageEmbeds,
+  getMessageTs,
+  getReplyReference,
+  getStoredTextFromDiscordMessage,
+  isDiscordChatLikeMessage,
+  normalizeDiscordReference,
+  previewText,
+  sortSurfaceParticipants,
+  toSurfaceParticipantActivities,
+} from "./discord-message-meta";
+import {
+  resolveDiscordSurfaceEditTarget,
+  resolveEffectiveSessionModelOverride,
+} from "./discord-session-model";
 import type { MarkdownTableRenderOptions } from "../../shared/markdown-table-renderer";
 import type { CustomCommandManager } from "../../custom-commands/manager";
 import { getSessionMode, resolveSessionConfigId } from "../bridge/bus-request-router/common";
+
+export {
+  hasExplicitDiscordUserMentionInContent,
+  isExplicitDiscordUserMention,
+  isRoutableDiscordUserMessage,
+} from "./discord-channel-guards";
+export {
+  resolveDiscordSurfaceEditTarget,
+  resolveEffectiveSessionModelOverride,
+} from "./discord-session-model";
 
 export type DiscordAdapterOptions = {
   /** Dependency injection for tests. */
@@ -155,470 +189,6 @@ function getLatestGatewayPingAt(client: Client): number | undefined {
   return latestGatewayPingAt;
 }
 
-export function resolveDiscordSurfaceEditTarget(input: {
-  authorId?: string | null;
-  selfUserId: string;
-  embedCount: number;
-  content?: string | null;
-}): "content" | "embed_description" {
-  if (input.authorId !== input.selfUserId) {
-    throw new Error(
-      "surface.messages.edit only supports messages authored by the Lilac Discord bot",
-    );
-  }
-
-  if (typeof input.content === "string" && input.content.trim().length > 0) {
-    return "content";
-  }
-
-  if (input.embedCount <= 0) {
-    return "content";
-  }
-
-  if (input.embedCount === 1) {
-    return "embed_description";
-  }
-
-  throw new Error(
-    "surface.messages.edit only supports Discord messages with plain content or a single embed",
-  );
-}
-
-function getChannelName<T extends { isDMBased?: () => boolean } | { name?: string }>(
-  channel: T | null,
-): string | undefined {
-  if (!channel) return undefined;
-  if ("isDMBased" in channel && typeof channel.isDMBased === "function" && channel.isDMBased()) {
-    return "dm";
-  }
-  const n = "name" in channel ? channel.name : undefined;
-  return typeof n === "string" ? n : undefined;
-}
-
-function getMessageTs(msg: Message): number {
-  // createdTimestamp is ms
-  return msg.createdTimestamp;
-}
-
-function getMessageEditedTs(msg: Message): number | undefined {
-  return msg.editedTimestamp ?? undefined;
-}
-
-function getDisplayName(msg: Message): string {
-  const memberName = msg.member && "displayName" in msg.member ? msg.member.displayName : undefined;
-  return memberName ?? msg.author.globalName ?? msg.author.username;
-}
-
-function toSurfaceParticipantActivities(
-  presence: Presence | null | undefined,
-): SurfaceSessionParticipantActivity[] {
-  if (!presence) return [];
-
-  const out: SurfaceSessionParticipantActivity[] = [];
-  for (const activity of presence.activities) {
-    const typeName = ActivityType[activity.type];
-    const mapped: SurfaceSessionParticipantActivity = {
-      type: typeof typeName === "string" ? typeName.toLowerCase() : String(activity.type),
-    };
-
-    if (typeof activity.name === "string" && activity.name.length > 0) {
-      mapped.name = activity.name;
-    }
-    if (typeof activity.state === "string" && activity.state.length > 0) {
-      mapped.state = activity.state;
-    }
-    if (typeof activity.details === "string" && activity.details.length > 0) {
-      mapped.details = activity.details;
-    }
-    if (typeof activity.url === "string" && activity.url.length > 0) {
-      mapped.url = activity.url;
-    }
-    if (activity.emoji?.name && activity.emoji.name.length > 0) {
-      mapped.emoji = activity.emoji.name;
-    }
-
-    out.push(mapped);
-  }
-
-  return out;
-}
-
-function sortSurfaceParticipants(
-  participants: readonly SurfaceSessionParticipant[],
-): SurfaceSessionParticipant[] {
-  return [...participants].sort((a, b) => {
-    const aName = (a.displayName ?? a.userName ?? a.userId).toLowerCase();
-    const bName = (b.displayName ?? b.userName ?? b.userId).toLowerCase();
-    if (aName !== bName) return aName.localeCompare(bName);
-    return a.userId.localeCompare(b.userId);
-  });
-}
-
-type DiscordAttachmentMeta = {
-  url: string;
-  filename?: string;
-  mimeType?: string;
-  size?: number;
-};
-
-const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
-const DISCORD_REFERENCE_TYPE_FORWARD = 1;
-
-function normalizeDiscordReference(msg: Message): {
-  messageId?: string;
-  channelId?: string;
-  guildId?: string;
-  type?: number;
-} | null {
-  const ref = msg.reference;
-  if (!ref) return null;
-
-  const messageId = typeof ref.messageId === "string" ? ref.messageId : undefined;
-  const channelId = typeof ref.channelId === "string" ? ref.channelId : undefined;
-  const guildId = typeof ref.guildId === "string" ? ref.guildId : undefined;
-  const type = typeof ref.type === "number" ? ref.type : undefined;
-
-  if (!messageId && !channelId && !guildId && type === undefined) {
-    return null;
-  }
-
-  return {
-    ...(messageId ? { messageId } : {}),
-    ...(channelId ? { channelId } : {}),
-    ...(guildId ? { guildId } : {}),
-    ...(type !== undefined ? { type } : {}),
-  };
-}
-
-function getReplyReference(msg: Message): {
-  messageId: string;
-  channelId?: string;
-} | null {
-  const ref = normalizeDiscordReference(msg);
-  if (!ref?.messageId) return null;
-
-  const type = ref.type ?? DISCORD_REFERENCE_TYPE_DEFAULT;
-  if (type === DISCORD_REFERENCE_TYPE_FORWARD) return null;
-
-  return {
-    messageId: ref.messageId,
-    ...(ref.channelId ? { channelId: ref.channelId } : {}),
-  };
-}
-
-function toDiscordAttachmentMeta(x: unknown): DiscordAttachmentMeta | null {
-  if (!x || typeof x !== "object") return null;
-  const o = x as Record<string, unknown>;
-
-  const url = typeof o.url === "string" ? o.url : null;
-  if (!url) return null;
-
-  const filename =
-    typeof o.name === "string" ? o.name : typeof o.filename === "string" ? o.filename : undefined;
-
-  const mimeType =
-    typeof o.contentType === "string"
-      ? o.contentType
-      : typeof o.mimeType === "string"
-        ? o.mimeType
-        : undefined;
-
-  const size = typeof o.size === "number" ? o.size : undefined;
-
-  return {
-    url,
-    ...(filename ? { filename } : {}),
-    ...(mimeType ? { mimeType } : {}),
-    ...(size !== undefined ? { size } : {}),
-  };
-}
-
-function collectDiscordAttachmentMeta(input: unknown): DiscordAttachmentMeta[] {
-  const out: DiscordAttachmentMeta[] = [];
-
-  if (!input) return out;
-
-  if (Array.isArray(input)) {
-    for (const item of input) {
-      const normalized = toDiscordAttachmentMeta(item);
-      if (normalized) out.push(normalized);
-    }
-    return out;
-  }
-
-  if (typeof input === "object") {
-    const maybeValues = (input as { values?: unknown }).values;
-    if (typeof maybeValues === "function") {
-      for (const item of (maybeValues as () => Iterable<unknown>).call(input)) {
-        const normalized = toDiscordAttachmentMeta(item);
-        if (normalized) out.push(normalized);
-      }
-    }
-  }
-
-  return out;
-}
-
-function getSnapshotEmbeds(snapshot: Record<string, unknown>): DiscordEmbedTextMeta[] {
-  return normalizeDiscordEmbeds(snapshot.embeds);
-}
-
-function normalizeFlagsNumber(v: unknown): number | undefined {
-  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
-  if (typeof v === "bigint") {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  if (!v || typeof v !== "object") return undefined;
-
-  const bitfield = (v as Record<string, unknown>).bitfield;
-  if (typeof bitfield === "number") return Number.isFinite(bitfield) ? bitfield : undefined;
-  if (typeof bitfield === "bigint") {
-    const n = Number(bitfield);
-    return Number.isFinite(n) ? n : undefined;
-  }
-
-  return undefined;
-}
-
-function getForwardSnapshotPayload(msg: Message): {
-  content: string;
-  embeds: DiscordEmbedTextMeta[];
-  attachments: DiscordAttachmentMeta[];
-  timestamp?: number;
-  editedTimestamp?: number;
-  flags?: number;
-} | null {
-  const ref = normalizeDiscordReference(msg);
-  const referenceType = ref?.type ?? DISCORD_REFERENCE_TYPE_DEFAULT;
-  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
-
-  const snapshots = msg.messageSnapshots;
-  if (!snapshots || snapshots.size === 0) return null;
-
-  let firstSnapshot: unknown;
-  for (const snapshot of snapshots.values()) {
-    firstSnapshot = snapshot;
-    break;
-  }
-  if (!firstSnapshot || typeof firstSnapshot !== "object") return null;
-
-  const snapshot = firstSnapshot as Record<string, unknown>;
-
-  const content = typeof snapshot.content === "string" ? snapshot.content : "";
-  const embeds = getSnapshotEmbeds(snapshot);
-  const attachments = collectDiscordAttachmentMeta(snapshot.attachments);
-  const timestamp =
-    typeof snapshot.createdTimestamp === "number" ? snapshot.createdTimestamp : undefined;
-  const editedTimestamp =
-    typeof snapshot.editedTimestamp === "number" ? snapshot.editedTimestamp : undefined;
-  const flags = normalizeFlagsNumber(snapshot.flags);
-
-  return {
-    content,
-    embeds,
-    attachments,
-    ...(timestamp !== undefined ? { timestamp } : {}),
-    ...(editedTimestamp !== undefined ? { editedTimestamp } : {}),
-    ...(flags !== undefined ? { flags } : {}),
-  };
-}
-
-function buildForwardMessageSnapshots(
-  forwardSnapshot: ReturnType<typeof getForwardSnapshotPayload>,
-): Array<{ message: Record<string, unknown> }> | undefined {
-  if (!forwardSnapshot) return undefined;
-
-  return [
-    {
-      message: {
-        content: forwardSnapshot.content,
-        embeds: forwardSnapshot.embeds,
-        attachments: forwardSnapshot.attachments,
-        ...(forwardSnapshot.timestamp !== undefined
-          ? { timestamp: forwardSnapshot.timestamp }
-          : {}),
-        ...(forwardSnapshot.editedTimestamp !== undefined
-          ? { editedTimestamp: forwardSnapshot.editedTimestamp }
-          : {}),
-        ...(forwardSnapshot.flags !== undefined ? { flags: forwardSnapshot.flags } : {}),
-      },
-    },
-  ];
-}
-
-function getMessageEmbeds(msg: Message): DiscordEmbedTextMeta[] {
-  return normalizeDiscordEmbeds(msg.embeds);
-}
-
-function joinNonEmptyTextBlocks(blocks: readonly string[]): string {
-  const nonEmpty = blocks.filter((block) => block.length > 0);
-  return nonEmpty.join("\n\n");
-}
-
-function getStoredTextFromDiscordMessage(input: {
-  msg: Message;
-  forwardSnapshot: ReturnType<typeof getForwardSnapshotPayload>;
-}): string {
-  const { msg, forwardSnapshot } = input;
-  const embeds = getMessageEmbeds(msg);
-  const hasOnlyEmbeds = (msg.content ?? "").trim().length === 0 && embeds.length > 0;
-  const topText = buildDiscordTaggedTextFromContentAndEmbeds({
-    content: msg.content ?? "",
-    embeds,
-    labelEmbeds: !(msg.author.bot && hasOnlyEmbeds),
-  });
-  const snapshotText = forwardSnapshot
-    ? buildDiscordTaggedTextFromContentAndEmbeds({
-        content: forwardSnapshot.content,
-        embeds: forwardSnapshot.embeds,
-      })
-    : "";
-
-  return joinNonEmptyTextBlocks([topText, snapshotText]);
-}
-
-function isDiscordChatLikeMessage(msg: Message): boolean {
-  // Treat only real chat/reply messages as context candidates.
-  // Discord system messages can still have MessageType.Default; exclude via `msg.system`.
-  if (msg.system) return false;
-  return msg.type === MessageType.Default || msg.type === MessageType.Reply;
-}
-
-function getDiscordMessageTypeName(msg: Message): string {
-  // `MessageType` is a numeric enum; reverse mapping yields a stable label.
-  const name = (MessageType as unknown as Record<number, unknown>)[msg.type];
-  return typeof name === "string" && name.length > 0 ? name : String(msg.type);
-}
-
-function previewText(text: string, max = 400): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, max)}...`;
-}
-
-function shouldAllowMessage(params: {
-  cfg: CoreConfig;
-  channelId: string;
-  guildId?: string | null;
-}): boolean {
-  const allowedChannelIds = new Set(params.cfg.surface.discord.allowedChannelIds);
-  const allowedGuildIds = new Set(params.cfg.surface.discord.allowedGuildIds);
-
-  if (allowedChannelIds.size === 0 && allowedGuildIds.size === 0) return false;
-
-  if (allowedChannelIds.has(params.channelId)) return true;
-
-  const gid = params.guildId ?? null;
-  if (gid && allowedGuildIds.has(gid)) return true;
-
-  return false;
-}
-
-type SendableDiscordChannel = {
-  send(options: unknown): Promise<unknown>;
-};
-
-function isTextSendableChannel(ch: unknown): ch is SendableDiscordChannel {
-  if (!ch || typeof ch !== "object") return false;
-  if (!("send" in ch)) return false;
-  const send = (ch as Record<string, unknown>)["send"];
-  return typeof send === "function";
-}
-
-async function resolveTextSendableChannel(
-  client: Client,
-  channelId: string,
-): Promise<SendableDiscordChannel | null> {
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  return isTextSendableChannel(channel) ? channel : null;
-}
-
-async function replyEphemeral(
-  interaction: RepliableInteraction<CacheType>,
-  content: string,
-): Promise<void> {
-  if (interaction.deferred || interaction.replied) {
-    await interaction.followUp({
-      content,
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  await interaction.reply({
-    content,
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function editOrReplyEphemeral(
-  interaction: RepliableInteraction<CacheType>,
-  content: string,
-): Promise<void> {
-  if (interaction.deferred || interaction.replied) {
-    await interaction.editReply({ content });
-    return;
-  }
-
-  await interaction.reply({
-    content,
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function tryReplyEphemeral(
-  interaction: RepliableInteraction<CacheType>,
-  content: string,
-): Promise<void> {
-  try {
-    await replyEphemeral(interaction, content);
-  } catch {
-    // Best-effort interaction acknowledgements should not fail event handling.
-  }
-}
-
-async function tryEditOrReplyEphemeral(
-  interaction: RepliableInteraction<CacheType>,
-  content: string,
-): Promise<void> {
-  try {
-    await editOrReplyEphemeral(interaction, content);
-  } catch {
-    // Best-effort interaction acknowledgements should not fail event handling.
-  }
-}
-
-export function isRoutableDiscordUserMessage(msg: Message): boolean {
-  if (msg.author.bot) return false;
-  if (msg.system) return false;
-
-  return msg.type === MessageType.Default || msg.type === MessageType.Reply;
-}
-
-export function hasExplicitDiscordUserMentionInContent(input: {
-  content: string;
-  userId: string;
-}): boolean {
-  return (
-    input.content.includes(`<@${input.userId}>`) || input.content.includes(`<@!${input.userId}>`)
-  );
-}
-
-export function isExplicitDiscordUserMention(input: {
-  content: string;
-  userId: string;
-  hasParsedMention: boolean;
-}): boolean {
-  return (
-    input.hasParsedMention &&
-    hasExplicitDiscordUserMentionInContent({
-      content: input.content,
-      userId: input.userId,
-    })
-  );
-}
-
 function compareDiscordSnowflake(a: string, b: string): number {
   // Prefer numeric comparison (snowflakes are numeric strings).
   // Fall back to localeCompare if parsing fails.
@@ -631,19 +201,6 @@ function compareDiscordSnowflake(a: string, b: string): number {
   } catch {
     return a.localeCompare(b);
   }
-}
-
-export function resolveEffectiveSessionModelOverride(input: {
-  sessionId: string;
-  parentChannelId?: string | null;
-  overrides: ReadonlyMap<string, string>;
-}): string | undefined {
-  const threadOverride = input.overrides.get(input.sessionId);
-  if (threadOverride) return threadOverride;
-
-  const parentChannelId = input.parentChannelId?.trim();
-  if (!parentChannelId) return undefined;
-  return input.overrides.get(parentChannelId);
 }
 
 const CONTEXT_MENU_CANCEL_REQUEST_NAME = "Cancel Request";
