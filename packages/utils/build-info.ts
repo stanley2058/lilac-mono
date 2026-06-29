@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { findWorkspaceRoot } from "./find-root";
+import { isRecord } from "./runtime-utils";
 
 const DEFAULT_BUILD_VERSION = "dev";
 const DEFAULT_BUILD_COMMIT = "dev";
@@ -35,10 +36,6 @@ function parseBooleanish(value: string | undefined): boolean | undefined {
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function findWorkspaceRootSafe(startDir: string): string | undefined {

@@ -3,6 +3,8 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { z } from "zod";
 
+import { errorMessage } from "./runtime-utils";
+
 export type SkillSource =
   | "lilac-data"
   | "claude-project"
@@ -120,7 +122,7 @@ export function parseSkillMarkdown(raw: string): ParsedSkillFile {
   try {
     parsedFrontmatter = Bun.YAML.parse(parts.frontmatterText) as unknown;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     throw new Error(`Failed to parse YAML frontmatter: ${msg}`);
   }
 
@@ -408,7 +410,7 @@ export async function discoverSkills(params: {
       try {
         rawPrefix = await readTextPrefix(skillPath, 64 * 1024);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessage(e);
         warnings.push({ location: skillPath, message: `read failed: ${msg}` });
         continue;
       }
@@ -419,7 +421,7 @@ export async function discoverSkills(params: {
         // need frontmatter; this works as long as frontmatter is in the prefix.
         parsed = parseSkillMarkdown(rawPrefix);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessage(e);
         warnings.push({ location: skillPath, message: msg });
         continue;
       }

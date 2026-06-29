@@ -8,7 +8,13 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 import { tavily, type TavilyClient } from "@tavily/core";
 import TurndownService from "turndown";
-import { createLogger, env, getCoreConfig } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  env,
+  errorMessage as getErrorMessage,
+  getCoreConfig,
+  isRecord,
+} from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 
@@ -153,14 +159,6 @@ function getAbortReasonError(signal: AbortSignal): Error {
     return createAbortError(reason);
   }
   return createAbortError();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function getNumericField(record: Record<string, unknown>, key: string): number | null {
@@ -549,7 +547,7 @@ export class Web implements ServerTool {
       extractProvidersFromConfig = config.extractProviders;
       fetchModeFromConfig = config.fetchMode;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = getErrorMessage(e);
       this.logger.logError(`Failed to read core-config.yaml for web tool config: ${msg}`);
       extractProvidersFromConfig = [];
     }
@@ -731,7 +729,7 @@ export class Web implements ServerTool {
     } catch (e) {
       return {
         isError: true,
-        error: e instanceof Error ? e.message : String(e),
+        error: getErrorMessage(e),
       } as const;
     }
   }

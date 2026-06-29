@@ -24,6 +24,7 @@ import {
   type ToolSet,
 } from "ai";
 import {
+  errorMessage,
   type ModelReasoningEffort,
   normalizeReplayMessages,
   normalizeAssistantToolCallInputMessage,
@@ -1517,10 +1518,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         }
       } catch (e) {
         isError = true;
-        result = e instanceof Error ? e.message : String(e);
+        result = errorMessage(e);
         toolOutput = {
           type: "error-text",
-          value: e instanceof Error ? e.message : String(e),
+          value: errorMessage(e),
         };
       }
 

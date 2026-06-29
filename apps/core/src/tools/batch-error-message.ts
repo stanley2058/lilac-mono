@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import { errorMessage as toErrorMessage, isRecord } from "@stanley2058/lilac-utils";
 
 type BatchChildValidationErrorParams = {
   childIndex: number;
@@ -14,10 +15,6 @@ type BatchPreflightMissingFieldErrorParams = {
   expectedType: string;
   parameters?: unknown;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function oneLine(input: string): string {
   return input.replace(/\s+/g, " ").trim();
@@ -52,11 +49,6 @@ function collectLikelyFieldPaths(error: ZodError): string[] {
     if (p.length > 0) paths.add(p);
   }
   return [...paths];
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 export function formatBatchPreflightMissingFieldError(

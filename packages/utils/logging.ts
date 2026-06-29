@@ -9,6 +9,8 @@ import {
   type WriteStream,
 } from "@stanley2058/simple-module-logger";
 
+import { isRecord } from "./runtime-utils";
+
 const LOG_LEVEL_VALUES: readonly LogLevel[] = ["debug", "info", "warn", "error", "fatal"];
 
 function hasTestGlobals(): boolean {
@@ -121,10 +123,6 @@ function toSingleLine(text: string): string {
 }
 
 const MAX_OBJECT_FIELDS_PER_ARG = 40;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isPrimitive(value: unknown): value is string | number | boolean | null {
   return (

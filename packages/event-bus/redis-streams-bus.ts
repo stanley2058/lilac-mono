@@ -1,6 +1,6 @@
 import type Redis from "ioredis";
 import SuperJSON from "superjson";
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger, errorMessage } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type { RawBus } from "./raw-bus";
@@ -138,7 +138,7 @@ async function ensureGroup(options: {
       startId: options.startId,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     if (msg.includes("BUSYGROUP")) {
       options.logger?.debug("consumer group exists", {
         streamKey: options.streamKey,

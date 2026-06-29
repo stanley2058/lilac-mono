@@ -3,6 +3,7 @@ import type { LogLevel } from "@stanley2058/simple-module-logger";
 import {
   createLogger,
   env,
+  errorMessage,
   getCoreConfig,
   readCoreConfigVersion,
   resolveDiscordDbPath,
@@ -133,7 +134,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
     await redis.ping();
   } catch (e) {
     logger.error("Failed to connect to Redis", e);
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     throw new Error(`Failed to connect to Redis: ${msg}`);
   }
 
@@ -266,7 +267,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       return {
         ok: false,
         durationMs: Date.now() - startedAt,
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
       };
     }
   }
@@ -383,7 +384,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       lastCoreConfigValidationError = null;
       await adapter.refreshCoreConfig();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       if (!coreConfigValidationHadError || lastCoreConfigValidationError !== msg) {
         const parserVersion = await readCoreConfigParserVersion(configPath);
         logger.warn("core-config hot-reload validation failed", {
@@ -780,7 +781,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         `Core runtime started (tool-server port=${toolServerPort}, subscriptionPrefix=${subscriptionPrefix})`,
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       logger.error(`Core runtime start failed: ${msg}`, e);
       await stop();
       throw e;

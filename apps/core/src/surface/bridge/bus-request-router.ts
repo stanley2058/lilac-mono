@@ -1,6 +1,12 @@
 import { type ModelMessage } from "ai";
 
-import { createLogger, getCoreConfig, env, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  getCoreConfig,
+  env,
+  errorMessage,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
   type EvtAdapterMessageCreatedData,
@@ -136,7 +142,7 @@ export async function startBusRequestRouter(params: {
       coreConfigReloadHadError = false;
       lastCoreConfigReloadError = null;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       if (!coreConfigReloadHadError || lastCoreConfigReloadError !== msg) {
         logger.warn("core-config reload failed; using last known config", {
           path: "core-config.yaml",

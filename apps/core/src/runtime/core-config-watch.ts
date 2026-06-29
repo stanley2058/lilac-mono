@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 
+import { errorCode } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
 type WatchReason = "watch";
@@ -20,12 +21,6 @@ export type HandleCoreConfigWatchEventParams = {
   scheduleValidation: (reason: WatchReason) => void;
   readFile?: ReadFileFn;
 };
-
-function getErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" ? code : undefined;
-}
 
 function normalizeWatchFilename(filename: string | Buffer | null, fallback: string): string {
   if (typeof filename === "string") return filename;
@@ -51,7 +46,7 @@ export async function handleCoreConfigWatchEvent(
     });
     params.scheduleValidation("watch");
   } catch (error) {
-    const code = getErrorCode(error);
+    const code = errorCode(error);
     if (code === "ENOENT") {
       params.logger.debug("core-config file temporarily unavailable during watch update", {
         eventType: params.eventType,

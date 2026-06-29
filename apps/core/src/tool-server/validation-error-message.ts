@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import type { ZodType } from "zod";
+import { errorMessage as toErrorMessage, isRecord } from "@stanley2058/lilac-utils";
 
 type ToolValidationErrorParams = {
   callableId: string;
@@ -27,10 +28,6 @@ export class ToolInputValidationError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function summarizeProvidedKeys(input: unknown): string {
   if (!isRecord(input)) return "(input is not an object)";
 
@@ -56,11 +53,6 @@ function collectLikelyFieldPaths(error: ZodError): string[] {
   }
 
   return [...paths];
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 export function formatToolValidationError(params: ToolValidationErrorParams): string {

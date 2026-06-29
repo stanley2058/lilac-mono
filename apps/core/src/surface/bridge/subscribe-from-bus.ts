@@ -1,6 +1,6 @@
 import { lilacEventTypes, outReqTopic, type LilacBus } from "@stanley2058/lilac-event-bus";
 
-import { createLogger, env } from "@stanley2058/lilac-utils";
+import { createLogger, env, errorMessage } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type {
@@ -145,7 +145,7 @@ async function cleanupGithubAck(input: { logger: Logger; requestId: string; sess
       });
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     // Best-effort: ignore if already removed.
     if (!msg.includes("404")) {
       input.logger.warn("failed to delete github ack reaction", { requestId: input.requestId }, e);

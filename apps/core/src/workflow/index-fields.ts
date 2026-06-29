@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { errorMessage } from "@stanley2058/lilac-utils";
 
 import type { WorkflowTaskRecord } from "./types";
 import { computeNextCronAtMs } from "./cron";
@@ -82,7 +83,7 @@ export function indexFieldsForTask(params: {
         Date.now(),
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       throw new Error(`Invalid time.cron input: ${msg}`);
     }
     return {

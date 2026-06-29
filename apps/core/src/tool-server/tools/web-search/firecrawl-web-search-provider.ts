@@ -1,3 +1,5 @@
+import { isRecord } from "@stanley2058/lilac-utils";
+
 import { normalizeBaseUrl } from "./shared";
 import type { WebSearchInput, WebSearchProvider, WebSearchResult } from "./types";
 
@@ -14,10 +16,6 @@ type FirecrawlSearchItem = {
   content: string;
   score: number | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function getString(record: Record<string, unknown>, key: string): string | null {
   const value = record[key];

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 import { env } from "./env";
+import { errorMessage, isRecord } from "./runtime-utils";
 import { findWorkspaceRoot } from "./find-root";
 import {
   buildAgentSystemPrompt,
@@ -143,13 +144,9 @@ function safeParseYaml(raw: string): unknown {
   try {
     return Bun.YAML.parse(raw) as unknown;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     throw new Error(`Failed to parse core-config.yaml: ${msg}`);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function readCoreConfigVersion(raw: unknown): CoreConfigVersion {
