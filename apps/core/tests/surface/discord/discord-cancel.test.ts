@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   buildCancelCustomId,
+  formatCancelCustomId,
   parseCancelCustomId,
 } from "../../../src/surface/discord/discord-cancel";
 
@@ -12,6 +13,7 @@ describe("discord cancel customId", () => {
     const id = buildCancelCustomId({ sessionId, requestId });
     expect(id).not.toBeNull();
     expect(parseCancelCustomId(id!)).toEqual({ sessionId, requestId });
+    expect(formatCancelCustomId({ sessionId, requestId })).toBe(id);
   });
 
   it("returns null if customId would exceed 100 chars", () => {

@@ -1,12 +1,18 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  formatNoReplyDirective,
   isPossibleNoReplyPrefix,
   NO_REPLY_TOKEN,
   resolveReplyDeliveryFromFinalText,
 } from "../../../src/surface/bridge/reply-directive";
 
 describe("resolveReplyDeliveryFromFinalText", () => {
+  it("formats no-reply directives", () => {
+    expect(formatNoReplyDirective()).toBe(NO_REPLY_TOKEN);
+    expect(resolveReplyDeliveryFromFinalText(formatNoReplyDirective())).toBe("skip");
+  });
+
   it("marks exact NO_REPLY token as skip", () => {
     expect(resolveReplyDeliveryFromFinalText(NO_REPLY_TOKEN)).toBe("skip");
     expect(resolveReplyDeliveryFromFinalText(`  ${NO_REPLY_TOKEN}  `)).toBe("skip");

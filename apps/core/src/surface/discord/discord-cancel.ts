@@ -27,6 +27,8 @@ export function buildCancelCustomId(input: {
   return id;
 }
 
+export const formatCancelCustomId = buildCancelCustomId;
+
 export function parseCancelCustomId(customId: string): {
   sessionId: string;
   requestId: string;

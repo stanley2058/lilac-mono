@@ -16,6 +16,7 @@ import type { SurfaceAdapter } from "../adapter";
 import type { MsgRef } from "../types";
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import { composeRequestMessages, composeSingleMessage } from "./request-composition";
+import { formatDiscordMessageRequestId } from "./request-ids";
 
 import {
   type SessionMode,
@@ -452,7 +453,10 @@ export async function startBusRequestRouter(params: {
 
       const customName = customCommands?.peekTextName(msg.data.text) ?? null;
       if (customName) {
-        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+        const requestId = formatDiscordMessageRequestId({
+          channelId: sessionId,
+          messageId: msgRef.messageId,
+        });
         const raw = (() => {
           const known = customCommands?.get(customName);
           if (!known) {
@@ -735,7 +739,10 @@ export async function startBusRequestRouter(params: {
     if (!batch || batch.items.length === 0) return;
 
     const last = batch.items[batch.items.length - 1]!;
-    const requestId = `discord:${input.sessionId}:${last.msgRef.messageId}`;
+    const requestId = formatDiscordMessageRequestId({
+      channelId: input.sessionId,
+      messageId: last.msgRef.messageId,
+    });
 
     const self = await adapter.getSelf();
     const discordUserAliasById = buildDiscordUserAliasById(cfg);
@@ -951,7 +958,10 @@ export async function startBusRequestRouter(params: {
       }
 
       if (replyToBot) {
-        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+        const requestId = formatDiscordMessageRequestId({
+          channelId: sessionId,
+          messageId: msgRef.messageId,
+        });
 
         await publishActiveChannelPrompt({
           adapter,
@@ -990,7 +1000,10 @@ export async function startBusRequestRouter(params: {
       return;
     }
 
-    const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+    const requestId = formatDiscordMessageRequestId({
+      channelId: sessionId,
+      messageId: msgRef.messageId,
+    });
 
     const triggerType: "mention" | "reply" | undefined = replyToBot
       ? "reply"
@@ -1200,7 +1213,10 @@ export async function startBusRequestRouter(params: {
       }
 
       if (replyToBot) {
-        const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+        const requestId = formatDiscordMessageRequestId({
+          channelId: sessionId,
+          messageId: msgRef.messageId,
+        });
 
         await publishActiveChannelPrompt({
           adapter,
@@ -1280,7 +1296,10 @@ export async function startBusRequestRouter(params: {
       clearDebounceBuffer(sessionId);
 
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
-      const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+      const requestId = formatDiscordMessageRequestId({
+        channelId: sessionId,
+        messageId: msgRef.messageId,
+      });
 
       await publishActiveChannelPrompt({
         adapter,
@@ -1536,7 +1555,10 @@ export async function startBusRequestRouter(params: {
       return;
     }
 
-    const requestId = `discord:${sessionId}:${msgRef.messageId}`;
+    const requestId = formatDiscordMessageRequestId({
+      channelId: sessionId,
+      messageId: msgRef.messageId,
+    });
 
     // Special case: if the user is replying to the currently active output message chain,
     // treat mention replies as steer/interrupt into the running request, and

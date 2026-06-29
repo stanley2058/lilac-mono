@@ -5,6 +5,7 @@ export const SURFACE_METADATA_OPEN_TAG = `<LILAC_META:v${SURFACE_METADATA_VERSIO
 export const SURFACE_METADATA_CLOSE_TAG = `</LILAC_META:v${SURFACE_METADATA_VERSION}>`;
 
 const SURFACE_METADATA_TAG_RE = /<\/?LILAC_META:v\d+>/gu;
+const SURFACE_METADATA_LINE_PARSE_RE = /^<LILAC_META:v(\d+)>(.*)<\/LILAC_META:v\1>$/u;
 const SURFACE_METADATA_LINE_RE = /^<LILAC_META:v\d+>.*<\/LILAC_META:v\d+>$/u;
 const SURFACE_METADATA_LINE_GLOBAL_RE = /(^|\n)<LILAC_META:v\d+>.*<\/LILAC_META:v\d+>\n?/gu;
 
@@ -71,6 +72,25 @@ export function formatSurfaceMetadataLine(meta: {
 }): string {
   const safeMeta = sanitizeSurfaceMetadataValue(meta);
   return `${SURFACE_METADATA_OPEN_TAG}${JSON.stringify(safeMeta)}${SURFACE_METADATA_CLOSE_TAG}`;
+}
+
+export function parseSurfaceMetadataLine(text: string): {
+  version: number;
+  meta: Record<string, SurfaceMetadataValue>;
+} | null {
+  const match = SURFACE_METADATA_LINE_PARSE_RE.exec(getFirstLine(text));
+  if (!match) return null;
+
+  const version = Number.parseInt(String(match[1]), 10);
+  if (!Number.isInteger(version)) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(String(match[2]));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return { version, meta: parsed as Record<string, SurfaceMetadataValue> };
+  } catch {
+    return null;
+  }
 }
 
 export function hasLeadingSurfaceMetadataLine(text: string): boolean {

@@ -68,6 +68,7 @@ import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
+import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
   buildDiscordTaggedTextFromContentAndEmbeds,
   normalizeDiscordEmbeds,
@@ -2074,7 +2075,7 @@ export class DiscordAdapter implements SurfaceAdapter {
       type: "adapter.request.cancel",
       platform: "discord",
       ts: Date.now(),
-      requestId: `discord:${channelId}:${targetMessageId}`,
+      requestId: formatDiscordMessageRequestId({ channelId, messageId: targetMessageId }),
       sessionId: channelId,
       cancelScope: "active_or_queued",
       source: "context_menu",
@@ -2379,7 +2380,10 @@ export class DiscordAdapter implements SurfaceAdapter {
         type: "adapter.command.invoked",
         platform: "discord",
         ts: Date.now(),
-        requestId: `discord:${channelId}:slash:${interaction.id}`,
+        requestId: formatDiscordSlashRequestId({
+          channelId,
+          interactionId: interaction.id,
+        }),
         sessionId: channelId,
         commandName: custom.def.name,
         args: parsed.args,

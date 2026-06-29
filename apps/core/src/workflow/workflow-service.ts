@@ -26,6 +26,7 @@ import type {
 import type { WorkflowStore } from "./workflow-store";
 import { buildResumeRequest } from "./resume";
 import { indexFieldsForTask } from "./index-fields";
+import { formatWorkflowRequestId, isDiscordRequestId } from "../surface/bridge/request-ids";
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -170,7 +171,7 @@ function canResolveWorkflow(def: WorkflowDefinitionV2, tasks: WorkflowTaskRecord
 }
 
 function ensureNonDiscordRequestId(requestId: string) {
-  if (requestId.startsWith("discord:")) {
+  if (isDiscordRequestId(requestId)) {
     throw new Error(`resume request_id must not use discord: prefix (got '${requestId}')`);
   }
 }
@@ -596,7 +597,10 @@ async function tryResolveWorkflow(params: {
 
   const bumpedV2 = bumped as WorkflowRecord & { definition: WorkflowDefinitionV2 };
 
-  const requestId = `wf:${workflowId}:${bumped.resumeSeq}`;
+  const requestId = formatWorkflowRequestId({
+    workflowId,
+    sequence: bumped.resumeSeq,
+  });
   ensureNonDiscordRequestId(requestId);
 
   logger.info("publishing resume request", {

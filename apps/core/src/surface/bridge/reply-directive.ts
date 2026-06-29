@@ -4,6 +4,10 @@ export const NO_REPLY_TOKEN = "NO_REPLY";
 
 export type ReplyDelivery = "reply" | "skip";
 
+export function formatNoReplyDirective(): string {
+  return NO_REPLY_TOKEN;
+}
+
 export function resolveReplyDeliveryFromFinalText(finalText: string): ReplyDelivery {
   return matchesMagicToken(finalText, NO_REPLY_TOKEN) ? "skip" : "reply";
 }

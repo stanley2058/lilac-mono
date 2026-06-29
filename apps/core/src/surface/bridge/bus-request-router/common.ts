@@ -6,6 +6,7 @@ import {
 } from "@stanley2058/lilac-utils";
 
 import type { MsgRef } from "../../types";
+import { formatGenericRequestId, formatQueuedRequestId } from "../request-ids";
 
 export type SessionMode = "mention" | "active";
 export type SessionSafetyMode = "trusted" | "restricted";
@@ -228,12 +229,11 @@ export function consumerId(prefix: string): string {
 }
 
 export function randomRequestId(): string {
-  // Use a stable prefix to make it easy to spot in logs.
-  return `req:${crypto.randomUUID()}`;
+  return formatGenericRequestId();
 }
 
 export function bufferedPromptRequestIdForActiveRequest(activeRequestId: string): string {
-  return `queued:${activeRequestId}`;
+  return formatQueuedRequestId(activeRequestId);
 }
 
 export function parseDiscordMsgRefFromAdapterEvent(data: {

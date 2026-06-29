@@ -16,6 +16,7 @@ import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
 
 import { deleteIssueCommentReactionById, deleteIssueReactionById } from "../../github/github-api";
 import { parseGithubRequestId, parseGithubSessionId } from "../../github/github-ids";
+import { parseRequestId } from "./request-ids";
 import {
   clearGithubAck,
   getGithubAck,
@@ -37,18 +38,14 @@ function isTypingIndicatorProvider(
 }
 
 function parseDiscordReplyTo(params: { requestId: string; sessionId: string }): MsgRef | null {
-  const parts = params.requestId.split(":");
-  if (parts.length !== 3) return null;
-  const [surface, sessionId] = parts;
-  const surfaceSpecificId = parts[2];
-  if (!surfaceSpecificId) return null;
-  if (surface !== "discord") return null;
-  if (sessionId !== params.sessionId) return null;
+  const parsed = parseRequestId(params.requestId);
+  if (parsed?.kind !== "discord_message") return null;
+  if (parsed.channelId !== params.sessionId) return null;
 
   return {
     platform: "discord",
     channelId: params.sessionId,
-    messageId: surfaceSpecificId,
+    messageId: parsed.messageId,
   };
 }
 

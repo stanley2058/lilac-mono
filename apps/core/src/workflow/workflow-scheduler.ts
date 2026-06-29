@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import { computeNextCronAtMs } from "./cron";
 import { buildScheduledJobMessages } from "./scheduled-request";
+import { formatWorkflowRequestId, isDiscordRequestId } from "../surface/bridge/request-ids";
 
 function now(): number {
   return Date.now();
@@ -128,7 +129,7 @@ function toRequestHeaders(params: {
 }
 
 function ensureNonDiscordRequestId(requestId: string) {
-  if (requestId.startsWith("discord:")) {
+  if (isDiscordRequestId(requestId)) {
     throw new Error(`scheduled request_id must not use discord: prefix (got '${requestId}')`);
   }
 }
@@ -273,7 +274,10 @@ export async function startWorkflowScheduler(params: {
     }
 
     const runSeq = bumped.resumeSeq;
-    const requestId = `wf:${workflow.workflowId}:${runSeq}`;
+    const requestId = formatWorkflowRequestId({
+      workflowId: workflow.workflowId,
+      sequence: runSeq,
+    });
     ensureNonDiscordRequestId(requestId);
 
     const sessionId = defaultJobSessionId(workflow.workflowId);
