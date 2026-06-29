@@ -1196,8 +1196,12 @@ export async function buildToolInput(
 
   if (parsed.positionalArgs.length > 0) {
     if (!primaryPositional) {
+      const bareBooleanFlag = parsed.fieldInputs.find((entry) => entry.value === true);
+      const flagHint = bareBooleanFlag
+        ? ` Bare --${camelToKebabCase(bareBooleanFlag.field)} was parsed as boolean true; if you meant to pass a value, use --${camelToKebabCase(bareBooleanFlag.field)}=<value>.`
+        : " If you meant to pass a flag value, use --field=<value>.";
       throw new Error(
-        `Tool '${parsed.callableId}' does not support positional input. Use --flags or --input JSON instead.`,
+        `Tool '${parsed.callableId}' does not support positional input.${flagHint} Space-separated flag values are not supported; use --input JSON or stdin for structured input.`,
       );
     }
 

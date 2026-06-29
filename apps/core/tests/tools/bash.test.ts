@@ -409,6 +409,51 @@ describe("executeRestrictedBash", () => {
     }
   });
 
+  it("explains that nested tools flags require equals syntax for values", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-tools-workspace-"),
+    );
+    let calledTool = false;
+
+    const restoreFetch = installMockFetch(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/help/surface.messages.list")) {
+        return Response.json({});
+      }
+      if (url.endsWith("/call")) {
+        calledTool = true;
+        return Response.json({ isError: false, output: { ok: true } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    try {
+      const result = await executeRestrictedBash(
+        {
+          command: 'tools surface.messages.list --session-id "#meeting-room"',
+          cwd: workspace,
+        },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-tools-equals-hint-test-req",
+            sessionId: "restricted-tools-equals-hint-test-session",
+            requestClient: "discord",
+          },
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(
+        "Bare --session-id was parsed as boolean true; if you meant to pass a value, use --session-id=<value>.",
+      );
+      expect(calledTool).toBe(false);
+    } finally {
+      restoreFetch();
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("keeps scalar tool positionals limited to one argument in the nested tools command", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-restricted-tools-workspace-"),

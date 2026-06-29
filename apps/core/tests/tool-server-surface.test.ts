@@ -277,6 +277,58 @@ describe("tool-server surface", () => {
     expect(sessions[0].alias).toBe("ops");
   });
 
+  it("limits surface.sessions.list after allowlist filtering", async () => {
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: ["c1", "c2", "c3"],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const adapter = new FakeAdapter(
+      [
+        { ref: { platform: "discord", channelId: "c1" }, kind: "channel", title: "one" },
+        { ref: { platform: "discord", channelId: "c2" }, kind: "channel", title: "two" },
+        { ref: { platform: "discord", channelId: "c3" }, kind: "channel", title: "three" },
+      ],
+      {},
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+    const sessions = (await tool.call("surface.sessions.list", {
+      client: "discord",
+      limit: 2,
+    })) as Array<{ channelId: string }>;
+
+    expect(sessions.map((session) => session.channelId)).toEqual(["c1", "c2"]);
+  });
+
+  it("rejects definitely unknown surface.sessions.list flags", async () => {
+    const tool = new Surface({ adapter: new FakeAdapter([], {}), config: testConfig({}) });
+
+    await expect(
+      tool.call("surface.sessions.list", {
+        client: "discord",
+        definitelyBogus: 1,
+      }),
+    ).rejects.toThrow("Unrecognized key");
+  });
+
+  it("rejects bare boolean limit for surface.sessions.list", async () => {
+    const tool = new Surface({ adapter: new FakeAdapter([], {}), config: testConfig({}) });
+
+    await expect(
+      tool.call("surface.sessions.list", {
+        client: "discord",
+        limit: true,
+      }),
+    ).rejects.toThrow("Invalid input");
+  });
+
   it("includes alias in surface.help context when request session is aliased", async () => {
     const cfg = testConfig({
       surface: {

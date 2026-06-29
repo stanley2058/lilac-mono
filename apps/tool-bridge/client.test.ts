@@ -380,6 +380,16 @@ describe("tool-bridge positional input", () => {
     );
   });
 
+  it("explains that space-separated tool flag values are not supported", async () => {
+    const parsed = parseArgs(["surface.messages.list", "--session-id", "#meeting-room"]);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed)).rejects.toThrow(
+      "Bare --session-id was parsed as boolean true; if you meant to pass a value, use --session-id=<value>.",
+    );
+  });
+
   it("rejects duplicate positional and named input for the same field", async () => {
     const parsed = parseArgs(["fetch", "https://example.com", "--url=https://other.example.com"]);
     expect(parsed.type).toBe("call");

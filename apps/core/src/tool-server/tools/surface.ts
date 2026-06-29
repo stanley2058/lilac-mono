@@ -462,11 +462,32 @@ function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
   return out;
 }
 
-const baseInputSchema = z.object({
-  client: surfaceClientSchema.optional(),
-});
+const baseInputSchema = z
+  .object({
+    client: surfaceClientSchema.optional(),
+  })
+  .strict();
 
 const helpInputSchema = baseInputSchema;
+
+const sessionsListLimitSchema = z
+  .union([z.string(), z.number()])
+  .optional()
+  .transform((value, ctx) => {
+    if (value === undefined) return undefined;
+
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Expected an integer from 1 to 1000.",
+      });
+      return z.NEVER;
+    }
+
+    return parsed;
+  })
+  .describe("Max sessions to return (default: all).");
 
 function withDefaultSessionId(
   rawInput: Record<string, unknown>,
@@ -1073,7 +1094,11 @@ function buildMessagesReadOutput(params: {
   };
 }
 
-const sessionsListInputSchema = baseInputSchema;
+const sessionsListInputSchema = baseInputSchema
+  .extend({
+    limit: sessionsListLimitSchema,
+  })
+  .strict();
 
 const activitiesRecentAgentWritesInputSchema = baseInputSchema.extend({
   limit: z.coerce
@@ -1791,6 +1816,7 @@ export class Surface implements ServerTool {
     ensureDiscordClient(client);
 
     const cfg = await this.getCfg();
+    const limit = input.limit ?? Number.POSITIVE_INFINITY;
 
     const sessions = await this.params.adapter.listSessions();
     const out: Array<{
@@ -1830,6 +1856,8 @@ export class Surface implements ServerTool {
           cfg,
         }),
       });
+
+      if (out.length >= limit) break;
     }
 
     return out;

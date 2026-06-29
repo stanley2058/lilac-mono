@@ -290,6 +290,7 @@ async function buildNestedToolInput(params: {
 }): Promise<Record<string, unknown>> {
   let input: Record<string, unknown> = {};
   const positionals: string[] = [];
+  const bareBooleanFlags: string[] = [];
 
   for (let i = 0; i < params.args.length; i++) {
     const arg = params.args[i] ?? "";
@@ -333,14 +334,25 @@ async function buildNestedToolInput(params: {
       continue;
     }
 
-    input[field] = eq === -1 ? true : (parseBooleanLike(rawValue) ?? rawValue);
+    if (eq === -1) {
+      bareBooleanFlags.push(rawKey);
+      input[field] = true;
+    } else {
+      input[field] = parseBooleanLike(rawValue) ?? rawValue;
+    }
   }
 
   if (positionals.length > 0) {
     const help = await fetchToolHelp(params.callableId, params.headers);
     const primaryPositional = help.primaryPositional;
     if (!primaryPositional) {
-      throw new Error(`Tool '${params.callableId}' does not support positional input`);
+      const bareFlag = bareBooleanFlags[0];
+      const flagHint = bareFlag
+        ? ` Bare --${bareFlag} was parsed as boolean true; if you meant to pass a value, use --${bareFlag}=<value>.`
+        : " If you meant to pass a flag value, use --field=<value>.";
+      throw new Error(
+        `Tool '${params.callableId}' does not support positional input.${flagHint} Space-separated flag values are not supported; use --input JSON or stdin for structured input.`,
+      );
     }
     if (Object.hasOwn(input, primaryPositional.field)) {
       throw new Error(
