@@ -29,7 +29,6 @@ import {
   resolveCoreConfigPath,
   createLogger,
   resolveEditingToolMode,
-  type JSONObject,
   resolveModelRef,
   resolveModelSlot,
 } from "@stanley2058/lilac-utils";
@@ -56,8 +55,6 @@ import {
 import fs from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import path from "node:path";
-import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import type { CoreToolPluginManager } from "../../plugins";
@@ -94,6 +91,22 @@ import {
   isAnthropicModelSpec,
   withStableAnthropicUpstreamOrder,
 } from "./bus-agent-runner/anthropic-fallback-media";
+import { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
+import {
+  debugJsonStringify,
+  formatInt,
+  formatSeconds,
+  safeStringify,
+  sanitizeFilenameToken,
+} from "./bus-agent-runner/formatting";
+import {
+  ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
+  shouldEnableAnthropicPromptCache,
+  toOpenAIPromptCacheKey,
+  withProviderOptionsOnLastUserMessage,
+  withReasoningDisplayDefaultForAnthropicModels,
+  withReasoningSummaryDefaultForOpenAIModels,
+} from "./bus-agent-runner/provider-options";
 import {
   type AgentRunProfile,
   parseCustomCommandFromRaw,
@@ -107,9 +120,22 @@ import {
   parseSubagentMetaFromRaw,
   requestRawReferencesMessage,
 } from "./bus-agent-runner/raw";
+import { latestUserText, shouldRunAutoInjectedThreadSearch } from "./bus-agent-runner/text-units";
 import { resolveSessionSafetyMode, type SessionSafetyMode } from "./bus-request-router/common";
-import { messagesContainSurfaceMetadata, stripSurfaceMetadataLines } from "./surface-metadata";
+import { messagesContainSurfaceMetadata } from "./surface-metadata";
 import type { CustomCommandManager } from "../../custom-commands/manager";
+
+export { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
+export {
+  shouldEnableAnthropicPromptCache,
+  toOpenAIPromptCacheKey,
+  withReasoningDisplayDefaultForAnthropicModels,
+  withReasoningSummaryDefaultForOpenAIModels,
+} from "./bus-agent-runner/provider-options";
+export {
+  measureMeaningfulTextUnits,
+  shouldRunAutoInjectedThreadSearch,
+} from "./bus-agent-runner/text-units";
 
 function supportsReadFileDirectAttachments(info: ModelCapabilityInfo | null): boolean {
   if (info?.attachment !== true) return false;
@@ -122,205 +148,7 @@ function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
 }
 
-function formatInt(n: number): string {
-  // Locale-independent grouping.
-  return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-function formatSeconds(ms: number): string {
-  const sec = ms / 1000;
-  return `${sec.toFixed(1)}s`;
-}
-
-function sanitizeFilenameToken(raw: string): string {
-  // Keep names mostly readable for humans (diff workflows) while preventing
-  // directory traversal or weird control chars.
-  return raw
-    .replace(/[\u0000-\u001F\u007F]/g, "_")
-    .replace(/[\\/]/g, "_")
-    .slice(0, 200);
-}
-
-function debugJsonStringify(value: unknown): string {
-  const seen = new WeakSet<object>();
-  return JSON.stringify(
-    value,
-    (_key, v) => {
-      if (typeof v === "bigint") return v.toString();
-      if (v instanceof URL) return v.toString();
-      if (v instanceof Error) {
-        return {
-          name: v.name,
-          message: v.message,
-          stack: v.stack,
-        };
-      }
-
-      // Bun/Node Buffers are Uint8Array. Preserve byte identity as base64.
-      if (v instanceof Uint8Array) {
-        return {
-          __type: "Uint8Array",
-          base64: Buffer.from(v).toString("base64"),
-          byteLength: v.byteLength,
-        };
-      }
-
-      if (v && typeof v === "object") {
-        if (seen.has(v as object)) return "[circular]";
-        seen.add(v as object);
-      }
-
-      return v;
-    },
-    2,
-  );
-}
-
 type ToolsLike = Record<string, { description?: string; inputSchema?: unknown }>;
-
-function safeStringify(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value instanceof URL) return value.toString();
-  if (value === undefined) return "undefined";
-  try {
-    const s = JSON.stringify(value);
-    return s ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function userContentText(content: ModelMessage["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  const parts: string[] = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const record = part as Record<string, unknown>;
-    if (record.type !== "text") continue;
-    const text = record.text;
-    if (typeof text === "string") parts.push(text);
-  }
-  return parts.join("\n");
-}
-
-function latestUserText(messages: readonly ModelMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i]!;
-    if (message.role !== "user") continue;
-    const text = stripSurfaceMetadataLines(userContentText(message.content)).trim();
-    if (text.length > 0) return text;
-  }
-  return "";
-}
-
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>()]+/giu;
-const DISCORD_TOKEN_RE = /<(?:(?:a?:\w+:\d+)|(?:[@#]&?\d+)|(?:t:\d+(?::[tTdDfFR])?))>/gu;
-const CODE_BLOCK_RE = /```[\s\S]*?```/gu;
-const INLINE_CODE_RE = /`[^`]*`/gu;
-const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
-const CODE_TEXT_UNITS_CAP = 20;
-
-function countMeaningfulTextUnits(text: string): number {
-  let units = 0;
-  for (const char of text) {
-    if (!WORD_CHAR_RE.test(char)) continue;
-    units += CJK_RE.test(char) ? 2 : 1;
-  }
-  return units;
-}
-
-export function measureMeaningfulTextUnits(raw: string): number {
-  let text = raw.normalize("NFKC");
-  text = text.replace(URL_RE, " ");
-  text = text.replace(DISCORD_TOKEN_RE, " ");
-
-  let codeUnits = 0;
-  text = text.replace(CODE_BLOCK_RE, (match) => {
-    codeUnits += countMeaningfulTextUnits(match) * 0.2;
-    return " ";
-  });
-  text = text.replace(INLINE_CODE_RE, (match) => {
-    codeUnits += countMeaningfulTextUnits(match) * 0.3;
-    return " ";
-  });
-
-  return countMeaningfulTextUnits(text) + Math.min(codeUnits, CODE_TEXT_UNITS_CAP);
-}
-
-export function shouldRunAutoInjectedThreadSearch(input: {
-  text: string;
-  minTextUnits: number;
-}): boolean {
-  return measureMeaningfulTextUnits(input.text) >= input.minTextUnits;
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function formatErrorLabel(value: unknown): string | undefined {
-  const label = readNonEmptyString(value);
-  if (!label || label === "error") return undefined;
-  return label;
-}
-
-function extractReadableErrorMessage(
-  value: unknown,
-  seen: Set<unknown>,
-  depth: number,
-): string | null {
-  if (depth > 8 || value === null || value === undefined) return null;
-
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-
-  if (value instanceof Error) {
-    return value.message.trim().length > 0 ? value.message : value.name;
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const message = extractReadableErrorMessage(item, seen, depth + 1);
-      if (message) return message;
-    }
-    return null;
-  }
-
-  if (!isRecord(value)) return null;
-  if (seen.has(value)) return null;
-  seen.add(value);
-
-  for (const key of ["error", "cause", "lastError"] as const) {
-    if (!(key in value)) continue;
-    const message = extractReadableErrorMessage(value[key], seen, depth + 1);
-    if (message) return message;
-  }
-
-  const message = readNonEmptyString(value.message ?? value.errorMessage ?? value.detail);
-  if (message) {
-    const label =
-      formatErrorLabel(value.code) ?? formatErrorLabel(value.type) ?? formatErrorLabel(value.name);
-    return label && !message.includes(label) ? `${label}: ${message}` : message;
-  }
-
-  const responseBody = readNonEmptyString(value.responseBody ?? value.body);
-  if (responseBody) return responseBody;
-
-  return null;
-}
-
-export function formatUnknownErrorForDisplay(error: unknown): string {
-  const readable = extractReadableErrorMessage(error, new Set<unknown>(), 0);
-  if (readable) return readable;
-
-  const formatted = safeStringify(error);
-  return formatted.length > 500 ? `${formatted.slice(0, 500)}...` : formatted;
-}
 
 function buildResumePrompt(partialText: string): ModelMessage {
   const base =
@@ -350,172 +178,6 @@ const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill"]);
 const MODEL_VIEW_MAX_BINARY_BYTES_PER_PART = 256 * 1024;
 const MODEL_VIEW_MAX_BINARY_BYTES_TOTAL = 2 * 1024 * 1024;
 const MODEL_VIEW_BINARY_OMITTED = "[binary omitted]";
-
-const ANTHROPIC_PROMPT_CACHE_CONTROL = {
-  type: "ephemeral",
-  ttl: "5m",
-} as const;
-
-const ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS = {
-  anthropic: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
-  openrouter: { cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
-} as const satisfies NonNullable<ModelMessage["providerOptions"]>;
-
-function mergeProviderOptions(
-  base: ModelMessage["providerOptions"],
-  patch: NonNullable<ModelMessage["providerOptions"]>,
-): NonNullable<ModelMessage["providerOptions"]> {
-  const out =
-    base && typeof base === "object" && !Array.isArray(base)
-      ? ({ ...base } as NonNullable<ModelMessage["providerOptions"]>)
-      : ({} as NonNullable<ModelMessage["providerOptions"]>);
-
-  for (const [k, v] of Object.entries(patch)) {
-    const existing = (out as Record<string, unknown>)[k];
-    (out as Record<string, unknown>)[k] =
-      existing && typeof existing === "object" && !Array.isArray(existing)
-        ? { ...(existing as Record<string, unknown>), ...v }
-        : v;
-  }
-
-  return out;
-}
-
-function withProviderOptionsOnLastUserMessage(
-  messages: ModelMessage[],
-  providerOptions: NonNullable<ModelMessage["providerOptions"]>,
-): ModelMessage[] {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]!;
-    if (msg.role !== "user") continue;
-
-    const merged = mergeProviderOptions(msg.providerOptions, providerOptions);
-    const next = { ...msg, providerOptions: merged } satisfies ModelMessage;
-    return [...messages.slice(0, i), next, ...messages.slice(i + 1)];
-  }
-
-  return messages;
-}
-
-function isOpenAIBackedModel(provider: string, modelId: string): boolean {
-  if (provider === "openai" || provider === "codex") return true;
-  return modelId.startsWith("openai/");
-}
-
-function isAnthropicBackedModel(provider: string, modelId: string): boolean {
-  if (provider === "anthropic") return true;
-  return modelId.startsWith("anthropic/");
-}
-
-export function shouldEnableAnthropicPromptCache(params: {
-  spec: string;
-  anthropicPromptCache?: boolean;
-}): boolean {
-  return params.anthropicPromptCache === true && isAnthropicModelSpec(params.spec);
-}
-
-const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
-const OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE = "reasoning.encrypted_content";
-
-export function toOpenAIPromptCacheKey(sessionId: string): string {
-  if (sessionId.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH) {
-    return sessionId;
-  }
-
-  return createHash("sha256").update(sessionId).digest("hex");
-}
-
-export function withReasoningSummaryDefaultForOpenAIModels(params: {
-  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
-  provider: string;
-  modelId: string;
-  providerOptions: { [x: string]: JSONObject } | undefined;
-}): { [x: string]: JSONObject } | undefined {
-  if (params.reasoningDisplay === "none") return params.providerOptions;
-  if (!isOpenAIBackedModel(params.provider, params.modelId)) return params.providerOptions;
-
-  const base = params.providerOptions ?? {};
-  const rawOpenAI = base["openai"];
-  const existingOpenAI: JSONObject =
-    rawOpenAI && typeof rawOpenAI === "object" && !Array.isArray(rawOpenAI)
-      ? (rawOpenAI as JSONObject)
-      : {};
-
-  const include = existingOpenAI["include"];
-  const openAIWithReasoningInclude =
-    Array.isArray(include) && include.includes(OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE)
-      ? existingOpenAI
-      : {
-          ...existingOpenAI,
-          include: Array.isArray(include)
-            ? [...include, OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE]
-            : [OPENAI_REASONING_ENCRYPTED_CONTENT_INCLUDE],
-        };
-
-  if ("reasoningSummary" in existingOpenAI) {
-    return {
-      ...base,
-      openai: openAIWithReasoningInclude,
-    };
-  }
-
-  return {
-    ...base,
-    openai: {
-      ...openAIWithReasoningInclude,
-      reasoningSummary: "detailed",
-    },
-  };
-}
-
-export function withReasoningDisplayDefaultForAnthropicModels(params: {
-  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
-  provider: string;
-  modelId: string;
-  providerOptions: { [x: string]: JSONObject } | undefined;
-}): { [x: string]: JSONObject } | undefined {
-  if (params.reasoningDisplay === "none") return params.providerOptions;
-  if (!isAnthropicBackedModel(params.provider, params.modelId)) return params.providerOptions;
-
-  const base = params.providerOptions ?? {};
-  const rawAnthropic = base["anthropic"];
-  const existingAnthropic: JSONObject =
-    rawAnthropic && typeof rawAnthropic === "object" && !Array.isArray(rawAnthropic)
-      ? (rawAnthropic as JSONObject)
-      : {};
-
-  const rawThinking = existingAnthropic["thinking"];
-  if (!rawThinking || typeof rawThinking !== "object" || Array.isArray(rawThinking)) {
-    return params.providerOptions;
-  }
-
-  const existingThinking = rawThinking as JSONObject;
-  if ("display" in existingThinking) {
-    return params.providerOptions;
-  }
-
-  const thinkingType = existingThinking["type"];
-  if (thinkingType === "disabled") {
-    return params.providerOptions;
-  }
-
-  if (thinkingType !== "adaptive" && thinkingType !== "enabled") {
-    return params.providerOptions;
-  }
-
-  const nextThinking: JSONObject = {
-    ...existingThinking,
-    display: "summarized",
-  };
-
-  return {
-    ...base,
-    anthropic: {
-      ...existingAnthropic,
-      thinking: nextThinking,
-    },
-  };
-}
 
 export function withBlankLineBetweenTextParts(params: {
   accumulatedText: string;
