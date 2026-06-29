@@ -734,27 +734,17 @@ export class ConversationThreadStore {
       )
       .all() as IndexedMessageRow[];
 
-    const nativeByChannel = new Map<string, IndexedMessageRow[]>();
     const inferredByChannel = new Map<string, IndexedMessageRow[]>();
     for (const row of rows) {
-      const isNativeThread = row.session_type === "thread" && !!row.parent_channel_id;
-      const bucket = isNativeThread ? nativeByChannel : inferredByChannel;
-      const list = bucket.get(row.channel_id);
+      const list = inferredByChannel.get(row.channel_id);
       if (list) list.push(row);
-      else bucket.set(row.channel_id, [row]);
+      else inferredByChannel.set(row.channel_id, [row]);
     }
 
     let threadCount = 0;
     const activeThreadIds = new Set<string>();
 
     const tx = this.db.transaction(() => {
-      for (const messages of nativeByChannel.values()) {
-        if (!this.hasMainAgentMessage(messages)) continue;
-        const threadId = this.upsertDiscordThread(messages);
-        activeThreadIds.add(threadId);
-        threadCount += 1;
-      }
-
       for (const messages of inferredByChannel.values()) {
         for (const group of groupInferredMessages(messages)) {
           if (!this.hasMainAgentMessage(group)) continue;
@@ -799,17 +789,6 @@ export class ConversationThreadStore {
     return this.upsertThread({
       threadId: `discord:channel:${first.channel_id}:${first.message_id}`,
       kind: "inferred_channel_thread",
-      parentChannelId: null,
-      messages,
-    });
-  }
-
-  private upsertDiscordThread(messages: readonly IndexedMessageRow[]): string {
-    const first = messages[0];
-    if (!first) throw new Error("cannot upsert empty Discord thread");
-    return this.upsertThread({
-      threadId: `discord:thread:${first.channel_id}`,
-      kind: "discord_thread",
       parentChannelId: first.parent_channel_id,
       messages,
     });

@@ -255,7 +255,7 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
-  it("forms native Discord threads and follows reply relations for inferred threads", async () => {
+  it("infers conversation chunks inside native Discord threads and follows reply relations", async () => {
     const searchDbPath = await createDbPath();
     const surfaceDbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(searchDbPath);
@@ -319,6 +319,24 @@ describe("conversation thread store", () => {
         text: "thread reply",
         ts: 11,
       }),
+      msg({
+        channelId: "th1",
+        guildId: "g1",
+        parentChannelId: "c1",
+        messageId: "t3",
+        userId: "u1",
+        text: "later thread topic",
+        ts: 2 * 60 * 60 * 1000,
+      }),
+      msg({
+        channelId: "th1",
+        guildId: "g1",
+        parentChannelId: "c1",
+        messageId: "t4",
+        userId: "u2",
+        text: "later thread reply",
+        ts: 2 * 60 * 60 * 1000 + 1,
+      }),
     ]);
 
     for (const message of [
@@ -333,6 +351,8 @@ describe("conversation thread store", () => {
       { channelId: "c1", messageId: "m3", authorId: "u3", ts: 6 * 60 * 60 * 1000 },
       { channelId: "th1", messageId: "t1", authorId: "u1", ts: 10 },
       { channelId: "th1", messageId: "t2", authorId: "u2", ts: 11 },
+      { channelId: "th1", messageId: "t3", authorId: "u1", ts: 2 * 60 * 60 * 1000 },
+      { channelId: "th1", messageId: "t4", authorId: "u2", ts: 2 * 60 * 60 * 1000 + 1 },
     ]) {
       surfaceStore.upsertMessageRelation({
         channelId: message.channelId,
@@ -347,12 +367,17 @@ describe("conversation thread store", () => {
     }
 
     const refreshed = threadStore.refreshInferredThreads();
-    expect(refreshed.threads).toBe(3);
+    expect(refreshed.threads).toBe(4);
 
-    const native = threadStore.readThread("discord:thread:th1", 0, 10);
-    expect(native?.thread.kind).toBe("discord_thread");
-    expect(native?.thread.parent_channel_id).toBe("c1");
-    expect(native?.messages.map((item) => item.messageId)).toEqual(["t1", "t2"]);
+    const nativeFirst = threadStore.readThread("discord:channel:th1:t1", 0, 10);
+    expect(nativeFirst?.thread.kind).toBe("inferred_channel_thread");
+    expect(nativeFirst?.thread.parent_channel_id).toBe("c1");
+    expect(nativeFirst?.messages.map((item) => item.messageId)).toEqual(["t1", "t2"]);
+
+    const nativeSecond = threadStore.readThread("discord:channel:th1:t3", 0, 10);
+    expect(nativeSecond?.thread.kind).toBe("inferred_channel_thread");
+    expect(nativeSecond?.thread.parent_channel_id).toBe("c1");
+    expect(nativeSecond?.messages.map((item) => item.messageId)).toEqual(["t3", "t4"]);
 
     const replied = threadStore.readThread("discord:channel:c1:m1", 0, 10);
     expect(replied?.messages.map((item) => item.messageId)).toEqual(["m1", "m2"]);
@@ -364,13 +389,13 @@ describe("conversation thread store", () => {
       store: threadStore,
       getConfig: async () => testConfig(),
       summarizer: async ({ threadId }) => ({
-        title: threadId === "discord:thread:th1" ? "Native parent thread" : "Other thread",
-        brief: threadId === "discord:thread:th1" ? "native parent allowlist" : "other thread",
+        title: threadId === "discord:channel:th1:t1" ? "Native parent thread" : "Other thread",
+        brief: threadId === "discord:channel:th1:t1" ? "native parent allowlist" : "other thread",
         topics: [],
       }),
     });
     await service.runSummarization({ now: Date.now() + 7 * 60 * 60 * 1000 });
-    const allowedByParent = await service.read({ threadId: "discord:thread:th1" });
+    const allowedByParent = await service.read({ threadId: "discord:channel:th1:t1" });
     expect(allowedByParent.thread.session.parentChannelId).toBe("c1");
 
     searchStore.close();
