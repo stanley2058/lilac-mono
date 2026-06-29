@@ -36,6 +36,18 @@ type StreamTextResult = {
   overflowFilePath?: string;
 };
 
+function isResponseBodyInit(value: unknown): value is BodyInit {
+  return (
+    typeof value === "string" ||
+    value instanceof Blob ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    value instanceof FormData ||
+    value instanceof URLSearchParams ||
+    value instanceof ReadableStream
+  );
+}
+
 async function appendOverflowChunk(params: {
   overflowFilePath: string;
   chunk: string;
@@ -140,7 +152,7 @@ async function readStreamTextCapped(
     return { text, totalChars, capped, overflowFilePath };
   }
 
-  const full = await new Response(stream as any).text();
+  const full = await new Response(isResponseBodyInit(stream) ? stream : String(stream)).text();
   const capped = full.length > maxChars;
   let overflowFilePath: string | undefined;
   if (capped && options?.overflowFilePath) {

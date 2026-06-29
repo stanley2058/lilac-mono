@@ -546,7 +546,7 @@ export class FileSystem {
       return { ...base, format: "raw", content: output };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+      const code = getErrorCode(e);
 
       const errorCode: ReadErrorCode =
         code === "ENOENT"
@@ -607,7 +607,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+      const code = getErrorCode(e);
 
       const errorCode: ReadErrorCode =
         code === "ENOENT"
@@ -652,8 +652,7 @@ export class FileSystem {
         const existing = await fs.readFile(resolvedPath, "utf-8");
         currentHash = this.hash(existing);
       } catch (e) {
-        const code =
-          typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+        const code = getErrorCode(e);
 
         if (code === "ENOENT") {
           existed = false;
@@ -725,7 +724,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+      const code = getErrorCode(e);
 
       const errorCode: WriteErrorCode =
         code === "ENOENT"
@@ -1092,7 +1091,12 @@ export class FileSystem {
               break;
             }
             default:
-              throw Object.assign(new Error(`Unknown edit type: ${(edit as any).type}`), {
+              const rawEdit: unknown = edit;
+              const type =
+                rawEdit && typeof rawEdit === "object" && "type" in rawEdit
+                  ? String(rawEdit.type)
+                  : "unknown";
+              throw Object.assign(new Error(`Unknown edit type: ${type}`), {
                 code: "INVALID_EDIT",
               });
           }
@@ -1100,7 +1104,7 @@ export class FileSystem {
           succeededOperations.push(edit.type);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          const rawCode = typeof e === "object" && e && "code" in e ? (e as any).code : undefined;
+          const rawCode = getErrorCode(e);
 
           const code: EditErrorCode =
             typeof rawCode === "string" && EDIT_ERROR_CODES.includes(rawCode as EditErrorCode)
@@ -1154,7 +1158,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+      const code = getErrorCode(e);
 
       const errorCode: EditErrorCode =
         code === "ENOENT"
@@ -1262,7 +1266,7 @@ export class FileSystem {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const code = typeof e === "object" && e && "code" in e ? String((e as any).code) : undefined;
+      const code = getErrorCode(e);
 
       const errorCode: EditErrorCode =
         code === "ENOENT"

@@ -20,6 +20,7 @@ import {
   type SystemModelMessage,
   type TextStreamPart,
   type Tool,
+  type ToolModelMessage,
   type ToolSet,
 } from "ai";
 import {
@@ -457,17 +458,58 @@ function stripToolExecuteForModel<TOOLS extends ToolSet>(tools: TOOLS): ToolSet 
   ) as ToolSet;
 }
 
-function upsertTextPart<A extends Array<any>>(
-  content: A,
+type AssistantContentParts = Extract<AssistantContent, unknown[]>;
+type ToolResultOutput = Extract<
+  ToolModelMessage["content"][number],
+  { type: "tool-result" }
+>["output"];
+type JsonToolOutputValue = Extract<ToolResultOutput, { type: "json" }>["value"];
+
+function isJsonToolOutputValue(value: unknown): value is JsonToolOutputValue {
+  if (value === null) return true;
+
+  switch (typeof value) {
+    case "string":
+    case "number":
+    case "boolean":
+      return true;
+    case "object":
+      if (Array.isArray(value)) return value.every(isJsonToolOutputValue);
+      return Object.values(value).every(isJsonToolOutputValue);
+    default:
+      return false;
+  }
+}
+
+function toJsonToolOutputValue(value: unknown): JsonToolOutputValue {
+  if (typeof value === "undefined") return null;
+  if (isJsonToolOutputValue(value)) return value;
+
+  try {
+    const parsed: unknown = JSON.parse(JSON.stringify(value));
+    if (isJsonToolOutputValue(parsed)) return parsed;
+  } catch {
+    // Fall through to the stable string representation.
+  }
+
+  return String(value);
+}
+
+function upsertTextPart(
+  content: AssistantContentParts,
   partType: "text" | "reasoning",
   delta: string,
 ): void {
   const last = content.length > 0 ? content[content.length - 1] : undefined;
-  if (last && last.type === partType) {
+  if (last && last.type === partType && "text" in last && typeof last.text === "string") {
     last.text += delta;
     return;
   }
-  content.push({ type: partType, text: delta });
+  if (partType === "text") {
+    content.push({ type: "text", text: delta });
+    return;
+  }
+  content.push({ type: "reasoning", text: delta });
 }
 
 class TurnAbortedError extends Error {
@@ -1365,7 +1407,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     type ToolExecutionOutcome = {
       result: unknown;
       isError: boolean;
-      toolOutput: any;
+      toolOutput: ToolResultOutput;
     };
     type IndexedToolCall = {
       index: number;
@@ -1384,7 +1426,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       PARALLEL_SAFE_TOOL_NAMES.has(call.toolName);
 
     const executeOne = async (call: ToolCall): Promise<ToolExecutionOutcome> => {
-      const tool = this.state.tools[call.toolName] as Tool<any, any> | undefined;
+      const tool = this.state.tools[call.toolName] as Tool | undefined;
 
       this.state.pendingToolCalls.add(call.toolCallId);
       this.emit({
@@ -1396,7 +1438,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
       let result: unknown;
       let isError = false;
-      let toolOutput: any;
+      let toolOutput: ToolResultOutput;
 
       try {
         if (call.invalid) {
@@ -1470,7 +1512,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                   input: call.input,
                   output: result,
                 })
-              : { type: "json", value: result ?? null };
+              : { type: "json", value: toJsonToolOutputValue(result) };
           }
         }
       } catch (e) {

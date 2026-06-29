@@ -374,7 +374,7 @@ export class RedisStreamsBus implements RawBus {
         opts.mode === "work" || opts.mode === "fanout"
           ? (opts as WorkOrFanoutSubscriptionOptions).consumerId
           : undefined,
-      offset: (opts as any).offset,
+      offset: opts.offset,
       maxMessages,
       blockMs,
     });

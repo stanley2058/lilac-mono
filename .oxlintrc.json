@@ -9,5 +9,19 @@
   ],
   "globals": {
     "Bun": "readonly"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["apps/**/*.ts", "packages/**/*.ts"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "error"
+      }
+    },
+    {
+      "files": ["**/*.test.ts", "**/tests/**/*.ts"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off"
+      }
+    }
+  ]
 }

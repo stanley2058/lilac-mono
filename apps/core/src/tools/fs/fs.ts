@@ -1168,11 +1168,9 @@ export function fsTool(
         const resQualified = (() => {
           if (cwdTarget.kind !== "ssh") return res;
           if (isAttachmentOutput(res)) return res;
-          const resolvedPath = (res as any)?.resolvedPath;
-          if (typeof resolvedPath !== "string") return res;
           return {
             ...res,
-            resolvedPath: toRemoteDebugPath(cwdTarget.host, resolvedPath),
+            resolvedPath: toRemoteDebugPath(cwdTarget.host, res.resolvedPath),
           } as ReadFileOutput;
         })();
 

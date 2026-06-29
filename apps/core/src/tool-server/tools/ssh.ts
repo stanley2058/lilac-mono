@@ -73,7 +73,8 @@ function truncateText(text: string, maxChars: number) {
 
 async function readStreamText(stream: unknown): Promise<string> {
   if (!stream || typeof stream === "number") return "";
-  return await new Response(stream as any).text();
+  const body: BodyInit = stream instanceof ReadableStream ? stream : String(stream);
+  return await new Response(body).text();
 }
 
 function inferTransportError(

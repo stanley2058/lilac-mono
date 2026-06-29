@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- Zod v4 does not expose stable public types for the .def internals used here; Stage 2/3 should replace this with narrow local accessors. */
+
 export type CliLineMode = "all" | "required";
 
 type Condition = {
