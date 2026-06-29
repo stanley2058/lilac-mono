@@ -1,13 +1,19 @@
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
 import type { SurfaceAdapter } from "../adapter";
 import type { AdapterEvent } from "../events";
-import { DiscordSearchService } from "../store/discord-search-store";
+import type { DiscordSearchService } from "../store/discord-search-store";
+
+type DiscordSearchIndexerService = Pick<
+  DiscordSearchService,
+  "onMessageCreated" | "onMessageUpdated" | "onMessageDeleted"
+>;
 
 export async function startDiscordSearchIndexer(params: {
   adapter: SurfaceAdapter;
-  search: DiscordSearchService;
+  search: DiscordSearchIndexerService;
+  getConfig: () => Promise<CoreConfig>;
   conversationThreads?: {
-    refreshThreads(): { channels: number; threads: number; messages: number };
+    refreshThreads(cfg?: CoreConfig): { channels: number; threads: number; messages: number };
   };
 }) {
   const logger = createLogger({
@@ -17,10 +23,10 @@ export async function startDiscordSearchIndexer(params: {
   const handleEvent = async (evt: AdapterEvent): Promise<void> => {
     if (evt.platform !== "discord") return;
 
-    const refreshThreads = () => {
+    const refreshThreads = async () => {
       if (!params.conversationThreads) return;
       try {
-        params.conversationThreads.refreshThreads();
+        params.conversationThreads.refreshThreads(await params.getConfig());
       } catch (e) {
         logger.error("conversation thread refresh after discord indexing failed", e);
       }
@@ -29,12 +35,12 @@ export async function startDiscordSearchIndexer(params: {
     switch (evt.type) {
       case "adapter.message.created": {
         await params.search.onMessageCreated(evt.message);
-        refreshThreads();
+        await refreshThreads();
         return;
       }
       case "adapter.message.updated": {
         params.search.onMessageUpdated(evt.message);
-        refreshThreads();
+        await refreshThreads();
         return;
       }
       case "adapter.message.deleted": {
@@ -43,7 +49,7 @@ export async function startDiscordSearchIndexer(params: {
           channelId: evt.session.channelId,
           messageId: evt.messageRef.messageId,
         });
-        refreshThreads();
+        await refreshThreads();
         return;
       }
       case "adapter.reaction.added":
@@ -64,7 +70,7 @@ export async function startDiscordSearchIndexer(params: {
   };
 
   return await params.adapter.subscribe((evt) => {
-    void handleEvent(evt).catch((e) => {
+    return handleEvent(evt).catch((e) => {
       logger.error("discord search indexer handler failed", e);
     });
   });

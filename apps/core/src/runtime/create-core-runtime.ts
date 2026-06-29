@@ -548,6 +548,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       stopDiscordSearchIndexer = await startDiscordSearchIndexer({
         adapter,
         search: discordSearchService,
+        getConfig: () => getCoreConfig(),
         conversationThreads: conversationThreadService ?? undefined,
       });
 
