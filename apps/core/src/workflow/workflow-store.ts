@@ -20,6 +20,7 @@ export type WorkflowStore = {
   getTask(workflowId: string, taskId: string): WorkflowTaskRecord | null;
   upsertTask(t: WorkflowTaskRecord): void;
   listTasks(workflowId: string): WorkflowTaskRecord[];
+  listTasksTolerant?(workflowId: string): WorkflowTaskRecord[];
 
   /**
    * Best-effort atomic claim for timeout-based tasks.
@@ -64,6 +65,135 @@ function parseJson<T>(
   }
 }
 
+type WorkflowDbRow = {
+  workflow_id: string;
+  state: string;
+  created_at: number;
+  updated_at: number;
+  resolved_at: number | null;
+  resume_published_at: number | null;
+  definition_json: string;
+  resume_seq: number;
+};
+
+type WorkflowTaskDbRow = {
+  workflow_id: string;
+  task_id: string;
+  kind: string;
+  description: string;
+  state: string;
+  input_json: string | null;
+  result_json: string | null;
+  created_at: number;
+  updated_at: number;
+  resolved_at: number | null;
+  resolved_by: string | null;
+  discord_channel_id: string | null;
+  discord_message_id: string | null;
+  discord_from_user_id: string | null;
+  timeout_at: number | null;
+};
+
+type JsonParseResult<T> =
+  | {
+      ok: true;
+      value: T | null;
+    }
+  | {
+      ok: false;
+    };
+
+function tryParseJson<T>(
+  raw: string | null,
+  context: { field: string; workflowId?: string; taskId?: string },
+): JsonParseResult<T> {
+  try {
+    return { ok: true, value: parseJson<T>(raw, context) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function workflowFromRow(row: WorkflowDbRow, opts: { strict: boolean }): WorkflowRecord | null {
+  const parsed = opts.strict
+    ? {
+        ok: true as const,
+        value: parseJson<WorkflowRecord["definition"]>(row.definition_json, {
+          field: "workflows.definition_json",
+          workflowId: row.workflow_id,
+        }),
+      }
+    : tryParseJson<WorkflowRecord["definition"]>(row.definition_json, {
+        field: "workflows.definition_json",
+        workflowId: row.workflow_id,
+      });
+
+  if (!parsed.ok || !parsed.value) return null;
+
+  return {
+    workflowId: row.workflow_id,
+    state: row.state as WorkflowRecord["state"],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at ?? undefined,
+    resumePublishedAt: row.resume_published_at ?? undefined,
+    definition: parsed.value,
+    resumeSeq: row.resume_seq,
+  };
+}
+
+function taskFromRow(row: WorkflowTaskDbRow, opts: { strict: boolean }): WorkflowTaskRecord | null {
+  const input = opts.strict
+    ? {
+        ok: true as const,
+        value: parseJson<WorkflowTaskRecord["input"]>(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }),
+      }
+    : tryParseJson<WorkflowTaskRecord["input"]>(row.input_json, {
+        field: "workflow_tasks.input_json",
+        workflowId: row.workflow_id,
+        taskId: row.task_id,
+      });
+  if (!input.ok) return null;
+
+  const result = opts.strict
+    ? {
+        ok: true as const,
+        value: parseJson<WorkflowTaskRecord["result"]>(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }),
+      }
+    : tryParseJson<WorkflowTaskRecord["result"]>(row.result_json, {
+        field: "workflow_tasks.result_json",
+        workflowId: row.workflow_id,
+        taskId: row.task_id,
+      });
+  if (!result.ok) return null;
+
+  return {
+    workflowId: row.workflow_id,
+    taskId: row.task_id,
+    kind: row.kind,
+    description: row.description,
+    state: row.state as WorkflowTaskRecord["state"],
+    input: input.value ?? undefined,
+    result: result.value ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at ?? undefined,
+    resolvedBy: row.resolved_by ?? undefined,
+    discordChannelId: row.discord_channel_id ?? undefined,
+    discordMessageId: row.discord_message_id ?? undefined,
+    discordFromUserId: row.discord_from_user_id ?? undefined,
+    timeoutAt: row.timeout_at ?? undefined,
+  };
+}
+
 export class SqliteWorkflowStore implements WorkflowStore {
   private readonly db: Database;
 
@@ -91,33 +221,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
       timeout_at: number | null;
     }>;
 
-    return rows.map((row) => ({
-      workflowId: row.workflow_id,
-      taskId: row.task_id,
-      kind: row.kind,
-      description: row.description,
-      state: row.state as WorkflowTaskRecord["state"],
-      input:
-        parseJson(row.input_json, {
-          field: "workflow_tasks.input_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      result:
-        parseJson(row.result_json, {
-          field: "workflow_tasks.result_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resolvedBy: row.resolved_by ?? undefined,
-      discordChannelId: row.discord_channel_id ?? undefined,
-      discordMessageId: row.discord_message_id ?? undefined,
-      discordFromUserId: row.discord_from_user_id ?? undefined,
-      timeoutAt: row.timeout_at ?? undefined,
-    }));
+    return rows.flatMap((row) => {
+      const task = taskFromRow(row, { strict: false });
+      return task ? [task] : [];
+    });
   }
 
   /**
@@ -150,33 +257,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
       timeout_at: number | null;
     }>;
 
-    return rows.map((row) => ({
-      workflowId: row.workflow_id,
-      taskId: row.task_id,
-      kind: row.kind,
-      description: row.description,
-      state: row.state as WorkflowTaskRecord["state"],
-      input:
-        parseJson(row.input_json, {
-          field: "workflow_tasks.input_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      result:
-        parseJson(row.result_json, {
-          field: "workflow_tasks.result_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resolvedBy: row.resolved_by ?? undefined,
-      discordChannelId: row.discord_channel_id ?? undefined,
-      discordMessageId: row.discord_message_id ?? undefined,
-      discordFromUserId: row.discord_from_user_id ?? undefined,
-      timeoutAt: row.timeout_at ?? undefined,
-    }));
+    return rows.flatMap((row) => {
+      const task = taskFromRow(row, { strict: false });
+      return task ? [task] : [];
+    });
   }
 
   unsafeListActiveTimeoutTasks(nowMs: number): WorkflowTaskRecord[] {
@@ -202,33 +286,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
       timeout_at: number | null;
     }>;
 
-    return rows.map((row) => ({
-      workflowId: row.workflow_id,
-      taskId: row.task_id,
-      kind: row.kind,
-      description: row.description,
-      state: row.state as WorkflowTaskRecord["state"],
-      input:
-        parseJson(row.input_json, {
-          field: "workflow_tasks.input_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      result:
-        parseJson(row.result_json, {
-          field: "workflow_tasks.result_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resolvedBy: row.resolved_by ?? undefined,
-      discordChannelId: row.discord_channel_id ?? undefined,
-      discordMessageId: row.discord_message_id ?? undefined,
-      discordFromUserId: row.discord_from_user_id ?? undefined,
-      timeoutAt: row.timeout_at ?? undefined,
-    }));
+    return rows.flatMap((row) => {
+      const task = taskFromRow(row, { strict: false });
+      return task ? [task] : [];
+    });
   }
 
   constructor(dbPath?: string) {
@@ -306,23 +367,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     } | null;
 
     if (!row) return null;
-
-    const def = parseJson<WorkflowRecord["definition"]>(row.definition_json, {
-      field: "workflows.definition_json",
-      workflowId: row.workflow_id,
-    });
-    if (!def) return null;
-
-    return {
-      workflowId: row.workflow_id,
-      state: row.state as WorkflowRecord["state"],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resumePublishedAt: row.resume_published_at ?? undefined,
-      definition: def,
-      resumeSeq: row.resume_seq,
-    };
+    return workflowFromRow(row, { strict: true });
   }
 
   listWorkflows(opts?: {
@@ -337,41 +382,33 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const orderSql = order === "created_desc" ? "created_at DESC" : "updated_at DESC";
 
-    const where = opts?.state ? "WHERE state = ?" : "";
-    const sql =
-      `SELECT workflow_id, state, created_at, updated_at, resolved_at, resume_published_at, definition_json, resume_seq ` +
-      `FROM workflows ${where} ORDER BY ${orderSql} LIMIT ? OFFSET ?`;
-
-    const rows = this.db
-      .query(sql)
-      .all(...(opts?.state ? [opts.state] : []), limit, offset) as Array<{
-      workflow_id: string;
-      state: string;
-      created_at: number;
-      updated_at: number;
-      resolved_at: number | null;
-      resume_published_at: number | null;
-      definition_json: string;
-      resume_seq: number;
-    }>;
-
     const out: WorkflowRecord[] = [];
-    for (const row of rows) {
-      const def = parseJson<WorkflowRecord["definition"]>(row.definition_json, {
-        field: "workflows.definition_json",
-        workflowId: row.workflow_id,
-      });
-      if (!def) continue;
-      out.push({
-        workflowId: row.workflow_id,
-        state: row.state as WorkflowRecord["state"],
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        resolvedAt: row.resolved_at ?? undefined,
-        resumePublishedAt: row.resume_published_at ?? undefined,
-        definition: def,
-        resumeSeq: row.resume_seq,
-      });
+    let validSkipped = 0;
+    let rawOffset = 0;
+    const batchLimit = Math.max(limit, 100);
+
+    while (out.length < limit) {
+      const where = opts?.state ? "WHERE state = ?" : "";
+      const sql =
+        `SELECT workflow_id, state, created_at, updated_at, resolved_at, resume_published_at, definition_json, resume_seq ` +
+        `FROM workflows ${where} ORDER BY ${orderSql} LIMIT ? OFFSET ?`;
+
+      const rows = this.db
+        .query(sql)
+        .all(...(opts?.state ? [opts.state] : []), batchLimit, rawOffset) as WorkflowDbRow[];
+      if (rows.length === 0) break;
+      rawOffset += rows.length;
+
+      for (const row of rows) {
+        const workflow = workflowFromRow(row, { strict: false });
+        if (!workflow) continue;
+        if (validSkipped < offset) {
+          validSkipped += 1;
+          continue;
+        }
+        out.push(workflow);
+        if (out.length >= limit) break;
+      }
     }
     return out;
   }
@@ -427,33 +464,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     if (!row) return null;
 
-    return {
-      workflowId: row.workflow_id,
-      taskId: row.task_id,
-      kind: row.kind,
-      description: row.description,
-      state: row.state as WorkflowTaskRecord["state"],
-      input:
-        parseJson(row.input_json, {
-          field: "workflow_tasks.input_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      result:
-        parseJson(row.result_json, {
-          field: "workflow_tasks.result_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resolvedBy: row.resolved_by ?? undefined,
-      discordChannelId: row.discord_channel_id ?? undefined,
-      discordMessageId: row.discord_message_id ?? undefined,
-      discordFromUserId: row.discord_from_user_id ?? undefined,
-      timeoutAt: row.timeout_at ?? undefined,
-    };
+    return taskFromRow(row, { strict: true });
   }
 
   upsertTask(t: WorkflowTaskRecord): void {
@@ -521,33 +532,26 @@ export class SqliteWorkflowStore implements WorkflowStore {
       timeout_at: number | null;
     }>;
 
-    return rows.map((row) => ({
-      workflowId: row.workflow_id,
-      taskId: row.task_id,
-      kind: row.kind,
-      description: row.description,
-      state: row.state as WorkflowTaskRecord["state"],
-      input:
-        parseJson(row.input_json, {
-          field: "workflow_tasks.input_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      result:
-        parseJson(row.result_json, {
-          field: "workflow_tasks.result_json",
-          workflowId: row.workflow_id,
-          taskId: row.task_id,
-        }) ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-      resolvedBy: row.resolved_by ?? undefined,
-      discordChannelId: row.discord_channel_id ?? undefined,
-      discordMessageId: row.discord_message_id ?? undefined,
-      discordFromUserId: row.discord_from_user_id ?? undefined,
-      timeoutAt: row.timeout_at ?? undefined,
-    }));
+    return rows.map((row) => {
+      const task = taskFromRow(row, { strict: true });
+      if (!task) {
+        throw new Error(
+          `Failed to parse workflow task row (workflowId=${row.workflow_id} taskId=${row.task_id})`,
+        );
+      }
+      return task;
+    });
+  }
+
+  listTasksTolerant(workflowId: string): WorkflowTaskRecord[] {
+    const rows = this.db
+      .query("SELECT * FROM workflow_tasks WHERE workflow_id = ? ORDER BY created_at ASC")
+      .all(workflowId) as WorkflowTaskDbRow[];
+
+    return rows.flatMap((row) => {
+      const task = taskFromRow(row, { strict: false });
+      return task ? [task] : [];
+    });
   }
 
   tryClaimTimeoutTask(params: {

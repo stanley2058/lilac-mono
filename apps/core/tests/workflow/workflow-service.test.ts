@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { Database } from "bun:sqlite";
 
 import {
   createLilacBus,
@@ -12,6 +13,10 @@ import {
 
 import { startWorkflowService } from "../../src/workflow/workflow-service";
 import { SqliteWorkflowStore } from "../../src/workflow/workflow-store";
+
+function getUnsafeDb(store: SqliteWorkflowStore): Database {
+  return (store as unknown as { db: Database }).db;
+}
 
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
@@ -319,6 +324,199 @@ describe("workflow-service (v2)", () => {
 
     const after = store.getWorkflow(workflowId);
     expect(after?.resumePublishedAt).toBeDefined();
+
+    await reqSub.stop();
+    await svc.stop();
+  });
+
+  it("publishes resume from the already parsed task snapshot", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test-single-task-snapshot",
+      pollTimeouts: { enabled: false },
+    });
+
+    const receivedReq: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-single-task-snapshot",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          receivedReq.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_single_task_snapshot";
+
+    await bus.publish(lilacEventTypes.CmdWorkflowCreate, {
+      workflowId,
+      definition: {
+        version: 2,
+        origin: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        resumeTarget: {
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        summary: "wait for one reply",
+        completion: "all",
+      },
+    });
+
+    await bus.publish(lilacEventTypes.CmdWorkflowTaskCreate, {
+      workflowId,
+      taskId: "good",
+      kind: "discord.wait_for_reply",
+      description: "resolves normally",
+      input: {
+        channelId: "dmY",
+        messageId: "anchor-good",
+        fromUserId: "userB",
+      },
+    });
+
+    const originalListTasks = store.listTasks.bind(store);
+    let listTasksCalls = 0;
+    store.listTasks = (id: string) => {
+      listTasksCalls += 1;
+      if (listTasksCalls > 1) {
+        throw new Error("listTasks should not be re-read after resolution");
+      }
+      return originalListTasks(id);
+    };
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: "dmY",
+      channelName: "dm",
+      messageId: "reply-good",
+      userId: "userB",
+      userName: "B",
+      text: "good reply",
+      ts: Date.now(),
+      raw: { discord: { replyToMessageId: "anchor-good" } },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(receivedReq.length).toBe(1);
+    expect(listTasksCalls).toBe(1);
+
+    await reqSub.stop();
+    await svc.stop();
+  });
+
+  it("does not resolve all-completion workflows when an active task row is malformed", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+
+    const svc = await startWorkflowService({
+      bus,
+      store,
+      subscriptionId: "workflow-test-malformed-active-task",
+      pollTimeouts: { enabled: false },
+    });
+
+    const receivedReq: any[] = [];
+    const reqSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test-malformed-active-task",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          receivedReq.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    const workflowId = "wf_malformed_active_task";
+
+    await bus.publish(lilacEventTypes.CmdWorkflowCreate, {
+      workflowId,
+      definition: {
+        version: 2,
+        origin: {
+          request_id: "discord:chanX:orig",
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        resumeTarget: {
+          session_id: "chanX",
+          request_client: "discord",
+        },
+        summary: "wait for two replies",
+        completion: "all",
+      },
+    });
+
+    await bus.publish(lilacEventTypes.CmdWorkflowTaskCreate, {
+      workflowId,
+      taskId: "bad",
+      kind: "discord.wait_for_reply",
+      description: "still active but malformed",
+      input: {
+        channelId: "dmY",
+        messageId: "anchor-bad",
+      },
+    });
+
+    await bus.publish(lilacEventTypes.CmdWorkflowTaskCreate, {
+      workflowId,
+      taskId: "good",
+      kind: "discord.wait_for_reply",
+      description: "resolves normally",
+      input: {
+        channelId: "dmY",
+        messageId: "anchor-good",
+        fromUserId: "userB",
+      },
+    });
+
+    getUnsafeDb(store)
+      .query("UPDATE workflow_tasks SET input_json = ? WHERE workflow_id = ? AND task_id = ?")
+      .run("{", workflowId, "bad");
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: "dmY",
+      channelName: "dm",
+      messageId: "reply-good",
+      userId: "userB",
+      userName: "B",
+      text: "good reply",
+      ts: Date.now(),
+      raw: { discord: { replyToMessageId: "anchor-good" } },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(receivedReq.length).toBe(0);
+    expect(store.getWorkflow(workflowId)?.state).toBe("blocked");
+    expect(store.getTask(workflowId, "good")?.state).toBe("resolved");
+    expect(() => store.listTasks(workflowId)).toThrow(
+      "Failed to parse workflow JSON (field=workflow_tasks.input_json workflowId=wf_malformed_active_task taskId=bad)",
+    );
 
     await reqSub.stop();
     await svc.stop();

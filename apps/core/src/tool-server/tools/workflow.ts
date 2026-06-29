@@ -15,6 +15,15 @@ import type { WorkflowDefinitionV3 } from "../../workflow/types";
 
 type RequestHeaders = RequiredToolServerHeaders;
 
+function listTasksForDisplay(store: WorkflowStore, workflowId: string) {
+  if (store.listTasksTolerant) return store.listTasksTolerant(workflowId);
+  try {
+    return store.listTasks(workflowId);
+  } catch {
+    return [];
+  }
+}
+
 function toHeaders(ctx: RequestContext | undefined): RequestHeaders {
   return requireToolServerHeaders(ctx, "workflow");
 }
@@ -508,11 +517,11 @@ export class Workflow implements ServerTool {
             updatedAt: w.updatedAt,
             resolvedAt: w.resolvedAt,
             summary: w.definition.summary,
-            ...(payload.includeTasks ? { tasks: store.listTasks(w.workflowId) } : {}),
+            ...(payload.includeTasks ? { tasks: listTasksForDisplay(store, w.workflowId) } : {}),
           };
         }
 
-        const tasks = store.listTasks(w.workflowId);
+        const tasks = listTasksForDisplay(store, w.workflowId);
         const trigger = tasks.find((t) => t.kind === "time.wait_until" || t.kind === "time.cron");
         return {
           workflowId: w.workflowId,

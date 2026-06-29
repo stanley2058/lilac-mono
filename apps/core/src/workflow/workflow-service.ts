@@ -524,7 +524,17 @@ async function tryResolveWorkflow(params: {
     return;
   }
 
-  const tasks = store.listTasks(workflowId);
+  let tasks: WorkflowTaskRecord[];
+  try {
+    tasks = store.listTasks(workflowId);
+  } catch (e) {
+    logger.warn("workflow.resolve.skip", {
+      workflowId,
+      reason: "task_list_parse_failed",
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
 
   if (!canResolveWorkflow(w.definition, tasks)) {
     logger.debug("workflow.resolve.skip", {
@@ -610,12 +620,12 @@ async function tryResolveWorkflow(params: {
     requestClient: bumpedV2.definition.resumeTarget.request_client,
     resumeSeq: bumped.resumeSeq,
     completion: bumpedV2.definition.completion,
-    taskCount: store.listTasks(workflowId).length,
+    taskCount: tasks.length,
   });
 
   const resume = buildResumeRequest({
     workflow: bumpedV2,
-    tasks: store.listTasks(workflowId),
+    tasks,
     triggerUserText: params.triggerUserText,
     triggerMeta: {
       platform: params.triggerEvt.platform,

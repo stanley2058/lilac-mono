@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { Database } from "bun:sqlite";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lila
 import type { SurfaceAdapter } from "../src/surface/adapter";
 import { Workflow } from "../src/tool-server/tools/workflow";
 import type { RequestContext } from "../src/tool-server/types";
+import { SqliteWorkflowStore } from "../src/workflow/workflow-store";
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -30,6 +32,10 @@ import type {
 function testConfig(input: unknown): CoreConfig {
   const cfg = parseCoreConfigV1ToUniversal(input);
   return { ...cfg, agent: { ...cfg.agent, systemPrompt: "(test)" } };
+}
+
+function getUnsafeDb(store: SqliteWorkflowStore): Database {
+  return (store as unknown as { db: Database }).db;
 }
 
 function createInMemoryRawBus(): RawBus {
@@ -258,5 +264,65 @@ describe("tool-server workflow", () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("lists workflows without failing on malformed scheduled task rows", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const store = new SqliteWorkflowStore(":memory:");
+    const tool = new Workflow({ bus, workflowStore: store });
+
+    store.upsertWorkflow({
+      workflowId: "wf_scheduled",
+      state: "blocked",
+      createdAt: 1,
+      updatedAt: 1,
+      definition: {
+        version: 3,
+        kind: "scheduled",
+        schedule: {
+          mode: "wait_until",
+          runAtMs: 123,
+        },
+        job: {
+          summary: "scheduled job",
+          userPrompt: "run it",
+        },
+      },
+      resumeSeq: 0,
+    });
+    store.upsertTask({
+      workflowId: "wf_scheduled",
+      taskId: "bad",
+      kind: "time.wait_until",
+      description: "bad task",
+      state: "blocked",
+      input: {
+        runAtMs: 123,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      timeoutAt: 123,
+    });
+
+    getUnsafeDb(store)
+      .query("UPDATE workflow_tasks SET input_json = ? WHERE workflow_id = ? AND task_id = ?")
+      .run("{", "wf_scheduled", "bad");
+
+    const withoutTasks = (await tool.call("workflow.list", {})) as {
+      ok: boolean;
+      workflows: Array<{ workflowId: string; nextRunAt?: number; tasks?: unknown[] }>;
+    };
+    expect(withoutTasks.ok).toBe(true);
+    expect(withoutTasks.workflows[0]?.workflowId).toBe("wf_scheduled");
+    expect(withoutTasks.workflows[0]?.nextRunAt).toBeUndefined();
+    expect(withoutTasks.workflows[0]?.tasks).toBeUndefined();
+
+    const withTasks = (await tool.call("workflow.list", { includeTasks: true })) as {
+      ok: boolean;
+      workflows: Array<{ workflowId: string; tasks?: unknown[] }>;
+    };
+    expect(withTasks.ok).toBe(true);
+    expect(withTasks.workflows[0]?.tasks).toEqual([]);
   });
 });
