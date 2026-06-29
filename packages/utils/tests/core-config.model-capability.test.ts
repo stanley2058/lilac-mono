@@ -70,6 +70,33 @@ describe("coreConfigSchema models.capability", () => {
     });
   });
 
+  it("accepts conversation thread auto inject planner model override", () => {
+    const parsed = coreConfigInputSchemaV2.parse({
+      configVersion: 2,
+      conversation: {
+        thread: {
+          autoInject: {
+            enabled: true,
+            plannerModel: "openrouter/openai/gpt-4o-mini",
+            minTextUnits: 120,
+            limit: 4,
+            mode: "semantic",
+            filterCurrentParticipants: true,
+          },
+        },
+      },
+    });
+
+    expect(parsed.conversation.thread.autoInject).toEqual({
+      enabled: true,
+      plannerModel: "openrouter/openai/gpt-4o-mini",
+      minTextUnits: 120,
+      limit: 4,
+      mode: "semantic",
+      filterCurrentParticipants: true,
+    });
+  });
+
   it("defaults forceUnknownProviders and empty overrides", () => {
     const parsed = coreConfigSchema.parse({});
     expect(parsed.models.capability.forceUnknownProviders).toEqual(["openai-compatible"]);

@@ -102,6 +102,7 @@ export type UniversalCoreConfig = {
       };
       autoInject: {
         enabled: boolean;
+        plannerModel?: string;
         minTextUnits: number;
         limit: number;
         mode: "hybrid" | "semantic" | "lexical";

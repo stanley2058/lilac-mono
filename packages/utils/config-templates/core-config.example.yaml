@@ -43,6 +43,10 @@ conversation:
       # Enable automatic injection of related thread title metadata before answers
       # to long, meaningful user messages.
       enabled: false
+      # Optional model used to plan automatic thread search queries. When unset,
+      # inherits conversation.thread.summarization.model. Accepts main, fast,
+      # a models.def alias, or a direct provider/model ref.
+      plannerModel: fast
       # Minimum authored text mass after removing URLs, Discord syntax, punctuation,
       # and discounting code blocks. 80 is a moderate Discord default.
       minTextUnits: 80

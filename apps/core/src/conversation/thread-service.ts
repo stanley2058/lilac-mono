@@ -812,6 +812,15 @@ function resolveSummarizationModel(cfg: CoreConfig) {
   return resolveModelRef(cfg, { model }, "conversation.thread.summarization.model");
 }
 
+function resolveAutoInjectPlannerModel(cfg: CoreConfig) {
+  const plannerModel = cfg.conversation.thread.autoInject.plannerModel?.trim();
+  if (!plannerModel) return resolveSummarizationModel(cfg);
+
+  const model = plannerModel;
+  if (model === "main" || model === "fast") return resolveModelSlot(cfg, model);
+  return resolveModelRef(cfg, { model }, "conversation.thread.autoInject.plannerModel");
+}
+
 function shouldAllowDiscordThread(
   cfg: CoreConfig,
   input: { channelId: string; parentChannelId?: string | null; guildId?: string | null },
@@ -1007,7 +1016,7 @@ async function defaultAutoInjectQueryPlanner(input: {
   cfg: CoreConfig;
   text: string;
 }): Promise<ConversationThreadAutoInjectQueryPlan> {
-  const resolved = resolveSummarizationModel(input.cfg);
+  const resolved = resolveAutoInjectPlannerModel(input.cfg);
   const messages = [
     {
       role: "user",

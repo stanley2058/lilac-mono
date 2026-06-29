@@ -279,6 +279,7 @@ const conversationSchemaV2 = z
         autoInject: z
           .object({
             enabled: z.boolean().default(false),
+            plannerModel: z.string().trim().min(1).optional(),
             minTextUnits: z.number().int().positive().default(80),
             limit: z.number().int().positive().max(10).default(3),
             mode: z.enum(["hybrid", "semantic", "lexical"]).default("hybrid"),

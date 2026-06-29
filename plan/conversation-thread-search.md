@@ -240,6 +240,7 @@ Use offset/limit for phase 1 simplicity.
 Automatic similar-thread metadata injection is implemented behind default-false config:
 
 - `conversation.thread.autoInject.enabled`: default `false`.
+- `conversation.thread.autoInject.plannerModel`: optional model used to plan automatic search queries; when unset, it inherits `conversation.thread.summarization.model`.
 - `conversation.thread.autoInject.minTextUnits`: default `80`; only run when the latest real user input has enough meaningful authored text so short prompts stay fast.
 - `conversation.thread.autoInject.limit`: max injected title entries.
 - `conversation.thread.autoInject.mode`: `hybrid`, `semantic`, or `lexical`.
