@@ -961,8 +961,11 @@ export type AutoInjectedThreadSearchPayload = {
   entries: Array<{
     threadId: string;
     title: string;
+    timeRange?: string;
   }>;
 };
+
+type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number];
 
 type AutoInjectedThreadSearchAppendedEvent = {
   toolCallId: string;
@@ -970,18 +973,19 @@ type AutoInjectedThreadSearchAppendedEvent = {
   limit: number;
   queries: readonly string[];
   participantFilterUserCount: number;
-  entries: readonly { threadId: string; title: string }[];
+  entries: readonly AutoInjectedThreadSearchEntry[];
 };
 
 export function buildAutoInjectedThreadSearchMessages(params: {
   toolCallId: string;
-  entries: readonly { threadId: string; title: string }[];
+  entries: readonly AutoInjectedThreadSearchEntry[];
 }): ModelMessage[] {
   const payload: AutoInjectedThreadSearchPayload = {
     note: AUTO_INJECTED_THREAD_SEARCH_NOTICE,
     entries: params.entries.map((entry) => ({
       threadId: entry.threadId,
       title: entry.title,
+      ...(entry.timeRange ? { timeRange: entry.timeRange } : {}),
     })),
   };
 
@@ -1045,6 +1049,29 @@ function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<st
   return threadIds;
 }
 
+function padLocalDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalThreadTime(value: string): string | null {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+
+  const year = date.getFullYear();
+  const month = padLocalDatePart(date.getMonth() + 1);
+  const day = padLocalDatePart(date.getDate());
+  const hour = padLocalDatePart(date.getHours());
+  const minute = padLocalDatePart(date.getMinutes());
+  return `${year}/${month}/${day} ${hour}:${minute}`;
+}
+
+function formatInjectedThreadTimeRange(input: { start: string; end: string }): string | undefined {
+  const start = formatLocalThreadTime(input.start);
+  const end = formatLocalThreadTime(input.end);
+  if (!start || !end) return undefined;
+  return `${start} - ${end}`;
+}
+
 export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   cfg: CoreConfig;
   conversationThreads?: ConversationThreadToolService;
@@ -1101,15 +1128,22 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
       queryAboutness: plan.aboutness,
       limit: autoInject.limit,
       mode: autoInject.mode,
+      verbose: true,
       ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
     });
     const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
     const entries = search.results
       .filter((result) => !previouslyInjectedThreadIds.has(result.threadId))
-      .map((result) => ({
-        threadId: result.threadId,
-        title: result.title,
-      }));
+      .map((result) => {
+        const timeRange = result.timeRange
+          ? formatInjectedThreadTimeRange(result.timeRange)
+          : undefined;
+        return {
+          threadId: result.threadId,
+          title: result.title,
+          ...(timeRange ? { timeRange } : {}),
+        };
+      });
 
     await publishToolStatusBestEffort({
       toolCallId,

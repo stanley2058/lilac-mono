@@ -64,6 +64,17 @@ function fakeModel(): LanguageModel {
   return {} as LanguageModel;
 }
 
+function formatExpectedLocalThreadTimeRange(start: string, end: string): string {
+  const format = (value: string) => {
+    const date = new Date(value);
+    const pad = (part: number) => String(part).padStart(2, "0");
+    return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(
+      date.getHours(),
+    )}:${pad(date.getMinutes())}`;
+  };
+  return `${format(start)} - ${format(end)}`;
+}
+
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
   const subs = new Set<{
@@ -297,7 +308,13 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
   it("builds slim auto-injected thread search metadata messages", () => {
     const messages = buildAutoInjectedThreadSearchMessages({
       toolCallId: "auto-thread-1",
-      entries: [{ threadId: "thread-1", title: "Short thread title" }],
+      entries: [
+        {
+          threadId: "thread-1",
+          title: "Short thread title",
+          timeRange: "2026/06/28 12:01 - 2026/06/28 13:23",
+        },
+      ],
     });
 
     expect(messages).toHaveLength(2);
@@ -323,7 +340,13 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
       type: "json",
       value: {
         note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
-        entries: [{ threadId: "thread-1", title: "Short thread title" }],
+        entries: [
+          {
+            threadId: "thread-1",
+            title: "Short thread title",
+            timeRange: "2026/06/28 12:01 - 2026/06/28 13:23",
+          },
+        ],
       },
     });
   });
@@ -448,7 +471,10 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     };
     const body =
       "I keep getting logged out after the OAuth callback, but only on mobile. It started after I changed the cookie settings and now Safari loops back to the login page.";
+    const startTime = "2026-06-28T12:01:00.000Z";
+    const endTime = "2026-06-28T13:23:00.000Z";
     let plannedText = "";
+    let searchVerbose: boolean | undefined;
 
     const messages = await maybeBuildAutoInjectedThreadSearchMessages({
       cfg: autoInjectCfg,
@@ -481,16 +507,29 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             },
           };
         },
-        search: async () => ({
-          meta: {
-            query: "OAuth callback mobile login loop",
-            limit: 3,
-            mode: "hybrid",
-            count: 1,
-            vectorAvailable: false,
-          },
-          results: [{ threadId: "thread-1", title: "OAuth callback login loop", brief: "" }],
-        }),
+        search: async (input) => {
+          searchVerbose = input.verbose;
+          return {
+            meta: {
+              query: "OAuth callback mobile login loop",
+              limit: 3,
+              mode: "hybrid",
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [
+              {
+                threadId: "thread-1",
+                title: "OAuth callback login loop",
+                brief: "",
+                timeRange: {
+                  start: startTime,
+                  end: endTime,
+                },
+              },
+            ],
+          };
+        },
         metadata: async () => {
           throw new Error("not used");
         },
@@ -507,7 +546,27 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
 
     expect(plannedText).toBe(body);
     expect(plannedText).not.toContain("LILAC_META");
+    expect(searchVerbose).toBe(true);
     expect(messages).toHaveLength(2);
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
+        entries: [
+          {
+            threadId: "thread-1",
+            title: "OAuth callback login loop",
+            timeRange: formatExpectedLocalThreadTimeRange(startTime, endTime),
+          },
+        ],
+      },
+    });
   });
 
   it("skips injection when all search results were already auto-injected", async () => {
