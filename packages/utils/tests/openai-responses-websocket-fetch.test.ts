@@ -658,6 +658,124 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     wsFetch.close();
   });
 
+  it("retries codex incremental replay without previous response id when server forgot it", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const selections: unknown[] = [];
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      onTransportSelected: (details) => selections.push(details),
+    });
+
+    const firstResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+      }),
+    });
+
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    const firstTextPromise = firstResponse.text();
+    socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.output_item.done",
+        item: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Checking the file.", annotations: [] }],
+        },
+      }),
+    );
+    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    await firstTextPromise;
+
+    const secondResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hello" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "Checking the file." }] },
+          { role: "user", content: [{ type: "input_text", text: "continue" }] },
+        ],
+      }),
+    });
+
+    expect(FakeWebSocket.instances.length).toBe(1);
+    expect(sentBody(socket, 1)).toEqual({
+      type: "response.create",
+      store: false,
+      previous_response_id: "resp_1",
+      input: [{ role: "user", content: [{ type: "input_text", text: "continue" }] }],
+    });
+
+    const secondTextPromise = secondResponse.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "previous_response_not_found",
+          message: "Previous response with id 'resp_1' not found.",
+          param: "previous_response_id",
+        },
+      }),
+    );
+    await Promise.resolve();
+
+    expect(sentBody(socket, 2)).toEqual({
+      type: "response.create",
+      store: false,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "Checking the file." }] },
+        { role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ],
+    });
+
+    socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_2" } }));
+    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+
+    const secondText = await secondTextPromise;
+    expect(secondText).not.toContain("previous_response_not_found");
+    expect(secondText).toContain("resp_2");
+    expect(secondText).toContain("[DONE]");
+    expect(selections).toEqual([
+      {
+        mode: "websocket",
+        requestUrl: "https://chatgpt.com/backend-api/codex/responses",
+        transport: "websocket",
+        optimizationEnabled: false,
+        optimizationReason: "no_continuation_state",
+      },
+      {
+        mode: "websocket",
+        requestUrl: "https://chatgpt.com/backend-api/codex/responses",
+        transport: "websocket",
+        optimizationEnabled: true,
+        optimizationReason: "incremental_replay",
+      },
+      {
+        mode: "websocket",
+        requestUrl: "https://chatgpt.com/backend-api/codex/responses",
+        transport: "websocket",
+        optimizationEnabled: false,
+        optimizationReason: "stale_previous_response_id_retry",
+      },
+    ]);
+    wsFetch.close();
+  });
+
   it("does not reuse codex previous response id for unrelated input prefixes", async () => {
     globals.fetch = (async () => {
       throw new Error("should not fallback");

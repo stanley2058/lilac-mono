@@ -55,7 +55,8 @@ type ResponsesOptimizationReason =
   | "request_shape_changed"
   | "unreplayable_output_items"
   | "not_prefix_extension"
-  | "incremental_replay";
+  | "incremental_replay"
+  | "stale_previous_response_id_retry";
 
 export type ResponsesTransportSelectionDetails = {
   mode: ResponsesTransportMode;
@@ -374,7 +375,7 @@ export function createOpenAIResponsesWebSocketFetch(
             optimizationEnabled: false,
             optimizationReason: "no_continuation_state" as const,
           };
-    const websocketPayload = payloadResult.payload;
+    let websocketPayload = payloadResult.payload;
     reportTransportSelected({
       requestUrl,
       transport: "websocket",
@@ -387,9 +388,38 @@ export function createOpenAIResponsesWebSocketFetch(
       start(controller) {
         let cleanedUp = false;
         let responseId: string | null = null;
-        const outputItems: JsonObject[] = [];
-        const outputItemDrafts = new Map<string, JsonObject>();
+        let outputItems: JsonObject[] = [];
+        let outputItemDrafts = new Map<string, JsonObject>();
         let canPersistContinuation = true;
+        let forwardedEventCount = 0;
+        let stalePreviousResponseRetryAttempted = false;
+
+        const sendPayload = (payload: ResponsesRequestBody) => {
+          connection.send(JSON.stringify({ type: "response.create", ...payload }));
+        };
+
+        const retryWithoutOptimization = (): boolean => {
+          if (!payloadResult.optimizationEnabled) return false;
+          if (stalePreviousResponseRetryAttempted) return false;
+          if (forwardedEventCount > 0) return false;
+
+          stalePreviousResponseRetryAttempted = true;
+          clearReusableContinuationState();
+          websocketPayload = cloneJsonObject(fullRequestBody);
+          responseId = null;
+          outputItems = [];
+          outputItemDrafts = new Map<string, JsonObject>();
+          canPersistContinuation = true;
+          reportTransportSelected({
+            requestUrl,
+            transport: "websocket",
+            optimizationEnabled: false,
+            optimizationReason: "stale_previous_response_id_retry",
+          });
+          sendPayload(websocketPayload);
+          return true;
+        };
+
         const cleanup = (params?: { closeConnection?: boolean }) => {
           if (cleanedUp) return;
           cleanedUp = true;
@@ -451,8 +481,13 @@ export function createOpenAIResponsesWebSocketFetch(
 
             const normalized = normalizeResponsesEvent(eventJson, options.normalizeEvent);
 
+            if (isPreviousResponseNotFoundError(normalized) && retryWithoutOptimization()) {
+              return;
+            }
+
             try {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
+              forwardedEventCount++;
             } catch {
               cleanup({ closeConnection: true });
               return;
@@ -529,7 +564,7 @@ export function createOpenAIResponsesWebSocketFetch(
         }
 
         try {
-          connection.send(JSON.stringify({ type: "response.create", ...websocketPayload }));
+          sendPayload(websocketPayload);
         } catch (error) {
           canPersistContinuation = false;
           cleanup({ closeConnection: true });
@@ -1302,6 +1337,22 @@ function normalizeErrorEventShape(event: Record<string, unknown>): Record<string
       param,
     },
   };
+}
+
+function isPreviousResponseNotFoundError(event: Record<string, unknown>): boolean {
+  if (readString(event.type) !== "error") return false;
+
+  const error = asRecord(event.error);
+  const message = readString(error?.message) ?? "";
+  const code = readString(error?.code) ?? "";
+  const param = readString(error?.param) ?? "";
+  const lowerMessage = message.toLowerCase();
+
+  return (
+    code === "previous_response_not_found" ||
+    param === "previous_response_id" ||
+    (lowerMessage.includes("previous response") && lowerMessage.includes("not found"))
+  );
 }
 
 function extractErrorDetails(
