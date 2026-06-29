@@ -322,7 +322,14 @@ function computeThreadInputHash(messages: readonly IndexedMessageRow[]): string 
   return stableHash(
     messages
       .map((message) =>
-        [message.channel_id, message.message_id, message.updated_ts, message.text].join("\u001f"),
+        [
+          message.channel_id,
+          message.message_id,
+          message.user_id,
+          message.user_name ?? "",
+          message.ts,
+          message.text,
+        ].join("\u001f"),
       )
       .join("\u001e"),
   );
@@ -931,7 +938,9 @@ export class ConversationThreadStore {
         first.ts,
         last.ts,
         input.messages.length,
-        Math.max(updatedAt, existing?.updated_at ?? 0, hashChanged ? now : 0),
+        hashChanged
+          ? Math.max(updatedAt, existing?.updated_at ?? 0, now)
+          : (existing?.updated_at ?? updatedAt),
         existing?.last_summarized_at ?? null,
         existing?.last_embedded_at ?? null,
         inputHash,

@@ -225,7 +225,14 @@ export class DiscordSearchStore {
             ts=excluded.ts,
             edited_ts=excluded.edited_ts,
             deleted=excluded.deleted,
-            updated_ts=excluded.updated_ts;
+            updated_ts=excluded.updated_ts
+          WHERE discord_search_messages.guild_id IS NOT excluded.guild_id
+             OR discord_search_messages.user_id IS NOT excluded.user_id
+             OR discord_search_messages.user_name IS NOT excluded.user_name
+             OR discord_search_messages.text IS NOT excluded.text
+             OR discord_search_messages.ts IS NOT excluded.ts
+             OR discord_search_messages.edited_ts IS NOT excluded.edited_ts
+             OR discord_search_messages.deleted IS NOT excluded.deleted;
           `,
           [
             message.session.channelId,

@@ -172,6 +172,75 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("does not make earlier active-gap threads stale after identical heal upserts", async () => {
+    const originalDateNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    const oneHour = 60 * 60 * 1000;
+    const messages = [
+      msg({ channelId: "c1", messageId: "old-1", userId: "u1", text: "old topic", ts: 1 }),
+      msg({ channelId: "c1", messageId: "old-2", userId: "u2", text: "old reply", ts: 2 }),
+      msg({
+        channelId: "c1",
+        messageId: "new-1",
+        userId: "u1",
+        text: "new topic",
+        ts: 2 * oneHour,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "new-2",
+        userId: "u2",
+        text: "new reply",
+        ts: 2 * oneHour + 1,
+      }),
+    ];
+
+    try {
+      searchStore.upsertMessages(messages);
+      const service = new ConversationThreadService({
+        store: threadStore,
+        getConfig: async () => testConfig(),
+        summarizer: async ({ threadId }) => ({
+          title: threadId,
+          brief: threadId,
+          topics: [],
+          retrievalHints: [],
+        }),
+      });
+
+      const eligibleNow = 4 * oneHour;
+      expect((await service.runSummarization({ now: eligibleNow })).summarized).toBe(2);
+
+      now = 2_000;
+      searchStore.upsertMessages([
+        ...messages,
+        msg({
+          channelId: "c1",
+          messageId: "new-3",
+          userId: "u3",
+          text: "new follow-up",
+          ts: 2 * oneHour + 2,
+        }),
+      ]);
+      threadStore.refreshInferredThreads({ cfg: testConfig() });
+
+      const eligible = threadStore.listEligibleForSummarization({ now: eligibleNow });
+      expect(eligible.map((thread) => thread.thread_id)).toEqual(["discord:channel:c1:new-1"]);
+      expect(threadStore.readThread("discord:channel:c1:old-1")?.summary?.title).toBe(
+        "discord:channel:c1:old-1",
+      );
+    } finally {
+      searchStore.close();
+      threadStore.close();
+      Date.now = originalDateNow;
+    }
+  });
+
   it("only forms threads that include the main agent when configured", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);

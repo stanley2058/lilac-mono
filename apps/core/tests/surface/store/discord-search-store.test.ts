@@ -20,6 +20,39 @@ class FakeSearchAdapter {
 }
 
 describe("discord search store", () => {
+  it("does not advance freshness when re-upserting identical messages", () => {
+    const originalDateNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+
+    const store = new DiscordSearchStore(":memory:");
+    const message: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "123", messageId: "m1" },
+      session: { platform: "discord", channelId: "123" },
+      userId: "u1",
+      userName: "user one",
+      text: "deploy completed",
+      ts: 1,
+    };
+
+    try {
+      store.upsertMessages([message]);
+      const first = store.listMessagesForDiscovery()[0]?.updatedTs;
+
+      now = 2_000;
+      store.upsertMessages([message]);
+      const unchanged = store.listMessagesForDiscovery()[0]?.updatedTs;
+      expect(unchanged).toBe(first);
+
+      store.upsertMessages([{ ...message, text: "deploy completed successfully" }]);
+      const changed = store.listMessagesForDiscovery()[0]?.updatedTs;
+      expect(changed).toBe(2_000);
+    } finally {
+      store.close();
+      Date.now = originalDateNow;
+    }
+  });
+
   it("searches within a single channel", () => {
     const store = new DiscordSearchStore(":memory:");
 
