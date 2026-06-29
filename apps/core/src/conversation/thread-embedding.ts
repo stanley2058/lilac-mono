@@ -29,12 +29,23 @@ export type ConversationThreadFacetInput = {
   text: string;
 };
 
+export type ConversationThreadEmbeddingUsageEvent = {
+  modelSpec: string;
+  provider: string;
+  modelId: string;
+  facet?: ConversationThreadEmbeddingFacet | "query";
+  inputChars: number;
+  tokens: number;
+  warnings: number;
+};
+
 export type ConversationThreadEmbeddingAdapter = {
   modelId: string;
   dimensions?: number;
   embed(input: {
     text: string;
     facet?: ConversationThreadEmbeddingFacet | "query";
+    onUsage?: (event: ConversationThreadEmbeddingUsageEvent) => void;
   }): Promise<Float32Array>;
 };
 
@@ -100,7 +111,7 @@ function createConversationThreadEmbeddingAdapterFromResolved(
         value: input.text,
         providerOptions,
       });
-      logger.info("conversation.thread.embedding.usage", {
+      input.onUsage?.({
         modelSpec: resolved.spec,
         provider: resolved.provider,
         modelId: resolved.modelId,

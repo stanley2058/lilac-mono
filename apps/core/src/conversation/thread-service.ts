@@ -29,7 +29,10 @@ import {
   type ConversationThreadSummaryInput,
   CONVERSATION_THREAD_SUMMARY_VERSION,
 } from "./thread-store";
-import type { ConversationThreadEmbeddingAdapterResolver } from "./thread-embedding";
+import type {
+  ConversationThreadEmbeddingAdapterResolver,
+  ConversationThreadEmbeddingUsageEvent,
+} from "./thread-embedding";
 import type { EntityMapper } from "../entity/entity-mapper";
 
 const SUMMARY_QUIET_MS = 60 * 60 * 1000;
@@ -313,6 +316,8 @@ type ConversationThreadPromptContext = {
 };
 
 type ThreadLanguageModelUsageOperation = "summary" | "query_aboutness" | "auto_inject_query_plan";
+type ThreadEmbeddingUsageOperation = "thread_facets" | "search_query";
+type ThreadEmbeddingUsageStatus = "completed" | "failed";
 
 type ThreadLanguageModelCallEndEvent = {
   provider: string;
@@ -363,6 +368,62 @@ function createThreadLanguageModelUsageLogger(input: {
       timeToFirstOutputMs: event.performance.timeToFirstOutputMs,
       outputTokensPerSecond: event.performance.outputTokensPerSecond,
     });
+  };
+}
+
+function createThreadEmbeddingUsageAccumulator(operation: ThreadEmbeddingUsageOperation) {
+  let calls = 0;
+  let inputChars = 0;
+  let tokens = 0;
+  let warnings = 0;
+  let modelSpec: string | undefined;
+  let provider: string | undefined;
+  let modelId: string | undefined;
+  const facets = new Set<NonNullable<ConversationThreadEmbeddingUsageEvent["facet"]>>();
+
+  return {
+    record(event: ConversationThreadEmbeddingUsageEvent) {
+      calls += 1;
+      inputChars += event.inputChars;
+      tokens += event.tokens;
+      warnings += event.warnings;
+      modelSpec ??= event.modelSpec;
+      provider ??= event.provider;
+      modelId ??= event.modelId;
+      if (event.facet) facets.add(event.facet);
+    },
+    log(input: {
+      status: ThreadEmbeddingUsageStatus;
+      jobId?: string;
+      threadId?: string;
+      mode?: "hybrid" | "semantic" | "lexical";
+      queryCount?: number;
+      dimensions?: number;
+      persistedEmbeddings?: number;
+      error?: string;
+    }) {
+      if (calls === 0) return;
+      threadLogger.info("conversation.thread.embedding.usage", {
+        operation,
+        status: input.status,
+        jobId: input.jobId,
+        threadId: input.threadId,
+        mode: input.mode,
+        queryCount: input.queryCount,
+        modelSpec,
+        provider,
+        modelId,
+        calls,
+        inputChars,
+        tokens,
+        warnings,
+        facetCount: facets.size,
+        facets: [...facets],
+        dimensions: input.dimensions,
+        persistedEmbeddings: input.persistedEmbeddings,
+        error: input.error,
+      });
+    },
   };
 }
 
@@ -1206,38 +1267,52 @@ export class ConversationThreadService {
     const filters = buildSearchFilters(input);
     const recallLimit =
       mode === "lexical" ? limit : Math.min(50, Math.max(limit * COVERAGE_RECALL_MULTIPLIER, 10));
-    const recallHits = await this.searchHitsForQueries({
-      queries,
-      limit: recallLimit,
-      mode,
-      cfg,
-      embeddingAdapter,
-      filters,
-      allowlist: buildSearchAllowlist(cfg),
-    });
-    const { aboutness: queryAboutness, error: queryAboutnessError } = input.queryAboutness
-      ? { aboutness: normalizeQueryAboutness(input.queryAboutness), error: undefined }
-      : await this.captureQueryAboutness({
-          queries,
-          cfg,
-          mode,
-          candidateCount: recallHits.length,
-        });
-    const hits = this.applyAboutnessCoverage(recallHits, queryAboutness).slice(0, limit);
-    return {
-      meta: {
-        query: queries[0]!,
-        ...(queries.length > 1 ? { queries } : {}),
-        limit,
+    const usage = createThreadEmbeddingUsageAccumulator("search_query");
+    try {
+      const recallHits = await this.searchHitsForQueries({
+        queries,
+        limit: recallLimit,
         mode,
-        count: hits.length,
-        vectorAvailable: this.params.store.isVectorSearchAvailable() && !!embeddingAdapter,
-        vectorError: this.params.store.getVectorLoadError() ?? undefined,
-        ...(input.verbose && queryAboutness ? { queryAboutness } : {}),
-        ...(input.verbose && queryAboutnessError ? { queryAboutnessError } : {}),
-      },
-      results: hits.map((hit) => this.formatSearchHit(hit, input.verbose ?? false)),
-    };
+        cfg,
+        embeddingAdapter,
+        filters,
+        allowlist: buildSearchAllowlist(cfg),
+        onEmbeddingUsage: usage.record,
+      });
+      const { aboutness: queryAboutness, error: queryAboutnessError } = input.queryAboutness
+        ? { aboutness: normalizeQueryAboutness(input.queryAboutness), error: undefined }
+        : await this.captureQueryAboutness({
+            queries,
+            cfg,
+            mode,
+            candidateCount: recallHits.length,
+          });
+      const hits = this.applyAboutnessCoverage(recallHits, queryAboutness).slice(0, limit);
+      const result = {
+        meta: {
+          query: queries[0]!,
+          ...(queries.length > 1 ? { queries } : {}),
+          limit,
+          mode,
+          count: hits.length,
+          vectorAvailable: this.params.store.isVectorSearchAvailable() && !!embeddingAdapter,
+          vectorError: this.params.store.getVectorLoadError() ?? undefined,
+          ...(input.verbose && queryAboutness ? { queryAboutness } : {}),
+          ...(input.verbose && queryAboutnessError ? { queryAboutnessError } : {}),
+        },
+        results: hits.map((hit) => this.formatSearchHit(hit, input.verbose ?? false)),
+      } satisfies ConversationThreadSearchResult;
+      usage.log({ status: "completed", mode, queryCount: queries.length });
+      return result;
+    } catch (e) {
+      usage.log({
+        status: "failed",
+        mode,
+        queryCount: queries.length,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
+    }
   }
 
   async planAutoInjectSearch(input: {
@@ -1694,42 +1769,66 @@ export class ConversationThreadService {
       facets: input.facets.length,
       modelId: adapter.modelId,
     });
-    for (const facet of input.facets) {
-      const embedding = await adapter.embed({ text: facet.text, facet: facet.facet });
-      dimensions ??= embedding.length;
-      if (embedding.length !== dimensions) {
-        throw new Error(
-          `thread embedding dimension mismatch: expected ${dimensions}, got ${embedding.length}`,
-        );
+    const usage = createThreadEmbeddingUsageAccumulator("thread_facets");
+    try {
+      for (const facet of input.facets) {
+        const embedding = await adapter.embed({
+          text: facet.text,
+          facet: facet.facet,
+          onUsage: usage.record,
+        });
+        dimensions ??= embedding.length;
+        if (embedding.length !== dimensions) {
+          throw new Error(
+            `thread embedding dimension mismatch: expected ${dimensions}, got ${embedding.length}`,
+          );
+        }
+        embeddings.push({
+          facet: facet.facet,
+          embedding,
+        });
       }
-      embeddings.push({
-        facet: facet.facet,
-        embedding,
-      });
-    }
 
-    if (dimensions === null) {
-      this.logger.debug("thread embedding generation skipped: no facets", {
+      if (dimensions === null) {
+        this.logger.debug("thread embedding generation skipped: no facets", {
+          jobId: input.jobId,
+          threadId: input.threadId,
+        });
+        return;
+      }
+
+      this.params.store.upsertEmbeddings({
+        threadId: input.threadId,
+        embeddingInputHash: input.embeddingInputHash,
+        modelId: adapter.modelId,
+        dimensions,
+        embeddings,
+      });
+      this.logger.debug("thread embedding generation completed", {
         jobId: input.jobId,
         threadId: input.threadId,
+        facets: embeddings.length,
+        dimensions,
+        modelId: adapter.modelId,
       });
-      return;
+      usage.log({
+        status: "completed",
+        jobId: input.jobId,
+        threadId: input.threadId,
+        dimensions,
+        persistedEmbeddings: embeddings.length,
+      });
+    } catch (e) {
+      usage.log({
+        status: "failed",
+        jobId: input.jobId,
+        threadId: input.threadId,
+        dimensions: dimensions ?? undefined,
+        persistedEmbeddings: embeddings.length,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
     }
-
-    this.params.store.upsertEmbeddings({
-      threadId: input.threadId,
-      embeddingInputHash: input.embeddingInputHash,
-      modelId: adapter.modelId,
-      dimensions,
-      embeddings,
-    });
-    this.logger.debug("thread embedding generation completed", {
-      jobId: input.jobId,
-      threadId: input.threadId,
-      facets: embeddings.length,
-      dimensions,
-      modelId: adapter.modelId,
-    });
   }
 
   private async captureQueryAboutness(input: {
@@ -1791,6 +1890,7 @@ export class ConversationThreadService {
     embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
+    onEmbeddingUsage?: (event: ConversationThreadEmbeddingUsageEvent) => void;
   }): Promise<ConversationThreadSearchHit[]> {
     const candidates = new Map<string, ConversationThreadSearchHit>();
     const add = (hit: ConversationThreadSearchHit) => {
@@ -1834,7 +1934,11 @@ export class ConversationThreadService {
     const adapter = input.embeddingAdapter;
     if (input.mode !== "lexical" && adapter && this.params.store.isVectorSearchAvailable()) {
       try {
-        const queryEmbedding = await adapter.embed({ text: input.query, facet: "query" });
+        const queryEmbedding = await adapter.embed({
+          text: input.query,
+          facet: "query",
+          onUsage: input.onEmbeddingUsage,
+        });
         for (const hit of this.params.store.searchSemantic({
           embedding: queryEmbedding,
           modelId: adapter.modelId,
@@ -1872,6 +1976,7 @@ export class ConversationThreadService {
     embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
+    onEmbeddingUsage?: (event: ConversationThreadEmbeddingUsageEvent) => void;
   }): Promise<ConversationThreadSearchHitWithAttribution[]> {
     if (input.queries.length === 1) {
       return await this.searchHits({
@@ -1882,6 +1987,7 @@ export class ConversationThreadService {
         embeddingAdapter: input.embeddingAdapter,
         filters: input.filters,
         allowlist: input.allowlist,
+        onEmbeddingUsage: input.onEmbeddingUsage,
       });
     }
 
@@ -1897,6 +2003,7 @@ export class ConversationThreadService {
           embeddingAdapter: input.embeddingAdapter,
           filters: input.filters,
           allowlist: input.allowlist,
+          onEmbeddingUsage: input.onEmbeddingUsage,
         }),
       })),
     );
