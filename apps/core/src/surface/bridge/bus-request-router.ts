@@ -70,6 +70,7 @@ import {
   resolvePreviousMessageText as resolvePreviousMessageTextImpl,
   resolveRepliedToMessageText as resolveRepliedToMessageTextImpl,
 } from "./bus-request-router/context";
+import { decideActiveRequestRoute } from "./bus-request-router/decisions";
 import type { CustomCommandManager } from "../../custom-commands/manager";
 
 type ActiveSessionState = {
@@ -1102,25 +1103,27 @@ export async function startBusRequestRouter(params: {
       // - Mentions (not replies) can steer the active request (plus output reanchor).
       // - Replies to other bot messages fork into a queued-behind prompt.
       // - Everything else becomes a follow-up into the running request.
-      const isReplyToActiveOutput =
-        replyToBot &&
-        typeof input.replyToMessageId === "string" &&
-        active.activeOutputMessageIds.has(input.replyToMessageId);
+      const routeDecision = decideActiveRequestRoute({
+        activeOutputMessageIds: active.activeOutputMessageIds,
+        replyToBot,
+        mentionsBot,
+        replyToMessageId: input.replyToMessageId,
+        userText,
+        botMentionNames,
+        allowMentionSteer: true,
+        plainMessageBehavior: "buffered_prompt",
+      });
 
-      if (isReplyToActiveOutput) {
-        if (mentionsBot) {
-          const steerMode = parseSteerDirectiveMode({
-            text: userText,
-            botNames: botMentionNames,
-          });
-
+      switch (routeDecision.kind) {
+        case "active_output_steer":
+        case "active_mention_steer": {
           await publishSurfaceOutputReanchor({
             bus,
             requestId: active.requestId,
             sessionId,
-            inheritReplyTo: false,
-            replyTo: msgRef,
-            mode: steerMode,
+            inheritReplyTo: routeDecision.inheritReplyTo,
+            ...(routeDecision.inheritReplyTo ? {} : { replyTo: msgRef }),
+            mode: routeDecision.queue,
           });
           active.activeOutputMessageIds.clear();
 
@@ -1130,7 +1133,7 @@ export async function startBusRequestRouter(params: {
             cfg,
             requestId: active.requestId,
             sessionId,
-            queue: steerMode,
+            queue: routeDecision.queue,
             msgRef,
             sessionMode,
             sessionConfigId,
@@ -1138,7 +1141,7 @@ export async function startBusRequestRouter(params: {
             transformUserText: combineTextTransforms(
               modelOverrideTransform,
               continueDirectiveTransform,
-              steerMode === "interrupt"
+              routeDecision.queue === "interrupt"
                 ? (text) =>
                     stripLeadingInterruptDirective({
                       text,
@@ -1149,118 +1152,77 @@ export async function startBusRequestRouter(params: {
           });
           return;
         }
+        case "active_output_follow_up":
+        case "plain_follow_up": {
+          await publishSingleMessageToActiveRequest({
+            adapter,
+            bus,
+            cfg,
+            requestId: active.requestId,
+            sessionId,
+            queue: "followUp",
+            msgRef,
+            sessionMode,
+            sessionConfigId,
+            parentChannelId,
+            transformUserText: combineTextTransforms(
+              modelOverrideTransform,
+              continueDirectiveTransform,
+            ),
+          });
+          return;
+        }
+        case "fork_reply_prompt": {
+          const requestId = formatDiscordMessageRequestId({
+            channelId: sessionId,
+            messageId: msgRef.messageId,
+          });
 
-        await publishSingleMessageToActiveRequest({
-          adapter,
-          bus,
-          cfg,
-          requestId: active.requestId,
-          sessionId,
-          queue: "followUp",
-          msgRef,
-          sessionMode,
-          sessionConfigId,
-          parentChannelId,
-          transformUserText: combineTextTransforms(
-            modelOverrideTransform,
-            continueDirectiveTransform,
-          ),
-        });
-        return;
+          await publishActiveChannelPrompt({
+            adapter,
+            bus,
+            cfg,
+            requestId,
+            sessionId,
+            triggerMsgRef: msgRef,
+            triggerType: "reply",
+            sessionMode,
+            sessionConfigId,
+            parentChannelId,
+            botMentionNames,
+            transformTriggerUserText: combineTextTransforms(
+              modelOverrideTransform,
+              continueDirectiveTransform,
+            ),
+            transformUserTextForMessageId: msgRef.messageId,
+            modelOverride,
+            markActive: false,
+          });
+          return;
+        }
+        case "buffered_prompt": {
+          await publishSingleMessagePrompt({
+            adapter,
+            bus,
+            cfg,
+            requestId: bufferedPromptRequestIdForActiveRequest(active.requestId),
+            sessionId,
+            sessionConfigId,
+            parentChannelId,
+            msgRef,
+            sessionMode,
+            modelOverride,
+            transformUserText: combineTextTransforms(
+              modelOverrideTransform,
+              continueDirectiveTransform,
+            ),
+            raw: {
+              bufferedForActiveRequestId: active.requestId,
+            },
+          });
+          return;
+        }
       }
-
-      // Active channel @mention (not a reply) can steer the running request.
-      // IMPORTANT: replies to non-active bot messages must still fork into a queued prompt.
-      if (!replyToBot && mentionsBot) {
-        const steerMode = parseSteerDirectiveMode({
-          text: userText,
-          botNames: botMentionNames,
-        });
-
-        await publishSurfaceOutputReanchor({
-          bus,
-          requestId: active.requestId,
-          sessionId,
-          inheritReplyTo: true,
-          mode: steerMode,
-        });
-        active.activeOutputMessageIds.clear();
-
-        await publishSingleMessageToActiveRequest({
-          adapter,
-          bus,
-          cfg,
-          requestId: active.requestId,
-          sessionId,
-          queue: steerMode,
-          msgRef,
-          sessionMode,
-          sessionConfigId,
-          parentChannelId,
-          transformUserText: combineTextTransforms(
-            modelOverrideTransform,
-            continueDirectiveTransform,
-            steerMode === "interrupt"
-              ? (text) =>
-                  stripLeadingInterruptDirective({
-                    text,
-                    botNames: botMentionNames,
-                  })
-              : undefined,
-          ),
-        });
-        return;
-      }
-
-      if (replyToBot) {
-        const requestId = formatDiscordMessageRequestId({
-          channelId: sessionId,
-          messageId: msgRef.messageId,
-        });
-
-        await publishActiveChannelPrompt({
-          adapter,
-          bus,
-          cfg,
-          requestId,
-          sessionId,
-          triggerMsgRef: msgRef,
-          triggerType: "reply",
-          sessionMode,
-          sessionConfigId,
-          parentChannelId,
-          botMentionNames,
-          transformTriggerUserText: combineTextTransforms(
-            modelOverrideTransform,
-            continueDirectiveTransform,
-          ),
-          transformUserTextForMessageId: msgRef.messageId,
-          modelOverride,
-          markActive: false,
-        });
-        return;
-      }
-
-      await publishSingleMessagePrompt({
-        adapter,
-        bus,
-        cfg,
-        requestId: bufferedPromptRequestIdForActiveRequest(active.requestId),
-        sessionId,
-        sessionConfigId,
-        parentChannelId,
-        msgRef,
-        sessionMode,
-        modelOverride,
-        transformUserText: combineTextTransforms(
-          modelOverrideTransform,
-          continueDirectiveTransform,
-        ),
-        raw: {
-          bufferedForActiveRequestId: active.requestId,
-        },
-      });
-      return;
     }
 
     // No active request.
