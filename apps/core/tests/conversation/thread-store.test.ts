@@ -403,6 +403,126 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("uses mention-mode reply-chain grouping inside native Discord threads", async () => {
+    const searchDbPath = await createDbPath();
+    const surfaceDbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(searchDbPath);
+    const surfaceStore = new DiscordSurfaceStore(surfaceDbPath);
+    const threadStore = new ConversationThreadStore(searchDbPath, { surfaceDbPath });
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["parent-channel"],
+        },
+        router: {
+          defaultMode: "active",
+          sessionModes: {
+            "parent-channel": { mode: "mention" },
+          },
+        },
+      },
+    });
+
+    surfaceStore.upsertSession({
+      channelId: "parent-channel",
+      guildId: "guild-1",
+      type: "channel",
+      updatedTs: 1,
+    });
+    surfaceStore.upsertSession({
+      channelId: "thread-channel",
+      guildId: "guild-1",
+      parentChannelId: "parent-channel",
+      type: "thread",
+      updatedTs: 1,
+    });
+
+    searchStore.upsertMessages([
+      msg({
+        channelId: "thread-channel",
+        guildId: "guild-1",
+        parentChannelId: "parent-channel",
+        messageId: "a0",
+        userId: "user-a",
+        text: "first topic preface",
+        ts: 500,
+      }),
+      msg({
+        channelId: "thread-channel",
+        guildId: "guild-1",
+        parentChannelId: "parent-channel",
+        messageId: "a1",
+        userId: "user-a",
+        text: "first topic question",
+        ts: 1_000,
+      }),
+      msg({
+        channelId: "thread-channel",
+        guildId: "guild-1",
+        parentChannelId: "parent-channel",
+        messageId: "a2",
+        userId: "bot",
+        userName: "lilac",
+        text: "first topic answer",
+        ts: 2_000,
+      }),
+      msg({
+        channelId: "thread-channel",
+        guildId: "guild-1",
+        parentChannelId: "parent-channel",
+        messageId: "b1",
+        userId: "user-b",
+        text: "second topic question",
+        ts: 3_000,
+      }),
+      msg({
+        channelId: "thread-channel",
+        guildId: "guild-1",
+        parentChannelId: "parent-channel",
+        messageId: "b2",
+        userId: "bot",
+        userName: "lilac",
+        text: "second topic answer",
+        ts: 4_000,
+      }),
+    ]);
+
+    for (const message of [
+      { messageId: "a0", authorId: "user-a", ts: 500 },
+      { messageId: "a1", authorId: "user-a", ts: 1_000 },
+      { messageId: "a2", authorId: "bot", ts: 2_000, replyToMessageId: "a1" },
+      { messageId: "b1", authorId: "user-b", ts: 3_000 },
+      { messageId: "b2", authorId: "bot", ts: 4_000, replyToMessageId: "b1" },
+    ]) {
+      surfaceStore.upsertMessageRelation({
+        channelId: "thread-channel",
+        messageId: message.messageId,
+        guildId: "guild-1",
+        authorId: message.authorId,
+        ts: message.ts,
+        isChat: true,
+        replyToMessageId: message.replyToMessageId,
+        updatedTs: 1,
+      });
+    }
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg });
+    expect(refreshed.threads).toBe(2);
+
+    const first = threadStore.readThread("discord:channel:thread-channel:a0", 0, 10);
+    expect(first?.thread.parent_channel_id).toBe("parent-channel");
+    expect(first?.messages.map((item) => item.messageId)).toEqual(["a0", "a1", "a2"]);
+
+    const second = threadStore.readThread("discord:channel:thread-channel:b1", 0, 10);
+    expect(second?.thread.parent_channel_id).toBe("parent-channel");
+    expect(second?.messages.map((item) => item.messageId)).toEqual(["b1", "b2"]);
+
+    searchStore.close();
+    surfaceStore.close();
+    threadStore.close();
+  });
+
   it("summarizes, searches, and reads through conversation.thread tools", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);

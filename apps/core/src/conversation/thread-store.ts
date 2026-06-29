@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import * as sqliteVec from "sqlite-vec";
+import type { CoreConfig } from "@stanley2058/lilac-utils";
 
 import type {
   ConversationThreadEmbeddingFacet,
   ConversationThreadFacetInput,
 } from "./thread-embedding";
+import { splitByDiscordWindowOldestToNewest } from "../surface/discord/merge-window";
 
 const SEARCH_LIMIT_MAX = 50;
 const THREAD_DISCOVERY_GAP_MS = 60 * 60 * 1000;
@@ -14,6 +16,8 @@ export const CONVERSATION_THREAD_SUMMARY_VERSION = 4;
 export const CONVERSATION_THREAD_EMBEDDING_VERSION = 1;
 
 export type ConversationThreadKind = "discord_thread" | "inferred_channel_thread";
+
+type ConversationThreadGroupingMode = "mention" | "active";
 
 export type ConversationThreadRow = {
   thread_id: string;
@@ -355,7 +359,11 @@ function messageKey(channelId: string, messageId: string): string {
   return `${channelId}\u001f${messageId}`;
 }
 
-function groupInferredMessages(messages: readonly IndexedMessageRow[]): IndexedMessageRow[][] {
+function groupInferredMessages(input: {
+  messages: readonly IndexedMessageRow[];
+  mode: ConversationThreadGroupingMode;
+}): IndexedMessageRow[][] {
+  const { messages, mode } = input;
   if (messages.length === 0) return [];
 
   const parent = messages.map((_, index) => index);
@@ -378,8 +386,29 @@ function groupInferredMessages(messages: readonly IndexedMessageRow[]): IndexedM
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]!;
     byMessage.set(messageKey(message.channel_id, message.message_id), i);
+  }
+
+  const visualGroups = splitByDiscordWindowOldestToNewest(
+    messages.map((message, index) => ({
+      index,
+      authorId: message.user_id,
+      ts: message.ts,
+      hardBreakBefore: Boolean(message.reply_to_message_id),
+    })),
+  );
+
+  for (const group of visualGroups) {
+    const first = group[0];
+    if (!first) continue;
+    for (const item of group.slice(1)) {
+      union(first.index, item.index);
+    }
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
     const previous = messages[i - 1];
-    if (previous && message.ts - previous.ts <= THREAD_DISCOVERY_GAP_MS) {
+    if (mode === "active" && previous && message.ts - previous.ts <= THREAD_DISCOVERY_GAP_MS) {
       union(i - 1, i);
     }
   }
@@ -408,6 +437,27 @@ function groupInferredMessages(messages: readonly IndexedMessageRow[]): IndexedM
     if (leftStart.ts !== rightStart.ts) return leftStart.ts - rightStart.ts;
     return leftStart.message_id.localeCompare(rightStart.message_id);
   });
+}
+
+function resolveThreadGroupingMode(input: {
+  message: IndexedMessageRow;
+  cfg?: CoreConfig;
+}): ConversationThreadGroupingMode {
+  const { message, cfg } = input;
+  if (message.session_type === "dm") return "active";
+  if (message.session_type === null) return "active";
+  if (!cfg) return "active";
+
+  const directMode = cfg.surface.router.sessionModes[message.channel_id]?.mode;
+  if (directMode) return directMode;
+
+  const parentChannelId = message.parent_channel_id?.trim();
+  if (parentChannelId) {
+    const parentMode = cfg.surface.router.sessionModes[parentChannelId]?.mode;
+    if (parentMode) return parentMode;
+  }
+
+  return cfg.surface.router.defaultMode;
 }
 
 export type ConversationThreadSummaryWriteResult = {
@@ -685,7 +735,11 @@ export class ConversationThreadStore {
     `);
   }
 
-  refreshInferredThreads(): { channels: number; threads: number; messages: number } {
+  refreshInferredThreads(input?: { cfg?: CoreConfig }): {
+    channels: number;
+    threads: number;
+    messages: number;
+  } {
     const hasSurfaceDb = this.ensureSurfaceDb();
     const metadataSelect = hasSurfaceDb
       ? `
@@ -746,7 +800,10 @@ export class ConversationThreadStore {
 
     const tx = this.db.transaction(() => {
       for (const messages of inferredByChannel.values()) {
-        for (const group of groupInferredMessages(messages)) {
+        const first = messages[0];
+        if (!first) continue;
+        const mode = resolveThreadGroupingMode({ message: first, cfg: input?.cfg });
+        for (const group of groupInferredMessages({ messages, mode })) {
           if (!this.hasMainAgentMessage(group)) continue;
           const threadId = this.upsertInferredThread(group);
           activeThreadIds.add(threadId);

@@ -1240,8 +1240,8 @@ export class ConversationThreadService {
     },
   ) {}
 
-  refreshThreads(): { channels: number; threads: number; messages: number } {
-    return this.params.store.refreshInferredThreads();
+  refreshThreads(cfg?: CoreConfig): { channels: number; threads: number; messages: number } {
+    return this.params.store.refreshInferredThreads({ cfg });
   }
 
   async search(input: {
@@ -1256,11 +1256,11 @@ export class ConversationThreadService {
     verbose?: boolean;
     queryAboutness?: ConversationThreadQueryAboutness;
   }): Promise<ConversationThreadSearchResult> {
-    this.refreshThreads();
+    const cfg = await this.params.getConfig();
+    this.refreshThreads(cfg);
     const limit = Math.min(50, Math.max(1, Math.floor(input.limit ?? 5)));
     const mode = input.mode ?? "hybrid";
     const queries = normalizeSearchQueries(input.query);
-    const cfg = await this.params.getConfig();
     const embeddingAdapter = this.params.getEmbeddingAdapter
       ? await this.params.getEmbeddingAdapter()
       : null;
@@ -1330,12 +1330,12 @@ export class ConversationThreadService {
     offset?: number;
     limit?: number;
   }): Promise<ConversationThreadReadOutput> {
-    this.refreshThreads();
+    const cfg = await this.params.getConfig();
+    this.refreshThreads(cfg);
     const offset = Math.max(0, Math.floor(input.offset ?? 0));
     const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? DEFAULT_READ_LIMIT)));
     const result = this.params.store.readThread(input.threadId, offset, limit);
     if (!result) throw new Error(`conversation thread not found: ${input.threadId}`);
-    const cfg = await this.params.getConfig();
     if (
       !shouldAllowDiscordThread(cfg, {
         channelId: result.thread.channel_id,
@@ -1375,9 +1375,9 @@ export class ConversationThreadService {
   async metadata(input: {
     threadIds: readonly string[];
   }): Promise<ConversationThreadMetadataOutput> {
-    this.refreshThreads();
-    const threadIds = normalizeMetadataThreadIds(input);
     const cfg = await this.params.getConfig();
+    this.refreshThreads(cfg);
+    const threadIds = normalizeMetadataThreadIds(input);
     const threads: ConversationThreadMetadataOutput["threads"] = [];
     const missing: string[] = [];
 
@@ -1414,8 +1414,9 @@ export class ConversationThreadService {
     input: ConversationThreadRunSummarizationInput = {},
   ): Promise<ConversationThreadRunSummarizationResult> {
     const jobId = input.jobId;
+    const cfg = await this.params.getConfig();
     this.logger.debug("thread summarization refresh started", { jobId });
-    const refreshed = this.refreshThreads();
+    const refreshed = this.refreshThreads(cfg);
     this.logger.debug("thread summarization refresh completed", { jobId, refreshed });
 
     if (input.clear === true && input.dryRun === true) {
@@ -1451,7 +1452,6 @@ export class ConversationThreadService {
       });
     }
 
-    const cfg = await this.params.getConfig();
     const embeddingAdapter = this.params.getEmbeddingAdapter
       ? await this.params.getEmbeddingAdapter()
       : null;
