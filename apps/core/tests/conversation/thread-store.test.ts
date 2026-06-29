@@ -172,6 +172,83 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("treats LILAC_SESSION_DIVIDER as an inferred thread boundary", async () => {
+    const searchDbPath = await createDbPath();
+    const surfaceDbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(searchDbPath);
+    const surfaceStore = new DiscordSurfaceStore(surfaceDbPath);
+    const threadStore = new ConversationThreadStore(searchDbPath, {
+      surfaceDbPath,
+      mainAgentUserNames: ["lilac"],
+    });
+
+    surfaceStore.upsertSession({
+      channelId: "c1",
+      type: "channel",
+      updatedTs: 1,
+    });
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "m1", userId: "u1", text: "before", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "m2",
+        userId: "bot",
+        userName: "lilac",
+        text: "before reply",
+        ts: 2,
+      }),
+      msg({
+        channelId: "c1",
+        messageId: "divider",
+        userId: "bot",
+        userName: "lilac",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
+        ts: 3,
+      }),
+      msg({ channelId: "c1", messageId: "m3", userId: "u1", text: "after", ts: 4 }),
+      msg({
+        channelId: "c1",
+        messageId: "m4",
+        userId: "bot",
+        userName: "lilac",
+        text: "after reply",
+        ts: 5,
+      }),
+    ]);
+
+    for (const message of [
+      { messageId: "m1", authorId: "u1", ts: 1 },
+      { messageId: "m2", authorId: "bot", ts: 2 },
+      { messageId: "divider", authorId: "bot", ts: 3 },
+      { messageId: "m3", authorId: "u1", ts: 4 },
+      { messageId: "m4", authorId: "bot", ts: 5 },
+    ]) {
+      surfaceStore.upsertMessageRelation({
+        channelId: "c1",
+        messageId: message.messageId,
+        authorId: message.authorId,
+        ts: message.ts,
+        isChat: true,
+        updatedTs: 1,
+      });
+    }
+
+    const refreshed = threadStore.refreshInferredThreads();
+    expect(refreshed.threads).toBe(2);
+
+    const before = threadStore.readThread("discord:channel:c1:m1", 0, 10);
+    expect(before?.messages.map((item) => item.messageId)).toEqual(["m1", "m2"]);
+
+    const after = threadStore.readThread("discord:channel:c1:m3", 0, 10);
+    expect(after?.messages.map((item) => item.messageId)).toEqual(["m3", "m4"]);
+    expect(threadStore.readThread("discord:channel:c1:divider", 0, 10)).toBeNull();
+
+    searchStore.close();
+    surfaceStore.close();
+    threadStore.close();
+  });
+
   it("does not make earlier active-gap threads stale after identical heal upserts", async () => {
     const originalDateNow = Date.now;
     let now = 1_000;

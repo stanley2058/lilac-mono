@@ -7,6 +7,7 @@ import type {
   ConversationThreadEmbeddingFacet,
   ConversationThreadFacetInput,
 } from "./thread-embedding";
+import { isDiscordSessionDividerText } from "../surface/discord/discord-session-divider";
 import { splitByDiscordWindowOldestToNewest } from "../surface/discord/merge-window";
 import { configureSqliteConnection } from "../shared/sqlite";
 
@@ -447,6 +448,44 @@ function groupInferredMessages(input: {
   });
 }
 
+function isMainAgentMessageRow(
+  message: IndexedMessageRow,
+  mainAgentUserNames: ReadonlySet<string>,
+): boolean {
+  if (mainAgentUserNames.size === 0) return true;
+  const userName = message.user_name?.trim().toLowerCase();
+  return !!userName && mainAgentUserNames.has(userName);
+}
+
+function isSessionDividerBoundaryMessage(
+  message: IndexedMessageRow,
+  mainAgentUserNames: ReadonlySet<string>,
+): boolean {
+  if (!isDiscordSessionDividerText(message.text)) return false;
+  return isMainAgentMessageRow(message, mainAgentUserNames);
+}
+
+function splitMessagesBySessionDivider(input: {
+  messages: readonly IndexedMessageRow[];
+  mainAgentUserNames: ReadonlySet<string>;
+}): IndexedMessageRow[][] {
+  const groups: IndexedMessageRow[][] = [];
+  let current: IndexedMessageRow[] = [];
+
+  for (const message of input.messages) {
+    if (isSessionDividerBoundaryMessage(message, input.mainAgentUserNames)) {
+      if (current.length > 0) groups.push(current);
+      current = [];
+      continue;
+    }
+
+    current.push(message);
+  }
+
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
 function resolveThreadGroupingMode(input: {
   message: IndexedMessageRow;
   cfg?: CoreConfig;
@@ -809,14 +848,19 @@ export class ConversationThreadStore {
 
     const tx = this.db.transaction(() => {
       for (const messages of inferredByChannel.values()) {
-        const first = messages[0];
-        if (!first) continue;
-        const mode = resolveThreadGroupingMode({ message: first, cfg: input?.cfg });
-        for (const group of groupInferredMessages({ messages, mode })) {
-          if (!this.hasMainAgentMessage(group)) continue;
-          const threadId = this.upsertInferredThread(group);
-          activeThreadIds.add(threadId);
-          threadCount += 1;
+        for (const segment of splitMessagesBySessionDivider({
+          messages,
+          mainAgentUserNames: this.mainAgentUserNames,
+        })) {
+          const first = segment[0];
+          if (!first) continue;
+          const mode = resolveThreadGroupingMode({ message: first, cfg: input?.cfg });
+          for (const group of groupInferredMessages({ messages: segment, mode })) {
+            if (!this.hasMainAgentMessage(group)) continue;
+            const threadId = this.upsertInferredThread(group);
+            activeThreadIds.add(threadId);
+            threadCount += 1;
+          }
         }
       }
 
@@ -842,11 +886,7 @@ export class ConversationThreadStore {
   }
 
   private hasMainAgentMessage(messages: readonly IndexedMessageRow[]): boolean {
-    if (this.mainAgentUserNames.size === 0) return true;
-    return messages.some((message) => {
-      const userName = message.user_name?.trim().toLowerCase();
-      return !!userName && this.mainAgentUserNames.has(userName);
-    });
+    return messages.some((message) => isMainAgentMessageRow(message, this.mainAgentUserNames));
   }
 
   private upsertInferredThread(messages: readonly IndexedMessageRow[]): string {
