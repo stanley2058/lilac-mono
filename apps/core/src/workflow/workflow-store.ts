@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { env } from "@stanley2058/lilac-utils";
+import { env, errorMessage } from "@stanley2058/lilac-utils";
 import path from "node:path";
 
 import type { WorkflowRecord, WorkflowState, WorkflowTaskRecord, WorkflowTaskState } from "./types";
@@ -45,12 +45,22 @@ export function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
 }
 
-function parseJson<T>(raw: string | null): T | null {
+function parseJson<T>(
+  raw: string | null,
+  context: { field: string; workflowId?: string; taskId?: string },
+): T | null {
   if (!raw) return null;
   try {
     return JSON.parse(raw) as T;
-  } catch {
-    return null;
+  } catch (error) {
+    const location = [
+      `field=${context.field}`,
+      context.workflowId ? `workflowId=${context.workflowId}` : undefined,
+      context.taskId ? `taskId=${context.taskId}` : undefined,
+    ]
+      .filter((part): part is string => typeof part === "string")
+      .join(" ");
+    throw new Error(`Failed to parse workflow JSON (${location}): ${errorMessage(error)}`);
   }
 }
 
@@ -87,8 +97,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
       kind: row.kind,
       description: row.description,
       state: row.state as WorkflowTaskRecord["state"],
-      input: parseJson(row.input_json) ?? undefined,
-      result: parseJson(row.result_json) ?? undefined,
+      input:
+        parseJson(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
+      result:
+        parseJson(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at ?? undefined,
@@ -136,8 +156,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
       kind: row.kind,
       description: row.description,
       state: row.state as WorkflowTaskRecord["state"],
-      input: parseJson(row.input_json) ?? undefined,
-      result: parseJson(row.result_json) ?? undefined,
+      input:
+        parseJson(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
+      result:
+        parseJson(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at ?? undefined,
@@ -178,8 +208,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
       kind: row.kind,
       description: row.description,
       state: row.state as WorkflowTaskRecord["state"],
-      input: parseJson(row.input_json) ?? undefined,
-      result: parseJson(row.result_json) ?? undefined,
+      input:
+        parseJson(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
+      result:
+        parseJson(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at ?? undefined,
@@ -267,7 +307,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     if (!row) return null;
 
-    const def = parseJson<WorkflowRecord["definition"]>(row.definition_json);
+    const def = parseJson<WorkflowRecord["definition"]>(row.definition_json, {
+      field: "workflows.definition_json",
+      workflowId: row.workflow_id,
+    });
     if (!def) return null;
 
     return {
@@ -314,7 +357,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const out: WorkflowRecord[] = [];
     for (const row of rows) {
-      const def = parseJson<WorkflowRecord["definition"]>(row.definition_json);
+      const def = parseJson<WorkflowRecord["definition"]>(row.definition_json, {
+        field: "workflows.definition_json",
+        workflowId: row.workflow_id,
+      });
       if (!def) continue;
       out.push({
         workflowId: row.workflow_id,
@@ -387,8 +433,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
       kind: row.kind,
       description: row.description,
       state: row.state as WorkflowTaskRecord["state"],
-      input: parseJson(row.input_json) ?? undefined,
-      result: parseJson(row.result_json) ?? undefined,
+      input:
+        parseJson(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
+      result:
+        parseJson(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at ?? undefined,
@@ -471,8 +527,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
       kind: row.kind,
       description: row.description,
       state: row.state as WorkflowTaskRecord["state"],
-      input: parseJson(row.input_json) ?? undefined,
-      result: parseJson(row.result_json) ?? undefined,
+      input:
+        parseJson(row.input_json, {
+          field: "workflow_tasks.input_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
+      result:
+        parseJson(row.result_json, {
+          field: "workflow_tasks.result_json",
+          workflowId: row.workflow_id,
+          taskId: row.task_id,
+        }) ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at ?? undefined,

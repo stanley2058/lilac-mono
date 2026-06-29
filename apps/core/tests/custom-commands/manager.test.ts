@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { CustomCommandManager } from "../../src/custom-commands/manager";
-import { parseCustomCommandFromRaw } from "../../src/surface/bridge/bus-agent-runner/raw";
+import {
+  parseCustomCommandFromRaw,
+  parseSessionConfigIdFromRaw,
+} from "../../src/surface/bridge/bus-agent-runner/raw";
 
 async function mkdirp(filePath: string) {
   await fs.mkdir(filePath, { recursive: true });
@@ -275,5 +278,24 @@ describe("parseCustomCommandFromRaw", () => {
       text: "/lilac:tarot 3",
       source: "text",
     });
+  });
+
+  it("rejects malformed command metadata", () => {
+    expect(
+      parseCustomCommandFromRaw({
+        customCommand: {
+          name: "tarot",
+          text: "/lilac:tarot",
+          source: "unknown",
+        },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("raw router metadata decoders", () => {
+  it("trims non-empty string fields", () => {
+    expect(parseSessionConfigIdFromRaw({ sessionConfigId: "  c1  " })).toBe("c1");
+    expect(parseSessionConfigIdFromRaw({ sessionConfigId: "   " })).toBeNull();
   });
 });
