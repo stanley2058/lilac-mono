@@ -467,16 +467,32 @@ type ToolResultOutput = Extract<
 type JsonToolOutputValue = Extract<ToolResultOutput, { type: "json" }>["value"];
 
 function isJsonToolOutputValue(value: unknown): value is JsonToolOutputValue {
+  return isJsonToolOutputValueInner(value, new WeakSet<object>());
+}
+
+function isJsonToolOutputValueInner(
+  value: unknown,
+  activeObjects: WeakSet<object>,
+): value is JsonToolOutputValue {
   if (value === null) return true;
 
   switch (typeof value) {
     case "string":
-    case "number":
     case "boolean":
       return true;
+    case "number":
+      return Number.isFinite(value);
     case "object":
-      if (Array.isArray(value)) return value.every(isJsonToolOutputValue);
-      return Object.values(value).every(isJsonToolOutputValue);
+      if (activeObjects.has(value)) return false;
+      activeObjects.add(value);
+      try {
+        const values = Array.isArray(value) ? value : Object.values(value);
+        return values.every((item) => isJsonToolOutputValueInner(item, activeObjects));
+      } catch {
+        return false;
+      } finally {
+        activeObjects.delete(value);
+      }
     default:
       return false;
   }

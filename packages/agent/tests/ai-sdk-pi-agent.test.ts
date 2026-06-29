@@ -1,10 +1,27 @@
 import { describe, expect, it } from "bun:test";
-import type { LanguageModel } from "ai";
+import { jsonSchema, tool, type LanguageModel, type ToolModelMessage } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 
 import { AiSdkPiAgent, extractToolCallsFromMessages } from "../ai-sdk-pi-agent";
 
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
+}
+
+function zeroUsage() {
+  return {
+    inputTokens: {
+      total: 0,
+      noCache: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    outputTokens: {
+      total: 0,
+      text: 0,
+      reasoning: 0,
+    },
+  };
 }
 
 describe("AiSdkPiAgent model spec tracking", () => {
@@ -256,5 +273,155 @@ describe("AiSdkPiAgent model spec tracking", () => {
     }
 
     expect(part.input).toEqual({ path: "note.txt" });
+  });
+
+  it("serializes cyclic successful tool outputs as fallback text without marking execution failed", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "cycle_tool",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-1" },
+              { type: "text-delta", id: "text-1", delta: "done" },
+              { type: "text-end", id: "text-1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const toolEnds: Array<{ isError: boolean; result: unknown }> = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        cycle_tool: tool({
+          description: "returns a cyclic object",
+          inputSchema: jsonSchema({
+            type: "object",
+            additionalProperties: false,
+          }),
+          execute: () => {
+            const result: { ok: true; self?: unknown } = { ok: true };
+            result.self = result;
+            return result;
+          },
+        }),
+      },
+    });
+
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_end") {
+        toolEnds.push({ isError: event.isError, result: event.result });
+      }
+    });
+
+    await agent.prompt("call the cyclic tool");
+
+    expect(toolEnds).toHaveLength(1);
+    expect(toolEnds[0]?.isError).toBe(false);
+
+    const toolMessage = agent.state.messages.find(
+      (message): message is ToolModelMessage => message.role === "tool",
+    );
+    const output =
+      toolMessage?.content[0]?.type === "tool-result" ? toolMessage.content[0].output : undefined;
+
+    expect(output).toEqual({ type: "json", value: "[object Object]" });
+  });
+
+  it("serializes non-finite successful tool outputs through JSON fallback", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "nan_tool",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-1" },
+              { type: "text-delta", id: "text-1", delta: "done" },
+              { type: "text-end", id: "text-1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const toolEnds: Array<{ isError: boolean; result: unknown }> = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        nan_tool: tool({
+          description: "returns NaN",
+          inputSchema: jsonSchema({
+            type: "object",
+            additionalProperties: false,
+          }),
+          execute: () => Number.NaN,
+        }),
+      },
+    });
+
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_end") {
+        toolEnds.push({ isError: event.isError, result: event.result });
+      }
+    });
+
+    await agent.prompt("call the NaN tool");
+
+    expect(toolEnds).toHaveLength(1);
+    expect(toolEnds[0]?.isError).toBe(false);
+
+    const toolMessage = agent.state.messages.find(
+      (message): message is ToolModelMessage => message.role === "tool",
+    );
+    const output =
+      toolMessage?.content[0]?.type === "tool-result" ? toolMessage.content[0].output : undefined;
+
+    expect(output).toEqual({ type: "json", value: null });
   });
 });
