@@ -1,17 +1,13 @@
 import type { MsgRef, SurfaceMessage } from "../../types";
 
 import { hasReplyChainPlannerProvider, type SurfaceAdapter } from "../../adapter";
-import {
-  buildDiscordRichTextFromContentAndEmbeds,
-  normalizeDiscordEmbeds,
-} from "../../discord/discord-embed-text";
+import { buildDiscordRichTextFromContentAndEmbeds } from "../../discord/discord-embed-text";
+import { normalizeDiscordRaw } from "../../discord/discord-raw-normalizer";
 
 import { splitByDiscordWindowOldestToNewest } from "../../discord/merge-window";
 
 import type { DiscordAttachmentMeta, MergedChunk, ReplyChainMessage } from "./types";
 
-const DISCORD_REFERENCE_TYPE_DEFAULT = 0;
-const DISCORD_REFERENCE_TYPE_FORWARD = 1;
 const DEFAULT_MENTION_BLOCK_LIMIT = 50;
 
 function compareDiscordSnowflakeLike(a: string, b: string): number {
@@ -26,86 +22,13 @@ function compareDiscordSnowflakeLike(a: string, b: string): number {
   }
 }
 
-function extractDiscordAttachmentsFromList(list: readonly unknown[]): DiscordAttachmentMeta[] {
-  const out: DiscordAttachmentMeta[] = [];
-
-  for (const item of list) {
-    if (!item || typeof item !== "object") continue;
-    const a = item as Record<string, unknown>;
-
-    const url = typeof a.url === "string" ? a.url : null;
-    if (!url) continue;
-
-    out.push({
-      url,
-      filename: typeof a.filename === "string" ? a.filename : undefined,
-      mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
-      size: typeof a.size === "number" ? a.size : undefined,
-    });
-  }
-
-  return out;
-}
-
-function getDiscordReferenceTypeFromRaw(raw: unknown): number | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const o = raw as Record<string, unknown>;
-
-  if ("reference" in o) {
-    const ref = o.reference;
-    if (ref && typeof ref === "object") {
-      const type = (ref as Record<string, unknown>).type;
-      if (typeof type === "number") return type;
-    }
-  }
-
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-  const referenceType =
-    discord && typeof discord.referenceType === "number" ? discord.referenceType : undefined;
-  return referenceType;
-}
-
-function getForwardSnapshotMessageFromRaw(raw: unknown): Record<string, unknown> | null {
-  if (!raw || typeof raw !== "object") return null;
-
-  const referenceType = getDiscordReferenceTypeFromRaw(raw) ?? DISCORD_REFERENCE_TYPE_DEFAULT;
-  if (referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) return null;
-
-  const o = raw as Record<string, unknown>;
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-
-  const resolveSnapshotMessage = (value: unknown): Record<string, unknown> | null => {
-    if (!Array.isArray(value) || value.length === 0) return null;
-    const first = value[0];
-    if (!first || typeof first !== "object") return null;
-
-    const firstObj = first as Record<string, unknown>;
-    const nestedMessage = firstObj.message;
-    if (nestedMessage && typeof nestedMessage === "object") {
-      return nestedMessage as Record<string, unknown>;
-    }
-
-    return firstObj;
-  };
-
-  return (
-    resolveSnapshotMessage(o.messageSnapshots) ?? resolveSnapshotMessage(discord?.messageSnapshots)
-  );
-}
-
 export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined {
-  const snapshot = getForwardSnapshotMessageFromRaw(raw);
+  const snapshot = normalizeDiscordRaw(raw)?.forwardSnapshot;
   if (!snapshot) return undefined;
 
   const fromSnapshot = buildDiscordRichTextFromContentAndEmbeds({
-    content: typeof snapshot.content === "string" ? snapshot.content : "",
-    embeds: normalizeDiscordEmbeds(snapshot.embeds),
+    content: snapshot.content,
+    embeds: snapshot.embeds,
     mode: "inbound",
   });
 
@@ -113,80 +36,16 @@ export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined 
 }
 
 function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {
-  if (!raw || typeof raw !== "object") return [];
-
-  const forwardSnapshot = getForwardSnapshotMessageFromRaw(raw);
-  if (forwardSnapshot) {
-    const snapshotAttachments =
-      "attachments" in forwardSnapshot && Array.isArray(forwardSnapshot.attachments)
-        ? extractDiscordAttachmentsFromList(forwardSnapshot.attachments)
-        : [];
-    if (snapshotAttachments.length > 0) {
-      return snapshotAttachments;
-    }
-  }
-
-  // We store attachments in two places depending on origin:
-  // - adapter persisted raw: { attachments: [...] }
-  // - adapter event raw: { discord: { attachments: [...] } }
-  const o = raw as Record<string, unknown>;
-
-  const listFromTopLevel =
-    "attachments" in o && Array.isArray(o.attachments) ? o.attachments : null;
-
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-
-  const listFromDiscord =
-    discord && "attachments" in discord && Array.isArray(discord.attachments)
-      ? discord.attachments
-      : null;
-
-  const list = listFromDiscord ?? listFromTopLevel;
-  if (!list) return [];
-
-  return extractDiscordAttachmentsFromList(list);
+  const discordRaw = normalizeDiscordRaw(raw);
+  return discordRaw?.forwardSnapshot?.attachments ?? discordRaw?.attachments ?? [];
 }
 
 function getReferenceFromRaw(raw: unknown): {
   messageId?: string;
   channelId?: string;
 } {
-  if (!raw || typeof raw !== "object") return {};
-  const o = raw as Record<string, unknown>;
-
-  // Preferred (Discord API shape): reference: { messageId, channelId }
-  if ("reference" in o) {
-    const ref = o.reference;
-    if (ref && typeof ref === "object") {
-      const r = ref as Record<string, unknown>;
-      const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
-      const channelId = typeof r.channelId === "string" ? r.channelId : undefined;
-      const referenceType = typeof r.type === "number" ? r.type : DISCORD_REFERENCE_TYPE_DEFAULT;
-      if (messageId && referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) {
-        return { messageId, channelId };
-      }
-    }
-  }
-
-  // Back-compat: older stored rows and adapter events.
-  const discord =
-    "discord" in o && o.discord && typeof o.discord === "object"
-      ? (o.discord as Record<string, unknown>)
-      : null;
-  const referenceType =
-    discord && typeof discord.referenceType === "number"
-      ? discord.referenceType
-      : DISCORD_REFERENCE_TYPE_DEFAULT;
-  const replyToMessageId =
-    discord && typeof discord.replyToMessageId === "string" ? discord.replyToMessageId : undefined;
-  if (replyToMessageId && referenceType !== DISCORD_REFERENCE_TYPE_FORWARD) {
-    return { messageId: replyToMessageId };
-  }
-
-  return {};
+  const replyReference = normalizeDiscordRaw(raw)?.replyReference;
+  return replyReference ?? {};
 }
 
 function hasReplyTargetInRaw(raw: unknown): boolean {
