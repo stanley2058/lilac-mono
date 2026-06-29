@@ -1428,6 +1428,7 @@ export async function startBusRequestRouter(params: {
       requestId: randomRequestId(),
       sessionId,
       sessionConfigId: b.sessionConfigId,
+      parentChannelId: b.parentChannelId,
       // Use newest message as the context anchor (not a reply trigger).
       triggerMsgRef: b.messages[b.messages.length - 1]?.msgRef,
       triggerType: undefined,

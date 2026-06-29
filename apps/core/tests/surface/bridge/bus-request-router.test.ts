@@ -1605,6 +1605,106 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("passes parentChannelId through gate-forwarded active thread batches", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+
+    const parentChannelId = "parent-chan";
+    const threadId = "thread-1";
+    const msgId = "m1";
+    const now = Date.now();
+
+    const adapter = new FakeAdapter({
+      [`${threadId}:${msgId}`]: {
+        ref: { platform: "discord", channelId: threadId, messageId: msgId },
+        session: { platform: "discord", channelId: threadId },
+        userId: "u1",
+        userName: "user1",
+        text: "thread hello",
+        ts: now,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      routerGate: async () => ({ forward: true, reason: "yes" }),
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+            previewFinalOutputStyle: "embed",
+          },
+          router: {
+            defaultMode: "mention",
+            sessionModes: {
+              [parentChannelId]: { mode: "active", gate: true, safetyMode: "restricted" },
+            },
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "test",
+        consumerId: "c1",
+        offset: { type: "begin" },
+      },
+      async (m, ctx) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) {
+          received.push(m);
+        }
+        await ctx.commit();
+      },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: threadId,
+      messageId: msgId,
+      userId: "u1",
+      userName: "user1",
+      text: "thread hello",
+      ts: now,
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: false,
+          replyToBot: false,
+          parentChannelId,
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(received.length).toBe(1);
+    expect(received[0].data.queue).toBe("prompt");
+    expect(received[0].data.raw?.sessionMode).toBe("active");
+    expect(received[0].data.raw?.parentChannelId).toBe(parentChannelId);
+
+    await sub.stop();
+    await router.stop();
+  });
+
   it("passes previous-message context to active channel gate", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
