@@ -70,6 +70,32 @@ describe("discord-raw-normalizer", () => {
     expect(normalized?.replyReference).toEqual({ messageId: "parent" });
   });
 
+  it("treats null or malformed optional nested objects as absent", () => {
+    const normalized = normalizeDiscordRaw({
+      content: "top content",
+      embeds: [{ title: "top embed" }],
+      attachments: [
+        {
+          url: "https://cdn.discordapp.com/attachments/1/top.png",
+          filename: "top.png",
+        },
+      ],
+      reference: null,
+      discord: "legacy-corrupt-envelope",
+    });
+
+    expect(normalized?.content).toBe("top content");
+    expect(normalized?.embeds).toEqual([{ title: "top embed" }]);
+    expect(normalized?.attachments).toEqual([
+      {
+        url: "https://cdn.discordapp.com/attachments/1/top.png",
+        filename: "top.png",
+      },
+    ]);
+    expect(normalized?.reference).toBeUndefined();
+    expect(normalized?.replyReference).toBeUndefined();
+  });
+
   it("treats forwarded references as roots and exposes the visible snapshot", () => {
     const normalized = normalizeDiscordRaw({
       reference: {

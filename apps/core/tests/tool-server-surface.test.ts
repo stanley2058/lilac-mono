@@ -1376,6 +1376,92 @@ describe("tool-server surface", () => {
     expect(withAttachments.messages[0]?.mediaFiles?.[0]?.kind).toBe("image");
   });
 
+  it("falls back to top-level attachments when forwarded snapshot attachments are empty", async () => {
+    const channelId = "123";
+    const cfg = testConfig({
+      surface: {
+        discord: {
+          tokenEnv: "DISCORD_TOKEN",
+          allowedChannelIds: [channelId],
+          allowedGuildIds: [],
+          botName: "lilac",
+        },
+      },
+    });
+
+    const raw = {
+      reference: {
+        type: 1,
+        messageId: "orig",
+        channelId: "other",
+      },
+      attachments: [
+        {
+          url: "https://cdn.discordapp.com/attachments/orig/1/IMG_TOP.png",
+          filename: "IMG_TOP.png",
+          mimeType: "image/png",
+          size: 10,
+        },
+      ],
+      messageSnapshots: [
+        {
+          message: {
+            content: "Forwarded snapshot text",
+            attachments: [],
+          },
+        },
+      ],
+    };
+
+    const adapter = new FakeAdapter(
+      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
+      {
+        [channelId]: [
+          {
+            ref: { platform: "discord", channelId, messageId: "m1" },
+            session: { platform: "discord", channelId },
+            userId: "u1",
+            text: "Forwarded snapshot text",
+            ts: 100,
+            raw,
+          },
+        ],
+      },
+    );
+
+    const tool = new Surface({ adapter, config: cfg });
+
+    const listed = (await tool.call("surface.messages.list", {
+      client: "discord",
+      sessionId: channelId,
+      includeAttachments: true,
+    })) as {
+      messages: Array<{
+        attachmentCount?: number;
+        attachments?: Array<{ filename?: string; kind?: string }>;
+      }>;
+    };
+
+    expect(listed.messages[0]?.attachmentCount).toBe(1);
+    expect(listed.messages[0]?.attachments?.[0]?.filename).toBe("IMG_TOP.png");
+    expect(listed.messages[0]?.attachments?.[0]?.kind).toBe("image");
+
+    const read = (await tool.call("surface.messages.read", {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "m1",
+    })) as {
+      message: {
+        attachmentCount?: number;
+        attachments?: Array<{ filename?: string; kind?: string }>;
+      } | null;
+    };
+
+    expect(read.message?.attachmentCount).toBe(1);
+    expect(read.message?.attachments?.[0]?.filename).toBe("IMG_TOP.png");
+    expect(read.message?.attachments?.[0]?.kind).toBe("image");
+  });
+
   it("supports search order options", async () => {
     const channelId = "123";
     const cfg = testConfig({

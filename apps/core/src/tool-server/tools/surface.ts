@@ -656,7 +656,11 @@ function extractDiscordAttachmentMetaFromRaw(raw: unknown): SurfaceMessageAttach
   const normalized = normalizeDiscordRaw(raw);
   if (!normalized) return [];
 
-  const attachments = normalized.forwardSnapshot?.attachments ?? normalized.attachments;
+  const snapshotAttachments = normalized.forwardSnapshot?.attachments;
+  const attachments =
+    snapshotAttachments && snapshotAttachments.length > 0
+      ? snapshotAttachments
+      : normalized.attachments;
   return extractAttachmentMetaFromList(attachments);
 }
 

@@ -37,7 +37,9 @@ export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined 
 
 function extractDiscordAttachmentsFromRaw(raw: unknown): DiscordAttachmentMeta[] {
   const discordRaw = normalizeDiscordRaw(raw);
-  return discordRaw?.forwardSnapshot?.attachments ?? discordRaw?.attachments ?? [];
+  const snapshotAttachments = discordRaw?.forwardSnapshot?.attachments;
+  if (snapshotAttachments && snapshotAttachments.length > 0) return snapshotAttachments;
+  return discordRaw?.attachments ?? [];
 }
 
 function getReferenceFromRaw(raw: unknown): {

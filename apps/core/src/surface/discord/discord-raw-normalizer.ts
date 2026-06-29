@@ -79,9 +79,9 @@ const discordRawSchema = z
     content: maybeStringSchema,
     embeds: z.unknown().optional(),
     attachments: z.unknown().optional(),
-    reference: discordReferenceSchema.optional(),
+    reference: z.unknown().optional(),
     messageSnapshots: z.unknown().optional(),
-    discord: discordEnvelopeSchema.optional(),
+    discord: z.unknown().optional(),
   })
   .passthrough();
 
@@ -146,8 +146,10 @@ export function normalizeDiscordRaw(raw: unknown): NormalizedDiscordRaw | null {
   if (!parsed.success) return null;
 
   const top = parsed.data;
-  const discord = top.discord;
-  const reference = normalizeReference(top.reference);
+  const parsedDiscord = discordEnvelopeSchema.safeParse(top.discord);
+  const discord = parsedDiscord.success ? parsedDiscord.data : undefined;
+  const parsedReference = discordReferenceSchema.safeParse(top.reference);
+  const reference = parsedReference.success ? normalizeReference(parsedReference.data) : undefined;
   const referenceType = reference?.type ?? discord?.referenceType ?? DISCORD_REFERENCE_TYPE_DEFAULT;
   const topAttachments = normalizeDiscordAttachments(top.attachments);
   const discordAttachments = normalizeDiscordAttachments(discord?.attachments);

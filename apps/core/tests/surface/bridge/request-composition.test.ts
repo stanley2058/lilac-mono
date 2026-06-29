@@ -773,6 +773,56 @@ describe("request-composition attachments", () => {
     expect(String(imageParts[0].image)).toContain("IMG_VISIBLE.png");
   });
 
+  it("falls back to top-level attachments when forward snapshot attachments are empty", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "user",
+      text: "Forwarded snapshot text",
+      ts: 0,
+      raw: {
+        reference: {
+          type: 1,
+          messageId: "orig",
+          channelId: "other",
+        },
+        attachments: [
+          {
+            url: "https://cdn.discordapp.com/attachments/orig/1/IMG_TOP.png",
+            filename: "IMG_TOP.png",
+            mimeType: "image/png",
+            size: 10,
+          },
+        ],
+        messageSnapshots: [
+          {
+            message: {
+              content: "Forwarded snapshot text",
+              attachments: [],
+            },
+          },
+        ],
+      },
+    };
+
+    const adapter = new FakeAdapter(msg);
+    const out = await composeSingleMessage(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+    });
+
+    expect(out?.role).toBe("user");
+    expect(Array.isArray(out?.content)).toBe(true);
+
+    const parts = out!.content as any[];
+    const imageParts = parts.filter((p) => p && p.type === "image");
+    expect(imageParts.length).toBe(1);
+    expect(String(imageParts[0].image)).toContain("IMG_TOP.png");
+  });
+
   it("uses forward snapshot embed string description when content is empty", async () => {
     const msg: SurfaceMessage = {
       ref: { platform: "discord", channelId: "c", messageId: "m" },
