@@ -108,8 +108,10 @@ USER ${LILAC_USER}
 
 # uv (user-level)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-# bun (user-level)
-RUN curl -fsSL https://bun.sh/install | bash
+# bun (user-level), pinned to the workspace packageManager version.
+COPY package.json /tmp/lilac-package.json
+RUN BUN_VERSION="$(node -e 'const pm = require("/tmp/lilac-package.json").packageManager; const match = /^bun@(.+)$/.exec(pm ?? ""); if (!match) throw new Error(`packageManager must be bun@<version>, got ${pm}`); process.stdout.write(match[1]);')" \
+  && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
 USER root
 
 ############################

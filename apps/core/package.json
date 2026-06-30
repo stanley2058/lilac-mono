@@ -12,7 +12,7 @@
     "build:remote-runner": "bun run build-remote-runner.ts"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.11",
+    "@types/bun": "^1.3.14",
     "@types/mdast": "^4.0.4",
     "@types/shell-quote": "^1.7.5"
   },

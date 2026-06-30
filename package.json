@@ -2,7 +2,7 @@
   "name": "lilac-mono",
   "private": true,
   "license": "MIT",
-  "packageManager": "bun@1.3.11",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "build:info": "bun scripts/write-build-info.ts",
     "build:remote-fs": "bun --cwd=apps/core run build:remote-runner && bun --cwd=packages/remote-fs-runner run build",
@@ -16,7 +16,7 @@
     "ci": "bun test && bun run lint && bun run typecheck && bun run fmt:check && echo 'check passed'"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.11",
+    "@types/bun": "^1.3.14",
     "oxfmt": "^0.44.0",
     "oxlint": "^1.59.0",
     "typescript": "^6.0.2"
