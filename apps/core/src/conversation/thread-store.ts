@@ -9,6 +9,7 @@ import type {
 } from "./thread-embedding";
 import { isDiscordSessionDividerText } from "../surface/discord/discord-session-divider";
 import { splitByDiscordWindowOldestToNewest } from "../surface/discord/merge-window";
+import { parseLeadingContinueDirective } from "../surface/bridge/bus-request-router/common";
 import { configureSqliteConnection } from "../shared/sqlite";
 
 const SEARCH_LIMIT_MAX = 50;
@@ -371,6 +372,8 @@ function messageKey(channelId: string, messageId: string): string {
 function groupInferredMessages(input: {
   messages: readonly IndexedMessageRow[];
   mode: ConversationThreadGroupingMode;
+  botMentionNames: readonly string[];
+  mainAgentUserNames: ReadonlySet<string>;
 }): IndexedMessageRow[][] {
   const { messages, mode } = input;
   if (messages.length === 0) return [];
@@ -432,6 +435,25 @@ function groupInferredMessages(input: {
     union(i, targetIndex);
   }
 
+  if (mode === "active") {
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]!;
+      if (message.reply_to_message_id) continue;
+      if (isConfiguredMainAgentMessageRow(message, input.mainAgentUserNames)) continue;
+
+      const continueCount = parseLeadingContinueDirective({
+        text: message.text,
+        botNames: input.botMentionNames,
+      });
+      if (continueCount === undefined) continue;
+
+      const start = Math.max(0, i - continueCount);
+      for (let j = start; j < i; j++) {
+        union(i, j);
+      }
+    }
+  }
+
   const groups = new Map<number, IndexedMessageRow[]>();
   for (let i = 0; i < messages.length; i++) {
     const root = find(i);
@@ -448,11 +470,42 @@ function groupInferredMessages(input: {
   });
 }
 
+function resolveConversationThreadBotMentionNames(input: {
+  cfg?: CoreConfig;
+  mainAgentUserNames: ReadonlySet<string>;
+}): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (value: string | undefined) => {
+    const name = value?.trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+
+  add(input.cfg?.surface.discord.botName);
+  for (const name of input.mainAgentUserNames) add(name);
+
+  return names;
+}
+
 function isMainAgentMessageRow(
   message: IndexedMessageRow,
   mainAgentUserNames: ReadonlySet<string>,
 ): boolean {
   if (mainAgentUserNames.size === 0) return true;
+  const userName = message.user_name?.trim().toLowerCase();
+  return !!userName && mainAgentUserNames.has(userName);
+}
+
+function isConfiguredMainAgentMessageRow(
+  message: IndexedMessageRow,
+  mainAgentUserNames: ReadonlySet<string>,
+): boolean {
+  if (mainAgentUserNames.size === 0) return false;
   const userName = message.user_name?.trim().toLowerCase();
   return !!userName && mainAgentUserNames.has(userName);
 }
@@ -845,6 +898,10 @@ export class ConversationThreadStore {
 
     let threadCount = 0;
     const activeThreadIds = new Set<string>();
+    const botMentionNames = resolveConversationThreadBotMentionNames({
+      cfg: input?.cfg,
+      mainAgentUserNames: this.mainAgentUserNames,
+    });
 
     const tx = this.db.transaction(() => {
       for (const messages of inferredByChannel.values()) {
@@ -855,7 +912,12 @@ export class ConversationThreadStore {
           const first = segment[0];
           if (!first) continue;
           const mode = resolveThreadGroupingMode({ message: first, cfg: input?.cfg });
-          for (const group of groupInferredMessages({ messages: segment, mode })) {
+          for (const group of groupInferredMessages({
+            messages: segment,
+            mode,
+            botMentionNames,
+            mainAgentUserNames: this.mainAgentUserNames,
+          })) {
             if (!this.hasMainAgentMessage(group)) continue;
             const threadId = this.upsertInferredThread(group);
             activeThreadIds.add(threadId);

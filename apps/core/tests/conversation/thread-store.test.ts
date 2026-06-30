@@ -120,6 +120,31 @@ function msg(input: {
   };
 }
 
+function upsertRelations(
+  store: DiscordSurfaceStore,
+  messages: Array<{
+    messageId: string;
+    authorId: string;
+    ts: number;
+    channelId?: string;
+    authorName?: string;
+    replyToMessageId?: string;
+  }>,
+) {
+  for (const message of messages) {
+    store.upsertMessageRelation({
+      channelId: message.channelId ?? "c1",
+      messageId: message.messageId,
+      authorId: message.authorId,
+      authorName: message.authorName,
+      ts: message.ts,
+      isChat: true,
+      replyToMessageId: message.replyToMessageId,
+      updatedTs: 1,
+    });
+  }
+}
+
 const fakeEmbeddingAdapter: ConversationThreadEmbeddingAdapter = {
   modelId: "fake-2d",
   dimensions: 2,
@@ -167,6 +192,266 @@ describe("conversation thread store", () => {
 
     const second = threadStore.readThread("discord:channel:c1:m3", 0, 10);
     expect(second?.messages.map((item) => item.messageId)).toEqual(["m3"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("uses active !cont as a forward thread merge across natural groups", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "B", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "d",
+        userId: "u1",
+        text: "@lilac !cont=2 D",
+        ts: 2 * hour,
+      }),
+      msg({ channelId: "c1", messageId: "e", userId: "u2", text: "E", ts: 2 * hour + 1 }),
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(1);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b", "d", "e"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("lets active !cont merge every natural group touched by the requested lookback", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "B", ts: 1 }),
+      msg({ channelId: "c1", messageId: "c", userId: "u1", text: "C", ts: 2 * hour }),
+      msg({ channelId: "c1", messageId: "d", userId: "u2", text: "D", ts: 2 * hour + 1 }),
+      msg({ channelId: "c1", messageId: "e", userId: "u1", text: "!cont=3 E", ts: 4 * hour }),
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(1);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b", "c", "d", "e"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("keeps active natural groups split across long gaps without !cont", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "B", ts: 1 }),
+      msg({ channelId: "c1", messageId: "c", userId: "u1", text: "C", ts: 2 * hour }),
+      msg({ channelId: "c1", messageId: "d", userId: "u2", text: "D", ts: 2 * hour + 1 }),
+      msg({ channelId: "c1", messageId: "e", userId: "u1", text: "E", ts: 4 * hour }),
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(3);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b"]);
+    expect(
+      threadStore.readThread("discord:channel:c1:c", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["c", "d"]);
+    expect(
+      threadStore.readThread("discord:channel:c1:e", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["e"]);
+
+    searchStore.close();
+    threadStore.close();
+  });
+
+  it("does not let active !cont cross a session divider", async () => {
+    const searchDbPath = await createDbPath();
+    const surfaceDbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(searchDbPath);
+    const surfaceStore = new DiscordSurfaceStore(surfaceDbPath);
+    const threadStore = new ConversationThreadStore(searchDbPath, { surfaceDbPath });
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "B", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "divider",
+        userId: "bot",
+        userName: "lilac",
+        text: "[LILAC_SESSION_DIVIDER] (by user)",
+        ts: hour,
+      }),
+      msg({ channelId: "c1", messageId: "d", userId: "u1", text: "!cont=3 D", ts: 2 * hour }),
+      msg({ channelId: "c1", messageId: "e", userId: "u2", text: "E", ts: 2 * hour + 1 }),
+    ]);
+    upsertRelations(surfaceStore, [
+      { messageId: "a", authorId: "u1", ts: 0 },
+      { messageId: "b", authorId: "u2", ts: 1 },
+      { messageId: "divider", authorId: "bot", authorName: "lilac", ts: hour },
+      { messageId: "d", authorId: "u1", ts: 2 * hour },
+      { messageId: "e", authorId: "u2", ts: 2 * hour + 1 },
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(2);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b"]);
+    expect(
+      threadStore.readThread("discord:channel:c1:d", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["d", "e"]);
+
+    searchStore.close();
+    surfaceStore.close();
+    threadStore.close();
+  });
+
+  it("ignores active !cont semantics on reply messages while preserving reply grouping", async () => {
+    const searchDbPath = await createDbPath();
+    const surfaceDbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(searchDbPath);
+    const surfaceStore = new DiscordSurfaceStore(surfaceDbPath);
+    const threadStore = new ConversationThreadStore(searchDbPath, { surfaceDbPath });
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "B", ts: 1 }),
+      msg({ channelId: "c1", messageId: "c", userId: "u1", text: "C", ts: 2 * hour }),
+      msg({ channelId: "c1", messageId: "d", userId: "u2", text: "D", ts: 2 * hour + 1 }),
+      msg({ channelId: "c1", messageId: "e", userId: "u1", text: "!cont=3 E", ts: 4 * hour }),
+    ]);
+    upsertRelations(surfaceStore, [
+      { messageId: "a", authorId: "u1", ts: 0 },
+      { messageId: "b", authorId: "u2", ts: 1 },
+      { messageId: "c", authorId: "u1", ts: 2 * hour },
+      { messageId: "d", authorId: "u2", ts: 2 * hour + 1 },
+      { messageId: "e", authorId: "u1", ts: 4 * hour, replyToMessageId: "c" },
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(2);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b"]);
+    expect(
+      threadStore.readThread("discord:channel:c1:c", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["c", "d", "e"]);
+
+    searchStore.close();
+    surfaceStore.close();
+    threadStore.close();
+  });
+
+  it("ignores active !cont semantics on main-agent messages", async () => {
+    const searchDbPath = await createDbPath();
+    const surfaceDbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(searchDbPath);
+    const surfaceStore = new DiscordSurfaceStore(surfaceDbPath);
+    const threadStore = new ConversationThreadStore(searchDbPath, {
+      surfaceDbPath,
+      mainAgentUserNames: ["lilac"],
+    });
+    const hour = 60 * 60 * 1000;
+
+    searchStore.upsertMessages([
+      msg({
+        channelId: "c1",
+        messageId: "a",
+        userId: "bot",
+        userName: "lilac",
+        text: "A",
+        ts: 0,
+      }),
+      msg({ channelId: "c1", messageId: "b", userId: "u1", text: "B", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "c",
+        userId: "bot",
+        userName: "lilac",
+        text: "!cont=2 literal example",
+        ts: 2 * hour,
+      }),
+    ]);
+    upsertRelations(surfaceStore, [
+      { messageId: "a", authorId: "bot", authorName: "lilac", ts: 0 },
+      { messageId: "b", authorId: "u1", ts: 1 },
+      { messageId: "c", authorId: "bot", authorName: "lilac", ts: 2 * hour },
+    ]);
+
+    const refreshed = threadStore.refreshInferredThreads({ cfg: testConfig() });
+    expect(refreshed.threads).toBe(2);
+    expect(
+      threadStore.readThread("discord:channel:c1:a", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["a", "b"]);
+    expect(
+      threadStore.readThread("discord:channel:c1:c", 0, 10)?.messages.map((item) => item.messageId),
+    ).toEqual(["c"]);
+
+    searchStore.close();
+    surfaceStore.close();
+    threadStore.close();
+  });
+
+  it("strips !cont directives from conversation thread reads and summarization input", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    let summarizedTexts: string[] = [];
+
+    searchStore.upsertMessages([
+      msg({ channelId: "c1", messageId: "a", userId: "u1", text: "A", ts: 0 }),
+      msg({ channelId: "c1", messageId: "b", userId: "u2", text: "@lilac !cont=1 resume", ts: 1 }),
+      msg({
+        channelId: "c1",
+        messageId: "c",
+        userId: "bot",
+        userName: "lilac",
+        text: "!cont=2 literal example",
+        ts: 2,
+      }),
+    ]);
+
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      summarizer: async ({ messages }) => {
+        summarizedTexts = messages.map((message) => message.text);
+        return {
+          title: "stripped",
+          brief: "stripped",
+          topics: [],
+        };
+      },
+    });
+
+    await service.runSummarization({ now: Date.now() + 2 * 60 * 60 * 1000 });
+    const read = await service.read({ threadId: "discord:channel:c1:a" });
+
+    expect(summarizedTexts).toEqual(["A", "@lilac resume", "!cont=2 literal example"]);
+    expect(read.messages.map((message) => message.content)).toEqual([
+      "A",
+      "@lilac resume",
+      "!cont=2 literal example",
+    ]);
 
     searchStore.close();
     threadStore.close();

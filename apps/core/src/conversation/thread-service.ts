@@ -34,6 +34,7 @@ import type {
   ConversationThreadEmbeddingUsageEvent,
 } from "./thread-embedding";
 import type { EntityMapper } from "../entity/entity-mapper";
+import { stripLeadingContinueDirective } from "../surface/bridge/bus-request-router/common";
 import { isSqliteBusyError } from "../shared/sqlite";
 
 const SUMMARY_QUIET_MS = 60 * 60 * 1000;
@@ -622,6 +623,39 @@ function buildFallbackSummary(
     importance: "medium",
     importanceReasons: [],
   };
+}
+
+function resolveThreadBotMentionNames(cfg: CoreConfig): string[] {
+  const botName = cfg.surface.discord.botName.trim();
+  return botName.length > 0 ? [botName] : [];
+}
+
+function stripThreadContinueDirective(input: {
+  text: string;
+  botMentionNames: readonly string[];
+}): string {
+  return stripLeadingContinueDirective({
+    text: input.text,
+    botNames: input.botMentionNames,
+  });
+}
+
+function isThreadBotMessage(message: ConversationThreadMessage, cfg: CoreConfig): boolean {
+  const botName = cfg.surface.discord.botName.trim().toLowerCase();
+  const userName = message.userName?.trim().toLowerCase();
+  return botName.length > 0 && userName === botName;
+}
+
+function stripUserThreadContinueDirective(input: {
+  message: ConversationThreadMessage;
+  cfg: CoreConfig;
+  botMentionNames: readonly string[];
+}): string {
+  if (isThreadBotMessage(input.message, input.cfg)) return input.message.text;
+  return stripThreadContinueDirective({
+    text: input.message.text,
+    botMentionNames: input.botMentionNames,
+  });
 }
 
 function importanceMultiplier(importance: ConversationThreadSearchHit["importance"]): number {
@@ -1349,6 +1383,7 @@ export class ConversationThreadService {
 
     const nextOffset = offset + result.messages.length;
     const hasMore = nextOffset < result.totalMessages;
+    const botMentionNames = resolveThreadBotMentionNames(cfg);
     return {
       thread: this.formatMetadataThread({
         thread: result.thread,
@@ -1368,7 +1403,11 @@ export class ConversationThreadService {
         userId: message.userId,
         userName: message.userName,
         time: formatTime(message.ts),
-        content: message.text,
+        content: stripUserThreadContinueDirective({
+          message,
+          cfg,
+          botMentionNames,
+        }),
       })),
     };
   }
@@ -1552,7 +1591,7 @@ export class ConversationThreadService {
           this.params.store.deleteThread(thread.thread_id);
           return;
         }
-        const summaryMessages = this.normalizeMessagesForSummarization(summaryRead.messages);
+        const summaryMessages = this.normalizeMessagesForSummarization(summaryRead.messages, cfg);
         const summaryIsStale =
           input.force === true ||
           thread.last_summarized_at === null ||
@@ -1744,10 +1783,20 @@ export class ConversationThreadService {
 
   private normalizeMessagesForSummarization(
     messages: readonly ConversationThreadMessage[],
+    cfg: CoreConfig,
   ): ConversationThreadMessage[] {
     const mapper = this.params.entityMapper;
-    if (!mapper) return [...messages];
-    return messages.map((message) => ({
+    const botMentionNames = resolveThreadBotMentionNames(cfg);
+    const stripped = messages.map((message) => ({
+      ...message,
+      text: stripUserThreadContinueDirective({
+        message,
+        cfg,
+        botMentionNames,
+      }),
+    }));
+    if (!mapper) return stripped;
+    return stripped.map((message) => ({
       ...message,
       userName: mapper.normalizeIncomingText(`<@${message.userId}>`),
       text: mapper.normalizeIncomingText(message.text),
