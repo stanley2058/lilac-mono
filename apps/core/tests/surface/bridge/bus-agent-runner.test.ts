@@ -371,6 +371,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           autoInject: {
             enabled: true,
             minTextUnits: 80,
+            followUpMinTextUnits: 110,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: false,
@@ -462,6 +463,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           autoInject: {
             enabled: true,
             minTextUnits: 80,
+            followUpMinTextUnits: 110,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: false,
@@ -587,6 +589,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           autoInject: {
             enabled: true,
             minTextUnits: 1,
+            followUpMinTextUnits: 1,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: false,
@@ -652,6 +655,265 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(injectedCalls).toBe(0);
   });
 
+  it("uses the initial threshold before any previous auto-injected metadata", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 80,
+            followUpMinTextUnits: 110,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    let plannerCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-1",
+      raw: {},
+      userMessages: [
+        {
+          role: "user",
+          content:
+            "please also verify whether our current cookie domain would cover the callback subdomain before changing code",
+        },
+      ],
+      conversationThreads: {
+        planAutoInjectSearch: async () => {
+          plannerCalls += 1;
+          return {
+            queries: ["cookie callback subdomain"],
+            aboutness: {
+              domains: [],
+              situations: [],
+              targets: [],
+              entities: [],
+              userWouldAskForThisAs: ["cookie callback subdomain"],
+              intentSummary: "Find cookie callback subdomain threads.",
+            },
+          };
+        },
+        search: async () => ({
+          meta: {
+            query: "cookie callback subdomain",
+            limit: 3,
+            mode: "hybrid",
+            count: 1,
+            vectorAvailable: false,
+          },
+          results: [{ threadId: "thread-1", title: "Cookie callback thread", brief: "" }],
+        }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(plannerCalls).toBe(1);
+    expect(messages).toHaveLength(2);
+  });
+
+  it("uses the follow-up threshold after previous auto-injected metadata", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 80,
+            followUpMinTextUnits: 110,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    let plannerCalls = 0;
+    let searchCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-2",
+      raw: {},
+      previousMessages: buildAutoInjectedThreadSearchMessages({
+        toolCallId: "conversation_thread_previous",
+        entries: [{ threadId: "thread-1", title: "Previously injected" }],
+      }),
+      userMessages: [
+        {
+          role: "user",
+          content:
+            "please also verify whether our current cookie domain would cover the callback subdomain before changing code",
+        },
+      ],
+      conversationThreads: {
+        planAutoInjectSearch: async () => {
+          plannerCalls += 1;
+          return {
+            queries: ["cookie callback subdomain"],
+            aboutness: {
+              domains: [],
+              situations: [],
+              targets: [],
+              entities: [],
+              userWouldAskForThisAs: ["cookie callback subdomain"],
+              intentSummary: "Find cookie callback subdomain threads.",
+            },
+          };
+        },
+        search: async () => {
+          searchCalls += 1;
+          return {
+            meta: {
+              query: "cookie callback subdomain",
+              limit: 3,
+              mode: "hybrid",
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [{ threadId: "thread-2", title: "Cookie callback thread", brief: "" }],
+          };
+        },
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(messages).toEqual([]);
+    expect(plannerCalls).toBe(0);
+    expect(searchCalls).toBe(0);
+  });
+
+  it("still injects follow-up metadata when the follow-up threshold is met", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 80,
+            followUpMinTextUnits: 110,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    let plannerCalls = 0;
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-3",
+      raw: {},
+      previousMessages: buildAutoInjectedThreadSearchMessages({
+        toolCallId: "conversation_thread_previous",
+        entries: [{ threadId: "thread-1", title: "Previously injected" }],
+      }),
+      userMessages: [
+        {
+          role: "user",
+          content:
+            "different angle: this started right after the edge middleware deploy, and the redirect host header differs between Vercel preview and production",
+        },
+      ],
+      conversationThreads: {
+        planAutoInjectSearch: async () => {
+          plannerCalls += 1;
+          return {
+            queries: ["edge middleware redirect host header"],
+            aboutness: {
+              domains: [],
+              situations: [],
+              targets: [],
+              entities: [],
+              userWouldAskForThisAs: ["edge middleware redirect host header"],
+              intentSummary: "Find redirect host header threads.",
+            },
+          };
+        },
+        search: async () => ({
+          meta: {
+            query: "edge middleware redirect host header",
+            limit: 3,
+            mode: "hybrid",
+            count: 1,
+            vectorAvailable: false,
+          },
+          results: [{ threadId: "thread-2", title: "Edge middleware host header", brief: "" }],
+        }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(plannerCalls).toBe(1);
+    expect(messages).toHaveLength(2);
+  });
+
   it("skips injection when participant filtering is enabled without visible participants", async () => {
     const cfg = parseCoreConfigV1ToUniversal({
       surface: {
@@ -670,6 +932,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           autoInject: {
             enabled: true,
             minTextUnits: 1,
+            followUpMinTextUnits: 110,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: true,
@@ -750,6 +1013,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
           autoInject: {
             enabled: true,
             minTextUnits: 1,
+            followUpMinTextUnits: 110,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: false,

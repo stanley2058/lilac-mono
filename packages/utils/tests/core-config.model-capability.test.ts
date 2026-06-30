@@ -22,6 +22,7 @@ describe("coreConfigSchema models.capability", () => {
     expect(v1.conversation.thread.autoInject).toEqual({
       enabled: false,
       minTextUnits: 80,
+      followUpMinTextUnits: 110,
       limit: 3,
       mode: "hybrid",
       filterCurrentParticipants: false,
@@ -41,6 +42,7 @@ describe("coreConfigSchema models.capability", () => {
     expect(v2.conversation.thread.autoInject).toEqual({
       enabled: false,
       minTextUnits: 80,
+      followUpMinTextUnits: 110,
       limit: 3,
       mode: "hybrid",
       filterCurrentParticipants: false,
@@ -79,6 +81,7 @@ describe("coreConfigSchema models.capability", () => {
             enabled: true,
             plannerModel: "openrouter/openai/gpt-4o-mini",
             minTextUnits: 120,
+            followUpMinTextUnits: 150,
             limit: 4,
             mode: "semantic",
             filterCurrentParticipants: true,
@@ -91,6 +94,7 @@ describe("coreConfigSchema models.capability", () => {
       enabled: true,
       plannerModel: "openrouter/openai/gpt-4o-mini",
       minTextUnits: 120,
+      followUpMinTextUnits: 150,
       limit: 4,
       mode: "semantic",
       filterCurrentParticipants: true,

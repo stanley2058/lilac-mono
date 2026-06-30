@@ -713,6 +713,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
         autoInject: {
           enabled: false,
           minTextUnits: 80,
+          followUpMinTextUnits: 110,
           limit: 3,
           mode: "hybrid",
           filterCurrentParticipants: false,

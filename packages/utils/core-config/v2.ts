@@ -281,6 +281,7 @@ const conversationSchemaV2 = z
             enabled: z.boolean().default(false),
             plannerModel: z.string().trim().min(1).optional(),
             minTextUnits: z.number().int().positive().default(80),
+            followUpMinTextUnits: z.number().int().positive().default(110),
             limit: z.number().int().positive().max(10).default(3),
             mode: z.enum(["hybrid", "semantic", "lexical"]).default("hybrid"),
             filterCurrentParticipants: z.boolean().default(false),
@@ -288,6 +289,7 @@ const conversationSchemaV2 = z
           .default({
             enabled: false,
             minTextUnits: 80,
+            followUpMinTextUnits: 110,
             limit: 3,
             mode: "hybrid",
             filterCurrentParticipants: false,
@@ -304,6 +306,7 @@ const conversationSchemaV2 = z
         autoInject: {
           enabled: false,
           minTextUnits: 80,
+          followUpMinTextUnits: 110,
           limit: 3,
           mode: "hybrid",
           filterCurrentParticipants: false,
@@ -322,6 +325,7 @@ const conversationSchemaV2 = z
       autoInject: {
         enabled: false,
         minTextUnits: 80,
+        followUpMinTextUnits: 110,
         limit: 3,
         mode: "hybrid",
         filterCurrentParticipants: false,

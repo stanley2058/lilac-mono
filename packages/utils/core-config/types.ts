@@ -104,6 +104,7 @@ export type UniversalCoreConfig = {
         enabled: boolean;
         plannerModel?: string;
         minTextUnits: number;
+        followUpMinTextUnits: number;
         limit: number;
         mode: "hybrid" | "semantic" | "lexical";
         filterCurrentParticipants: boolean;

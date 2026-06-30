@@ -50,6 +50,9 @@ conversation:
       # Minimum authored text mass after removing URLs, Discord syntax, punctuation,
       # and discounting code blocks. 80 is a moderate Discord default.
       minTextUnits: 80
+      # Higher threshold after this conversation already received auto-injected
+      # thread metadata. This avoids re-searching for same-topic follow-ups.
+      followUpMinTextUnits: 110
       # Max thread titles to inject.
       limit: 3
       # Search mode for auto-injected metadata: hybrid, semantic, or lexical.

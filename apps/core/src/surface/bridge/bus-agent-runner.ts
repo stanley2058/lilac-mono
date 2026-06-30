@@ -778,7 +778,12 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   if (!params.conversationThreads) return [];
 
   const text = latestUserText(params.userMessages);
-  if (!shouldRunAutoInjectedThreadSearch({ text, minTextUnits: autoInject.minTextUnits })) {
+  const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
+  const minTextUnits =
+    previouslyInjectedThreadIds.size > 0
+      ? autoInject.followUpMinTextUnits
+      : autoInject.minTextUnits;
+  if (!shouldRunAutoInjectedThreadSearch({ text, minTextUnits })) {
     return [];
   }
 
@@ -815,7 +820,6 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
       verbose: true,
       ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
     });
-    const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
     const entries = search.results
       .filter((result) => !previouslyInjectedThreadIds.has(result.threadId))
       .map((result) => {
