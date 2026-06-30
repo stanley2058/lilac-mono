@@ -106,7 +106,66 @@ function toErrorMessage(error: unknown) {
 }
 
 function stripAnsiEscapeSequences(input: string): string {
-  return Bun.stripANSI(input);
+  let output = "";
+  let plainStart = 0;
+
+  const flushPlain = (end: number) => {
+    if (end > plainStart) output += input.slice(plainStart, end);
+  };
+
+  const skipCsi = (start: number): number => {
+    let i = start;
+    while (i < input.length) {
+      const code = input.charCodeAt(i);
+      i += 1;
+      if (code >= 0x40 && code <= 0x7e) return i;
+    }
+    return i;
+  };
+
+  const skipOsc = (start: number): number => {
+    let i = start;
+    while (i < input.length) {
+      const code = input.charCodeAt(i);
+      if (code === 0x07) return i + 1;
+      if (code === 0x1b && input.charCodeAt(i + 1) === 0x5c) return i + 2;
+      i += 1;
+    }
+    return i;
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (code === 0x1b) {
+      flushPlain(i);
+      const next = input.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        i = skipCsi(i + 2) - 1;
+      } else if (next === 0x5d) {
+        i = skipOsc(i + 2) - 1;
+      } else {
+        i = Math.min(i + 1, input.length - 1);
+      }
+      plainStart = i + 1;
+      continue;
+    }
+
+    if (code === 0x9b) {
+      flushPlain(i);
+      i = skipCsi(i + 1) - 1;
+      plainStart = i + 1;
+      continue;
+    }
+
+    if (code === 0x9d) {
+      flushPlain(i);
+      i = skipOsc(i + 1) - 1;
+      plainStart = i + 1;
+    }
+  }
+
+  flushPlain(input.length);
+  return output;
 }
 
 type StreamTextResult = {
