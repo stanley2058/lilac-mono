@@ -10,6 +10,7 @@ import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
 import { google, type GoogleLanguageModelOptions } from "@ai-sdk/google";
 import { createLogger, providers, type CoreConfig } from "@stanley2058/lilac-utils";
+import { extname } from "node:path";
 
 import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
@@ -45,6 +46,50 @@ const CONTENT_INSPECT_INSTRUCTIONS = [
   "(2-5 sentences; must be fully supported by OBSERVATIONS; no new entities)",
 ].join("\n");
 
+const TEXT_EXTENSION_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  ".cjs": "text/javascript",
+  ".conf": "text/plain",
+  ".css": "text/css",
+  ".csv": "text/csv",
+  ".cts": "text/typescript",
+  ".env": "text/plain",
+  ".htm": "text/html",
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".json": "application/json",
+  ".jsonc": "application/json",
+  ".jsx": "text/javascript",
+  ".log": "text/plain",
+  ".md": "text/markdown",
+  ".mdx": "text/markdown",
+  ".mjs": "text/javascript",
+  ".mts": "text/typescript",
+  ".sql": "application/sql",
+  ".svg": "image/svg+xml",
+  ".toml": "application/toml",
+  ".ts": "text/typescript",
+  ".tsx": "text/typescript",
+  ".txt": "text/plain",
+  ".xml": "application/xml",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+};
+
+export type LoadedInspectSource =
+  | {
+      kind: "text";
+      text: string;
+      mediaType: string;
+      charset?: string;
+      source: string;
+    }
+  | {
+      kind: "file";
+      data: Uint8Array | URL;
+      mediaType: string;
+      source: string;
+    };
+
 export class ContentInspect implements ServerTool {
   id = "content.inspect";
 
@@ -66,6 +111,9 @@ export class ContentInspect implements ServerTool {
         description:
           "Inspect, transcribe, and summarize text, URLs, files, images, and videos using Gemini AI. Use --help to see all options.",
         shortInput: ["--text=<string> OR --url=<string> OR --path=<string> OR --base64=<base64>"],
+        primaryPositional: {
+          field: "text",
+        },
         input: zodObjectToCliLines(contentInspectInputSchema),
       },
     ];
@@ -277,35 +325,7 @@ export async function inspectContent(
       break;
     }
     case "binary": {
-      let mime: string;
-      let data: Uint8Array | URL;
-
-      if (typeof input.url === "string") {
-        if (isYouTubeURL(input.url)) {
-          data = new URL(input.url);
-          mime = "video/mp4";
-        } else {
-          const res = await fetch(input.url, { signal: abortSignal });
-          const blob = await res.blob();
-          const meta = await fileTypeFromBlob(blob);
-          mime = meta?.mime ?? "application/octet-stream";
-          data = await blob.bytes();
-        }
-      } else if (typeof input.path === "string") {
-        const bytes = await Bun.file(input.path).bytes();
-        const buf = Buffer.from(bytes);
-        const meta = await fileTypeFromBuffer(buf);
-        mime = meta?.mime ?? "application/octet-stream";
-        data = buf;
-      } else {
-        if (typeof input.base64 !== "string") {
-          throw new Error("Invalid binary input; expected base64 string");
-        }
-        const buf = Buffer.from(input.base64, "base64");
-        const meta = await fileTypeFromBuffer(buf);
-        mime = meta?.mime ?? "application/octet-stream";
-        data = buf;
-      }
+      const source = await loadInspectSource(input, abortSignal);
 
       const content: UserContent = [];
 
@@ -313,7 +333,19 @@ export async function inspectContent(
         content.push({ type: "text", text: input.additionalInstructions });
       }
 
-      content.push({ type: "file", data, mediaType: mime });
+      if (source.kind === "text") {
+        content.push({
+          type: "text",
+          text: [
+            `Source: ${source.source}`,
+            `Media type: ${source.mediaType}`,
+            "",
+            source.text,
+          ].join("\n"),
+        });
+      } else {
+        content.push({ type: "file", data: source.data, mediaType: source.mediaType });
+      }
 
       messages = buildContentInspectMessages({
         role: "user",
@@ -351,6 +383,211 @@ export async function inspectContent(
 
 function buildContentInspectMessages(input: UserModelMessage): ModelMessage[] {
   return [input];
+}
+
+export async function loadInspectSource(
+  input: Extract<z.infer<typeof contentInspectInputSchema>, { type: "binary" }>,
+  abortSignal?: AbortSignal,
+): Promise<LoadedInspectSource> {
+  if (typeof input.url === "string") {
+    if (isYouTubeURL(input.url)) {
+      return {
+        kind: "file",
+        data: new URL(input.url),
+        mediaType: "video/mp4",
+        source: input.url,
+      };
+    }
+
+    const res = await fetch(input.url, { signal: abortSignal });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch ${input.url}: ${res.status} ${res.statusText}`.trim());
+    }
+
+    const blob = await res.blob();
+    const bytes = await blob.bytes();
+    const meta = await fileTypeFromBlob(blob);
+    const declared = res.headers.get("content-type") ?? blob.type;
+    const mediaType = resolveInspectMediaType({
+      detected: meta?.mime,
+      declared,
+      source: input.url,
+      bytes,
+    });
+    return sourceFromBytes({
+      bytes,
+      mediaType,
+      charset: charsetFromMediaType(declared),
+      source: input.url,
+    });
+  }
+
+  if (typeof input.path === "string") {
+    const file = Bun.file(input.path);
+    const bytes = await file.bytes();
+    const buf = Buffer.from(bytes);
+    const meta = await fileTypeFromBuffer(buf);
+    const declared = file.type;
+    const mediaType = resolveInspectMediaType({
+      detected: meta?.mime,
+      declared,
+      source: input.path,
+      bytes: buf,
+    });
+    return sourceFromBytes({
+      bytes: buf,
+      mediaType,
+      charset: charsetFromMediaType(declared),
+      source: input.path,
+    });
+  }
+
+  if (typeof input.base64 !== "string") {
+    throw new Error("Invalid binary input; expected base64 string");
+  }
+
+  const buf = Buffer.from(input.base64, "base64");
+  const meta = await fileTypeFromBuffer(buf);
+  const mediaType = resolveInspectMediaType({
+    detected: meta?.mime,
+    source: "base64 input",
+    bytes: buf,
+  });
+  return sourceFromBytes({ bytes: buf, mediaType, source: "base64 input" });
+}
+
+function sourceFromBytes(input: {
+  bytes: Uint8Array;
+  mediaType: string;
+  charset?: string;
+  source: string;
+}): LoadedInspectSource {
+  if (isTextLikeMediaType(input.mediaType)) {
+    return {
+      kind: "text",
+      text: decodeInspectText(input.bytes, input.charset),
+      mediaType: input.mediaType,
+      charset: input.charset,
+      source: input.source,
+    };
+  }
+
+  if (input.mediaType === "application/octet-stream") {
+    throw new Error(
+      `Unsupported or unknown file media type for ${input.source}; pass text via --text or use a supported image/PDF/video file.`,
+    );
+  }
+
+  return {
+    kind: "file",
+    data: input.bytes,
+    mediaType: input.mediaType,
+    source: input.source,
+  };
+}
+
+export function resolveInspectMediaType(input: {
+  detected?: string;
+  declared?: string;
+  source?: string;
+  bytes?: Uint8Array;
+}): string {
+  const detected = normalizeInspectMediaType(input.detected);
+  if (detected && detected !== "application/octet-stream") return detected;
+
+  const declared = normalizeInspectMediaType(input.declared);
+  if (declared && declared !== "application/octet-stream") return declared;
+
+  const fromExtension = input.source ? mediaTypeFromSource(input.source) : undefined;
+  if (fromExtension) return fromExtension;
+
+  if (input.bytes && looksLikeUtf8Text(input.bytes)) return "text/plain";
+
+  return "application/octet-stream";
+}
+
+export function isTextLikeMediaType(mediaType: string): boolean {
+  const normalized = normalizeInspectMediaType(mediaType) ?? "";
+  if (normalized.startsWith("text/")) return true;
+  if (normalized.endsWith("+json") || normalized.endsWith("+xml")) return true;
+
+  return [
+    "application/javascript",
+    "application/json",
+    "application/ld+json",
+    "application/sql",
+    "application/toml",
+    "application/x-ndjson",
+    "application/xml",
+    "application/yaml",
+    "image/svg+xml",
+  ].includes(normalized);
+}
+
+function mediaTypeFromSource(source: string): string | undefined {
+  return TEXT_EXTENSION_MEDIA_TYPES[extname(urlSafePath(source)).toLowerCase()];
+}
+
+function normalizeInspectMediaType(mediaType: string | undefined): string | undefined {
+  const normalized = mediaType?.split(";", 1)[0]?.trim().toLowerCase();
+  return normalized ? normalized : undefined;
+}
+
+function charsetFromMediaType(mediaType: string | undefined): string | undefined {
+  if (!mediaType) return undefined;
+
+  const parts = mediaType.split(";").slice(1);
+  for (const part of parts) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+
+    const key = part.slice(0, eq).trim().toLowerCase();
+    if (key !== "charset") continue;
+
+    const value = part
+      .slice(eq + 1)
+      .trim()
+      .replace(/^['"]|['"]$/g, "");
+    return value ? value : undefined;
+  }
+
+  return undefined;
+}
+
+function looksLikeUtf8Text(bytes: Uint8Array): boolean {
+  if (bytes.length === 0) return true;
+  if (bytes.includes(0)) return false;
+
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (!text) return true;
+    let suspicious = 0;
+    for (const char of text) {
+      const code = char.charCodeAt(0);
+      if (code < 32 && code !== 9 && code !== 10 && code !== 13) suspicious += 1;
+    }
+    return suspicious / text.length < 0.01;
+  } catch {
+    return false;
+  }
+}
+
+function decodeInspectText(bytes: Uint8Array, charset: string | undefined): string {
+  const encoding = charset ?? "utf-8";
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`Failed to decode text content as ${encoding}: ${message}`);
+  }
+}
+
+function urlSafePath(source: string): string {
+  try {
+    return new URL(source).pathname;
+  } catch {
+    return source;
+  }
 }
 
 function isYouTubeURL(url: string) {
