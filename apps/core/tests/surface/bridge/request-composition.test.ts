@@ -768,9 +768,15 @@ describe("request-composition attachments", () => {
     expect(parts[0].type).toBe("text");
     expect(parts[0].text).toContain("Forwarded snapshot text");
 
-    const imageParts = parts.filter((p) => p && p.type === "image");
+    const imageParts = parts.filter(
+      (p) =>
+        p &&
+        p.type === "file" &&
+        typeof p.mediaType === "string" &&
+        p.mediaType.startsWith("image/"),
+    );
     expect(imageParts.length).toBe(1);
-    expect(String(imageParts[0].image)).toContain("IMG_VISIBLE.png");
+    expect(String(imageParts[0].data)).toContain("IMG_VISIBLE.png");
   });
 
   it("falls back to top-level attachments when forward snapshot attachments are empty", async () => {
@@ -818,9 +824,15 @@ describe("request-composition attachments", () => {
     expect(Array.isArray(out?.content)).toBe(true);
 
     const parts = out!.content as any[];
-    const imageParts = parts.filter((p) => p && p.type === "image");
+    const imageParts = parts.filter(
+      (p) =>
+        p &&
+        p.type === "file" &&
+        typeof p.mediaType === "string" &&
+        p.mediaType.startsWith("image/"),
+    );
     expect(imageParts.length).toBe(1);
-    expect(String(imageParts[0].image)).toContain("IMG_TOP.png");
+    expect(String(imageParts[0].data)).toContain("IMG_TOP.png");
   });
 
   it("uses forward snapshot embed string description when content is empty", async () => {
@@ -1549,9 +1561,15 @@ describe("request-composition mention thread context", () => {
     expect(parts[0].type).toBe("text");
     expect(parts[0].text).toContain("Forwarded snapshot text");
 
-    const imageParts = parts.filter((p) => p && p.type === "image");
+    const imageParts = parts.filter(
+      (p) =>
+        p &&
+        p.type === "file" &&
+        typeof p.mediaType === "string" &&
+        p.mediaType.startsWith("image/"),
+    );
     expect(imageParts.length).toBe(1);
-    expect(String(imageParts[0].image)).toContain("IMG_VISIBLE.png");
+    expect(String(imageParts[0].data)).toContain("IMG_VISIBLE.png");
   });
 
   it("includes user alias in mention-thread attribution header when configured", async () => {

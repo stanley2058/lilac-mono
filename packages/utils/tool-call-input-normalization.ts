@@ -146,6 +146,42 @@ export function normalizeAssistantToolCallInputs(
   return messages.map(normalizeAssistantToolCallInputMessage);
 }
 
+export function normalizeLegacyUserImagePartMessage(message: ModelMessage): ModelMessage {
+  if (message.role !== "user" || !Array.isArray(message.content)) {
+    return message;
+  }
+
+  let changed = false;
+  const content = message.content.map((part) => {
+    if (part.type !== "image") return part;
+
+    changed = true;
+    const normalized = {
+      type: "file" as const,
+      data: part.image,
+      mediaType: part.mediaType ?? "image",
+    };
+
+    return part.providerOptions
+      ? {
+          ...normalized,
+          providerOptions: part.providerOptions,
+        }
+      : normalized;
+  });
+
+  return changed
+    ? {
+        ...message,
+        content,
+      }
+    : message;
+}
+
+export function normalizeLegacyUserImageParts(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map(normalizeLegacyUserImagePartMessage);
+}
+
 export function dedupeToolResultMessages(messages: readonly ModelMessage[]): ModelMessage[] {
   const seenToolCallIds = new Set<string>();
   const out: ModelMessage[] = [];
@@ -190,5 +226,7 @@ export function dedupeToolResultMessages(messages: readonly ModelMessage[]): Mod
 }
 
 export function normalizeReplayMessages(messages: readonly ModelMessage[]): ModelMessage[] {
-  return dedupeToolResultMessages(normalizeAssistantToolCallInputs(messages));
+  return dedupeToolResultMessages(
+    normalizeLegacyUserImageParts(normalizeAssistantToolCallInputs(messages)),
+  );
 }

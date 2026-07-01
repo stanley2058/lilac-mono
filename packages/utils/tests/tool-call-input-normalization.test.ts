@@ -5,6 +5,7 @@ import {
   dedupeToolResultMessages,
   normalizeAssistantToolCallInputMessage,
   normalizeAssistantToolCallInputs,
+  normalizeLegacyUserImagePartMessage,
   normalizeReplayMessages,
   normalizeToolCallInputValue,
 } from "../tool-call-input-normalization";
@@ -156,8 +157,35 @@ describe("tool call input normalization", () => {
     expect(dedupeToolResultMessages(messages)).toEqual(messages.slice(0, 2));
   });
 
-  it("normalizes replay messages by repairing inputs and deduping tool results", () => {
+  it("normalizes legacy user image parts to file parts", () => {
+    const message: ModelMessage = {
+      role: "user",
+      content: [
+        { type: "text", text: "look" },
+        { type: "image", image: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+        { type: "image", image: new URL("https://example.com/image.jpg") },
+      ],
+    };
+
+    expect(normalizeLegacyUserImagePartMessage(message)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "look" },
+        { type: "file", data: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+        { type: "file", data: new URL("https://example.com/image.jpg"), mediaType: "image" },
+      ],
+    });
+  });
+
+  it("normalizes replay messages by repairing inputs, migrating images, and deduping tool results", () => {
     const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "image", image: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+        ],
+      },
       {
         role: "assistant",
         content: [
@@ -194,6 +222,13 @@ describe("tool call input normalization", () => {
     ];
 
     expect(normalizeReplayMessages(messages)).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "file", data: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+        ],
+      },
       {
         role: "assistant",
         content: [

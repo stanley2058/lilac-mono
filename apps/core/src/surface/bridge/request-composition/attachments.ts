@@ -158,13 +158,13 @@ export async function appendDiscordAttachmentsToUserContent(
     const mimeType = normalizeMimeType(att.mimeType);
 
     // If Discord provides mime type, follow policy without sniffing.
-    // - image/* => image part
+    // - image/* => file part
     // - application/pdf => file part
     // - text-extractable => download + convert to text part
     // - everything else => do not send as a file part; include URL in text
     if (mimeType) {
       if (isImageMimeType(mimeType)) {
-        parts.push({ type: "image", image: url, mediaType: mimeType });
+        parts.push({ type: "file", data: url, filename: att.filename, mediaType: mimeType });
         continue;
       }
 
@@ -287,7 +287,7 @@ export async function appendDiscordAttachmentsToUserContent(
     const inferred = bestEffortInferMimeType({ filename: att.filename, url });
 
     if (inferred && isImageMimeType(inferred)) {
-      parts.push({ type: "image", image: url, mediaType: inferred });
+      parts.push({ type: "file", data: url, filename: att.filename, mediaType: inferred });
       continue;
     }
 
@@ -424,7 +424,7 @@ export async function appendDiscordAttachmentsToUserContent(
         const fallback =
           bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
         if (isImageMimeType(fallback)) {
-          parts.push({ type: "image", image: url, mediaType: fallback });
+          parts.push({ type: "file", data: url, filename: att.filename, mediaType: fallback });
           continue;
         }
         if (isPdfMimeType(fallback)) {
@@ -458,7 +458,7 @@ export async function appendDiscordAttachmentsToUserContent(
           const fallback =
             bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
           if (isImageMimeType(fallback)) {
-            parts.push({ type: "image", image: url, mediaType: fallback });
+            parts.push({ type: "file", data: url, filename: att.filename, mediaType: fallback });
             continue;
           }
           if (isPdfMimeType(fallback)) {
@@ -490,7 +490,7 @@ export async function appendDiscordAttachmentsToUserContent(
           const fallback =
             bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
           if (isImageMimeType(fallback)) {
-            parts.push({ type: "image", image: url, mediaType: fallback });
+            parts.push({ type: "file", data: url, filename: att.filename, mediaType: fallback });
             continue;
           }
           if (isPdfMimeType(fallback)) {
@@ -559,7 +559,7 @@ export async function appendDiscordAttachmentsToUserContent(
     }
 
     if (isImageMimeType(mt)) {
-      parts.push({ type: "image", image: bytes, mediaType: mt });
+      parts.push({ type: "file", data: bytes, filename: att.filename, mediaType: mt });
       continue;
     }
 

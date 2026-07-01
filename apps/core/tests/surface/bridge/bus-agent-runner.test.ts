@@ -2475,7 +2475,7 @@ describe("mergeToSingleUserMessage", () => {
         role: "user",
         content: [
           { type: "text", text: "B with image" },
-          { type: "image", image: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
+          { type: "file", data: new Uint8Array([1, 2, 3]), mediaType: "image/png" },
         ],
       },
       { role: "user", content: "D steer" },
@@ -2491,7 +2491,7 @@ describe("mergeToSingleUserMessage", () => {
       Array.isArray(out.content) &&
         out.content.some((part) => part.type === "text" && part.text.includes("D steer")),
     ).toBe(true);
-    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "image")).toBe(
+    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "file")).toBe(
       true,
     );
   });
@@ -2503,7 +2503,7 @@ describe("mergeToSingleUserMessage", () => {
         role: "user",
         content: [
           { type: "text", text: "D interrupt with image" },
-          { type: "image", image: new Uint8Array([7, 8]), mediaType: "image/jpeg" },
+          { type: "file", data: new Uint8Array([7, 8]), mediaType: "image/jpeg" },
         ],
       },
     ] satisfies ModelMessage[]);
@@ -2518,7 +2518,7 @@ describe("mergeToSingleUserMessage", () => {
       Array.isArray(out.content) &&
         out.content.some((part) => part.type === "text" && part.text.includes("D interrupt")),
     ).toBe(true);
-    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "image")).toBe(
+    expect(Array.isArray(out.content) && out.content.some((part) => part.type === "file")).toBe(
       true,
     );
   });
