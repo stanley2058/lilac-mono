@@ -389,13 +389,19 @@ export function createOpenAIResponsesWebSocketFetch(
     const wsHeaders = applyTurnStateHeader(toWebSocketHeaders(getRequestHeaders(input, init)));
     const socketUrl = getWebSocketUrl(requestUrl);
 
-    let connection: WebSocket;
     const useReusableConnection = !reusableBusy;
+    if (useReusableConnection) {
+      reusableBusy = true;
+      clearIdleCloseTimer();
+    }
+
+    let connection: WebSocket;
     try {
       connection = useReusableConnection
         ? await getConnection(socketUrl, wsHeaders)
         : await connectWebSocket(socketUrl, wsHeaders);
     } catch (error) {
+      if (useReusableConnection) reusableBusy = false;
       if (options.mode === "auto") {
         reportAutoFallback({
           reason: "websocket_connect_failed",
@@ -413,11 +419,6 @@ export function createOpenAIResponsesWebSocketFetch(
       throw error;
     }
     inspectTurnStateHeader(connection, requestUrl);
-
-    if (useReusableConnection) {
-      reusableBusy = true;
-      clearIdleCloseTimer();
-    }
 
     const { stream: _stream, ...requestBody } = parsedBody;
     const fullRequestBody = cloneJsonObject(requestBody);

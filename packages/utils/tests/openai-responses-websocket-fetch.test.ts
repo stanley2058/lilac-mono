@@ -507,6 +507,47 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     wsFetch.close();
   });
 
+  it("uses a dedicated connection for concurrent requests while the reusable socket is still connecting", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+
+    const response1Promise = wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "turn-1" }),
+    });
+    const response2Promise = wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "turn-2" }),
+    });
+
+    const [response1, response2] = await Promise.all([response1Promise, response2Promise]);
+    expect(FakeWebSocket.instances.length).toBe(2);
+
+    const socket1 = FakeWebSocket.instances[0];
+    const socket2 = FakeWebSocket.instances[1];
+    expect(sentBody(socket1).input).toBe("turn-1");
+    expect(sentBody(socket2).input).toBe("turn-2");
+
+    const text1Promise = response1.text();
+    const text2Promise = response2.text();
+    socket2?.emitMessage(
+      JSON.stringify({ type: "response.completed", response: { id: "resp_2" } }),
+    );
+    socket1?.emitMessage(
+      JSON.stringify({ type: "response.completed", response: { id: "resp_1" } }),
+    );
+
+    const [text1, text2] = await Promise.all([text1Promise, text2Promise]);
+    expect(text1).toContain("resp_1");
+    expect(text1).not.toContain("resp_2");
+    expect(text2).toContain("resp_2");
+    expect(text2).not.toContain("resp_1");
+    wsFetch.close();
+  });
+
   it("reuses previous response id and only sends delta input for default OpenAI requests", async () => {
     globals.fetch = (async () => {
       throw new Error("should not fallback");

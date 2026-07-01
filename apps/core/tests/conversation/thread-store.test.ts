@@ -1368,6 +1368,55 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 
+  it("keeps concurrent scheduled-style summaries attached to their own thread ids", async () => {
+    const dbPath = await createDbPath();
+    const searchStore = new DiscordSearchStore(dbPath);
+    const threadStore = new ConversationThreadStore(dbPath);
+    const threadCount = 16;
+    searchStore.upsertMessages(
+      Array.from({ length: threadCount }, (_, index) => [
+        msg({
+          channelId: "c1",
+          messageId: `scheduled-${index}-1`,
+          userId: "u1",
+          text: `scheduled thread ${index} start`,
+          ts: index * 2 * 60 * 60 * 1000 + 1,
+        }),
+        msg({
+          channelId: "c1",
+          messageId: `scheduled-${index}-2`,
+          userId: "u2",
+          text: `scheduled thread ${index} reply`,
+          ts: index * 2 * 60 * 60 * 1000 + 2,
+        }),
+      ]).flat(),
+    );
+
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfigWithThreadConcurrency(16),
+      summarizer: async ({ threadId }) => {
+        const index = Number(threadId.match(/scheduled-(\d+)-1$/u)?.[1] ?? "0");
+        await Bun.sleep(threadCount - index);
+        return {
+          title: `Summary for ${threadId}`,
+          brief: `Summary for ${threadId}`,
+          topics: [`thread ${index}`],
+        };
+      },
+    });
+
+    const run = await service.runSummarization({ now: Date.now() + 40 * 60 * 60 * 1000 });
+    expect(run.summarized).toBe(threadCount);
+    for (let index = 0; index < threadCount; index++) {
+      const threadId = `discord:channel:c1:scheduled-${index}-1`;
+      expect(threadStore.readThread(threadId)?.summary?.title).toBe(`Summary for ${threadId}`);
+    }
+
+    searchStore.close();
+    threadStore.close();
+  });
+
   it("resolves the embedding adapter once per summarization run", async () => {
     const dbPath = await createDbPath();
     const searchStore = new DiscordSearchStore(dbPath);
