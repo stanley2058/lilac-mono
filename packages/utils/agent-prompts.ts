@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { z } from "zod";
 
 import { findWorkspaceRoot } from "./find-root";
@@ -33,6 +34,7 @@ export const CORE_PROMPT_FILES = [
 ] as const;
 
 export const PROMPT_TEMPLATE_STATE_FILENAME = ".prompt-template-state.json";
+export const PROMPT_TEMPLATE_BASELINE_DIRNAME = ".prompt-template-baselines";
 
 const PROMPT_TEMPLATE_STATE_SCHEMA_VERSION = 1 as const;
 
@@ -49,6 +51,8 @@ type EnsureResult = {
     dirtyDetected: boolean;
     newFileCreated: boolean;
     newPath?: string;
+    upstreamDiffPath?: string;
+    mergedPath?: string;
   }[];
 };
 
@@ -194,6 +198,162 @@ async function writeTextIfChanged(params: {
   return { written: true, created: !existed };
 }
 
+function promptTemplateBaselinePath(promptDir: string, name: CorePromptFileName): string {
+  return path.join(promptDir, PROMPT_TEMPLATE_BASELINE_DIRNAME, name);
+}
+
+async function readTextIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await Bun.file(filePath).text();
+  } catch {
+    return null;
+  }
+}
+
+async function loadPreviousTemplateContent(params: {
+  promptDir: string;
+  name: CorePromptFileName;
+  expectedHash: string | undefined;
+  fallbackNewPath: string;
+}): Promise<string | null> {
+  if (!params.expectedHash) return null;
+
+  const baseline = await readTextIfExists(
+    promptTemplateBaselinePath(params.promptDir, params.name),
+  );
+  if (baseline !== null && sha256HexText(baseline) === params.expectedHash) {
+    return baseline;
+  }
+
+  const previousNew = await readTextIfExists(params.fallbackNewPath);
+  if (previousNew !== null && sha256HexText(previousNew) === params.expectedHash) {
+    return previousNew;
+  }
+
+  return null;
+}
+
+async function writeTemplateBaseline(params: {
+  promptDir: string;
+  name: CorePromptFileName;
+  content: string;
+}): Promise<void> {
+  const baselinePath = promptTemplateBaselinePath(params.promptDir, params.name);
+  await safeMkdir(path.dirname(baselinePath));
+  await writeTextIfChanged({ filePath: baselinePath, content: params.content });
+}
+
+type GitResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
+
+async function runGit(args: readonly string[]): Promise<GitResult | null> {
+  const git = Bun.which("git");
+  if (!git) return null;
+
+  const proc = Bun.spawn([git, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  return { code, stdout, stderr };
+}
+
+function normalizeGitArtifactPaths(
+  text: string,
+  replacements: readonly [string, string][],
+): string {
+  let normalized = text;
+  for (const [from, to] of replacements) {
+    normalized = normalized.split(from).join(to);
+  }
+  return normalized;
+}
+
+async function withTemporaryTemplateFiles<T>(params: {
+  name: CorePromptFileName;
+  oldContent: string;
+  newContent: string;
+  run: (paths: { oldPath: string; newPath: string }) => Promise<T>;
+}): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(tmpdir(), "lilac-prompt-template-"));
+  try {
+    const oldPath = path.join(dir, `upstream-before-${params.name}`);
+    const newPath = path.join(dir, `upstream-after-${params.name}`);
+    await Bun.write(oldPath, params.oldContent);
+    await Bun.write(newPath, params.newContent);
+    return await params.run({ oldPath, newPath });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function buildUpstreamTemplatePatch(params: {
+  name: CorePromptFileName;
+  oldContent: string;
+  newContent: string;
+}): Promise<string | null> {
+  if (params.oldContent === params.newContent) return null;
+
+  return withTemporaryTemplateFiles({
+    name: params.name,
+    oldContent: params.oldContent,
+    newContent: params.newContent,
+    run: async ({ oldPath, newPath }) => {
+      const result = await runGit(["diff", "--no-index", "--no-prefix", "--", oldPath, newPath]);
+      if (!result || (result.code !== 0 && result.code !== 1) || result.stdout.length === 0) {
+        return null;
+      }
+
+      const normalized = normalizeGitArtifactPaths(result.stdout, [
+        [oldPath, `upstream-before/${params.name}`],
+        [newPath, `upstream-after/${params.name}`],
+        [oldPath.replace(/^\//u, ""), `upstream-before/${params.name}`],
+        [newPath.replace(/^\//u, ""), `upstream-after/${params.name}`],
+      ]);
+      return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
+    },
+  });
+}
+
+async function buildMergedPromptCandidate(params: {
+  name: CorePromptFileName;
+  currentPath: string;
+  oldContent: string;
+  newContent: string;
+}): Promise<string | null> {
+  return withTemporaryTemplateFiles({
+    name: params.name,
+    oldContent: params.oldContent,
+    newContent: params.newContent,
+    run: async ({ oldPath, newPath }) => {
+      const result = await runGit([
+        "merge-file",
+        "-p",
+        "-L",
+        `current/${params.name}`,
+        "-L",
+        `upstream-before/${params.name}`,
+        "-L",
+        `upstream-after/${params.name}`,
+        params.currentPath,
+        oldPath,
+        newPath,
+      ]);
+      if (!result || (result.code !== 0 && result.code !== 1)) return null;
+      return result.stdout;
+    },
+  });
+}
+
 function computeTemplateBundleHash(
   templates: Record<CorePromptFileName, { hash: string }>,
 ): string {
@@ -247,6 +407,7 @@ export async function ensurePromptWorkspace(options?: {
 
     if (options?.overwrite) {
       await Bun.write(dst, template.content);
+      await writeTemplateBaseline({ promptDir, name, content: template.content });
       ensured.push({
         name,
         path: dst,
@@ -266,6 +427,7 @@ export async function ensurePromptWorkspace(options?: {
 
     if (currentContent === null) {
       await Bun.write(dst, template.content);
+      await writeTemplateBaseline({ promptDir, name, content: template.content });
       ensured.push({
         name,
         path: dst,
@@ -284,6 +446,7 @@ export async function ensurePromptWorkspace(options?: {
     }
 
     if (currentHash === template.hash) {
+      await writeTemplateBaseline({ promptDir, name, content: template.content });
       ensured.push({
         name,
         path: dst,
@@ -308,6 +471,7 @@ export async function ensurePromptWorkspace(options?: {
 
     if (managedAndUnchangedSinceLastApply && templateChanged) {
       await Bun.write(dst, template.content);
+      await writeTemplateBaseline({ promptDir, name, content: template.content });
       ensured.push({
         name,
         path: dst,
@@ -325,11 +489,47 @@ export async function ensurePromptWorkspace(options?: {
       continue;
     }
 
+    const previousTemplateContent = templateChanged
+      ? await loadPreviousTemplateContent({
+          promptDir,
+          name,
+          expectedHash: previousEntry?.templateHash,
+          fallbackNewPath: newPath,
+        })
+      : null;
+
     let newFileCreated = false;
     if (shouldWriteNewFile) {
       const result = await writeTextIfChanged({ filePath: newPath, content: template.content });
       newFileCreated = result.created;
     }
+
+    let upstreamDiffPath: string | undefined;
+    let mergedPath: string | undefined;
+    if (shouldWriteNewFile && previousTemplateContent !== null) {
+      const patch = await buildUpstreamTemplatePatch({
+        name,
+        oldContent: previousTemplateContent,
+        newContent: template.content,
+      });
+      if (patch !== null) {
+        upstreamDiffPath = `${dst}.upstream.patch`;
+        await writeTextIfChanged({ filePath: upstreamDiffPath, content: patch });
+      }
+
+      const merged = await buildMergedPromptCandidate({
+        name,
+        currentPath: dst,
+        oldContent: previousTemplateContent,
+        newContent: template.content,
+      });
+      if (merged !== null) {
+        mergedPath = `${dst}.merged`;
+        await writeTextIfChanged({ filePath: mergedPath, content: merged });
+      }
+    }
+
+    await writeTemplateBaseline({ promptDir, name, content: template.content });
 
     ensured.push({
       name,
@@ -340,6 +540,8 @@ export async function ensurePromptWorkspace(options?: {
       dirtyDetected: true,
       newFileCreated,
       ...(shouldWriteNewFile ? { newPath } : {}),
+      ...(upstreamDiffPath ? { upstreamDiffPath } : {}),
+      ...(mergedPath ? { mergedPath } : {}),
     });
 
     nextStateFiles[name] = {

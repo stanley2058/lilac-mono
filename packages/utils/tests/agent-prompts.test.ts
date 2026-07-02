@@ -10,6 +10,7 @@ import {
   DEFAULT_PROMPT_DIRNAME,
   HEARTBEAT_PROMPT_DIRNAME,
   HEARTBEAT_PROMPT_FILENAME,
+  PROMPT_TEMPLATE_BASELINE_DIRNAME,
   PROMPT_TEMPLATE_STATE_FILENAME,
   ensurePromptWorkspace,
 } from "../agent-prompts";
@@ -36,6 +37,10 @@ function promptDirFromDataDir(dataDir: string): string {
 
 function promptPath(dataDir: string, name: (typeof CORE_PROMPT_FILES)[number]): string {
   return path.join(promptDirFromDataDir(dataDir), name);
+}
+
+function templateBaselinePath(dataDir: string, name: (typeof CORE_PROMPT_FILES)[number]): string {
+  return path.join(promptDirFromDataDir(dataDir), PROMPT_TEMPLATE_BASELINE_DIRNAME, name);
 }
 
 async function readTemplate(name: (typeof CORE_PROMPT_FILES)[number]): Promise<string> {
@@ -306,6 +311,56 @@ describe("agent prompts", () => {
       expect(agents?.newPath).toBe(`${agentsPath}.new`);
       expect(agents?.newFileCreated).toBe(false);
       expect(await Bun.file(`${agentsPath}.new`).text()).toBe(templateContent);
+    });
+  });
+
+  it("writes upstream diff and merged candidate for customized files with a baseline", async () => {
+    if (!Bun.which("git")) return;
+
+    await withTempDataDir(async (dataDir) => {
+      await ensurePromptWorkspace({ dataDir });
+
+      const agentsPath = promptPath(dataDir, "AGENTS.md");
+      const oldTemplateContent = "# AGENTS.md\n\nOld upstream rule.\n";
+      const customized = "# AGENTS.md\n\nOld upstream rule.\n\nLocal custom rule.\n";
+      const oldTemplateHash = sha256HexText(oldTemplateContent);
+
+      await writeFile(agentsPath, customized, "utf8");
+      const baselinePath = templateBaselinePath(dataDir, "AGENTS.md");
+      await mkdir(path.dirname(baselinePath), { recursive: true });
+      await writeFile(baselinePath, oldTemplateContent, "utf8");
+
+      await writePromptState(dataDir, {
+        schemaVersion: 1,
+        templateBundleHash: "legacy-bundle",
+        files: {
+          "AGENTS.md": {
+            status: "managed",
+            templateHash: oldTemplateHash,
+            appliedHash: oldTemplateHash,
+          },
+        },
+      });
+
+      const result = await ensurePromptWorkspace({ dataDir });
+      const agents = result.ensured.find((e) => e.name === "AGENTS.md");
+
+      expect(agents?.dirtyDetected).toBe(true);
+      expect(agents?.newPath).toBe(`${agentsPath}.new`);
+      expect(agents?.upstreamDiffPath).toBe(`${agentsPath}.upstream.patch`);
+      expect(agents?.mergedPath).toBe(`${agentsPath}.merged`);
+      expect(await Bun.file(agentsPath).text()).toBe(customized);
+
+      const upstreamPatch = await Bun.file(`${agentsPath}.upstream.patch`).text();
+      expect(upstreamPatch).toContain("upstream-before/AGENTS.md");
+      expect(upstreamPatch).toContain("upstream-after/AGENTS.md");
+      expect(upstreamPatch).toContain("Old upstream rule.");
+
+      const merged = await Bun.file(`${agentsPath}.merged`).text();
+      expect(merged).toContain("Local custom rule.");
+
+      const templateContent = await readTemplate("AGENTS.md");
+      expect(await Bun.file(baselinePath).text()).toBe(templateContent);
     });
   });
 });
