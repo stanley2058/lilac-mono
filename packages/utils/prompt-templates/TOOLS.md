@@ -42,7 +42,7 @@ Basic usage:
 ```bash
 tools --list
 tools --help [tool]
-tools <tool> --arg1=value --arg2=value
+tools <tool> --arg1=value --arg2=value # note: space separated `--arg value` is not supported, always use `=`
 tools <tool> --input=@payload.json
 cat payload.json | tools <tool> --stdin
 ```
