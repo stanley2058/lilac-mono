@@ -639,12 +639,17 @@ function buildCustomCommandMessages(params: {
 const AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME = "conversation_thread_search";
 const AUTO_INJECTED_THREAD_SEARCH_NOTICE =
   "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.";
+export const AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH = 320;
+const AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD = Math.floor(
+  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH * 1.1,
+);
 
 export type AutoInjectedThreadSearchPayload = {
   note: string;
   entries: Array<{
     threadId: string;
     title: string;
+    brief?: string;
     timeRange?: string;
   }>;
 };
@@ -669,6 +674,7 @@ export function buildAutoInjectedThreadSearchMessages(params: {
     entries: params.entries.map((entry) => ({
       threadId: entry.threadId,
       title: entry.title,
+      ...(entry.brief ? { brief: entry.brief } : {}),
       ...(entry.timeRange ? { timeRange: entry.timeRange } : {}),
     })),
   };
@@ -702,6 +708,14 @@ export function buildAutoInjectedThreadSearchMessages(params: {
       ],
     },
   ];
+}
+
+function formatAutoInjectedThreadBrief(brief: string): string | undefined {
+  const trimmed = brief.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length <= AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD) return trimmed;
+
+  return `${trimmed.slice(0, AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH).trimEnd()} ...(${trimmed.length - AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH} remaining)`;
 }
 
 function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<string> {
@@ -826,9 +840,11 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
         const timeRange = result.timeRange
           ? formatInjectedThreadTimeRange(result.timeRange)
           : undefined;
+        const brief = formatAutoInjectedThreadBrief(result.brief);
         return {
           threadId: result.threadId,
           title: result.title,
+          ...(brief ? { brief } : {}),
           ...(timeRange ? { timeRange } : {}),
         };
       });

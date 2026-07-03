@@ -23,6 +23,7 @@ import type { ModelMessage } from "ai";
 import type { LanguageModel } from "ai";
 
 import {
+  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   consumeAssistantTextDelta,
@@ -312,6 +313,7 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
         {
           threadId: "thread-1",
           title: "Short thread title",
+          brief: "Short thread brief",
           timeRange: "2026/06/28 12:01 - 2026/06/28 13:23",
         },
       ],
@@ -344,6 +346,7 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
           {
             threadId: "thread-1",
             title: "Short thread title",
+            brief: "Short thread brief",
             timeRange: "2026/06/28 12:01 - 2026/06/28 13:23",
           },
         ],
@@ -353,6 +356,105 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
 });
 
 describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
+  it("includes dynamically capped brief metadata", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            followUpMinTextUnits: 1,
+            limit: 3,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const fullThreshold = Math.floor(AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH * 1.1);
+    const belowDisplayBrief = "a".repeat(AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH - 1);
+    const nearThresholdBrief = "b".repeat(fullThreshold);
+    const overThresholdBrief = "c".repeat(fullThreshold + 1);
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-briefs",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          queries: ["meaningful message"],
+          aboutness: {
+            domains: [],
+            situations: [],
+            targets: [],
+            entities: [],
+            userWouldAskForThisAs: ["meaningful message"],
+            intentSummary: "Find meaningful message threads.",
+          },
+        }),
+        search: async () => ({
+          meta: {
+            query: "meaningful message",
+            limit: 3,
+            mode: "hybrid",
+            count: 3,
+            vectorAvailable: false,
+          },
+          results: [
+            { threadId: "thread-1", title: "Below display", brief: belowDisplayBrief },
+            { threadId: "thread-2", title: "Near threshold", brief: nearThresholdBrief },
+            { threadId: "thread-3", title: "Over threshold", brief: overThresholdBrief },
+          ],
+        }),
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
+        entries: [
+          { threadId: "thread-1", title: "Below display", brief: belowDisplayBrief },
+          { threadId: "thread-2", title: "Near threshold", brief: nearThresholdBrief },
+          {
+            threadId: "thread-3",
+            title: "Over threshold",
+            brief: `${overThresholdBrief.slice(0, AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH)} ...(${overThresholdBrief.length - AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH} remaining)`,
+          },
+        ],
+      },
+    });
+  });
+
   it("ignores surface metadata when deciding whether to auto-inject", async () => {
     const cfg = parseCoreConfigV1ToUniversal({
       surface: {
