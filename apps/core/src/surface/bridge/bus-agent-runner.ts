@@ -124,6 +124,7 @@ import {
 import {
   appendAdditionalSessionMemoBlock,
   appendConfiguredAliasPromptBlock,
+  buildAutoInjectedThreadSearchOverlay,
   buildHeartbeatOverlayForRequest,
   buildRestrictedSessionOverlay,
   buildSurfaceMetadataOverlay,
@@ -152,6 +153,7 @@ export {
 export {
   appendAdditionalSessionMemoBlock,
   appendConfiguredAliasPromptBlock,
+  buildAutoInjectedThreadSearchOverlay,
   buildHeartbeatOverlayForRequest,
   buildRestrictedSessionOverlay,
   buildSurfaceMetadataOverlay,
@@ -637,15 +639,12 @@ function buildCustomCommandMessages(params: {
 }
 
 const AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME = "conversation_thread_search";
-const AUTO_INJECTED_THREAD_SEARCH_NOTICE =
-  "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.";
 export const AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH = 320;
 const AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD = Math.floor(
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH * 1.1,
 );
 
 export type AutoInjectedThreadSearchPayload = {
-  note: string;
   entries: Array<{
     threadId: string;
     title: string;
@@ -670,7 +669,6 @@ export function buildAutoInjectedThreadSearchMessages(params: {
   entries: readonly AutoInjectedThreadSearchEntry[];
 }): ModelMessage[] {
   const payload: AutoInjectedThreadSearchPayload = {
-    note: AUTO_INJECTED_THREAD_SEARCH_NOTICE,
     entries: params.entries.map((entry) => ({
       threadId: entry.threadId,
       title: entry.title,
@@ -2706,12 +2704,22 @@ export async function startBusAgentRunner(params: {
           ? `${systemPromptWithSessionMemo}\n\n${heartbeatOverlay}`
           : systemPromptWithSessionMemo;
 
+      const autoInjectedThreadSearchOverlay = buildAutoInjectedThreadSearchOverlay({
+        cfg,
+        runProfile,
+      });
+
+      const systemPromptWithAutoInjectedThreadSearchOverlay =
+        autoInjectedThreadSearchOverlay && autoInjectedThreadSearchOverlay.trim().length > 0
+          ? `${systemPromptWithHeartbeatOverlay}\n\n${autoInjectedThreadSearchOverlay}`
+          : systemPromptWithHeartbeatOverlay;
+
       const surfaceMetadataOverlay = buildSurfaceMetadataOverlay(next.messages);
 
       const systemPromptWithSurfaceMetadataOverlay =
         surfaceMetadataOverlay && surfaceMetadataOverlay.trim().length > 0
-          ? `${systemPromptWithHeartbeatOverlay}\n\n${surfaceMetadataOverlay}`
-          : systemPromptWithHeartbeatOverlay;
+          ? `${systemPromptWithAutoInjectedThreadSearchOverlay}\n\n${surfaceMetadataOverlay}`
+          : systemPromptWithAutoInjectedThreadSearchOverlay;
 
       const restrictedSessionOverlay =
         safetyMode === "restricted"

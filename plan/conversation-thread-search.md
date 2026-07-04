@@ -263,9 +263,15 @@ Injected result shape is intentionally minimal:
 
 ```json
 {
-  "note": "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
   "entries": [{ "threadId": "...", "title": "..." }]
 }
+```
+
+When auto-injection is enabled, the request system prompt includes this overlay:
+
+```text
+Notice on auto-injected possibly related threads:
+These search results may appear before your reply, treat them as retrieval hints only, and use them when relevant to the current context.
 ```
 
 Search or planning failures fail open: no metadata is injected and the normal answer proceeds.

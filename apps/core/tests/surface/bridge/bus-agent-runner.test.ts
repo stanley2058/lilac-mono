@@ -26,6 +26,7 @@ import {
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
+  buildAutoInjectedThreadSearchOverlay,
   consumeAssistantTextDelta,
   computeTransientRetryDelayMs,
   createAssistantTextPartBoundaryState,
@@ -341,7 +342,6 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
     expect(result.output).toEqual({
       type: "json",
       value: {
-        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
         entries: [
           {
             threadId: "thread-1",
@@ -443,7 +443,6 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(result.output).toEqual({
       type: "json",
       value: {
-        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
         entries: [
           { threadId: "thread-1", title: "Below display", brief: belowDisplayBrief },
           { threadId: "thread-2", title: "Near threshold", brief: nearThresholdBrief },
@@ -670,7 +669,6 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(result.output).toEqual({
       type: "json",
       value: {
-        note: "Auto-injected conversation-thread metadata for possible context. Use only if relevant; thread transcripts were not loaded.",
         entries: [
           {
             threadId: "thread-1",
@@ -2511,6 +2509,35 @@ describe("assistant text part boundary accumulation", () => {
 
     expect(streamed).toEqual(["...update the notes.", "\n", "\nWorks without the old patch..."]);
     expect(finalText).toBe("...update the notes.\n\nWorks without the old patch...");
+  });
+});
+
+describe("buildAutoInjectedThreadSearchOverlay", () => {
+  it("returns the notice only for primary runs when auto-inject is enabled", () => {
+    const baseCfg = parseCoreConfigV1ToUniversal({});
+    const cfg: CoreConfig = {
+      ...baseCfg,
+      conversation: {
+        ...baseCfg.conversation,
+        thread: {
+          ...baseCfg.conversation.thread,
+          autoInject: {
+            ...baseCfg.conversation.thread.autoInject,
+            enabled: true,
+          },
+        },
+      },
+    };
+
+    const overlay = buildAutoInjectedThreadSearchOverlay({ cfg, runProfile: "primary" });
+
+    expect(overlay).toBe(
+      "Notice on auto-injected possibly related threads:\nThese search results may appear before your reply, treat them as retrieval hints only, and use them when relevant to the current context.",
+    );
+    expect(
+      buildAutoInjectedThreadSearchOverlay({ cfg: baseCfg, runProfile: "primary" }),
+    ).toBeNull();
+    expect(buildAutoInjectedThreadSearchOverlay({ cfg, runProfile: "explore" })).toBeNull();
   });
 });
 

@@ -228,6 +228,19 @@ export function maybeAppendResponseCommentaryPrompt(params: {
   return `${base}\n\n${commentaryPrompt}`;
 }
 
+export function buildAutoInjectedThreadSearchOverlay(params: {
+  cfg: Pick<CoreConfig, "conversation">;
+  runProfile: AgentRunProfile;
+}): string | null {
+  if (params.runProfile !== "primary") return null;
+  if (!params.cfg.conversation.thread.autoInject.enabled) return null;
+
+  return [
+    "Notice on auto-injected possibly related threads:",
+    "These search results may appear before your reply, treat them as retrieval hints only, and use them when relevant to the current context.",
+  ].join("\n");
+}
+
 export function buildSurfaceMetadataOverlay(messages: readonly ModelMessage[]): string | null {
   if (!messagesContainSurfaceMetadata(messages)) return null;
 
