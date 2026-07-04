@@ -376,6 +376,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 1,
             followUpMinTextUnits: 1,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -409,6 +410,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             query: "meaningful message",
             limit: 3,
             mode: "hybrid",
+            minScore: 0.1,
             count: 3,
             vectorAvailable: false,
           },
@@ -475,6 +477,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 80,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -522,6 +525,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
               query: "lol",
               limit: 3,
               mode: "hybrid",
+              minScore: 0.1,
               count: 1,
               vectorAvailable: false,
             },
@@ -567,6 +571,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 80,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.42,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -579,6 +584,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     const endTime = "2026-06-28T13:23:00.000Z";
     let plannedText = "";
     let searchVerbose: boolean | undefined;
+    let searchMinScore: number | undefined;
 
     const messages = await maybeBuildAutoInjectedThreadSearchMessages({
       cfg: autoInjectCfg,
@@ -613,11 +619,13 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
         },
         search: async (input) => {
           searchVerbose = input.verbose;
+          searchMinScore = input.minScore;
           return {
             meta: {
               query: "OAuth callback mobile login loop",
               limit: 3,
               mode: "hybrid",
+              minScore: 0.42,
               count: 1,
               vectorAvailable: false,
             },
@@ -651,6 +659,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(plannedText).toBe(body);
     expect(plannedText).not.toContain("LILAC_META");
     expect(searchVerbose).toBe(true);
+    expect(searchMinScore).toBe(0.42);
     expect(messages).toHaveLength(2);
     const toolMessage = messages[1];
     if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
@@ -693,6 +702,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 1,
             followUpMinTextUnits: 1,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -728,6 +738,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             query: "meaningful message",
             limit: 3,
             mode: "hybrid",
+            minScore: 0.1,
             count: 1,
             vectorAvailable: false,
           },
@@ -777,6 +788,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 80,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -816,6 +828,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             query: "cookie callback subdomain",
             limit: 3,
             mode: "hybrid",
+            minScore: 0.1,
             count: 1,
             vectorAvailable: false,
           },
@@ -859,6 +872,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 80,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -905,6 +919,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
               query: "cookie callback subdomain",
               limit: 3,
               mode: "hybrid",
+              minScore: 0.1,
               count: 1,
               vectorAvailable: false,
             },
@@ -950,6 +965,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 80,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -993,6 +1009,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             query: "edge middleware redirect host header",
             limit: 3,
             mode: "hybrid",
+            minScore: 0.1,
             count: 1,
             vectorAvailable: false,
           },
@@ -1036,6 +1053,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 1,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: true,
           },
@@ -1072,6 +1090,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
               query: "meaningful message",
               limit: 3,
               mode: "hybrid",
+              minScore: 0.1,
               count: 1,
               vectorAvailable: false,
             },
@@ -1117,6 +1136,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             minTextUnits: 1,
             followUpMinTextUnits: 110,
             limit: 3,
+            minScore: 0.1,
             mode: "hybrid",
             filterCurrentParticipants: false,
           },
@@ -1155,6 +1175,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
             query: "meaningful message",
             limit: 3,
             mode: "hybrid",
+            minScore: 0.1,
             count: 1,
             vectorAvailable: false,
           },

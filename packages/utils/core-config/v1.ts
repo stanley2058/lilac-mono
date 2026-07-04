@@ -715,6 +715,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
           minTextUnits: 80,
           followUpMinTextUnits: 110,
           limit: 3,
+          minScore: 0.1,
           mode: "hybrid",
           filterCurrentParticipants: false,
         },

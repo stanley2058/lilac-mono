@@ -106,6 +106,7 @@ export type UniversalCoreConfig = {
         minTextUnits: number;
         followUpMinTextUnits: number;
         limit: number;
+        minScore: number;
         mode: "hybrid" | "semantic" | "lexical";
         filterCurrentParticipants: boolean;
       };

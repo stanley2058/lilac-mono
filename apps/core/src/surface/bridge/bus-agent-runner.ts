@@ -830,6 +830,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
       query: plan.queries,
       queryAboutness: plan.aboutness,
       limit: autoInject.limit,
+      minScore: autoInject.minScore,
       mode: autoInject.mode,
       verbose: true,
       ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),

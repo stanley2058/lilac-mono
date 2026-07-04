@@ -243,6 +243,7 @@ Automatic similar-thread metadata injection is implemented behind default-false 
 - `conversation.thread.autoInject.plannerModel`: optional model used to plan automatic search queries; when unset, it inherits `conversation.thread.summarization.model`.
 - `conversation.thread.autoInject.minTextUnits`: default `80`; only run when the latest real user input has enough meaningful authored text so short prompts stay fast.
 - `conversation.thread.autoInject.limit`: max injected title entries.
+- `conversation.thread.autoInject.minScore`: default `0.1`; minimum final search score after semantic/lexical ranking and aboutness coverage.
 - `conversation.thread.autoInject.mode`: `hybrid`, `semantic`, or `lexical`.
 - `conversation.thread.autoInject.filterCurrentParticipants`: when enabled, keep only candidate threads that contain at least one Discord user visible in the composed request/reply-chain context. The main agent participant is already required by thread formation and is not part of this filter.
 

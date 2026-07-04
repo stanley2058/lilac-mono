@@ -55,6 +55,9 @@ conversation:
       followUpMinTextUnits: 110
       # Max thread titles to inject.
       limit: 3
+      # Minimum final search score after semantic/lexical ranking and aboutness
+      # coverage. Use 0 for broad/debug recall.
+      minScore: 0.1
       # Search mode for auto-injected metadata: hybrid, semantic, or lexical.
       mode: hybrid
       # Only inject threads containing at least one user visible in the composed

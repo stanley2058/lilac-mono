@@ -24,6 +24,7 @@ describe("coreConfigSchema models.capability", () => {
       minTextUnits: 80,
       followUpMinTextUnits: 110,
       limit: 3,
+      minScore: 0.1,
       mode: "hybrid",
       filterCurrentParticipants: false,
     });
@@ -44,6 +45,7 @@ describe("coreConfigSchema models.capability", () => {
       minTextUnits: 80,
       followUpMinTextUnits: 110,
       limit: 3,
+      minScore: 0.1,
       mode: "hybrid",
       filterCurrentParticipants: false,
     });
@@ -83,6 +85,7 @@ describe("coreConfigSchema models.capability", () => {
             minTextUnits: 120,
             followUpMinTextUnits: 150,
             limit: 4,
+            minScore: 0.2,
             mode: "semantic",
             filterCurrentParticipants: true,
           },
@@ -96,6 +99,7 @@ describe("coreConfigSchema models.capability", () => {
       minTextUnits: 120,
       followUpMinTextUnits: 150,
       limit: 4,
+      minScore: 0.2,
       mode: "semantic",
       filterCurrentParticipants: true,
     });

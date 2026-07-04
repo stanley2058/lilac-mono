@@ -1734,6 +1734,16 @@ describe("conversation thread store", () => {
       },
     ]);
 
+    const thresholded = await service.search({
+      query: ["alpha", "beta"],
+      mode: "lexical",
+      limit: 2,
+      minScore: 0.75,
+      verbose: true,
+    });
+    expect(thresholded.meta.minScore).toBe(0.75);
+    expect(thresholded.results.map((item) => item.title)).toEqual(["Two query match"]);
+
     searchStore.close();
     threadStore.close();
   });

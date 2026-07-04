@@ -42,6 +42,7 @@ const SUMMARY_HEAD_MESSAGES = 40;
 const SUMMARY_TAIL_MESSAGES = 160;
 const SUMMARY_MAX_MESSAGES = SUMMARY_HEAD_MESSAGES + SUMMARY_TAIL_MESSAGES;
 const DEFAULT_READ_LIMIT = 50;
+const DEFAULT_SEARCH_MIN_SCORE = 0.1;
 const SUMMARY_PARSE_MAX_ATTEMPTS = 3;
 const HYBRID_LEXICAL_WEIGHT = 0.35;
 const PROMPT_CONTEXT_FILES = ["MEMORY.md", "USER.md", "ENTITIES.md"] as const;
@@ -166,6 +167,7 @@ export type ConversationThreadSearchResult = {
     queries?: string[];
     limit: number;
     mode: "hybrid" | "semantic" | "lexical";
+    minScore: number;
     count: number;
     vectorAvailable: boolean;
     vectorError?: string;
@@ -1288,12 +1290,14 @@ export class ConversationThreadService {
     beforeTs?: number;
     afterTs?: number;
     mode?: "hybrid" | "semantic" | "lexical";
+    minScore?: number;
     verbose?: boolean;
     queryAboutness?: ConversationThreadQueryAboutness;
   }): Promise<ConversationThreadSearchResult> {
     const cfg = await this.params.getConfig();
     this.refreshThreads(cfg);
     const limit = Math.min(50, Math.max(1, Math.floor(input.limit ?? 5)));
+    const minScore = Math.max(0, input.minScore ?? DEFAULT_SEARCH_MIN_SCORE);
     const mode = input.mode ?? "hybrid";
     const queries = normalizeSearchQueries(input.query);
     const embeddingAdapter = this.params.getEmbeddingAdapter
@@ -1322,13 +1326,16 @@ export class ConversationThreadService {
             mode,
             candidateCount: recallHits.length,
           });
-      const hits = this.applyAboutnessCoverage(recallHits, queryAboutness).slice(0, limit);
+      const hits = this.applyAboutnessCoverage(recallHits, queryAboutness)
+        .filter((hit) => hit.score >= minScore)
+        .slice(0, limit);
       const result = {
         meta: {
           query: queries[0]!,
           ...(queries.length > 1 ? { queries } : {}),
           limit,
           mode,
+          minScore,
           count: hits.length,
           vectorAvailable: this.params.store.isVectorSearchAvailable() && !!embeddingAdapter,
           vectorError: this.params.store.getVectorLoadError() ?? undefined,

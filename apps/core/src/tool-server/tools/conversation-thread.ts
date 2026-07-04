@@ -16,6 +16,11 @@ const searchInputSchema = z.object({
     .optional()
     .describe("Search mode. Defaults to hybrid."),
   limit: z.coerce.number().int().positive().max(50).optional().describe("Max results."),
+  minScore: z.coerce
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Minimum final score after ranking and aboutness coverage. Defaults to 0.1."),
   sessionId: z
     .string()
     .min(1)
