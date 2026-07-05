@@ -71,8 +71,11 @@ function findFenceEndingAt(offset: number, index: MarkdownIndex): CodeFenceRange
   return (
     index.codeFences.find(
       (fence) =>
-        offset > fence.openerEnd &&
-        (fence.closeStart === null ? offset <= (fence.end ?? offset) : offset <= fence.closeStart),
+        (offset === fence.openerEnd && fence.closeStart === fence.openerEnd) ||
+        (offset > fence.openerEnd &&
+          (fence.closeStart === null
+            ? offset <= (fence.end ?? offset)
+            : offset <= fence.closeStart)),
     ) ?? null
   );
 }
@@ -83,6 +86,30 @@ function findNextFence(start: number, end: number, index: MarkdownIndex): CodeFe
 
 function findCloserAt(offset: number, index: MarkdownIndex): CodeFenceRange | null {
   return index.codeFences.find((fence) => fence.closeStart === offset) ?? null;
+}
+
+function isSuppressibleOpenerOnlyFence(fence: CodeFenceRange): boolean {
+  return fence.closeStart !== fence.openerEnd;
+}
+
+function findTrailingOpenerOnlyFence(range: RawChunk, index: MarkdownIndex): CodeFenceRange | null {
+  return (
+    index.codeFences.find(
+      (fence) =>
+        range.start < fence.start &&
+        range.end === fence.openerEnd &&
+        isSuppressibleOpenerOnlyFence(fence),
+    ) ?? null
+  );
+}
+
+function isFenceOpenerOnlyRange(range: RawChunk, index: MarkdownIndex): boolean {
+  return index.codeFences.some(
+    (fence) =>
+      range.start === fence.start &&
+      range.end === fence.openerEnd &&
+      isSuppressibleOpenerOnlyFence(fence),
+  );
 }
 
 function startFormattingAt(range: RawChunk, index: MarkdownIndex): string[] {
@@ -116,6 +143,9 @@ function renderRawSlice(raw: string, range: RawChunk, index: MarkdownIndex): str
   while (pos < range.end) {
     const closer = findCloserAt(pos, index);
     if (closer !== null && closer.end !== null) {
+      if (closer.closeStart === closer.openerEnd && range.start <= closer.start) {
+        out += normalizedFenceCloser(raw.slice(closer.closeStart, closer.end));
+      }
       pos = Math.min(range.end, closer.end);
       continue;
     }
@@ -171,9 +201,16 @@ function renderDiscordChunk(
   index: MarkdownIndex,
   options: { isLast: boolean; completeLastChunk: boolean },
 ): string {
-  const startState = index.getStateAt(range.start);
-  const endState = index.getStateAt(range.end);
-  const endFence = endState.fence ?? findFenceEndingAt(range.end, index);
+  const trailingOpenerOnlyFence = findTrailingOpenerOnlyFence(range, index);
+  const renderRange = trailingOpenerOnlyFence
+    ? { start: range.start, end: trailingOpenerOnlyFence.start }
+    : range;
+
+  const startState = index.getStateAt(renderRange.start);
+  const endState = index.getStateAt(renderRange.end);
+  const endFence = trailingOpenerOnlyFence
+    ? null
+    : (endState.fence ?? findFenceEndingAt(renderRange.end, index));
 
   let prefix = "";
   let suffix = "";
@@ -184,8 +221,8 @@ function renderDiscordChunk(
   } else {
     prefix =
       blockquotePrefix +
-      startFormattingAt(range, index).join("") +
-      startInlineCodeMarkerAt(range, index);
+      startFormattingAt(renderRange, index).join("") +
+      startInlineCodeMarkerAt(renderRange, index);
   }
 
   if (endFence !== null) {
@@ -194,7 +231,7 @@ function renderDiscordChunk(
     suffix = (endState.inlineCode?.marker ?? "") + [...endState.formatting].reverse().join("");
   }
 
-  const body = renderRawSlice(raw, range, index);
+  const body = renderRawSlice(raw, renderRange, index);
   const separator = endFence !== null && body.length > 0 && !body.endsWith("\n") ? "\n" : "";
   const rendered = prefix + body + separator + suffix;
 
@@ -323,21 +360,27 @@ function renderChunks(
   for (let i = 0; i < ranges.length; i++) {
     const range = ranges[i];
     if (!range) continue;
+    const nextRange = ranges[i + 1];
+    if (isFenceOpenerOnlyRange(range, index)) {
+      if (nextRange) ranges[i + 1] = { start: range.start, end: nextRange.end };
+      continue;
+    }
+
     const isLast = i === ranges.length - 1;
     const activeBudget = isLast ? lastBudget : budget;
     let result = shrinkToRenderedBudget(raw, range, index, activeBudget, isLast, completeLastChunk);
 
     if (result.range.end < range.end) {
-      const nextRange = ranges[i + 1];
-      if (nextRange && nextRange.start === range.end) {
-        ranges[i + 1] = { start: result.range.end, end: nextRange.end };
+      const followingRange = ranges[i + 1];
+      if (followingRange && followingRange.start === range.end) {
+        ranges[i + 1] = { start: result.range.end, end: followingRange.end };
       } else {
         ranges.splice(i + 1, 0, { start: result.range.end, end: range.end });
       }
       result = shrinkToRenderedBudget(raw, result.range, index, budget, false, false);
     }
 
-    displays.push(result.display);
+    if (result.display.length > 0) displays.push(result.display);
   }
 
   return displays;

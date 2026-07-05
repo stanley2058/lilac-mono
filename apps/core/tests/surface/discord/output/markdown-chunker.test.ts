@@ -422,6 +422,100 @@ describe("markdown-chunker", () => {
     expect(chunks.every((chunk) => chunk.length <= 38)).toBe(true);
   });
 
+  it("should not render an empty code block after a multiline blockquote lead-in", () => {
+    const input = [">>> lead", "```js", "const value = 1;", "```"].join("\n");
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 30,
+      maxLastChunkLength: 30,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 30,
+    });
+
+    expect(chunks).toEqual([">>> lead\n", ">>> ```js\nconst value = 1;\n```"]);
+    expect(chunks.join("")).not.toContain("```js\n```");
+    expect(chunks.every((chunk) => chunk.length <= 30)).toBe(true);
+  });
+
+  it("should not render an empty code block after a plain lead-in", () => {
+    const input = ["lead", "```js", "const value = 1;", "```"].join("\n");
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 26,
+      maxLastChunkLength: 26,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 26,
+    });
+
+    expect(chunks).toEqual(["lead\n", "```js\nconst value = 1;\n```"]);
+    expect(chunks.join("")).not.toContain("```js\n```");
+    expect(chunks.every((chunk) => chunk.length <= 26)).toBe(true);
+  });
+
+  it("should not render a standalone empty code block when the fence opener is its own chunk", () => {
+    const input = ["lead lead lead", "```js", "const value = 1;", "```"].join("\n");
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 15,
+      maxLastChunkLength: 15,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 15,
+    });
+
+    expect(chunks).not.toContain("```js\n```");
+    expect(chunks.every((chunk) => chunk.length <= 15)).toBe(true);
+  });
+
+  it("should preserve intentionally empty closed code fences", () => {
+    const input = ["xxxxxxxx", "```js", "```", "more text"].join("\n");
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 15,
+      maxLastChunkLength: 15,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 15,
+    });
+
+    expect(chunks.join("")).toBe(input);
+    expect(chunks.join("")).toContain("```js\n```");
+    expect(chunks.every((chunk) => chunk.length <= 15)).toBe(true);
+  });
+
+  it("should not emit empty chunks while preserving empty closed code fences", () => {
+    const input = ["lead", "```js", "```", "more text after"].join("\n");
+
+    for (let limit = 9; limit <= 15; limit++) {
+      const chunks = chunkMarkdownForEmbeds(input, {
+        maxChunkLength: limit,
+        maxLastChunkLength: limit,
+        useSmartSplitting: true,
+        hardMaxChunkLength: limit,
+      });
+
+      expect(chunks).not.toContain("");
+      expect(chunks.join("")).toContain("```js\n```");
+      expect(chunks.join("")).toContain("more text after");
+    }
+  });
+
+  it("should drop an unclosed empty fence opener at end of input", () => {
+    const chunks = chunkMarkdownForEmbeds(["lead", "```js", ""].join("\n"), {
+      maxChunkLength: 15,
+      maxLastChunkLength: 15,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 15,
+    });
+
+    expect(chunks).toEqual(["lead\n"]);
+  });
+
+  it("should drop a final opener-only range instead of rendering an empty block", () => {
+    const chunks = chunkMarkdownForEmbeds(["lead lead lead", "```js", ""].join("\n"), {
+      maxChunkLength: 15,
+      maxLastChunkLength: 15,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 15,
+    });
+
+    expect(chunks).toEqual(["lead lead lead\n"]);
+  });
+
   it("should not carry blockquote formatting into following plain text", () => {
     const input = "> quoted sentence that wraps around\nplain sentence that also wraps";
     const chunks = chunkMarkdownForEmbeds(input, {
