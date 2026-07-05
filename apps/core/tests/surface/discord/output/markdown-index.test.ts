@@ -119,4 +119,43 @@ describe("markdown-index", () => {
 
     expect(index.getStateAt(input.indexOf("still")).formatting).toEqual([]);
   });
+
+  it("should report active blockquote state inside a blockquote line", () => {
+    const input = "> quoted text that can be split";
+    const index = buildMarkdownIndex(input);
+
+    expect(index.getStateAt(input.indexOf("text")).blockquote).toEqual({ prefix: "> " });
+    expect(index.getStateAt(0).blockquote).toBeNull();
+    expect(index.isSafeOffset(1)).toBe(false);
+    expect(index.isSafeOffset(2)).toBe(true);
+  });
+
+  it("should not report blockquote state for literal greater-than text", () => {
+    const inputs = [">text that should stay literal", ">> text that should stay literal"];
+
+    for (const input of inputs) {
+      const index = buildMarkdownIndex(input);
+      expect(index.blockquotes).toEqual([]);
+      expect(index.getStateAt(input.indexOf("text")).blockquote).toBeNull();
+    }
+  });
+
+  it("should report multiline blockquote state after the first line", () => {
+    const input = ">>> first line\nsecond line that can be split";
+    const index = buildMarkdownIndex(input);
+
+    expect(index.getStateAt(input.indexOf("first")).blockquote).toEqual({ prefix: ">>> " });
+    expect(index.getStateAt(input.indexOf("second")).blockquote).toEqual({ prefix: ">>> " });
+    expect(index.isSafeOffset(1)).toBe(false);
+    expect(index.isSafeOffset(2)).toBe(false);
+    expect(index.isSafeOffset(3)).toBe(false);
+    expect(index.isSafeOffset(4)).toBe(true);
+  });
+
+  it("should not report blockquote state inside fenced code", () => {
+    const input = "```md\n>>> quoted-looking code\n```";
+    const index = buildMarkdownIndex(input);
+
+    expect(index.getStateAt(input.indexOf("quoted-looking")).blockquote).toBeNull();
+  });
 });

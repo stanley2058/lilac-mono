@@ -177,11 +177,15 @@ function renderDiscordChunk(
 
   let prefix = "";
   let suffix = "";
+  const blockquotePrefix = startState.blockquote?.prefix ?? "";
 
   if (startState.fence !== null) {
-    prefix = normalizedFenceOpener(startState.fence.lang);
+    prefix = blockquotePrefix + normalizedFenceOpener(startState.fence.lang);
   } else {
-    prefix = startFormattingAt(range, index).join("") + startInlineCodeMarkerAt(range, index);
+    prefix =
+      blockquotePrefix +
+      startFormattingAt(range, index).join("") +
+      startInlineCodeMarkerAt(range, index);
   }
 
   if (endFence !== null) {

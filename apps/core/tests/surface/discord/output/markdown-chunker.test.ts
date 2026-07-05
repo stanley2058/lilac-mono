@@ -348,6 +348,125 @@ describe("markdown-chunker", () => {
     expect(chunks.every((chunk) => chunk.length <= 9)).toBe(true);
   });
 
+  it("should preserve blockquote formatting across split chunks", () => {
+    const input = "> this is a long sentence getting split by the markdown splitter";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 36,
+      maxLastChunkLength: 36,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 36,
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.startsWith("> "))).toBe(true);
+    expect(chunks.every((chunk) => chunk.length <= 36)).toBe(true);
+    expect(chunks.map((chunk, index) => (index === 0 ? chunk : chunk.slice(2))).join("")).toBe(
+      input,
+    );
+  });
+
+  it("should not inject blockquote prefixes for literal greater-than text", () => {
+    const inputs = [
+      ">text that is fairly long and will be split into chunks",
+      ">> text that is fairly long and will be split into chunks",
+    ];
+
+    for (const input of inputs) {
+      const chunks = chunkMarkdownForEmbeds(input, {
+        maxChunkLength: 18,
+        maxLastChunkLength: 18,
+        useSmartSplitting: true,
+        hardMaxChunkLength: 18,
+      });
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.join("")).toBe(input);
+    }
+  });
+
+  it("should preserve multiline blockquote formatting across split chunks", () => {
+    const input = ">>> first line getting split\nsecond line also quoted by discord";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 32,
+      maxLastChunkLength: 32,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 32,
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.startsWith(">>> "))).toBe(true);
+    expect(chunks.every((chunk) => chunk.length <= 32)).toBe(true);
+    expect(chunks.map((chunk, index) => (index === 0 ? chunk : chunk.slice(4))).join("")).toBe(
+      input,
+    );
+  });
+
+  it("should preserve multiline blockquote formatting across fenced code splits", () => {
+    const input = [
+      ">>> quoted lead-in",
+      "```js",
+      "const first = 'line that should split';",
+      "const second = 'line that should also split';",
+      "```",
+    ].join("\n");
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 38,
+      maxLastChunkLength: 38,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 38,
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.startsWith(">>> "))).toBe(true);
+    expect(chunks.slice(1).every((chunk) => chunk.startsWith(">>> ```js"))).toBe(true);
+    expect(chunks.every((chunk) => chunk.length <= 38)).toBe(true);
+  });
+
+  it("should not carry blockquote formatting into following plain text", () => {
+    const input = "> quoted sentence that wraps around\nplain sentence that also wraps";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 34,
+      maxLastChunkLength: 34,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 34,
+    });
+
+    const plainChunks = chunks.filter(
+      (chunk) => chunk.includes("plain") || chunk.includes("also wraps"),
+    );
+    expect(plainChunks.length).toBeGreaterThan(0);
+    expect(plainChunks.every((chunk) => !chunk.startsWith("> "))).toBe(true);
+  });
+
+  it("should not add blockquote prefixes inside fenced code", () => {
+    const input = "```md\n> quoted-looking code that should stay literal and split\n```";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 30,
+      maxLastChunkLength: 30,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 30,
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.slice(1).every((chunk) => !chunk.startsWith("> "))).toBe(true);
+    expect(chunks.join("\n")).toContain("> quoted-looking");
+  });
+
+  it("should keep emphasis balanced when blockquote chunks split inside emphasis", () => {
+    const input = "> **aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa**";
+    const chunks = chunkMarkdownForEmbeds(input, {
+      maxChunkLength: 16,
+      maxLastChunkLength: 16,
+      useSmartSplitting: true,
+      hardMaxChunkLength: 16,
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.startsWith("> "))).toBe(true);
+    expect(chunks.every((chunk) => (chunk.match(/\*\*/gu) ?? []).length % 2 === 0)).toBe(true);
+    expect(chunks.every((chunk) => chunk.length <= 16)).toBe(true);
+  });
+
   it("should complete unmatched markdown on final last chunk when requested", () => {
     const chunks = chunkMarkdownForEmbeds("hello **bold", {
       maxChunkLength: 100,

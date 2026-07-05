@@ -20,12 +20,22 @@ export interface CodeFenceRange {
   lang: string;
 }
 
+export interface BlockquoteRange {
+  lineStart: number;
+  contentStart: number;
+  lineEnd: number;
+  prefix: string;
+}
+
 export type MarkdownDelimiter = "**" | "*" | "__" | "_" | "~~";
 
 export interface MarkdownState {
   fence: null | {
     markerLength: number;
     lang: string;
+  };
+  blockquote: null | {
+    prefix: string;
   };
   inlineCode: null | {
     marker: string;
@@ -36,6 +46,7 @@ export interface MarkdownState {
 export interface MarkdownIndex {
   unsafeZones: readonly UnsafeZone[];
   codeFences: readonly CodeFenceRange[];
+  blockquotes: readonly BlockquoteRange[];
   formattingRanges: readonly MarkdownFormattingRange[];
   inlineCodeRanges: readonly MarkdownInlineCodeRange[];
   getStateAt(offset: number): MarkdownState;
@@ -298,6 +309,52 @@ function getActiveFence(
   return null;
 }
 
+function getActiveBlockquote(
+  offset: number,
+  blockquotes: readonly BlockquoteRange[],
+): BlockquoteRange | null {
+  return (
+    blockquotes.find(
+      (blockquote) => offset >= blockquote.contentStart && offset < blockquote.lineEnd,
+    ) ?? null
+  );
+}
+
+function scanBlockquotes(
+  raw: string,
+  codeFences: readonly CodeFenceRange[],
+  zones: UnsafeZone[],
+): BlockquoteRange[] {
+  const blockquotes: BlockquoteRange[] = [];
+  let pos = 0;
+
+  while (pos < raw.length) {
+    const end = lineEndIndex(raw, pos);
+    const activeFence = getActiveFence(pos, codeFences);
+
+    if (activeFence === null) {
+      const line = raw.slice(pos, end);
+      const match = /^( {0,3}(?:>>>|>)[ \t])/u.exec(line);
+      if (match?.[1]) {
+        const isMultiline = match[1].trimStart().startsWith(">>>");
+        const contentStart = pos + match[1].length;
+        addZone(zones, pos, contentStart, "marker");
+        blockquotes.push({
+          lineStart: pos,
+          contentStart,
+          lineEnd: isMultiline ? raw.length : line.endsWith("\n") ? end - 1 : end,
+          prefix: match[1],
+        });
+        if (isMultiline) break;
+      }
+    }
+
+    pos = end;
+  }
+
+  return blockquotes;
+}
+
 function findFormattingMarkerRangeAt(
   offset: number,
   formattingRanges: readonly MarkdownFormattingRange[],
@@ -357,6 +414,7 @@ function scanInlineState(
   raw: string,
   offset: number,
   codeFences: readonly CodeFenceRange[],
+  blockquotes: readonly BlockquoteRange[],
   formattingRanges: readonly MarkdownFormattingRange[],
   inlineCodeRanges: readonly MarkdownInlineCodeRange[],
 ): MarkdownState {
@@ -421,6 +479,7 @@ function scanInlineState(
   }
 
   const fence = getActiveFence(end, codeFences);
+  const blockquote = getActiveBlockquote(end, blockquotes);
   const formatting = formattingRanges
     .filter((range) => end >= range.openerEnd && end <= range.closeStart)
     .sort((a, b) => a.start - b.start || b.end - a.end)
@@ -433,6 +492,7 @@ function scanInlineState(
 
   return {
     fence: fence ? { markerLength: fence.markerLength, lang: fence.lang } : null,
+    blockquote: blockquote ? { prefix: blockquote.prefix } : null,
     inlineCode: inlineCode
       ? { marker: inlineCode.marker }
       : openInlineMarker
@@ -460,19 +520,22 @@ export function buildMarkdownIndex(raw: string): MarkdownIndex {
 
   collectAstUnsafeZones(raw, unsafeZones, formattingRanges, inlineCodeRanges, tree);
   const codeFences = scanCodeFences(raw, unsafeZones);
+  const blockquotes = scanBlockquotes(raw, codeFences, unsafeZones);
 
   unsafeZones.sort((a, b) => a.start - b.start || a.end - b.end);
   codeFences.sort((a, b) => a.start - b.start || a.openerEnd - b.openerEnd);
+  blockquotes.sort((a, b) => a.lineStart - b.lineStart || a.lineEnd - b.lineEnd);
   formattingRanges.sort((a, b) => a.start - b.start || b.end - a.end);
   inlineCodeRanges.sort((a, b) => a.start - b.start || b.end - a.end);
 
   return {
     unsafeZones,
     codeFences,
+    blockquotes,
     formattingRanges,
     inlineCodeRanges,
     getStateAt: (offset) =>
-      scanInlineState(raw, offset, codeFences, formattingRanges, inlineCodeRanges),
+      scanInlineState(raw, offset, codeFences, blockquotes, formattingRanges, inlineCodeRanges),
     isSafeOffset: (offset) => isSafeOffset(offset, unsafeZones),
   };
 }
