@@ -26,11 +26,6 @@ Guidance for when to use deferred vs sync should live **in the tool description 
 
 Add:
 - `mode?: "deferred" | "sync"` with default `"deferred"`
-- `blockingReason?: string`
-
-Validation:
-- `blockingReason` is required when `mode === "sync"`
-- `blockingReason` must be omitted or ignored when `mode === "deferred"`
 
 ### `subagent_delegate` output
 
@@ -145,7 +140,7 @@ Runner loop behavior:
 
 ## Observability
 
-When `mode: "sync"` is used, record `blockingReason` in logs.
+When `mode: "sync"` is used, record the selected mode in logs.
 
 Purpose:
 - understand whether models are overusing sync
@@ -170,7 +165,6 @@ On restore:
 
 - Deferred mode returns immediately and parent continues.
 - Omitted `mode` behaves as deferred.
-- Sync mode requires `blockingReason`.
 - Deferred child completion is injected as a synthetic tool-call/result pair and parent continues automatically.
 - Multiple deferred children complete out of order and are injected in completion order.
 - Parent request remains unresolved while deferred children are outstanding.

@@ -17,47 +17,30 @@ const subagentSessionNameSchema = z
   .max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
 
-const subagentDelegateInputSchema = z
-  .object({
-    profile: subagentProfileSchema
-      .default("explore")
-      .describe("Subagent profile to run (explore, general, self)."),
-    task: z.string().min(1).describe("Objective for the subagent."),
-    mode: subagentModeSchema
-      .default("deferred")
-      .describe(
-        "Delegation mode. Use deferred by default for parallelizable work; use sync only when the child result is immediately required before any meaningful next step.",
-      ),
-    blockingReason: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'Required when mode is "sync". Explain why the child result is immediately required before continuing.',
-      ),
-    sessionName: subagentSessionNameSchema
-      .optional()
-      .describe(
-        "Optional stable short slug for continuing a subagent session within this parent session/channel.",
-      ),
-    timeoutMs: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe(
-        "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
-      ),
-  })
-  .superRefine((value, ctx) => {
-    if (value.mode === "sync" && !value.blockingReason?.trim()) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blockingReason"],
-        message: 'blockingReason is required when mode is "sync"',
-      });
-    }
-  });
+const subagentDelegateInputSchema = z.object({
+  profile: subagentProfileSchema
+    .default("explore")
+    .describe("Subagent profile to run (explore, general, self)."),
+  task: z.string().min(1).describe("Objective for the subagent."),
+  mode: subagentModeSchema
+    .default("deferred")
+    .describe(
+      "Delegation mode. Use deferred by default for parallelizable work; use sync only when the child result is immediately required before any meaningful next step.",
+    ),
+  sessionName: subagentSessionNameSchema
+    .optional()
+    .describe(
+      "Optional stable short slug for continuing a subagent session within this parent session/channel.",
+    ),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
+    ),
+});
 
 const subagentTerminalStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
 
@@ -264,7 +247,7 @@ export function subagentTools(params: {
       description: [
         "Delegate work to a subagent profile (explore, general, self).",
         "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
-        'Use sync only when the child result is immediately required before any meaningful next step. When mode is "sync", blockingReason is required.',
+        "Use sync only when the child result is immediately required before any meaningful next step.",
         "Prefer deferred for: repository exploration, independent evidence gathering, parallel investigations, or work whose result can be incorporated later.",
         "Prefer sync for: child answers that determine the next edit or decision, child results needed before responding, or the one blocking computation.",
       ].join("\n"),
@@ -275,12 +258,6 @@ export function subagentTools(params: {
         const ctx = requireRequestContext(context, "subagent_delegate") as RequestContextLike;
         const profile = parsed.profile;
         const mode = parsed.mode;
-        const blockingReason = parsed.blockingReason?.trim() || undefined;
-
-        if (mode === "sync" && !blockingReason) {
-          throw new Error('blockingReason is required when mode is "sync"');
-        }
-
         const depth = parseDepth(context);
 
         const currentRunProfile = parseCurrentRunProfile(context);
@@ -333,7 +310,6 @@ export function subagentTools(params: {
           childDepth: depth + 1,
           sessionName: parsed.sessionName ?? null,
           timeoutMs,
-          blockingReason: mode === "sync" ? blockingReason : undefined,
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
         });
 

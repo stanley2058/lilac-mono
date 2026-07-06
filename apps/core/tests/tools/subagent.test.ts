@@ -217,34 +217,6 @@ describe("subagent_delegate tool", () => {
     ]);
   });
 
-  it("requires blockingReason for sync mode", async () => {
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-
-    const tools = subagentTools({
-      bus,
-      defaultTimeoutMs: 2_000,
-      maxTimeoutMs: 4_000,
-      maxDepth: 1,
-    });
-
-    await expect(
-      tools.subagent_delegate.execute!(
-        { profile: "explore", task: "Map auth flow", mode: "sync" },
-        {
-          toolCallId: "tool-sync-validation",
-          messages: [],
-          context: {
-            requestId: "r:sync-validation",
-            sessionId: "s:sync-validation",
-            requestClient: "discord",
-            subagentDepth: 0,
-          },
-        },
-      ),
-    ).rejects.toThrow(/blockingReason is required/i);
-  });
-
   it("delegates to child request and returns child final text", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
@@ -349,7 +321,6 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Map auth flow",
           mode: "sync",
-          blockingReason: "need child result immediately",
         },
         {
           toolCallId: "tool-1",
@@ -460,7 +431,6 @@ describe("subagent_delegate tool", () => {
             profile,
             task: "Do delegated work",
             mode: "sync",
-            blockingReason: "need child result immediately",
           },
           {
             toolCallId: `tool-${profile}`,
@@ -568,7 +538,6 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Continue prior work",
           mode: "sync",
-          blockingReason: "need child result immediately",
           sessionName,
         },
         {
@@ -785,7 +754,6 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Map auth flow",
           mode: "sync",
-          blockingReason: "need child result immediately",
         },
         {
           toolCallId: "tool-self-explore",
@@ -884,7 +852,6 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Map auth flow",
           mode: "sync",
-          blockingReason: "need child result immediately",
           timeoutMs: 999_999,
         },
         {
@@ -1044,7 +1011,6 @@ describe("subagent_delegate tool", () => {
           profile: "explore",
           task: "Map auth flow",
           mode: "sync",
-          blockingReason: "need child result immediately",
         },
         {
           toolCallId: parentToolCallId,
