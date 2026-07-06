@@ -158,13 +158,19 @@ const fakeEmbeddingAdapter: ConversationThreadEmbeddingAdapter = {
 };
 
 describe("conversation thread store", () => {
-  it("instructs summaries to avoid first-person retrieval hints", () => {
+  it("instructs summaries to use broad natural retrieval hints", () => {
     const instructions = buildThreadSummaryInstructions();
     expect(instructions).toContain("Never use first-person pronouns");
     expect(instructions).toContain("I, me, my, mine, we, us, our, or ours");
     expect(instructions).toContain("Avoid ambiguous pronouns in retrievalHints");
     expect(instructions).toContain("aboutness.userWouldAskForThisAs");
     expect(instructions).toContain("Do not create negative aboutness fields");
+    expect(instructions).toContain("Cover multiple abstraction levels");
+    expect(instructions).toContain("broad remembered wording");
+    expect(instructions).toContain("Do not pack every important detail into every hint");
+    expect(instructions).toContain(
+      "Do not solve broad lookup with fixed domain-specific synonym lists",
+    );
   });
 
   it("groups indexed messages into inferred threads and reads stable membership", async () => {

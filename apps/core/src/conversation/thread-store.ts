@@ -15,7 +15,7 @@ import { configureSqliteConnection } from "../shared/sqlite";
 const SEARCH_LIMIT_MAX = 50;
 const THREAD_DISCOVERY_GAP_MS = 60 * 60 * 1000;
 
-export const CONVERSATION_THREAD_SUMMARY_VERSION = 4;
+export const CONVERSATION_THREAD_SUMMARY_VERSION = 5;
 export const CONVERSATION_THREAD_EMBEDDING_VERSION = 1;
 
 export type ConversationThreadKind = "discord_thread" | "inferred_channel_thread";
