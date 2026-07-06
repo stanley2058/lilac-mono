@@ -1939,15 +1939,19 @@ describe("conversation thread store", () => {
         throw new Error("should not be called");
       },
       autoInjectQueryPlanner: async () => ({
-        queries: ["precomputed topic"],
-        aboutness: {
-          domains: ["conversation memory"],
-          situations: ["precomputed search"],
-          targets: ["thread lookup"],
-          entities: ["precomputed topic"],
-          userWouldAskForThisAs: ["precomputed topic"],
-          intentSummary: "Find the precomputed topic thread.",
-        },
+        searches: [
+          {
+            queries: ["precomputed topic"],
+            aboutness: {
+              domains: ["conversation memory"],
+              situations: ["precomputed search"],
+              targets: ["thread lookup"],
+              entities: ["precomputed topic"],
+              userWouldAskForThisAs: ["precomputed topic"],
+              intentSummary: "Find the precomputed topic thread.",
+            },
+          },
+        ],
       }),
       summarizer: async () => ({
         title: "Precomputed topic thread",
@@ -1962,8 +1966,8 @@ describe("conversation thread store", () => {
       text: "Long message about precomputed topic",
     });
     const result = await service.search({
-      query: plan.queries,
-      queryAboutness: plan.aboutness,
+      query: plan.searches[0]!.queries,
+      queryAboutness: plan.searches[0]!.aboutness,
       verbose: true,
     });
 
@@ -1972,6 +1976,46 @@ describe("conversation thread store", () => {
     expect(result.meta.queryAboutness?.intentSummary).toBe("Find the precomputed topic thread.");
 
     searchStore.close();
+    threadStore.close();
+  });
+
+  it("truncates overlong auto-inject search groups and query variants", async () => {
+    const dbPath = await createDbPath();
+    const threadStore = new ConversationThreadStore(dbPath);
+    const aboutness = (intentSummary: string) => ({
+      domains: [],
+      situations: [],
+      targets: [],
+      entities: [],
+      userWouldAskForThisAs: [intentSummary],
+      intentSummary,
+    });
+    const service = new ConversationThreadService({
+      store: threadStore,
+      getConfig: async () => testConfig(),
+      autoInjectQueryPlanner: async () => ({
+        searches: [
+          {
+            queries: ["one", "one alias", "one exact", "one extra"],
+            aboutness: aboutness("Find first search threads."),
+          },
+          { queries: ["two"], aboutness: aboutness("Find second search threads.") },
+          { queries: ["three"], aboutness: aboutness("Find third search threads.") },
+          { queries: ["four"], aboutness: aboutness("Find fourth search threads.") },
+        ],
+      }),
+    });
+
+    const plan = await service.planAutoInjectSearch({ text: "Long message with many facets" });
+
+    expect(plan.searches).toHaveLength(3);
+    expect(plan.searches[0]?.queries).toEqual(["one", "one alias", "one exact"]);
+    expect(plan.searches.map((search) => search.aboutness.intentSummary)).toEqual([
+      "Find first search threads.",
+      "Find second search threads.",
+      "Find third search threads.",
+    ]);
+
     threadStore.close();
   });
 

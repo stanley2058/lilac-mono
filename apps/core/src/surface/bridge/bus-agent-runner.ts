@@ -65,7 +65,10 @@ import {
   HEARTBEAT_HANDOFF_SESSION_ID,
 } from "../../transcript/heartbeat-handoff";
 import type { TranscriptStore } from "../../transcript/transcript-store";
-import type { ConversationThreadToolService } from "../../conversation/thread-service";
+import type {
+  ConversationThreadSearchResult,
+  ConversationThreadToolService,
+} from "../../conversation/thread-service";
 import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { buildSystemPromptForProfile } from "./bus-agent-runner/subagent-prompt";
@@ -655,11 +658,17 @@ export type AutoInjectedThreadSearchPayload = {
 
 type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number];
 
+type AutoInjectedThreadSearchCandidate = AutoInjectedThreadSearchEntry & {
+  score: number;
+  searchIndex: number;
+  rank: number;
+};
+
 type AutoInjectedThreadSearchAppendedEvent = {
   toolCallId: string;
   mode: "hybrid" | "semantic" | "lexical";
   limit: number;
-  queries: readonly string[];
+  searches: readonly (readonly string[])[];
   participantFilterUserCount: number;
   entries: readonly AutoInjectedThreadSearchEntry[];
 };
@@ -714,6 +723,96 @@ function formatAutoInjectedThreadBrief(brief: string): string | undefined {
   if (trimmed.length <= AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD) return trimmed;
 
   return `${trimmed.slice(0, AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH).trimEnd()} ...(${trimmed.length - AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH} remaining)`;
+}
+
+function compareAutoInjectedThreadSearchCandidates(
+  left: AutoInjectedThreadSearchCandidate,
+  right: AutoInjectedThreadSearchCandidate,
+): number {
+  if (left.score !== right.score) return right.score - left.score;
+  if (left.searchIndex !== right.searchIndex) return left.searchIndex - right.searchIndex;
+  return left.rank - right.rank;
+}
+
+function stripAutoInjectedThreadSearchCandidate(
+  candidate: AutoInjectedThreadSearchCandidate,
+): AutoInjectedThreadSearchEntry {
+  return {
+    threadId: candidate.threadId,
+    title: candidate.title,
+    ...(candidate.brief ? { brief: candidate.brief } : {}),
+    ...(candidate.timeRange ? { timeRange: candidate.timeRange } : {}),
+  };
+}
+
+function selectAutoInjectedThreadSearchEntries(
+  groups: readonly (readonly AutoInjectedThreadSearchCandidate[])[],
+  limit: number,
+): AutoInjectedThreadSearchEntry[] {
+  const selected: AutoInjectedThreadSearchCandidate[] = [];
+  const selectedThreadIds = new Set<string>();
+  const earlierGroupThreadIds = new Set<string>();
+
+  for (const group of groups) {
+    if (selected.length >= limit) break;
+    const candidate = group.find(
+      (item) => !selectedThreadIds.has(item.threadId) && !earlierGroupThreadIds.has(item.threadId),
+    );
+    for (const item of group) {
+      earlierGroupThreadIds.add(item.threadId);
+    }
+    if (!candidate) continue;
+    selected.push(candidate);
+    selectedThreadIds.add(candidate.threadId);
+  }
+
+  if (selected.length < limit) {
+    const remainingByThreadId = new Map<string, AutoInjectedThreadSearchCandidate>();
+    for (const group of groups) {
+      for (const candidate of group) {
+        if (selectedThreadIds.has(candidate.threadId)) continue;
+        const existing = remainingByThreadId.get(candidate.threadId);
+        if (!existing || compareAutoInjectedThreadSearchCandidates(candidate, existing) < 0) {
+          remainingByThreadId.set(candidate.threadId, candidate);
+        }
+      }
+    }
+
+    const remaining = [...remainingByThreadId.values()].sort(
+      compareAutoInjectedThreadSearchCandidates,
+    );
+    for (const candidate of remaining) {
+      if (selected.length >= limit) break;
+      selected.push(candidate);
+      selectedThreadIds.add(candidate.threadId);
+    }
+  }
+
+  return selected.map(stripAutoInjectedThreadSearchCandidate);
+}
+
+function buildAutoInjectedThreadSearchCandidates(input: {
+  search: ConversationThreadSearchResult;
+  searchIndex: number;
+  previouslyInjectedThreadIds: ReadonlySet<string>;
+}): AutoInjectedThreadSearchCandidate[] {
+  return input.search.results
+    .filter((result) => !input.previouslyInjectedThreadIds.has(result.threadId))
+    .map((result, index) => {
+      const timeRange = result.timeRange
+        ? formatInjectedThreadTimeRange(result.timeRange)
+        : undefined;
+      const brief = formatAutoInjectedThreadBrief(result.brief);
+      return {
+        threadId: result.threadId,
+        title: result.title,
+        ...(brief ? { brief } : {}),
+        ...(timeRange ? { timeRange } : {}),
+        score: result.score ?? 0,
+        searchIndex: input.searchIndex,
+        rank: index + 1,
+      };
+    });
 }
 
 function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<string> {
@@ -788,6 +887,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   const autoInject = params.cfg.conversation.thread.autoInject;
   if (!autoInject.enabled) return [];
   if (!params.conversationThreads) return [];
+  const conversationThreads = params.conversationThreads;
 
   const text = latestUserText(params.userMessages);
   const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
@@ -823,30 +923,40 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   await publishToolStatusBestEffort({ toolCallId, status: "start", display });
 
   try {
-    const plan = await params.conversationThreads.planAutoInjectSearch({ text });
-    const search = await params.conversationThreads.search({
-      query: plan.queries,
-      queryAboutness: plan.aboutness,
-      limit: autoInject.limit,
-      minScore: autoInject.minScore,
-      mode: autoInject.mode,
-      verbose: true,
-      ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
-    });
-    const entries = search.results
-      .filter((result) => !previouslyInjectedThreadIds.has(result.threadId))
-      .map((result) => {
-        const timeRange = result.timeRange
-          ? formatInjectedThreadTimeRange(result.timeRange)
-          : undefined;
-        const brief = formatAutoInjectedThreadBrief(result.brief);
-        return {
-          threadId: result.threadId,
-          title: result.title,
-          ...(brief ? { brief } : {}),
-          ...(timeRange ? { timeRange } : {}),
-        };
+    const plan = await conversationThreads.planAutoInjectSearch({ text });
+    const searchRecallLimit = Math.min(50, autoInject.limit * plan.searches.length);
+    const settledSearches = await Promise.allSettled(
+      plan.searches.map((searchPlan) =>
+        conversationThreads.search({
+          query: searchPlan.queries,
+          queryAboutness: searchPlan.aboutness,
+          limit: searchRecallLimit,
+          minScore: autoInject.minScore,
+          mode: autoInject.mode,
+          verbose: true,
+          ...(participantIds.length > 0 ? { participantIdsAny: participantIds } : {}),
+        }),
+      ),
+    );
+    let fulfilledSearches = 0;
+    const candidateGroups = settledSearches.map((result, searchIndex) => {
+      if (result.status === "fulfilled") {
+        fulfilledSearches += 1;
+        return buildAutoInjectedThreadSearchCandidates({
+          search: result.value,
+          searchIndex,
+          previouslyInjectedThreadIds,
+        });
+      }
+
+      params.onError("auto-injected thread search failed; continuing with partial metadata", {
+        searchIndex,
+        error: result.reason,
       });
+      return [];
+    });
+    if (fulfilledSearches === 0) throw new Error("all auto-injected thread searches failed");
+    const entries = selectAutoInjectedThreadSearchEntries(candidateGroups, autoInject.limit);
 
     await publishToolStatusBestEffort({
       toolCallId,
@@ -861,7 +971,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
         toolCallId,
         mode: autoInject.mode,
         limit: autoInject.limit,
-        queries: plan.queries,
+        searches: plan.searches.map((searchPlan) => searchPlan.queries),
         participantFilterUserCount: participantIds.length,
         entries,
       });
@@ -3525,8 +3635,9 @@ export async function startBusAgentRunner(params: {
                     toolCallId: event.toolCallId,
                     mode: event.mode,
                     limit: event.limit,
-                    queryCount: event.queries.length,
-                    queries: event.queries,
+                    searchCount: event.searches.length,
+                    queryCount: event.searches.reduce((sum, queries) => sum + queries.length, 0),
+                    searches: event.searches,
                     participantFilterUserCount: event.participantFilterUserCount,
                     appendedCount: event.entries.length,
                     entries: event.entries,

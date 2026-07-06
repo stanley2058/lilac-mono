@@ -47,6 +47,8 @@ const SUMMARY_PARSE_MAX_ATTEMPTS = 3;
 const HYBRID_LEXICAL_WEIGHT = 0.35;
 const PROMPT_CONTEXT_FILES = ["MEMORY.md", "USER.md", "ENTITIES.md"] as const;
 const MULTI_QUERY_MAX = 10;
+const AUTO_INJECT_SEARCH_MAX = 3;
+const AUTO_INJECT_QUERIES_PER_SEARCH_MAX = 3;
 const COVERAGE_RECALL_MULTIPLIER = 5;
 const WEAK_COVERAGE_MULTIPLIER = 0.25;
 const DOMAIN_MISMATCH_COVERAGE_MULTIPLIER = 0.35;
@@ -109,9 +111,13 @@ const queryAboutnessSchema = z.object({
   intentSummary: z.string(),
 });
 
-const autoInjectQueryPlanSchema = z.object({
+const autoInjectSearchPlanSchema = z.object({
   queries: z.array(z.string()).min(1).max(MULTI_QUERY_MAX),
   aboutness: queryAboutnessSchema,
+});
+
+const autoInjectQueryPlanSchema = z.object({
+  searches: z.array(autoInjectSearchPlanSchema).min(1).max(MULTI_QUERY_MAX),
 });
 
 export type ConversationThreadQueryAboutness = z.infer<typeof queryAboutnessSchema>;
@@ -472,7 +478,10 @@ function stableHash(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-function normalizeSearchQueries(input: string | readonly string[]): string[] {
+function normalizeSearchQueries(
+  input: string | readonly string[],
+  max = MULTI_QUERY_MAX,
+): string[] {
   const seen = new Set<string>();
   const queries: string[] = [];
   for (const raw of Array.isArray(input) ? input : [input]) {
@@ -482,7 +491,7 @@ function normalizeSearchQueries(input: string | readonly string[]): string[] {
     if (seen.has(key)) continue;
     seen.add(key);
     queries.push(query);
-    if (queries.length >= MULTI_QUERY_MAX) break;
+    if (queries.length >= max) break;
   }
   if (queries.length === 0) throw new Error("conversation thread search query is required");
   return queries;
@@ -524,10 +533,11 @@ function normalizeQueryAboutness(
 function normalizeAutoInjectQueryPlan(
   plan: ConversationThreadAutoInjectQueryPlan,
 ): ConversationThreadAutoInjectQueryPlan {
-  const queries = normalizeSearchQueries(plan.queries);
   return {
-    queries,
-    aboutness: normalizeQueryAboutness(plan.aboutness),
+    searches: plan.searches.slice(0, AUTO_INJECT_SEARCH_MAX).map((search) => ({
+      queries: normalizeSearchQueries(search.queries, AUTO_INJECT_QUERIES_PER_SEARCH_MAX),
+      aboutness: normalizeQueryAboutness(search.aboutness),
+    })),
   };
 }
 
@@ -1121,7 +1131,7 @@ async function defaultAutoInjectQueryPlanner(input: {
       content: [
         "Create compact conversation-memory search queries for this new user message.",
         "Do not answer the message. Extract what prior conversation threads would be relevant context for responding.",
-        "Return search queries and positive aboutness evidence only.",
+        "Return grouped search plans and positive aboutness evidence only.",
         "",
         "## User message",
         input.text,
@@ -1184,15 +1194,17 @@ function buildAutoInjectQueryPlanInstructions(): string {
   return [
     "You create retrieval queries for an automatic conversation-memory lookup.",
     "Return exactly one JSON object and nothing else.",
-    'Shape: {"queries":["..."],"aboutness":{"domains":["..."],"situations":["..."],"targets":["..."],"entities":["..."],"userWouldAskForThisAs":["..."],"intentSummary":"..."}}',
+    'Shape: {"searches":[{"queries":["..."],"aboutness":{"domains":["..."],"situations":["..."],"targets":["..."],"entities":["..."],"userWouldAskForThisAs":["..."],"intentSummary":"..."}}]}',
     "",
     "The input is a newly received user message, possibly a long article or essay.",
     "Do not summarize the article for the final answer. Instead, generate semantic search queries that would find prior conversation threads useful for responding to it.",
-    "Use 2-6 query variants for substantive long input. Prefer compact natural phrases over dense paragraphs.",
+    "Produce 1-3 searches, ordered by expected usefulness. Each search is one distinct retrieval category or intent.",
+    "Within each search, use 1-3 query variants/facets for the same intent. Prefer 1 query unless aliases, exact entities, or meaningfully different wording improve recall.",
+    "Do not split near-duplicate phrasings into separate searches; keep them as query variants inside one search.",
     "Queries should name the durable subject, task, decision, complaint target, project, technology, entities, or situation.",
     "Avoid copying long passages. Preserve exact names, code identifiers, errors, and source-language phrases only when central.",
     "Use only positive aboutness evidence: what relevant prior threads would be about, not what should be excluded.",
-    "The aboutness object follows the same meaning as conversation-thread search query aboutness.",
+    "Each search's aboutness object describes only that search intent and follows the same meaning as conversation-thread search query aboutness.",
     "Write primarily in English.",
   ].join("\n");
 }

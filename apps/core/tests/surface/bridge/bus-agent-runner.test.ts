@@ -77,6 +77,24 @@ function formatExpectedLocalThreadTimeRange(start: string, end: string): string 
   return `${format(start)} - ${format(end)}`;
 }
 
+function autoInjectPlanForQuery(query: string, intentSummary: string) {
+  return {
+    searches: [
+      {
+        queries: [query],
+        aboutness: {
+          domains: [],
+          situations: [],
+          targets: [],
+          entities: [],
+          userWouldAskForThisAs: [query],
+          intentSummary,
+        },
+      },
+    ],
+  };
+}
+
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
   const subs = new Set<{
@@ -394,17 +412,8 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       raw: {},
       userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
       conversationThreads: {
-        planAutoInjectSearch: async () => ({
-          queries: ["meaningful message"],
-          aboutness: {
-            domains: [],
-            situations: [],
-            targets: [],
-            entities: [],
-            userWouldAskForThisAs: ["meaningful message"],
-            intentSummary: "Find meaningful message threads.",
-          },
-        }),
+        planAutoInjectSearch: async () =>
+          autoInjectPlanForQuery("meaningful message", "Find meaningful message threads."),
         search: async () => ({
           meta: {
             query: "meaningful message",
@@ -505,17 +514,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       conversationThreads: {
         planAutoInjectSearch: async () => {
           plannerCalls += 1;
-          return {
-            queries: ["lol"],
-            aboutness: {
-              domains: [],
-              situations: [],
-              targets: [],
-              entities: [],
-              userWouldAskForThisAs: ["lol"],
-              intentSummary: "Short message.",
-            },
-          };
+          return autoInjectPlanForQuery("lol", "Short message.");
         },
         search: async () => {
           searchCalls += 1;
@@ -605,15 +604,19 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
         planAutoInjectSearch: async (input) => {
           plannedText = input.text;
           return {
-            queries: ["OAuth callback mobile login loop"],
-            aboutness: {
-              domains: ["OAuth debugging"],
-              situations: ["mobile login loop after callback"],
-              targets: ["cookie settings"],
-              entities: ["Safari", "SameSite", "secure"],
-              userWouldAskForThisAs: ["OAuth callback mobile login loop"],
-              intentSummary: "Find prior threads about OAuth callback login loops on mobile.",
-            },
+            searches: [
+              {
+                queries: ["OAuth callback mobile login loop"],
+                aboutness: {
+                  domains: ["OAuth debugging"],
+                  situations: ["mobile login loop after callback"],
+                  targets: ["cookie settings"],
+                  entities: ["Safari", "SameSite", "secure"],
+                  userWouldAskForThisAs: ["OAuth callback mobile login loop"],
+                  intentSummary: "Find prior threads about OAuth callback login loops on mobile.",
+                },
+              },
+            ],
           };
         },
         search: async (input) => {
@@ -680,6 +683,403 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     });
   });
 
+  it("selects one unique auto-injected result per planned search before score fill", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            followUpMinTextUnits: 1,
+            limit: 3,
+            minScore: 0.1,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const searchQueries: string[] = [];
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-grouped",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful grouped message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          searches: [
+            autoInjectPlanForQuery("auth cookies", "Find auth cookie threads.").searches[0]!,
+            autoInjectPlanForQuery("workplace context", "Find workplace context threads.")
+              .searches[0]!,
+            autoInjectPlanForQuery("project architecture", "Find project architecture threads.")
+              .searches[0]!,
+          ],
+        }),
+        search: async (input) => {
+          const query = String(Array.isArray(input.query) ? (input.query[0] ?? "") : input.query);
+          searchQueries.push(query);
+          const resultsByQuery: Record<
+            string,
+            Array<{ threadId: string; title: string; brief: string; score: number }>
+          > = {
+            "auth cookies": [
+              { threadId: "shared", title: "Shared top", brief: "", score: 0.99 },
+              { threadId: "auth-second", title: "Auth second", brief: "", score: 0.4 },
+            ],
+            "workplace context": [
+              { threadId: "shared", title: "Shared top", brief: "", score: 0.98 },
+              { threadId: "work-second", title: "Work second", brief: "", score: 0.3 },
+            ],
+            "project architecture": [
+              { threadId: "project-top", title: "Project top", brief: "", score: 0.2 },
+            ],
+          };
+          return {
+            meta: {
+              query,
+              limit: 3,
+              mode: "hybrid",
+              minScore: 0.1,
+              count: resultsByQuery[query]?.length ?? 0,
+              vectorAvailable: false,
+            },
+            results: resultsByQuery[query] ?? [],
+          };
+        },
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(searchQueries).toEqual(["auth cookies", "workplace context", "project architecture"]);
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        entries: [
+          { threadId: "shared", title: "Shared top" },
+          { threadId: "work-second", title: "Work second" },
+          { threadId: "project-top", title: "Project top" },
+        ],
+      },
+    });
+  });
+
+  it("caps auto-injected category coverage by global limit and planner order", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            followUpMinTextUnits: 1,
+            limit: 2,
+            minScore: 0.1,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-limit-two",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful grouped message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          searches: [
+            autoInjectPlanForQuery("first category", "Find first category threads.").searches[0]!,
+            autoInjectPlanForQuery("second category", "Find second category threads.").searches[0]!,
+            autoInjectPlanForQuery("third category", "Find third category threads.").searches[0]!,
+          ],
+        }),
+        search: async (input) => {
+          const query = Array.isArray(input.query) ? input.query[0]! : input.query;
+          const title = `${query} result`;
+          return {
+            meta: {
+              query,
+              limit: 2,
+              mode: "hybrid",
+              minScore: 0.1,
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [
+              {
+                threadId: query,
+                title,
+                brief: "",
+                score: query === "third category" ? 1 : 0.1,
+              },
+            ],
+          };
+        },
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        entries: [
+          { threadId: "first category", title: "first category result" },
+          { threadId: "second category", title: "second category result" },
+        ],
+      },
+    });
+  });
+
+  it("fetches extra per-search recall before deduping grouped auto-inject results", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            followUpMinTextUnits: 1,
+            limit: 2,
+            minScore: 0.1,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const requestedLimits: number[] = [];
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-dedupe-recall",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful grouped message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          searches: [
+            autoInjectPlanForQuery("first category", "Find first category threads.").searches[0]!,
+            autoInjectPlanForQuery("second category", "Find second category threads.").searches[0]!,
+          ],
+        }),
+        search: async (input) => {
+          const query = String(Array.isArray(input.query) ? (input.query[0] ?? "") : input.query);
+          const requestedLimit = input.limit ?? 5;
+          requestedLimits.push(requestedLimit);
+          const resultsByQuery: Record<
+            string,
+            Array<{ threadId: string; title: string; brief: string; score: number }>
+          > = {
+            "first category": [
+              { threadId: "shared-1", title: "Shared 1", brief: "", score: 1 },
+              { threadId: "shared-2", title: "Shared 2", brief: "", score: 0.9 },
+            ],
+            "second category": [
+              { threadId: "shared-1", title: "Shared 1", brief: "", score: 1 },
+              { threadId: "shared-2", title: "Shared 2", brief: "", score: 0.9 },
+              { threadId: "second-unique", title: "Second unique", brief: "", score: 0.8 },
+            ],
+          };
+          const results = resultsByQuery[query]?.slice(0, requestedLimit) ?? [];
+          return {
+            meta: {
+              query,
+              limit: requestedLimit,
+              mode: "hybrid",
+              minScore: 0.1,
+              count: results.length,
+              vectorAvailable: false,
+            },
+            results,
+          };
+        },
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: () => {},
+    });
+
+    expect(requestedLimits).toEqual([4, 4]);
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        entries: [
+          { threadId: "shared-1", title: "Shared 1" },
+          { threadId: "second-unique", title: "Second unique" },
+        ],
+      },
+    });
+  });
+
+  it("keeps successful auto-inject search groups when another group fails", async () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      surface: {
+        discord: {
+          botName: "lilac",
+          allowedChannelIds: ["c1"],
+        },
+      },
+    });
+    const autoInjectCfg: CoreConfig = {
+      ...cfg,
+      conversation: {
+        ...cfg.conversation,
+        thread: {
+          ...cfg.conversation.thread,
+          autoInject: {
+            enabled: true,
+            minTextUnits: 1,
+            followUpMinTextUnits: 1,
+            limit: 2,
+            minScore: 0.1,
+            mode: "hybrid",
+            filterCurrentParticipants: false,
+          },
+        },
+      },
+    };
+    const errors: string[] = [];
+
+    const messages = await maybeBuildAutoInjectedThreadSearchMessages({
+      cfg: autoInjectCfg,
+      requestId: "request-partial-search-failure",
+      raw: {},
+      userMessages: [{ role: "user", content: "A sufficiently meaningful grouped message" }],
+      conversationThreads: {
+        planAutoInjectSearch: async () => ({
+          searches: [
+            autoInjectPlanForQuery("working category", "Find working category threads.")
+              .searches[0]!,
+            autoInjectPlanForQuery("failing category", "Find failing category threads.")
+              .searches[0]!,
+          ],
+        }),
+        search: async (input) => {
+          const query = String(Array.isArray(input.query) ? (input.query[0] ?? "") : input.query);
+          if (query === "failing category") throw new Error("vector search unavailable");
+          return {
+            meta: {
+              query,
+              limit: input.limit ?? 2,
+              mode: "hybrid",
+              minScore: 0.1,
+              count: 1,
+              vectorAvailable: false,
+            },
+            results: [{ threadId: "working-thread", title: "Working thread", brief: "" }],
+          };
+        },
+        metadata: async () => {
+          throw new Error("not used");
+        },
+        read: async () => {
+          throw new Error("not used");
+        },
+        runSummarization: async () => {
+          throw new Error("not used");
+        },
+      },
+      publishToolStatus: async () => {},
+      onError: (message) => {
+        errors.push(message);
+      },
+    });
+
+    expect(errors).toEqual([
+      "auto-injected thread search failed; continuing with partial metadata",
+    ]);
+    const toolMessage = messages[1];
+    if (toolMessage?.role !== "tool" || typeof toolMessage.content === "string") {
+      throw new Error("expected tool message");
+    }
+    const result = toolMessage.content[0];
+    if (result?.type !== "tool-result") throw new Error("expected tool result");
+    expect(result.output).toEqual({
+      type: "json",
+      value: {
+        entries: [{ threadId: "working-thread", title: "Working thread" }],
+      },
+    });
+  });
+
   it("skips injection when all search results were already auto-injected", async () => {
     const cfg = parseCoreConfigV1ToUniversal({
       surface: {
@@ -720,17 +1120,8 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       }),
       userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
       conversationThreads: {
-        planAutoInjectSearch: async () => ({
-          queries: ["meaningful message"],
-          aboutness: {
-            domains: [],
-            situations: [],
-            targets: [],
-            entities: [],
-            userWouldAskForThisAs: ["meaningful message"],
-            intentSummary: "Find meaningful message threads.",
-          },
-        }),
+        planAutoInjectSearch: async () =>
+          autoInjectPlanForQuery("meaningful message", "Find meaningful message threads."),
         search: async () => ({
           meta: {
             query: "meaningful message",
@@ -809,17 +1200,10 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       conversationThreads: {
         planAutoInjectSearch: async () => {
           plannerCalls += 1;
-          return {
-            queries: ["cookie callback subdomain"],
-            aboutness: {
-              domains: [],
-              situations: [],
-              targets: [],
-              entities: [],
-              userWouldAskForThisAs: ["cookie callback subdomain"],
-              intentSummary: "Find cookie callback subdomain threads.",
-            },
-          };
+          return autoInjectPlanForQuery(
+            "cookie callback subdomain",
+            "Find cookie callback subdomain threads.",
+          );
         },
         search: async () => ({
           meta: {
@@ -898,17 +1282,10 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       conversationThreads: {
         planAutoInjectSearch: async () => {
           plannerCalls += 1;
-          return {
-            queries: ["cookie callback subdomain"],
-            aboutness: {
-              domains: [],
-              situations: [],
-              targets: [],
-              entities: [],
-              userWouldAskForThisAs: ["cookie callback subdomain"],
-              intentSummary: "Find cookie callback subdomain threads.",
-            },
-          };
+          return autoInjectPlanForQuery(
+            "cookie callback subdomain",
+            "Find cookie callback subdomain threads.",
+          );
         },
         search: async () => {
           searchCalls += 1;
@@ -990,17 +1367,10 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       conversationThreads: {
         planAutoInjectSearch: async () => {
           plannerCalls += 1;
-          return {
-            queries: ["edge middleware redirect host header"],
-            aboutness: {
-              domains: [],
-              situations: [],
-              targets: [],
-              entities: [],
-              userWouldAskForThisAs: ["edge middleware redirect host header"],
-              intentSummary: "Find redirect host header threads.",
-            },
-          };
+          return autoInjectPlanForQuery(
+            "edge middleware redirect host header",
+            "Find redirect host header threads.",
+          );
         },
         search: async () => ({
           meta: {
@@ -1069,17 +1439,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       conversationThreads: {
         planAutoInjectSearch: async () => {
           plannerCalls += 1;
-          return {
-            queries: ["meaningful message"],
-            aboutness: {
-              domains: [],
-              situations: [],
-              targets: [],
-              entities: [],
-              userWouldAskForThisAs: ["meaningful message"],
-              intentSummary: "Find meaningful message threads.",
-            },
-          };
+          return autoInjectPlanForQuery("meaningful message", "Find meaningful message threads.");
         },
         search: async () => {
           searchCalls += 1;
@@ -1146,7 +1506,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       toolCallId: string;
       mode: "hybrid" | "semantic" | "lexical";
       limit: number;
-      queries: readonly string[];
+      searches: readonly (readonly string[])[];
       participantFilterUserCount: number;
       entries: readonly { threadId: string; title: string }[];
     }> = [];
@@ -1157,17 +1517,8 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
       raw: {},
       userMessages: [{ role: "user", content: "A sufficiently meaningful message" }],
       conversationThreads: {
-        planAutoInjectSearch: async () => ({
-          queries: ["meaningful message"],
-          aboutness: {
-            domains: [],
-            situations: [],
-            targets: [],
-            entities: [],
-            userWouldAskForThisAs: ["meaningful message"],
-            intentSummary: "Find meaningful message threads.",
-          },
-        }),
+        planAutoInjectSearch: async () =>
+          autoInjectPlanForQuery("meaningful message", "Find meaningful message threads."),
         search: async () => ({
           meta: {
             query: "meaningful message",
@@ -1207,7 +1558,7 @@ describe("maybeBuildAutoInjectedThreadSearchMessages", () => {
     expect(injectedEvent).toMatchObject({
       mode: "hybrid",
       limit: 3,
-      queries: ["meaningful message"],
+      searches: [["meaningful message"]],
       participantFilterUserCount: 0,
       entries: [{ threadId: "thread-1", title: "Related title" }],
     });
