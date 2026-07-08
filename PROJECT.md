@@ -369,6 +369,10 @@ Key sections:
 - `surface.discord`: bot token env var name, allowlists, botName.
 - `tools.web.extract.providers`: ordered web provider list shared by `web.search` and provider-backed `web.fetch`/extract (`tavily`, `exa`, `firecrawl`).
 - `tools.web.fetch.mode`: default fetch strategy (`auto`, `fetch`, `browser`, `extract`, or `provider-only`).
+- `tools.generate.image.models`: optional ordered default image model specs for `generate.image`; use `openai-compatible/<model-id>` with `OPENAI_COMPATIBLE_BASE_URL` for third-party OpenAI-compatible image APIs.
+- `tools.generate.image.defaults` / `profiles`: optional global and per-model image generation parameter defaults (`size`, `aspectRatio`, `seed`, `maxRetries`, provider `options`) plus `useWhen` guidance surfaced in the tool description.
+- OpenAI-compatible image models often need provider-specific fields under `options`; for example `openai-compatible/gpt-image-2` may require a profile with `size: "1024x1024"` and `options.quality: "high"` depending on the upstream gateway.
+- Runtime verification path: `tools --help generate.image` should show the configured default models and profile defaults, then `tools generate.image --output=json ...` should return the selected `model`, output path, MIME type, and byte count. `Default models: none` usually means the runtime is not reading the expected `core-config.yaml` or is running code that cannot resolve the configured provider.
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
