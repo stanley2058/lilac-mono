@@ -78,7 +78,18 @@ export function createBuiltinCodexPlugin(): CoreToolPlugin {
 }
 
 export function createBuiltinGeneratePlugin(): CoreToolPlugin {
-  return singletonLevel2("generate", () => new Generate());
+  return {
+    meta: {
+      id: "generate",
+    },
+    create({ runtime }) {
+      const config = runtime.config;
+      const getConfig = runtime.getConfig ?? (config ? async () => config : undefined);
+      return {
+        level2: [new Generate({ getConfig })],
+      };
+    },
+  };
 }
 
 export function createBuiltinContentInspectPlugin(): CoreToolPlugin {
