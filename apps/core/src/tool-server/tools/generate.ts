@@ -388,11 +388,19 @@ function deepMergeObjects(base?: JSONObject, override?: JSONObject): JSONObject 
   return deepMergeJson(base, override) as JSONObject;
 }
 
-function looksLikeProviderOptionsMap(obj: JSONObject): boolean {
-  const values = Object.values(obj);
-  if (values.length === 0) return false;
+const KNOWN_PROVIDER_OPTION_NAMESPACES = new Set(
+  CONFIGURABLE_IMAGE_PROVIDER_IDS.flatMap((provider) => {
+    const namespace = providerOptionsNamespace(provider);
+    return namespace === provider ? [provider] : [provider, namespace];
+  }),
+);
 
-  for (const value of values) {
+function looksLikeProviderOptionsMap(obj: JSONObject): boolean {
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return false;
+
+  for (const [provider, value] of entries) {
+    if (!KNOWN_PROVIDER_OPTION_NAMESPACES.has(provider)) return false;
     if (value === undefined) continue;
     if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   }

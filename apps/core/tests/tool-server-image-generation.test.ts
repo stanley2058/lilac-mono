@@ -291,6 +291,64 @@ describe("tool-server image generation", () => {
     });
   });
 
+  it("wraps nested shorthand provider options under the resolved namespace", () => {
+    const config = {
+      tools: {
+        fsBackend: "fff",
+        web: {
+          extract: {
+            providers: ["tavily"],
+          },
+          fetch: {
+            mode: "auto",
+          },
+        },
+        inspect: {
+          model: "google/gemini-3.5-flash",
+        },
+        editFile: {
+          hashline: true,
+        },
+        generate: {
+          image: {
+            models: ["openai-compatible/nanobanana"],
+            defaults: {
+              options: {
+                quality: {
+                  mode: "high",
+                },
+              },
+            },
+            profiles: {},
+          },
+        },
+      },
+    } satisfies Pick<CoreConfig, "tools">;
+
+    const params = resolveImageGenerationParameters({
+      config,
+      modelId: "openai-compatible/nanobanana",
+      model: {
+        specificationVersion: "v4",
+        provider: "openaiCompatible.image",
+        modelId: "nanobanana",
+        maxImagesPerCall: 1,
+        doGenerate() {
+          throw new Error("not called");
+        },
+      },
+      input: {},
+    });
+
+    expect(params.providerOptions).toEqual({
+      openaiCompatible: {
+        quality: {
+          mode: "high",
+        },
+      },
+    });
+  });
+
   it("lets caller image parameters override configured defaults", () => {
     const config = {
       tools: {
