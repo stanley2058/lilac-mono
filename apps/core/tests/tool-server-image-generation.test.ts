@@ -1,11 +1,18 @@
 import { describe, expect, it } from "bun:test";
+import type { CoreConfig } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import {
   buildImageGenerationPrompt,
   buildVideoGenerationPrompt,
+  canRequestImageModel,
+  createExplicitProviderImageModel,
   imageGenerateInputSchema,
+  normalizeImageGenerationParametersForModel,
+  resolveConfiguredImageModelSpecs,
+  resolveImageGenerationParameters,
   resolveImageEditInputs,
   videoGenerateInputSchema,
 } from "../src/tool-server/tools/generate";
@@ -50,6 +57,292 @@ describe("tool-server image generation", () => {
         prompt: "Generate a portrait",
       }),
     ).toThrow("Unrecognized key");
+  });
+
+  it("uses built-in image model defaults when config does not specify models", () => {
+    expect(resolveConfiguredImageModelSpecs(undefined)).toEqual([
+      "nanobanana-2",
+      "nanobanana-pro",
+      "gpt-5-image",
+      "grok-imagine-image-pro",
+      "grok-imagine-image",
+      "nanobanana",
+    ]);
+  });
+
+  it("uses configured image model specs as the default order", () => {
+    const config = {
+      tools: {
+        fsBackend: "fff",
+        web: {
+          extract: {
+            providers: ["tavily"],
+          },
+          fetch: {
+            mode: "auto",
+          },
+        },
+        inspect: {
+          model: "google/gemini-3.5-flash",
+        },
+        editFile: {
+          hashline: true,
+        },
+        generate: {
+          image: {
+            models: ["openai-compatible/acme-image-model"],
+            defaults: {},
+            profiles: {},
+          },
+        },
+      },
+    } satisfies Pick<CoreConfig, "tools">;
+
+    expect(resolveConfiguredImageModelSpecs(config)).toEqual([
+      "openai-compatible/acme-image-model",
+    ]);
+  });
+
+  it("creates explicit OpenAI-compatible image models from provider/model specs", () => {
+    const requestedModelIds: string[] = [];
+    const model = createExplicitProviderImageModel({
+      spec: "openai-compatible/acme/image-model",
+      configuredProviderIds: ["openai-compatible"],
+      providers: {
+        "openai-compatible": {
+          imageModel(modelId: string) {
+            requestedModelIds.push(modelId);
+            return `image:${modelId}`;
+          },
+        },
+      },
+    });
+
+    expect(model).toBe("image:acme/image-model");
+    expect(requestedModelIds).toEqual(["acme/image-model"]);
+  });
+
+  it("creates explicit image models from function-shaped AI SDK providers", () => {
+    const requestedModelIds: string[] = [];
+    const provider = Object.assign(() => undefined, {
+      imageModel(modelId: string) {
+        requestedModelIds.push(modelId);
+        return `image:${modelId}`;
+      },
+    });
+
+    const model = createExplicitProviderImageModel({
+      spec: "openai-compatible/gpt-image-2",
+      configuredProviderIds: ["openai-compatible"],
+      providers: {
+        "openai-compatible": provider,
+      },
+    });
+
+    expect(model).toBe("image:gpt-image-2");
+    expect(requestedModelIds).toEqual(["gpt-image-2"]);
+  });
+
+  it("does not create explicit image models for unconfigured providers", () => {
+    const model = createExplicitProviderImageModel({
+      spec: "openai-compatible/acme/image-model",
+      configuredProviderIds: [],
+      providers: {
+        "openai-compatible": {
+          imageModel(modelId: string) {
+            return `image:${modelId}`;
+          },
+        },
+      },
+    });
+
+    expect(model).toBeUndefined();
+  });
+
+  it("treats configured image models as the explicit request allowlist", () => {
+    expect(
+      canRequestImageModel({
+        configuredModelSpecs: ["openai-compatible/gpt-image-2"],
+        requested: "openai-compatible/gpt-image-2",
+      }),
+    ).toBe(true);
+
+    expect(
+      canRequestImageModel({
+        configuredModelSpecs: ["openai-compatible/gpt-image-2"],
+        requested: "openai-compatible/nanobanana-pro",
+      }),
+    ).toBe(false);
+
+    expect(
+      canRequestImageModel({
+        configuredModelSpecs: [],
+        requested: "openai-compatible/nanobanana-pro",
+      }),
+    ).toBe(true);
+  });
+
+  it("normalizes gpt-image-2 sizes before sending them to the provider", () => {
+    const normalized = normalizeImageGenerationParametersForModel({
+      modelId: "openai-compatible/gpt-image-2",
+      parameters: {
+        size: "2304x4096",
+      },
+    });
+
+    expect(normalized.parameters.size).toBe("2160x3840");
+    expect(normalized.warnings).toEqual([
+      {
+        type: "parameter-adjusted",
+        parameter: "size",
+        from: "2304x4096",
+        to: "2160x3840",
+        reason:
+          "gpt-image-2 image sizes must use 16-pixel multiples and stay within the provider pixel limit.",
+      },
+    ]);
+  });
+
+  it("converts gpt-image-2 aspectRatio into a concrete provider size", () => {
+    const normalized = normalizeImageGenerationParametersForModel({
+      modelId: "openai-compatible/gpt-image-2",
+      parameters: {
+        aspectRatio: "3:4",
+      },
+    });
+
+    expect(normalized.parameters).toMatchObject({
+      size: "880x1184",
+      aspectRatio: undefined,
+    });
+    expect(normalized.warnings[0]?.parameter).toBe("aspectRatio");
+  });
+
+  it("resolves image generation parameters from global defaults and model profiles", () => {
+    const config = {
+      tools: {
+        fsBackend: "fff",
+        web: {
+          extract: {
+            providers: ["tavily"],
+          },
+          fetch: {
+            mode: "auto",
+          },
+        },
+        inspect: {
+          model: "google/gemini-3.5-flash",
+        },
+        editFile: {
+          hashline: true,
+        },
+        generate: {
+          image: {
+            models: ["openai-compatible/nanobanana", "openai-compatible/gpt-image-2"],
+            defaults: {
+              aspectRatio: "1:1",
+              seed: 11,
+              options: {
+                quality: "standard",
+              },
+            },
+            profiles: {
+              "openai-compatible/nanobanana": {
+                useWhen: "fast edits and drafts",
+                defaults: {
+                  size: "1024x1024",
+                  options: {
+                    quality: "high",
+                    background: "transparent",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    } satisfies Pick<CoreConfig, "tools">;
+
+    const params = resolveImageGenerationParameters({
+      config,
+      modelId: "openai-compatible/nanobanana",
+      model: {
+        specificationVersion: "v4",
+        provider: "openaiCompatible.image",
+        modelId: "nanobanana",
+        maxImagesPerCall: 1,
+        doGenerate() {
+          throw new Error("not called");
+        },
+      },
+      input: {},
+    });
+
+    expect(params).toEqual({
+      size: "1024x1024",
+      aspectRatio: undefined,
+      seed: 11,
+      providerOptions: {
+        openaiCompatible: {
+          quality: "high",
+          background: "transparent",
+        },
+      },
+    });
+  });
+
+  it("lets caller image parameters override configured defaults", () => {
+    const config = {
+      tools: {
+        fsBackend: "fff",
+        web: {
+          extract: {
+            providers: ["tavily"],
+          },
+          fetch: {
+            mode: "auto",
+          },
+        },
+        inspect: {
+          model: "google/gemini-3.5-flash",
+        },
+        editFile: {
+          hashline: true,
+        },
+        generate: {
+          image: {
+            models: ["openai-compatible/gpt-image-2"],
+            defaults: {
+              aspectRatio: "1:1",
+              seed: 11,
+            },
+            profiles: {},
+          },
+        },
+      },
+    } satisfies Pick<CoreConfig, "tools">;
+
+    const params = resolveImageGenerationParameters({
+      config,
+      modelId: "openai-compatible/gpt-image-2",
+      model: {
+        specificationVersion: "v4",
+        provider: "openaiCompatible.image",
+        modelId: "gpt-image-2",
+        maxImagesPerCall: 1,
+        doGenerate() {
+          throw new Error("not called");
+        },
+      },
+      input: {
+        size: "1536x1024",
+        seed: 42,
+      },
+    });
+
+    expect(params.size).toBe("1536x1024");
+    expect(params.aspectRatio).toBeUndefined();
+    expect(params.seed).toBe(42);
   });
 
   it("returns plain text prompt when inputImages are not provided", async () => {

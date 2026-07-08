@@ -1,4 +1,10 @@
-import { env, getModelProviders } from "@stanley2058/lilac-utils";
+import {
+  env,
+  getModelProviders,
+  type CoreConfig,
+  type JSONObject,
+  type JSONValue,
+} from "@stanley2058/lilac-utils";
 import {
   experimental_generateVideo as generateVideo,
   generateImage,
@@ -165,6 +171,7 @@ export const imageGenerateInputSchema = z
       .describe(
         [
           "Optional output size as '{width}x{height}'. (Use only one of --size or --aspect-ratio)",
+          "- For gpt-image-2: arbitrary sizes are normalized to 16-pixel multiples and clamped to the provider pixel limit.",
           "- For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
           "- For nanobanana(-2|-pro): calculate based-on 1K, 2K, 4K. E.g.,",
           "  - 1:1 @ 1K/2K/4K: 1024^2 / 2048^2 / 4096^2",
@@ -186,6 +193,12 @@ export const imageGenerateInputSchema = z
           "- For grok-imagine-image(-pro): 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 2:1 | 1:2 | 19.5:9 | 9:19.5 | 20:9 | 9:20.",
         ].join("\n"),
       ),
+
+    seed: z.coerce
+      .number()
+      .int()
+      .optional()
+      .describe("Optional generation seed. If omitted, uses model/profile/provider default."),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -269,11 +282,471 @@ type VideoModelDescriptor = ModelDescriptor<
   VideoGenerateInput
 >;
 
-function isConfiguredProvider(provider: "openai" | "openrouter" | "xai" | "vercel"): boolean {
-  const config = env.providers[provider];
+type ImageProviderId = "openai" | "openai-compatible" | "openrouter" | "xai" | "vercel";
+
+type GenerateOptions = {
+  config?: Pick<CoreConfig, "tools">;
+  getConfig?: () => Promise<Pick<CoreConfig, "tools">>;
+};
+
+type ResolvedImageModel = {
+  id: string;
+  model: ImageModel;
+  validateInput: (input: ImageGenerateInput) => void;
+};
+
+type GenerateImageCallOptions = Parameters<typeof generateImage>[0];
+type ImageProviderOptions = NonNullable<GenerateImageCallOptions["providerOptions"]>;
+
+type ImageGenerationResolvedParameters = {
+  size?: `${number}x${number}`;
+  aspectRatio?: `${number}:${number}`;
+  seed?: number;
+  maxRetries?: number;
+  providerOptions?: ImageProviderOptions;
+};
+
+type ImageGenerationParameterWarning = {
+  type: "parameter-adjusted";
+  parameter: "size" | "aspectRatio";
+  from?: string;
+  to: string;
+  reason: string;
+};
+
+// Keep explicit provider/model specs bounded to providers that are already
+// wired through the AI SDK and expose image factories. This gives third-party
+// URL flexibility without inventing a second HTTP image client in the tool.
+const CONFIGURABLE_IMAGE_PROVIDER_IDS = [
+  "openai",
+  "openai-compatible",
+  "openrouter",
+  "xai",
+  "vercel",
+] as const satisfies readonly ImageProviderId[];
+
+const GPT_IMAGE_2_MAX_PIXELS = 8_294_400;
+const GPT_IMAGE_2_SIZE_MULTIPLE = 16;
+const GPT_IMAGE_2_DEFAULT_PIXELS = 1024 * 1024;
+
+function isImageProviderId(value: string): value is ImageProviderId {
+  return (CONFIGURABLE_IMAGE_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+function cloneJson(value: JSONValue): JSONValue {
+  if (Array.isArray(value)) return value.map(cloneJson);
+  if (value !== null && typeof value === "object") {
+    const source = value as Record<string, JSONValue | undefined>;
+    const next: Record<string, JSONValue | undefined> = {};
+    for (const [key, entry] of Object.entries(source)) {
+      next[key] = entry === undefined ? undefined : cloneJson(entry);
+    }
+    return next;
+  }
+  return value;
+}
+
+function deepMergeJson(base: JSONValue, override: JSONValue): JSONValue {
+  if (Array.isArray(base) || Array.isArray(override)) {
+    return cloneJson(override);
+  }
+
+  if (
+    base !== null &&
+    typeof base === "object" &&
+    override !== null &&
+    typeof override === "object"
+  ) {
+    const baseRecord = base as Record<string, JSONValue | undefined>;
+    const overrideRecord = override as Record<string, JSONValue | undefined>;
+    const out: Record<string, JSONValue | undefined> = {};
+
+    for (const [key, entry] of Object.entries(baseRecord)) {
+      out[key] = entry === undefined ? undefined : cloneJson(entry);
+    }
+
+    for (const [key, overrideEntry] of Object.entries(overrideRecord)) {
+      if (overrideEntry === undefined) continue;
+
+      const baseEntry = baseRecord[key];
+      out[key] =
+        baseEntry === undefined
+          ? cloneJson(overrideEntry)
+          : deepMergeJson(baseEntry, overrideEntry);
+    }
+
+    return out;
+  }
+
+  return cloneJson(override);
+}
+
+function deepMergeObjects(base?: JSONObject, override?: JSONObject): JSONObject | undefined {
+  if (!base && !override) return undefined;
+  if (!base) return cloneJson(override ?? {}) as JSONObject;
+  if (!override) return cloneJson(base) as JSONObject;
+  return deepMergeJson(base, override) as JSONObject;
+}
+
+function looksLikeProviderOptionsMap(obj: JSONObject): boolean {
+  const values = Object.values(obj);
+  if (values.length === 0) return false;
+
+  for (const value of values) {
+    if (value === undefined) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  }
+
+  return true;
+}
+
+function providerOptionsNamespace(provider: string): string {
+  if (provider === "openai-compatible" || provider === "openaiCompatible") {
+    return "openaiCompatible";
+  }
+  if (provider === "vercel") return "gateway";
+  return provider;
+}
+
+function getImageProviderConfig(provider: ImageProviderId): {
+  apiKey?: string;
+  baseUrl?: string;
+} {
+  if (provider === "openai-compatible") {
+    return env.providers.openaiCompatible;
+  }
+
+  return env.providers[provider];
+}
+
+function isConfiguredProvider(provider: ImageProviderId): boolean {
+  const config = getImageProviderConfig(provider);
   const apiKey = "apiKey" in config ? config.apiKey : undefined;
   const baseUrl = "baseUrl" in config ? config.baseUrl : undefined;
+
+  // The OpenAI-compatible provider has no safe default endpoint. An API key
+  // alone cannot identify where image requests should be sent.
+  if (provider === "openai-compatible") {
+    return Boolean(baseUrl?.trim());
+  }
+
   return Boolean(apiKey?.trim() || baseUrl?.trim());
+}
+
+function configuredExplicitImageProviderIds(): ImageProviderId[] {
+  return CONFIGURABLE_IMAGE_PROVIDER_IDS.filter((provider) => isConfiguredProvider(provider));
+}
+
+function parseProviderModelSpec(spec: string):
+  | {
+      provider: string;
+      modelId: string;
+    }
+  | undefined {
+  // Split only the first slash so upstream model IDs can contain their own
+  // namespaces, e.g. openrouter/google/... or openai-compatible/acme/image.
+  const separator = spec.indexOf("/");
+  if (separator <= 0 || separator === spec.length - 1) return undefined;
+  return {
+    provider: spec.slice(0, separator),
+    modelId: spec.slice(separator + 1),
+  };
+}
+
+function isReflectable(value: unknown): value is object {
+  return (typeof value === "object" && value !== null) || typeof value === "function";
+}
+
+function getImageModelProviderNamespace(model: ImageModel, fallbackModelId: string): string {
+  if (isReflectable(model) && "provider" in model) {
+    const provider = Reflect.get(model, "provider");
+    if (typeof provider === "string" && provider.trim().length > 0) {
+      return providerOptionsNamespace(provider.split(".")[0] ?? provider);
+    }
+  }
+
+  const parsed = parseProviderModelSpec(fallbackModelId);
+  return providerOptionsNamespace(parsed?.provider ?? "openai-compatible");
+}
+
+function normalizeImageProviderOptions(
+  options: JSONObject | undefined,
+  providerNamespace: string,
+): ImageProviderOptions | undefined {
+  if (!options || Object.keys(options).length === 0) return undefined;
+
+  const raw = looksLikeProviderOptionsMap(options)
+    ? options
+    : ({
+        [providerNamespace]: options,
+      } satisfies JSONObject);
+
+  const normalized: Record<string, JSONObject> = {};
+  for (const [provider, value] of Object.entries(raw)) {
+    if (value === undefined) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      normalized[provider] = {};
+      continue;
+    }
+    normalized[provider] = cloneJson(value as JSONValue) as JSONObject;
+  }
+
+  return normalized as ImageProviderOptions;
+}
+
+function mergeImageProviderOptions(
+  base: ImageProviderOptions | undefined,
+  override: ImageProviderOptions | undefined,
+): ImageProviderOptions | undefined {
+  if (!base) return override;
+  if (!override) return base;
+
+  let merged: JSONObject | undefined;
+  for (const [provider, value] of Object.entries(base)) {
+    merged = deepMergeObjects(merged, {
+      [provider]: cloneJson(value as JSONValue),
+    });
+  }
+  for (const [provider, value] of Object.entries(override)) {
+    merged = deepMergeObjects(merged, {
+      [provider]: cloneJson(value as JSONValue),
+    });
+  }
+
+  return merged as ImageProviderOptions | undefined;
+}
+
+function applyParameterDefaults(
+  current: ImageGenerationResolvedParameters,
+  defaults: CoreConfig["tools"]["generate"]["image"]["defaults"] | undefined,
+  providerNamespace: string,
+): ImageGenerationResolvedParameters {
+  if (!defaults) return current;
+
+  const next: ImageGenerationResolvedParameters = { ...current };
+  if (defaults.size) {
+    next.size = defaults.size as `${number}x${number}`;
+    next.aspectRatio = undefined;
+  } else if (defaults.aspectRatio) {
+    next.aspectRatio = defaults.aspectRatio as `${number}:${number}`;
+    next.size = undefined;
+  }
+
+  if (defaults.seed !== undefined) next.seed = defaults.seed;
+  if (defaults.maxRetries !== undefined) next.maxRetries = defaults.maxRetries;
+
+  next.providerOptions = mergeImageProviderOptions(
+    next.providerOptions,
+    normalizeImageProviderOptions(defaults.options, providerNamespace),
+  );
+
+  return next;
+}
+
+export function resolveImageGenerationParameters(params: {
+  config: Pick<CoreConfig, "tools"> | undefined;
+  modelId: string;
+  model: ImageModel;
+  input: Pick<ImageGenerateInput, "size" | "aspectRatio" | "seed">;
+}): ImageGenerationResolvedParameters {
+  const imageConfig = params.config?.tools.generate.image;
+  const providerNamespace = getImageModelProviderNamespace(params.model, params.modelId);
+  const profileDefaults = imageConfig?.profiles[params.modelId]?.defaults;
+
+  let resolved = applyParameterDefaults({}, imageConfig?.defaults, providerNamespace);
+  resolved = applyParameterDefaults(resolved, profileDefaults, providerNamespace);
+
+  // Caller input wins over config defaults. A caller-supplied size also clears
+  // configured aspectRatio, and vice versa, preserving the one-shape-rule.
+  if (params.input.size) {
+    resolved = {
+      ...resolved,
+      size: params.input.size as `${number}x${number}`,
+      aspectRatio: undefined,
+    };
+  } else if (params.input.aspectRatio) {
+    resolved = {
+      ...resolved,
+      size: undefined,
+      aspectRatio: params.input.aspectRatio as `${number}:${number}`,
+    };
+  }
+
+  if (params.input.seed !== undefined) {
+    resolved = {
+      ...resolved,
+      seed: params.input.seed,
+    };
+  }
+
+  return resolved;
+}
+
+function parseSize(value: string): { width: number; height: number } {
+  const [widthRaw, heightRaw] = value.split("x");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(
+      `Invalid image size '${value}'. Expected positive integer size like 1024x1024.`,
+    );
+  }
+  return { width, height };
+}
+
+function parseAspectRatio(value: string): { width: number; height: number } {
+  const [widthRaw, heightRaw] = value.split(":");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error(`Invalid image aspectRatio '${value}'. Expected positive ratio like 3:4.`);
+  }
+  return { width, height };
+}
+
+function formatSize(width: number, height: number): `${number}x${number}` {
+  return `${width}x${height}` as `${number}x${number}`;
+}
+
+function floorToMultiple(value: number, multiple: number): number {
+  return Math.max(multiple, Math.floor(value / multiple) * multiple);
+}
+
+function roundToMultiple(value: number, multiple: number): number {
+  return Math.max(multiple, Math.round(value / multiple) * multiple);
+}
+
+function clampGptImage2Size(width: number, height: number): `${number}x${number}` {
+  let normalizedWidth = roundToMultiple(width, GPT_IMAGE_2_SIZE_MULTIPLE);
+  let normalizedHeight = roundToMultiple(height, GPT_IMAGE_2_SIZE_MULTIPLE);
+
+  if (normalizedWidth * normalizedHeight > GPT_IMAGE_2_MAX_PIXELS) {
+    const scale = Math.sqrt(GPT_IMAGE_2_MAX_PIXELS / (normalizedWidth * normalizedHeight));
+    normalizedWidth = floorToMultiple(normalizedWidth * scale, GPT_IMAGE_2_SIZE_MULTIPLE);
+    normalizedHeight = floorToMultiple(normalizedHeight * scale, GPT_IMAGE_2_SIZE_MULTIPLE);
+  }
+
+  while (normalizedWidth * normalizedHeight > GPT_IMAGE_2_MAX_PIXELS) {
+    if (normalizedWidth >= normalizedHeight) {
+      normalizedWidth -= GPT_IMAGE_2_SIZE_MULTIPLE;
+    } else {
+      normalizedHeight -= GPT_IMAGE_2_SIZE_MULTIPLE;
+    }
+  }
+
+  return formatSize(normalizedWidth, normalizedHeight);
+}
+
+function gptImage2AspectRatioToSize(aspectRatio: string): `${number}x${number}` {
+  const ratio = parseAspectRatio(aspectRatio);
+  const width = Math.sqrt(GPT_IMAGE_2_DEFAULT_PIXELS * (ratio.width / ratio.height));
+  const height = width * (ratio.height / ratio.width);
+  return clampGptImage2Size(width, height);
+}
+
+function isGptImage2ModelId(modelId: string): boolean {
+  const parsed = parseProviderModelSpec(modelId);
+  const concreteModelId = parsed?.modelId ?? modelId;
+  return concreteModelId.split("/").at(-1) === "gpt-image-2";
+}
+
+export function normalizeImageGenerationParametersForModel(params: {
+  modelId: string;
+  parameters: ImageGenerationResolvedParameters;
+}): {
+  parameters: ImageGenerationResolvedParameters;
+  warnings: ImageGenerationParameterWarning[];
+} {
+  if (!isGptImage2ModelId(params.modelId)) {
+    return { parameters: params.parameters, warnings: [] };
+  }
+
+  if (params.parameters.size) {
+    const parsed = parseSize(params.parameters.size);
+    const normalizedSize = clampGptImage2Size(parsed.width, parsed.height);
+    if (normalizedSize === params.parameters.size) {
+      return { parameters: params.parameters, warnings: [] };
+    }
+
+    return {
+      parameters: {
+        ...params.parameters,
+        size: normalizedSize,
+        aspectRatio: undefined,
+      },
+      warnings: [
+        {
+          type: "parameter-adjusted",
+          parameter: "size",
+          from: params.parameters.size,
+          to: normalizedSize,
+          reason:
+            "gpt-image-2 image sizes must use 16-pixel multiples and stay within the provider pixel limit.",
+        },
+      ],
+    };
+  }
+
+  if (params.parameters.aspectRatio) {
+    const normalizedSize = gptImage2AspectRatioToSize(params.parameters.aspectRatio);
+    return {
+      parameters: {
+        ...params.parameters,
+        size: normalizedSize,
+        aspectRatio: undefined,
+      },
+      warnings: [
+        {
+          type: "parameter-adjusted",
+          parameter: "aspectRatio",
+          from: params.parameters.aspectRatio,
+          to: normalizedSize,
+          reason:
+            "The OpenAI-compatible gpt-image-2 adapter does not forward aspectRatio, so Lilac converted it to a concrete size.",
+        },
+      ],
+    };
+  }
+
+  return { parameters: params.parameters, warnings: [] };
+}
+
+type ProviderWithImageModel = {
+  imageModel(modelId: string): ImageModel;
+};
+
+type ProviderWithImage = {
+  image(modelId: string): ImageModel;
+};
+
+function hasImageModel(provider: unknown): provider is ProviderWithImageModel {
+  return isReflectable(provider) && typeof Reflect.get(provider, "imageModel") === "function";
+}
+
+function hasImage(provider: unknown): provider is ProviderWithImage {
+  return isReflectable(provider) && typeof Reflect.get(provider, "image") === "function";
+}
+
+export function createExplicitProviderImageModel(params: {
+  spec: string;
+  providers: Record<string, unknown>;
+  configuredProviderIds: readonly string[];
+}): ImageModel | undefined {
+  const parsed = parseProviderModelSpec(params.spec);
+  if (!parsed || !isImageProviderId(parsed.provider)) return undefined;
+  if (!params.configuredProviderIds.includes(parsed.provider)) return undefined;
+
+  const provider = params.providers[parsed.provider];
+  // Prefer imageModel because OpenRouter and OpenAI-compatible expose the
+  // provider-neutral AI SDK image interface there. Fall back to image for
+  // providers such as OpenAI/xAI that expose that convenience method.
+  if (hasImageModel(provider)) {
+    return provider.imageModel(parsed.modelId);
+  }
+  if (hasImage(provider)) {
+    return provider.image(parsed.modelId);
+  }
+  return undefined;
 }
 
 function isOneOf<const T extends readonly string[]>(allowed: T, value: string): value is T[number] {
@@ -402,6 +875,14 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
   },
 ];
 
+// Built-in aliases carry local validation and provider fallback logic. Explicit
+// provider/model specs below intentionally skip local capability rules because
+// third-party providers often add provider-specific models faster than Lilac can
+// encode their size/aspect-ratio matrix.
+const IMAGE_MODEL_DESCRIPTOR_BY_ID = new Map<SupportedImageModelId, ImageModelDescriptor>(
+  IMAGE_MODEL_DESCRIPTORS.map((descriptor) => [descriptor.id, descriptor]),
+);
+
 function validateGrokVideoInput(input: VideoGenerateInput): void {
   if (input.aspectRatio && !isOneOf(GROK_VIDEO_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
     throw new Error(
@@ -467,9 +948,136 @@ function resolveAvailableModels<TId extends string, TModel, TInput>(
   };
 }
 
-function getAvailableImageModels() {
+export function resolveConfiguredImageModelSpecs(
+  config: Pick<CoreConfig, "tools"> | undefined,
+): readonly string[] {
+  const configured = config?.tools.generate.image.models ?? [];
+  // Empty config preserves historical behavior: use Lilac's built-in aliases
+  // and provider-aware fallback order.
+  return configured.length > 0 ? configured : DEFAULT_IMAGE_MODEL_FALLBACK_ORDER;
+}
+
+export function canRequestImageModel(params: {
+  configuredModelSpecs: readonly string[];
+  requested: string;
+}): boolean {
+  return (
+    params.configuredModelSpecs.length === 0 ||
+    params.configuredModelSpecs.includes(params.requested)
+  );
+}
+
+export function resolveAvailableImageModels(params: {
+  providers: ReturnType<typeof getModelProviders>;
+  modelSpecs: readonly string[];
+}): {
+  available: ReadonlyMap<string, ImageModel>;
+  byId: ReadonlyMap<string, ResolvedImageModel>;
+  ids: string[];
+} {
+  const available = new Map<string, ImageModel>();
+  const byId = new Map<string, ResolvedImageModel>();
+  const ids: string[] = [];
+
+  for (const spec of params.modelSpecs) {
+    // First resolve stable Lilac aliases such as gpt-5-image or nanobanana-2.
+    // These aliases can point at different concrete providers while retaining
+    // one user-facing model name and local input validation.
+    const builtInDescriptor = IMAGE_MODEL_DESCRIPTOR_BY_ID.get(spec as SupportedImageModelId);
+    if (builtInDescriptor) {
+      const model = builtInDescriptor.createModel(params.providers);
+      if (!model) continue;
+
+      available.set(spec, model);
+      byId.set(spec, {
+        id: spec,
+        model,
+        validateInput: builtInDescriptor.validateInput,
+      });
+      ids.push(spec);
+      continue;
+    }
+
+    // Then resolve direct provider/model specs. This is the escape hatch for
+    // third-party image APIs configured via OPENAI_COMPATIBLE_BASE_URL and for
+    // operators who want to pin concrete upstream provider model IDs.
+    const model = createExplicitProviderImageModel({
+      spec,
+      providers: params.providers,
+      configuredProviderIds: configuredExplicitImageProviderIds(),
+    });
+    if (!model) continue;
+
+    available.set(spec, model);
+    byId.set(spec, {
+      id: spec,
+      model,
+      validateInput: () => {},
+    });
+    ids.push(spec);
+  }
+
+  return {
+    available,
+    byId,
+    ids,
+  };
+}
+
+function describeImageParameterDefaults(
+  defaults: CoreConfig["tools"]["generate"]["image"]["defaults"] | undefined,
+): string | undefined {
+  if (!defaults) return undefined;
+
+  const parts: string[] = [];
+  if (defaults.size) parts.push(`size=${defaults.size}`);
+  if (defaults.aspectRatio) parts.push(`aspectRatio=${defaults.aspectRatio}`);
+  if (defaults.seed !== undefined) parts.push(`seed=${defaults.seed}`);
+  if (defaults.maxRetries !== undefined) parts.push(`maxRetries=${defaults.maxRetries}`);
+  if (defaults.options && Object.keys(defaults.options).length > 0) {
+    parts.push("providerOptions=configured");
+  }
+
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
+function describeImageModelProfiles(
+  config: Pick<CoreConfig, "tools"> | undefined,
+  modelIds: readonly string[],
+): string | undefined {
+  const profiles = config?.tools.generate.image.profiles;
+  if (!profiles) return undefined;
+
+  const descriptions = modelIds
+    .map((id) => {
+      const profile = profiles[id];
+      if (!profile) return undefined;
+
+      const parts: string[] = [];
+      if (profile.useWhen) parts.push(`use when: ${profile.useWhen}`);
+      const defaults = describeImageParameterDefaults(profile.defaults);
+      if (defaults) parts.push(`defaults: ${defaults}`);
+      return parts.length > 0 ? `${id} (${parts.join("; ")})` : undefined;
+    })
+    .filter((entry): entry is string => entry !== undefined);
+
+  return descriptions.length > 0 ? descriptions.join(" | ") : undefined;
+}
+
+async function getAvailableImageModels(options?: GenerateOptions) {
   const providers = getModelProviders();
-  return resolveAvailableModels(IMAGE_MODEL_DESCRIPTORS, providers);
+  const config = await resolveGenerateConfig(options);
+  const modelSpecs = resolveConfiguredImageModelSpecs(config);
+  return resolveAvailableImageModels({
+    providers,
+    modelSpecs,
+  });
+}
+
+async function resolveGenerateConfig(
+  options?: GenerateOptions,
+): Promise<Pick<CoreConfig, "tools"> | undefined> {
+  return options?.config ?? (options?.getConfig ? await options.getConfig() : undefined);
 }
 
 function getAvailableVideoModels() {
@@ -506,6 +1114,74 @@ function pickModel<TId extends string, TModel>(
 
   throw new Error(
     `No ${modalityLabel} generation models are configured. Configure at least one provider for ${modalityLabel} generation.`,
+  );
+}
+
+function pickImageModel(params: {
+  availableModels: Awaited<ReturnType<typeof getAvailableImageModels>>;
+  requested: string | undefined;
+  providers: ReturnType<typeof getModelProviders>;
+  configuredModelSpecs: readonly string[];
+}): ResolvedImageModel {
+  if (params.requested) {
+    if (
+      !canRequestImageModel({
+        configuredModelSpecs: params.configuredModelSpecs,
+        requested: params.requested,
+      })
+    ) {
+      throw new Error(
+        `Requested image model '${params.requested}' is not listed in tools.generate.image.models. Configured image models: ${params.configuredModelSpecs.join(", ") || "none"}.`,
+      );
+    }
+
+    const configuredModel = params.availableModels.byId.get(params.requested);
+    if (configuredModel) return configuredModel;
+
+    // If no image model allowlist is configured, a caller-supplied provider
+    // model can still be used as an operator escape hatch.
+    const explicitModel = createExplicitProviderImageModel({
+      spec: params.requested,
+      providers: params.providers,
+      configuredProviderIds: configuredExplicitImageProviderIds(),
+    });
+    if (explicitModel) {
+      return {
+        id: params.requested,
+        model: explicitModel,
+        validateInput: () => {},
+      };
+    }
+
+    const configured = params.availableModels.ids.join(", ") || "none";
+    const explicitProviders = configuredExplicitImageProviderIds()
+      .map((provider) => `${provider}/<model-id>`)
+      .join(", ");
+    throw new Error(
+      `Requested model '${params.requested}' is not available for image generation (configured defaults: ${configured}; explicit providers: ${explicitProviders || "none"}).`,
+    );
+  }
+
+  const first = params.availableModels.ids[0];
+  if (first) {
+    const model = params.availableModels.byId.get(first);
+    if (model) return model;
+  }
+
+  const explicitProviders = configuredExplicitImageProviderIds()
+    .map((provider) => `${provider}/<model-id>`)
+    .join(", ");
+
+  // If a generic provider is configured but no default image model is named,
+  // keep the tool discoverable while requiring the caller to choose a model.
+  if (explicitProviders) {
+    throw new Error(
+      `No default image generation model is configured. Set tools.generate.image.models or pass model as one of: ${explicitProviders}.`,
+    );
+  }
+
+  throw new Error(
+    "No image generation models are configured. Configure an image provider or set tools.generate.image.models.",
   );
 }
 
@@ -676,6 +1352,9 @@ export function generateImageWithModel(
     abortSignal?: AbortSignal;
     size?: `${number}x${number}`;
     aspectRatio?: `${number}:${number}`;
+    seed?: number;
+    maxRetries?: number;
+    providerOptions?: ImageProviderOptions;
   },
 ) {
   return generateImage({
@@ -684,6 +1363,9 @@ export function generateImageWithModel(
     abortSignal: opts?.abortSignal,
     size: opts?.size,
     aspectRatio: opts?.aspectRatio,
+    seed: opts?.seed,
+    maxRetries: opts?.maxRetries,
+    providerOptions: opts?.providerOptions,
   });
 }
 
@@ -710,21 +1392,43 @@ export function generateVideoWithModel(
 export class Generate implements ServerTool {
   id = "generate";
 
+  constructor(private readonly options: GenerateOptions = {}) {}
+
   async init(): Promise<void> {}
   async destroy(): Promise<void> {}
 
   async list() {
-    const imageModels = getAvailableImageModels().ids;
+    const config = await resolveGenerateConfig(this.options);
+    const imageModels = (
+      await getAvailableImageModels({
+        ...this.options,
+        config,
+      })
+    ).ids;
+    const explicitImageProviders = configuredExplicitImageProviderIds();
+    const configuredImageModelSpecs = config?.tools.generate.image.models ?? [];
     const videoModels = getAvailableVideoModels().ids;
     const tools = [];
 
-    if (imageModels.length > 0) {
+    if (imageModels.length > 0 || explicitImageProviders.length > 0) {
+      // A configured explicit provider is enough to advertise generate.image:
+      // the tool description tells agents how to pass provider/model manually
+      // even when the operator has not selected a default model.
+      const explicitProviderSpecs =
+        configuredImageModelSpecs.length > 0
+          ? configuredImageModelSpecs
+          : explicitImageProviders.map((provider) => `${provider}/<model-id>`);
+      const globalDefaults = describeImageParameterDefaults(config?.tools.generate.image.defaults);
+      const modelProfiles = describeImageModelProfiles(config, imageModels);
       tools.push({
         callableId: "generate.image",
         name: "Generate Image",
         description:
           "Generate or edit an image with a configured provider and write it to a local file in outputDir (or cwd). Returns absolute output path + MIME type. " +
-          `Available models: ${imageModels.join(", ")}`,
+          `Default models: ${imageModels.join(", ") || "none"}. ` +
+          `Explicit model specs: ${explicitProviderSpecs.join(", ") || "none"}. ` +
+          `Global defaults: ${globalDefaults || "none"}. ` +
+          `Model profiles: ${modelProfiles || "none"}`,
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
         }),
@@ -780,19 +1484,36 @@ export class Generate implements ServerTool {
     },
   ): Promise<unknown> {
     const payload = imageGenerateInputSchema.parse(input);
-    const availableModels = getAvailableImageModels();
-    const picked = pickModel(
-      availableModels.available,
-      payload.model,
-      DEFAULT_IMAGE_MODEL_FALLBACK_ORDER,
-      "image",
-    );
+    const providers = getModelProviders();
+    const config = await resolveGenerateConfig(this.options);
+    const availableModels = await getAvailableImageModels({
+      ...this.options,
+      config,
+    });
+    const picked = pickImageModel({
+      availableModels,
+      requested: payload.model,
+      providers,
+      configuredModelSpecs: config?.tools.generate.image.models ?? [],
+    });
 
-    const descriptor = availableModels.byId.get(picked.id);
-    if (!descriptor) {
-      throw new Error(`Model descriptor not found for '${picked.id}'.`);
-    }
-    descriptor.validateInput(payload);
+    const resolvedGenerationParameters = resolveImageGenerationParameters({
+      config,
+      modelId: picked.id,
+      model: picked.model,
+      input: payload,
+    });
+    const generationParameterNormalization = normalizeImageGenerationParametersForModel({
+      modelId: picked.id,
+      parameters: resolvedGenerationParameters,
+    });
+    const generationParameters = generationParameterNormalization.parameters;
+    picked.validateInput({
+      ...payload,
+      size: generationParameters.size,
+      aspectRatio: generationParameters.aspectRatio,
+      seed: generationParameters.seed,
+    });
 
     const cwd = opts?.context?.cwd ?? process.cwd();
     const resolvedOutputDir = resolveToolPathForRequestContext({
@@ -802,24 +1523,25 @@ export class Generate implements ServerTool {
     });
 
     const size =
-      payload.size && payload.size.length > 0
-        ? (payload.size as `${number}x${number}`)
-        : picked.id === "gpt-5-image" && payload.aspectRatio
+      generationParameters.size && generationParameters.size.length > 0
+        ? generationParameters.size
+        : picked.id === "gpt-5-image" && generationParameters.aspectRatio
           ? (gptAspectRatioToSize(
-              payload.aspectRatio as (typeof GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
+              generationParameters.aspectRatio as (typeof GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
             ) as `${number}x${number}`)
           : undefined;
 
     const aspectRatio =
-      !payload.size && payload.aspectRatio
-        ? (payload.aspectRatio as `${number}:${number}`)
-        : undefined;
+      !size && generationParameters.aspectRatio ? generationParameters.aspectRatio : undefined;
     const prompt = await buildImageGenerationPrompt(cwd, payload, opts?.context);
 
     const res = await generateImageWithModel(picked.model, prompt, {
       abortSignal: opts?.signal,
       size,
       aspectRatio,
+      seed: generationParameters.seed,
+      maxRetries: generationParameters.maxRetries,
+      providerOptions: generationParameters.providerOptions,
     });
 
     const image = res.image;
@@ -835,7 +1557,7 @@ export class Generate implements ServerTool {
       bytes: image.uint8Array.byteLength,
       mimeType: image.mediaType,
       model: picked.id,
-      warnings: res.warnings,
+      warnings: [...generationParameterNormalization.warnings, ...res.warnings],
     };
   }
 
