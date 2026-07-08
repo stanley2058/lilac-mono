@@ -714,6 +714,13 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
         maxInlineBytesPerPart: 10 * 1024 * 1024,
         maxInlineBytesTotal: 20 * 1024 * 1024,
       },
+      generate: {
+        image: {
+          models: [],
+          defaults: {},
+          profiles: {},
+        },
+      },
     },
     conversation: {
       thread: {

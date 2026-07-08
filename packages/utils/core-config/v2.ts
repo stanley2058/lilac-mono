@@ -220,6 +220,32 @@ const discordSurfaceSchema = z
 const byteSizeSchema = z.preprocess(parseFriendlyByteSize, z.number().int().positive());
 const durationMsSchema = z.preprocess(parseFriendlyDurationMs, z.number().int().positive());
 
+const imageGenerationParameterDefaultsSchema = z
+  .object({
+    size: z
+      .string()
+      .trim()
+      .regex(/^\d+x\d+$/)
+      .optional(),
+    aspectRatio: z
+      .string()
+      .trim()
+      .regex(/^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/)
+      .optional(),
+    seed: z.number().int().optional(),
+    maxRetries: z.number().int().min(0).optional(),
+    /** AI SDK providerOptions-style object, with shorthand support in generate.image. */
+    options: jsonObjectSchema.optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.size && input.aspectRatio) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Provide only one of size or aspectRatio (not both).",
+      });
+    }
+  });
+
 const toolsSchema = z
   .object({
     fsBackend: z.enum(["fff", "node-rg"]).default("fff"),
@@ -274,6 +300,45 @@ const toolsSchema = z
         maxInlineBytesPerPart: 10 * 1024 * 1024,
         maxInlineBytesTotal: 20 * 1024 * 1024,
       }),
+    generate: z
+      .object({
+        image: z
+          .object({
+            // Ordered default image model specs for generate.image. Empty means
+            // "use built-in aliases"; explicit specs use provider/model format.
+            models: z
+              .array(z.string().trim().min(1))
+              .transform((models) => Array.from(new Set(models)))
+              .default([]),
+            // Global default parameters applied before model-specific profiles
+            // and before caller input. Keep these portable; provider-specific
+            // fields go under options.
+            defaults: imageGenerationParameterDefaultsSchema.default({}),
+            // Optional per-model tuning and selection guidance, keyed by the
+            // same model spec/alias string used in models or tool input.
+            profiles: z
+              .record(
+                z.string().trim().min(1),
+                z.object({
+                  useWhen: z.string().trim().min(1).optional(),
+                  defaults: imageGenerationParameterDefaultsSchema.default({}),
+                }),
+              )
+              .default({}),
+          })
+          .default({
+            models: [],
+            defaults: {},
+            profiles: {},
+          }),
+      })
+      .default({
+        image: {
+          models: [],
+          defaults: {},
+          profiles: {},
+        },
+      }),
   })
   .default({
     fsBackend: "fff",
@@ -305,6 +370,13 @@ const toolsSchema = z
     media: {
       maxInlineBytesPerPart: 10 * 1024 * 1024,
       maxInlineBytesTotal: 20 * 1024 * 1024,
+    },
+    generate: {
+      image: {
+        models: [],
+        defaults: {},
+        profiles: {},
+      },
     },
   });
 

@@ -92,6 +92,9 @@ describe("core config drift coverage", () => {
     expect(cfg.tools.historicalResultPruning.enabled).toBe(false);
     expect(cfg.tools.batch.maxCalls).toBe(8);
     expect(cfg.tools.media.maxInlineBytesTotal).toBe(20 * 1024 * 1024);
+    expect(cfg.tools.generate.image.models).toEqual([]);
+    expect(cfg.tools.generate.image.defaults).toEqual({});
+    expect(cfg.tools.generate.image.profiles).toEqual({});
     expect(cfg.surface.discord.outputMode).toBe("preview");
     expect(cfg.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
     expect(cfg.surface.discord.outputNotification).toBe(true);
