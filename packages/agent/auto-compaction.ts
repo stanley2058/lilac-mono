@@ -820,15 +820,17 @@ function computeInputCompactionBudget(params: {
   const boundedThreshold = Math.max(0.05, Math.min(0.95, params.thresholdFraction));
   const earlyInputBudget = Math.max(1, Math.floor(contextLimit * boundedThreshold));
 
-  const reservedOutputFromLimit =
-    params.outputLimit > 0 ? Math.max(256, Math.floor(params.outputLimit)) : 0;
   const reservedOutputFallback = Math.max(
     DEFAULT_RESERVED_OUTPUT_MIN_TOKENS,
     Math.floor(contextLimit * DEFAULT_RESERVED_OUTPUT_FRACTION),
   );
+  const reservedOutputFromLimit =
+    params.outputLimit > 0 && params.outputLimit < contextLimit
+      ? Math.max(256, Math.floor(params.outputLimit))
+      : 0;
   const reservedOutputTokens = Math.min(
     Math.max(1, contextLimit - 1),
-    reservedOutputFromLimit > 0 ? reservedOutputFromLimit : reservedOutputFallback,
+    Math.max(reservedOutputFallback, reservedOutputFromLimit),
   );
 
   const safeInputBudget = Math.max(1, contextLimit - reservedOutputTokens);

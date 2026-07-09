@@ -128,7 +128,8 @@ describe("auto-compaction internals", () => {
       thresholdFraction: 0.8,
     });
     expect(largeWindow.earlyInputBudget).toBe(160_000);
-    expect(largeWindow.safeInputBudget).toBe(184_000);
+    expect(largeWindow.reservedOutputTokens).toBe(40_000);
+    expect(largeWindow.safeInputBudget).toBe(160_000);
     expect(largeWindow.inputBudget).toBe(160_000);
 
     const smallWindow = __autoCompactionInternals.computeInputCompactionBudget({
@@ -137,8 +138,18 @@ describe("auto-compaction internals", () => {
       thresholdFraction: 0.8,
     });
     expect(smallWindow.earlyInputBudget).toBe(25_600);
+    expect(smallWindow.reservedOutputTokens).toBe(12_000);
     expect(smallWindow.safeInputBudget).toBe(20_000);
     expect(smallWindow.inputBudget).toBe(20_000);
+
+    const fullOutputWindow = __autoCompactionInternals.computeInputCompactionBudget({
+      contextLimit: 500_000,
+      outputLimit: 500_000,
+      thresholdFraction: 0.8,
+    });
+    expect(fullOutputWindow.reservedOutputTokens).toBe(100_000);
+    expect(fullOutputWindow.safeInputBudget).toBe(400_000);
+    expect(fullOutputWindow.inputBudget).toBe(400_000);
   });
 
   it("computes fallback budget for unknown-model overflow retries", () => {
