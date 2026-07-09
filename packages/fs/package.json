@@ -16,7 +16,7 @@
     "@types/bun": "^1.3.14"
   },
   "peerDependencies": {
-    "typescript": "^6.0.2"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@ff-labs/fff-node": "^0.9.4",
