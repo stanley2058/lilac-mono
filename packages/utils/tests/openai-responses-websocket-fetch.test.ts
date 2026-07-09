@@ -15,11 +15,9 @@ class FakeWebSocket {
   static readonly CLOSED = 3;
 
   static instances: FakeWebSocket[] = [];
-  static nextResponseHeaders: unknown;
 
   readonly url: string;
   readonly init?: WebSocketInit;
-  readonly responseHeaders?: unknown;
   readyState = FakeWebSocket.CONNECTING;
   readonly sent: string[] = [];
 
@@ -33,17 +31,12 @@ class FakeWebSocket {
   constructor(url: string | URL, init?: WebSocketInit) {
     this.url = String(url);
     this.init = init;
-    if (FakeWebSocket.nextResponseHeaders !== undefined) {
-      this.responseHeaders = FakeWebSocket.nextResponseHeaders;
-      FakeWebSocket.nextResponseHeaders = undefined;
-    }
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.emitOpen());
   }
 
   static reset(): void {
     FakeWebSocket.instances.length = 0;
-    FakeWebSocket.nextResponseHeaders = undefined;
   }
 
   addEventListener(type: string, listener: (event: Event) => void): void {
@@ -367,6 +360,47 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(parts.some((part) => part.type === "error")).toBe(true);
   });
 
+  it("errors when websocket closes before a terminal response event", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const response = await wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const textPromise = response.text();
+    FakeWebSocket.instances[0]?.close();
+
+    await expect(textPromise).rejects.toThrow("before a terminal response event");
+    wsFetch.close();
+  });
+
+  it("errors the stream when websocket event normalization fails", async () => {
+    globals.fetch = (async () => {
+      throw new Error("should not fallback");
+    }) as unknown as typeof globalThis.fetch;
+
+    const wsFetch = createOpenAIResponsesWebSocketFetch({
+      mode: "websocket",
+      normalizeEvent: () => {
+        throw new Error("normalization failed");
+      },
+    });
+    const response = await wsFetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+
+    const textPromise = response.text();
+    FakeWebSocket.instances[0]?.emitMessage(JSON.stringify({ type: "response.created" }));
+
+    await expect(textPromise).rejects.toThrow("normalization failed");
+    wsFetch.close();
+  });
+
   it("normalizes SSE response.done events", async () => {
     const selections: Array<Record<string, unknown>> = [];
     globals.fetch = (async () =>
@@ -567,6 +601,12 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(socket).toBeDefined();
 
     const firstTextPromise = firstResponse.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.metadata",
+        headers: { "x-codex-turn-state": "turn-state-1" },
+      }),
+    );
     socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
     socket?.emitMessage(
       JSON.stringify({
@@ -594,7 +634,8 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
       }),
     );
     socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
-    await firstTextPromise;
+    const firstText = await firstTextPromise;
+    expect(firstText).toContain('"type":"response.metadata"');
 
     const secondResponse = await wsFetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -623,15 +664,13 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     wsFetch.close();
   });
 
-  it("acknowledges and reuses previous response id for codex store=false requests", async () => {
+  it("replays codex response metadata turn state after a same-turn reconnect", async () => {
     globals.fetch = (async () => {
       throw new Error("should not fallback");
     }) as unknown as typeof globalThis.fetch;
 
-    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-1"]]);
     const wsFetch = createOpenAIResponsesWebSocketFetch({
       mode: "websocket",
-      responseProcessed: true,
       turnStateHeaderName: "x-codex-turn-state",
     });
 
@@ -648,6 +687,12 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(socket).toBeDefined();
 
     const firstTextPromise = firstResponse.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.metadata",
+        headers: { "x-codex-turn-state": "turn-state-1" },
+      }),
+    );
     socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
     socket?.emitMessage(
       JSON.stringify({
@@ -676,10 +721,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     );
     socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await firstTextPromise;
-    expect(sentBody(socket, 1)).toEqual({
-      type: "response.processed",
-      response_id: "resp_1",
-    });
+    socket?.close();
 
     const secondResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
       method: "POST",
@@ -700,27 +742,39 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
       }),
     });
 
-    expect(FakeWebSocket.instances.length).toBe(1);
-    expect(sentBody(socket, 2)).toEqual({
+    expect(FakeWebSocket.instances.length).toBe(2);
+    const secondSocket = FakeWebSocket.instances[1];
+    expect(sentBody(secondSocket)).toEqual({
       type: "response.create",
       store: false,
-      previous_response_id: "resp_1",
-      input: [{ type: "function_call_output", call_id: "call_1", output: "# Lilac" }],
+      client_metadata: { "x-codex-turn-state": "turn-state-1" },
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "Checking the file." }] },
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "read_file",
+          arguments: '{"path":"README.md"}',
+        },
+        { type: "function_call_output", call_id: "call_1", output: "# Lilac" },
+      ],
     });
 
     const secondTextPromise = secondResponse.text();
-    socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_2" } }));
-    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    secondSocket?.emitMessage(
+      JSON.stringify({ type: "response.created", response: { id: "resp_2" } }),
+    );
+    secondSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await secondTextPromise;
     wsFetch.close();
   });
 
-  it("replays codex turn state on websocket reconnects when upgrade headers are exposed", async () => {
+  it("does not replay codex turn state into a new logical turn", async () => {
     globals.fetch = (async () => {
       throw new Error("should not fallback");
     }) as unknown as typeof globalThis.fetch;
 
-    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-1"]]);
     const wsFetch = createOpenAIResponsesWebSocketFetch({
       mode: "websocket",
       turnStateHeaderName: "x-codex-turn-state",
@@ -737,71 +791,58 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     const firstSocket = FakeWebSocket.instances[0];
     expect(firstSocket).toBeDefined();
-    expect(firstSocket?.init?.headers?.["x-codex-turn-state"]).toBeUndefined();
-
     const firstTextPromise = firstResponse.text();
+    firstSocket?.emitMessage(
+      JSON.stringify({
+        type: "response.metadata",
+        headers: { "x-codex-turn-state": "turn-state-1" },
+      }),
+    );
     firstSocket?.emitMessage(
       JSON.stringify({ type: "response.created", response: { id: "resp_1" } }),
     );
+    firstSocket?.emitMessage(
+      JSON.stringify({
+        type: "response.output_item.done",
+        item: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "First turn complete." }],
+        },
+      }),
+    );
     firstSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await firstTextPromise;
-    firstSocket?.close();
 
-    FakeWebSocket.nextResponseHeaders = new Headers([["x-codex-turn-state", "turn-state-2"]]);
     const secondResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
       method: "POST",
       body: JSON.stringify({
         stream: true,
         store: false,
-        input: [{ role: "user", content: [{ type: "input_text", text: "different" }] }],
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hello" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "First turn complete." }] },
+          { role: "user", content: [{ type: "input_text", text: "different" }] },
+        ],
       }),
     });
 
-    const secondSocket = FakeWebSocket.instances[1];
-    expect(secondSocket).toBeDefined();
-    expect(secondSocket?.init?.headers?.["x-codex-turn-state"]).toBe("turn-state-1");
+    expect(FakeWebSocket.instances.length).toBe(1);
+    expect(sentBody(firstSocket, 1)).toEqual({
+      type: "response.create",
+      store: false,
+      previous_response_id: "resp_1",
+      input: [{ role: "user", content: [{ type: "input_text", text: "different" }] }],
+    });
 
     const secondTextPromise = secondResponse.text();
-    secondSocket?.emitMessage(
+    firstSocket?.emitMessage(
       JSON.stringify({ type: "response.created", response: { id: "resp_2" } }),
     );
-    secondSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    firstSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await secondTextPromise;
-    wsFetch.close();
-  });
-
-  it("warns when codex websocket turn state upgrade headers are unavailable", async () => {
-    globals.fetch = (async () => {
-      throw new Error("should not fallback");
-    }) as unknown as typeof globalThis.fetch;
-
-    const warnings: unknown[] = [];
-    const wsFetch = createOpenAIResponsesWebSocketFetch({
-      mode: "websocket",
-      turnStateHeaderName: "x-codex-turn-state",
-      onTurnStateUnavailable: (details) => warnings.push(details),
-    });
-
-    const response = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
-      method: "POST",
-      body: JSON.stringify({
-        stream: true,
-        store: false,
-        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
-      }),
-    });
-
-    expect(warnings).toEqual([
-      {
-        reason: "headers_not_exposed",
-        requestUrl: "https://chatgpt.com/backend-api/codex/responses",
-      },
-    ]);
-
-    const socket = FakeWebSocket.instances[0];
-    const textPromise = response.text();
-    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
-    await textPromise;
     wsFetch.close();
   });
 
@@ -813,6 +854,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     const selections: unknown[] = [];
     const wsFetch = createOpenAIResponsesWebSocketFetch({
       mode: "websocket",
+      turnStateHeaderName: "x-codex-turn-state",
       onTransportSelected: (details) => selections.push(details),
     });
 
@@ -829,6 +871,12 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(socket).toBeDefined();
 
     const firstTextPromise = firstResponse.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.metadata",
+        headers: { "x-codex-turn-state": "turn-state-1" },
+      }),
+    );
     socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
     socket?.emitMessage(
       JSON.stringify({
@@ -839,6 +887,19 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
           role: "assistant",
           status: "completed",
           content: [{ type: "output_text", text: "Checking the file.", annotations: [] }],
+        },
+      }),
+    );
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.output_item.done",
+        item: {
+          id: "fc_1",
+          type: "function_call",
+          call_id: "call_1",
+          name: "continue_work",
+          arguments: "{}",
+          status: "completed",
         },
       }),
     );
@@ -853,7 +914,8 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
         input: [
           { role: "user", content: [{ type: "input_text", text: "hello" }] },
           { role: "assistant", content: [{ type: "output_text", text: "Checking the file." }] },
-          { role: "user", content: [{ type: "input_text", text: "continue" }] },
+          { type: "function_call", call_id: "call_1", name: "continue_work", arguments: "{}" },
+          { type: "function_call_output", call_id: "call_1", output: "continue" },
         ],
       }),
     });
@@ -863,10 +925,17 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
       type: "response.create",
       store: false,
       previous_response_id: "resp_1",
-      input: [{ role: "user", content: [{ type: "input_text", text: "continue" }] }],
+      input: [{ type: "function_call_output", call_id: "call_1", output: "continue" }],
+      client_metadata: { "x-codex-turn-state": "turn-state-1" },
     });
 
     const secondTextPromise = secondResponse.text();
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response.metadata",
+        headers: { "x-codex-turn-state": "turn-state-stale" },
+      }),
+    );
     socket?.emitMessage(
       JSON.stringify({ type: "response.created", response: { id: "resp_stale_attempt" } }),
     );
@@ -886,10 +955,12 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     expect(sentBody(socket, 2)).toEqual({
       type: "response.create",
       store: false,
+      client_metadata: { "x-codex-turn-state": "turn-state-1" },
       input: [
         { role: "user", content: [{ type: "input_text", text: "hello" }] },
         { role: "assistant", content: [{ type: "output_text", text: "Checking the file." }] },
-        { role: "user", content: [{ type: "input_text", text: "continue" }] },
+        { type: "function_call", call_id: "call_1", name: "continue_work", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: "continue" },
       ],
     });
 
@@ -899,6 +970,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     const secondText = await secondTextPromise;
     expect(secondText).not.toContain("previous_response_not_found");
     expect(secondText).not.toContain("resp_stale_attempt");
+    expect(secondText).not.toContain("turn-state-stale");
     expect(secondText).toContain("resp_2");
     expect(secondText).toContain("[DONE]");
     expect(selections).toEqual([
@@ -982,6 +1054,34 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_2" } }));
     socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await secondTextPromise;
+
+    const thirdResponse = await wsFetch("https://chatgpt.com/backend-api/codex/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        stream: true,
+        store: false,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "thread alpha" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "Alpha summary" }] },
+          { role: "user", content: [{ type: "input_text", text: "continue alpha" }] },
+        ],
+      }),
+    });
+
+    expect(sentBody(socket, 2)).toEqual({
+      type: "response.create",
+      store: false,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "thread alpha" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "Alpha summary" }] },
+        { role: "user", content: [{ type: "input_text", text: "continue alpha" }] },
+      ],
+    });
+
+    const thirdTextPromise = thirdResponse.text();
+    socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_3" } }));
+    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    await thirdTextPromise;
     wsFetch.close();
   });
 
@@ -1275,7 +1375,9 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
       }),
     });
 
-    expect(sentBody(socket, 2)).toEqual({
+    const thirdSocket = FakeWebSocket.instances[1];
+    expect(thirdSocket).toBeDefined();
+    expect(sentBody(thirdSocket)).toEqual({
       type: "response.create",
       input: [
         { role: "user", content: [{ type: "input_text", text: "hello" }] },
@@ -1286,8 +1388,10 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     });
 
     const thirdTextPromise = thirdResponse.text();
-    socket?.emitMessage(JSON.stringify({ type: "response.created", response: { id: "resp_3" } }));
-    socket?.emitMessage(JSON.stringify({ type: "response.completed" }));
+    thirdSocket?.emitMessage(
+      JSON.stringify({ type: "response.created", response: { id: "resp_3" } }),
+    );
+    thirdSocket?.emitMessage(JSON.stringify({ type: "response.completed" }));
     await thirdTextPromise;
     wsFetch.close();
   });

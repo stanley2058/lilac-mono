@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import type { ResponsesTransportMode } from "./env";
 
 const OPENAI_BETA_RESPONSES_WEBSOCKETS = "responses_websockets=2026-02-06";
-const CONTINUATION_CACHE_MAX_ENTRIES = 128;
 const CONTINUATION_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export type CreateOpenAIResponsesWebSocketFetchOptions = {
@@ -13,7 +12,6 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
   idleTimeoutMs?: number;
-  responseProcessed?: boolean;
   turnStateHeaderName?: string;
   onTransportSelected?: (details: ResponsesTransportSelectionDetails) => void;
   onAutoFallback?: (details: {
@@ -21,11 +19,6 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
     requestUrl: string;
     errorMessage?: string;
   }) => void;
-  onTurnStateUnavailable?: (details: {
-    reason: "headers_not_exposed" | "header_not_present";
-    requestUrl: string;
-  }) => void;
-  onResponseProcessedFailed?: (details: { requestUrl: string; errorMessage: string }) => void;
 };
 
 export type OpenAIResponsesWebSocketFetch = typeof globalThis.fetch & {
@@ -49,7 +42,9 @@ type ResponsesContinuationCacheEntry = {
   requestShapeHash: string;
   prefixHash: string;
   prefix: JsonValue[];
-  responseId: string;
+  responseId: string | null;
+  turnState: string | null;
+  turnStateMatch: "prefix" | "exact";
   createdAt: number;
   lastUsedAt: number;
 };
@@ -77,6 +72,7 @@ type IncrementalPayloadResult = {
   payload: ResponsesRequestBody;
   optimizationEnabled: boolean;
   optimizationReason: ResponsesOptimizationReason;
+  turnState: string | null;
 };
 
 type WebSocketWithHeadersConstructor = {
@@ -97,9 +93,6 @@ export function createOpenAIResponsesWebSocketFetch(
   let reusableBusy = false;
   let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let connectionHeadersKey: string | null = null;
-  let turnStateHeaderValue: string | null = null;
-  let turnStateUnavailableReported = false;
-  const turnStateInspectedSockets = new WeakSet<WebSocket>();
   const reusableContinuationCache = new Map<string, ResponsesContinuationCacheEntry>();
 
   function reportAutoFallback(details: {
@@ -166,7 +159,7 @@ export function createOpenAIResponsesWebSocketFetch(
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
-      clearReusableContinuationState();
+      invalidateReusableContinuationResponseIds();
       return;
     }
 
@@ -175,7 +168,7 @@ export function createOpenAIResponsesWebSocketFetch(
         closeSocket(ws);
         ws = null;
         connectionHeadersKey = null;
-        clearReusableContinuationState();
+        invalidateReusableContinuationResponseIds();
       }
       idleCloseTimer = null;
     }, idleTimeoutMs);
@@ -185,55 +178,21 @@ export function createOpenAIResponsesWebSocketFetch(
     reusableContinuationCache.clear();
   }
 
-  function reportTurnStateUnavailable(details: {
-    reason: "headers_not_exposed" | "header_not_present";
-    requestUrl: URL;
-  }): void {
-    if (turnStateUnavailableReported) return;
-    turnStateUnavailableReported = true;
-    options.onTurnStateUnavailable?.({
-      reason: details.reason,
-      requestUrl: details.requestUrl.toString(),
-    });
-  }
-
-  function applyTurnStateHeader(headers: Record<string, string>): Record<string, string> {
-    const headerName = options.turnStateHeaderName;
-    if (!headerName || !turnStateHeaderValue) return headers;
-
-    const next = { ...headers };
-    next[headerName.toLowerCase()] = turnStateHeaderValue;
-    return next;
-  }
-
-  function inspectTurnStateHeader(socket: WebSocket, requestUrl: URL): void {
-    const headerName = options.turnStateHeaderName;
-    if (!headerName || turnStateInspectedSockets.has(socket)) return;
-    turnStateInspectedSockets.add(socket);
-
-    const headerValue = readWebSocketUpgradeHeader(socket, headerName);
-    if (typeof headerValue === "string" && headerValue.length > 0) {
-      turnStateHeaderValue = headerValue;
-      return;
+  function invalidateReusableContinuationResponseIds(): void {
+    for (const entry of reusableContinuationCache.values()) {
+      entry.responseId = null;
     }
-
-    reportTurnStateUnavailable({
-      requestUrl,
-      reason: headerValue === undefined ? "headers_not_exposed" : "header_not_present",
-    });
   }
 
   function pruneContinuationCache(now: number): void {
     for (const [key, entry] of reusableContinuationCache) {
       if (now - entry.createdAt > CONTINUATION_CACHE_TTL_MS) {
-        reusableContinuationCache.delete(key);
+        if (entry.turnState) {
+          entry.responseId = null;
+        } else {
+          reusableContinuationCache.delete(key);
+        }
       }
-    }
-
-    while (reusableContinuationCache.size > CONTINUATION_CACHE_MAX_ENTRIES) {
-      const oldestKey = reusableContinuationCache.keys().next().value;
-      if (typeof oldestKey !== "string") return;
-      reusableContinuationCache.delete(oldestKey);
     }
   }
 
@@ -247,12 +206,38 @@ export function createOpenAIResponsesWebSocketFetch(
     requestUrl: URL;
     responseId: string;
     outputItems: readonly JsonObject[];
+    turnState: string | null;
   }): void {
     const entry = buildContinuationCacheEntry({ ...input, now: Date.now() });
+    clearReusableContinuationState();
     if (!entry) return;
 
     touchContinuationCacheEntry(continuationCacheKey(entry), entry);
     pruneContinuationCache(entry.createdAt);
+  }
+
+  function storeReusableTurnStateRetry(
+    requestBody: ResponsesRequestBody,
+    turnState: string | null,
+  ): void {
+    if (!turnState) return;
+    const requestInput = asJsonArray(requestBody.input);
+    if (!requestInput) return;
+
+    const prefix = requestInput.map(cloneJsonValue);
+    const now = Date.now();
+    const entry: ResponsesContinuationCacheEntry = {
+      requestShapeHash: stableJsonHash(omitRequestInputFields(requestBody)),
+      prefixHash: stableJsonHash(prefix),
+      prefix,
+      responseId: null,
+      turnState,
+      turnStateMatch: "exact",
+      createdAt: now,
+      lastUsedAt: now,
+    };
+    clearReusableContinuationState();
+    touchContinuationCacheEntry(continuationCacheKey(entry), entry);
   }
 
   function connectWebSocket(
@@ -287,13 +272,8 @@ export function createOpenAIResponsesWebSocketFetch(
   }
 
   function getConnectionKey(socketUrl: string, headers: Record<string, string>): string {
-    const turnStateHeaderName = options.turnStateHeaderName?.toLowerCase();
-    const comparableHeaders = Object.entries(headers).filter(
-      ([key]) => key.toLowerCase() !== turnStateHeaderName,
-    );
-
     return `${socketUrl}|${JSON.stringify(
-      comparableHeaders.sort(([a], [b]) => a.localeCompare(b)),
+      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
     )}`;
   }
 
@@ -308,11 +288,11 @@ export function createOpenAIResponsesWebSocketFetch(
       return connecting;
     }
 
-    if (ws && connectionHeadersKey !== key) {
+    if (ws) {
       closeSocket(ws);
       ws = null;
       connectionHeadersKey = null;
-      clearReusableContinuationState();
+      invalidateReusableContinuationResponseIds();
     }
 
     connecting = connectWebSocket(socketUrl, headers)
@@ -325,7 +305,7 @@ export function createOpenAIResponsesWebSocketFetch(
             if (ws === socket) {
               ws = null;
               connectionHeadersKey = null;
-              clearReusableContinuationState();
+              invalidateReusableContinuationResponseIds();
             }
           },
           { once: true },
@@ -386,7 +366,7 @@ export function createOpenAIResponsesWebSocketFetch(
       return forwardWithSseNormalization();
     }
 
-    const wsHeaders = applyTurnStateHeader(toWebSocketHeaders(getRequestHeaders(input, init)));
+    const wsHeaders = toWebSocketHeaders(getRequestHeaders(input, init));
     const socketUrl = getWebSocketUrl(requestUrl);
 
     const useReusableConnection = !reusableBusy;
@@ -418,8 +398,6 @@ export function createOpenAIResponsesWebSocketFetch(
       }
       throw error;
     }
-    inspectTurnStateHeader(connection, requestUrl);
-
     const { stream: _stream, ...requestBody } = parsedBody;
     const fullRequestBody = cloneJsonObject(requestBody);
     pruneContinuationCache(Date.now());
@@ -433,8 +411,14 @@ export function createOpenAIResponsesWebSocketFetch(
             payload: cloneJsonObject(fullRequestBody),
             optimizationEnabled: false,
             optimizationReason: "no_continuation_state" as const,
+            turnState: null,
           };
-    let websocketPayload = payloadResult.payload;
+    if (useReusableConnection) clearReusableContinuationState();
+    let websocketPayload = applyTurnStateToPayload(
+      payloadResult.payload,
+      options.turnStateHeaderName,
+      payloadResult.turnState,
+    );
     reportTransportSelected({
       requestUrl,
       transport: "websocket",
@@ -450,26 +434,13 @@ export function createOpenAIResponsesWebSocketFetch(
         let outputItems: JsonObject[] = [];
         let outputItemDrafts = new Map<string, JsonObject>();
         let canPersistContinuation = true;
+        let responseTurnState = payloadResult.turnState;
         let forwardedEventCount = 0;
         let pendingPreOutputEvents: Record<string, unknown>[] = [];
         let stalePreviousResponseRetryAttempted = false;
 
         const sendPayload = (payload: ResponsesRequestBody) => {
           connection.send(JSON.stringify({ type: "response.create", ...payload }));
-        };
-
-        const sendResponseProcessed = (processedResponseId: string) => {
-          if (!options.responseProcessed) return;
-          try {
-            connection.send(
-              JSON.stringify({ type: "response.processed", response_id: processedResponseId }),
-            );
-          } catch (error) {
-            options.onResponseProcessedFailed?.({
-              requestUrl: requestUrl.toString(),
-              errorMessage: error instanceof Error ? error.message : String(error),
-            });
-          }
         };
 
         const retryWithoutOptimization = (): boolean => {
@@ -479,7 +450,11 @@ export function createOpenAIResponsesWebSocketFetch(
 
           stalePreviousResponseRetryAttempted = true;
           clearReusableContinuationState();
-          websocketPayload = cloneJsonObject(fullRequestBody);
+          websocketPayload = applyTurnStateToPayload(
+            cloneJsonObject(fullRequestBody),
+            options.turnStateHeaderName,
+            responseTurnState,
+          );
           responseId = null;
           outputItems = [];
           outputItemDrafts = new Map<string, JsonObject>();
@@ -562,6 +537,7 @@ export function createOpenAIResponsesWebSocketFetch(
 
             const eventRecord = asRecord(eventJson);
             if (eventRecord) {
+              responseTurnState ??= extractTurnState(eventRecord, options.turnStateHeaderName);
               const nextResponseId = extractResponseId(eventRecord);
               if (nextResponseId) {
                 responseId = nextResponseId;
@@ -571,6 +547,12 @@ export function createOpenAIResponsesWebSocketFetch(
               const doneItem = extractOutputItemDone(eventRecord);
               if (doneItem) {
                 outputItems.push(mergeOutputItemDraft(doneItem, outputItemDrafts));
+              }
+              if (
+                options.turnStateHeaderName &&
+                readString(eventRecord.type) === "response.metadata"
+              ) {
+                return;
               }
             }
 
@@ -605,10 +587,8 @@ export function createOpenAIResponsesWebSocketFetch(
                   requestUrl,
                   responseId,
                   outputItems,
+                  turnState: responseTurnState,
                 });
-              }
-              if (canPersistContinuation && responseId && type === "response.completed") {
-                sendResponseProcessed(responseId);
               }
               try {
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -616,28 +596,43 @@ export function createOpenAIResponsesWebSocketFetch(
                 cleanup({ closeConnection: true });
                 return;
               }
-              cleanup();
+              cleanup({ closeConnection: type === "error" });
+              if (type === "error" && useReusableConnection) {
+                storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+              }
               try {
                 controller.close();
               } catch {}
             }
-          })().catch(() => {
+          })().catch((error: unknown) => {
             canPersistContinuation = false;
             cleanup({ closeConnection: true });
+            if (useReusableConnection) {
+              storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+            }
+            try {
+              controller.error(error instanceof Error ? error : new Error(String(error)));
+            } catch {}
           });
         };
 
         const onError = (event: Event) => {
           canPersistContinuation = false;
           cleanup({ closeConnection: true });
+          if (useReusableConnection) {
+            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+          }
           controller.error(extractWebSocketError(event));
         };
 
         const onClose = () => {
           canPersistContinuation = false;
           cleanup({ closeConnection: true });
+          if (useReusableConnection) {
+            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+          }
           try {
-            controller.close();
+            controller.error(new Error("WebSocket closed before a terminal response event"));
           } catch {}
         };
 
@@ -666,6 +661,9 @@ export function createOpenAIResponsesWebSocketFetch(
         } catch (error) {
           canPersistContinuation = false;
           cleanup({ closeConnection: true });
+          if (useReusableConnection) {
+            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+          }
           controller.error(error instanceof Error ? error : new Error(String(error)));
         }
       },
@@ -703,6 +701,7 @@ function buildIncrementalWebSocketPayload(input: {
       payload: cloneJsonObject(requestBody),
       optimizationEnabled: false,
       optimizationReason: "existing_previous_response_id",
+      turnState: null,
     };
   }
 
@@ -712,25 +711,36 @@ function buildIncrementalWebSocketPayload(input: {
       payload: cloneJsonObject(requestBody),
       optimizationEnabled: false,
       optimizationReason: "missing_input",
+      turnState: null,
     };
   }
 
   const currentWithoutInput = omitRequestInputFields(requestBody);
   const requestShapeHash = stableJsonHash(currentWithoutInput);
-  let best: { key: string; entry: ResponsesContinuationCacheEntry; suffix: JsonValue[] } | null =
-    null;
+  let matchingPrefix: { entry: ResponsesContinuationCacheEntry; suffix: JsonValue[] } | null = null;
+  let best: {
+    key: string;
+    entry: ResponsesContinuationCacheEntry;
+    responseId: string;
+    suffix: JsonValue[];
+  } | null = null;
 
   for (const [key, entry] of continuationCache) {
-    if (entry.requestShapeHash !== requestShapeHash) continue;
-    if (entry.prefix.length >= currentInput.length) continue;
+    if (entry.prefix.length > currentInput.length) continue;
     const suffix = sliceJsonArrayPrefix(currentInput, entry.prefix);
-    if (!suffix || suffix.length === 0) continue;
+    if (!suffix) continue;
+    if (entry.turnStateMatch === "exact" && suffix.length > 0) continue;
+    if (entry.turnStateMatch === "prefix" && suffix.length === 0) continue;
+    if (!matchingPrefix || entry.prefix.length > matchingPrefix.entry.prefix.length) {
+      matchingPrefix = { entry, suffix };
+    }
+    if (entry.requestShapeHash !== requestShapeHash || !entry.responseId) continue;
     if (
       !best ||
       entry.prefix.length > best.entry.prefix.length ||
       (entry.prefix.length === best.entry.prefix.length && entry.lastUsedAt > best.entry.lastUsedAt)
     ) {
-      best = { key, entry, suffix };
+      best = { key, entry, responseId: entry.responseId, suffix };
     }
   }
 
@@ -738,7 +748,13 @@ function buildIncrementalWebSocketPayload(input: {
     return {
       payload: cloneJsonObject(requestBody),
       optimizationEnabled: false,
-      optimizationReason: "not_prefix_extension",
+      optimizationReason:
+        matchingPrefix && matchingPrefix.entry.responseId
+          ? "request_shape_changed"
+          : matchingPrefix
+            ? "no_continuation_state"
+            : "not_prefix_extension",
+      turnState: matchingPrefix?.entry.turnState ?? null,
     };
   }
 
@@ -749,11 +765,12 @@ function buildIncrementalWebSocketPayload(input: {
   return {
     payload: {
       ...cloneJsonObject(currentWithoutInput),
-      previous_response_id: best.entry.responseId,
+      previous_response_id: best.responseId,
       input: best.suffix,
     },
     optimizationEnabled: true,
     optimizationReason: "incremental_replay",
+    turnState: best.entry.turnState,
   };
 }
 
@@ -762,6 +779,7 @@ function buildContinuationCacheEntry(input: {
   requestUrl: URL;
   responseId: string;
   outputItems: readonly JsonObject[];
+  turnState: string | null;
   now: number;
 }): ResponsesContinuationCacheEntry | null {
   const requestInput = asJsonArray(input.requestBody.input);
@@ -785,6 +803,8 @@ function buildContinuationCacheEntry(input: {
     prefixHash: stableJsonHash(prefix),
     prefix,
     responseId: input.responseId,
+    turnState: responseNeedsClientFollowUp(input.outputItems) ? input.turnState : null,
+    turnStateMatch: "prefix",
     createdAt: input.now,
     lastUsedAt: input.now,
   };
@@ -814,6 +834,23 @@ function omitRequestInputFields(requestBody: ResponsesRequestBody): JsonObject {
   return cloned;
 }
 
+function applyTurnStateToPayload(
+  payload: ResponsesRequestBody,
+  headerName: string | undefined,
+  turnState: string | null,
+): ResponsesRequestBody {
+  if (!headerName || !turnState) return payload;
+
+  const clientMetadata = asRecord(payload.client_metadata);
+  return {
+    ...payload,
+    client_metadata: {
+      ...(clientMetadata ? cloneJsonObject(clientMetadata) : {}),
+      [headerName]: turnState,
+    },
+  };
+}
+
 function shouldUseStoreReferences(requestBody: ResponsesRequestBody): boolean {
   return requestBody.store !== false;
 }
@@ -836,6 +873,30 @@ function extractResponseId(event: Record<string, unknown>): string | null {
     return null;
   }
   return readString(asRecord(event.response)?.id) ?? null;
+}
+
+function extractTurnState(
+  event: Record<string, unknown>,
+  headerName: string | undefined,
+): string | null {
+  if (!headerName || readString(event.type) !== "response.metadata") return null;
+  const value = readHeaderValue(event.headers, headerName);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function responseNeedsClientFollowUp(outputItems: readonly JsonObject[]): boolean {
+  return outputItems.some((item) => {
+    switch (readString(item.type)) {
+      case "function_call":
+      case "custom_tool_call":
+      case "local_shell_call":
+      case "shell_call":
+      case "apply_patch_call":
+        return true;
+      default:
+        return false;
+    }
+  });
 }
 
 function extractOutputItemDone(event: Record<string, unknown>): JsonObject | null {
@@ -1462,7 +1523,9 @@ function isPreviousResponseNotFoundError(event: Record<string, unknown>): boolea
 }
 
 function isPreOutputMetadataEvent(type: string): boolean {
-  return type === "response.created" || type === "response.in_progress";
+  return (
+    type === "response.created" || type === "response.in_progress" || type === "response.metadata"
+  );
 }
 
 function extractErrorDetails(
@@ -1594,30 +1657,6 @@ function toWebSocketHeaders(headers: Record<string, string>): Record<string, str
   }
 
   return wsHeaders;
-}
-
-function readWebSocketUpgradeHeader(socket: WebSocket, name: string): string | null | undefined {
-  const socketRecord = asRecord(socket);
-  if (!socketRecord) return undefined;
-
-  const headerContainers = [
-    socketRecord.responseHeaders,
-    socketRecord.upgradeHeaders,
-    socketRecord.upgradeResponseHeaders,
-    asRecord(socketRecord.response)?.headers,
-    asRecord(socketRecord.upgradeResponse)?.headers,
-    asRecord(socketRecord._response)?.headers,
-  ];
-
-  let sawHeaders = false;
-  for (const headers of headerContainers) {
-    if (headers === undefined || headers === null) continue;
-    sawHeaders = true;
-    const value = readHeaderValue(headers, name);
-    if (value !== undefined && value !== null) return value;
-  }
-
-  return sawHeaders ? null : undefined;
 }
 
 function readHeaderValue(headers: unknown, name: string): string | null | undefined {

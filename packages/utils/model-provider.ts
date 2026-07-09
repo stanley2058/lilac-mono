@@ -128,7 +128,6 @@ export function getModelProviders() {
     url: "wss://chatgpt.com/backend-api/codex/responses",
     completionEventTypes: ["response.completed", "response.done"],
     normalizeEvent: normalizeCodexResponsesEvent,
-    responseProcessed: true,
     turnStateHeaderName: "x-codex-turn-state",
     onTransportSelected: (details) => {
       logger.info("responses transport selected", {
@@ -138,18 +137,6 @@ export function getModelProviders() {
     },
     onAutoFallback: (details) => {
       logger.warn("responses transport fallback to sse", {
-        provider: "codex",
-        ...details,
-      });
-    },
-    onTurnStateUnavailable: (details) => {
-      logger.warn("codex websocket turn state unavailable", {
-        provider: "codex",
-        ...details,
-      });
-    },
-    onResponseProcessedFailed: (details) => {
-      logger.warn("codex websocket response.processed failed", {
         provider: "codex",
         ...details,
       });
