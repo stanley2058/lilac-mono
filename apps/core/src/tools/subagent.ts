@@ -30,7 +30,7 @@ const subagentDelegateInputSchema = z.object({
   sessionName: subagentSessionNameSchema
     .optional()
     .describe(
-      "Optional stable short slug for continuing a subagent session within this parent session/channel.",
+      "Optional stable short slug for continuing a subagent session within this parent session/channel. When omitted, a reusable short name is generated and returned.",
     ),
   timeoutMs: z
     .number()
@@ -49,9 +49,7 @@ const subagentDelegateDeferredOutputSchema = z.object({
   mode: z.literal("deferred"),
   status: z.literal("accepted"),
   profile: subagentProfileSchema,
-  childRequestId: z.string(),
-  childSessionId: z.string(),
-  timeoutMs: z.number().int().positive(),
+  sessionName: subagentSessionNameSchema,
 });
 
 const subagentDelegateSyncOutputSchema = z.object({
@@ -59,10 +57,7 @@ const subagentDelegateSyncOutputSchema = z.object({
   mode: z.literal("sync"),
   status: subagentTerminalStatusSchema,
   profile: subagentProfileSchema,
-  childRequestId: z.string(),
-  childSessionId: z.string(),
-  timeoutMs: z.number().int().positive(),
-  durationMs: z.number().int().nonnegative(),
+  sessionName: subagentSessionNameSchema,
   finalText: z.string(),
   detail: z.string().optional(),
 });
@@ -148,6 +143,12 @@ function clampTimeoutMs(
   return Math.min(normalized, defaults.maxTimeoutMs);
 }
 
+function generateSessionName(profile: SubagentProfile): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${profile}-${token}`;
+}
+
 function truncateEnd(input: string, maxLen: number): string {
   if (input.length <= maxLen) return input;
   if (maxLen <= 3) return "...".slice(0, maxLen);
@@ -204,6 +205,7 @@ export function buildDelegatedTaskPrompt(task: string): ModelMessage {
 
 export type DeferredSubagentRegistration = {
   profile: SubagentProfile;
+  sessionName: string;
   task: string;
   timeoutMs: number;
   depth: number;
@@ -279,10 +281,9 @@ export function subagentTools(params: {
         });
 
         const startedAt = Date.now();
+        const sessionName = parsed.sessionName ?? generateSessionName(profile);
         const childRequestId = `sub:${ctx.requestId}:${crypto.randomUUID()}`;
-        const childSessionId = parsed.sessionName
-          ? `sub:${ctx.sessionId}:named:${parsed.sessionName}`
-          : `sub:${ctx.sessionId}:${childRequestId}`;
+        const childSessionId = `sub:${ctx.sessionId}:named:${sessionName}`;
 
         const childHeaders = {
           request_id: childRequestId,
@@ -308,7 +309,7 @@ export function subagentTools(params: {
           profile,
           parentDepth: depth,
           childDepth: depth + 1,
-          sessionName: parsed.sessionName ?? null,
+          sessionName,
           timeoutMs,
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
         });
@@ -322,6 +323,7 @@ export function subagentTools(params: {
 
           await params.onDeferredDelegate({
             profile,
+            sessionName,
             task: parsed.task,
             timeoutMs,
             depth: depth + 1,
@@ -352,9 +354,7 @@ export function subagentTools(params: {
             mode: "deferred",
             status: "accepted",
             profile,
-            childRequestId,
-            childSessionId,
-            timeoutMs,
+            sessionName,
           };
         }
 
@@ -604,10 +604,7 @@ export function subagentTools(params: {
             mode: "sync",
             status,
             profile,
-            childRequestId,
-            childSessionId,
-            timeoutMs,
-            durationMs,
+            sessionName,
             finalText,
             detail: outcome.detail ?? lifecycleDetail,
           };

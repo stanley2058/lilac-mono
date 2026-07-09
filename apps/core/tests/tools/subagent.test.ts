@@ -118,7 +118,12 @@ describe("subagent_delegate tool", () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
 
-    const launches: Array<{ childRequestId: string; childSessionId: string; task: string }> = [];
+    const launches: Array<{
+      sessionName: string;
+      childRequestId: string;
+      childSessionId: string;
+      task: string;
+    }> = [];
 
     const tools = subagentTools({
       bus,
@@ -127,6 +132,7 @@ describe("subagent_delegate tool", () => {
       maxDepth: 1,
       onDeferredDelegate: async (registration) => {
         launches.push({
+          sessionName: registration.sessionName,
           childRequestId: registration.childRequestId,
           childSessionId: registration.childSessionId,
           task: registration.task,
@@ -155,24 +161,24 @@ describe("subagent_delegate tool", () => {
       mode: "deferred",
       status: "accepted",
       profile: "explore",
-      childRequestId: res.childRequestId,
-      childSessionId: res.childSessionId,
-      timeoutMs: 2_000,
+      sessionName: expect.stringMatching(/^explore-[0-9a-f]{8}$/u),
     });
     expect(launches).toEqual([
       {
-        childRequestId: res.childRequestId,
-        childSessionId: res.childSessionId,
+        sessionName: res.sessionName,
+        childRequestId: expect.stringMatching(/^sub:r:deferred-1:/u),
+        childSessionId: `sub:s:deferred-1:named:${res.sessionName}`,
         task: "Map auth flow",
       },
     ]);
   });
 
-  it("ignores legacy raw sessionId input and creates an anonymous child session", async () => {
+  it("ignores legacy raw sessionId input and creates a named child session", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
 
-    const launches: Array<{ childRequestId: string; childSessionId: string }> = [];
+    const launches: Array<{ sessionName: string; childRequestId: string; childSessionId: string }> =
+      [];
 
     const tools = subagentTools({
       bus,
@@ -181,6 +187,7 @@ describe("subagent_delegate tool", () => {
       maxDepth: 1,
       onDeferredDelegate: async (registration) => {
         launches.push({
+          sessionName: registration.sessionName,
           childRequestId: registration.childRequestId,
           childSessionId: registration.childSessionId,
         });
@@ -208,11 +215,12 @@ describe("subagent_delegate tool", () => {
     );
 
     expect(res.status).toBe("accepted");
-    expect(res.childSessionId).toBe(`sub:s:legacy-session-id:${res.childRequestId}`);
+    expect(res.sessionName).toMatch(/^explore-[0-9a-f]{8}$/u);
     expect(launches).toEqual([
       {
-        childRequestId: res.childRequestId,
-        childSessionId: res.childSessionId,
+        sessionName: res.sessionName,
+        childRequestId: expect.stringMatching(/^sub:r:legacy-session-id:/u),
+        childSessionId: `sub:s:legacy-session-id:named:${res.sessionName}`,
       },
     ]);
   });
@@ -340,9 +348,12 @@ describe("subagent_delegate tool", () => {
     expect(res.ok).toBe(true);
     expect(res.status).toBe("resolved");
     expect(res.profile).toBe("explore");
+    expect(res.sessionName).toMatch(/^explore-[0-9a-f]{8}$/u);
     expect(res.finalText).toBe("hello world");
-    expect(res.childRequestId.startsWith("sub:r:1:")).toBe(true);
-    expect(res.childSessionId.startsWith("sub:s:1:")).toBe(true);
+    expect(res).not.toHaveProperty("childRequestId");
+    expect(res).not.toHaveProperty("childSessionId");
+    expect(res).not.toHaveProperty("timeoutMs");
+    expect(res).not.toHaveProperty("durationMs");
   });
 
   it("supports general and self delegation profiles", async () => {
@@ -554,7 +565,7 @@ describe("subagent_delegate tool", () => {
     );
 
     expect(res.status).toBe("resolved");
-    expect(res.childSessionId).toBe(expectedSessionId);
+    expect(res.sessionName).toBe(sessionName);
     expect(seenChildSessionId === expectedSessionId).toBe(true);
   });
 
@@ -779,79 +790,24 @@ describe("subagent_delegate tool", () => {
   it("clamps timeoutMs to configured max", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
+    let capturedTimeoutMs: number | undefined;
 
     const tools = subagentTools({
       bus,
       defaultTimeoutMs: 2_000,
       maxTimeoutMs: 4_000,
       maxDepth: 1,
+      onDeferredDelegate: async (registration) => {
+        capturedTimeoutMs = registration.timeoutMs;
+      },
     });
-
-    await bus.subscribeTopic(
-      "cmd.request",
-      {
-        mode: "fanout",
-        subscriptionId: "subagent-test-worker-2",
-        consumerId: "subagent-test-worker-2",
-        offset: { type: "begin" },
-      },
-      async (msg, ctx) => {
-        if (msg.type !== lilacEventTypes.CmdRequestMessage) {
-          await ctx.commit();
-          return;
-        }
-
-        const requestId = msg.headers?.request_id;
-        const sessionId = msg.headers?.session_id;
-        const requestClient = msg.headers?.request_client;
-        if (!requestId || !sessionId || !requestClient) {
-          await ctx.commit();
-          return;
-        }
-
-        if (msg.data.queue !== "prompt") {
-          await ctx.commit();
-          return;
-        }
-
-        await bus.publish(
-          lilacEventTypes.EvtAgentOutputResponseText,
-          {
-            finalText: "done",
-          },
-          {
-            headers: {
-              request_id: requestId,
-              session_id: sessionId,
-              request_client: requestClient,
-            },
-          },
-        );
-
-        await bus.publish(
-          lilacEventTypes.EvtRequestLifecycleChanged,
-          {
-            state: "resolved",
-          },
-          {
-            headers: {
-              request_id: requestId,
-              session_id: sessionId,
-              request_client: requestClient,
-            },
-          },
-        );
-
-        await ctx.commit();
-      },
-    );
 
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
         {
           profile: "explore",
           task: "Map auth flow",
-          mode: "sync",
+          mode: "deferred",
           timeoutMs: 999_999,
         },
         {
@@ -867,8 +823,8 @@ describe("subagent_delegate tool", () => {
       ),
     );
 
-    expect(res.timeoutMs).toBe(4_000);
-    expect(res.status).toBe("resolved");
+    expect(capturedTimeoutMs).toBe(4_000);
+    expect(res.status).toBe("accepted");
   });
 
   it("surfaces child tool execution progress on the parent tool line", async () => {

@@ -486,20 +486,27 @@ type DeferredSubagentTerminalStatus = "resolved" | "failed" | "cancelled" | "tim
 type DeferredSubagentBufferedCompletion = {
   parentToolCallId: string;
   profile: DeferredSubagentRegistration["profile"];
+  sessionName: string;
   childRequestId: string;
   childSessionId: string;
   status: DeferredSubagentTerminalStatus;
   ok: boolean;
-  timeoutMs: number;
-  durationMs: number;
   finalText: string;
   detail?: string;
   childTools: ChildToolState[];
 };
 
+type DeferredSubagentBufferedCompletionSnapshot = Omit<
+  DeferredSubagentBufferedCompletion,
+  "sessionName"
+> & {
+  sessionName?: string;
+};
+
 type DeferredSubagentHandleSnapshot = {
   parentToolCallId: string;
   profile: DeferredSubagentRegistration["profile"];
+  sessionName?: string;
   childRequestId: string;
   childSessionId: string;
   timeoutMs: number;
@@ -514,12 +521,13 @@ type DeferredSubagentHandleSnapshot = {
 
 type DeferredSubagentRecoveryState = {
   outstanding: DeferredSubagentHandleSnapshot[];
-  bufferedCompletions: DeferredSubagentBufferedCompletion[];
+  bufferedCompletions: DeferredSubagentBufferedCompletionSnapshot[];
 };
 
 type DeferredSubagentHandle = {
   parentToolCallId: string;
   profile: DeferredSubagentRegistration["profile"];
+  sessionName: string;
   childRequestId: string;
   childSessionId: string;
   timeoutMs: number;
@@ -541,17 +549,14 @@ function isDeferredSubagentAcceptedResult(result: unknown): result is {
   ok: true;
   mode: "deferred";
   status: "accepted";
-  childRequestId: string;
-  childSessionId: string;
-  timeoutMs: number;
+  sessionName: string;
 } {
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
   return (
     (result as Record<string, unknown>)["ok"] === true &&
     (result as Record<string, unknown>)["mode"] === "deferred" &&
     (result as Record<string, unknown>)["status"] === "accepted" &&
-    typeof (result as Record<string, unknown>)["childRequestId"] === "string" &&
-    typeof (result as Record<string, unknown>)["childSessionId"] === "string"
+    typeof (result as Record<string, unknown>)["sessionName"] === "string"
   );
 }
 
@@ -560,6 +565,36 @@ function buildSubagentResultToolCallId(childRequestId: string): string {
     prefix: "subagent_result",
     seed: childRequestId,
   });
+}
+
+function resolveRecoveredSubagentSessionName(
+  snapshot: Pick<
+    DeferredSubagentHandleSnapshot,
+    "sessionName" | "childSessionId" | "childRequestId" | "profile"
+  >,
+): string {
+  if (
+    typeof snapshot.sessionName === "string" &&
+    snapshot.sessionName.length <= 64 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(snapshot.sessionName)
+  ) {
+    return snapshot.sessionName;
+  }
+
+  const namedMarker = ":named:";
+  const namedIndex = snapshot.childSessionId.lastIndexOf(namedMarker);
+  if (namedIndex >= 0) {
+    const name = snapshot.childSessionId.slice(namedIndex + namedMarker.length);
+    if (name.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name)) {
+      return name;
+    }
+  }
+
+  const requestToken = snapshot.childRequestId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/gu, "")
+    .slice(-8);
+  return `${snapshot.profile}-${requestToken || "recovered"}`;
 }
 
 function buildCustomCommandToolCallId(requestId: string, name: string): string {
@@ -999,11 +1034,10 @@ function buildDeferredSubagentResultMessages(
   const toolCallId = buildSubagentResultToolCallId(completion.childRequestId);
   const payload = {
     ok: completion.ok,
+    mode: "deferred" as const,
     status: completion.status,
     profile: completion.profile,
-    childRequestId: completion.childRequestId,
-    childSessionId: completion.childSessionId,
-    durationMs: completion.durationMs,
+    sessionName: completion.sessionName,
     finalText: completion.finalText,
     ...(completion.detail ? { detail: completion.detail } : {}),
   };
@@ -1018,8 +1052,7 @@ function buildDeferredSubagentResultMessages(
           toolName: "subagent_result",
           input: {
             profile: completion.profile,
-            childRequestId: completion.childRequestId,
-            childSessionId: completion.childSessionId,
+            sessionName: completion.sessionName,
             status: completion.status,
           },
         },
@@ -1059,6 +1092,7 @@ function buildDeferredSubagentRecoveryState(params: {
   const outstanding = Array.from(params.handles, (handle) => ({
     parentToolCallId: handle.parentToolCallId,
     profile: handle.profile,
+    sessionName: handle.sessionName,
     childRequestId: handle.childRequestId,
     childSessionId: handle.childSessionId,
     timeoutMs: handle.timeoutMs,
@@ -1221,12 +1255,11 @@ export function createDeferredSubagentManager(params: {
     const completion: DeferredSubagentBufferedCompletion = {
       parentToolCallId: handle.parentToolCallId,
       profile: handle.profile,
+      sessionName: handle.sessionName,
       childRequestId: handle.childRequestId,
       childSessionId: handle.childSessionId,
       status,
       ok: status === "resolved",
-      timeoutMs: handle.timeoutMs,
-      durationMs: Math.max(0, Date.now() - handle.startedAtMs),
       finalText: handle.finalText,
       ...(handle.detail ? { detail: handle.detail } : {}),
       childTools: Array.from(handle.childTools.values()),
@@ -1262,6 +1295,7 @@ export function createDeferredSubagentManager(params: {
     const handle: DeferredSubagentHandle = {
       parentToolCallId: snapshot.parentToolCallId,
       profile: snapshot.profile,
+      sessionName: resolveRecoveredSubagentSessionName(snapshot),
       childRequestId: snapshot.childRequestId,
       childSessionId: snapshot.childSessionId,
       timeoutMs: snapshot.timeoutMs,
@@ -1412,6 +1446,7 @@ export function createDeferredSubagentManager(params: {
       await restoreOutstandingHandle({
         parentToolCallId: registration.parentToolCallId,
         profile: registration.profile,
+        sessionName: registration.sessionName,
         childRequestId: registration.childRequestId,
         childSessionId: registration.childSessionId,
         timeoutMs: registration.timeoutMs,
@@ -1450,7 +1485,12 @@ export function createDeferredSubagentManager(params: {
 
     async restore(recovery: DeferredSubagentRecoveryState | undefined) {
       if (!recovery) return;
-      bufferedCompletions.push(...recovery.bufferedCompletions);
+      bufferedCompletions.push(
+        ...recovery.bufferedCompletions.map((completion) => ({
+          ...completion,
+          sessionName: resolveRecoveredSubagentSessionName(completion),
+        })),
+      );
       for (const outstanding of recovery.outstanding) {
         await restoreOutstandingHandle(outstanding, { replayExisting: true });
       }

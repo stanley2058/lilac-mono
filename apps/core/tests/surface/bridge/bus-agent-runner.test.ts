@@ -3045,6 +3045,7 @@ describe("createDeferredSubagentManager", () => {
 
     await manager.register({
       profile: "explore",
+      sessionName: "explore-test0001",
       task: "Map auth flow",
       timeoutMs: 5_000,
       depth: 1,
@@ -3053,11 +3054,11 @@ describe("createDeferredSubagentManager", () => {
       parentRequestClient: parentHeaders.request_client,
       parentToolCallId: "tool-1",
       childRequestId: "child-request",
-      childSessionId: "child-session",
+      childSessionId: "sub:parent-session:named:legacy-session",
       parentHeaders,
       childHeaders: {
         request_id: "child-request",
-        session_id: "child-session",
+        session_id: "sub:parent-session:named:legacy-session",
         request_client: "unknown",
         parent_request_id: parentHeaders.request_id,
         parent_tool_call_id: "tool-1",
@@ -3069,6 +3070,7 @@ describe("createDeferredSubagentManager", () => {
 
     const recovery = manager.buildRecoveryState();
     expect(recovery).toBeDefined();
+    delete recovery?.outstanding[0]?.sessionName;
     await manager.stop();
 
     await bus.publish(
@@ -3077,7 +3079,7 @@ describe("createDeferredSubagentManager", () => {
       {
         headers: {
           request_id: "child-request",
-          session_id: "child-session",
+          session_id: "sub:parent-session:named:legacy-session",
           request_client: "unknown",
         },
       },
@@ -3088,7 +3090,7 @@ describe("createDeferredSubagentManager", () => {
       {
         headers: {
           request_id: "child-request",
-          session_id: "child-session",
+          session_id: "sub:parent-session:named:legacy-session",
           request_client: "unknown",
         },
       },
@@ -3123,11 +3125,10 @@ describe("createDeferredSubagentManager", () => {
       type: "json",
       value: {
         ok: true,
+        mode: "deferred",
         status: "resolved",
         profile: "explore",
-        childRequestId: "child-request",
-        childSessionId: "child-session",
-        durationMs: expect.any(Number),
+        sessionName: "legacy-session",
         finalText: "done after restart",
       },
     });
@@ -3154,6 +3155,7 @@ describe("createDeferredSubagentManager", () => {
 
     await manager.register({
       profile: "explore",
+      sessionName: "explore-test0002",
       task: "Map auth flow",
       timeoutMs: 5_000,
       depth: 1,
@@ -3225,11 +3227,10 @@ describe("createDeferredSubagentManager", () => {
       type: "json",
       value: {
         ok: true,
+        mode: "deferred",
         status: "resolved",
         profile: "explore",
-        childRequestId: "child-request",
-        childSessionId: "child-session",
-        durationMs: expect.any(Number),
+        sessionName: "explore-test0002",
         finalText: "done before wait registered",
       },
     });
@@ -3256,6 +3257,7 @@ describe("createDeferredSubagentManager", () => {
 
     await manager.register({
       profile: "explore",
+      sessionName: "explore-test0003",
       task: "Map auth flow",
       timeoutMs: 5_000,
       depth: 1,
@@ -3339,11 +3341,10 @@ describe("createDeferredSubagentManager", () => {
       type: "json",
       value: {
         ok: true,
+        mode: "deferred",
         status: "resolved",
         profile: "explore",
-        childRequestId: "child-request",
-        childSessionId: "child-session",
-        durationMs: expect.any(Number),
+        sessionName: "explore-test0003",
         finalText: "resolved without deadlock",
       },
     });
@@ -3370,6 +3371,7 @@ describe("createDeferredSubagentManager", () => {
 
     await manager.register({
       profile: "explore",
+      sessionName: "explore-test0004",
       task: "Map auth flow",
       timeoutMs: 5_000,
       depth: 1,
@@ -3461,11 +3463,10 @@ describe("createDeferredSubagentManager", () => {
       type: "json",
       value: {
         ok: true,
+        mode: "deferred",
         status: "resolved",
         profile: "explore",
-        childRequestId: "child-request",
-        childSessionId: "child-session",
-        durationMs: expect.any(Number),
+        sessionName: "explore-test0004",
         finalText: "ab",
       },
     });
