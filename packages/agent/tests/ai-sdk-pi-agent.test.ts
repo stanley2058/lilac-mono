@@ -275,7 +275,7 @@ describe("AiSdkPiAgent model spec tracking", () => {
     expect(part.input).toEqual({ path: "note.txt" });
   });
 
-  it("serializes cyclic successful tool outputs as fallback text without marking execution failed", async () => {
+  it("bounds JSON normalization failures without marking successful execution failed", async () => {
     const model = new MockLanguageModelV4({
       doStream: [
         {
@@ -330,6 +330,9 @@ describe("AiSdkPiAgent model spec tracking", () => {
           },
         }),
       },
+      normalizeToolResultOutput: () => {
+        throw new Error("serialization failed");
+      },
     });
 
     agent.subscribe((event) => {
@@ -349,7 +352,7 @@ describe("AiSdkPiAgent model spec tracking", () => {
     const output =
       toolMessage?.content[0]?.type === "tool-result" ? toolMessage.content[0].output : undefined;
 
-    expect(output).toEqual({ type: "json", value: "[object Object]" });
+    expect(output).toEqual({ type: "text", value: "[tool result is not JSON-serializable]" });
   });
 
   it("serializes non-finite successful tool outputs through JSON fallback", async () => {

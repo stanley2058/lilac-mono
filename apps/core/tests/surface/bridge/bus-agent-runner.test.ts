@@ -27,6 +27,7 @@ import {
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   buildAutoInjectedThreadSearchOverlay,
+  buildCustomCommandFailureFinalText,
   consumeAssistantTextDelta,
   computeTransientRetryDelayMs,
   createAssistantTextPartBoundaryState,
@@ -3025,7 +3026,74 @@ describe("mergeToSingleUserMessage", () => {
   });
 });
 
+describe("custom command failures", () => {
+  it("builds persisted finalText from the bounded normalized error", () => {
+    const finalText = buildCustomCommandFailureFinalText({
+      commandText: "/fixture",
+      normalizedOutput: {
+        type: "error-text",
+        value: "bounded error [tool result truncated: 100 characters omitted]",
+      },
+    });
+
+    expect(finalText).toBe(
+      "Error running /fixture: bounded error [tool result truncated: 100 characters omitted]",
+    );
+  });
+});
+
 describe("createDeferredSubagentManager", () => {
+  it("bounds outstanding finalText in graceful-restart snapshots", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const parentHeaders = {
+      request_id: "parent-request",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger: createLogger({ module: "bus-agent-runner-test" }),
+      parentHeaders,
+      normalizeFinalTextForSnapshot: (finalText) => `bounded:${finalText.slice(-4)}`,
+    });
+
+    await manager.register({
+      profile: "explore",
+      sessionName: "explore-snapshot",
+      task: "Map auth flow",
+      timeoutMs: 5_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-1",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-request",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-1",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+    });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "unbounded-child-final-text" },
+      { headers: { ...parentHeaders, request_id: "child-request", session_id: "child-session" } },
+    );
+    await waitFor(
+      () => manager.buildRecoveryState()?.outstanding[0]?.finalText.startsWith("bounded:") === true,
+    );
+
+    expect(manager.buildRecoveryState()?.outstanding[0]?.finalText).toBe("bounded:text");
+    await manager.stop();
+  });
+
   it("replays child completion that happened before restore reattach", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

@@ -68,6 +68,7 @@ import { CustomCommandManager } from "../custom-commands/manager";
 import { handleCoreConfigWatchEvent } from "./core-config-watch";
 import { SqliteGracefulRestartStore, type GracefulRestartSnapshot } from "./graceful-restart-store";
 import { prewarmFffFinders } from "@stanley2058/lilac-fs";
+import { createToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 
 export type CoreRuntime = {
   start(): Promise<void>;
@@ -94,6 +95,7 @@ function runtimeFsDenyPaths(): readonly string[] {
   const home = process.env.HOME;
   return [
     path.resolve(env.dataDir, "secret"),
+    path.resolve(env.dataDir, "tool-results"),
     ...(home ? [path.join(home, ".ssh"), path.join(home, ".aws"), path.join(home, ".gnupg")] : []),
   ];
 }
@@ -212,6 +214,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let requestMessageCache: RequestMessageCache | null = null;
   let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
   let pluginManager: CoreToolPluginManager | null = null;
+  const toolResultArtifacts = createToolResultArtifactStore(path.join(env.dataDir, "tool-results"));
   let runtimeFullyStarted = false;
   let coreConfigWatcher: FSWatcher | null = null;
   let coreConfigValidationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -489,6 +492,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       // Ensure data dir exists before creating sqlite-backed stores.
       await fs.mkdir(env.dataDir, { recursive: true });
+      await toolResultArtifacts.init();
 
       const startupConfig = await getCoreConfig();
       if (startupConfig.tools.fsBackend === "fff") {
@@ -644,6 +648,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           conversationThreads: conversationThreadToolService,
           discordSearch: discordSearchService ?? undefined,
           transcriptStore: transcriptStore ?? undefined,
+          toolResultArtifacts,
         },
         dataDir: env.dataDir,
       });
@@ -721,6 +726,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         cwd,
         transcriptStore: transcriptStore ?? undefined,
         conversationThreads: conversationThreadToolService,
+        toolResultArtifacts,
       });
 
       logger.info("Bus agent runner started", {

@@ -48,7 +48,7 @@ const configSchema = z.object({
 
 const level1Tool: Level1ToolSpec<unknown> = {
   name: "example_echo",
-  supportsBatch: true,
+  supportsBatch: false,
   isEnabled: () => true,
   createTool: () =>
     tool({
@@ -134,3 +134,11 @@ plugins:
 - Level 2 tools can opt into a single string positional shortcut via `primaryPositional`, e.g. `tools fetch <url>`.
 - Built-in and external plugins share the same loading path and validation rules.
 - Hot reload is based on `core-config.yaml` and plugin directory contents; changing the built entrypoint and then calling `/reload`, `/list`, `/help/:callableId`, or `/call` will cause re-evaluation.
+
+## Level 1 Output
+
+- Text and JSON returned to the model are bounded by `tools.output.maxPreviewBytes` after `toModelOutput` conversion.
+- Oversized text and JSON are preserved as transient, session-owned `tool-result://` artifacts when storage succeeds. The preview tells the model how to inspect the artifact with `read_file`.
+- Media and provider-reference content parts are not converted into text artifacts.
+- Truncation does not change whether the tool execution succeeded or failed.
+- `supportsBatch` defaults to false when omitted. Set it to true only when the raw `execute` result is intrinsically bounded, because batch invokes child `execute` directly rather than applying `toModelOutput` or an aggregate artifact layer.

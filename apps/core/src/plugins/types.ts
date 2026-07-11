@@ -12,6 +12,7 @@ import type { ConversationThreadToolService } from "../conversation/thread-servi
 import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { WorkflowStore } from "../workflow/workflow-store";
+import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 
 export type CoreToolPluginRuntime = {
   bus?: LilacBus;
@@ -23,8 +24,21 @@ export type CoreToolPluginRuntime = {
   conversationThreads?: ConversationThreadToolService;
   discordSearch?: DiscordSearchService;
   transcriptStore?: TranscriptStore;
+  toolResultArtifacts?: ToolResultArtifactStore;
 };
 
-export type CoreLevel1ToolSpec = Level1ToolSpec<CoreToolPluginRuntime>;
+const BOUNDED_BUILTIN_OUTPUT = Symbol("bounded-builtin-output");
+
+export type CoreLevel1ToolSpec = Level1ToolSpec<CoreToolPluginRuntime> & {
+  [BOUNDED_BUILTIN_OUTPUT]?: true;
+};
+
+export function markBoundedBuiltinOutput(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
+  return { ...spec, [BOUNDED_BUILTIN_OUTPUT]: true };
+}
+
+export function hasBoundedBuiltinOutput(spec: CoreLevel1ToolSpec): boolean {
+  return spec[BOUNDED_BUILTIN_OUTPUT] === true;
+}
 
 export type CoreToolPlugin = LilacToolPlugin<CoreToolPluginRuntime, CoreLevel1ToolSpec, ServerTool>;

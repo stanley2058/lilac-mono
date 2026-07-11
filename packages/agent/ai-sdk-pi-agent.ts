@@ -24,6 +24,7 @@ import {
   type ToolSet,
 } from "ai";
 import {
+  createLogger,
   errorMessage,
   type ModelReasoningEffort,
   normalizeReplayMessages,
@@ -32,6 +33,9 @@ import {
 } from "@stanley2058/lilac-utils";
 
 import { normalizeModelMessagesToolCallIds } from "./tool-call-id-normalization";
+
+const logger = createLogger({ module: "ai-sdk-pi-agent" });
+const UNSERIALIZABLE_TOOL_RESULT = "[tool result is not JSON-serializable]";
 
 export type SystemPrompt = string | SystemModelMessage | SystemModelMessage[];
 
@@ -279,6 +283,20 @@ export type TurnErrorHandler = (
   },
 ) => TurnErrorHandlerDecision | Promise<TurnErrorHandlerDecision>;
 
+export type ToolResultOutput = Extract<
+  ToolModelMessage["content"][number],
+  { type: "tool-result" }
+>["output"];
+
+export type NormalizeToolResultOutputFn = (
+  output: ToolResultOutput,
+  context: {
+    toolCallId: string;
+    toolName: string;
+    bypassGenericOutputNormalizer?: boolean;
+  },
+) => ToolResultOutput | Promise<ToolResultOutput>;
+
 export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   /** System prompt for the model. */
   system: SystemPrompt;
@@ -299,6 +317,10 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   transformMessages?: TransformMessagesFn;
   /** Optional hook to recover from turn errors (e.g. context overflow). */
   turnErrorHandler?: TurnErrorHandler;
+  /** Normalize model-facing tool output before it enters the canonical transcript. */
+  normalizeToolResultOutput?: NormalizeToolResultOutputFn;
+  /** Tool names whose specs guarantee already-bounded model output. */
+  genericOutputNormalizerBypassTools?: ReadonlySet<string>;
   /** Optional provider-specific options. */
   providerOptions?: {
     [x: string]: JSONObject;
@@ -460,10 +482,6 @@ function stripToolExecuteForModel<TOOLS extends ToolSet>(tools: TOOLS): ToolSet 
 }
 
 type AssistantContentParts = Extract<AssistantContent, unknown[]>;
-type ToolResultOutput = Extract<
-  ToolModelMessage["content"][number],
-  { type: "tool-result" }
->["output"];
 type JsonToolOutputValue = Extract<ToolResultOutput, { type: "json" }>["value"];
 
 function isJsonToolOutputValue(value: unknown): value is JsonToolOutputValue {
@@ -651,6 +669,8 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private transformMessages: TransformMessagesFn | undefined;
   private turnErrorHandler: TurnErrorHandler | undefined;
   private experimentalDownload: DownloadFunction | undefined;
+  private normalizeToolResultOutput: NormalizeToolResultOutputFn | undefined;
+  private genericOutputNormalizerBypassTools: ReadonlySet<string>;
 
   private context?: unknown;
 
@@ -662,6 +682,9 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.transformMessages = options.transformMessages;
     this.turnErrorHandler = options.turnErrorHandler;
     this.experimentalDownload = options.experimentalDownload;
+    this.normalizeToolResultOutput = options.normalizeToolResultOutput;
+    this.genericOutputNormalizerBypassTools =
+      options.genericOutputNormalizerBypassTools ?? new Set<string>();
 
     this.captureModelViewMessages = options.debug?.captureModelViewMessages === true;
 
@@ -1539,6 +1562,29 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           type: "error-text",
           value: errorMessage(e),
         };
+      }
+
+      if (this.normalizeToolResultOutput) {
+        try {
+          toolOutput = await this.normalizeToolResultOutput(toolOutput, {
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            bypassGenericOutputNormalizer: this.genericOutputNormalizerBypassTools.has(
+              call.toolName,
+            ),
+          });
+        } catch (error) {
+          logger.warn("tool result normalization failed", {
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            error: errorMessage(error),
+          });
+          if (toolOutput.type === "json") {
+            toolOutput = { type: "text", value: UNSERIALIZABLE_TOOL_RESULT };
+          } else if (toolOutput.type === "error-json") {
+            toolOutput = { type: "error-text", value: UNSERIALIZABLE_TOOL_RESULT };
+          }
+        }
       }
 
       this.state.pendingToolCalls.delete(call.toolCallId);
