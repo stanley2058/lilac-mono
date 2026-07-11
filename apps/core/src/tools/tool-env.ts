@@ -10,6 +10,8 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const RESERVED_PREFIXES = ["LILAC_", "LD_", "DYLD_", "NODE_", "BUN_"] as const;
 const RESERVED_NAMES = new Set([
   "BASH_ENV",
+  "BASHOPTS",
+  "CDPATH",
   "ENV",
   "PROMPT_COMMAND",
   "SHELLOPTS",

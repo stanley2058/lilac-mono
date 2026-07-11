@@ -69,6 +69,60 @@ describe("bash output sanitizer stream", () => {
     );
   });
 
+  it("applies pattern redaction across stream chunks", async () => {
+    expect(await sanitizeChunks(["before API_TO", "KEN=secret-value", " after"], [])).toBe(
+      "before API_TOKEN=<redacted> after",
+    );
+  });
+
+  it("keeps assignment redaction state across the pattern buffer boundary", async () => {
+    const prefix = "x".repeat(64 * 1024 - 6);
+    expect(await sanitizeChunks([`${prefix} API_TO`, "KEN=secret-value", "-continued"], [])).toBe(
+      `${prefix} API_TOKEN=<redacted>`,
+    );
+  });
+
+  it("redacts nested assignments across the pattern buffer boundary", async () => {
+    const prefix = "x".repeat(64 * 1024 - 10);
+    expect(await sanitizeChunks([`${prefix} FOO=value:API_TO`, "KEN=secret-value"], [])).toBe(
+      `${prefix} FOO=value:API_TOKEN=<redacted>`,
+    );
+  });
+
+  it("retains fixed token prefixes across the pattern buffer boundary", async () => {
+    const prefix = "x".repeat(64 * 1024 - 6);
+    expect(await sanitizeChunks([`${prefix} githu`, "b_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ"], [])).toBe(
+      `${prefix} <redacted>`,
+    );
+  });
+
+  it("suppresses long token continuations after a pattern buffer flush", async () => {
+    const prefix = "x".repeat(64 * 1024 - 300);
+    const tokenStart = `github_pat_${"A".repeat(289)}`;
+    const tokenEnd = `${"B".repeat(400)} suffix`;
+    expect(await sanitizeChunks([`${prefix}${tokenStart}`, tokenEnd], [])).toBe(
+      `${prefix}<redacted> suffix`,
+    );
+  });
+
+  it("retains long URL credentials until their terminator", async () => {
+    const prefix = "x".repeat(64 * 1024 - 300);
+    const credentialStart = `https://user:${"a".repeat(287)}`;
+    expect(
+      await sanitizeChunks([`${prefix}${credentialStart}`, "password@example.com/path"], []),
+    ).toBe(`${prefix}https://<redacted>:<redacted>@example.com/path`);
+  });
+
+  it("suppresses long authorization values through the line boundary", async () => {
+    const value = "a".repeat(64 * 1024 - "Authorization: Bearer ".length);
+    expect(
+      await sanitizeChunks(
+        [`Authorization: Bearer ${value}`, " nonce=VISIBLE-CREDENTIAL\nsafe"],
+        [],
+      ),
+    ).toBe("Authorization: <redacted>\nsafe");
+  });
+
   it("redacts a boundary-spanning secret after an earlier complete occurrence", async () => {
     expect(await sanitizeChunks(["token xx to", "ken"], ["token"])).toBe(
       "<redacted> xx <redacted>",
@@ -182,6 +236,26 @@ describe("bash output sanitizer stream", () => {
       expect(result.text).toBe("prefix x");
       expect(result.overflowFilePath).toBe(overflowFilePath);
       expect(await fs.readFile(overflowFilePath, "utf8")).toBe("prefix xy<redacted>ba suffix");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("pattern-redacts overflow before writing it", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-output-sanitizer-"));
+    const overflowFilePath = path.join(tempDir, "overflow.log");
+
+    try {
+      const result = await readSanitizedStreamTextCapped(
+        streamFromStrings(["prefix API_TO", "KEN=secret-value suffix"]),
+        8,
+        { overflowFilePath },
+      );
+
+      expect(result.capped).toBeTrue();
+      expect(await fs.readFile(overflowFilePath, "utf8")).toBe(
+        "prefix API_TOKEN=<redacted> suffix",
+      );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }

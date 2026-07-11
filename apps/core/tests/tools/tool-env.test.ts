@@ -26,6 +26,8 @@ describe("tool env", () => {
         LILAC_REQUEST_ID: "override",
         PATH: "/surprise",
         BASH_ENV: "/tmp/inject.sh",
+        BASHOPTS: "failglob",
+        CDPATH: "/tmp",
         ENV: "/tmp/inject.sh",
         PROMPT_COMMAND: "surprise",
         SHELLOPTS: "xtrace",
