@@ -176,9 +176,6 @@ describe("executeBash", () => {
     // 210k characters of output (over the 50KB tool limit).
     const requestId = "bash-trunc-test-request";
     const toolCallId = "bash-trunc-test-tool";
-    const outPath = `/tmp/${requestId}-${toolCallId}.log`;
-
-    await fs.unlink(outPath).catch(() => undefined);
 
     const res = await executeBash(
       {
@@ -198,7 +195,9 @@ describe("executeBash", () => {
     expect(res.stdout.length + res.stderr.length).toBeLessThanOrEqual(50 * 1024);
     expect(res.stderr).toBe("");
 
-    expect(res.truncation?.outputPath).toBe(outPath);
+    const outPath = res.truncation?.outputPath;
+    expect(outPath).toMatch(new RegExp(`^/tmp/${requestId}-${toolCallId}-[0-9a-f-]+\\.log$`, "u"));
+    if (!outPath) throw new Error("expected truncated output path");
     expect(res.executionError).toBeDefined();
     expect(res.executionError?.type).toBe("truncated");
     if (res.executionError?.type === "truncated") {

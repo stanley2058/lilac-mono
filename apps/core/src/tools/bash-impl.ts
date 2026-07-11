@@ -1,4 +1,5 @@
 import { createLogger, env, resolveVcsEnv } from "@stanley2058/lilac-utils";
+import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,7 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
+import { createBashOutputSanitizerTransform } from "./bash-output-sanitizer";
 import { loadToolEnv } from "./tool-env";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -27,7 +29,7 @@ const MAX_BASH_OUTPUT_CHARS = 50 * 1024;
 
 function buildBashOutputTruncationMessage(outputPath?: string): string {
   if (typeof outputPath === "string" && outputPath.length > 0) {
-    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full raw output saved to: ${outputPath}`;
+    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output saved to: ${outputPath}`;
   }
 
   return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output file could not be written; narrow output and retry.`;
@@ -129,6 +131,7 @@ function stripAnsiEscapeSequences(input: string): string {
     while (i < input.length) {
       const code = input.charCodeAt(i);
       if (code === 0x07) return i + 1;
+      if (code === 0x9c) return i + 1;
       if (code === 0x1b && input.charCodeAt(i + 1) === 0x5c) return i + 2;
       i += 1;
     }
@@ -166,7 +169,12 @@ function stripAnsiEscapeSequences(input: string): string {
   }
 
   flushPlain(input.length);
-  return output;
+  return [...output]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code === 0x09 || code === 0x0a || (code >= 0x20 && code < 0x7f) || code > 0x9f;
+    })
+    .join("");
 }
 
 type StreamTextResult = {
@@ -243,6 +251,7 @@ async function readStreamTextCapped(
       });
       if (!ok) {
         overflowWriteFailed = true;
+        overflowFilePath = undefined;
         return;
       }
       overflowInitialized = true;
@@ -332,7 +341,7 @@ function buildTruncatedOutputPaths(params: { requestId?: string; toolCallId?: st
 } {
   const requestToken = sanitizeTempFileToken(params.requestId, "unknown-request");
   const toolToken = sanitizeTempFileToken(params.toolCallId, "unknown-tool");
-  const fileName = `${requestToken}-${toolToken}.log`;
+  const fileName = `${requestToken}-${toolToken}-${randomUUID()}.log`;
   const outputPath = path.join(BASH_TRUNCATED_OUTPUT_DIR, fileName);
   return {
     outputPath,
@@ -346,21 +355,25 @@ async function appendSectionOutput(params: {
   label: "stdout" | "stderr";
   captured: string;
   overflowFilePath?: string;
+  literalSecrets?: readonly string[];
 }) {
   await fs.appendFile(params.outputPath, `--- ${params.label} ---\n`, "utf8");
 
   if (params.overflowFilePath) {
-    try {
-      await fs.stat(params.overflowFilePath);
+    await fs.stat(params.overflowFilePath);
+    const source = createReadStream(params.overflowFilePath);
+    const destination = createWriteStream(params.outputPath, { flags: "a", mode: 0o600 });
+    if (params.literalSecrets && params.literalSecrets.length > 0) {
       await pipeline(
-        createReadStream(params.overflowFilePath),
-        createWriteStream(params.outputPath, { flags: "a", mode: 0o600 }),
+        source,
+        createBashOutputSanitizerTransform(params.literalSecrets),
+        destination,
       );
-      await fs.appendFile(params.outputPath, "\n", "utf8");
-      return;
-    } catch {
-      // Fall back to captured fragment when spill file is unavailable.
+    } else {
+      await pipeline(source, destination);
     }
+    await fs.appendFile(params.outputPath, "\n", "utf8");
+    return;
   }
 
   if (params.captured.length > 0) {
@@ -377,7 +390,7 @@ async function maybeWriteTruncatedOutputFile(params: {
   stderr: string;
   stdoutOverflowPath?: string;
   stderrOverflowPath?: string;
-  includeOverflowFiles?: boolean;
+  literalSecrets?: readonly string[];
 }): Promise<string | undefined> {
   try {
     const header =
@@ -393,8 +406,8 @@ async function maybeWriteTruncatedOutputFile(params: {
       outputPath: params.outputPath,
       label: "stdout",
       captured: params.stdout,
-      overflowFilePath:
-        params.includeOverflowFiles === false ? undefined : params.stdoutOverflowPath,
+      overflowFilePath: params.stdoutOverflowPath,
+      literalSecrets: params.literalSecrets,
     });
 
     await fs.appendFile(params.outputPath, "\n", "utf8");
@@ -403,21 +416,22 @@ async function maybeWriteTruncatedOutputFile(params: {
       outputPath: params.outputPath,
       label: "stderr",
       captured: params.stderr,
-      overflowFilePath:
-        params.includeOverflowFiles === false ? undefined : params.stderrOverflowPath,
+      overflowFilePath: params.stderrOverflowPath,
+      literalSecrets: params.literalSecrets,
     });
 
     await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
     await fs.chmod(params.outputPath, 0o600);
   } catch {
+    await fs.unlink(params.outputPath).catch(() => undefined);
     return undefined;
-  }
-
-  if (params.stdoutOverflowPath) {
-    await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
-  }
-  if (params.stderrOverflowPath) {
-    await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
+  } finally {
+    if (params.stdoutOverflowPath) {
+      await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
+    }
+    if (params.stderrOverflowPath) {
+      await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
+    }
   }
 
   return params.outputPath;
@@ -699,23 +713,27 @@ export async function executeBash(
       const stderr = execResult.stderr;
       const exitCode = execResult.exitCode;
 
-      const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
-      const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
+      const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout));
+      const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr));
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
         streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
-      const truncatedOutputPath = outputTruncated
-        ? await maybeWriteTruncatedOutputFile({
-            outputPath: truncatedOutputPaths.outputPath,
-            requestId: context?.requestId,
-            toolCallId,
-            stdout,
-            stderr,
-            stdoutOverflowPath: execResult.overflowPaths.stdout,
-            stderrOverflowPath: execResult.overflowPaths.stderr,
-          })
-        : undefined;
+      const spillIncomplete =
+        (execResult.capped.stdout && !execResult.overflowPaths.stdout) ||
+        (execResult.capped.stderr && !execResult.overflowPaths.stderr);
+      const truncatedOutputPath =
+        outputTruncated && !spillIncomplete
+          ? await maybeWriteTruncatedOutputFile({
+              outputPath: truncatedOutputPaths.outputPath,
+              requestId: context?.requestId,
+              toolCallId,
+              stdout,
+              stderr,
+              stdoutOverflowPath: execResult.overflowPaths.stdout,
+              stderrOverflowPath: execResult.overflowPaths.stderr,
+            })
+          : undefined;
 
       const durationMs = execResult.durationMs;
 
@@ -903,8 +921,9 @@ export async function executeBash(
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
     const toolEnvSecrets = Object.values(toolEnv);
-    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout, toolEnvSecrets));
-    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr, toolEnvSecrets));
+    const normalizedToolEnvSecrets = toolEnvSecrets.map(stripAnsiEscapeSequences);
+    const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout), normalizedToolEnvSecrets);
+    const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr), normalizedToolEnvSecrets);
 
     const durationMs = Date.now() - startedAt;
 
@@ -913,20 +932,28 @@ export async function executeBash(
       (stderrResult.status === "fulfilled" && stderrResult.value.capped);
     const outputTruncated =
       streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
-    const truncatedOutputPath = outputTruncated
-      ? await maybeWriteTruncatedOutputFile({
-          outputPath: truncatedOutputPaths.outputPath,
-          requestId: context?.requestId,
-          toolCallId,
-          stdout: toolEnvSecrets.length > 0 ? safeStdout : stdout,
-          stderr: toolEnvSecrets.length > 0 ? safeStderr : stderr,
-          stdoutOverflowPath:
-            stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
-          stderrOverflowPath:
-            stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
-          includeOverflowFiles: toolEnvSecrets.length === 0,
-        })
-      : undefined;
+    const spillIncomplete =
+      (stdoutResult.status === "fulfilled" &&
+        stdoutResult.value.capped &&
+        !stdoutResult.value.overflowFilePath) ||
+      (stderrResult.status === "fulfilled" &&
+        stderrResult.value.capped &&
+        !stderrResult.value.overflowFilePath);
+    const truncatedOutputPath =
+      outputTruncated && !spillIncomplete
+        ? await maybeWriteTruncatedOutputFile({
+            outputPath: truncatedOutputPaths.outputPath,
+            requestId: context?.requestId,
+            toolCallId,
+            stdout: normalizedToolEnvSecrets.length > 0 ? safeStdout : stdout,
+            stderr: normalizedToolEnvSecrets.length > 0 ? safeStderr : stderr,
+            stdoutOverflowPath:
+              stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
+            stderrOverflowPath:
+              stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
+            literalSecrets: normalizedToolEnvSecrets,
+          })
+        : undefined;
 
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
@@ -1160,6 +1187,8 @@ export async function executeBash(
       },
     };
   } finally {
+    await fs.unlink(truncatedOutputPaths.stdoutOverflowPath).catch(() => undefined);
+    await fs.unlink(truncatedOutputPaths.stderrOverflowPath).catch(() => undefined);
     clearTimeout(timeout);
     if (hardKillTimer) {
       clearTimeout(hardKillTimer);
