@@ -377,6 +377,7 @@ async function maybeWriteTruncatedOutputFile(params: {
   stderr: string;
   stdoutOverflowPath?: string;
   stderrOverflowPath?: string;
+  includeOverflowFiles?: boolean;
 }): Promise<string | undefined> {
   try {
     const header =
@@ -392,7 +393,8 @@ async function maybeWriteTruncatedOutputFile(params: {
       outputPath: params.outputPath,
       label: "stdout",
       captured: params.stdout,
-      overflowFilePath: params.stdoutOverflowPath,
+      overflowFilePath:
+        params.includeOverflowFiles === false ? undefined : params.stdoutOverflowPath,
     });
 
     await fs.appendFile(params.outputPath, "\n", "utf8");
@@ -401,7 +403,8 @@ async function maybeWriteTruncatedOutputFile(params: {
       outputPath: params.outputPath,
       label: "stderr",
       captured: params.stderr,
-      overflowFilePath: params.stderrOverflowPath,
+      overflowFilePath:
+        params.includeOverflowFiles === false ? undefined : params.stderrOverflowPath,
     });
 
     await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
@@ -899,8 +902,9 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
-    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
+    const toolEnvSecrets = Object.values(toolEnv);
+    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout, toolEnvSecrets));
+    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr, toolEnvSecrets));
 
     const durationMs = Date.now() - startedAt;
 
@@ -914,12 +918,13 @@ export async function executeBash(
           outputPath: truncatedOutputPaths.outputPath,
           requestId: context?.requestId,
           toolCallId,
-          stdout,
-          stderr,
+          stdout: toolEnvSecrets.length > 0 ? safeStdout : stdout,
+          stderr: toolEnvSecrets.length > 0 ? safeStderr : stderr,
           stdoutOverflowPath:
             stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
           stderrOverflowPath:
             stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
+          includeOverflowFiles: toolEnvSecrets.length === 0,
         })
       : undefined;
 

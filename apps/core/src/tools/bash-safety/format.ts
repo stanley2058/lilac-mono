@@ -34,8 +34,15 @@ function excerpt(text: string, maxLen: number): string {
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 }
 
-export function redactSecrets(text: string): string {
+export function redactSecrets(text: string, literalSecrets: readonly string[] = []): string {
   let result = text;
+
+  const uniqueSecrets = [...new Set(literalSecrets.filter((value) => value.length > 0))].sort(
+    (a, b) => b.length - a.length,
+  );
+  for (const secret of uniqueSecrets) {
+    result = result.split(secret).join("<redacted>");
+  }
 
   result = result.replace(
     /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIALS)[A-Z0-9_]*)=([^\s]+)/gi,
