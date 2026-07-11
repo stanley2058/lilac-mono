@@ -38,10 +38,6 @@ export function dangerousInText(text: string): string | null {
       reason: "access to GitHub user token secret",
     },
     {
-      regex: /tool-env\.json/,
-      reason: "access to dynamic tool environment secrets",
-    },
-    {
       regex: /\brm\s+(-[^\s]*r[^\s]*\s+-[^\s]*f|-\S*f\S*\s+-\S*r|-\S*rf|-\S*fr)\b/,
       reason: "rm -rf",
     },

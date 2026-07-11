@@ -21,10 +21,6 @@ You have access to three tiers of tools:
 - Bash command logs and returned stdout/stderr may redact secrets as `<redacted>`; this is a display transform, not the runtime value actually used.
   - Use pipes when possible; Reading `.env`/credential files is allowed when the task legitimately requires it.
   - Never surface a secret, give the user the path or command to read it themself.
-- Trusted local bash commands load dynamic environment variables from `$DATA_DIR/secret/tool-env.jsonc` before each new process. Entries may be strings or `{ "value": "...", "expiresAt": "..." }`; expired entries are ignored. This overlay does not apply to restricted bash or SSH targets.
-  - Keep this file owner-only (`0600`). Trusted bash receives these values directly; output redaction and filename safety checks are defense-in-depth against accidental disclosure, not a sandbox against a command that deliberately transforms or transmits them.
-  - The loader assumes `$DATA_DIR/secret` is controlled by a trusted local operator. File-mode warnings and lexical path checks are advisory; they do not replace host filesystem permissions or isolation.
-
 ## Remote Workdirs (SSH-style cwd)
 
 These tools: `bash`, `read_file`, `glob`, `grep`, `apply_patch` supports SSH-style working directory in `cwd`:

@@ -1,11 +1,10 @@
 import { StringDecoder } from "node:string_decoder";
+import fs from "node:fs/promises";
 import { Transform, type TransformCallback } from "node:stream";
 
-type AnsiState = "plain" | "escape" | "csi" | "osc" | "osc-escape";
+import { normalizeLiteralSecrets, REDACTION_PLACEHOLDER } from "./bash-literal-redactor";
 
-export function getLiteralRedactionOverlap(literalSecrets: readonly string[]): number {
-  return Math.max(0, ...literalSecrets.map((value) => Math.max(0, value.length - 1)));
-}
+type AnsiState = "plain" | "escape" | "csi" | "osc" | "osc-escape";
 
 class StreamingAnsiStripper {
   private state: AnsiState = "plain";
@@ -43,70 +42,209 @@ class StreamingAnsiStripper {
 class StreamingLiteralRedactor {
   private carry = "";
   private readonly secrets: readonly string[];
-  private readonly overlap: number;
+  private readonly maxSecretLength: number;
 
   constructor(secrets: readonly string[]) {
-    this.secrets = [...new Set(secrets.filter((value) => value.length > 0))].sort(
-      (a, b) => b.length - a.length,
-    );
-    this.overlap = getLiteralRedactionOverlap(this.secrets);
+    this.secrets = normalizeLiteralSecrets(secrets);
+    this.maxSecretLength = Math.max(0, ...this.secrets.map((value) => value.length));
   }
 
   write(input: string): string {
-    const combined = this.carry + input;
-    let cut = Math.max(0, combined.length - this.overlap);
-    for (const secret of this.secrets) {
-      let match = combined.indexOf(secret, Math.max(0, cut - secret.length + 1));
-      while (match >= 0 && match < cut) {
-        if (match + secret.length > cut) {
-          cut = match;
-          break;
-        }
-        match = combined.indexOf(secret, match + 1);
-      }
-    }
-    if (
-      cut > 0 &&
-      cut < combined.length &&
-      /[\uD800-\uDBFF]/u.test(combined[cut - 1] ?? "") &&
-      /[\uDC00-\uDFFF]/u.test(combined[cut] ?? "")
-    ) {
-      cut -= 1;
-    }
-    this.carry = combined.slice(cut);
-    return this.redact(combined.slice(0, cut));
+    return this.process(this.carry + input, false);
   }
 
   end(): string {
-    const output = this.redact(this.carry);
-    this.carry = "";
-    return output;
+    return this.process(this.carry, true);
   }
 
-  private redact(input: string): string {
-    let output = input;
-    for (const secret of this.secrets) output = output.split(secret).join("<redacted>");
+  private process(input: string, final: boolean): string {
+    let output = "";
+    let cursor = 0;
+
+    while (cursor < input.length) {
+      if (!final && input.length - cursor < this.maxSecretLength) break;
+
+      const secret = this.secrets.find((value) => input.startsWith(value, cursor));
+      if (secret) {
+        output += REDACTION_PLACEHOLDER;
+        cursor += secret.length;
+        continue;
+      }
+
+      const startsSurrogatePair =
+        /[\uD800-\uDBFF]/u.test(input[cursor] ?? "") &&
+        /[\uDC00-\uDFFF]/u.test(input[cursor + 1] ?? "");
+      if (startsSurrogatePair && !final && input.length - (cursor + 1) < this.maxSecretLength) {
+        break;
+      }
+
+      output += input[cursor];
+      cursor += 1;
+    }
+
+    this.carry = final ? "" : input.slice(cursor);
     return output;
   }
 }
 
-export function createBashOutputSanitizerTransform(literalSecrets: readonly string[]): Transform {
+type BashOutputSanitizer = {
+  write(chunk: Uint8Array): string;
+  end(): string;
+};
+
+function createBashOutputSanitizer(literalSecrets: readonly string[]): BashOutputSanitizer {
   const decoder = new StringDecoder("utf8");
   const ansiStripper = new StreamingAnsiStripper();
   const redactor = new StreamingLiteralRedactor(literalSecrets);
 
+  return {
+    write(chunk) {
+      return redactor.write(ansiStripper.write(decoder.write(Buffer.from(chunk))));
+    },
+    end() {
+      return redactor.write(ansiStripper.write(decoder.end())) + redactor.end();
+    },
+  };
+}
+
+export type SanitizedStreamTextResult = {
+  text: string;
+  totalChars: number;
+  capped: boolean;
+  overflowFilePath?: string;
+};
+
+async function appendOverflowChunk(params: {
+  overflowFilePath: string;
+  chunk: string;
+  initialized: boolean;
+}): Promise<boolean> {
+  try {
+    if (!params.initialized) {
+      await fs.writeFile(params.overflowFilePath, params.chunk, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    } else {
+      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isResponseBodyInit(value: unknown): value is BodyInit {
+  return (
+    typeof value === "string" ||
+    value instanceof Blob ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    value instanceof FormData ||
+    value instanceof URLSearchParams ||
+    value instanceof ReadableStream
+  );
+}
+
+export async function readSanitizedStreamTextCapped(
+  stream: unknown,
+  maxChars: number,
+  options?: { overflowFilePath?: string; literalSecrets?: readonly string[] },
+): Promise<SanitizedStreamTextResult> {
+  if (!stream || typeof stream === "number") {
+    return { text: "", totalChars: 0, capped: false };
+  }
+
+  const sanitizer = createBashOutputSanitizer(options?.literalSecrets ?? []);
+  let text = "";
+  let totalChars = 0;
+  let capped = false;
+  let overflowInitialized = false;
+  let overflowWriteFailed = false;
+  let overflowFilePath: string | undefined;
+
+  const writeOverflowChunk = async (chunk: string) => {
+    if (chunk.length === 0 || overflowWriteFailed || !options?.overflowFilePath) return;
+
+    const ok = await appendOverflowChunk({
+      overflowFilePath: options.overflowFilePath,
+      chunk,
+      initialized: overflowInitialized,
+    });
+    if (!ok) {
+      overflowWriteFailed = true;
+      overflowFilePath = undefined;
+      return;
+    }
+    overflowInitialized = true;
+    overflowFilePath = options.overflowFilePath;
+  };
+
+  const consumeSanitizedText = async (chunk: string) => {
+    if (chunk.length === 0) return;
+    totalChars += chunk.length;
+
+    if (capped) {
+      await writeOverflowChunk(chunk);
+      return;
+    }
+
+    const previousText = text;
+    if (previousText.length + chunk.length <= maxChars) {
+      text += chunk;
+      return;
+    }
+
+    capped = true;
+    const remaining = Math.max(0, maxChars - previousText.length);
+    let sliceEnd = remaining;
+    if (
+      sliceEnd > 0 &&
+      /[\uD800-\uDBFF]/u.test(chunk[sliceEnd - 1] ?? "") &&
+      /[\uDC00-\uDFFF]/u.test(chunk[sliceEnd] ?? "")
+    ) {
+      sliceEnd -= 1;
+    }
+    text = previousText + chunk.slice(0, sliceEnd);
+    await writeOverflowChunk(previousText + chunk);
+  };
+
+  const maybeReadable = stream as { getReader?: unknown };
+  if (typeof maybeReadable.getReader === "function") {
+    const reader = (stream as ReadableStream<Uint8Array>).getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) await consumeSanitizedText(sanitizer.write(value));
+      }
+      await consumeSanitizedText(sanitizer.end());
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    const response = new Response(isResponseBodyInit(stream) ? stream : String(stream));
+    if (!response.body) return { text: "", totalChars: 0, capped: false };
+    return await readSanitizedStreamTextCapped(response.body, maxChars, options);
+  }
+
+  return { text, totalChars, capped, overflowFilePath };
+}
+
+export function createBashOutputSanitizerTransform(literalSecrets: readonly string[]): Transform {
+  const sanitizer = createBashOutputSanitizer(literalSecrets);
+
   return new Transform({
     transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
       try {
-        callback(null, redactor.write(ansiStripper.write(decoder.write(chunk))));
+        callback(null, sanitizer.write(chunk));
       } catch (error) {
         callback(error instanceof Error ? error : new Error(String(error)));
       }
     },
     flush(callback: TransformCallback) {
       try {
-        const decodedTail = decoder.end();
-        callback(null, redactor.write(ansiStripper.write(decodedTail)) + redactor.end());
+        callback(null, sanitizer.end());
       } catch (error) {
         callback(error instanceof Error ? error : new Error(String(error)));
       }

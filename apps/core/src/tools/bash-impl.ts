@@ -16,10 +16,7 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
-import {
-  createBashOutputSanitizerTransform,
-  getLiteralRedactionOverlap,
-} from "./bash-output-sanitizer";
+import { readSanitizedStreamTextCapped } from "./bash-output-sanitizer";
 import { loadToolEnv } from "./tool-env";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -180,152 +177,6 @@ function stripAnsiEscapeSequences(input: string): string {
     .join("");
 }
 
-type StreamTextResult = {
-  text: string;
-  totalChars: number;
-  capped: boolean;
-  overflowFilePath?: string;
-};
-
-function isResponseBodyInit(value: unknown): value is BodyInit {
-  return (
-    typeof value === "string" ||
-    value instanceof Blob ||
-    value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value) ||
-    value instanceof FormData ||
-    value instanceof URLSearchParams ||
-    value instanceof ReadableStream
-  );
-}
-
-async function appendOverflowChunk(params: {
-  overflowFilePath: string;
-  chunk: string;
-  initialized: boolean;
-}): Promise<boolean> {
-  try {
-    if (!params.initialized) {
-      await fs.writeFile(params.overflowFilePath, params.chunk, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-    } else {
-      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readStreamTextCapped(
-  stream: unknown,
-  maxChars: number,
-  options?: { overflowFilePath?: string },
-): Promise<StreamTextResult> {
-  if (!stream || typeof stream === "number") {
-    return { text: "", totalChars: 0, capped: false };
-  }
-
-  // Bun.spawn pipes are ReadableStream<Uint8Array>.
-  const maybeReadable = stream as { getReader?: unknown };
-  if (typeof maybeReadable.getReader === "function") {
-    const reader = (stream as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-
-    let text = "";
-    let totalChars = 0;
-    let capped = false;
-    let overflowInitialized = false;
-    let overflowWriteFailed = false;
-    let overflowFilePath: string | undefined;
-
-    const writeOverflowChunk = async (chunk: string) => {
-      if (chunk.length === 0) return;
-      if (overflowWriteFailed) return;
-      const target = options?.overflowFilePath;
-      if (!target) return;
-
-      const ok = await appendOverflowChunk({
-        overflowFilePath: target,
-        chunk,
-        initialized: overflowInitialized,
-      });
-      if (!ok) {
-        overflowWriteFailed = true;
-        overflowFilePath = undefined;
-        return;
-      }
-      overflowInitialized = true;
-      overflowFilePath = target;
-    };
-
-    const consumeChunkText = async (chunkText: string) => {
-      if (chunkText.length === 0) return;
-
-      totalChars += chunkText.length;
-
-      if (capped) {
-        await writeOverflowChunk(chunkText);
-        return;
-      }
-
-      const previousText = text;
-      const nextLen = previousText.length + chunkText.length;
-      if (nextLen <= maxChars) {
-        text = previousText + chunkText;
-        return;
-      }
-
-      capped = true;
-      const remaining = Math.max(0, maxChars - previousText.length);
-      text = previousText + chunkText.slice(0, remaining);
-      await writeOverflowChunk(previousText + chunkText);
-    };
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-
-        const chunkText = decoder.decode(value, { stream: true });
-        await consumeChunkText(chunkText);
-      }
-
-      const tail = decoder.decode();
-      if (tail.length > 0) {
-        await consumeChunkText(tail);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    return { text, totalChars, capped, overflowFilePath };
-  }
-
-  // Fallback (should be rare): read everything, then cap.
-  const full = await new Response(isResponseBodyInit(stream) ? stream : String(stream)).text();
-  const capped = full.length > maxChars;
-  let overflowFilePath: string | undefined;
-  if (capped && options?.overflowFilePath) {
-    const ok = await appendOverflowChunk({
-      overflowFilePath: options.overflowFilePath,
-      chunk: full,
-      initialized: false,
-    });
-    if (ok) overflowFilePath = options.overflowFilePath;
-  }
-
-  return {
-    text: full.length > maxChars ? full.slice(0, maxChars) : full,
-    totalChars: full.length,
-    capped,
-    overflowFilePath,
-  };
-}
-
 function sanitizeTempFileToken(value: string | undefined, fallback: string): string {
   const trimmed = (value ?? "").trim();
   if (trimmed.length === 0) return fallback;
@@ -358,7 +209,6 @@ async function appendSectionOutput(params: {
   label: "stdout" | "stderr";
   captured: string;
   overflowFilePath?: string;
-  literalSecrets?: readonly string[];
 }) {
   await fs.appendFile(params.outputPath, `--- ${params.label} ---\n`, "utf8");
 
@@ -366,15 +216,7 @@ async function appendSectionOutput(params: {
     await fs.stat(params.overflowFilePath);
     const source = createReadStream(params.overflowFilePath);
     const destination = createWriteStream(params.outputPath, { flags: "a", mode: 0o600 });
-    if (params.literalSecrets && params.literalSecrets.length > 0) {
-      await pipeline(
-        source,
-        createBashOutputSanitizerTransform(params.literalSecrets),
-        destination,
-      );
-    } else {
-      await pipeline(source, destination);
-    }
+    await pipeline(source, destination);
     await fs.appendFile(params.outputPath, "\n", "utf8");
     return;
   }
@@ -393,7 +235,6 @@ async function maybeWriteTruncatedOutputFile(params: {
   stderr: string;
   stdoutOverflowPath?: string;
   stderrOverflowPath?: string;
-  literalSecrets?: readonly string[];
 }): Promise<string | undefined> {
   try {
     const header =
@@ -410,7 +251,6 @@ async function maybeWriteTruncatedOutputFile(params: {
       label: "stdout",
       captured: params.stdout,
       overflowFilePath: params.stdoutOverflowPath,
-      literalSecrets: params.literalSecrets,
     });
 
     await fs.appendFile(params.outputPath, "\n", "utf8");
@@ -420,7 +260,6 @@ async function maybeWriteTruncatedOutputFile(params: {
       label: "stderr",
       captured: params.stderr,
       overflowFilePath: params.stderrOverflowPath,
-      literalSecrets: params.literalSecrets,
     });
 
     await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
@@ -464,9 +303,23 @@ function limitBashOutput(
 
   const available = Math.max(0, MAX_BASH_OUTPUT_CHARS);
 
-  const stdoutPart = input.stdout.slice(0, available);
+  const sliceWithoutSplittingSurrogate = (value: string, maxChars: number): string => {
+    let end = Math.min(value.length, maxChars);
+    if (
+      end > 0 &&
+      /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") &&
+      /[\uDC00-\uDFFF]/u.test(value[end] ?? "")
+    ) {
+      end -= 1;
+    }
+    return value.slice(0, end);
+  };
+
+  const stdoutPart = sliceWithoutSplittingSurrogate(input.stdout, available);
   const stderrPart =
-    available > stdoutPart.length ? input.stderr.slice(0, available - stdoutPart.length) : "";
+    available > stdoutPart.length
+      ? sliceWithoutSplittingSurrogate(input.stderr, available - stdoutPart.length)
+      : "";
 
   return {
     stdout: stdoutPart,
@@ -892,9 +745,12 @@ export async function executeBash(
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
     const toolEnv = await loadToolEnv(env.dataDir);
-    const normalizedToolEnvSecrets = Object.values(toolEnv).map(stripAnsiEscapeSequences);
-    const captureMaxChars =
-      MAX_BASH_OUTPUT_CHARS + getLiteralRedactionOverlap(normalizedToolEnvSecrets);
+    const outputSecrets = [
+      ...Object.values(toolEnv),
+      ...Object.entries(githubEnv)
+        .filter(([name]) => name.includes("TOKEN"))
+        .map(([, value]) => value),
+    ].map(stripAnsiEscapeSequences);
     child = Bun.spawn(buildLocalSpawnArgs(command, effectiveStdinMode), {
       cwd: resolvedCwd,
       stdout: "pipe",
@@ -913,11 +769,13 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamTextCapped(child.stdout, captureMaxChars, {
+      readSanitizedStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
         overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
+        literalSecrets: outputSecrets,
       }),
-      readStreamTextCapped(child.stderr, captureMaxChars, {
+      readSanitizedStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
         overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
+        literalSecrets: outputSecrets,
       }),
       child.exited,
     ]);
@@ -926,8 +784,8 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout), normalizedToolEnvSecrets);
-    const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr), normalizedToolEnvSecrets);
+    const safeStdout = redactSecrets(stdout);
+    const safeStderr = redactSecrets(stderr);
 
     const durationMs = Date.now() - startedAt;
 
@@ -949,13 +807,12 @@ export async function executeBash(
             outputPath: truncatedOutputPaths.outputPath,
             requestId: context?.requestId,
             toolCallId,
-            stdout: normalizedToolEnvSecrets.length > 0 ? safeStdout : stdout,
-            stderr: normalizedToolEnvSecrets.length > 0 ? safeStderr : stderr,
+            stdout: safeStdout,
+            stderr: safeStderr,
             stdoutOverflowPath:
               stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
             stderrOverflowPath:
               stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
-            literalSecrets: normalizedToolEnvSecrets,
           })
         : undefined;
 

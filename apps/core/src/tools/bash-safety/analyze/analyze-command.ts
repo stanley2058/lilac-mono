@@ -17,11 +17,6 @@ export function analyzeCommandInternal(
     return null;
   }
 
-  // Check the raw command because shell parsers represent glob tokens as structured values.
-  if (/tool-env\.json/iu.test(command)) {
-    return { reason: "access to dynamic tool environment secrets", segment: command };
-  }
-
   const segments = splitShellCommands(command);
 
   // Strict mode: block if command couldn't be parsed (unclosed quotes, etc.)

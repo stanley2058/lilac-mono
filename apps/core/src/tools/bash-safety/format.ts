@@ -1,3 +1,7 @@
+import { redactLiteralSecrets } from "../bash-literal-redactor";
+
+export { redactLiteralSecrets } from "../bash-literal-redactor";
+
 type RedactFn = (text: string) => string;
 
 export interface FormatBlockedMessageInput {
@@ -50,17 +54,5 @@ export function redactSecrets(text: string, literalSecrets: readonly string[] = 
   result = result.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "<redacted>");
   result = result.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "<redacted>");
 
-  return result;
-}
-
-export function redactLiteralSecrets(text: string, literalSecrets: readonly string[]): string {
-  let result = text;
-
-  const uniqueSecrets = [...new Set(literalSecrets.filter((value) => value.length > 0))].sort(
-    (a, b) => b.length - a.length,
-  );
-  for (const secret of uniqueSecrets) {
-    result = result.split(secret).join("<redacted>");
-  }
   return result;
 }
