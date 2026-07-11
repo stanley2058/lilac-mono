@@ -75,7 +75,7 @@ describe("tool result output normalizer", () => {
       "",
       "[tool result truncated: 10 characters omitted]",
       "Complete output: tool-result://00000000-0000-0000-0000-000000000000",
-      "Use read_file with this URI, startOffset, and maxCharacters to inspect it.",
+      'Use read_file with this URI and start: { "type": "offset", "offset": 0 }. Reuse the returned nextStart unchanged while more content remains.',
       "",
       `quoted tail ${"y".repeat(50)}`,
     ].join("\n");

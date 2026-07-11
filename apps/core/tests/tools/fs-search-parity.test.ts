@@ -8,6 +8,7 @@ import {
   type EditFileResult,
   type GlobResult,
   type GrepResult,
+  type ReadFileResult,
 } from "@stanley2058/lilac-fs";
 
 const runnerPath = path.resolve(import.meta.dir, "../../src/ssh/remote-js/remote-runner.cjs");
@@ -120,6 +121,34 @@ describe("fs search parity (local vs remote runner)", () => {
 
   afterEach(async () => {
     await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it("read continuations preserve offset and line start modes", async () => {
+    await writeFile(path.join(baseDir, "src", "unicode.txt"), "ab😀\ncd");
+
+    for (const start of [
+      { type: "offset", offset: 2 } as const,
+      { type: "line", line: 1, column: 2 } as const,
+    ]) {
+      const input = { path: "src/unicode.txt", start, maxCharacters: 2 };
+      const local = await fsTool.readFile(input);
+      const remote = await runRemoteOp<ReadFileResult>({ cwd: baseDir, op: "fs.read_text", input });
+      expect(remote).toEqual(local);
+      if (!local.success || !local.nextStart) throw new Error("expected continuation");
+
+      const continuationInput = {
+        path: "src/unicode.txt",
+        start: local.nextStart,
+        maxCharacters: 2,
+      };
+      const localContinuation = await fsTool.readFile(continuationInput);
+      const remoteContinuation = await runRemoteOp<ReadFileResult>({
+        cwd: baseDir,
+        op: "fs.read_text",
+        input: continuationInput,
+      });
+      expect(remoteContinuation).toEqual(localContinuation);
+    }
   });
 
   it("glob default and detailed outputs match", async () => {

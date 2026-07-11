@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -38,7 +38,12 @@ describe("read_file tool-result resources", () => {
     }).read_file;
 
     const output = await readFile.execute!(
-      { path: created.uri, cwd: "ssh-host:/ignored", startOffset: 2, maxCharacters: 2 },
+      {
+        path: created.uri,
+        cwd: "ssh-host:/ignored",
+        start: { type: "offset", offset: 2 },
+        maxCharacters: 2,
+      },
       { toolCallId: "read-a", messages: [], context: {} },
     );
     expect(output).toEqual({
@@ -49,15 +54,63 @@ describe("read_file tool-result resources", () => {
       startOffset: 2,
       endOffset: 4,
       totalCharacters: 5,
-      nextOffset: 4,
+      nextStart: { type: "offset", offset: 4 },
       hasMore: true,
     });
 
     const next = await readFile.execute!(
-      { path: created.uri, startOffset: 4, maxCharacters: 10 },
+      { path: created.uri, start: { type: "offset", offset: 4 }, maxCharacters: 10 },
       { toolCallId: "read-next", messages: [], context: {} },
     );
     expect(next).toMatchObject({ content: "d", startOffset: 4, endOffset: 5, hasMore: false });
+  });
+
+  it("supports line starts for artifacts and offset starts for ordinary files", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      sessionId: "session-a",
+      requestId: "request-a",
+      toolCallId: "call-a",
+      toolName: "bash",
+      content: "first\nab😀cd",
+      ttlMs: 60_000,
+      maxBytesPerSession: 1024,
+    });
+    const readFile = fsTool(baseDir, {
+      toolResultArtifacts: store,
+      requestContext: { requestId: "request-a", sessionId: "session-a" },
+    }).read_file;
+
+    await writeFile(path.join(baseDir, "ordinary.txt"), "ab😀\ncd");
+
+    const artifactWithLine = await readFile.execute!(
+      {
+        path: created.uri,
+        start: { type: "line", line: 2, column: 2 },
+        maxCharacters: 2,
+      },
+      { toolCallId: "artifact-line", messages: [], context: {} },
+    );
+    const fileWithOffset = await readFile.execute!(
+      {
+        path: "ordinary.txt",
+        start: { type: "offset", offset: 2 },
+        maxCharacters: 2,
+      },
+      { toolCallId: "file-offset", messages: [], context: {} },
+    );
+
+    expect(artifactWithLine).toMatchObject({
+      success: true,
+      content: "😀c",
+      nextStart: { type: "line", line: 2, column: 4 },
+    });
+    expect(fileWithOffset).toMatchObject({
+      success: true,
+      content: "😀\n",
+      nextStart: { type: "offset", offset: 4 },
+    });
   });
 
   it("allows artifact reads but rejects filesystem paths in artifact-only mode", async () => {

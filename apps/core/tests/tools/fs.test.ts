@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "@stanley2058/lilac-fs";
+import { FileSystem, type ReadFileStart } from "@stanley2058/lilac-fs";
 
 describe("fs tool", () => {
   let baseDir: string;
@@ -46,7 +46,7 @@ describe("fs tool", () => {
 
     const paged = await fsTool.readFile({
       path: "a.txt",
-      startLine: 2,
+      start: { type: "line", line: 2 },
       maxLines: 1,
     });
 
@@ -56,6 +56,7 @@ describe("fs tool", () => {
     expect(paged.startLine).toBe(2);
     expect(paged.endLine).toBe(2);
     expect(paged.hasMoreLines).toBe(true);
+    expect(paged.nextStart).toEqual({ type: "line", line: 3 });
 
     if (paged.format === "raw") {
       expect(paged.content).toBe("line2");
@@ -65,7 +66,7 @@ describe("fs tool", () => {
 
     const numbered = await fsTool.readFile({
       path: "a.txt",
-      startLine: 2,
+      start: { type: "line", line: 2 },
       maxLines: 1,
       format: "numbered",
     });
@@ -79,6 +80,90 @@ describe("fs tool", () => {
     }
   });
 
+  it("readFile supports absolute Unicode offsets including newlines", async () => {
+    await writeFile(join(baseDir, "offset.txt"), "A😀\nBC");
+
+    const atNewline = await fsTool.readFile({
+      path: "offset.txt",
+      start: { type: "offset", offset: 2 },
+    });
+    expect(atNewline.success).toBe(true);
+    if (!atNewline.success || atNewline.format !== "raw") return;
+    expect(atNewline.content).toBe("\nBC");
+    expect(atNewline.startLine).toBe(1);
+
+    const afterNewline = await fsTool.readFile({
+      path: "offset.txt",
+      start: { type: "offset", offset: 3 },
+    });
+    expect(afterNewline.success).toBe(true);
+    if (!afterNewline.success || afterNewline.format !== "raw") return;
+    expect(afterNewline.content).toBe("BC");
+    expect(afterNewline.startLine).toBe(2);
+  });
+
+  it("readFile formats numbered partial lines and degrades partial hashline reads", async () => {
+    await writeFile(join(baseDir, "partial.txt"), "alpha\nbeta");
+
+    const numbered = await fsTool.readFile({
+      path: "partial.txt",
+      start: { type: "offset", offset: 2 },
+      format: "numbered",
+    });
+    expect(numbered.success).toBe(true);
+    if (!numbered.success || numbered.format !== "numbered") return;
+    expect(numbered.numberedContent).toBe("1| pha\n2| beta");
+
+    const hashline = await fsTool.readFile({
+      path: "partial.txt",
+      start: { type: "offset", offset: 2 },
+      format: "hashline",
+    });
+    expect(hashline.success).toBe(true);
+    if (!hashline.success || hashline.format !== "raw") return;
+    expect(hashline.content).toBe("pha\nbeta");
+    expect(hashline.degradedFromHashline).toBe(true);
+
+    const lineColumnHashline = await fsTool.readFile({
+      path: "partial.txt",
+      start: { type: "line", line: 1, column: 2 },
+      format: "hashline",
+    });
+    expect(lineColumnHashline.success).toBe(true);
+    if (!lineColumnHashline.success || lineColumnHashline.format !== "raw") return;
+    expect(lineColumnHashline.content).toBe("pha\nbeta");
+    expect(lineColumnHashline.degradedFromHashline).toBe(true);
+
+    for (const format of ["numbered", "hashline"] as const) {
+      const truncated = await fsTool.readFile({
+        path: "partial.txt",
+        start: { type: "offset", offset: 2 },
+        format,
+        maxCharacters: 2,
+      });
+      expect(truncated.success).toBe(true);
+      if (!truncated.success || truncated.format !== "raw") {
+        throw new Error("expected degraded raw read");
+      }
+      expect(truncated.content).toBe("ph");
+      expect(truncated.nextStart).toEqual({ type: "offset", offset: 4 });
+
+      const lineLimited = await fsTool.readFile({
+        path: "partial.txt",
+        start: { type: "offset", offset: 0 },
+        format,
+        maxLines: 1,
+        maxCharacters: 6,
+      });
+      expect(lineLimited.success).toBe(true);
+      if (!lineLimited.success || lineLimited.format !== "raw") {
+        throw new Error("expected line-limited degraded raw read");
+      }
+      expect(lineLimited.content).toBe("alpha\n");
+      expect(lineLimited.nextStart).toEqual({ type: "offset", offset: 6 });
+    }
+  });
+
   it("readFile character truncation reports a continuation that cannot skip a long line", async () => {
     await writeFile(join(baseDir, "long-line.txt"), `${"x".repeat(100)}\nsecond`);
     const res = await fsTool.readFile({ path: "long-line.txt", maxCharacters: 10 });
@@ -86,44 +171,128 @@ describe("fs tool", () => {
     if (!res.success) return;
     expect(res.truncatedByChars).toBe(true);
     expect(res.endLine).toBe(0);
-    expect(res.nextStartLine).toBe(1);
-    expect(res.nextStartColumn).toBe(10);
+    expect(res.nextStart).toEqual({ type: "line", line: 1, column: 10 });
     expect(res.hasMoreLines).toBe(true);
+    if (!res.nextStart) throw new Error("expected continuation");
 
     const continued = await fsTool.readFile({
       path: "long-line.txt",
-      startLine: res.nextStartLine,
-      startColumn: res.nextStartColumn,
+      start: res.nextStart,
       maxCharacters: 10,
     });
     expect(continued.success).toBe(true);
     if (continued.success && continued.format === "raw") {
       expect(continued.content).toBe("x".repeat(10));
-      expect(continued.nextStartColumn).toBe(20);
+      expect(continued.nextStart).toEqual({ type: "line", line: 1, column: 20 });
     }
   });
 
-  it("readFile degrades formatted truncation to Unicode-safe raw continuation", async () => {
-    await writeFile(join(baseDir, "formatted-long-line.txt"), "😀abc");
+  it("readFile preserves offset mode in Unicode-safe character continuations", async () => {
+    await writeFile(join(baseDir, "offset-continuation.txt"), "😀abc");
     const first = await fsTool.readFile({
-      path: "formatted-long-line.txt",
-      format: "numbered",
+      path: "offset-continuation.txt",
+      start: { type: "offset", offset: 0 },
       maxCharacters: 1,
     });
     expect(first.success).toBe(true);
     if (!first.success || first.format !== "raw") return;
     expect(first.content).toBe("😀");
-    expect(first.nextStartLine).toBe(1);
-    expect(first.nextStartColumn).toBe(1);
+    expect(first.nextStart).toEqual({ type: "offset", offset: 1 });
+    if (!first.nextStart) throw new Error("expected continuation");
 
     const second = await fsTool.readFile({
-      path: "formatted-long-line.txt",
-      startLine: first.nextStartLine,
-      startColumn: first.nextStartColumn,
+      path: "offset-continuation.txt",
+      start: first.nextStart,
       maxCharacters: 1,
     });
     expect(second.success).toBe(true);
     if (second.success && second.format === "raw") expect(second.content).toBe("a");
+  });
+
+  it("readFile returns mode-preserving continuations for line windows", async () => {
+    await writeFile(join(baseDir, "windows.txt"), "line1\nline2\nline3");
+
+    const defaultStart = await fsTool.readFile({ path: "windows.txt", maxLines: 1 });
+    expect(defaultStart.success).toBe(true);
+    if (!defaultStart.success) return;
+    expect(defaultStart.nextStart).toEqual({ type: "line", line: 2 });
+
+    const offsetStart = await fsTool.readFile({
+      path: "windows.txt",
+      start: { type: "offset", offset: 1 },
+      maxLines: 1,
+    });
+    expect(offsetStart.success).toBe(true);
+    if (!offsetStart.success || offsetStart.format !== "raw") return;
+    expect(offsetStart.content).toBe("ine1\n");
+    expect(offsetStart.nextStart).toEqual({ type: "offset", offset: 6 });
+  });
+
+  it("reconstructs source exactly from offset pages limited by lines", async () => {
+    const source = "one\n😀two\nthree";
+    await writeFile(join(baseDir, "offset-pages.txt"), source);
+    const chunks: string[] = [];
+    let start: ReadFileStart = { type: "offset", offset: 0 };
+
+    for (let page = 0; page < 10; page += 1) {
+      const result = await fsTool.readFile({ path: "offset-pages.txt", start, maxLines: 1 });
+      expect(result.success).toBe(true);
+      if (!result.success || result.format !== "raw") throw new Error("expected raw page");
+      chunks.push(result.content);
+      if (!result.nextStart) break;
+      expect(result.nextStart.type).toBe("offset");
+      if (result.nextStart.type !== "offset" || start.type !== "offset") {
+        throw new Error("expected offset continuation");
+      }
+      expect(result.nextStart.offset).toBeGreaterThan(start.offset);
+      start = result.nextStart;
+    }
+
+    expect(chunks.join("")).toBe(source);
+  });
+
+  it("readFile clamps maxLines to one and returns an advancing continuation", async () => {
+    await writeFile(join(baseDir, "zero-lines.txt"), "first\nsecond");
+
+    const lineStart = await fsTool.readFile({ path: "zero-lines.txt", maxLines: 0 });
+    expect(lineStart.success).toBe(true);
+    if (!lineStart.success || lineStart.format !== "raw") return;
+    expect(lineStart.content).toBe("first");
+    expect(lineStart.nextStart).toEqual({ type: "line", line: 2 });
+
+    const offsetStart = await fsTool.readFile({
+      path: "zero-lines.txt",
+      start: { type: "offset", offset: 0 },
+      maxLines: 0,
+    });
+    expect(offsetStart.success).toBe(true);
+    if (!offsetStart.success || offsetStart.format !== "raw") return;
+    expect(offsetStart.content).toBe("first\n");
+    expect(offsetStart.nextStart).toEqual({ type: "offset", offset: 6 });
+  });
+
+  it("readFile degrades numbered and hashline truncation to Unicode-safe raw continuation", async () => {
+    await writeFile(join(baseDir, "formatted-long-line.txt"), "😀abc");
+    for (const format of ["numbered", "hashline"] as const) {
+      const first = await fsTool.readFile({
+        path: "formatted-long-line.txt",
+        format,
+        maxCharacters: 1,
+      });
+      expect(first.success).toBe(true);
+      if (!first.success || first.format !== "raw") throw new Error("expected degraded raw read");
+      expect(first.content).toBe("😀");
+      expect(first.nextStart).toEqual({ type: "line", line: 1, column: 1 });
+      if (!first.nextStart) throw new Error("expected continuation");
+
+      const second = await fsTool.readFile({
+        path: "formatted-long-line.txt",
+        start: first.nextStart,
+        maxCharacters: 1,
+      });
+      expect(second.success).toBe(true);
+      if (second.success && second.format === "raw") expect(second.content).toBe("a");
+    }
   });
 
   it("readFile streams a small late window while hashing the complete file", async () => {
@@ -132,7 +301,7 @@ describe("fs tool", () => {
 
     const res = await fsTool.readFile({
       path: "large.txt",
-      startLine: 2,
+      start: { type: "line", line: 2 },
       maxLines: 1,
       maxCharacters: 10,
     });

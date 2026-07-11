@@ -411,7 +411,7 @@ export function withLimitedBashOutput(
   const originalStderrBytes =
     options.originalStderrBytes ?? Buffer.byteLength(output.stderr, "utf8");
   const message = options.artifactUri
-    ? `Bash output was truncated. Complete output: ${options.artifactUri}. Use read_file with this URI, startOffset, and maxCharacters to inspect it.`
+    ? `Bash output was truncated. Complete output: ${options.artifactUri}. Use read_file with this URI and start: { "type": "offset", "offset": 0 }. Reuse the returned nextStart unchanged while more content remains.`
     : "Bash output was truncated and the complete output could not be retained. Re-run the command with narrower output if needed.";
 
   logger.info("tool.result.truncated", {

@@ -131,6 +131,21 @@ describe("fs tool search wrappers", () => {
       readFileInputZod.safeParse({ path: "tool-result://result", maxCharacters: 40 * 1024 + 1 })
         .success,
     ).toBe(false);
+    expect(
+      readFileInputZod.safeParse({
+        path: "a.txt",
+        start: { type: "line", line: 2, column: 3 },
+      }).success,
+    ).toBe(true);
+    expect(
+      readFileInputZod.safeParse({
+        path: "tool-result://result",
+        start: { type: "offset", offset: 4 },
+      }).success,
+    ).toBe(true);
+    expect(
+      readFileInputZod.safeParse({ path: "a.txt", start: { type: "line", line: 0 } }).success,
+    ).toBe(false);
   });
 
   it("glob returns metadata in detailed mode", async () => {

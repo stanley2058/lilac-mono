@@ -7,7 +7,7 @@ import { redactSecrets } from "../tools/bash-safety/format";
 
 const TRUNCATION_MARKER = "[tool result truncated:";
 const GENERATED_TRUNCATION_ENVELOPE =
-  /^(?<head>[\s\S]*)\n\n\[tool result truncated: \d+ characters omitted\]\n(?:Complete output: tool-result:\/\/[0-9a-f-]{36}\nUse read_file with this URI, startOffset, and maxCharacters to inspect it\.|The complete output could not be retained\. Re-run the tool with narrower output if needed\.)\n\n(?<tail>[\s\S]*)$/u;
+  /^(?<head>[\s\S]*)\n\n\[tool result truncated: \d+ characters omitted\]\n(?:Complete output: tool-result:\/\/[0-9a-f-]{36}\nUse read_file with this URI and start: \{ "type": "offset", "offset": 0 \}\. Reuse the returned nextStart unchanged while more content remains\.|The complete output could not be retained\. Re-run the tool with narrower output if needed\.)\n\n(?<tail>[\s\S]*)$/u;
 const UNSERIALIZABLE_JSON_OUTPUT = "[tool result is not JSON-serializable]";
 
 type NormalizerOwner = {
@@ -38,7 +38,7 @@ function buildTruncatedText(value: string, maxPreviewBytes: number, uri?: string
     Array.from(value).length - Array.from(head).length - Array.from(tail).length,
   );
   const retrieval = uri
-    ? `Complete output: ${uri}\nUse read_file with this URI, startOffset, and maxCharacters to inspect it.`
+    ? `Complete output: ${uri}\nUse read_file with this URI and start: { "type": "offset", "offset": 0 }. Reuse the returned nextStart unchanged while more content remains.`
     : "The complete output could not be retained. Re-run the tool with narrower output if needed.";
 
   return `${head}\n\n${TRUNCATION_MARKER} ${omittedCharacters} characters omitted]\n${retrieval}\n\n${tail}`;

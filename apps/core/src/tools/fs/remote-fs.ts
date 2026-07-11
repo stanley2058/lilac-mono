@@ -1,4 +1,9 @@
-import type { EffectiveSearchBackend, FsBackend, FuzzySearchResult } from "@stanley2058/lilac-fs";
+import type {
+  EffectiveSearchBackend,
+  FsBackend,
+  FuzzySearchResult,
+  ReadFileStart,
+} from "@stanley2058/lilac-fs";
 import { createRequire } from "node:module";
 
 import { sshExecBash, sshExecScriptJson } from "../../ssh/ssh-exec";
@@ -9,8 +14,7 @@ const requirePackageJson = createRequire(import.meta.url);
 
 export type RemoteReadTextInput = {
   path: string;
-  startLine?: number;
-  startColumn?: number;
+  start?: ReadFileStart;
   maxLines?: number;
   maxCharacters?: number;
   format?: "raw" | "numbered" | "hashline";
@@ -26,8 +30,7 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "raw";
@@ -42,8 +45,7 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "numbered";
@@ -58,8 +60,7 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "hashline";

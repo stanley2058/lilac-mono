@@ -3,14 +3,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { ReadFileStart } from "@stanley2058/lilac-fs";
+
 import { handleRequest } from "../src/cli";
 
 type ReadOutput = {
   success: boolean;
   format?: string;
   content?: string;
-  nextStartLine?: number;
-  nextStartColumn?: number;
+  nextStart?: ReadFileStart;
 };
 
 async function runRead(cwd: string, input: Record<string, unknown>): Promise<ReadOutput> {
@@ -28,29 +29,54 @@ describe("remote fs runner reads", () => {
     await rm(baseDir, { recursive: true, force: true });
   });
 
-  it("forwards startColumn for long-line continuation", async () => {
+  it("forwards a line start for long-line continuation", async () => {
     await writeFile(path.join(baseDir, "long.txt"), `${"x".repeat(30)}\n`);
     const first = await runRead(baseDir, { path: "long.txt", maxCharacters: 10 });
     expect(first).toMatchObject({
       success: true,
       format: "raw",
       content: "x".repeat(10),
-      nextStartLine: 1,
-      nextStartColumn: 10,
+      nextStart: { type: "line", line: 1, column: 10 },
     });
 
     const second = await runRead(baseDir, {
       path: "long.txt",
-      startLine: first.nextStartLine,
-      startColumn: first.nextStartColumn,
+      start: first.nextStart,
       maxCharacters: 10,
     });
     expect(second).toMatchObject({
       success: true,
       format: "raw",
       content: "x".repeat(10),
-      nextStartLine: 1,
-      nextStartColumn: 20,
+      nextStart: { type: "line", line: 1, column: 20 },
+    });
+  });
+
+  it("forwards an offset start across Unicode characters and newlines", async () => {
+    await writeFile(path.join(baseDir, "unicode.txt"), "a😀\nbé\n終z");
+
+    const first = await runRead(baseDir, {
+      path: "unicode.txt",
+      start: { type: "offset", offset: 1 },
+      maxCharacters: 3,
+    });
+    expect(first).toMatchObject({
+      success: true,
+      format: "raw",
+      content: "😀\nb",
+      nextStart: { type: "offset", offset: 4 },
+    });
+
+    const second = await runRead(baseDir, {
+      path: "unicode.txt",
+      start: first.nextStart,
+      maxCharacters: 3,
+    });
+    expect(second).toMatchObject({
+      success: true,
+      format: "raw",
+      content: "é\n終",
+      nextStart: { type: "offset", offset: 7 },
     });
   });
 

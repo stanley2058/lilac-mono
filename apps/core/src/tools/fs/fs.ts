@@ -11,6 +11,7 @@ import {
   type GrepMode,
   type HashlineEdit,
   type HashlineWarning,
+  type ReadFileStart,
 } from "@stanley2058/lilac-fs";
 import { createLogger, env } from "@stanley2058/lilac-utils";
 import { fileTypeFromBuffer } from "file-type";
@@ -184,18 +185,26 @@ function buildReadFileInputZod(hashlineEnabled: boolean) {
       .describe(
         "Optional working directory to resolve relative paths against (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias. Defaults to the tool root.",
       ),
-    startLine: z
-      .number()
+    start: z
+      .discriminatedUnion("type", [
+        z.object({
+          type: z.literal("offset"),
+          offset: z.number().int().nonnegative(),
+        }),
+        z.object({
+          type: z.literal("line"),
+          line: z.number().int().positive(),
+          column: z.number().int().nonnegative().optional(),
+        }),
+      ])
       .optional()
-      .describe("1-based line number to start reading from. Defaults to 1."),
-    startColumn: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe("0-based character offset within startLine. Defaults to 0."),
+      .describe(
+        "Start or continuation position for any text resource. Use {type:'offset',offset:N} for an absolute Unicode character position, or {type:'line',line:N,column?:N} for a line position. Lines are 1-based; offsets and columns are 0-based.",
+      ),
     maxLines: z
       .number()
+      .int()
+      .positive()
       .optional()
       .describe("Maximum number of lines to return. Defaults to 2000."),
     maxCharacters: z
@@ -205,12 +214,6 @@ function buildReadFileInputZod(hashlineEnabled: boolean) {
       .max(40 * 1024)
       .optional()
       .describe("Maximum number of characters to return (max: 40960). Defaults to 10000."),
-    startOffset: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe("0-based character offset for tool-result:// resources. Defaults to 0."),
     format: (hashlineEnabled
       ? z.enum(["raw", "numbered", "hashline"])
       : z.enum(["raw", "numbered"])
@@ -233,11 +236,9 @@ export const readFileInputZod = buildReadFileInputZod(false);
 type ReadFileInput = {
   path: string;
   cwd?: string;
-  startLine?: number;
-  startColumn?: number;
+  start?: ReadFileStart;
   maxLines?: number;
   maxCharacters?: number;
-  startOffset?: number;
   format?: "raw" | "numbered" | "hashline";
   dangerouslyAllow?: boolean;
 };
@@ -833,6 +834,20 @@ const instructionFieldsZod = z.object({
   degradedFromHashline: z.boolean().optional(),
 });
 
+const readFileOffsetStartZod = z.object({
+  type: z.literal("offset"),
+  offset: z.number().int().nonnegative(),
+});
+const readFileLineStartZod = z.object({
+  type: z.literal("line"),
+  line: z.number().int().positive(),
+  column: z.number().int().nonnegative().optional(),
+});
+const readFileStartZod = z.discriminatedUnion("type", [
+  readFileOffsetStartZod,
+  readFileLineStartZod,
+]);
+
 const readFileSuccessBaseZod = z
   .object({
     success: z.literal(true),
@@ -843,8 +858,7 @@ const readFileSuccessBaseZod = z
     totalLines: z.number(),
     hasMoreLines: z.boolean(),
     truncatedByChars: z.boolean(),
-    nextStartLine: z.number().optional(),
-    nextStartColumn: z.number().optional(),
+    nextStart: readFileStartZod.optional(),
   })
   .extend(instructionFieldsZod.shape);
 
@@ -868,7 +882,7 @@ const readFileArtifactSuccessZod = z.object({
   startOffset: z.number(),
   endOffset: z.number(),
   totalCharacters: z.number(),
-  nextOffset: z.number().optional(),
+  nextStart: readFileStartZod.optional(),
   hasMore: z.boolean(),
 });
 
@@ -919,7 +933,7 @@ type ReadFileOutput =
       startOffset: number;
       endOffset: number;
       totalCharacters: number;
-      nextOffset?: number;
+      nextStart?: ReadFileStart;
       hasMore: boolean;
     }
   | ({
@@ -931,8 +945,7 @@ type ReadFileOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       format: "raw";
       content: string;
     } & InstructionFields)
@@ -945,8 +958,7 @@ type ReadFileOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       format: "numbered";
       numberedContent: string;
     } & InstructionFields)
@@ -959,8 +971,7 @@ type ReadFileOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
-      nextStartLine?: number;
-      nextStartColumn?: number;
+      nextStart?: ReadFileStart;
       format: "hashline";
       hashlineContent: string;
     } & InstructionFields)
@@ -1091,7 +1102,7 @@ export function fsTool(
     }
 
     parts.push(
-      "Use character-based startOffset and maxCharacters to page through tool-result:// resources.",
+      "Use maxCharacters with either absolute offset or line/column start positions to page through text resources. Absolute offsets count Unicode characters including newlines. Reuse nextStart unchanged to continue.",
     );
     parts.push("Denylisted paths require dangerouslyAllow=true.");
     return parts.join(" ");
@@ -1245,8 +1256,9 @@ export function fsTool(
           const artifact =
             opts?.toolResultArtifacts && sessionId
               ? await opts.toolResultArtifacts.readWindow(input.path, sessionId, {
-                  startOffset: input.startOffset ?? 0,
+                  start: input.start ?? { type: "offset", offset: 0 },
                   maxCharacters: Math.max(1, input.maxCharacters ?? 10_000),
+                  maxLines: Math.max(1, input.maxLines ?? 2_000),
                 })
               : { ok: false as const };
           if (!artifact.ok) {
@@ -1268,7 +1280,7 @@ export function fsTool(
             startOffset: artifact.startOffset,
             endOffset: artifact.endOffset,
             totalCharacters: artifact.totalCharacters,
-            ...(artifact.hasMore ? { nextOffset: artifact.endOffset } : {}),
+            ...(artifact.nextStart ? { nextStart: artifact.nextStart } : {}),
             hasMore: artifact.hasMore,
           };
         }
@@ -1291,8 +1303,7 @@ export function fsTool(
           path: input.path,
           cwd: opCwd,
           target: cwdTarget.kind,
-          startLine: input.startLine,
-          startColumn: input.startColumn,
+          start: input.start,
           maxLines: input.maxLines,
           maxCharacters: input.maxCharacters,
           format: input.format ?? "raw",
@@ -1453,7 +1464,10 @@ export function fsTool(
                 const remoteRes = await remoteReadTextFile({
                   host: cwdTarget.host,
                   cwd: cwdTarget.cwd,
-                  input,
+                  input: {
+                    ...input,
+                    start: input.start,
+                  },
                   denyPaths: remoteDenyPaths,
                 });
                 if (remoteRes.success) {
@@ -1467,7 +1481,14 @@ export function fsTool(
                 }
                 return remoteRes;
               })()
-            : await fileSystem.readFile({ ...input, dangerouslyAllow }, opCwd);
+            : await fileSystem.readFile(
+                {
+                  ...input,
+                  start: input.start,
+                  dangerouslyAllow,
+                },
+                opCwd,
+              );
 
         const resQualified = (() => {
           if (cwdTarget.kind !== "ssh") return res;

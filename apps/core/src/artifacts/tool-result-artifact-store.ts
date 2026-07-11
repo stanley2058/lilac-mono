@@ -13,6 +13,10 @@ export const TOOL_RESULT_UNAVAILABLE_MESSAGE =
 // Four-byte Unicode characters still fit within the configured 40 KiB raw preview budget.
 export const TOOL_RESULT_MAX_PAGE_CHARACTERS = 10 * 1024;
 
+export type ToolResultArtifactStart =
+  | { type: "offset"; offset: number }
+  | { type: "line"; line: number; column?: number };
+
 type ArtifactMetadata = {
   id: string;
   storageKey: string;
@@ -70,7 +74,7 @@ export type ToolResultArtifactStore = {
   readWindow(
     uri: string,
     sessionId: string,
-    options: { startOffset: number; maxCharacters: number },
+    options: { start: ToolResultArtifactStart; maxCharacters: number; maxLines: number },
   ): Promise<
     | {
         ok: true;
@@ -83,6 +87,7 @@ export type ToolResultArtifactStore = {
         endOffset: number;
         totalCharacters: number;
         hasMore: boolean;
+        nextStart?: ToolResultArtifactStart;
       }
     | { ok: false }
   >;
@@ -322,9 +327,17 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
 
   async function readEncryptedWindow(
     storageKey: string,
-    startOffset: number,
+    start: ToolResultArtifactStart,
     maxCharacters: number,
-  ): Promise<{ content: string; totalCharacters: number }> {
+    maxLines: number,
+  ): Promise<{
+    content: string;
+    startOffset: number;
+    endOffset: number;
+    totalCharacters: number;
+    endLine: number;
+    endColumn: number;
+  }> {
     const filePath = contentPath(storageKey);
     const handle = await fs.open(filePath, "r");
     let size: number;
@@ -345,13 +358,49 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
     decipher.setAuthTag(authTag);
     const decoder = new StringDecoder("utf8");
     let totalCharacters = 0;
+    let line = 1;
+    let column = 0;
+    let selectedStartOffset: number | undefined;
+    let selectedEndOffset: number | undefined;
+    let selectedEndLine: number | undefined;
+    let selectedEndColumn: number | undefined;
+    let selectedLines = 1;
     const selected: string[] = [];
     const consume = (text: string) => {
       for (const character of text) {
-        if (totalCharacters >= startOffset && selected.length < maxCharacters) {
-          selected.push(character);
+        if (selectedStartOffset === undefined) {
+          const reachedStart =
+            start.type === "offset"
+              ? totalCharacters >= start.offset
+              : line === start.line && (column >= (start.column ?? 0) || character === "\n");
+          if (reachedStart) selectedStartOffset = totalCharacters;
+        }
+        let selectionEnds = false;
+        if (selectedStartOffset !== undefined && selectedEndOffset === undefined) {
+          if (character === "\n" && selectedLines >= maxLines) {
+            if (start.type === "offset") selected.push(character);
+            selectionEnds = true;
+          } else {
+            selected.push(character);
+            if (selected.length >= maxCharacters) {
+              selectionEnds = true;
+            } else if (character === "\n") {
+              selectedLines += 1;
+            }
+          }
         }
         totalCharacters += 1;
+        if (character === "\n") {
+          line += 1;
+          column = 0;
+        } else {
+          column += 1;
+        }
+        if (selectionEnds) {
+          selectedEndOffset = totalCharacters;
+          selectedEndLine = line;
+          selectedEndColumn = column;
+        }
       }
     };
 
@@ -365,7 +414,15 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
       decipher.final();
     }
     consume(decoder.end());
-    return { content: selected.join(""), totalCharacters };
+    const startOffset = selectedStartOffset ?? totalCharacters;
+    return {
+      content: selected.join(""),
+      startOffset,
+      endOffset: selectedEndOffset ?? totalCharacters,
+      totalCharacters,
+      endLine: selectedEndLine ?? line,
+      endColumn: selectedEndColumn ?? column,
+    };
   }
 
   return {
@@ -445,9 +502,24 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
         if (!metadata || metadata.sessionId !== sessionId) return { ok: false };
 
         try {
-          const startOffset = Number.isFinite(options.startOffset)
-            ? Math.max(0, Math.floor(options.startOffset))
-            : 0;
+          const start: ToolResultArtifactStart =
+            options.start.type === "offset"
+              ? {
+                  type: "offset",
+                  offset: Number.isFinite(options.start.offset)
+                    ? Math.max(0, Math.floor(options.start.offset))
+                    : 0,
+                }
+              : {
+                  type: "line",
+                  line: Number.isFinite(options.start.line)
+                    ? Math.max(1, Math.floor(options.start.line))
+                    : 1,
+                  column:
+                    options.start.column !== undefined && Number.isFinite(options.start.column)
+                      ? Math.max(0, Math.floor(options.start.column))
+                      : 0,
+                };
           const requestedCharacters = Number.isFinite(options.maxCharacters)
             ? Math.floor(options.maxCharacters)
             : TOOL_RESULT_MAX_PAGE_CHARACTERS;
@@ -455,9 +527,21 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
             TOOL_RESULT_MAX_PAGE_CHARACTERS,
             Math.max(1, requestedCharacters),
           );
-          const window = await readEncryptedWindow(metadata.storageKey, startOffset, maxCharacters);
-          const normalizedStartOffset = Math.min(startOffset, window.totalCharacters);
-          const endOffset = normalizedStartOffset + Array.from(window.content).length;
+          const maxLines = Number.isFinite(options.maxLines)
+            ? Math.max(1, Math.floor(options.maxLines))
+            : 1;
+          const window = await readEncryptedWindow(
+            metadata.storageKey,
+            start,
+            maxCharacters,
+            maxLines,
+          );
+          const hasMore = window.endOffset < window.totalCharacters;
+          const nextStart = hasMore
+            ? start.type === "offset"
+              ? ({ type: "offset", offset: window.endOffset } as const)
+              : ({ type: "line", line: window.endLine, column: window.endColumn } as const)
+            : undefined;
           logger.info("tool.artifact.read", { bytes: metadata.bytes });
           return {
             ok: true,
@@ -466,10 +550,11 @@ export function createToolResultArtifactStore(rootDir: string): ToolResultArtifa
             bytes: metadata.bytes,
             createdAt: metadata.createdAt,
             expiresAt: metadata.expiresAt,
-            startOffset: normalizedStartOffset,
-            endOffset,
+            startOffset: window.startOffset,
+            endOffset: window.endOffset,
             totalCharacters: window.totalCharacters,
-            hasMore: endOffset < window.totalCharacters,
+            hasMore,
+            ...(nextStart ? { nextStart } : {}),
           };
         } catch {
           await removeArtifact(metadata.storageKey);

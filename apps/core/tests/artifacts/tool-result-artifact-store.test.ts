@@ -44,6 +44,13 @@ describe("tool result artifact store", () => {
       content: "hello",
     });
     expect(await store.read(created.uri, "session-b")).toEqual({ ok: false });
+    expect(
+      await store.readWindow(created.uri, "session-b", {
+        start: { type: "offset", offset: 0 },
+        maxCharacters: 10,
+        maxLines: 10,
+      }),
+    ).toEqual({ ok: false });
     const storedEntries = await readdir(store.rootDir);
     expect(storedEntries.some((entry) => entry.includes(created.id))).toBe(false);
     const encryptedContentPath = path.join(
@@ -164,15 +171,320 @@ describe("tool result artifact store", () => {
     });
 
     const maximum = await store.readWindow(created.uri, "session-a", {
-      startOffset: 0,
+      start: { type: "offset", offset: 0 },
       maxCharacters: Number.MAX_SAFE_INTEGER,
+      maxLines: 1,
     });
     expect(maximum.ok && maximum.content.length).toBe(TOOL_RESULT_MAX_PAGE_CHARACTERS);
     const positive = await store.readWindow(created.uri, "session-a", {
-      startOffset: 0,
+      start: { type: "offset", offset: 0 },
       maxCharacters: 0,
+      maxLines: 0,
     });
     expect(positive.ok && positive.content.length).toBe(1);
+  });
+
+  it("reads offset windows in zero-based Unicode characters", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("A😀\nβZ"),
+      maxBytesPerSession: 100,
+    });
+
+    const result = await store.readWindow(created.uri, "session-a", {
+      start: { type: "offset", offset: 1 },
+      maxCharacters: 2,
+      maxLines: 10,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "😀\n",
+      startOffset: 1,
+      endOffset: 3,
+      totalCharacters: 5,
+      hasMore: true,
+      nextStart: { type: "offset", offset: 3 },
+    });
+  });
+
+  it("reads multiline windows from one-based lines and Unicode columns", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("zero\n😀ab\nlast"),
+      maxBytesPerSession: 100,
+    });
+
+    const result = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 2, column: 1 },
+      maxCharacters: 4,
+      maxLines: 10,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "ab\nl",
+      startOffset: 6,
+      endOffset: 10,
+      totalCharacters: 13,
+      hasMore: true,
+      nextStart: { type: "line", line: 3, column: 1 },
+    });
+    if (!result.ok || !result.nextStart) throw new Error("Expected a continuation");
+    const continuation = await store.readWindow(created.uri, "session-a", {
+      start: result.nextStart,
+      maxCharacters: 10,
+      maxLines: 10,
+    });
+    expect(continuation).toMatchObject({
+      ok: true,
+      content: "ast",
+      startOffset: 10,
+      endOffset: 13,
+      hasMore: false,
+    });
+  });
+
+  it("clamps line columns to the line end", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("one\n二三\nend"),
+      maxBytesPerSession: 100,
+    });
+
+    const result = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 2, column: 99 },
+      maxCharacters: 2,
+      maxLines: 10,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "\ne",
+      startOffset: 6,
+      endOffset: 8,
+      hasMore: true,
+      nextStart: { type: "line", line: 3, column: 1 },
+    });
+  });
+
+  it("normalizes starts beyond EOF to an empty EOF window", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("a😀\nlast"),
+      maxBytesPerSession: 100,
+    });
+
+    const offset = await store.readWindow(created.uri, "session-a", {
+      start: { type: "offset", offset: 999 },
+      maxCharacters: 10,
+      maxLines: 10,
+    });
+    const line = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 999, column: 999 },
+      maxCharacters: 10,
+      maxLines: 10,
+    });
+
+    expect(offset).toMatchObject({
+      ok: true,
+      content: "",
+      startOffset: 7,
+      endOffset: 7,
+      totalCharacters: 7,
+      hasMore: false,
+    });
+    expect(line).toMatchObject({
+      ok: true,
+      content: "",
+      startOffset: 7,
+      endOffset: 7,
+      totalCharacters: 7,
+      hasMore: false,
+    });
+    expect(offset.ok && offset.nextStart).toBeUndefined();
+    expect(line.ok && line.nextStart).toBeUndefined();
+  });
+
+  it("caps and continues a long Unicode line exactly", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const content = "😀".repeat(TOOL_RESULT_MAX_PAGE_CHARACTERS + 2);
+    const created = await store.create({
+      ...artifactParams(content),
+      maxBytesPerSession: Buffer.byteLength(content) + 100,
+    });
+
+    const result = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 1 },
+      maxCharacters: Number.MAX_SAFE_INTEGER,
+      maxLines: 1,
+    });
+
+    expect(result.ok && Array.from(result.content)).toHaveLength(TOOL_RESULT_MAX_PAGE_CHARACTERS);
+    expect(result).toMatchObject({
+      ok: true,
+      startOffset: 0,
+      endOffset: TOOL_RESULT_MAX_PAGE_CHARACTERS,
+      totalCharacters: TOOL_RESULT_MAX_PAGE_CHARACTERS + 2,
+      hasMore: true,
+      nextStart: {
+        type: "line",
+        line: 1,
+        column: TOOL_RESULT_MAX_PAGE_CHARACTERS,
+      },
+    });
+  });
+
+  it("keeps offset pages source-exact and line pages line-oriented", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("zero\none\ntwo"),
+      maxBytesPerSession: 100,
+    });
+
+    const offset = await store.readWindow(created.uri, "session-a", {
+      start: { type: "offset", offset: 2 },
+      maxCharacters: 100,
+      maxLines: 1,
+    });
+    const line = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 2, column: 1 },
+      maxCharacters: 100,
+      maxLines: 1,
+    });
+
+    expect(offset).toMatchObject({
+      ok: true,
+      content: "ro\n",
+      startOffset: 2,
+      endOffset: 5,
+      hasMore: true,
+      nextStart: { type: "offset", offset: 5 },
+    });
+    expect(line).toMatchObject({
+      ok: true,
+      content: "ne",
+      startOffset: 6,
+      endOffset: 9,
+      hasMore: true,
+      nextStart: { type: "line", line: 3, column: 0 },
+    });
+  });
+
+  it("reconstructs artifact source exactly from offset pages limited by lines", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const source = "one\n😀two\nthree";
+    const created = await store.create({
+      ...artifactParams(source),
+      maxBytesPerSession: 100,
+    });
+    const chunks: string[] = [];
+    let offset = 0;
+
+    for (let page = 0; page < 10; page += 1) {
+      const result = await store.readWindow(created.uri, "session-a", {
+        start: { type: "offset", offset },
+        maxCharacters: 100,
+        maxLines: 1,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected artifact page");
+      chunks.push(result.content);
+      if (!result.nextStart) break;
+      expect(result.nextStart.type).toBe("offset");
+      if (result.nextStart.type !== "offset") throw new Error("expected offset continuation");
+      expect(result.nextStart.offset).toBeGreaterThan(offset);
+      offset = result.nextStart.offset;
+    }
+
+    expect(chunks.join("")).toBe(source);
+  });
+
+  it("counts empty lines and advances across their newline", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("a\n\nb"),
+      maxBytesPerSession: 100,
+    });
+
+    const result = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 2 },
+      maxCharacters: 100,
+      maxLines: 1,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "",
+      startOffset: 2,
+      endOffset: 3,
+      totalCharacters: 4,
+      hasMore: true,
+      nextStart: { type: "line", line: 3, column: 0 },
+    });
+  });
+
+  it("applies character precedence at line boundaries and clamps maxLines", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const created = await store.create({
+      ...artifactParams("ab\ncd\nef"),
+      maxBytesPerSession: 100,
+    });
+
+    const lineFirst = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 1 },
+      maxCharacters: 4,
+      maxLines: 0,
+    });
+    const sameBoundary = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 1 },
+      maxCharacters: 3,
+      maxLines: 1,
+    });
+    const newlineCharactersFirst = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 1 },
+      maxCharacters: 3,
+      maxLines: 2,
+    });
+    const charactersFirst = await store.readWindow(created.uri, "session-a", {
+      start: { type: "line", line: 1 },
+      maxCharacters: 2,
+      maxLines: 2,
+    });
+
+    expect(lineFirst).toMatchObject({
+      ok: true,
+      content: "ab",
+      endOffset: 3,
+      nextStart: { type: "line", line: 2, column: 0 },
+    });
+    expect(sameBoundary).toMatchObject({
+      ok: true,
+      content: "ab",
+      endOffset: 3,
+      nextStart: { type: "line", line: 2, column: 0 },
+    });
+    expect(newlineCharactersFirst).toMatchObject({
+      ok: true,
+      content: "ab\n",
+      endOffset: 3,
+      nextStart: { type: "line", line: 2, column: 0 },
+    });
+    expect(charactersFirst).toMatchObject({
+      ok: true,
+      content: "ab",
+      endOffset: 2,
+      nextStart: { type: "line", line: 1, column: 2 },
+    });
   });
 
   it("evicts oldest artifacts and retains an oversized artifact alone", async () => {

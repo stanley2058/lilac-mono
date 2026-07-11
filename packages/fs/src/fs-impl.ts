@@ -126,8 +126,7 @@ export type ReadFileSuccessBase = {
   totalLines: number;
   hasMoreLines: boolean;
   truncatedByChars: boolean;
-  nextStartLine?: number;
-  nextStartColumn?: number;
+  nextStart?: ReadFileStart;
   warnings?: HashlineWarning[];
   degradedFromHashline?: boolean;
 };
@@ -214,11 +213,22 @@ export type EditFileResult =
       }[];
     };
 
+export type ReadFileStart =
+  | {
+      type: "offset";
+      /** 0-based Unicode character offset in the source, including newlines */
+      offset: number;
+    }
+  | {
+      type: "line";
+      /** 1-based line number */
+      line: number;
+      /** 0-based Unicode character offset within line, defaults to 0. */
+      column?: number;
+    };
+
 export interface ReadFileOptions {
-  /** 1-based line number to start reading from */
-  startLine?: number;
-  /** 0-based character offset within startLine, defaults to 0. */
-  startColumn?: number;
+  start?: ReadFileStart;
   /** Maximum number of lines to return, defaults to 2000 */
   maxLines?: number;
   /** Maximum number of characters to return, defaults to 10000 */
@@ -506,8 +516,7 @@ export class FileSystem {
 
     try {
       const {
-        startLine = 1,
-        startColumn = 0,
+        start = { type: "line", line: 1 },
         maxLines = 2000,
         maxCharacters = 10000,
         format = "raw",
@@ -516,10 +525,17 @@ export class FileSystem {
 
       this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
 
-      const requestedStartLine = Math.max(1, Math.floor(startLine));
-      const requestedStartColumn = Math.max(0, Math.floor(startColumn));
-      const requestedMaxLines = Math.max(0, Math.floor(maxLines));
-      const requestedMaxCharacters = Math.max(0, Math.floor(maxCharacters));
+      const requestedStartLine = start.type === "line" ? Math.max(1, Math.floor(start.line)) : 1;
+      const requestedStartColumn =
+        start.type === "line" ? Math.max(0, Math.floor(start.column ?? 0)) : 0;
+      const requestedStartOffset =
+        start.type === "offset" ? Math.max(0, Math.floor(start.offset)) : undefined;
+      const requestedMaxLines = Number.isFinite(maxLines)
+        ? Math.max(1, Math.floor(maxLines))
+        : 2000;
+      const requestedMaxCharacters = Number.isFinite(maxCharacters)
+        ? Math.max(1, Math.floor(maxCharacters))
+        : 10000;
       const storedLineLimit = requestedMaxCharacters + 2;
       const storedCharacterLimit = requestedMaxCharacters + 1;
       const windowLines: string[] = [];
@@ -532,12 +548,41 @@ export class FileSystem {
       let currentLineCharacters = 0;
       let currentLineUtf16Length = 0;
       let firstSelectedLineCharacters = 0;
+      let sourceOffset = 0;
+      let offsetStartLine: number | undefined;
+      let offsetStartColumn: number | undefined;
+      let normalizedStartOffset: number | undefined;
+      let selectedNextLineOffset: number | undefined;
       let hashlineOverflow: HashlineWarning | undefined;
 
-      const isCurrentLineSelected = () =>
-        lineNumber >= requestedStartLine && lineNumber < requestedStartLine + requestedMaxLines;
+      const resolveOffsetStart = () => {
+        if (
+          requestedStartOffset === undefined ||
+          offsetStartLine !== undefined ||
+          sourceOffset < requestedStartOffset
+        ) {
+          return;
+        }
+        offsetStartLine = lineNumber;
+        offsetStartColumn = currentLineCharacters;
+        normalizedStartOffset = sourceOffset;
+      };
 
-      const finishLine = () => {
+      const isCurrentLineSelected = () => {
+        if (start.type === "line") {
+          return (
+            lineNumber >= requestedStartLine && lineNumber < requestedStartLine + requestedMaxLines
+          );
+        }
+        return (
+          offsetStartLine !== undefined &&
+          lineNumber >= offsetStartLine &&
+          lineNumber < offsetStartLine + requestedMaxLines
+        );
+      };
+
+      const finishLine = (hasNewline: boolean) => {
+        resolveOffsetStart();
         if (isCurrentLineSelected()) {
           if (selectedLineCount === 0) firstSelectedLineCharacters = currentLineCharacters;
           if (!hashlineOverflow && currentLineUtf16Length > HASHLINE_MAX_LINE_CHARS) {
@@ -545,6 +590,7 @@ export class FileSystem {
           }
           if (windowLines.length < storedLineLimit) windowLines.push(currentLine);
           selectedLineCount++;
+          if (hasNewline) selectedNextLineOffset = sourceOffset + 1;
         }
         currentLine = "";
         currentLineCharacters = 0;
@@ -554,21 +600,26 @@ export class FileSystem {
       const consumeText = (text: string) => {
         for (const character of text) {
           if (character === "\n") {
-            finishLine();
+            finishLine(true);
+            sourceOffset++;
             lineNumber++;
             continue;
           }
 
+          resolveOffsetStart();
           currentLineCharacters++;
           currentLineUtf16Length += character.length;
           if (
             isCurrentLineSelected() &&
-            (lineNumber !== requestedStartLine || currentLineCharacters > requestedStartColumn) &&
+            (start.type === "offset" ||
+              lineNumber !== requestedStartLine ||
+              currentLineCharacters > requestedStartColumn) &&
             storedCharacters < storedCharacterLimit
           ) {
             currentLine += character;
             storedCharacters++;
           }
+          sourceOffset++;
         }
       };
 
@@ -578,12 +629,23 @@ export class FileSystem {
         consumeText(decoder.write(bytes));
       }
       consumeText(decoder.end());
-      finishLine();
+      if (requestedStartOffset !== undefined && offsetStartLine === undefined) {
+        offsetStartLine = lineNumber;
+        offsetStartColumn = currentLineCharacters;
+        normalizedStartOffset = sourceOffset;
+      }
+      finishLine(false);
 
       const fileHash = hasher.digest("hex");
       const totalLines = lineNumber;
-      const normalizedStartLine = Math.min(requestedStartLine, totalLines + 1);
-      const normalizedStartColumn = Math.min(requestedStartColumn, firstSelectedLineCharacters);
+      const normalizedStartLine =
+        start.type === "line"
+          ? Math.min(requestedStartLine, totalLines + 1)
+          : (offsetStartLine ?? totalLines);
+      const normalizedStartColumn =
+        start.type === "line"
+          ? Math.min(requestedStartColumn, firstSelectedLineCharacters)
+          : (offsetStartColumn ?? 0);
       const windowEndLine = normalizedStartLine + selectedLineCount - 1;
 
       let output: string;
@@ -598,7 +660,11 @@ export class FileSystem {
           .join("\n");
       } else if (format === "hashline") {
         const overflow = hashlineOverflow;
-        if (overflow) {
+        if (normalizedStartColumn > 0) {
+          effectiveFormat = "raw";
+          degradedFromHashline = true;
+          output = windowLines.join("\n");
+        } else if (overflow) {
           effectiveFormat = "raw";
           degradedFromHashline = true;
           warnings = [overflow];
@@ -609,25 +675,53 @@ export class FileSystem {
       } else {
         output = windowLines.join("\n");
       }
+      const includesOffsetBoundaryNewline =
+        start.type === "offset" &&
+        selectedLineCount >= requestedMaxLines &&
+        selectedNextLineOffset !== undefined;
+      if (includesOffsetBoundaryNewline) output += "\n";
 
       let outputCharacters = Array.from(output);
       if (outputCharacters.length > requestedMaxCharacters && effectiveFormat !== "raw") {
         effectiveFormat = "raw";
         degradedFromHashline ||= format === "hashline";
-        output = windowLines.join("\n");
+        output = windowLines.join("\n") + (includesOffsetBoundaryNewline ? "\n" : "");
         outputCharacters = Array.from(output);
       }
       const truncatedByChars = outputCharacters.length > requestedMaxCharacters;
       output = outputCharacters.slice(0, requestedMaxCharacters).join("");
       const completeLines = truncatedByChars ? output.split("\n").length - 1 : selectedLineCount;
       const endLine = truncatedByChars ? normalizedStartLine + completeLines - 1 : windowEndLine;
-      const nextStartLine = truncatedByChars ? normalizedStartLine + completeLines : undefined;
-      const nextStartColumn = truncatedByChars
-        ? completeLines === 0
-          ? normalizedStartColumn + Array.from(output).length
-          : Array.from(output.slice(output.lastIndexOf("\n") + 1)).length
-        : undefined;
       const hasMoreLines = truncatedByChars || endLine < totalLines;
+      let nextStart: ReadFileStart | undefined;
+      if (hasMoreLines) {
+        if (start.type === "offset") {
+          nextStart = {
+            type: "offset",
+            offset: truncatedByChars
+              ? (normalizedStartOffset ?? sourceOffset) + Array.from(output).length
+              : (selectedNextLineOffset ?? normalizedStartOffset ?? sourceOffset),
+          };
+        } else if (truncatedByChars) {
+          nextStart = {
+            type: "line",
+            line: normalizedStartLine + completeLines,
+            column:
+              completeLines === 0
+                ? normalizedStartColumn + Array.from(output).length
+                : Array.from(output.slice(output.lastIndexOf("\n") + 1)).length,
+          };
+        } else {
+          nextStart = {
+            type: "line",
+            line:
+              selectedLineCount > 0 ? normalizedStartLine + selectedLineCount : normalizedStartLine,
+            ...(selectedLineCount === 0 && normalizedStartColumn > 0
+              ? { column: normalizedStartColumn }
+              : {}),
+          };
+        }
+      }
 
       this.fileAccessRecord.set(resolvedPath, {
         lastAccess: Date.now(),
@@ -649,8 +743,7 @@ export class FileSystem {
         totalLines,
         hasMoreLines,
         truncatedByChars,
-        ...(nextStartLine !== undefined ? { nextStartLine } : {}),
-        ...(nextStartColumn !== undefined ? { nextStartColumn } : {}),
+        ...(nextStart ? { nextStart } : {}),
         ...(warnings ? { warnings } : {}),
         ...(degradedFromHashline ? { degradedFromHashline } : {}),
       };

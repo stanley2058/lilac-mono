@@ -200,12 +200,12 @@ Persist the complete sanitized model-facing text, not an arbitrary raw runtime o
 
 Extend `read_file` to recognize `tool-result://` before normal local or remote path resolution.
 
-Artifact reads use character offsets rather than byte offsets:
+Artifact and ordinary text reads accept a discriminated start position. Absolute offsets count Unicode characters, including newlines, rather than bytes; line positions use one-based lines and zero-based Unicode columns:
 
 ```ts
 read_file({
   path: "tool-result://01J...",
-  startOffset: 0,
+  start: { type: "offset", offset: 0 },
   maxCharacters: 10_000,
 });
 ```
@@ -215,11 +215,11 @@ The result reports:
 - `startOffset`
 - `endOffset`
 - `totalCharacters`
-- `nextOffset` when more content remains
+- a `nextStart` matching the requested offset or line mode when more content remains
 - `hasMore`
 - the bounded content window
 
-Character offsets avoid exposing UTF-8 boundary concerns to the model. Implementations may scan from the beginning for this transient-file use case; these files are bounded by the session quota in normal operation.
+Character offsets avoid exposing UTF-8 boundary concerns to the model. Implementations may scan from the beginning for this transient-file use case; these files are bounded by the session quota in normal operation. Offset-mode pages are source-exact, while line-mode pages remain line-oriented.
 
 Normal filesystem reads remain line-oriented and source-backed. They do not create artifacts. Preserve the existing head/window behavior, but make truncation and the next usable continuation position explicit. Avoid reporting an `endLine` that causes the model to skip an unseen remainder of a very long line.
 

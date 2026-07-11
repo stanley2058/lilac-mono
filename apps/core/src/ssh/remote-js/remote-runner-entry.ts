@@ -8,6 +8,7 @@ import {
   type EditFileResult,
   type FileEdit,
   type HashlineEdit,
+  type ReadFileStart,
 } from "@stanley2058/lilac-fs";
 
 import { applyHunks, parsePatch } from "../../tools/apply-patch/apply-patch-core";
@@ -55,6 +56,29 @@ function numberOrUndefined(value: unknown): number | undefined {
   return Number(value);
 }
 
+function ordinaryFileStartOrUndefined(value: unknown): ReadFileStart | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+
+  const start = value as Record<string, unknown>;
+  if (start["type"] === "offset") {
+    const offset = start["offset"];
+    return typeof offset === "number" && Number.isFinite(offset)
+      ? { type: "offset", offset }
+      : undefined;
+  }
+
+  const line = start["line"];
+  const column = start["column"];
+  if (start["type"] !== "line" || typeof line !== "number" || !Number.isFinite(line)) {
+    return undefined;
+  }
+  if (column !== undefined && (typeof column !== "number" || !Number.isFinite(column))) {
+    return undefined;
+  }
+
+  return column === undefined ? { type: "line", line } : { type: "line", line, column };
+}
+
 function normalizeEditOutput(result: EditFileResult): EditFileResult {
   if (result.success) {
     return {
@@ -76,9 +100,10 @@ function normalizeEditOutput(result: EditFileResult): EditFileResult {
 }
 
 async function opReadText(input: Record<string, unknown>, fsTool: FileSystem): Promise<unknown> {
+  const start = ordinaryFileStartOrUndefined(input["start"]);
   const readRes = await fsTool.readFile({
     path: String(input["path"] ?? ""),
-    startLine: numberOrUndefined(input["startLine"]),
+    start,
     maxLines: numberOrUndefined(input["maxLines"]),
     maxCharacters: numberOrUndefined(input["maxCharacters"]),
     format:
@@ -203,7 +228,7 @@ async function opEdit(
 
   const readRes = await fsTool.readFile({
     path: pathInput,
-    startLine: 1,
+    start: { type: "line", line: 1 },
     maxLines: 1,
     maxCharacters: 1,
     format: "raw",
