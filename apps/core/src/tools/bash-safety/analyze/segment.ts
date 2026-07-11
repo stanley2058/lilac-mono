@@ -47,6 +47,10 @@ const SENSITIVE_TOKEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
     re: /github-user-token\.json\b/i,
     reason: "access to GitHub user token secret",
   },
+  {
+    re: /tool-env\.jsonc\b/i,
+    reason: "access to dynamic tool environment secrets",
+  },
 ];
 
 export type SegmentAnalyzeOptions = AnalyzeOptions & {

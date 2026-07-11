@@ -543,6 +543,13 @@ describe("analyzeBashCommand", () => {
     expect(result?.reason).toContain("find -delete");
   });
 
+  it("blocks access to the dynamic tool environment secret", () => {
+    expect(analyzeBashCommand("cat /data/secret/tool-env.jsonc")).not.toBeNull();
+    expect(
+      analyzeBashCommand("python -c 'print(open(\"/data/secret/tool-env.jsonc\").read())'"),
+    ).not.toBeNull();
+  });
+
   it("blocks xargs rm -rf even with temp targets", () => {
     const result = analyzeBashCommand("xargs rm -rf /tmp/cache");
     expect(result).not.toBeNull();

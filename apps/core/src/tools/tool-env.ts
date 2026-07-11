@@ -1,6 +1,7 @@
 import { createLogger } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 
 const logger = createLogger({ module: "tool:env" });
 
@@ -8,6 +9,10 @@ const MAX_TOOL_ENV_FILE_BYTES = 64 * 1024;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const RESERVED_PREFIXES = ["LILAC_", "LD_", "DYLD_", "NODE_", "BUN_"] as const;
 const RESERVED_NAMES = new Set([
+  "BASH_ENV",
+  "ENV",
+  "PROMPT_COMMAND",
+  "SHELLOPTS",
   "PATH",
   "HOME",
   "SHELL",
@@ -25,50 +30,47 @@ const RESERVED_NAMES = new Set([
   "REDIS_URL",
 ]);
 
-type ToolEnvEntry = string | { value: string; expiresAt?: string | number };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const toolEnvFileSchema = z.record(z.string(), z.unknown());
+const expiresAtSchema = z
+  .union([z.string(), z.number().finite()])
+  .refine((value) => Number.isFinite(new Date(value).getTime()), {
+    message: "expiresAt must be a valid date string or epoch-millisecond number",
+  });
+const toolEnvEntrySchema = z.union([
+  z.string(),
+  z
+    .object({
+      value: z.string(),
+      expiresAt: expiresAtSchema.optional(),
+    })
+    .strict(),
+]);
 
 function isReservedName(name: string): boolean {
   return RESERVED_NAMES.has(name) || RESERVED_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
-function parseEntry(name: string, raw: unknown, now: number): ToolEnvEntry | null {
-  if (typeof raw === "string") return raw;
-  if (!isRecord(raw) || typeof raw.value !== "string") {
-    logger.warn("tool env entry ignored: expected a string or object with a string value", {
-      name,
-    });
+function parseEntry(name: string, raw: unknown, now: number): string | null {
+  const parsed = toolEnvEntrySchema.safeParse(raw);
+  if (!parsed.success) {
+    logger.warn("tool env entry ignored: validation failed", { name });
     return null;
   }
 
-  const expiresAt = raw.expiresAt;
-  if (expiresAt !== undefined) {
-    if (typeof expiresAt !== "string" && typeof expiresAt !== "number") {
-      logger.warn("tool env entry ignored: expiresAt must be a string or number", { name });
-      return null;
-    }
-
-    const expiresAtMs = new Date(expiresAt).getTime();
-    if (!Number.isFinite(expiresAtMs)) {
-      logger.warn("tool env entry ignored: expiresAt is invalid", { name });
-      return null;
-    }
+  if (typeof parsed.data === "string") return parsed.data;
+  if (parsed.data.expiresAt !== undefined) {
+    const expiresAtMs = new Date(parsed.data.expiresAt).getTime();
     if (now >= expiresAtMs) return null;
   }
 
-  return { value: raw.value, ...(expiresAt === undefined ? {} : { expiresAt }) };
+  return parsed.data.value;
 }
 
 export function parseToolEnv(raw: unknown, now = Date.now()): Record<string, string> {
-  if (!isRecord(raw)) {
-    throw new Error("tool env must be a JSON object");
-  }
+  const parsedFile = toolEnvFileSchema.parse(raw);
 
   const result: Record<string, string> = {};
-  for (const [name, value] of Object.entries(raw)) {
+  for (const [name, value] of Object.entries(parsedFile)) {
     if (!ENV_NAME_PATTERN.test(name)) {
       logger.warn("tool env entry ignored: invalid environment variable name", { name });
       continue;
@@ -80,12 +82,11 @@ export function parseToolEnv(raw: unknown, now = Date.now()): Record<string, str
 
     const parsed = parseEntry(name, value, now);
     if (parsed === null) continue;
-    const resolved = typeof parsed === "string" ? parsed : parsed.value;
-    if (resolved.includes("\0")) {
+    if (parsed.includes("\0")) {
       logger.warn("tool env entry ignored: value contains a null byte", { name });
       continue;
     }
-    result[name] = resolved;
+    result[name] = parsed;
   }
 
   return result;
