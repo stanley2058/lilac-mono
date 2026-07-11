@@ -184,6 +184,9 @@ describe("core tool plugin manager", () => {
       "read_file",
       "subagent_delegate",
     ]);
+    expect([...applyPatchTools.genericOutputNormalizerBypassTools].sort()).toEqual(
+      [...applyPatchTools.specs.keys()].sort(),
+    );
 
     const editFileTools = await manager.buildLevel1Toolset({
       cwd: dataDir,
@@ -246,7 +249,7 @@ describe("core tool plugin manager", () => {
       },
     });
 
-    expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch"]);
+    expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch", "read_file"]);
   });
 
   it("threads direct attachment support metadata into read_file description", async () => {
@@ -544,6 +547,7 @@ describe("core tool plugin manager", () => {
       level1: [{
         name: "fixture_level1",
         supportsBatch: true,
+        bypassGenericOutputNormalizer: true,
         createTool() { return { execute() { return { ok: true }; } }; },
         isEnabled() { return true; },
         formatArgs() { return " fixture"; },
@@ -580,6 +584,7 @@ describe("core tool plugin manager", () => {
       subagentConfig: cfg.agent.subagents!,
     });
     expect(level1.specs.has("fixture_level1")).toBe(true);
+    expect(level1.genericOutputNormalizerBypassTools.has("fixture_level1")).toBe(false);
 
     const callableIds = (
       await Promise.all(

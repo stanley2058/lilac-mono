@@ -79,6 +79,78 @@ describe("fs tool", () => {
     }
   });
 
+  it("readFile character truncation reports a continuation that cannot skip a long line", async () => {
+    await writeFile(join(baseDir, "long-line.txt"), `${"x".repeat(100)}\nsecond`);
+    const res = await fsTool.readFile({ path: "long-line.txt", maxCharacters: 10 });
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.truncatedByChars).toBe(true);
+    expect(res.endLine).toBe(0);
+    expect(res.nextStartLine).toBe(1);
+    expect(res.nextStartColumn).toBe(10);
+    expect(res.hasMoreLines).toBe(true);
+
+    const continued = await fsTool.readFile({
+      path: "long-line.txt",
+      startLine: res.nextStartLine,
+      startColumn: res.nextStartColumn,
+      maxCharacters: 10,
+    });
+    expect(continued.success).toBe(true);
+    if (continued.success && continued.format === "raw") {
+      expect(continued.content).toBe("x".repeat(10));
+      expect(continued.nextStartColumn).toBe(20);
+    }
+  });
+
+  it("readFile degrades formatted truncation to Unicode-safe raw continuation", async () => {
+    await writeFile(join(baseDir, "formatted-long-line.txt"), "😀abc");
+    const first = await fsTool.readFile({
+      path: "formatted-long-line.txt",
+      format: "numbered",
+      maxCharacters: 1,
+    });
+    expect(first.success).toBe(true);
+    if (!first.success || first.format !== "raw") return;
+    expect(first.content).toBe("😀");
+    expect(first.nextStartLine).toBe(1);
+    expect(first.nextStartColumn).toBe(1);
+
+    const second = await fsTool.readFile({
+      path: "formatted-long-line.txt",
+      startLine: first.nextStartLine,
+      startColumn: first.nextStartColumn,
+      maxCharacters: 1,
+    });
+    expect(second.success).toBe(true);
+    if (second.success && second.format === "raw") expect(second.content).toBe("a");
+  });
+
+  it("readFile streams a small late window while hashing the complete file", async () => {
+    const largePrefix = `${"0123456789abcdef".repeat(256 * 1024)}\n`;
+    await writeFile(join(baseDir, "large.txt"), `${largePrefix}target\nafter`);
+
+    const res = await fsTool.readFile({
+      path: "large.txt",
+      startLine: 2,
+      maxLines: 1,
+      maxCharacters: 10,
+    });
+
+    expect(res.success).toBe(true);
+    if (!res.success || res.format !== "raw") return;
+    expect(res.content).toBe("target");
+    expect(res.totalLines).toBe(3);
+    expect(res.hasMoreLines).toBe(true);
+
+    const edit = await fsTool.editFile({
+      path: "large.txt",
+      expectedHash: res.fileHash,
+      edits: [{ type: "replace_snippet", target: "target", newText: "updated" }],
+    });
+    expect(edit.success).toBe(true);
+  });
+
   it("readFile supports hashline format", async () => {
     await writeFile(join(baseDir, "hashline.txt"), "alpha\nbeta\n");
 

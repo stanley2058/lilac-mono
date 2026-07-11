@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { fsTool } from "../../src/tools/fs/fs";
+import { fsTool, fuzzySearchInputZod, globInputZod, readFileInputZod } from "../../src/tools/fs/fs";
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return (
@@ -47,6 +47,16 @@ describe("fs tool search wrappers", () => {
     await rm(baseDir, { recursive: true, force: true });
   });
 
+  it("caps caller-controlled search accumulation limits", () => {
+    expect(globInputZod.safeParse({ patterns: ["**/*"], maxEntries: 10_001 }).success).toBe(false);
+    expect(
+      globInputZod.safeParse({ patterns: Array.from({ length: 101 }, () => "**/*") }).success,
+    ).toBe(false);
+    expect(fuzzySearchInputZod.safeParse({ query: "file", maxResults: 10_001 }).success).toBe(
+      false,
+    );
+  });
+
   it("exposes edit_file only when enabled", async () => {
     const defaultTools = fsTool(baseDir);
     const editEnabledTools = fsTool(baseDir, { includeEditFile: true });
@@ -68,6 +78,59 @@ describe("fs tool search wrappers", () => {
       throw new Error("expected default glob output");
     }
     expect(out.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("applies a serialized-size backstop without creating artifacts", async () => {
+    await writeFile(path.join(baseDir, "src", "huge.ts"), `${"match ".repeat(2000)}\n`);
+    const tools = fsTool(baseDir, { maxOutputBytes: 512 });
+    const out = await resolveExecuteResult(
+      tools.grep.execute!({ pattern: "match", maxResults: 10 }, toolOptions("size-limit")),
+    );
+
+    expect(out.truncated).toBe(true);
+    expect(out.truncationHint).toContain("Narrow the query");
+    expect(Buffer.byteLength(JSON.stringify(out), "utf8")).toBeLessThanOrEqual(512);
+    expect(JSON.stringify(out)).not.toContain("tool-result://");
+  });
+
+  it("bounds search errors without discarding their meaning", async () => {
+    const tools = fsTool(baseDir, { fsBackend: "fff", maxOutputBytes: 64 });
+    const out = await resolveExecuteResult(
+      tools.grep.execute!({ pattern: "[", regex: true }, toolOptions("tiny-error")),
+    );
+
+    expect(out.truncated).toBe(true);
+    expect(out.error).toBeDefined();
+    expect(out.error).toContain("rg");
+    expect(out.truncationHint).toContain("Narrow the query");
+    expect(out.truncationHint).toContain("read_file");
+    expect(Buffer.byteLength(JSON.stringify(out), "utf8")).toBeGreaterThan(64);
+    expect(Buffer.byteLength(JSON.stringify(out), "utf8")).toBeLessThanOrEqual(512);
+  });
+
+  it("truncates bounded search strings without splitting Unicode characters", async () => {
+    const unicodeName = `${"😀".repeat(50)}.txt`;
+    await writeFile(path.join(baseDir, "src", unicodeName), "unicode\n");
+    const tools = fsTool(baseDir, { maxOutputBytes: 300 });
+    const out = await resolveExecuteResult(
+      tools.glob.execute!({ patterns: ["src/*.txt"] }, toolOptions("unicode-limit")),
+    );
+
+    expect(out.mode).toBe("default");
+    if (out.mode !== "default") throw new Error("expected default glob output");
+    expect(out.paths).toHaveLength(1);
+    expect(out.paths[0]).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(Buffer.byteLength(JSON.stringify(out), "utf8")).toBeLessThanOrEqual(300);
+  });
+
+  it("caps read_file pages at 40 KiB characters", () => {
+    expect(readFileInputZod.safeParse({ path: "a.txt", maxCharacters: 40 * 1024 }).success).toBe(
+      true,
+    );
+    expect(
+      readFileInputZod.safeParse({ path: "tool-result://result", maxCharacters: 40 * 1024 + 1 })
+        .success,
+    ).toBe(false);
   });
 
   it("glob returns metadata in detailed mode", async () => {

@@ -1,8 +1,10 @@
 import type { Stats } from "node:fs";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname, resolve, isAbsolute, sep, relative, matchesGlob } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   applyHashlineEdits,
@@ -10,7 +12,6 @@ import {
   HASHLINE_MAX_LINE_CHARS,
   type HashlineEdit,
   type HashlineWarning,
-  findFirstHashlineOverflow,
   formatHashlineWindow,
 } from "./hashline";
 
@@ -125,6 +126,8 @@ export type ReadFileSuccessBase = {
   totalLines: number;
   hasMoreLines: boolean;
   truncatedByChars: boolean;
+  nextStartLine?: number;
+  nextStartColumn?: number;
   warnings?: HashlineWarning[];
   degradedFromHashline?: boolean;
 };
@@ -214,6 +217,8 @@ export type EditFileResult =
 export interface ReadFileOptions {
   /** 1-based line number to start reading from */
   startLine?: number;
+  /** 0-based character offset within startLine, defaults to 0. */
+  startColumn?: number;
   /** Maximum number of lines to return, defaults to 2000 */
   maxLines?: number;
   /** Maximum number of characters to return, defaults to 10000 */
@@ -502,6 +507,7 @@ export class FileSystem {
     try {
       const {
         startLine = 1,
+        startColumn = 0,
         maxLines = 2000,
         maxCharacters = 10000,
         format = "raw",
@@ -510,18 +516,75 @@ export class FileSystem {
 
       this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
 
-      const file = await fs.readFile(resolvedPath, "utf-8");
-      const fileHash = this.hash(file);
+      const requestedStartLine = Math.max(1, Math.floor(startLine));
+      const requestedStartColumn = Math.max(0, Math.floor(startColumn));
+      const requestedMaxLines = Math.max(0, Math.floor(maxLines));
+      const requestedMaxCharacters = Math.max(0, Math.floor(maxCharacters));
+      const storedLineLimit = requestedMaxCharacters + 2;
+      const storedCharacterLimit = requestedMaxCharacters + 1;
+      const windowLines: string[] = [];
+      const decoder = new StringDecoder("utf8");
+      const hasher = createHash("sha256");
+      let lineNumber = 1;
+      let selectedLineCount = 0;
+      let storedCharacters = 0;
+      let currentLine = "";
+      let currentLineCharacters = 0;
+      let currentLineUtf16Length = 0;
+      let firstSelectedLineCharacters = 0;
+      let hashlineOverflow: HashlineWarning | undefined;
 
-      const lines = file.split("\n");
-      const totalLines = lines.length;
+      const isCurrentLineSelected = () =>
+        lineNumber >= requestedStartLine && lineNumber < requestedStartLine + requestedMaxLines;
 
-      const normalizedStartLine = Math.min(Math.max(1, startLine), totalLines + 1);
-      const startIndex = normalizedStartLine - 1;
-      const windowLines = lines.slice(startIndex, startIndex + maxLines);
-      const endLine = normalizedStartLine + windowLines.length - 1;
+      const finishLine = () => {
+        if (isCurrentLineSelected()) {
+          if (selectedLineCount === 0) firstSelectedLineCharacters = currentLineCharacters;
+          if (!hashlineOverflow && currentLineUtf16Length > HASHLINE_MAX_LINE_CHARS) {
+            hashlineOverflow = buildHashlineWarning(lineNumber, currentLineUtf16Length);
+          }
+          if (windowLines.length < storedLineLimit) windowLines.push(currentLine);
+          selectedLineCount++;
+        }
+        currentLine = "";
+        currentLineCharacters = 0;
+        currentLineUtf16Length = 0;
+      };
 
-      const hasMoreLines = endLine < totalLines;
+      const consumeText = (text: string) => {
+        for (const character of text) {
+          if (character === "\n") {
+            finishLine();
+            lineNumber++;
+            continue;
+          }
+
+          currentLineCharacters++;
+          currentLineUtf16Length += character.length;
+          if (
+            isCurrentLineSelected() &&
+            (lineNumber !== requestedStartLine || currentLineCharacters > requestedStartColumn) &&
+            storedCharacters < storedCharacterLimit
+          ) {
+            currentLine += character;
+            storedCharacters++;
+          }
+        }
+      };
+
+      for await (const chunk of createReadStream(resolvedPath)) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        hasher.update(bytes);
+        consumeText(decoder.write(bytes));
+      }
+      consumeText(decoder.end());
+      finishLine();
+
+      const fileHash = hasher.digest("hex");
+      const totalLines = lineNumber;
+      const normalizedStartLine = Math.min(requestedStartLine, totalLines + 1);
+      const normalizedStartColumn = Math.min(requestedStartColumn, firstSelectedLineCharacters);
+      const windowEndLine = normalizedStartLine + selectedLineCount - 1;
 
       let output: string;
       let warnings: HashlineWarning[] | undefined;
@@ -529,15 +592,12 @@ export class FileSystem {
       let effectiveFormat: "raw" | "numbered" | "hashline" = format;
 
       if (format === "numbered") {
-        const digits = Math.max(1, String(Math.max(endLine, normalizedStartLine)).length);
+        const digits = Math.max(1, String(Math.max(windowEndLine, normalizedStartLine)).length);
         output = windowLines
           .map((line, i) => `${String(normalizedStartLine + i).padStart(digits, " ")}| ${line}`)
           .join("\n");
       } else if (format === "hashline") {
-        const overflow = findFirstHashlineOverflow({
-          lines: windowLines,
-          startLine: normalizedStartLine,
-        });
+        const overflow = hashlineOverflow;
         if (overflow) {
           effectiveFormat = "raw";
           degradedFromHashline = true;
@@ -550,8 +610,24 @@ export class FileSystem {
         output = windowLines.join("\n");
       }
 
-      const truncatedByChars = output.length > maxCharacters;
-      output = output.slice(0, maxCharacters);
+      let outputCharacters = Array.from(output);
+      if (outputCharacters.length > requestedMaxCharacters && effectiveFormat !== "raw") {
+        effectiveFormat = "raw";
+        degradedFromHashline ||= format === "hashline";
+        output = windowLines.join("\n");
+        outputCharacters = Array.from(output);
+      }
+      const truncatedByChars = outputCharacters.length > requestedMaxCharacters;
+      output = outputCharacters.slice(0, requestedMaxCharacters).join("");
+      const completeLines = truncatedByChars ? output.split("\n").length - 1 : selectedLineCount;
+      const endLine = truncatedByChars ? normalizedStartLine + completeLines - 1 : windowEndLine;
+      const nextStartLine = truncatedByChars ? normalizedStartLine + completeLines : undefined;
+      const nextStartColumn = truncatedByChars
+        ? completeLines === 0
+          ? normalizedStartColumn + Array.from(output).length
+          : Array.from(output.slice(output.lastIndexOf("\n") + 1)).length
+        : undefined;
+      const hasMoreLines = truncatedByChars || endLine < totalLines;
 
       this.fileAccessRecord.set(resolvedPath, {
         lastAccess: Date.now(),
@@ -573,6 +649,8 @@ export class FileSystem {
         totalLines,
         hasMoreLines,
         truncatedByChars,
+        ...(nextStartLine !== undefined ? { nextStartLine } : {}),
+        ...(nextStartColumn !== undefined ? { nextStartColumn } : {}),
         ...(warnings ? { warnings } : {}),
         ...(degradedFromHashline ? { degradedFromHashline } : {}),
       };
@@ -615,9 +693,11 @@ export class FileSystem {
     {
       path,
       dangerouslyAllow = false,
+      maxBytes,
     }: {
       path: string;
       dangerouslyAllow?: boolean;
+      maxBytes?: number;
     },
     cwd?: string,
   ): Promise<ReadFileBytesResult> {
@@ -625,6 +705,15 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
+
+      if (maxBytes !== undefined) {
+        const stats = await fs.stat(resolvedPath);
+        if (stats.size > maxBytes) {
+          throw new Error(
+            `File is too large to inline (${stats.size} bytes; maximum ${maxBytes} bytes): ${resolvedPath}`,
+          );
+        }
+      }
 
       const bytes = await fs.readFile(resolvedPath);
       const fileHash = this.hash(bytes);
@@ -1649,10 +1738,6 @@ export class FileSystem {
   }
 
   private hash(input: string | Uint8Array) {
-    if (typeof Bun !== "undefined" && Bun.hash && typeof Bun.hash.xxHash3 === "function") {
-      return Bun.hash.xxHash3(input).toString(16);
-    }
-
     const hasher = createHash("sha256");
     hasher.update(input);
     return hasher.digest("hex");

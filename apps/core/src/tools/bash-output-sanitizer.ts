@@ -273,26 +273,34 @@ function createBashOutputSanitizer(literalSecrets: readonly string[]): BashOutpu
   };
 }
 
+export function sanitizeBashOutputText(
+  value: string,
+  literalSecrets: readonly string[] = [],
+): string {
+  const sanitizer = createBashOutputSanitizer(literalSecrets);
+  return sanitizer.write(Buffer.from(value, "utf8")) + sanitizer.end();
+}
+
 export type SanitizedStreamTextResult = {
   text: string;
   totalChars: number;
+  totalBytes: number;
   capped: boolean;
   overflowFilePath?: string;
 };
 
 async function appendOverflowChunk(params: {
   overflowFilePath: string;
-  chunk: string;
+  chunk: Uint8Array;
   initialized: boolean;
 }): Promise<boolean> {
   try {
     if (!params.initialized) {
       await fs.writeFile(params.overflowFilePath, params.chunk, {
-        encoding: "utf8",
         mode: 0o600,
       });
     } else {
-      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
+      await fs.appendFile(params.overflowFilePath, params.chunk);
     }
     return true;
   } catch {
@@ -318,19 +326,23 @@ export async function readSanitizedStreamTextCapped(
   options?: { overflowFilePath?: string; literalSecrets?: readonly string[] },
 ): Promise<SanitizedStreamTextResult> {
   if (!stream || typeof stream === "number") {
-    return { text: "", totalChars: 0, capped: false };
+    return { text: "", totalChars: 0, totalBytes: 0, capped: false };
   }
 
   const sanitizer = createBashOutputSanitizer(options?.literalSecrets ?? []);
   let text = "";
   let totalChars = 0;
+  let totalBytes = 0;
   let capped = false;
   let overflowInitialized = false;
   let overflowWriteFailed = false;
   let overflowFilePath: string | undefined;
+  let bufferedRawBytes = 0;
+  const bufferedRawChunks: Buffer[] = [];
+  const rawBufferLimit = Math.max(256 * 1024, maxChars * 4 + MAX_PATTERN_REDACTION_BUFFER_CHARS);
 
-  const writeOverflowChunk = async (chunk: string) => {
-    if (chunk.length === 0 || overflowWriteFailed || !options?.overflowFilePath) return;
+  const writeOverflowChunk = async (chunk: Uint8Array) => {
+    if (chunk.byteLength === 0 || overflowWriteFailed || !options?.overflowFilePath) return;
 
     const ok = await appendOverflowChunk({
       overflowFilePath: options.overflowFilePath,
@@ -340,20 +352,38 @@ export async function readSanitizedStreamTextCapped(
     if (!ok) {
       overflowWriteFailed = true;
       overflowFilePath = undefined;
+      await fs.rm(options.overflowFilePath, { force: true }).catch(() => undefined);
       return;
     }
     overflowInitialized = true;
     overflowFilePath = options.overflowFilePath;
   };
 
-  const consumeSanitizedText = async (chunk: string) => {
-    if (chunk.length === 0) return;
-    totalChars += chunk.length;
+  const flushBufferedRaw = async () => {
+    for (const chunk of bufferedRawChunks) await writeOverflowChunk(chunk);
+    bufferedRawChunks.length = 0;
+    bufferedRawBytes = 0;
+  };
 
-    if (capped) {
+  const retainRawChunk = async (chunk: Uint8Array) => {
+    if (overflowWriteFailed || !options?.overflowFilePath) return;
+    if (overflowInitialized) {
       await writeOverflowChunk(chunk);
       return;
     }
+
+    const copy = Buffer.from(chunk);
+    bufferedRawChunks.push(copy);
+    bufferedRawBytes += copy.length;
+    if (bufferedRawBytes >= rawBufferLimit) await flushBufferedRaw();
+  };
+
+  const consumeSanitizedText = async (chunk: string) => {
+    if (chunk.length === 0) return;
+    totalChars += chunk.length;
+    totalBytes += Buffer.byteLength(chunk, "utf8");
+
+    if (capped) return;
 
     const previousText = text;
     if (previousText.length + chunk.length <= maxChars) {
@@ -372,7 +402,6 @@ export async function readSanitizedStreamTextCapped(
       sliceEnd -= 1;
     }
     text = previousText + chunk.slice(0, sliceEnd);
-    await writeOverflowChunk(previousText + chunk);
   };
 
   const maybeReadable = stream as { getReader?: unknown };
@@ -382,19 +411,29 @@ export async function readSanitizedStreamTextCapped(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) await consumeSanitizedText(sanitizer.write(value));
+        if (value) {
+          await retainRawChunk(value);
+          await consumeSanitizedText(sanitizer.write(value));
+          if (capped && !overflowInitialized) await flushBufferedRaw();
+        }
       }
       await consumeSanitizedText(sanitizer.end());
+      if (capped && !overflowInitialized) await flushBufferedRaw();
     } finally {
       reader.releaseLock();
     }
   } else {
     const response = new Response(isResponseBodyInit(stream) ? stream : String(stream));
-    if (!response.body) return { text: "", totalChars: 0, capped: false };
+    if (!response.body) return { text: "", totalChars: 0, totalBytes: 0, capped: false };
     return await readSanitizedStreamTextCapped(response.body, maxChars, options);
   }
 
-  return { text, totalChars, capped, overflowFilePath };
+  if (!capped && options?.overflowFilePath && overflowInitialized) {
+    await fs.rm(options.overflowFilePath, { force: true }).catch(() => undefined);
+    overflowFilePath = undefined;
+  }
+
+  return { text, totalChars, totalBytes, capped, overflowFilePath };
 }
 
 export function createBashOutputSanitizerTransform(literalSecrets: readonly string[]): Transform {

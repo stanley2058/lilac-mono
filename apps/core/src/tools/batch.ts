@@ -20,6 +20,9 @@ const ALLOWED_TOOL_NAMES_BY_MODE = {
   none: ["read_file", "glob", "grep", "bash"],
 } as const;
 
+const ABSOLUTE_MAX_CALLS = 8;
+export const BATCH_CHILD_CONTEXT_FLAG = Symbol("lilac.batch-child");
+
 function makeToolCallSchema(allowedToolNames: readonly [string, ...string[]]) {
   return z.object({
     tool: z.enum(allowedToolNames).describe("Tool name to execute"),
@@ -31,12 +34,12 @@ function makeToolCallSchema(allowedToolNames: readonly [string, ...string[]]) {
   });
 }
 
-function makeBatchInputSchema(allowedToolNames: readonly [string, ...string[]]) {
+function makeBatchInputSchema(allowedToolNames: readonly [string, ...string[]], maxCalls: number) {
   return z.object({
     tool_calls: z
       .array(makeToolCallSchema(allowedToolNames))
       .min(1)
-      .max(25)
+      .max(maxCalls)
       .describe("Array of tool calls to execute in parallel"),
   });
 }
@@ -201,6 +204,7 @@ export function batchTool(params: {
   getTools: () => ToolSet;
   getToolSpecs?: () => ReadonlyMap<string, Level1ToolSpec<unknown>>;
   editingMode?: EditingToolMode | "none";
+  maxCalls?: number;
   reportToolStatus?: (update: {
     toolCallId: string;
     status: "start" | "update" | "end";
@@ -211,15 +215,16 @@ export function batchTool(params: {
 }) {
   const { defaultCwd, getTools, reportToolStatus } = params;
   const editingMode = params.editingMode ?? "apply_patch";
+  const maxCalls = Math.min(params.maxCalls ?? ABSOLUTE_MAX_CALLS, ABSOLUTE_MAX_CALLS);
   const toolSpecs = normalizeToolSpecs(params.getToolSpecs?.());
   const allowedToolNames =
     resolveAllowedToolNamesFromSpecs(toolSpecs) ??
     (ALLOWED_TOOL_NAMES_BY_MODE[editingMode] as unknown as [string, ...string[]]);
-  const batchInputSchema = makeBatchInputSchema(allowedToolNames);
+  const batchInputSchema = makeBatchInputSchema(allowedToolNames, maxCalls);
   const editCallDescription =
     editingMode === "none"
-      ? "Supports independent read_file/glob/grep/bash operations."
-      : `Supports independent read_file/glob/grep/bash/${editingMode} operations.`;
+      ? "Supports independent read_file, glob, grep, and bash operations."
+      : `Supports independent read_file, glob, grep, bash, and ${editingMode} operations.`;
 
   const reportSafe = (update: {
     toolCallId: string;
@@ -296,6 +301,9 @@ export function batchTool(params: {
       outputSchema: batchOutputSchema,
       execute: async (input, options) => {
         const calls = input.tool_calls;
+        if (calls.length > ABSOLUTE_MAX_CALLS || calls.length > maxCalls) {
+          throw new Error(`Batch accepts at most ${maxCalls} tool calls.`);
+        }
         const tools = getTools();
 
         const activeEditTool = editingMode === "none" ? null : editingMode;
@@ -464,11 +472,18 @@ export function batchTool(params: {
             publishProgress();
 
             try {
+              const parentContext =
+                options.context && typeof options.context === "object"
+                  ? options.context
+                  : undefined;
               const out = await t.execute(validatedArgs, {
                 toolCallId,
                 messages: options.messages,
                 abortSignal: options.abortSignal,
-                context: options.context,
+                context: {
+                  ...parentContext,
+                  [BATCH_CHILD_CONTEXT_FLAG]: true,
+                },
               });
 
               child.status = "done";

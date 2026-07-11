@@ -29,6 +29,7 @@ function makeTools(
     editingMode?: "apply_patch" | "edit_file" | "none";
     includeApplyPatch?: boolean;
     includeEditFile?: boolean;
+    maxCalls?: number;
   },
 ): ToolSet {
   const editingMode = opts?.editingMode ?? "apply_patch";
@@ -46,6 +47,7 @@ function makeTools(
       defaultCwd: cwd,
       getTools: () => tools,
       editingMode,
+      maxCalls: opts?.maxCalls,
     }),
   );
   return tools;
@@ -98,6 +100,47 @@ describe("batch tool", () => {
 
   afterEach(async () => {
     await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it("accepts eight calls and rejects a ninth", async () => {
+    const tools = makeTools(baseDir, { editingMode: "none" });
+    const batch = getTool(tools, "batch");
+    expect((batch as ExecTool & { description?: string }).description).toContain(
+      "Supports independent read_file, glob, grep, and bash operations.",
+    );
+    const toolCall = { tool: "glob", parameters: { patterns: ["*.missing"] } };
+    const options = {
+      toolCallId: "batch-limit",
+      messages: [],
+      abortSignal: undefined,
+      context: undefined,
+    };
+
+    const accepted = (await batch.execute(
+      { tool_calls: Array.from({ length: 8 }, () => toolCall) },
+      options,
+    )) as { total: number };
+    expect(accepted.total).toBe(8);
+    await expect(
+      Promise.resolve(
+        batch.execute({ tool_calls: Array.from({ length: 9 }, () => toolCall) }, options),
+      ),
+    ).rejects.toThrow("at most 8");
+  });
+
+  it("defensively caps configured maxCalls above eight", async () => {
+    const tools = makeTools(baseDir, { editingMode: "none", maxCalls: 100 });
+    const batch = getTool(tools, "batch");
+    const toolCall = { tool: "glob", parameters: { patterns: ["*.missing"] } };
+
+    await expect(
+      Promise.resolve(
+        batch.execute(
+          { tool_calls: Array.from({ length: 9 }, () => toolCall) },
+          { toolCallId: "batch-hard-limit", messages: [] },
+        ),
+      ),
+    ).rejects.toThrow("at most 8");
   });
 
   it("rejects a batch when apply_patch calls touch the same file", async () => {
@@ -465,6 +508,9 @@ describe("batch tool", () => {
       custom_write: {
         execute: () => ({ ok: true }),
       } as ExecTool,
+      custom_default: {
+        execute: () => ({ ok: true }),
+      } as ExecTool,
     } as unknown as ToolSet;
 
     const specs = new Map<string, Level1ToolSpec<unknown>>([
@@ -474,6 +520,14 @@ describe("batch tool", () => {
           name: "custom_read",
           supportsBatch: true,
           createTool: () => tools.custom_read,
+          isEnabled: () => true,
+        },
+      ],
+      [
+        "custom_default",
+        {
+          name: "custom_default",
+          createTool: () => tools.custom_default,
           isEnabled: () => true,
         },
       ],
@@ -509,6 +563,7 @@ describe("batch tool", () => {
 
     expect(enumValues).toContain("custom_read");
     expect(enumValues).not.toContain("custom_write");
+    expect(enumValues).not.toContain("custom_default");
   });
 
   it("uses plugin-provided editTargets to reject overlapping custom edits", async () => {

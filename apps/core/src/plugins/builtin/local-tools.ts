@@ -11,7 +11,7 @@ import { fsTool } from "../../tools/fs/fs";
 import { subagentTools, type DeferredSubagentRegistration } from "../../tools/subagent";
 import { BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS } from "../../surface/bridge/bus-agent-runner/tool-failure-logging";
 import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-display";
-import type { CoreLevel1ToolSpec, CoreToolPlugin } from "../types";
+import { markBoundedBuiltinOutput, type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
 
 type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
 
@@ -32,6 +32,16 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
       context.runtime.config?.tools.editFile.hashline === true,
     fsBackend: context.runtime.config?.tools.fsBackend,
     readFileDirectAttachmentSupported: getReadFileDirectAttachmentSupported(context),
+    maxOutputBytes: context.runtime.config?.tools.output.maxPreviewBytes,
+    maxInlineMediaBytesPerPart: context.runtime.config?.tools.media.maxInlineBytesPerPart,
+    artifactOnly: context.requestContext?.safetyMode === "restricted",
+    toolResultArtifacts: context.runtime.toolResultArtifacts,
+    requestContext: context.requestContext
+      ? {
+          requestId: context.requestContext.requestId,
+          sessionId: context.requestContext.sessionId,
+        }
+      : undefined,
   });
   localFsToolsByBuildContext.set(context, tools);
   return tools;
@@ -61,6 +71,10 @@ function withBuiltinMetadata(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
   };
 }
 
+function withBoundedOutput(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
+  return markBoundedBuiltinOutput(withBuiltinMetadata(spec));
+}
+
 function getDeferredDelegateHandler(requestContext: {
   metadata?: Readonly<Record<string, unknown>>;
 }): ((registration: DeferredSubagentRegistration) => Promise<void>) | undefined {
@@ -72,38 +86,42 @@ function getDeferredDelegateHandler(requestContext: {
 
 function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
   return [
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "bash",
       supportsBatch: true,
       isEnabled: ({ runProfile }) => runProfile !== "explore",
-      createTool: ({ cwd }) => bashToolWithCwd(cwd).bash,
+      createTool: ({ cwd, runtime }) =>
+        bashToolWithCwd(cwd, {
+          artifacts: runtime.toolResultArtifacts,
+          outputConfig: runtime.config?.tools.output,
+        }).bash,
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "read_file",
       supportsBatch: true,
-      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
+      isEnabled: () => true,
       createTool: (context) => getFsReadOnlyTool("read_file", context),
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "glob",
       supportsBatch: true,
       isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("glob", context),
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "grep",
       supportsBatch: true,
       isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "fuzzy_search",
       supportsBatch: true,
       isEnabled: ({ runtime, requestContext }) =>
         runtime.config?.tools.fsBackend === "fff" && requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("fuzzy_search", context),
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "edit_file",
       supportsBatch: true,
       isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
@@ -119,7 +137,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         return collectEditFileTouchedPaths({ path: record.path, cwd: context.cwd });
       },
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "apply_patch",
       supportsBatch: true,
       isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
@@ -135,7 +153,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         return collectApplyPatchTouchedPaths({ patchText: record.patchText, cwd: context.cwd });
       },
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "subagent_delegate",
       isEnabled: ({ runProfile, runtime, subagentConfig, subagentDepth, requestContext }) =>
         runProfile !== "explore" &&
@@ -158,16 +176,24 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         }).subagent_delegate;
       },
     }),
-    withBuiltinMetadata({
+    withBoundedOutput({
       name: "batch",
       isEnabled: () => true,
-      createTool: ({ cwd, editingToolMode, getTools, getLevel1ToolSpecs, reportToolStatus }) =>
+      createTool: ({
+        cwd,
+        editingToolMode,
+        getTools,
+        getLevel1ToolSpecs,
+        reportToolStatus,
+        runtime,
+      }) =>
         batchTool({
           defaultCwd: cwd,
           getTools,
           getToolSpecs: getLevel1ToolSpecs,
           editingMode: editingToolMode,
           reportToolStatus,
+          maxCalls: runtime.config?.tools.batch.maxCalls ?? 8,
         }).batch,
     }),
   ];

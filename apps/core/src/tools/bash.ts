@@ -2,6 +2,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { executeBash } from "./bash-impl";
 import { executeRestrictedBash } from "./restricted-bash";
+import type { CoreConfig } from "@stanley2058/lilac-utils";
+import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 
 export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
@@ -41,11 +43,6 @@ const bashExecutionErrorSchema = z.discriminatedUnion("type", [
     phase: z.enum(["spawn", "stdout", "stderr", "unknown"]),
     message: z.string(),
   }),
-  z.object({
-    type: z.literal("truncated"),
-    message: z.string(),
-    outputPath: z.string().optional(),
-  }),
 ]);
 
 const bashOutputSchema = z.object({
@@ -55,7 +52,12 @@ const bashOutputSchema = z.object({
   executionError: bashExecutionErrorSchema.optional(),
   truncation: z
     .object({
-      outputPath: z.string(),
+      artifactUri: z.string().optional(),
+      message: z.string(),
+      originalStdoutBytes: z.number(),
+      originalStderrBytes: z.number(),
+      previewBytes: z.number(),
+      completeOutputRetained: z.boolean(),
     })
     .optional(),
 });
@@ -64,7 +66,7 @@ export function bashTool() {
   return {
     bash: tool({
       description:
-        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
+        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true. When output is truncated, use read_file with truncation.artifactUri to inspect the complete transient result.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
       execute: (input, { context, abortSignal, toolCallId }) =>
@@ -85,11 +87,17 @@ export function bashTool() {
   };
 }
 
-export function bashToolWithCwd(defaultCwd: string) {
+export function bashToolWithCwd(
+  defaultCwd: string,
+  opts?: {
+    artifacts?: ToolResultArtifactStore;
+    outputConfig?: CoreConfig["tools"]["output"];
+  },
+) {
   return {
     bash: tool({
       description:
-        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true.",
+        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true. When output is truncated, use read_file with truncation.artifactUri to inspect the complete transient result.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
       execute: (input, { context, abortSignal, toolCallId }) => {
@@ -107,12 +115,17 @@ export function bashToolWithCwd(defaultCwd: string) {
             workspaceRoot: defaultCwd,
             context: typedContext,
             abortSignal,
+            toolCallId,
+            artifacts: opts?.artifacts,
+            outputConfig: opts?.outputConfig,
           });
         }
         return executeBash(payload, {
           context,
           abortSignal,
           toolCallId,
+          artifacts: opts?.artifacts,
+          outputConfig: opts?.outputConfig,
         } as {
           context?: {
             requestId: string;
@@ -121,6 +134,8 @@ export function bashToolWithCwd(defaultCwd: string) {
           };
           abortSignal?: AbortSignal;
           toolCallId?: string;
+          artifacts?: ToolResultArtifactStore;
+          outputConfig?: CoreConfig["tools"]["output"];
         });
       },
     }),

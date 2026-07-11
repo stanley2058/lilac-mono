@@ -221,7 +221,7 @@ describe("bash output sanitizer stream", () => {
     expect(result.endsWith(" <redacted> suffix")).toBeTrue();
   });
 
-  it("sanitizes before capping and writing overflow", async () => {
+  it("keeps only raw executor output in the temporary overflow spill", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-output-sanitizer-"));
     const overflowFilePath = path.join(tempDir, "overflow.log");
 
@@ -235,13 +235,13 @@ describe("bash output sanitizer stream", () => {
       expect(result.capped).toBeTrue();
       expect(result.text).toBe("prefix x");
       expect(result.overflowFilePath).toBe(overflowFilePath);
-      expect(await fs.readFile(overflowFilePath, "utf8")).toBe("prefix xy<redacted>ba suffix");
+      expect(await fs.readFile(overflowFilePath, "utf8")).toBe("prefix xyababa suffix");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("pattern-redacts overflow before writing it", async () => {
+  it("defers pattern redaction of overflow until artifact persistence", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-output-sanitizer-"));
     const overflowFilePath = path.join(tempDir, "overflow.log");
 
@@ -254,7 +254,7 @@ describe("bash output sanitizer stream", () => {
 
       expect(result.capped).toBeTrue();
       expect(await fs.readFile(overflowFilePath, "utf8")).toBe(
-        "prefix API_TOKEN=<redacted> suffix",
+        "prefix API_TOKEN=secret-value suffix",
       );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

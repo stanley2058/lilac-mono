@@ -130,7 +130,7 @@ function normalizeEditOutput(result: unknown): unknown {
   };
 }
 
-async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
+export async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
   const fsTool = new FileSystem(envelope.cwd, {
     denyPaths: envelope.denyPaths,
     fsBackend: "fff",
@@ -142,6 +142,7 @@ async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
     return await fsTool.readFile({
       path: String(input["path"] ?? ""),
       startLine: numberOrUndefined(input["startLine"]),
+      startColumn: numberOrUndefined(input["startColumn"]),
       maxLines: numberOrUndefined(input["maxLines"]),
       maxCharacters: numberOrUndefined(input["maxCharacters"]),
       format:
@@ -154,15 +155,16 @@ async function handleRequest(envelope: RequestEnvelope): Promise<unknown> {
   }
 
   if (envelope.op === "fs.read_bytes") {
-    const result = await fsTool.readFileBytes({ path: String(input["path"] ?? "") });
-    if (!result.success) return result;
-
     const maxBytes = numberOrUndefined(input["maxBytes"]);
-    if (maxBytes !== undefined && result.bytesLength > maxBytes) {
+    const result = await fsTool.readFileBytes({
+      path: String(input["path"] ?? ""),
+      maxBytes,
+    });
+    if (!result.success) {
       return {
         ok: false,
         resolvedPath: result.resolvedPath,
-        error: `Remote file too large (${result.bytesLength} bytes). Max allowed is ${maxBytes}.`,
+        error: result.error.message,
       };
     }
 
@@ -450,7 +452,9 @@ async function main(): Promise<void> {
   writeJson({ ok: false, error: `Unknown command: ${command}` } satisfies ResponseEnvelope);
 }
 
-main().catch((error) => {
-  writeJson(responseError(error));
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    writeJson(responseError(error));
+    process.exitCode = 1;
+  });
+}

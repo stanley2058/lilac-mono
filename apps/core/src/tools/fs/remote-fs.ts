@@ -10,6 +10,7 @@ const requirePackageJson = createRequire(import.meta.url);
 export type RemoteReadTextInput = {
   path: string;
   startLine?: number;
+  startColumn?: number;
   maxLines?: number;
   maxCharacters?: number;
   format?: "raw" | "numbered" | "hashline";
@@ -25,6 +26,8 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
+      nextStartLine?: number;
+      nextStartColumn?: number;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "raw";
@@ -39,6 +42,8 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
+      nextStartLine?: number;
+      nextStartColumn?: number;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "numbered";
@@ -53,6 +58,8 @@ export type RemoteReadTextOutput =
       totalLines: number;
       hasMoreLines: boolean;
       truncatedByChars: boolean;
+      nextStartLine?: number;
+      nextStartColumn?: number;
       warnings?: HashlineWarning[];
       degradedFromHashline?: boolean;
       format: "hashline";

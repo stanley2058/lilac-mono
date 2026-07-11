@@ -3,10 +3,14 @@ import { env } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { executeBash } from "../../src/tools/bash-impl";
+import { executeBash, withLimitedBashOutput } from "../../src/tools/bash-impl";
 import { executeRestrictedBash } from "../../src/tools/restricted-bash";
 import { analyzeBashCommand } from "../../src/tools/bash-safety";
 import { resolveRestrictedSessionTmpDir } from "../../src/shared/attachment-utils";
+import {
+  createToolResultArtifactStore,
+  type ToolResultArtifactStore,
+} from "../../src/artifacts/tool-result-artifact-store";
 
 const STDIN_PROBE_COMMAND =
   "if cat >/dev/null 2>&1; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi";
@@ -25,6 +29,24 @@ function installMockFetch(handler: MockFetch): () => void {
 }
 
 describe("executeBash", () => {
+  it("allocates UTF-8 head-tail preview space to both streams", () => {
+    const output = withLimitedBashOutput(
+      {
+        stdout: `OUT_START${"😀".repeat(100)}OUT_END`,
+        stderr: `ERR_START${"界".repeat(100)}ERR_END`,
+        exitCode: 0,
+      },
+      { maxOutputBytes: 160, truncated: true },
+    );
+    expect(output.stdout).toContain("OUT_START");
+    expect(output.stdout).toContain("OUT_END");
+    expect(output.stderr).toContain("ERR_START");
+    expect(output.stderr).toContain("ERR_END");
+    expect(Buffer.byteLength(output.stdout + output.stderr, "utf8")).toBeLessThanOrEqual(160);
+    expect(output.executionError).toBeUndefined();
+    expect(output.truncation?.completeOutputRetained).toBe(false);
+  });
+
   it("executes a command and returns output", async () => {
     const res = await executeBash({ command: "echo hello" });
 
@@ -172,49 +194,145 @@ describe("executeBash", () => {
     expect(res.stdout).toContain("stdin_read_ok");
   });
 
-  it("truncates very large output and appends a tool error hint", async () => {
-    // 210k characters of output (over the 50KB tool limit).
+  it("stores large output as an artifact without changing execution success", async () => {
+    const artifactDir = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-bash-artifact-"),
+    );
+    const artifacts = createToolResultArtifactStore(path.join(artifactDir, "tool-results"));
+    await artifacts.init();
     const requestId = "bash-trunc-test-request";
     const toolCallId = "bash-trunc-test-tool";
-
-    const res = await executeBash(
-      {
-        command: "head -c 210000 /dev/zero | tr '\\0' 'a'",
+    let persistenceTempEntries: string[] = [];
+    const observedArtifacts: ToolResultArtifactStore = {
+      ...artifacts,
+      async createFromStream(params) {
+        persistenceTempEntries = (await fs.readdir(await fs.realpath("/tmp"))).filter((entry) =>
+          entry.startsWith(`${requestId}-${toolCallId}-`),
+        );
+        return artifacts.createFromStream(params);
       },
-      {
-        context: {
-          requestId,
-          sessionId: "bash-trunc-test-session",
-          requestClient: "test",
+    };
+
+    try {
+      const res = await executeBash(
+        {
+          command:
+            "printf START; head -c 210000 /dev/zero | tr '\\0' 'a'; printf ' API_TOKEN=secret-value END'",
         },
+        {
+          context: {
+            requestId,
+            sessionId: "bash-trunc-test-session",
+            requestClient: "test",
+          },
+          toolCallId,
+          artifacts: observedArtifacts,
+          outputConfig: {
+            maxPreviewBytes: 40 * 1024,
+            artifactTtlMs: 60_000,
+            artifactMaxBytesPerSession: 1024 * 1024,
+          },
+        },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(res.executionError).toBeUndefined();
+      expect(res.stdout).toContain("START");
+      expect(res.stdout).toContain("END");
+      expect(Buffer.byteLength(res.stdout + res.stderr, "utf8")).toBeLessThanOrEqual(40 * 1024);
+      expect(res.truncation?.completeOutputRetained).toBe(true);
+      expect(res.truncation?.originalStdoutBytes).toBe(210_030);
+      expect(res.truncation?.originalStderrBytes).toBe(0);
+      expect(res.truncation?.message).toContain("Use read_file with this URI");
+      expect(persistenceTempEntries).toHaveLength(1);
+      expect(persistenceTempEntries[0]).toEndWith(".stdout.part");
+      expect(persistenceTempEntries.some((entry) => entry.endsWith(".sanitized"))).toBe(false);
+      const uri = res.truncation?.artifactUri;
+      if (!uri) throw new Error("expected truncated output artifact URI");
+      const artifact = await artifacts.read(uri, "bash-trunc-test-session");
+      expect(artifact.ok).toBe(true);
+      if (artifact.ok) {
+        expect(artifact.content).toContain("<bash_tool_full_output>");
+        expect(artifact.content).toContain("--- stdout ---");
+        expect(artifact.content).toContain("--- stderr ---");
+        expect(artifact.content).toContain("API_TOKEN=<redacted>");
+        expect(artifact.content).not.toContain("secret-value");
+        expect(artifact.content).toContain("END");
+      }
+    } finally {
+      await fs.rm(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not assemble a discarded full-output spill without an artifact store", async () => {
+    const requestId = `bash-no-artifact-${Date.now()}`;
+    const toolCallId = "missing-store";
+    const res = await executeBash(
+      { command: "head -c 100000 /dev/zero | tr '\\0' 'z'" },
+      {
+        context: { requestId, sessionId: "session", requestClient: "test" },
         toolCallId,
       },
     );
-
     expect(res.exitCode).toBe(0);
-    expect(res.stdout.length + res.stderr.length).toBeLessThanOrEqual(50 * 1024);
-    expect(res.stderr).toBe("");
-
-    const outPath = res.truncation?.outputPath;
-    expect(outPath).toMatch(new RegExp(`^/tmp/${requestId}-${toolCallId}-[0-9a-f-]+\\.log$`, "u"));
-    if (!outPath) throw new Error("expected truncated output path");
-    expect(res.executionError).toBeDefined();
-    expect(res.executionError?.type).toBe("truncated");
-    if (res.executionError?.type === "truncated") {
-      expect(res.executionError.message).toContain("output truncated");
-      expect(res.executionError.outputPath).toBe(outPath);
-    }
-
-    const fullOutput = await fs.readFile(outPath, "utf8");
-    expect(fullOutput).toContain("<bash_tool_full_output>");
-    expect(fullOutput).toContain("--- stdout ---");
-    expect(fullOutput).toContain("--- stderr ---");
-
-    await fs.unlink(outPath).catch(() => undefined);
+    expect(res.truncation?.completeOutputRetained).toBe(false);
+    expect(res.truncation?.message).toContain("could not be retained");
+    const tmpEntries = await fs.readdir(await fs.realpath("/tmp"));
+    expect(tmpEntries.some((entry) => entry.startsWith(`${requestId}-${toolCallId}-`))).toBe(false);
   });
 });
 
 describe("executeRestrictedBash", () => {
+  it("sanitizes previews and encrypted artifacts before returning them", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-sanitize-workspace-"),
+    );
+    const artifactRoot = path.join(workspace, ".artifacts");
+    const store = createToolResultArtifactStore(artifactRoot);
+    await store.init();
+
+    try {
+      const result = await executeRestrictedBash(
+        {
+          command:
+            "printf '\\033[31mAPI_TOKEN=abcdefghijklmnopqrstuvwxyz1234567890\\033[0m repeated repeated'",
+          cwd: workspace,
+        },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-sanitize-request",
+            sessionId: "restricted-sanitize-session",
+            requestClient: "test",
+          },
+          toolCallId: "restricted-sanitize-call",
+          artifacts: store,
+          outputConfig: {
+            maxPreviewBytes: 16,
+            artifactTtlMs: 60_000,
+            artifactMaxBytesPerSession: 1024 * 1024,
+          },
+        },
+      );
+
+      expect(result.stdout).not.toContain("\u001b");
+      expect(result.stdout).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+      expect(result.truncation?.artifactUri).toStartWith("tool-result://");
+      const stored = await store.read(
+        result.truncation?.artifactUri ?? "",
+        "restricted-sanitize-session",
+      );
+      expect(stored.ok).toBe(true);
+      if (stored.ok) {
+        expect(stored.content).not.toContain("\u001b");
+        expect(stored.content).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+        expect(stored.content).toContain("<redacted>");
+      }
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("uses an overlay workspace and persistent per-session /tmp", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-restricted-workspace-"),
@@ -270,6 +388,40 @@ describe("executeRestrictedBash", () => {
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
       await fs.rm(sessionTmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not share cached shell state across sessions with the same request ID", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-isolation-workspace-"),
+    );
+    const requestId = "restricted-shared-request";
+    const firstSession = "restricted-isolation-a";
+    const secondSession = "restricted-isolation-b";
+
+    try {
+      const first = await executeRestrictedBash(
+        { command: "printf private > /tmp/private.txt", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: { requestId, sessionId: firstSession, requestClient: "test" },
+        },
+      );
+      const second = await executeRestrictedBash(
+        { command: "cat /tmp/private.txt", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: { requestId, sessionId: secondSession, requestClient: "test" },
+        },
+      );
+
+      expect(first.exitCode).toBe(0);
+      expect(second.exitCode).not.toBe(0);
+      expect(second.stdout).not.toContain("private");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(resolveRestrictedSessionTmpDir(firstSession), { recursive: true, force: true });
+      await fs.rm(resolveRestrictedSessionTmpDir(secondSession), { recursive: true, force: true });
     }
   });
 

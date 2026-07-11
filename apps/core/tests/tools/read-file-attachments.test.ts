@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { BATCH_CHILD_CONTEXT_FLAG } from "../../src/tools/batch";
 import { fsTool } from "../../src/tools/fs/fs";
 
 describe("read_file attachments", () => {
@@ -149,5 +150,62 @@ describe("read_file attachments", () => {
     expect(parts[1]!.mediaType).toBe("application/pdf");
     expect(parts[1]!.filename).toBe("doc.pdf");
     expect(parts[1]!.data).toEqual({ type: "data", data: pdf.toString("base64") });
+  });
+
+  it("rejects media reads from batch children before caching bytes", async () => {
+    await writeFile(path.join(baseDir, "batched.png"), Buffer.alloc(32));
+    const readFile = fsTool(baseDir).read_file;
+
+    const output = await resolveExecuteResult(
+      readFile.execute!(
+        { path: "batched.png" },
+        {
+          toolCallId: "batch:1",
+          messages: [],
+          context: { [BATCH_CHILD_CONTEXT_FLAG]: true },
+        },
+      ),
+    );
+
+    expect(output).toMatchObject({ success: false });
+    if (!("error" in output)) return;
+    expect(output.error.message).toContain("cannot be read through batch");
+    expect(output.error.message).toContain("read_file directly");
+  });
+
+  it("rejects oversized images before attachment caching with resize guidance", async () => {
+    await writeFile(path.join(baseDir, "large.png"), Buffer.alloc(32));
+    const readFile = fsTool(baseDir, { maxInlineMediaBytesPerPart: 16 }).read_file;
+
+    const output = await resolveExecuteResult(
+      readFile.execute!(
+        { path: "large.png" },
+        { toolCallId: "large-image", messages: [], context: {} },
+      ),
+    );
+
+    expect(output).toMatchObject({ success: false });
+    if (!("error" in output)) return;
+    expect(output.error.message).toContain("large.png");
+    expect(output.error.message).toContain("image/png");
+    expect(output.error.message).toContain("Resize or compress the image");
+  });
+
+  it("rejects oversized PDFs with file-reduction guidance", async () => {
+    await writeFile(path.join(baseDir, "large.pdf"), Buffer.alloc(32));
+    const readFile = fsTool(baseDir, { maxInlineMediaBytesPerPart: 16 }).read_file;
+
+    const output = await resolveExecuteResult(
+      readFile.execute!(
+        { path: "large.pdf" },
+        { toolCallId: "large-pdf", messages: [], context: {} },
+      ),
+    );
+
+    expect(output).toMatchObject({ success: false });
+    if (!("error" in output)) return;
+    expect(output.error.message).toContain("large.pdf");
+    expect(output.error.message).toContain("application/pdf");
+    expect(output.error.message).toContain("Reduce or compress the file");
   });
 });

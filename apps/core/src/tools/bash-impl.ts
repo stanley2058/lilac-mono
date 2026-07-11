@@ -1,9 +1,9 @@
-import { createLogger, env, resolveVcsEnv } from "@stanley2058/lilac-utils";
+import { createLogger, env, resolveVcsEnv, type CoreConfig } from "@stanley2058/lilac-utils";
 import { randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import { analyzeBashCommand } from "./bash-safety";
 import { formatBlockedMessage, redactSecrets } from "./bash-safety/format";
 import { expandTilde } from "@stanley2058/lilac-fs";
@@ -16,24 +16,19 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
-import { readSanitizedStreamTextCapped } from "./bash-output-sanitizer";
+import {
+  createBashOutputSanitizerTransform,
+  readSanitizedStreamTextCapped,
+} from "./bash-output-sanitizer";
 import { loadToolEnv } from "./tool-env";
+import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
 const DEFAULT_BASH_STDIN_MODE: BashStdinMode = "error";
 const BASH_TRUNCATED_OUTPUT_DIR = "/tmp";
 
-// Keep tool output bounded so we don't blow up agent context.
-const MAX_BASH_OUTPUT_CHARS = 50 * 1024;
-
-function buildBashOutputTruncationMessage(outputPath?: string): string {
-  if (typeof outputPath === "string" && outputPath.length > 0) {
-    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output saved to: ${outputPath}`;
-  }
-
-  return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output file could not be written; narrow output and retry.`;
-}
+const DEFAULT_MAX_BASH_OUTPUT_BYTES = 40 * 1024;
 
 const logger = createLogger({
   module: "tool:bash",
@@ -74,11 +69,6 @@ export type BashExecutionError =
       type: "exception";
       phase: "spawn" | "stdout" | "stderr" | "unknown";
       message: string;
-    }
-  | {
-      type: "truncated";
-      message: string;
-      outputPath?: string;
     };
 
 export type BashToolOutput = {
@@ -93,13 +83,18 @@ export type BashToolOutput = {
    */
   exitCode: number;
   /**
-   * Tool-level error (timeout, spawn failure, stream read failure, output truncation).
+   * Tool-level error (timeout, spawn failure, or stream read failure).
    *
    * This is distinct from a command failure, which is represented by a non-zero exitCode.
    */
   executionError?: BashExecutionError;
   truncation?: {
-    outputPath: string;
+    artifactUri?: string;
+    message: string;
+    originalStdoutBytes: number;
+    originalStderrBytes: number;
+    previewBytes: number;
+    completeOutputRetained: boolean;
   };
 };
 
@@ -204,96 +199,146 @@ function buildTruncatedOutputPaths(params: { requestId?: string; toolCallId?: st
   };
 }
 
-async function appendSectionOutput(params: {
-  outputPath: string;
-  label: "stdout" | "stderr";
-  captured: string;
-  overflowFilePath?: string;
-}) {
-  await fs.appendFile(params.outputPath, `--- ${params.label} ---\n`, "utf8");
-
-  if (params.overflowFilePath) {
-    await fs.stat(params.overflowFilePath);
-    const source = createReadStream(params.overflowFilePath);
-    const destination = createWriteStream(params.outputPath, { flags: "a", mode: 0o600 });
-    await pipeline(source, destination);
-    await fs.appendFile(params.outputPath, "\n", "utf8");
-    return;
-  }
-
-  if (params.captured.length > 0) {
-    await fs.appendFile(params.outputPath, params.captured, "utf8");
-  }
-  await fs.appendFile(params.outputPath, "\n", "utf8");
-}
-
-async function maybeWriteTruncatedOutputFile(params: {
-  outputPath: string;
+function createBashArtifactSource(params: {
   requestId?: string;
   toolCallId?: string;
   stdout: string;
   stderr: string;
   stdoutOverflowPath?: string;
   stderrOverflowPath?: string;
-}): Promise<string | undefined> {
-  try {
-    const header =
+}): Readable {
+  async function* content() {
+    yield (
       "<bash_tool_full_output>\n" +
-      `requestId: ${params.requestId ?? "unknown"}\n` +
-      `toolCallId: ${params.toolCallId ?? "unknown"}\n\n`;
-    await fs.writeFile(params.outputPath, header, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-
-    await appendSectionOutput({
-      outputPath: params.outputPath,
-      label: "stdout",
-      captured: params.stdout,
-      overflowFilePath: params.stdoutOverflowPath,
-    });
-
-    await fs.appendFile(params.outputPath, "\n", "utf8");
-
-    await appendSectionOutput({
-      outputPath: params.outputPath,
-      label: "stderr",
-      captured: params.stderr,
-      overflowFilePath: params.stderrOverflowPath,
-    });
-
-    await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
-    await fs.chmod(params.outputPath, 0o600);
-  } catch {
-    await fs.unlink(params.outputPath).catch(() => undefined);
-    return undefined;
-  } finally {
-    if (params.stdoutOverflowPath) {
-      await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
-    }
-    if (params.stderrOverflowPath) {
-      await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
-    }
+        `requestId: ${params.requestId ?? "unknown"}\n` +
+        `toolCallId: ${params.toolCallId ?? "unknown"}\n\n`
+    );
+    yield "--- stdout ---\n";
+    if (params.stdoutOverflowPath) yield* createReadStream(params.stdoutOverflowPath);
+    else yield params.stdout;
+    yield "\n\n--- stderr ---\n";
+    if (params.stderrOverflowPath) yield* createReadStream(params.stderrOverflowPath);
+    else yield params.stderr;
+    yield "\n</bash_tool_full_output>\n";
   }
 
-  return params.outputPath;
+  return Readable.from(content());
+}
+
+function takeUtf8Edge(value: string, maxBytes: number, fromEnd: boolean): string {
+  const characters = Array.from(value);
+  let bytes = 0;
+  let output = "";
+  const start = fromEnd ? characters.length - 1 : 0;
+  const stop = fromEnd ? -1 : characters.length;
+  const step = fromEnd ? -1 : 1;
+  for (let index = start; index !== stop; index += step) {
+    const character = characters[index]!;
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > maxBytes) break;
+    output = fromEnd ? character + output : output + character;
+    bytes += characterBytes;
+  }
+  return output;
+}
+
+function previewStream(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  if (maxBytes <= 0) return "";
+  const totalCharacters = Array.from(value).length;
+  const marker = `\n...[${totalCharacters} characters omitted]...\n`;
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  if (markerBytes >= maxBytes) return takeUtf8Edge(value, maxBytes, false);
+  const contentBudget = maxBytes - markerBytes;
+  const head = takeUtf8Edge(value, Math.ceil(contentBudget / 2), false);
+  const tail = takeUtf8Edge(value, Math.floor(contentBudget / 2), true);
+  const omitted = Math.max(0, totalCharacters - Array.from(head).length - Array.from(tail).length);
+  return `${head}\n...[${omitted} characters omitted]...\n${tail}`;
+}
+
+async function overflowStreamBytes(captured: string, overflowPath?: string): Promise<number> {
+  if (!overflowPath) return Buffer.byteLength(captured, "utf8");
+  try {
+    return (await fs.stat(overflowPath)).size;
+  } catch {
+    return Buffer.byteLength(captured, "utf8");
+  }
+}
+
+async function buildOverflowStreamPreview(params: {
+  captured: string;
+  overflowPath?: string;
+  maxBytes: number;
+  literalSecrets: readonly string[];
+}): Promise<string> {
+  if (!params.overflowPath) return previewStream(params.captured, params.maxBytes);
+  const marker = "\n...[output omitted]...\n";
+  const contentBudget = Math.max(0, params.maxBytes - Buffer.byteLength(marker, "utf8"));
+  const head = takeUtf8Edge(params.captured, Math.ceil(contentBudget / 2), false);
+  let tail = "";
+  try {
+    const handle = await fs.open(params.overflowPath, "r");
+    try {
+      const stat = await handle.stat();
+      const readBytes = Math.min(stat.size, Math.max(4096, contentBudget * 4));
+      const buffer = Buffer.alloc(readBytes);
+      await handle.read(buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
+      const sanitized = redactSecrets(
+        stripAnsiEscapeSequences(buffer.toString("utf8")),
+        params.literalSecrets,
+      );
+      tail = takeUtf8Edge(sanitized, Math.floor(contentBudget / 2), true);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return previewStream(params.captured, params.maxBytes);
+  }
+  return `${head}${marker}${tail}`;
+}
+
+function allocateStreamPreviewBytes(params: {
+  stdoutBytes: number;
+  stderrBytes: number;
+  maxBytes: number;
+}): { stdout: number; stderr: number } {
+  const both = params.stdoutBytes > 0 && params.stderrBytes > 0;
+  let stdout = both
+    ? Math.min(params.stdoutBytes, Math.ceil(params.maxBytes / 2))
+    : params.stdoutBytes > 0
+      ? params.maxBytes
+      : 0;
+  let stderr = both
+    ? Math.min(params.stderrBytes, Math.floor(params.maxBytes / 2))
+    : params.stderrBytes > 0
+      ? params.maxBytes
+      : 0;
+  let remaining = Math.max(0, params.maxBytes - stdout - stderr);
+  const stdoutExtra = Math.min(Math.max(0, params.stdoutBytes - stdout), remaining);
+  stdout += stdoutExtra;
+  remaining -= stdoutExtra;
+  stderr += Math.min(Math.max(0, params.stderrBytes - stderr), remaining);
+  return { stdout, stderr };
 }
 
 function limitBashOutput(
   input: { stdout: string; stderr: string },
+  maxOutputBytes: number,
   options?: { truncated?: boolean },
 ): {
   stdout: string;
   stderr: string;
   truncated: boolean;
 } {
-  const totalLen = input.stdout.length + input.stderr.length;
-  const truncated = Boolean(options?.truncated) || totalLen > MAX_BASH_OUTPUT_CHARS;
+  const stdoutBytes = Buffer.byteLength(input.stdout, "utf8");
+  const stderrBytes = Buffer.byteLength(input.stderr, "utf8");
+  const totalBytes = stdoutBytes + stderrBytes;
+  const truncated = Boolean(options?.truncated) || totalBytes > maxOutputBytes;
   if (!truncated) {
     return { ...input, truncated: false };
   }
 
-  if (totalLen <= MAX_BASH_OUTPUT_CHARS) {
+  if (totalBytes <= maxOutputBytes) {
     return {
       stdout: input.stdout,
       stderr: input.stderr,
@@ -301,25 +346,41 @@ function limitBashOutput(
     };
   }
 
-  const available = Math.max(0, MAX_BASH_OUTPUT_CHARS);
-
-  const sliceWithoutSplittingSurrogate = (value: string, maxChars: number): string => {
-    let end = Math.min(value.length, maxChars);
-    if (
-      end > 0 &&
-      /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") &&
-      /[\uDC00-\uDFFF]/u.test(value[end] ?? "")
-    ) {
-      end -= 1;
+  const available = Math.max(0, maxOutputBytes);
+  const bothStreams = input.stdout.length > 0 && input.stderr.length > 0;
+  let stdoutBudget = bothStreams
+    ? Math.min(stdoutBytes, Math.ceil(available / 2))
+    : input.stdout.length > 0
+      ? available
+      : 0;
+  let stderrBudget = bothStreams
+    ? Math.min(stderrBytes, Math.floor(available / 2))
+    : input.stderr.length > 0
+      ? available
+      : 0;
+  let remaining = Math.max(0, available - stdoutBudget - stderrBudget);
+  const stdoutNeed = Math.max(0, stdoutBytes - stdoutBudget);
+  const stdoutExtra = Math.min(stdoutNeed, remaining);
+  stdoutBudget += stdoutExtra;
+  remaining -= stdoutExtra;
+  stderrBudget += Math.min(Math.max(0, stderrBytes - stderrBudget), remaining);
+  let stdoutPart = previewStream(input.stdout, stdoutBudget);
+  let stderrPart = previewStream(input.stderr, stderrBudget);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const usedBytes = Buffer.byteLength(stdoutPart, "utf8") + Buffer.byteLength(stderrPart, "utf8");
+    if (usedBytes <= available) break;
+    const excess = usedBytes - available;
+    if (stdoutBudget > 0 && stderrBudget > 0) {
+      stdoutBudget = Math.max(0, stdoutBudget - Math.ceil(excess / 2));
+      stderrBudget = Math.max(0, stderrBudget - Math.floor(excess / 2));
+    } else if (stdoutBudget > 0) {
+      stdoutBudget = Math.max(0, stdoutBudget - excess);
+    } else {
+      stderrBudget = Math.max(0, stderrBudget - excess);
     }
-    return value.slice(0, end);
-  };
-
-  const stdoutPart = sliceWithoutSplittingSurrogate(input.stdout, available);
-  const stderrPart =
-    available > stdoutPart.length
-      ? sliceWithoutSplittingSurrogate(input.stderr, available - stdoutPart.length)
-      : "";
+    stdoutPart = previewStream(input.stdout, stdoutBudget);
+    stderrPart = previewStream(input.stderr, stderrBudget);
+  }
 
   return {
     stdout: stdoutPart,
@@ -328,37 +389,103 @@ function limitBashOutput(
   };
 }
 
-function withLimitedOutput(
+export function withLimitedBashOutput(
   output: BashToolOutput,
-  options?: { truncated?: boolean; outputPath?: string },
+  options: {
+    maxOutputBytes: number;
+    truncated?: boolean;
+    artifactUri?: string;
+    originalStdoutBytes?: number;
+    originalStderrBytes?: number;
+  },
 ): BashToolOutput {
   const limited = limitBashOutput(
     { stdout: output.stdout, stderr: output.stderr },
-    { truncated: options?.truncated },
+    options.maxOutputBytes,
+    { truncated: options.truncated },
   );
   if (!limited.truncated) return output;
 
-  const truncationMessage = buildBashOutputTruncationMessage(options?.outputPath);
-  const executionError =
-    output.executionError ??
-    ({
-      type: "truncated",
-      message: truncationMessage,
-      ...(options?.outputPath ? { outputPath: options.outputPath } : {}),
-    } satisfies BashExecutionError);
+  const originalStdoutBytes =
+    options.originalStdoutBytes ?? Buffer.byteLength(output.stdout, "utf8");
+  const originalStderrBytes =
+    options.originalStderrBytes ?? Buffer.byteLength(output.stderr, "utf8");
+  const message = options.artifactUri
+    ? `Bash output was truncated. Complete output: ${options.artifactUri}. Use read_file with this URI, startOffset, and maxCharacters to inspect it.`
+    : "Bash output was truncated and the complete output could not be retained. Re-run the command with narrower output if needed.";
 
-  const truncation =
-    typeof options?.outputPath === "string" && options.outputPath.length > 0
-      ? { outputPath: options.outputPath }
-      : output.truncation;
+  logger.info("tool.result.truncated", {
+    toolName: "bash",
+    outputKind: "stdout-stderr",
+    originalBytes: originalStdoutBytes + originalStderrBytes,
+    previewBytes:
+      Buffer.byteLength(limited.stdout, "utf8") + Buffer.byteLength(limited.stderr, "utf8"),
+    artifactStored: options.artifactUri !== undefined,
+  });
 
   return {
     ...output,
     stdout: limited.stdout,
     stderr: limited.stderr,
-    executionError,
-    ...(truncation ? { truncation } : {}),
+    truncation: {
+      ...(options.artifactUri ? { artifactUri: options.artifactUri } : {}),
+      message,
+      originalStdoutBytes,
+      originalStderrBytes,
+      previewBytes:
+        Buffer.byteLength(limited.stdout, "utf8") + Buffer.byteLength(limited.stderr, "utf8"),
+      completeOutputRetained: options.artifactUri !== undefined,
+    },
   };
+}
+
+async function persistTruncatedOutput(params: {
+  artifacts?: ToolResultArtifactStore;
+  outputConfig: CoreConfig["tools"]["output"];
+  context?: { requestId: string; sessionId: string; requestClient: string };
+  toolCallId?: string;
+  literalSecrets: readonly string[];
+  stdout: string;
+  stderr: string;
+  stdoutOverflowPath?: string;
+  stderrOverflowPath?: string;
+}): Promise<{ uri?: string }> {
+  try {
+    if (!params.artifacts || !params.context || !params.toolCallId) return {};
+    const source = createBashArtifactSource({
+      requestId: params.context.requestId,
+      toolCallId: params.toolCallId,
+      stdout: params.stdout,
+      stderr: params.stderr,
+      stdoutOverflowPath: params.stdoutOverflowPath,
+      stderrOverflowPath: params.stderrOverflowPath,
+    }).pipe(createBashOutputSanitizerTransform(params.literalSecrets));
+    const artifact = await params.artifacts.createFromStream({
+      sessionId: params.context.sessionId,
+      requestId: params.context.requestId,
+      toolCallId: params.toolCallId,
+      toolName: "bash",
+      source,
+      ttlMs: params.outputConfig.artifactTtlMs,
+      maxBytesPerSession: params.outputConfig.artifactMaxBytesPerSession,
+    });
+    return { uri: artifact.uri };
+  } catch (error) {
+    logger.warn("tool.artifact.write_failed", {
+      toolName: "bash",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {};
+  } finally {
+    await Promise.all([
+      params.stdoutOverflowPath
+        ? fs.rm(params.stdoutOverflowPath, { force: true }).catch(() => undefined)
+        : undefined,
+      params.stderrOverflowPath
+        ? fs.rm(params.stderrOverflowPath, { force: true }).catch(() => undefined)
+        : undefined,
+    ]);
+  }
 }
 
 function buildBashChildEnv(params: {
@@ -403,6 +530,12 @@ export async function executeBash(
     context,
     abortSignal,
     toolCallId,
+    artifacts,
+    outputConfig = {
+      maxPreviewBytes: DEFAULT_MAX_BASH_OUTPUT_BYTES,
+      artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
+      artifactMaxBytesPerSession: 50 * 1024 * 1024,
+    },
   }: {
     context?: {
       requestId: string;
@@ -411,6 +544,8 @@ export async function executeBash(
     };
     abortSignal?: AbortSignal;
     toolCallId?: string;
+    artifacts?: ToolResultArtifactStore;
+    outputConfig?: CoreConfig["tools"]["output"];
   } = {},
 ): Promise<BashToolOutput> {
   const cwdTarget = parseSshCwdTarget(cwd);
@@ -559,7 +694,7 @@ export async function executeBash(
             timeoutMs: effectiveTimeoutMs,
             stdinMode: effectiveStdinMode,
             signal: controller.signal,
-            maxOutputChars: MAX_BASH_OUTPUT_CHARS,
+            maxOutputChars: outputConfig.maxPreviewBytes,
             overflowOutputPath: truncatedOutputPaths.outputPath,
           })
         : null;
@@ -569,27 +704,66 @@ export async function executeBash(
       const stderr = execResult.stderr;
       const exitCode = execResult.exitCode;
 
-      const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout));
-      const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr));
+      let safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout));
+      let safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr));
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
-        streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+        streamCapped ||
+        Buffer.byteLength(safeStdout, "utf8") + Buffer.byteLength(safeStderr, "utf8") >
+          outputConfig.maxPreviewBytes;
       const spillIncomplete =
         (execResult.capped.stdout && !execResult.overflowPaths.stdout) ||
         (execResult.capped.stderr && !execResult.overflowPaths.stderr);
-      const truncatedOutputPath =
+      let originalStdoutBytes = Buffer.byteLength(safeStdout, "utf8");
+      let originalStderrBytes = Buffer.byteLength(safeStderr, "utf8");
+      if (outputTruncated) {
+        [originalStdoutBytes, originalStderrBytes] = await Promise.all([
+          overflowStreamBytes(safeStdout, execResult.overflowPaths.stdout),
+          overflowStreamBytes(safeStderr, execResult.overflowPaths.stderr),
+        ]);
+        const budgets = allocateStreamPreviewBytes({
+          stdoutBytes: originalStdoutBytes,
+          stderrBytes: originalStderrBytes,
+          maxBytes: outputConfig.maxPreviewBytes,
+        });
+        [safeStdout, safeStderr] = await Promise.all([
+          buildOverflowStreamPreview({
+            captured: safeStdout,
+            overflowPath: execResult.overflowPaths.stdout,
+            maxBytes: budgets.stdout,
+            literalSecrets: [],
+          }),
+          buildOverflowStreamPreview({
+            captured: safeStderr,
+            overflowPath: execResult.overflowPaths.stderr,
+            maxBytes: budgets.stderr,
+            literalSecrets: [],
+          }),
+        ]);
+      }
+      const persistedOutput =
         outputTruncated && !spillIncomplete
-          ? await maybeWriteTruncatedOutputFile({
-              outputPath: truncatedOutputPaths.outputPath,
-              requestId: context?.requestId,
+          ? await persistTruncatedOutput({
+              artifacts,
+              outputConfig,
+              context,
               toolCallId,
+              literalSecrets: [],
               stdout,
               stderr,
               stdoutOverflowPath: execResult.overflowPaths.stdout,
               stderrOverflowPath: execResult.overflowPaths.stderr,
             })
-          : undefined;
+          : {};
+      const artifactUri = persistedOutput.uri;
+      const bashLimitOptions = {
+        truncated: outputTruncated,
+        artifactUri,
+        maxOutputBytes: outputConfig.maxPreviewBytes,
+        originalStdoutBytes,
+        originalStderrBytes,
+      };
 
       const durationMs = execResult.durationMs;
 
@@ -609,7 +783,7 @@ export async function executeBash(
           requestClient: context?.requestClient,
         });
 
-        return withLimitedOutput(
+        return withLimitedBashOutput(
           {
             stdout: safeStdout,
             stderr: safeStderr,
@@ -620,7 +794,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated, outputPath: truncatedOutputPath },
+          bashLimitOptions,
         );
       }
 
@@ -640,7 +814,7 @@ export async function executeBash(
           requestClient: context?.requestClient,
         });
 
-        return withLimitedOutput(
+        return withLimitedBashOutput(
           {
             stdout: safeStdout,
             stderr: safeStderr,
@@ -650,7 +824,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated, outputPath: truncatedOutputPath },
+          bashLimitOptions,
         );
       }
 
@@ -670,7 +844,7 @@ export async function executeBash(
           requestClient: context?.requestClient,
         });
 
-        return withLimitedOutput(
+        return withLimitedBashOutput(
           {
             stdout: safeStdout,
             stderr: safeStderr,
@@ -681,7 +855,7 @@ export async function executeBash(
               signal: DEFAULT_KILL_SIGNAL,
             },
           },
-          { truncated: outputTruncated, outputPath: truncatedOutputPath },
+          bashLimitOptions,
         );
       }
 
@@ -698,7 +872,7 @@ export async function executeBash(
           stderrTotalChars: stderr.length,
           stdoutCapped: execResult.capped.stdout,
           stderrCapped: execResult.capped.stderr,
-          outputPath: truncatedOutputPath,
+          artifactUri,
           requestId: context?.requestId,
           sessionId: context?.sessionId,
           requestClient: context?.requestClient,
@@ -734,9 +908,9 @@ export async function executeBash(
         });
       }
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         { stdout: safeStdout, stderr: safeStderr, exitCode },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -769,11 +943,11 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readSanitizedStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
+      readSanitizedStreamTextCapped(child.stdout, outputConfig.maxPreviewBytes, {
         overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
         literalSecrets: outputSecrets,
       }),
-      readSanitizedStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
+      readSanitizedStreamTextCapped(child.stderr, outputConfig.maxPreviewBytes, {
         overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
         literalSecrets: outputSecrets,
       }),
@@ -784,8 +958,8 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = redactSecrets(stdout);
-    const safeStderr = redactSecrets(stderr);
+    let safeStdout = redactSecrets(stdout);
+    let safeStderr = redactSecrets(stderr);
 
     const durationMs = Date.now() - startedAt;
 
@@ -793,7 +967,9 @@ export async function executeBash(
       (stdoutResult.status === "fulfilled" && stdoutResult.value.capped) ||
       (stderrResult.status === "fulfilled" && stderrResult.value.capped);
     const outputTruncated =
-      streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
+      streamCapped ||
+      Buffer.byteLength(safeStdout, "utf8") + Buffer.byteLength(safeStderr, "utf8") >
+        outputConfig.maxPreviewBytes;
     const spillIncomplete =
       (stdoutResult.status === "fulfilled" &&
         stdoutResult.value.capped &&
@@ -801,20 +977,65 @@ export async function executeBash(
       (stderrResult.status === "fulfilled" &&
         stderrResult.value.capped &&
         !stderrResult.value.overflowFilePath);
-    const truncatedOutputPath =
+    const artifactStdout = safeStdout;
+    const artifactStderr = safeStderr;
+    const stdoutOverflowPath =
+      stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined;
+    const stderrOverflowPath =
+      stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined;
+    let originalStdoutBytes = Buffer.byteLength(safeStdout, "utf8");
+    let originalStderrBytes = Buffer.byteLength(safeStderr, "utf8");
+    if (outputTruncated) {
+      originalStdoutBytes =
+        stdoutResult.status === "fulfilled"
+          ? stdoutResult.value.totalBytes
+          : Buffer.byteLength(safeStdout, "utf8");
+      originalStderrBytes =
+        stderrResult.status === "fulfilled"
+          ? stderrResult.value.totalBytes
+          : Buffer.byteLength(safeStderr, "utf8");
+      const budgets = allocateStreamPreviewBytes({
+        stdoutBytes: originalStdoutBytes,
+        stderrBytes: originalStderrBytes,
+        maxBytes: outputConfig.maxPreviewBytes,
+      });
+      [safeStdout, safeStderr] = await Promise.all([
+        buildOverflowStreamPreview({
+          captured: safeStdout,
+          overflowPath: stdoutOverflowPath,
+          maxBytes: budgets.stdout,
+          literalSecrets: outputSecrets,
+        }),
+        buildOverflowStreamPreview({
+          captured: safeStderr,
+          overflowPath: stderrOverflowPath,
+          maxBytes: budgets.stderr,
+          literalSecrets: outputSecrets,
+        }),
+      ]);
+    }
+    const persistedOutput =
       outputTruncated && !spillIncomplete
-        ? await maybeWriteTruncatedOutputFile({
-            outputPath: truncatedOutputPaths.outputPath,
-            requestId: context?.requestId,
+        ? await persistTruncatedOutput({
+            artifacts,
+            outputConfig,
+            context,
             toolCallId,
-            stdout: safeStdout,
-            stderr: safeStderr,
-            stdoutOverflowPath:
-              stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
-            stderrOverflowPath:
-              stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
+            literalSecrets: outputSecrets,
+            stdout: artifactStdout,
+            stderr: artifactStderr,
+            stdoutOverflowPath,
+            stderrOverflowPath,
           })
-        : undefined;
+        : {};
+    const artifactUri = persistedOutput.uri;
+    const bashLimitOptions = {
+      truncated: outputTruncated,
+      artifactUri,
+      maxOutputBytes: outputConfig.maxPreviewBytes,
+      originalStdoutBytes,
+      originalStderrBytes,
+    };
 
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
@@ -832,7 +1053,7 @@ export async function executeBash(
         requestClient: context?.requestClient,
       });
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         {
           stdout: safeStdout,
           stderr: safeStderr,
@@ -842,7 +1063,7 @@ export async function executeBash(
             signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
           },
         },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -862,7 +1083,7 @@ export async function executeBash(
         requestClient: context?.requestClient,
       });
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         {
           stdout: safeStdout,
           stderr: safeStderr,
@@ -873,7 +1094,7 @@ export async function executeBash(
             signal: child.signalCode ?? DEFAULT_KILL_SIGNAL,
           },
         },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -892,7 +1113,7 @@ export async function executeBash(
         stdoutResult.reason,
       );
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         {
           stdout: safeStdout,
           stderr: safeStderr,
@@ -903,7 +1124,7 @@ export async function executeBash(
             message: toErrorMessage(stdoutResult.reason),
           },
         },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -922,7 +1143,7 @@ export async function executeBash(
         stderrResult.reason,
       );
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         {
           stdout: safeStdout,
           stderr: safeStderr,
@@ -933,7 +1154,7 @@ export async function executeBash(
             message: toErrorMessage(stderrResult.reason),
           },
         },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -952,7 +1173,7 @@ export async function executeBash(
         exitResult.reason,
       );
 
-      return withLimitedOutput(
+      return withLimitedBashOutput(
         {
           stdout: safeStdout,
           stderr: safeStderr,
@@ -963,7 +1184,7 @@ export async function executeBash(
             message: toErrorMessage(exitResult.reason),
           },
         },
-        { truncated: outputTruncated, outputPath: truncatedOutputPath },
+        bashLimitOptions,
       );
     }
 
@@ -980,7 +1201,7 @@ export async function executeBash(
         stderrTotalChars: stderrResult.status === "fulfilled" ? stderrResult.value.totalChars : 0,
         stdoutCapped: stdoutResult.status === "fulfilled" ? stdoutResult.value.capped : false,
         stderrCapped: stderrResult.status === "fulfilled" ? stderrResult.value.capped : false,
-        outputPath: truncatedOutputPath,
+        artifactUri,
         requestId: context?.requestId,
         sessionId: context?.sessionId,
         requestClient: context?.requestClient,
@@ -1017,9 +1238,9 @@ export async function executeBash(
       });
     }
 
-    return withLimitedOutput(
+    return withLimitedBashOutput(
       { stdout: safeStdout, stderr: safeStderr, exitCode },
-      { truncated: outputTruncated, outputPath: truncatedOutputPath },
+      bashLimitOptions,
     );
   } catch (err) {
     const durationMs = Date.now() - startedAt;

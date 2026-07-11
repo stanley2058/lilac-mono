@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { posix as posixPath } from "node:path";
+import { Readable } from "node:stream";
 
 import {
   Bash,
@@ -17,7 +18,10 @@ import {
   type IFileSystem,
 } from "just-bash";
 
-import type { BashToolInput, BashToolOutput } from "./bash-impl";
+import { withLimitedBashOutput, type BashToolInput, type BashToolOutput } from "./bash-impl";
+import { sanitizeBashOutputText } from "./bash-output-sanitizer";
+import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
+import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import { expandTilde } from "@stanley2058/lilac-fs";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
@@ -25,9 +29,9 @@ import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 const WORKSPACE_MOUNT = "/workspace";
 const TMP_MOUNT = "/tmp";
 const DEFAULT_RESTRICTED_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_RESTRICTED_OUTPUT_CHARS = 50 * 1024;
 const MAX_RESTRICTED_FILE_READ_BYTES = 10 * 1024 * 1024;
 const TOOL_SERVER_BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
+const logger = createLogger({ module: "restricted-bash" });
 
 type RestrictedBashContext = {
   requestId?: string;
@@ -525,10 +529,14 @@ async function getRestrictedBash(params: {
   const now = Date.now();
   pruneRestrictedBashCache(now);
 
-  const cacheKey = params.requestId;
-  if (!cacheKey) {
+  if (!params.requestId) {
     return await createRestrictedBash(params);
   }
+  const cacheKey = JSON.stringify([
+    params.context.sessionId ?? "",
+    params.requestId,
+    params.workspaceRoot,
+  ]);
 
   const cached = restrictedBashByRequest.get(cacheKey);
   if (cached) {
@@ -541,32 +549,15 @@ async function getRestrictedBash(params: {
   return bash;
 }
 
-function withLimitedOutput(output: BashToolOutput): BashToolOutput {
-  const total = output.stdout.length + output.stderr.length;
-  if (total <= MAX_RESTRICTED_OUTPUT_CHARS) return output;
-
-  const stdout = output.stdout.slice(0, MAX_RESTRICTED_OUTPUT_CHARS);
-  const stderr =
-    stdout.length < MAX_RESTRICTED_OUTPUT_CHARS
-      ? output.stderr.slice(0, MAX_RESTRICTED_OUTPUT_CHARS - stdout.length)
-      : "";
-  return {
-    ...output,
-    stdout,
-    stderr,
-    executionError: output.executionError ?? {
-      type: "truncated",
-      message: `Restricted bash output truncated: exceeded ${MAX_RESTRICTED_OUTPUT_CHARS.toLocaleString()} characters`,
-    },
-  };
-}
-
 export async function executeRestrictedBash(
   { command, cwd, timeoutMs, stdinMode }: BashToolInput,
   options: {
     workspaceRoot?: string;
     context?: RestrictedBashContext;
     abortSignal?: AbortSignal;
+    toolCallId?: string;
+    artifacts?: ToolResultArtifactStore;
+    outputConfig?: CoreConfig["tools"]["output"];
   } = {},
 ): Promise<BashToolOutput> {
   if (stdinMode === "eof") {
@@ -594,7 +585,11 @@ export async function executeRestrictedBash(
 
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_RESTRICTED_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, effectiveTimeoutMs);
   timeout.unref?.();
 
   const abortListener = () => controller.abort();
@@ -615,10 +610,59 @@ export async function executeRestrictedBash(
       replaceEnv: false,
       signal: controller.signal,
     });
-    return withLimitedOutput({
-      stdout: result.stdout,
-      stderr: result.stderr,
+    const output = {
+      stdout: sanitizeBashOutputText(result.stdout),
+      stderr: sanitizeBashOutputText(result.stderr),
       exitCode: result.exitCode,
+    };
+    const outputConfig = options.outputConfig ?? {
+      maxPreviewBytes: 40 * 1024,
+      artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
+      artifactMaxBytesPerSession: 50 * 1024 * 1024,
+    };
+    const isTruncated =
+      Buffer.byteLength(output.stdout, "utf8") + Buffer.byteLength(output.stderr, "utf8") >
+      outputConfig.maxPreviewBytes;
+    let artifactUri: string | undefined;
+    if (
+      isTruncated &&
+      options.artifacts &&
+      context.sessionId &&
+      context.requestId &&
+      options.toolCallId
+    ) {
+      try {
+        artifactUri = (
+          await options.artifacts.createFromStream({
+            sessionId: context.sessionId,
+            requestId: context.requestId,
+            toolCallId: options.toolCallId,
+            toolName: "bash",
+            source: Readable.from([
+              "--- stdout ---\n",
+              output.stdout,
+              "\n\n--- stderr ---\n",
+              output.stderr,
+              "\n",
+            ]),
+            ttlMs: outputConfig.artifactTtlMs,
+            maxBytesPerSession: outputConfig.artifactMaxBytesPerSession,
+          })
+        ).uri;
+      } catch (error) {
+        logger.warn("tool.artifact.write_failed", {
+          toolName: "bash",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        artifactUri = undefined;
+      }
+    }
+    return withLimitedBashOutput(output, {
+      maxOutputBytes: outputConfig.maxPreviewBytes,
+      truncated: isTruncated,
+      artifactUri,
+      originalStdoutBytes: Buffer.byteLength(output.stdout, "utf8"),
+      originalStderrBytes: Buffer.byteLength(output.stderr, "utf8"),
     });
   } catch (error) {
     const aborted = controller.signal.aborted;
@@ -626,17 +670,22 @@ export async function executeRestrictedBash(
       stdout: "",
       stderr: error instanceof Error ? error.message : String(error),
       exitCode: -1,
-      executionError: aborted
+      executionError: timedOut
         ? {
             type: "timeout",
             timeoutMs: effectiveTimeoutMs,
             signal: "ABORT",
           }
-        : {
-            type: "exception",
-            phase: "unknown",
-            message: error instanceof Error ? error.message : String(error),
-          },
+        : aborted
+          ? {
+              type: "aborted",
+              signal: "ABORT",
+            }
+          : {
+              type: "exception",
+              phase: "unknown",
+              message: error instanceof Error ? error.message : String(error),
+            },
     };
   } finally {
     clearTimeout(timeout);
