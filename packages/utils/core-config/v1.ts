@@ -697,6 +697,23 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
       editFile: {
         hashline,
       },
+      output: {
+        maxPreviewBytes: 40 * 1024,
+        artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
+        artifactMaxBytesPerSession: 50 * 1024 * 1024,
+      },
+      historicalResultPruning: {
+        enabled: false,
+        protectTokens: 40_000,
+        minimumTokens: 20_000,
+      },
+      batch: {
+        maxCalls: 8,
+      },
+      media: {
+        maxInlineBytesPerPart: 10 * 1024 * 1024,
+        maxInlineBytesTotal: 20 * 1024 * 1024,
+      },
     },
     conversation: {
       thread: {

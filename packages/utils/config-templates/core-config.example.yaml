@@ -13,6 +13,19 @@ tools:
     model: google/gemini-3.5-flash
   editFile:
     hashline: true
+  output:
+    maxPreviewBytes: 40KiB
+    artifactTtl: 7d
+    artifactMaxBytesPerSession: 50MiB
+  historicalResultPruning:
+    enabled: false
+    protectTokens: 40000
+    minimumTokens: 20000
+  batch:
+    maxCalls: 8
+  media:
+    maxInlineBytesPerPart: 10MiB
+    maxInlineBytesTotal: 20MiB
 
 plugins:
   disabled: []

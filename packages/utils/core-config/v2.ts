@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicators";
+import { parseFriendlyByteSize, parseFriendlyDurationMs } from "../friendly-units";
 
 import {
   coreConfigInputSchemaV1,
@@ -216,6 +217,9 @@ const discordSurfaceSchema = z
     },
   });
 
+const byteSizeSchema = z.preprocess(parseFriendlyByteSize, z.number().int().positive());
+const durationMsSchema = z.preprocess(parseFriendlyDurationMs, z.number().int().positive());
+
 const toolsSchema = z
   .object({
     fsBackend: z.enum(["fff", "node-rg"]).default("fff"),
@@ -234,6 +238,42 @@ const toolsSchema = z
       .default({
         hashline: true,
       }),
+    output: z
+      .object({
+        maxPreviewBytes: byteSizeSchema.default(40 * 1024),
+        artifactTtl: durationMsSchema.default(7 * 24 * 60 * 60 * 1000),
+        artifactMaxBytesPerSession: byteSizeSchema.default(50 * 1024 * 1024),
+      })
+      .default({
+        maxPreviewBytes: 40 * 1024,
+        artifactTtl: 7 * 24 * 60 * 60 * 1000,
+        artifactMaxBytesPerSession: 50 * 1024 * 1024,
+      }),
+    historicalResultPruning: z
+      .object({
+        enabled: z.boolean().default(false),
+        protectTokens: z.number().int().nonnegative().default(40_000),
+        minimumTokens: z.number().int().nonnegative().default(20_000),
+      })
+      .default({
+        enabled: false,
+        protectTokens: 40_000,
+        minimumTokens: 20_000,
+      }),
+    batch: z
+      .object({
+        maxCalls: z.number().int().positive().max(8).default(8),
+      })
+      .default({ maxCalls: 8 }),
+    media: z
+      .object({
+        maxInlineBytesPerPart: byteSizeSchema.default(10 * 1024 * 1024),
+        maxInlineBytesTotal: byteSizeSchema.default(20 * 1024 * 1024),
+      })
+      .default({
+        maxInlineBytesPerPart: 10 * 1024 * 1024,
+        maxInlineBytesTotal: 20 * 1024 * 1024,
+      }),
   })
   .default({
     fsBackend: "fff",
@@ -250,6 +290,21 @@ const toolsSchema = z
     },
     editFile: {
       hashline: true,
+    },
+    output: {
+      maxPreviewBytes: 40 * 1024,
+      artifactTtl: 7 * 24 * 60 * 60 * 1000,
+      artifactMaxBytesPerSession: 50 * 1024 * 1024,
+    },
+    historicalResultPruning: {
+      enabled: false,
+      protectTokens: 40_000,
+      minimumTokens: 20_000,
+    },
+    batch: { maxCalls: 8 },
+    media: {
+      maxInlineBytesPerPart: 10 * 1024 * 1024,
+      maxInlineBytesTotal: 20 * 1024 * 1024,
     },
   });
 
@@ -488,9 +543,17 @@ export function parseCoreConfigV2(raw: unknown): ParsedCoreConfigV2 {
 
 export function parseCoreConfigV2ToUniversal(raw: unknown): UniversalCoreConfig {
   const parsed = parseCoreConfigV2(raw);
+  const { artifactTtl, ...output } = parsed.tools.output;
 
   return {
     ...parsed,
+    tools: {
+      ...parsed.tools,
+      output: {
+        ...output,
+        artifactTtlMs: artifactTtl,
+      },
+    },
     agent: {
       ...parsed.agent,
       systemPrompt: "",

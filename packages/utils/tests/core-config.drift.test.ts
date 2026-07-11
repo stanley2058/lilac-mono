@@ -87,6 +87,11 @@ describe("core config drift coverage", () => {
     expect(cfg.tools.fsBackend).toBe("fff");
     expect(cfg.tools.inspect.model).toBe("google/gemini-3.5-flash");
     expect(cfg.tools.editFile.hashline).toBe(true);
+    expect(cfg.tools.output.maxPreviewBytes).toBe(40 * 1024);
+    expect(cfg.tools.output.artifactTtlMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(cfg.tools.historicalResultPruning.enabled).toBe(false);
+    expect(cfg.tools.batch.maxCalls).toBe(8);
+    expect(cfg.tools.media.maxInlineBytesTotal).toBe(20 * 1024 * 1024);
     expect(cfg.surface.discord.outputMode).toBe("preview");
     expect(cfg.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
     expect(cfg.surface.discord.outputNotification).toBe(true);

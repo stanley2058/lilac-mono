@@ -81,6 +81,23 @@ export type UniversalCoreConfig = {
     editFile: {
       hashline: boolean;
     };
+    output: {
+      maxPreviewBytes: number;
+      artifactTtlMs: number;
+      artifactMaxBytesPerSession: number;
+    };
+    historicalResultPruning: {
+      enabled: boolean;
+      protectTokens: number;
+      minimumTokens: number;
+    };
+    batch: {
+      maxCalls: number;
+    };
+    media: {
+      maxInlineBytesPerPart: number;
+      maxInlineBytesTotal: number;
+    };
   };
 
   plugins: {
