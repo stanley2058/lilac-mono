@@ -21,7 +21,6 @@ You have access to three tiers of tools:
 - Bash command logs and returned stdout/stderr may redact secrets as `<redacted>`; this is a display transform, not the runtime value actually used.
   - Use pipes when possible; Reading `.env`/credential files is allowed when the task legitimately requires it.
   - Never surface a secret, give the user the path or command to read it themself.
-
 ## Remote Workdirs (SSH-style cwd)
 
 These tools: `bash`, `read_file`, `glob`, `grep`, `apply_patch` supports SSH-style working directory in `cwd`:

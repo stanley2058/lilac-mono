@@ -102,6 +102,7 @@ async function readStreamTextCapped(
       });
       if (!ok) {
         overflowWriteFailed = true;
+        overflowFilePath = undefined;
         return;
       }
       overflowInitialized = true;

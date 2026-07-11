@@ -1,3 +1,7 @@
+import { redactLiteralSecrets } from "../bash-literal-redactor";
+
+export { redactLiteralSecrets } from "../bash-literal-redactor";
+
 type RedactFn = (text: string) => string;
 
 export interface FormatBlockedMessageInput {
@@ -34,8 +38,8 @@ function excerpt(text: string, maxLen: number): string {
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 }
 
-export function redactSecrets(text: string): string {
-  let result = text;
+export function redactSecrets(text: string, literalSecrets: readonly string[] = []): string {
+  let result = redactLiteralSecrets(text, literalSecrets);
 
   result = result.replace(
     /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIALS)[A-Z0-9_]*)=([^\s]+)/gi,

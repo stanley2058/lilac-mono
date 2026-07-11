@@ -1,4 +1,5 @@
 import { createLogger, env, resolveVcsEnv } from "@stanley2058/lilac-utils";
+import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,8 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
+import { readSanitizedStreamTextCapped } from "./bash-output-sanitizer";
+import { loadToolEnv } from "./tool-env";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
@@ -26,7 +29,7 @@ const MAX_BASH_OUTPUT_CHARS = 50 * 1024;
 
 function buildBashOutputTruncationMessage(outputPath?: string): string {
   if (typeof outputPath === "string" && outputPath.length > 0) {
-    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full raw output saved to: ${outputPath}`;
+    return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output saved to: ${outputPath}`;
   }
 
   return `Bash output truncated: exceeded ${MAX_BASH_OUTPUT_CHARS.toLocaleString()} characters. Full output file could not be written; narrow output and retry.`;
@@ -128,6 +131,7 @@ function stripAnsiEscapeSequences(input: string): string {
     while (i < input.length) {
       const code = input.charCodeAt(i);
       if (code === 0x07) return i + 1;
+      if (code === 0x9c) return i + 1;
       if (code === 0x1b && input.charCodeAt(i + 1) === 0x5c) return i + 2;
       i += 1;
     }
@@ -165,152 +169,12 @@ function stripAnsiEscapeSequences(input: string): string {
   }
 
   flushPlain(input.length);
-  return output;
-}
-
-type StreamTextResult = {
-  text: string;
-  totalChars: number;
-  capped: boolean;
-  overflowFilePath?: string;
-};
-
-function isResponseBodyInit(value: unknown): value is BodyInit {
-  return (
-    typeof value === "string" ||
-    value instanceof Blob ||
-    value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value) ||
-    value instanceof FormData ||
-    value instanceof URLSearchParams ||
-    value instanceof ReadableStream
-  );
-}
-
-async function appendOverflowChunk(params: {
-  overflowFilePath: string;
-  chunk: string;
-  initialized: boolean;
-}): Promise<boolean> {
-  try {
-    if (!params.initialized) {
-      await fs.writeFile(params.overflowFilePath, params.chunk, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-    } else {
-      await fs.appendFile(params.overflowFilePath, params.chunk, "utf8");
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readStreamTextCapped(
-  stream: unknown,
-  maxChars: number,
-  options?: { overflowFilePath?: string },
-): Promise<StreamTextResult> {
-  if (!stream || typeof stream === "number") {
-    return { text: "", totalChars: 0, capped: false };
-  }
-
-  // Bun.spawn pipes are ReadableStream<Uint8Array>.
-  const maybeReadable = stream as { getReader?: unknown };
-  if (typeof maybeReadable.getReader === "function") {
-    const reader = (stream as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-
-    let text = "";
-    let totalChars = 0;
-    let capped = false;
-    let overflowInitialized = false;
-    let overflowWriteFailed = false;
-    let overflowFilePath: string | undefined;
-
-    const writeOverflowChunk = async (chunk: string) => {
-      if (chunk.length === 0) return;
-      if (overflowWriteFailed) return;
-      const target = options?.overflowFilePath;
-      if (!target) return;
-
-      const ok = await appendOverflowChunk({
-        overflowFilePath: target,
-        chunk,
-        initialized: overflowInitialized,
-      });
-      if (!ok) {
-        overflowWriteFailed = true;
-        return;
-      }
-      overflowInitialized = true;
-      overflowFilePath = target;
-    };
-
-    const consumeChunkText = async (chunkText: string) => {
-      if (chunkText.length === 0) return;
-
-      totalChars += chunkText.length;
-
-      if (capped) {
-        await writeOverflowChunk(chunkText);
-        return;
-      }
-
-      const previousText = text;
-      const nextLen = previousText.length + chunkText.length;
-      if (nextLen <= maxChars) {
-        text = previousText + chunkText;
-        return;
-      }
-
-      capped = true;
-      const remaining = Math.max(0, maxChars - previousText.length);
-      text = previousText + chunkText.slice(0, remaining);
-      await writeOverflowChunk(previousText + chunkText);
-    };
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-
-        const chunkText = decoder.decode(value, { stream: true });
-        await consumeChunkText(chunkText);
-      }
-
-      const tail = decoder.decode();
-      if (tail.length > 0) {
-        await consumeChunkText(tail);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    return { text, totalChars, capped, overflowFilePath };
-  }
-
-  // Fallback (should be rare): read everything, then cap.
-  const full = await new Response(isResponseBodyInit(stream) ? stream : String(stream)).text();
-  const capped = full.length > maxChars;
-  let overflowFilePath: string | undefined;
-  if (capped && options?.overflowFilePath) {
-    const ok = await appendOverflowChunk({
-      overflowFilePath: options.overflowFilePath,
-      chunk: full,
-      initialized: false,
-    });
-    if (ok) overflowFilePath = options.overflowFilePath;
-  }
-
-  return {
-    text: full.length > maxChars ? full.slice(0, maxChars) : full,
-    totalChars: full.length,
-    capped,
-    overflowFilePath,
-  };
+  return [...output]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code === 0x09 || code === 0x0a || (code >= 0x20 && code < 0x7f) || code > 0x9f;
+    })
+    .join("");
 }
 
 function sanitizeTempFileToken(value: string | undefined, fallback: string): string {
@@ -331,7 +195,7 @@ function buildTruncatedOutputPaths(params: { requestId?: string; toolCallId?: st
 } {
   const requestToken = sanitizeTempFileToken(params.requestId, "unknown-request");
   const toolToken = sanitizeTempFileToken(params.toolCallId, "unknown-tool");
-  const fileName = `${requestToken}-${toolToken}.log`;
+  const fileName = `${requestToken}-${toolToken}-${randomUUID()}.log`;
   const outputPath = path.join(BASH_TRUNCATED_OUTPUT_DIR, fileName);
   return {
     outputPath,
@@ -349,17 +213,12 @@ async function appendSectionOutput(params: {
   await fs.appendFile(params.outputPath, `--- ${params.label} ---\n`, "utf8");
 
   if (params.overflowFilePath) {
-    try {
-      await fs.stat(params.overflowFilePath);
-      await pipeline(
-        createReadStream(params.overflowFilePath),
-        createWriteStream(params.outputPath, { flags: "a", mode: 0o600 }),
-      );
-      await fs.appendFile(params.outputPath, "\n", "utf8");
-      return;
-    } catch {
-      // Fall back to captured fragment when spill file is unavailable.
-    }
+    await fs.stat(params.overflowFilePath);
+    const source = createReadStream(params.overflowFilePath);
+    const destination = createWriteStream(params.outputPath, { flags: "a", mode: 0o600 });
+    await pipeline(source, destination);
+    await fs.appendFile(params.outputPath, "\n", "utf8");
+    return;
   }
 
   if (params.captured.length > 0) {
@@ -406,14 +265,15 @@ async function maybeWriteTruncatedOutputFile(params: {
     await fs.appendFile(params.outputPath, "</bash_tool_full_output>\n", "utf8");
     await fs.chmod(params.outputPath, 0o600);
   } catch {
+    await fs.unlink(params.outputPath).catch(() => undefined);
     return undefined;
-  }
-
-  if (params.stdoutOverflowPath) {
-    await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
-  }
-  if (params.stderrOverflowPath) {
-    await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
+  } finally {
+    if (params.stdoutOverflowPath) {
+      await fs.unlink(params.stdoutOverflowPath).catch(() => undefined);
+    }
+    if (params.stderrOverflowPath) {
+      await fs.unlink(params.stderrOverflowPath).catch(() => undefined);
+    }
   }
 
   return params.outputPath;
@@ -443,9 +303,23 @@ function limitBashOutput(
 
   const available = Math.max(0, MAX_BASH_OUTPUT_CHARS);
 
-  const stdoutPart = input.stdout.slice(0, available);
+  const sliceWithoutSplittingSurrogate = (value: string, maxChars: number): string => {
+    let end = Math.min(value.length, maxChars);
+    if (
+      end > 0 &&
+      /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") &&
+      /[\uDC00-\uDFFF]/u.test(value[end] ?? "")
+    ) {
+      end -= 1;
+    }
+    return value.slice(0, end);
+  };
+
+  const stdoutPart = sliceWithoutSplittingSurrogate(input.stdout, available);
   const stderrPart =
-    available > stdoutPart.length ? input.stderr.slice(0, available - stdoutPart.length) : "";
+    available > stdoutPart.length
+      ? sliceWithoutSplittingSurrogate(input.stderr, available - stdoutPart.length)
+      : "";
 
   return {
     stdout: stdoutPart,
@@ -488,6 +362,7 @@ function withLimitedOutput(
 }
 
 function buildBashChildEnv(params: {
+  toolEnv: Record<string, string>;
   githubEnv: Record<string, string>;
   vcsEnv: Record<string, string>;
   context?: {
@@ -499,6 +374,7 @@ function buildBashChildEnv(params: {
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...params.toolEnv,
     ...params.githubEnv,
     ...params.vcsEnv,
     LILAC_REQUEST_ID: params.context?.requestId,
@@ -693,23 +569,27 @@ export async function executeBash(
       const stderr = execResult.stderr;
       const exitCode = execResult.exitCode;
 
-      const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
-      const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
+      const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout));
+      const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr));
 
       const streamCapped = execResult.capped.stdout || execResult.capped.stderr;
       const outputTruncated =
         streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
-      const truncatedOutputPath = outputTruncated
-        ? await maybeWriteTruncatedOutputFile({
-            outputPath: truncatedOutputPaths.outputPath,
-            requestId: context?.requestId,
-            toolCallId,
-            stdout,
-            stderr,
-            stdoutOverflowPath: execResult.overflowPaths.stdout,
-            stderrOverflowPath: execResult.overflowPaths.stderr,
-          })
-        : undefined;
+      const spillIncomplete =
+        (execResult.capped.stdout && !execResult.overflowPaths.stdout) ||
+        (execResult.capped.stderr && !execResult.overflowPaths.stderr);
+      const truncatedOutputPath =
+        outputTruncated && !spillIncomplete
+          ? await maybeWriteTruncatedOutputFile({
+              outputPath: truncatedOutputPaths.outputPath,
+              requestId: context?.requestId,
+              toolCallId,
+              stdout,
+              stderr,
+              stdoutOverflowPath: execResult.overflowPaths.stdout,
+              stderrOverflowPath: execResult.overflowPaths.stderr,
+            })
+          : undefined;
 
       const durationMs = execResult.durationMs;
 
@@ -864,6 +744,13 @@ export async function executeBash(
     // Intentionally avoid a login shell here.
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
+    const toolEnv = await loadToolEnv(env.dataDir);
+    const outputSecrets = [
+      ...Object.values(toolEnv),
+      ...Object.entries(githubEnv)
+        .filter(([name]) => name.includes("TOKEN"))
+        .map(([, value]) => value),
+    ].map(stripAnsiEscapeSequences);
     child = Bun.spawn(buildLocalSpawnArgs(command, effectiveStdinMode), {
       cwd: resolvedCwd,
       stdout: "pipe",
@@ -873,6 +760,7 @@ export async function executeBash(
       killSignal: DEFAULT_KILL_SIGNAL,
       detached: true,
       env: buildBashChildEnv({
+        toolEnv,
         githubEnv,
         vcsEnv,
         context,
@@ -881,11 +769,13 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
+      readSanitizedStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
         overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
+        literalSecrets: outputSecrets,
       }),
-      readStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
+      readSanitizedStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
         overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
+        literalSecrets: outputSecrets,
       }),
       child.exited,
     ]);
@@ -894,8 +784,8 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const safeStdout = stripAnsiEscapeSequences(redactSecrets(stdout));
-    const safeStderr = stripAnsiEscapeSequences(redactSecrets(stderr));
+    const safeStdout = redactSecrets(stdout);
+    const safeStderr = redactSecrets(stderr);
 
     const durationMs = Date.now() - startedAt;
 
@@ -904,19 +794,27 @@ export async function executeBash(
       (stderrResult.status === "fulfilled" && stderrResult.value.capped);
     const outputTruncated =
       streamCapped || safeStdout.length + safeStderr.length > MAX_BASH_OUTPUT_CHARS;
-    const truncatedOutputPath = outputTruncated
-      ? await maybeWriteTruncatedOutputFile({
-          outputPath: truncatedOutputPaths.outputPath,
-          requestId: context?.requestId,
-          toolCallId,
-          stdout,
-          stderr,
-          stdoutOverflowPath:
-            stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
-          stderrOverflowPath:
-            stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
-        })
-      : undefined;
+    const spillIncomplete =
+      (stdoutResult.status === "fulfilled" &&
+        stdoutResult.value.capped &&
+        !stdoutResult.value.overflowFilePath) ||
+      (stderrResult.status === "fulfilled" &&
+        stderrResult.value.capped &&
+        !stderrResult.value.overflowFilePath);
+    const truncatedOutputPath =
+      outputTruncated && !spillIncomplete
+        ? await maybeWriteTruncatedOutputFile({
+            outputPath: truncatedOutputPaths.outputPath,
+            requestId: context?.requestId,
+            toolCallId,
+            stdout: safeStdout,
+            stderr: safeStderr,
+            stdoutOverflowPath:
+              stdoutResult.status === "fulfilled" ? stdoutResult.value.overflowFilePath : undefined,
+            stderrOverflowPath:
+              stderrResult.status === "fulfilled" ? stderrResult.value.overflowFilePath : undefined,
+          })
+        : undefined;
 
     if (aborted && child.killed) {
       logger.warn("bash aborted", {
@@ -1150,6 +1048,8 @@ export async function executeBash(
       },
     };
   } finally {
+    await fs.unlink(truncatedOutputPaths.stdoutOverflowPath).catch(() => undefined);
+    await fs.unlink(truncatedOutputPaths.stderrOverflowPath).catch(() => undefined);
     clearTimeout(timeout);
     if (hardKillTimer) {
       clearTimeout(hardKillTimer);

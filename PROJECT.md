@@ -276,6 +276,8 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Key ones:
       - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.
         - Child env always includes request context vars (`LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`) and VCS vars (`GIT_CONFIG_GLOBAL`, `GNUPGHOME`, with color forced off via `NO_COLOR=1`).
+        - Trusted local bash also loads `$DATA_DIR/secret/tool-env.jsonc` before each process. This overlay is not used for restricted bash or SSH execution.
+        - Bash output redaction is best-effort accidental-leak prevention, not a security boundary. Trusted local commands can read, transform, or transmit their environment and same-user files; use restricted bash or OS-level isolation when commands must not access secrets.
         - When GitHub outbound auth is configured, bash also injects GitHub auth vars from `apps/core/src/github/github-auth.ts`:
           - Canonical: `GH_TOKEN`, `GITHUB_TOKEN` (prefer user token when configured, otherwise app token).
           - Optional host: `GH_HOST`.
