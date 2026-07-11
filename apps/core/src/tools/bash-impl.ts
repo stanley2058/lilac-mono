@@ -15,6 +15,7 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
+import { loadToolEnv } from "./tool-env";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_KILL_SIGNAL = "SIGTERM";
@@ -488,6 +489,7 @@ function withLimitedOutput(
 }
 
 function buildBashChildEnv(params: {
+  toolEnv: Record<string, string>;
   githubEnv: Record<string, string>;
   vcsEnv: Record<string, string>;
   context?: {
@@ -499,6 +501,7 @@ function buildBashChildEnv(params: {
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...params.toolEnv,
     ...params.githubEnv,
     ...params.vcsEnv,
     LILAC_REQUEST_ID: params.context?.requestId,
@@ -864,6 +867,7 @@ export async function executeBash(
     // Intentionally avoid a login shell here.
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
+    const toolEnv = await loadToolEnv(env.dataDir);
     child = Bun.spawn(buildLocalSpawnArgs(command, effectiveStdinMode), {
       cwd: resolvedCwd,
       stdout: "pipe",
@@ -873,6 +877,7 @@ export async function executeBash(
       killSignal: DEFAULT_KILL_SIGNAL,
       detached: true,
       env: buildBashChildEnv({
+        toolEnv,
         githubEnv,
         vcsEnv,
         context,
