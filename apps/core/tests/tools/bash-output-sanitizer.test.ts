@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { Readable } from "node:stream";
 
-import { createBashOutputSanitizerTransform } from "../../src/tools/bash-output-sanitizer";
+import {
+  createBashOutputSanitizerTransform,
+  getLiteralRedactionOverlap,
+} from "../../src/tools/bash-output-sanitizer";
 
 async function sanitizeChunks(
   chunks: readonly string[],
@@ -17,6 +20,10 @@ async function sanitizeChunks(
 }
 
 describe("bash output sanitizer stream", () => {
+  it("keeps enough capture overlap to redact a secret crossing the display cap", () => {
+    expect(getLiteralRedactionOverlap(["secret-token", "x"])).toBe("secret-token".length - 1);
+  });
+
   it("redacts secrets split across chunks", async () => {
     expect(await sanitizeChunks(["before secret-", "token after"], ["secret-token"])).toBe(
       "before <redacted> after",

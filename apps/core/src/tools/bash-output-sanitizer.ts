@@ -3,6 +3,10 @@ import { Transform, type TransformCallback } from "node:stream";
 
 type AnsiState = "plain" | "escape" | "csi" | "osc" | "osc-escape";
 
+export function getLiteralRedactionOverlap(literalSecrets: readonly string[]): number {
+  return Math.max(0, ...literalSecrets.map((value) => Math.max(0, value.length - 1)));
+}
+
 class StreamingAnsiStripper {
   private state: AnsiState = "plain";
 
@@ -45,7 +49,7 @@ class StreamingLiteralRedactor {
     this.secrets = [...new Set(secrets.filter((value) => value.length > 0))].sort(
       (a, b) => b.length - a.length,
     );
-    this.overlap = Math.max(0, ...this.secrets.map((value) => value.length - 1));
+    this.overlap = getLiteralRedactionOverlap(this.secrets);
   }
 
   write(input: string): string {

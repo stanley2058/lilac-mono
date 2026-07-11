@@ -48,7 +48,7 @@ const SENSITIVE_TOKEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
     reason: "access to GitHub user token secret",
   },
   {
-    re: /tool-env\.jsonc\b/i,
+    re: /tool-env\.json/i,
     reason: "access to dynamic tool environment secrets",
   },
 ];

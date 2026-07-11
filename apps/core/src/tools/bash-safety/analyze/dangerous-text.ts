@@ -38,7 +38,7 @@ export function dangerousInText(text: string): string | null {
       reason: "access to GitHub user token secret",
     },
     {
-      regex: /tool-env\.jsonc\b/,
+      regex: /tool-env\.json/,
       reason: "access to dynamic tool environment secrets",
     },
     {

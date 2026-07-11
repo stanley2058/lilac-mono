@@ -544,6 +544,9 @@ describe("analyzeBashCommand", () => {
 
   it("blocks access to the dynamic tool environment secret", () => {
     expect(analyzeBashCommand("cat /data/secret/tool-env.jsonc")).not.toBeNull();
+    expect(analyzeBashCommand('cat "$DATA_DIR"/secret/tool-env.json?')).not.toBeNull();
+    expect(analyzeBashCommand('cat "$DATA_DIR"/secret/tool-env.json*')).not.toBeNull();
+    expect(analyzeBashCommand('cat "$DATA_DIR"/secret/tool-env.json[c]')).not.toBeNull();
     expect(
       analyzeBashCommand("python -c 'print(open(\"/data/secret/tool-env.jsonc\").read())'"),
     ).not.toBeNull();

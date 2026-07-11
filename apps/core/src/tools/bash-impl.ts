@@ -16,7 +16,10 @@ import {
   toBashSafetyCwdForRemote,
 } from "../ssh/ssh-cwd";
 import { sshExecBash } from "../ssh/ssh-exec";
-import { createBashOutputSanitizerTransform } from "./bash-output-sanitizer";
+import {
+  createBashOutputSanitizerTransform,
+  getLiteralRedactionOverlap,
+} from "./bash-output-sanitizer";
 import { loadToolEnv } from "./tool-env";
 
 const DEFAULT_BASH_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -889,6 +892,9 @@ export async function executeBash(
     // Login shells source /etc/profile (and friends) which can clobber PATH
     // and diverge from the process environment we want the tool to inherit.
     const toolEnv = await loadToolEnv(env.dataDir);
+    const normalizedToolEnvSecrets = Object.values(toolEnv).map(stripAnsiEscapeSequences);
+    const captureMaxChars =
+      MAX_BASH_OUTPUT_CHARS + getLiteralRedactionOverlap(normalizedToolEnvSecrets);
     child = Bun.spawn(buildLocalSpawnArgs(command, effectiveStdinMode), {
       cwd: resolvedCwd,
       stdout: "pipe",
@@ -907,10 +913,10 @@ export async function executeBash(
     });
 
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-      readStreamTextCapped(child.stdout, MAX_BASH_OUTPUT_CHARS, {
+      readStreamTextCapped(child.stdout, captureMaxChars, {
         overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
       }),
-      readStreamTextCapped(child.stderr, MAX_BASH_OUTPUT_CHARS, {
+      readStreamTextCapped(child.stderr, captureMaxChars, {
         overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
       }),
       child.exited,
@@ -920,8 +926,6 @@ export async function executeBash(
     const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
     const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
 
-    const toolEnvSecrets = Object.values(toolEnv);
-    const normalizedToolEnvSecrets = toolEnvSecrets.map(stripAnsiEscapeSequences);
     const safeStdout = redactSecrets(stripAnsiEscapeSequences(stdout), normalizedToolEnvSecrets);
     const safeStderr = redactSecrets(stripAnsiEscapeSequences(stderr), normalizedToolEnvSecrets);
 
