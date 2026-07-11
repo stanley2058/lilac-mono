@@ -79,6 +79,11 @@ function getAssistantToolCallIds(message: ModelMessage): string[] {
   return ids;
 }
 
+function getAssistantToolCallPartCount(message: ModelMessage): number {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return 0;
+  return message.content.filter((part) => part.type === "tool-call").length;
+}
+
 function getToolResultToolCallIds(message: ModelMessage): string[] {
   if (message.role !== "tool") return [];
 
@@ -96,29 +101,54 @@ function getToolResultToolCallIds(message: ModelMessage): string[] {
 }
 
 function isValidSuffix(messages: readonly ModelMessage[], startIndex: number): boolean {
-  const open = new Set<string>();
+  let openToolCallIds: Set<string> | null = null;
 
   for (let i = startIndex; i < messages.length; i++) {
     const message = messages[i]!;
 
     if (message.role === "assistant") {
-      for (const id of getAssistantToolCallIds(message)) open.add(id);
+      if (openToolCallIds) return false;
+
+      const toolCallIds = getAssistantToolCallIds(message);
+      if (getAssistantToolCallPartCount(message) !== toolCallIds.length) return false;
+      if (new Set(toolCallIds).size !== toolCallIds.length) return false;
+      if (toolCallIds.length > 0) openToolCallIds = new Set(toolCallIds);
       continue;
     }
 
     if (message.role === "tool") {
-      for (const id of getToolResultToolCallIds(message)) {
-        if (!open.has(id)) return false;
-        open.delete(id);
+      if (!openToolCallIds) return false;
+
+      const resultIds = getToolResultToolCallIds(message);
+      if (resultIds.length === 0) return false;
+      for (const id of resultIds) {
+        if (!openToolCallIds.delete(id)) return false;
       }
+      if (openToolCallIds.size === 0) openToolCallIds = null;
+      continue;
     }
+
+    if (openToolCallIds) return false;
   }
 
-  return true;
+  return openToolCallIds === null;
 }
 
 function isCutBoundaryMessage(message: ModelMessage): boolean {
   return message.role === "user" || message.role === "assistant";
+}
+
+function stringifyForTokenEstimate(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value, (_key, item: unknown) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      const record = item as Record<string, unknown>;
+      return record["type"] === "file" ? { ...record, data: "[inline media payload]" } : item;
+    });
+    return serialized ?? stringifyUnknown(value);
+  } catch {
+    return stringifyUnknown(value);
+  }
 }
 
 function estimateMessageTokens(message: ModelMessage): number {
@@ -126,7 +156,7 @@ function estimateMessageTokens(message: ModelMessage): number {
     if (typeof message.content === "string") {
       return estimateTokensFromText(message.content);
     }
-    return estimateTokensFromText(stringifyUnknown(message.content));
+    return estimateTokensFromText(stringifyForTokenEstimate(message.content));
   }
 
   if (message.role === "assistant") {
@@ -155,16 +185,16 @@ function estimateMessageTokens(message: ModelMessage): number {
         continue;
       }
 
-      text += stringifyUnknown(part);
+      text += stringifyForTokenEstimate(part);
     }
     return estimateTokensFromText(text);
   }
 
   if (message.role === "tool") {
-    return estimateTokensFromText(stringifyUnknown(message.content));
+    return estimateTokensFromText(stringifyForTokenEstimate(message.content));
   }
 
-  return estimateTokensFromText(stringifyUnknown(message));
+  return estimateTokensFromText(stringifyForTokenEstimate(message));
 }
 
 function estimateMessagesTokens(messages: readonly ModelMessage[]): number {
@@ -175,62 +205,123 @@ function estimateMessagesTokens(messages: readonly ModelMessage[]): number {
   return total;
 }
 
+function inlineMediaStorageBytes(messages: readonly ModelMessage[]): number {
+  const seen = new WeakSet<object>();
+  const dataBytes = (value: unknown): number => {
+    if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+    if (value instanceof Uint8Array) return value.byteLength;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return 0;
+    const record = value as Record<string, unknown>;
+    return record["type"] === "data" ? dataBytes(record["data"]) : 0;
+  };
+  const visit = (value: unknown): number => {
+    if (!value || typeof value !== "object") return 0;
+    if (seen.has(value)) return 0;
+    seen.add(value);
+    if (Array.isArray(value)) return value.reduce((total, item) => total + visit(item), 0);
+
+    const record = value as Record<string, unknown>;
+    if (record["type"] === "file") return dataBytes(record["data"]);
+    return Object.values(record).reduce<number>((total, item) => total + visit(item), 0);
+  };
+
+  return messages.reduce((total, message) => total + visit(message), 0);
+}
+
 type RepairTranscriptResult = {
   messages: ModelMessage[];
+  droppedDanglingToolCallParts: number;
   droppedOrphanToolResultParts: number;
+  droppedEmptyAssistantMessages: number;
   droppedEmptyToolMessages: number;
 };
 
 function repairTranscriptForCompaction(messages: readonly ModelMessage[]): RepairTranscriptResult {
   const repaired: ModelMessage[] = [];
-  const openToolCallIds = new Set<string>();
+  let droppedDanglingToolCallParts = 0;
   let droppedOrphanToolResultParts = 0;
+  let droppedEmptyAssistantMessages = 0;
   let droppedEmptyToolMessages = 0;
 
-  for (const message of messages) {
-    if (message.role === "assistant") {
-      for (const id of getAssistantToolCallIds(message)) {
-        openToolCallIds.add(id);
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]!;
+    const toolCallIds = getAssistantToolCallIds(message);
+    const toolCallPartCount = getAssistantToolCallPartCount(message);
+
+    if (message.role === "assistant" && Array.isArray(message.content) && toolCallPartCount > 0) {
+      let toolBlockEnd = messageIndex + 1;
+      while (messages[toolBlockEnd]?.role === "tool") toolBlockEnd += 1;
+
+      const uniqueToolCallIds = new Set(toolCallIds);
+      const matchedToolCallIds = new Set<string>();
+      for (let toolIndex = messageIndex + 1; toolIndex < toolBlockEnd; toolIndex++) {
+        const toolMessage = messages[toolIndex]!;
+        for (const resultId of getToolResultToolCallIds(toolMessage)) {
+          if (uniqueToolCallIds.has(resultId)) matchedToolCallIds.add(resultId);
+        }
       }
-      repaired.push(cloneMessage(message));
+
+      const retainedToolCallIds = new Set<string>();
+      const assistantContent = message.content.filter((part) => {
+        const candidate = part as { type?: unknown; toolCallId?: unknown };
+        if (candidate.type !== "tool-call") return true;
+        if (
+          typeof candidate.toolCallId === "string" &&
+          matchedToolCallIds.has(candidate.toolCallId) &&
+          !retainedToolCallIds.has(candidate.toolCallId)
+        ) {
+          retainedToolCallIds.add(candidate.toolCallId);
+          return true;
+        }
+        droppedDanglingToolCallParts += 1;
+        return false;
+      });
+
+      if (assistantContent.length > 0) {
+        repaired.push({ ...message, content: assistantContent.map((part) => ({ ...part })) });
+      } else {
+        droppedEmptyAssistantMessages += 1;
+      }
+
+      const retainedResultIds = new Set<string>();
+      for (let toolIndex = messageIndex + 1; toolIndex < toolBlockEnd; toolIndex++) {
+        const toolMessage = messages[toolIndex]!;
+        if (toolMessage.role !== "tool") continue;
+
+        let retainedResults = 0;
+        const toolContent = toolMessage.content.filter((part) => {
+          const candidate = part as { type?: unknown; toolCallId?: unknown };
+          if (candidate.type !== "tool-result") return true;
+          if (
+            typeof candidate.toolCallId === "string" &&
+            retainedToolCallIds.has(candidate.toolCallId) &&
+            !retainedResultIds.has(candidate.toolCallId)
+          ) {
+            retainedResultIds.add(candidate.toolCallId);
+            retainedResults += 1;
+            return true;
+          }
+          droppedOrphanToolResultParts += 1;
+          return false;
+        });
+
+        if (retainedResults > 0) {
+          repaired.push({ ...toolMessage, content: toolContent.map((part) => ({ ...part })) });
+        } else {
+          droppedEmptyToolMessages += 1;
+        }
+      }
+
+      messageIndex = toolBlockEnd - 1;
       continue;
     }
 
     if (message.role === "tool") {
-      const nextContent = [] as typeof message.content;
-
       for (const part of message.content) {
-        const candidate = part as {
-          type?: unknown;
-          toolCallId?: unknown;
-        };
-
-        if (candidate.type !== "tool-result") {
-          nextContent.push({ ...part });
-          continue;
-        }
-
-        if (
-          typeof candidate.toolCallId !== "string" ||
-          !openToolCallIds.has(candidate.toolCallId)
-        ) {
-          droppedOrphanToolResultParts += 1;
-          continue;
-        }
-
-        openToolCallIds.delete(candidate.toolCallId);
-        nextContent.push({ ...part });
+        const candidate = part as { type?: unknown };
+        if (candidate.type === "tool-result") droppedOrphanToolResultParts += 1;
       }
-
-      if (nextContent.length === 0) {
-        droppedEmptyToolMessages += 1;
-        continue;
-      }
-
-      repaired.push({
-        ...message,
-        content: nextContent,
-      });
+      droppedEmptyToolMessages += 1;
       continue;
     }
 
@@ -239,181 +330,54 @@ function repairTranscriptForCompaction(messages: readonly ModelMessage[]): Repai
 
   return {
     messages: repaired,
+    droppedDanglingToolCallParts,
     droppedOrphanToolResultParts,
+    droppedEmptyAssistantMessages,
     droppedEmptyToolMessages,
-  };
-}
-
-function ensureMessagesEndNotAssistant(messages: readonly ModelMessage[]): ModelMessage[] {
-  let end = messages.length;
-  while (end > 0) {
-    const candidate = messages[end - 1];
-    if (!candidate || candidate.role !== "assistant") break;
-    end -= 1;
-  }
-
-  if (end === messages.length) return cloneMessages(messages);
-  return cloneMessages(messages.slice(0, end));
-}
-
-const EMERGENCY_TOOL_OUTPUT_PLACEHOLDER = "[tool output omitted by emergency compaction]";
-
-function compactOneToolResultOutput(messages: readonly ModelMessage[]): {
-  messages: ModelMessage[];
-  changed: boolean;
-} {
-  for (let messageIndex = 1; messageIndex < messages.length; messageIndex++) {
-    const message = messages[messageIndex]!;
-    if (message.role !== "tool") continue;
-
-    for (let partIndex = 0; partIndex < message.content.length; partIndex++) {
-      const part = message.content[partIndex];
-      const candidate = part as {
-        type?: unknown;
-        output?: unknown;
-      };
-      if (candidate.type !== "tool-result") continue;
-
-      const output = candidate.output;
-      if (
-        typeof output === "object" &&
-        output !== null &&
-        (output as Record<string, unknown>)["type"] === "text" &&
-        typeof (output as Record<string, unknown>)["value"] === "string" &&
-        (output as Record<string, unknown>)["value"] === EMERGENCY_TOOL_OUTPUT_PLACEHOLDER
-      ) {
-        continue;
-      }
-
-      const next = cloneMessages(messages);
-      const nextMessage = next[messageIndex];
-      if (!nextMessage || nextMessage.role !== "tool") {
-        return {
-          messages: next,
-          changed: false,
-        };
-      }
-
-      const nextPart = nextMessage.content[partIndex];
-      if (nextPart && typeof nextPart === "object") {
-        const nextPartRecord = nextPart as Record<string, unknown>;
-        nextPartRecord["output"] = {
-          type: "text",
-          value: EMERGENCY_TOOL_OUTPUT_PLACEHOLDER,
-        };
-      }
-
-      return {
-        messages: next,
-        changed: true,
-      };
-    }
-  }
-
-  return {
-    messages: cloneMessages(messages),
-    changed: false,
   };
 }
 
 function shrinkCompactedMessagesToBudget(params: {
   messages: readonly ModelMessage[];
   inputBudget: number;
-  maxSteps?: number;
 }): ModelMessage[] {
-  const shrinkSingleMessage = (message: ModelMessage): ModelMessage => {
-    const maxChars = Math.max(64, params.inputBudget * 4);
-
-    if (message.role === "user" && typeof message.content === "string") {
-      return {
-        ...message,
-        content: truncateText(message.content, maxChars),
-      };
-    }
-
-    if (message.role === "assistant" && typeof message.content === "string") {
-      return {
-        ...message,
-        content: truncateText(message.content, maxChars),
-      };
-    }
-
-    return message;
-  };
-
-  let working = ensureMessagesEndNotAssistant(params.messages);
-  working = repairTranscriptForCompaction(working).messages;
-
   const budget = Math.max(1, params.inputBudget);
-  const maxSteps = params.maxSteps ?? Math.max(8, working.length * 4);
+  const working = repairTranscriptForCompaction(params.messages).messages;
+  const estimatedTokens = estimateMessagesTokens(working);
+  if (estimatedTokens <= budget) return working;
 
-  for (let step = 0; step < maxSteps; step++) {
-    if (estimateMessagesTokens(working) <= budget) return working;
-
-    const lastUserIndex = (() => {
-      for (let i = working.length - 1; i >= 0; i--) {
-        if (working[i]?.role === "user") return i;
-      }
-      return -1;
-    })();
-
-    const compactedToolResult = compactOneToolResultOutput(working);
-    if (compactedToolResult.changed) {
-      working = ensureMessagesEndNotAssistant(
-        repairTranscriptForCompaction(compactedToolResult.messages).messages,
-      );
-      continue;
-    }
-
-    if (working.length <= 1) {
-      if (working.length === 0) return working;
-      return [shrinkSingleMessage(working[0]!)];
-    }
-
-    const head = working[0];
-    if (!head) return working;
-
-    let removableIndex = -1;
-    for (let i = 1; i < working.length; i++) {
-      if (i === working.length - 1) continue;
-      if (i === lastUserIndex) continue;
-      removableIndex = i;
-      break;
-    }
-
-    if (removableIndex < 0) {
-      const next = cloneMessages(working);
-      next[0] = shrinkSingleMessage(next[0]!);
-      if (estimateMessageTokens(next[0]!) >= estimateMessageTokens(working[0]!)) {
-        break;
-      }
-      working = ensureMessagesEndNotAssistant(repairTranscriptForCompaction(next).messages);
-      continue;
-    }
-
-    const droppedOldest = [
-      head,
-      ...working.slice(1, removableIndex),
-      ...working.slice(removableIndex + 1),
-    ];
-    working = ensureMessagesEndNotAssistant(repairTranscriptForCompaction(droppedOldest).messages);
+  const summaryMessage = working[0];
+  const retainedSuffix = working.slice(1);
+  const retainedSuffixTokens = estimateMessagesTokens(retainedSuffix);
+  if (retainedSuffixTokens >= budget) {
+    throw new Error(
+      `Compaction could not fit retained bounded context within the input budget (${retainedSuffixTokens} >= ${budget} estimated tokens); no retained suffix messages were discarded.`,
+    );
   }
 
-  if (estimateMessagesTokens(working) <= budget) return working;
-  if (working.length === 0) return [];
-
-  const lastUser = (() => {
-    for (let i = working.length - 1; i >= 0; i--) {
-      if (working[i]?.role === "user") return working[i]!;
-    }
-    return null;
-  })();
-
-  if (lastUser) {
-    return [shrinkSingleMessage(lastUser)];
+  if (
+    !summaryMessage ||
+    (summaryMessage.role !== "user" && summaryMessage.role !== "assistant") ||
+    typeof summaryMessage.content !== "string"
+  ) {
+    throw new Error(
+      `Compaction could not fit bounded context within the input budget (${estimatedTokens} > ${budget} estimated tokens).`,
+    );
   }
 
-  return [shrinkSingleMessage(working[0]!)];
+  const availableSummaryTokens = budget - retainedSuffixTokens;
+  const shrunkSummary: ModelMessage = {
+    ...summaryMessage,
+    content: truncateText(summaryMessage.content, Math.max(1, availableSummaryTokens * 4)),
+  };
+  const compacted = [shrunkSummary, ...retainedSuffix];
+  const compactedTokens = estimateMessagesTokens(compacted);
+  if (compactedTokens > budget) {
+    throw new Error(
+      `Compaction could not fit bounded context within the input budget (${compactedTokens} > ${budget} estimated tokens).`,
+    );
+  }
+  return compacted;
 }
 
 function chooseSuffixStartByMessageCount(
@@ -510,21 +474,16 @@ function resolveCompactionBoundary(params: {
   };
 }
 
-function renderMessageForSummary(
-  message: ModelMessage,
-  options: {
-    maxCharsPerMessage: number;
-  },
-): string {
+function renderMessageForSummary(message: ModelMessage): string {
   if (message.role === "user") {
     const content =
       typeof message.content === "string" ? message.content : stringifyUnknown(message.content);
-    return truncateText(`USER:\n${content}`, options.maxCharsPerMessage);
+    return `USER:\n${content}`;
   }
 
   if (message.role === "assistant") {
     if (typeof message.content === "string") {
-      return truncateText(`ASSISTANT:\n${message.content}`, options.maxCharsPerMessage);
+      return `ASSISTANT:\n${message.content}`;
     }
 
     const lines: string[] = [];
@@ -556,7 +515,7 @@ function renderMessageForSummary(
       lines.push(stringifyUnknown(part));
     }
 
-    return truncateText(`ASSISTANT:\n${lines.join("\n")}`, options.maxCharsPerMessage);
+    return `ASSISTANT:\n${lines.join("\n")}`;
   }
 
   if (message.role === "tool") {
@@ -580,53 +539,49 @@ function renderMessageForSummary(
       lines.push(stringifyUnknown(part));
     }
 
-    return truncateText(`TOOL:\n${lines.join("\n")}`, options.maxCharsPerMessage);
+    return `TOOL:\n${lines.join("\n")}`;
   }
 
-  return truncateText(
-    `${String((message as { role?: unknown }).role ?? "UNKNOWN").toUpperCase()}:\n${stringifyUnknown(message)}`,
-    options.maxCharsPerMessage,
-  );
+  return `${String((message as { role?: unknown }).role ?? "UNKNOWN").toUpperCase()}:\n${stringifyUnknown(message)}`;
 }
 
 function renderMessagesForSummary(
+  messages: readonly ModelMessage[],
+  _options: {
+    maxCharsPerMessage: number;
+    maxCharsTotal: number;
+  },
+): string {
+  const separator = "\n\n---\n\n";
+  return messages.map((message) => renderMessageForSummary(message)).join(separator);
+}
+
+function renderMessagesForSummarySegments(
   messages: readonly ModelMessage[],
   options: {
     maxCharsPerMessage: number;
     maxCharsTotal: number;
   },
-): string {
-  const parts: string[] = [];
-  let chars = 0;
-  const separator = "\n\n---\n\n";
+): string[] {
+  const segmentLimit = Math.max(100, Math.min(options.maxCharsPerMessage, options.maxCharsTotal));
+  const payloadLimit = Math.max(1, segmentLimit - 80);
+  const segments: string[] = [];
 
   for (const message of messages) {
-    const rendered = renderMessageForSummary(message, {
-      maxCharsPerMessage: options.maxCharsPerMessage,
-    });
-    if (!rendered) continue;
-
-    const next = parts.length === 0 ? rendered : `${separator}${rendered}`;
-    if (chars + next.length <= options.maxCharsTotal) {
-      parts.push(rendered);
-      chars += next.length;
+    const rendered = renderMessageForSummary(message);
+    if (rendered.length <= segmentLimit) {
+      segments.push(rendered);
       continue;
     }
 
-    const remaining = options.maxCharsTotal - chars;
-    if (remaining <= 0) break;
-    const clipped = truncateText(next, remaining);
-    if (clipped.trim().length > 0) {
-      if (parts.length === 0) {
-        parts.push(clipped);
-      } else {
-        parts.push(clipped.slice(separator.length));
-      }
+    const segmentCount = Math.ceil(rendered.length / payloadLimit);
+    for (let index = 0; index < segmentCount; index++) {
+      const payload = rendered.slice(index * payloadLimit, (index + 1) * payloadLimit);
+      segments.push(`[message continuation ${index + 1}/${segmentCount}]\n${payload}`);
     }
-    break;
   }
 
-  return parts.join(separator);
+  return segments;
 }
 
 async function summarizePrompt(options: {
@@ -698,13 +653,14 @@ async function summarizeMessagesHierarchical(options: {
       let summary: string | null = null;
 
       for (const chunk of chunks) {
-        const transcriptText = renderMessagesForSummary(chunk, {
+        const transcriptSegments = renderMessagesForSummarySegments(chunk, {
           maxCharsPerMessage,
           maxCharsTotal,
         });
-        if (!transcriptText.trim()) continue;
-
-        summary = await options.summarizeChunk(transcriptText, summary, options.abortSignal);
+        for (const transcriptText of transcriptSegments) {
+          if (!transcriptText.trim()) continue;
+          summary = await options.summarizeChunk(transcriptText, summary, options.abortSignal);
+        }
       }
 
       return (summary ?? "").trim();
@@ -722,27 +678,6 @@ async function summarizeMessagesHierarchical(options: {
   throw lastError instanceof Error
     ? lastError
     : new Error("Compaction summarization failed after recursive chunk retries.");
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function renderDeterministicFallbackSummary(options: {
-  title: string;
-  messages: readonly ModelMessage[];
-  maxCharsTotal: number;
-}): string {
-  const rendered = renderMessagesForSummary(options.messages, {
-    maxCharsPerMessage: Math.max(400, Math.floor(options.maxCharsTotal / 4)),
-    maxCharsTotal: Math.max(500, options.maxCharsTotal),
-  }).trim();
-
-  if (!rendered) {
-    return `${options.title}\n\nNo transcript excerpt available.`;
-  }
-
-  return `${options.title}\n\n${rendered}`;
 }
 
 const DEFAULT_THRESHOLD_FRACTION = 0.8;
@@ -1252,11 +1187,18 @@ export async function attachAutoCompaction(
     estimatedInputTokens: number;
   }): InputCompactionBudget | null => {
     if (params.capability.known) {
-      return computeInputCompactionBudget({
+      const budget = computeInputCompactionBudget({
         contextLimit: params.capability.contextLimit,
         outputLimit: params.capability.outputLimit,
         thresholdFraction,
       });
+      if (params.reason !== "overflow" || overflowRecoveryAttempts <= 1) return budget;
+
+      const progressiveFactor = Math.pow(0.75, overflowRecoveryAttempts - 1);
+      return {
+        ...budget,
+        inputBudget: Math.max(1, Math.floor(budget.inputBudget * progressiveFactor)),
+      };
     }
 
     if (params.reason !== "overflow") {
@@ -1337,6 +1279,7 @@ export async function attachAutoCompaction(
     messages,
     context: TransformMessagesContext,
   ) => {
+    const canonicalMediaBytes = inlineMediaStorageBytes(messages);
     const maybeTransformed = options.baseTransformMessages
       ? await options.baseTransformMessages(messages, context)
       : [...messages];
@@ -1346,6 +1289,16 @@ export async function attachAutoCompaction(
       pendingReason: pendingCompactionReason,
       capabilityKnown: latestCapability.known,
     });
+
+    if (
+      latestCapability.known &&
+      pendingCompactionReason === null &&
+      canonicalMediaBytes > inlineMediaStorageBytes(maybeTransformed)
+    ) {
+      scheduleCompaction("threshold");
+      // Deliver the newest retained media once before compacting omitted historical media.
+      return maybeTransformed;
+    }
 
     if (
       latestCapability.known &&
@@ -1417,15 +1370,17 @@ export async function attachAutoCompaction(
           keepLastMessages: passKeepLastMessages,
         });
 
-        if (boundary.suffixStart <= 0) break;
-
-        const historyEnd = boundary.splitTurnStart ?? boundary.suffixStart;
+        const historyEnd =
+          boundary.suffixStart <= 0
+            ? compactableMessages.length
+            : (boundary.splitTurnStart ?? boundary.suffixStart);
         const historyMessages = compactableMessages.slice(0, historyEnd);
         const splitTurnPrefixMessages =
-          boundary.splitTurnStart !== null
+          boundary.suffixStart > 0 && boundary.splitTurnStart !== null
             ? compactableMessages.slice(boundary.splitTurnStart, boundary.suffixStart)
             : [];
-        const suffixMessages = compactableMessages.slice(boundary.suffixStart);
+        const suffixMessages =
+          boundary.suffixStart > 0 ? compactableMessages.slice(boundary.suffixStart) : [];
 
         if (historyMessages.length === 0 && splitTurnPrefixMessages.length === 0) {
           break;
@@ -1444,73 +1399,55 @@ export async function attachAutoCompaction(
         const summarizeMainHistory = async (): Promise<string> => {
           if (historyMessages.length === 0) return "";
 
-          try {
-            const text = await summarizeMessagesHierarchical({
-              messages: historyMessages,
-              initialChunkTokenBudget: chunkTokenBudget,
-              maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
-              initialMaxCharsPerMessage: Math.max(2_000, chunkTokenBudget * 4),
-              initialMaxCharsTotal: Math.max(4_000, chunkTokenBudget * 6),
-              summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
-                const prompt = previousSummary
-                  ? buildSummaryUpdatePrompt(previousSummary, transcriptText)
-                  : buildSummaryPrompt(transcriptText);
-                return await summarizePrompt({
-                  model: modelToUse,
-                  system: summarySystem,
-                  prompt,
-                  providerOptions: agent.state.providerOptions,
-                  abortSignal,
-                });
-              },
-              abortSignal: context.abortSignal,
-            });
+          const text = await summarizeMessagesHierarchical({
+            messages: historyMessages,
+            initialChunkTokenBudget: chunkTokenBudget,
+            maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
+            initialMaxCharsPerMessage: Math.max(2_000, chunkTokenBudget * 4),
+            initialMaxCharsTotal: Math.max(4_000, chunkTokenBudget * 6),
+            summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
+              const prompt = previousSummary
+                ? buildSummaryUpdatePrompt(previousSummary, transcriptText)
+                : buildSummaryPrompt(transcriptText);
+              return await summarizePrompt({
+                model: modelToUse,
+                system: summarySystem,
+                prompt,
+                providerOptions: agent.state.providerOptions,
+                abortSignal,
+              });
+            },
+            abortSignal: context.abortSignal,
+          });
 
-            return text.trim();
-          } catch (error) {
-            if (context.abortSignal?.aborted || isAbortLikeError(error)) throw error;
-            return renderDeterministicFallbackSummary({
-              title: "## History",
-              messages: historyMessages,
-              maxCharsTotal: summaryMaxChars,
-            });
-          }
+          return text.trim();
         };
 
         const summarizeSplitTurnPrefix = async (): Promise<string> => {
           if (splitTurnPrefixMessages.length === 0) return "";
 
-          try {
-            const text = await summarizeMessagesHierarchical({
-              messages: splitTurnPrefixMessages,
-              initialChunkTokenBudget: Math.max(1, Math.floor(chunkTokenBudget * 0.7)),
-              maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
-              initialMaxCharsPerMessage: Math.max(1_500, Math.floor(chunkTokenBudget * 3)),
-              initialMaxCharsTotal: Math.max(3_000, Math.floor(chunkTokenBudget * 5)),
-              summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
-                const prompt = previousSummary
-                  ? DEFAULT_SPLIT_TURN_UPDATE_PROMPT(previousSummary, transcriptText)
-                  : buildSplitTurnSummaryPrompt(transcriptText);
-                return await summarizePrompt({
-                  model: modelToUse,
-                  system: summarySystem,
-                  prompt,
-                  providerOptions: agent.state.providerOptions,
-                  abortSignal,
-                });
-              },
-              abortSignal: context.abortSignal,
-            });
+          const text = await summarizeMessagesHierarchical({
+            messages: splitTurnPrefixMessages,
+            initialChunkTokenBudget: Math.max(1, Math.floor(chunkTokenBudget * 0.7)),
+            maxReductionPasses: DEFAULT_SUMMARY_REDUCTION_PASSES,
+            initialMaxCharsPerMessage: Math.max(1_500, Math.floor(chunkTokenBudget * 3)),
+            initialMaxCharsTotal: Math.max(3_000, Math.floor(chunkTokenBudget * 5)),
+            summarizeChunk: async (transcriptText, previousSummary, abortSignal) => {
+              const prompt = previousSummary
+                ? DEFAULT_SPLIT_TURN_UPDATE_PROMPT(previousSummary, transcriptText)
+                : buildSplitTurnSummaryPrompt(transcriptText);
+              return await summarizePrompt({
+                model: modelToUse,
+                system: summarySystem,
+                prompt,
+                providerOptions: agent.state.providerOptions,
+                abortSignal,
+              });
+            },
+            abortSignal: context.abortSignal,
+          });
 
-            return text.trim();
-          } catch (error) {
-            if (context.abortSignal?.aborted || isAbortLikeError(error)) throw error;
-            return renderDeterministicFallbackSummary({
-              title: "## Turn Prefix",
-              messages: splitTurnPrefixMessages,
-              maxCharsTotal: Math.max(1_000, Math.floor(summaryMaxChars * 0.7)),
-            });
-          }
+          return text.trim();
         };
 
         const [historySummary, splitTurnSummary] = await Promise.all([
@@ -1526,11 +1463,7 @@ export async function attachAutoCompaction(
 
         let finalSummary = summaryParts.join("\n\n---\n\n").trim();
         if (!finalSummary) {
-          finalSummary = renderDeterministicFallbackSummary({
-            title: "## History",
-            messages: historyMessages,
-            maxCharsTotal: summaryMaxChars,
-          });
+          throw new Error("Compaction summarization returned no summary for selected transcript.");
         }
 
         finalSummary = truncateText(finalSummary, summaryMaxChars);
@@ -1556,25 +1489,7 @@ export async function attachAutoCompaction(
       }
 
       if (!compactedCandidate) {
-        const emergencySummaryChars = Math.max(
-          DEFAULT_SUMMARY_MAX_CHARS_FLOOR,
-          activeBudget.inputBudget * 4,
-        );
-        const emergencySummary = truncateText(
-          renderDeterministicFallbackSummary({
-            title: "## History",
-            messages: compactableMessages,
-            maxCharsTotal: emergencySummaryChars,
-          }),
-          emergencySummaryChars,
-        );
-
-        compactedCandidate = [
-          {
-            role: "user",
-            content: `<summary>\n${emergencySummary}\n</summary>`,
-          },
-        ];
+        throw new Error("Compaction could not select transcript content for summarization.");
       }
 
       const compacted = shrinkCompactedMessagesToBudget({
@@ -1635,6 +1550,8 @@ export const __autoCompactionInternals = {
   chooseSuffixStartByTokenBudget,
   estimateMessageTokens,
   estimateMessagesTokens,
+  inlineMediaStorageBytes,
+  isValidSuffix,
   repairTranscriptForCompaction,
   renderMessagesForSummary,
   resolveCompactionBoundary,

@@ -20,6 +20,41 @@ function fakeModel(): LanguageModel {
 }
 
 describe("auto-compaction internals", () => {
+  it("counts canonical inline media separately from text token estimates", () => {
+    const withMedia: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            data: "aGVsbG8=",
+          },
+        ],
+      },
+    ];
+    const scrubbed: ModelMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Image omitted after its limit." }] },
+    ];
+
+    expect(__autoCompactionInternals.inlineMediaStorageBytes(withMedia)).toBe(8);
+    expect(__autoCompactionInternals.inlineMediaStorageBytes(scrubbed)).toBe(0);
+    expect(
+      __autoCompactionInternals.estimateMessagesTokens([
+        {
+          role: "user",
+          content: [
+            {
+              type: "file",
+              mediaType: "image/png",
+              data: "a".repeat(10 * 1024 * 1024),
+            },
+          ],
+        },
+      ]),
+    ).toBeLessThan(100);
+  });
+
   it("selects a split-turn boundary using token budget", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "old request" },
@@ -90,6 +125,33 @@ describe("auto-compaction internals", () => {
 
     expect(calls).toBeGreaterThan(1);
     expect(summary.startsWith("S")).toBe(true);
+  });
+
+  it("sends every marker from an oversized selected message through summarization", async () => {
+    const markers = ["MARKER_A", "MARKER_B", "MARKER_C", "MARKER_D"];
+    const content = markers.map((marker) => `${marker}${"x".repeat(90)}`).join("");
+    const transcripts: string[] = [];
+    const previousSummaries: Array<string | null> = [];
+
+    await __autoCompactionInternals.summarizeMessagesHierarchical({
+      messages: [{ role: "user", content }],
+      initialChunkTokenBudget: 10_000,
+      maxReductionPasses: 1,
+      initialMaxCharsPerMessage: 200,
+      initialMaxCharsTotal: 500,
+      summarizeChunk: async (transcript, previousSummary) => {
+        transcripts.push(transcript);
+        previousSummaries.push(previousSummary);
+        return `${previousSummary ?? "summary"}|updated`;
+      },
+    });
+
+    expect(transcripts.length).toBeGreaterThan(1);
+    for (const marker of markers) {
+      expect(transcripts.some((transcript) => transcript.includes(marker))).toBe(true);
+    }
+    expect(previousSummaries[0]).toBeNull();
+    expect(previousSummaries.slice(1).every((summary) => summary !== null)).toBe(true);
   });
 
   it("computes overflow recovery decisions", () => {
@@ -271,8 +333,165 @@ describe("auto-compaction internals", () => {
     expect(repaired.messages[1]?.role).toBe("tool");
   });
 
-  it("shrinks compacted transcript to fit input budget", () => {
+  it("preserves the complete subset of a partial multi-call group", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "complete-call",
+            toolName: "read_file",
+            input: { filePath: "complete.ts" },
+          },
+          {
+            type: "tool-call",
+            toolCallId: "dangling-call",
+            toolName: "read_file",
+            input: { filePath: "dangling.ts" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "complete-call",
+            toolName: "read_file",
+            output: { type: "text", value: "complete result" },
+          },
+        ],
+      },
+      { role: "user", content: "latest" },
+    ];
+
+    expect(__autoCompactionInternals.isValidSuffix(messages, 0)).toBe(false);
+    const repaired = __autoCompactionInternals.repairTranscriptForCompaction(messages);
+    const rendered = JSON.stringify(repaired.messages);
+
+    expect(repaired.droppedDanglingToolCallParts).toBe(1);
+    expect(rendered).toContain("complete-call");
+    expect(rendered).toContain("complete result");
+    expect(rendered).not.toContain("dangling-call");
+    expect(__autoCompactionInternals.isValidSuffix(repaired.messages, 0)).toBe(true);
+  });
+
+  it("removes a dangling assistant tool call", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "dangling-call",
+            toolName: "bash",
+            input: { command: "pwd" },
+          },
+        ],
+      },
+      { role: "user", content: "latest" },
+    ];
+
+    expect(__autoCompactionInternals.isValidSuffix(messages, 0)).toBe(false);
+    const repaired = __autoCompactionInternals.repairTranscriptForCompaction(messages);
+
+    expect(repaired.droppedDanglingToolCallParts).toBe(1);
+    expect(repaired.droppedEmptyAssistantMessages).toBe(1);
+    expect(repaired.messages).toEqual([{ role: "user", content: "latest" }]);
+    expect(__autoCompactionInternals.isValidSuffix(repaired.messages, 0)).toBe(true);
+  });
+
+  it("does not connect a tool call and result across an intervening message", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "progress before tool" },
+          {
+            type: "tool-call",
+            toolCallId: "separated-call",
+            toolName: "bash",
+            input: { command: "pwd" },
+          },
+        ],
+      },
+      { role: "user", content: "intervening user" },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "separated-call",
+            toolName: "bash",
+            output: { type: "text", value: "must not reconnect" },
+          },
+        ],
+      },
+    ];
+
+    expect(__autoCompactionInternals.isValidSuffix(messages, 0)).toBe(false);
+    const repaired = __autoCompactionInternals.repairTranscriptForCompaction(messages);
+    const rendered = JSON.stringify(repaired.messages);
+
+    expect(rendered).toContain("progress before tool");
+    expect(rendered).toContain("intervening user");
+    expect(rendered).not.toContain("separated-call");
+    expect(rendered).not.toContain("must not reconnect");
+    expect(__autoCompactionInternals.isValidSuffix(repaired.messages, 0)).toBe(true);
+  });
+
+  it("drops a result that appears before its call without losing the later complete group", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "misordered-call",
+            toolName: "bash",
+            output: { type: "text", value: "misordered result" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "misordered-call",
+            toolName: "bash",
+            input: { command: "pwd" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "misordered-call",
+            toolName: "bash",
+            output: { type: "text", value: "ordered result" },
+          },
+        ],
+      },
+      { role: "user", content: "latest" },
+    ];
+
+    expect(__autoCompactionInternals.isValidSuffix(messages, 0)).toBe(false);
+    const repaired = __autoCompactionInternals.repairTranscriptForCompaction(messages);
+    const rendered = JSON.stringify(repaired.messages);
+
+    expect(repaired.droppedOrphanToolResultParts).toBe(1);
+    expect(rendered).not.toContain("misordered result");
+    expect(rendered).toContain("ordered result");
+    expect(__autoCompactionInternals.isValidSuffix(repaired.messages, 0)).toBe(true);
+  });
+
+  it("shrinks only the summary and preserves retained tool call-result context", () => {
     const summary = `<summary>\n${"s".repeat(8_000)}\n</summary>`;
+    const retainedOutputMarker = `UNSUMMARIZED_SUFFIX_OUTPUT_${"x".repeat(10_000)}`;
     const messages: ModelMessage[] = [
       { role: "user", content: summary },
       {
@@ -293,14 +512,14 @@ describe("auto-compaction internals", () => {
             type: "tool-result",
             toolCallId: "call-1",
             toolName: "bash",
-            output: { type: "text", value: "x".repeat(10_000) },
+            output: { type: "text", value: retainedOutputMarker },
           },
         ],
       },
       { role: "user", content: "latest" },
     ];
 
-    const budget = 500;
+    const budget = 3_000;
     const shrunk = __autoCompactionInternals.shrinkCompactedMessagesToBudget({
       messages,
       inputBudget: budget,
@@ -309,9 +528,11 @@ describe("auto-compaction internals", () => {
     expect(__autoCompactionInternals.estimateMessagesTokens(shrunk)).toBeLessThanOrEqual(budget);
     expect(shrunk.length).toBeGreaterThan(0);
     expect(shrunk[shrunk.length - 1]?.role).not.toBe("assistant");
+    expect(JSON.stringify(shrunk)).toContain(retainedOutputMarker);
+    expect(JSON.stringify(shrunk)).not.toContain("tool output omitted by emergency compaction");
   });
 
-  it("preserves the latest user request during emergency shrinking", () => {
+  it("preserves the latest user request while shrinking the summary", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: `<summary>\n${"s".repeat(3_000)}\n</summary>` },
       { role: "user", content: "Please continue from here and make sure tests pass." },
@@ -326,5 +547,65 @@ describe("auto-compaction internals", () => {
     expect(shrunk[shrunk.length - 1]?.role).toBe("user");
     const content = shrunk[shrunk.length - 1]?.content;
     expect(typeof content === "string" && content.includes("Please continue from here")).toBe(true);
+  });
+
+  it("throws instead of dropping an unsummarized suffix that cannot fit", () => {
+    const retainedOutputMarker = `IRREDUCIBLE_SUFFIX_${"x".repeat(4_000)}`;
+    const messages: ModelMessage[] = [
+      { role: "user", content: "<summary>summary</summary>" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-retained",
+            toolName: "bash",
+            input: { command: "generate output" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-retained",
+            toolName: "bash",
+            output: { type: "text", value: retainedOutputMarker },
+          },
+        ],
+      },
+      { role: "user", content: "latest request" },
+    ];
+
+    expect(() =>
+      __autoCompactionInternals.shrinkCompactedMessagesToBudget({
+        messages,
+        inputBudget: 100,
+      }),
+    ).toThrow("no retained suffix messages were discarded");
+    expect(JSON.stringify(messages)).toContain(retainedOutputMarker);
+  });
+
+  it("surfaces a clear failure when an irreducible bounded message cannot fit", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            mediaType: "application/octet-stream",
+            data: "x".repeat(1_000),
+          },
+        ],
+      },
+    ];
+
+    expect(() =>
+      __autoCompactionInternals.shrinkCompactedMessagesToBudget({
+        messages,
+        inputBudget: 1,
+      }),
+    ).toThrow("Compaction could not fit bounded context within the input budget");
   });
 });
