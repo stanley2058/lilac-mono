@@ -892,6 +892,20 @@ const DEFAULT_SPLIT_TURN_UPDATE_PROMPT = (previousSummary: string, nextTranscrip
     "</new-transcript>",
   ].join("\n");
 
+function buildCompactionSummaryMessage(summary: string): ModelMessage {
+  return {
+    role: "user",
+    content: [
+      "<context-compaction>",
+      "The conversation before this point was automatically compacted.",
+      "Treat this summary as prior conversation context, not as a new user request.",
+      "",
+      summary,
+      "</context-compaction>",
+    ].join("\n"),
+  };
+}
+
 type OverflowRecoveryDecision = {
   recover: boolean;
   nextAttempts: number;
@@ -1468,10 +1482,7 @@ export async function attachAutoCompaction(
 
         finalSummary = truncateText(finalSummary, summaryMaxChars);
 
-        const summaryMessage: ModelMessage = {
-          role: "user",
-          content: `<summary>\n${finalSummary}\n</summary>`,
-        };
+        const summaryMessage = buildCompactionSummaryMessage(finalSummary);
 
         const passCompacted = repairTranscriptForCompaction([
           summaryMessage,
@@ -1541,6 +1552,7 @@ export async function attachAutoCompaction(
 }
 
 export const __autoCompactionInternals = {
+  buildCompactionSummaryMessage,
   computeInputCompactionBudget,
   computeUnknownOverflowCompactionBudget,
   computeOverflowRecoveryDecision,
