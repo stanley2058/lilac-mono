@@ -2485,11 +2485,13 @@ describe("request-composition active channel burst rules", () => {
       mkUser("10", anchorTs),
     ];
 
+    const lookupCounts = new Map<string, number>();
     const transcriptStore: TranscriptStore = {
       saveRequestTranscript() {},
       linkSurfaceMessagesToRequest() {},
       close() {},
       getTranscriptBySurfaceMessage(input) {
+        lookupCounts.set(input.messageId, (lookupCounts.get(input.messageId) ?? 0) + 1);
         const expanded = (content: string): ModelMessage[] => [{ role: "assistant", content }];
         if (input.messageId === "8") {
           return {
@@ -2568,6 +2570,12 @@ describe("request-composition active channel burst rules", () => {
     expect(text).not.toContain("old bot text");
     expect(assistantText).not.toContain("tool-call");
     expect(assistantText).not.toContain("[discord user_id=");
+    expect(lookupCounts).toEqual(
+      new Map([
+        ["8", 1],
+        ["9", 1],
+      ]),
+    );
   });
 
   it("applies an old reachable checkpoint before transcript-age fallback", async () => {

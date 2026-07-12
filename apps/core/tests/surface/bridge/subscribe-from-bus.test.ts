@@ -30,6 +30,7 @@ import {
   type PublishOptions,
 } from "@stanley2058/lilac-event-bus";
 import { setGithubLatestRequestForSession } from "../../../src/github/github-state";
+import type { TranscriptStore } from "../../../src/transcript/transcript-store";
 
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
@@ -1485,6 +1486,57 @@ describe("bridgeBusToAdapter", () => {
       messageId: "m_out_1",
     });
     expect(adapter.stream?.parts).toEqual([{ type: "text.delta", delta: "working" }]);
+
+    await bridge.stop();
+  });
+
+  it("finishes skip cleanup when checkpoint candidate deletion fails", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+    const requestId = "discord:chan:msg_skip_cleanup_failure";
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest() {},
+      getTranscriptBySurfaceMessage() {
+        return null;
+      },
+      deleteUnlinkedCheckpointCandidate() {
+        throw new Error("cleanup failed");
+      },
+      close() {},
+    };
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+      transcriptStore,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseText,
+      { finalText: "NO_REPLY" },
+      { headers: { request_id: requestId } },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.stream?.aborted).toBe("skip");
+    expect(adapter.typingStops).toBe(1);
+    expect(bridge.snapshotRelays()).toEqual([]);
 
     await bridge.stop();
   });

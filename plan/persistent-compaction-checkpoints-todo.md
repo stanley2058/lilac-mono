@@ -35,6 +35,23 @@
 - [x] Run final `bun run fmt`.
 - [x] Inspect final diff and repository status.
 
+## Completed review follow-up
+
+- [x] Isolate deletion-event transcript unlink failures so bus publication still proceeds.
+- [x] Keep skipped-output relay cleanup running when unlinked checkpoint candidate deletion fails.
+- [x] Reuse checkpoint-selection transcript resolutions, including cached misses, during descendant transcript expansion.
+- [x] Separate external and relative transcript-store imports.
+- [x] Add focused failure-path and transcript lookup-count regression coverage.
+
+Checks completed:
+
+- `cd apps/core && bun test tests/surface/bridge/publish-to-bus.test.ts tests/surface/bridge/subscribe-from-bus.test.ts tests/surface/bridge/checkpoint-selection.test.ts tests/surface/bridge/request-composition.test.ts` — 107 pass, 0 fail.
+- `cd apps/core && bunx tsc -p tsconfig.json --noEmit` — passed.
+- `bun run lint:fix` — 0 warnings, 0 errors.
+- `bun run fmt` — completed successfully.
+- `bun run lint` — 0 warnings, 0 errors.
+- `bun run fmt:check` — all matched files correctly formatted.
+
 ## Deferred / non-blocking residual items
 
 - Cancelled and failed post-compaction runs retain the pre-existing stale `responseStartIndex` edge case for ordinary error/cancellation transcript persistence.

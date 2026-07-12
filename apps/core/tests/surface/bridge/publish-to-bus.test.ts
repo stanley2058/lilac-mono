@@ -216,6 +216,48 @@ describe("bridgeAdapterToBus cancel mapping", () => {
     expect(unlinked).toEqual([{ platform: "discord", channelId: "chan", messageId: "m1" }]);
   });
 
+  it("publishes deletion events when transcript unlinking fails", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const adapter = new FakeAdapter();
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest() {},
+      getTranscriptBySurfaceMessage() {
+        return null;
+      },
+      unlinkSurfaceMessage() {
+        throw new Error("unlink failed");
+      },
+      close() {},
+    };
+    const publishedTypes: string[] = [];
+    const evtSub = await bus.subscribeTopic(
+      "evt.adapter",
+      {
+        mode: "fanout",
+        subscriptionId: "test:unlink-failure",
+        consumerId: "c1",
+        offset: { type: "now" },
+      },
+      async (msg) => {
+        publishedTypes.push(msg.type);
+      },
+    );
+    await bridgeAdapterToBus({ adapter, bus, subscriptionId: "test", transcriptStore });
+
+    adapter.emit({
+      type: "adapter.message.deleted",
+      platform: "discord",
+      ts: Date.now(),
+      messageRef: { platform: "discord", channelId: "chan", messageId: "m1" },
+      session: { platform: "discord", channelId: "chan" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(publishedTypes).toContain(lilacEventTypes.EvtAdapterMessageDeleted);
+    await evtSub.stop();
+  });
+
   it("maps adapter message and reaction events to Lilac bus events", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const adapter = new FakeAdapter();

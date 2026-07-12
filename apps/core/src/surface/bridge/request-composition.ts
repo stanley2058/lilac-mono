@@ -12,7 +12,7 @@ import {
   isDiscordSessionDividerText,
 } from "../discord/discord-session-divider";
 
-import type { TranscriptSnapshot } from "../../transcript/transcript-store";
+import type { TranscriptSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import {
   appendDiscordAttachmentsToUserContent,
   createDiscordAttachmentState,
@@ -51,6 +51,24 @@ export type {
 } from "./request-composition/types";
 
 const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+function resolveTranscriptSnapshot(input: {
+  messageId: string;
+  platform: "discord";
+  channelId: string;
+  transcriptStore: TranscriptStore;
+  resolvedSnapshotsBySurfaceMessageId: ReadonlyMap<string, TranscriptSnapshot | null>;
+}): TranscriptSnapshot | null {
+  if (input.resolvedSnapshotsBySurfaceMessageId.has(input.messageId)) {
+    return input.resolvedSnapshotsBySurfaceMessageId.get(input.messageId) ?? null;
+  }
+
+  return input.transcriptStore.getTranscriptBySurfaceMessage({
+    platform: input.platform,
+    channelId: input.channelId,
+    messageId: input.messageId,
+  });
+}
 
 function getDiscordIsChatFromRaw(raw: unknown): boolean | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -762,10 +780,13 @@ export async function composeRequestMessages(
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
     if (isBot && opts.transcriptStore) {
-      const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+      const snap = resolveTranscriptSnapshot({
         platform: opts.platform,
         channelId: opts.trigger.msgRef.channelId,
         messageId,
+        transcriptStore: opts.transcriptStore,
+        resolvedSnapshotsBySurfaceMessageId:
+          checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
       });
 
       if (snap) {
@@ -939,10 +960,13 @@ export async function composeRecentChannelMessages(
           const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
           if (isBot && opts.transcriptStore) {
-            const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+            const snap = resolveTranscriptSnapshot({
               platform: opts.platform,
               channelId: opts.sessionId,
               messageId,
+              transcriptStore: opts.transcriptStore,
+              resolvedSnapshotsBySurfaceMessageId:
+                checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
             });
             if (snap) {
               if (!seenTranscriptRequestIds.has(snap.requestId)) {
@@ -1181,10 +1205,13 @@ export async function composeRecentChannelMessages(
 
     let botTranscriptSnap: TranscriptSnapshot | null = null;
     if (isBot && opts.transcriptStore) {
-      botTranscriptSnap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+      botTranscriptSnap = resolveTranscriptSnapshot({
         platform: opts.platform,
         channelId: opts.sessionId,
         messageId,
+        transcriptStore: opts.transcriptStore,
+        resolvedSnapshotsBySurfaceMessageId:
+          checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
       });
     }
 

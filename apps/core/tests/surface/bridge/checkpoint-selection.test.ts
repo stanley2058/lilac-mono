@@ -91,6 +91,14 @@ describe("selectNewestReachableCheckpoint", () => {
     expect(result.checkpoint).toBeNull();
     expect(result.descendants).toEqual(chain);
     expect(result.checkpointMessages).toEqual([]);
+    expect(result.resolvedSnapshotsBySurfaceMessageId.get("assistant")).toBe(ordinary);
+  });
+
+  it("exposes cached null snapshot resolutions by surface message ID", () => {
+    const result = select([{ messageId: "unmapped", authorId: "bot" }], {});
+
+    expect(result.resolvedSnapshotsBySurfaceMessageId.has("unmapped")).toBe(true);
+    expect(result.resolvedSnapshotsBySurfaceMessageId.get("unmapped")).toBeNull();
   });
 
   it("does not inherit a checkpoint on a fork whose selected chain ends before it", () => {

@@ -10,6 +10,7 @@ export type CheckpointSelection<T> = {
   checkpointMessages: ModelMessage[];
   descendants: T[];
   discardedSurfaceCount: number;
+  resolvedSnapshotsBySurfaceMessageId: ReadonlyMap<string, TranscriptSnapshot | null>;
 };
 
 export function selectNewestReachableCheckpoint<T>(input: {
@@ -23,24 +24,24 @@ export function selectNewestReachableCheckpoint<T>(input: {
   getMessageId: (item: T) => string;
 }): CheckpointSelection<T> {
   const original = [...input.chainOldestToNewest];
+  const resolvedSnapshotsBySurfaceMessageId = new Map<string, TranscriptSnapshot | null>();
   if (!input.transcriptStore) {
-    return emptySelection(original);
+    return emptySelection(original, resolvedSnapshotsBySurfaceMessageId);
   }
 
-  const snapshotByIndex = new Map<number, TranscriptSnapshot | null>();
   const resolveAt = (index: number): TranscriptSnapshot | null => {
-    if (snapshotByIndex.has(index)) return snapshotByIndex.get(index) ?? null;
     const item = original[index];
-    if (!item || input.getAuthorId(item) !== input.botUserId) {
-      snapshotByIndex.set(index, null);
-      return null;
+    if (!item || input.getAuthorId(item) !== input.botUserId) return null;
+    const messageId = input.getMessageId(item);
+    if (resolvedSnapshotsBySurfaceMessageId.has(messageId)) {
+      return resolvedSnapshotsBySurfaceMessageId.get(messageId) ?? null;
     }
     const snapshot = input.transcriptStore!.getTranscriptBySurfaceMessage({
       platform: input.platform,
       channelId: input.channelId,
-      messageId: input.getMessageId(item),
+      messageId,
     });
-    snapshotByIndex.set(index, snapshot);
+    resolvedSnapshotsBySurfaceMessageId.set(messageId, snapshot);
     return snapshot;
   };
 
@@ -55,13 +56,13 @@ export function selectNewestReachableCheckpoint<T>(input: {
     break;
   }
 
-  if (!checkpoint) return emptySelection(original);
+  if (!checkpoint) return emptySelection(original, resolvedSnapshotsBySurfaceMessageId);
 
   let frontierIndex = -1;
   for (let index = 0; index < original.length; index++) {
     if (resolveAt(index)?.requestId === checkpoint.requestId) frontierIndex = index;
   }
-  if (frontierIndex < 0) return emptySelection(original);
+  if (frontierIndex < 0) return emptySelection(original, resolvedSnapshotsBySurfaceMessageId);
 
   const descendants = original.slice(frontierIndex + 1);
   logger.info("compaction checkpoint applied", {
@@ -78,14 +79,19 @@ export function selectNewestReachableCheckpoint<T>(input: {
     checkpointMessages: [...checkpoint.messages],
     descendants,
     discardedSurfaceCount: frontierIndex + 1,
+    resolvedSnapshotsBySurfaceMessageId,
   };
 }
 
-function emptySelection<T>(chain: T[]): CheckpointSelection<T> {
+function emptySelection<T>(
+  chain: T[],
+  resolvedSnapshotsBySurfaceMessageId: ReadonlyMap<string, TranscriptSnapshot | null>,
+): CheckpointSelection<T> {
   return {
     checkpoint: null,
     checkpointMessages: [],
     descendants: chain,
     discardedSurfaceCount: 0,
+    resolvedSnapshotsBySurfaceMessageId,
   };
 }

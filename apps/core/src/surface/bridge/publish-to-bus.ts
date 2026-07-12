@@ -158,6 +158,19 @@ export async function bridgeAdapterToBus(params: {
               reason: "last_surface_link_deleted",
             });
           }
+        } catch (e) {
+          logger.warn(
+            "failed to unlink deleted surface message",
+            {
+              platform: evt.messageRef.platform,
+              channelId: evt.messageRef.channelId,
+              messageId: evt.messageRef.messageId,
+            },
+            e,
+          );
+        }
+
+        try {
           await bus.publish(
             lilacEventTypes.EvtAdapterMessageDeleted,
             toBusEvtAdapterMessageDeleted({
