@@ -22,6 +22,61 @@ import type {
 
 const DEFAULT_MAX_MESSAGES = 50;
 const DEFAULT_BLOCK_MS = 1000;
+const OUTPUT_STREAM_TTL_SECONDS = 24 * 60 * 60;
+const TRIM_DEBOUNCE_MS = 100;
+const EPHEMERAL_GROUP_PREFIX = "__lilac_ephemeral__:";
+const TAIL_REPLAY_TOPICS = new Set<Topic>(["evt.request"]);
+
+const XADD_WITH_EXPIRY_SCRIPT = `
+local id = redis.call("XADD", KEYS[1], unpack(ARGV, 2))
+redis.call("EXPIRE", KEYS[1], ARGV[1])
+return id
+`;
+
+const TRIM_ACKNOWLEDGED_PREFIX_SCRIPT = `
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+if #groups == 0 then return 0 end
+
+local function component_less_than(left, right)
+  if string.len(left) ~= string.len(right) then return string.len(left) < string.len(right) end
+  return left < right
+end
+
+local function less_than(left, right)
+  local left_dash = string.find(left, "-", 1, true)
+  local right_dash = string.find(right, "-", 1, true)
+  local left_time = string.sub(left, 1, left_dash - 1)
+  local right_time = string.sub(right, 1, right_dash - 1)
+  if left_time ~= right_time then return component_less_than(left_time, right_time) end
+  local left_sequence = string.sub(left, left_dash + 1)
+  local right_sequence = string.sub(right, right_dash + 1)
+  return component_less_than(left_sequence, right_sequence)
+end
+
+local watermark = nil
+for _, fields in ipairs(groups) do
+  local name = nil
+  local pending = nil
+  local last_delivered_id = nil
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" then name = fields[index + 1] end
+    if fields[index] == "pending" then pending = fields[index + 1] end
+    if fields[index] == "last-delivered-id" then last_delivered_id = fields[index + 1] end
+  end
+  if not name or pending == nil or not last_delivered_id then return 0 end
+
+  local boundary = last_delivered_id
+  if pending > 0 then
+    local pending_summary = redis.call("XPENDING", KEYS[1], name)
+    boundary = pending_summary[2]
+    if not boundary then return 0 end
+  end
+  if boundary == "0-0" then return 0 end
+  if not watermark or less_than(boundary, watermark) then watermark = boundary end
+end
+
+return redis.call("XTRIM", KEYS[1], "MINID", "=", watermark)
+`;
 
 function randomConsumerId(): string {
   // Bun + modern Node both support this.
@@ -122,7 +177,7 @@ async function ensureGroup(options: {
   group: string;
   startId: string;
   logger?: Logger;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     await options.redis.xgroup(
       "CREATE",
@@ -137,6 +192,7 @@ async function ensureGroup(options: {
       group: options.group,
       startId: options.startId,
     });
+    return true;
   } catch (e) {
     const msg = errorMessage(e);
     if (msg.includes("BUSYGROUP")) {
@@ -144,7 +200,7 @@ async function ensureGroup(options: {
         streamKey: options.streamKey,
         group: options.group,
       });
-      return;
+      return false;
     }
     throw e;
   }
@@ -191,6 +247,9 @@ export class RedisStreamsBus implements RawBus {
   private readonly ownsRedis: boolean;
   private readonly logger: Logger;
   private readonly subPool: RedisConnectionPool;
+  private readonly trimTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly activeTrims = new Set<Promise<void>>();
+  private closing = false;
 
   /** Create a new bus using an existing ioredis client. */
   constructor(options: RedisStreamsBusOptions) {
@@ -221,6 +280,39 @@ export class RedisStreamsBus implements RawBus {
     return `${this.keyPrefix}:${topic}`;
   }
 
+  private isOutputTopic(topic: Topic): boolean {
+    return topic.startsWith("out.req.");
+  }
+
+  private scheduleAcknowledgedTrim(topic: Topic, streamKey: string): void {
+    if (
+      this.closing ||
+      this.isOutputTopic(topic) ||
+      TAIL_REPLAY_TOPICS.has(topic) ||
+      this.trimTimers.has(streamKey)
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.trimTimers.delete(streamKey);
+      const activeTrim = this.trimAcknowledgedPrefix(topic, streamKey).catch((e: unknown) => {
+        this.logger.error("event_bus.trim_failed", { topic }, e);
+      });
+      this.activeTrims.add(activeTrim);
+      void activeTrim.finally(() => this.activeTrims.delete(activeTrim));
+    }, TRIM_DEBOUNCE_MS);
+    timer.unref?.();
+    this.trimTimers.set(streamKey, timer);
+  }
+
+  private async trimAcknowledgedPrefix(topic: Topic, streamKey: string): Promise<void> {
+    const trimmed = await this.redis.eval(TRIM_ACKNOWLEDGED_PREFIX_SCRIPT, 1, streamKey);
+    if (typeof trimmed === "number" && trimmed > 0) {
+      this.logger.debug("event_bus.trimmed", { topic, trimmed });
+    }
+  }
+
   /** Publish a message via `XADD`. */
   async publish<TData>(
     msg: Omit<Message<TData>, "id" | "ts">,
@@ -249,18 +341,20 @@ export class RedisStreamsBus implements RawBus {
 
     // If requested, apply approximate trimming.
     // TODO: decide retention policy and move to config.
-    const id = opts.retention?.maxLenApprox
-      ? await this.redis.xadd(
+    const xaddArgs = opts.retention?.maxLenApprox
+      ? ["MAXLEN", "~", String(opts.retention.maxLenApprox), "*", ...fields]
+      : ["*", ...fields];
+    const id = this.isOutputTopic(opts.topic)
+      ? await this.redis.eval(
+          XADD_WITH_EXPIRY_SCRIPT,
+          1,
           streamKey,
-          "MAXLEN",
-          "~",
-          String(opts.retention.maxLenApprox),
-          "*",
-          ...fields,
+          String(OUTPUT_STREAM_TTL_SECONDS),
+          ...xaddArgs,
         )
-      : await this.redis.xadd(streamKey, "*", ...fields);
+      : await this.redis.xadd(streamKey, ...xaddArgs);
 
-    if (!id) throw new Error("Redis XADD returned null id");
+    if (typeof id !== "string") throw new Error("Redis XADD returned invalid id");
 
     this.logger.debug("event_bus.publish", {
       topic: opts.topic,
@@ -336,6 +430,7 @@ export class RedisStreamsBus implements RawBus {
     // For work/fanout (consumer group) modes, the group must exist before we return.
     let group: string | null = null;
     let consumerId: string | null = null;
+    let createdGroup = false;
 
     const maxMessages = opts.batch?.maxMessages ?? DEFAULT_MAX_MESSAGES;
     const blockMs = Math.min(Math.max(1, opts.batch?.maxWaitMs ?? DEFAULT_BLOCK_MS), 30_000);
@@ -343,17 +438,25 @@ export class RedisStreamsBus implements RawBus {
     try {
       if (opts.mode === "work" || opts.mode === "fanout") {
         const workOpts = opts as WorkOrFanoutSubscriptionOptions;
-        group = workOpts.subscriptionId;
+        if (!workOpts.ephemeral && workOpts.subscriptionId.startsWith(EPHEMERAL_GROUP_PREFIX)) {
+          throw new Error(`Consumer group uses reserved prefix: ${EPHEMERAL_GROUP_PREFIX}`);
+        }
+        group = workOpts.ephemeral
+          ? `${EPHEMERAL_GROUP_PREFIX}${workOpts.subscriptionId}`
+          : workOpts.subscriptionId;
         consumerId = workOpts.consumerId ?? randomConsumerId();
 
         const startId = workOpts.offset?.type === "begin" ? "0-0" : "$";
-        await ensureGroup({
+        createdGroup = await ensureGroup({
           redis: subRedis,
           streamKey,
           group,
           startId,
           logger: this.logger,
         });
+        if (workOpts.ephemeral && !createdGroup) {
+          throw new Error(`Ephemeral consumer group already exists: ${group}`);
+        }
       }
     } catch (e) {
       releaseUnhealthy = true;
@@ -461,6 +564,7 @@ export class RedisStreamsBus implements RawBus {
                 commit: async () => {
                   try {
                     await subRedis.xack(streamKey, group, id);
+                    this.scheduleAcknowledgedTrim(topic, streamKey);
                   } catch (e) {
                     this.logger.error(
                       "event_bus.ack_failed",
@@ -528,12 +632,36 @@ export class RedisStreamsBus implements RawBus {
         }
 
         await running;
+
+        if (group && consumerId) {
+          const workOpts = opts as WorkOrFanoutSubscriptionOptions;
+          if (workOpts.ephemeral && createdGroup) {
+            await this.redis.xgroup("DESTROY", streamKey, group);
+            this.scheduleAcknowledgedTrim(topic, streamKey);
+          } else {
+            const pending = (await this.redis.xpending(
+              streamKey,
+              group,
+              "-",
+              "+",
+              1,
+              consumerId,
+            )) as unknown;
+            if (Array.isArray(pending) && pending.length === 0) {
+              await this.redis.xgroup("DELCONSUMER", streamKey, group, consumerId);
+            }
+          }
+        }
       },
     };
   }
 
   /** Close the bus (no-op unless `ownsRedis` was set). */
   async close(): Promise<void> {
+    this.closing = true;
+    for (const timer of this.trimTimers.values()) clearTimeout(timer);
+    this.trimTimers.clear();
+    await Promise.allSettled(this.activeTrims);
     await this.subPool.close();
     if (!this.ownsRedis) return;
 

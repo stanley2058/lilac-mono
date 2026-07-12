@@ -257,7 +257,10 @@ export async function startHeartbeatService(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.EvtRequestLifecycleChanged) return;
+      if (msg.type !== lilacEventTypes.EvtRequestLifecycleChanged) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;

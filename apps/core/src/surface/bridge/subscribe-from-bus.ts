@@ -266,7 +266,10 @@ export async function bridgeBusToAdapter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
+      if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
@@ -340,7 +343,10 @@ export async function bridgeBusToAdapter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.CmdSurfaceOutputReanchor) return;
+      if (msg.type !== lilacEventTypes.CmdSurfaceOutputReanchor) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;

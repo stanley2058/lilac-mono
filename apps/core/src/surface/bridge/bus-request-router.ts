@@ -219,7 +219,10 @@ export async function startBusRequestRouter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.EvtRequestLifecycleChanged) return;
+      if (msg.type !== lilacEventTypes.EvtRequestLifecycleChanged) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
@@ -275,7 +278,10 @@ export async function startBusRequestRouter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.EvtSurfaceOutputMessageCreated) return;
+      if (msg.type !== lilacEventTypes.EvtSurfaceOutputMessageCreated) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;
@@ -323,8 +329,14 @@ export async function startBusRequestRouter(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.EvtAdapterMessageCreated) return;
-      if (msg.data.platform !== "discord") return;
+      if (msg.type !== lilacEventTypes.EvtAdapterMessageCreated) {
+        await ctx.commit();
+        return;
+      }
+      if (msg.data.platform !== "discord") {
+        await ctx.commit();
+        return;
+      }
 
       if (env.perf.log) {
         const lagMs = Date.now() - msg.ts;

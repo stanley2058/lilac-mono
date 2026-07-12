@@ -10,6 +10,17 @@ function randomId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
+    await Bun.sleep(20);
+  }
+}
+
 describe("RedisStreamsBus", () => {
   it("does not block publish while a tail subscription is blocked", async () => {
     const redis = new Redis(TEST_REDIS_URL);
@@ -112,6 +123,192 @@ describe("RedisStreamsBus", () => {
 
     expect(received).toEqual(["hello"]);
     await bus.close();
+  });
+
+  it("refreshes a 24-hour TTL on request output streams", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("output-ttl")}`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const bus = createLilacBus(raw);
+    const requestId = randomId("req");
+    const topic = outReqTopic(requestId);
+    const streamKey = `${keyPrefix}:${topic}`;
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "hello", seq: 1 },
+      { headers: { request_id: requestId } },
+    );
+
+    const ttl = await redis.ttl(streamKey);
+    expect(ttl).toBeGreaterThan(24 * 60 * 60 - 10);
+    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60);
+
+    await redis.del(streamKey);
+    await bus.close();
+    await redis.quit();
+  });
+
+  it("trims only entries acknowledged by every consumer group", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("acked-trim")}`;
+    const streamKey = `${keyPrefix}:topic`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const commitsA: Array<() => Promise<void>> = [];
+    const commitsB: Array<() => Promise<void>> = [];
+
+    const subA = await raw.subscribe(
+      "topic",
+      {
+        mode: "fanout",
+        subscriptionId: "group-a",
+        consumerId: "consumer-a",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async (_msg, ctx) => {
+        commitsA.push(ctx.commit);
+      },
+    );
+    const subB = await raw.subscribe(
+      "topic",
+      {
+        mode: "fanout",
+        subscriptionId: "group-b",
+        consumerId: "consumer-b",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async (_msg, ctx) => {
+        commitsB.push(ctx.commit);
+      },
+    );
+
+    await raw.publish({ topic: "topic", type: "test", data: 1 }, { topic: "topic", type: "test" });
+    await raw.publish({ topic: "topic", type: "test", data: 2 }, { topic: "topic", type: "test" });
+    await waitFor(() => commitsA.length === 2 && commitsB.length === 2);
+
+    await commitsA[0]!();
+    await commitsA[1]!();
+    await commitsB[1]!();
+    await Bun.sleep(200);
+    expect(await redis.xlen(streamKey)).toBe(2);
+
+    await commitsB[0]!();
+    await waitFor(async () => (await redis.xlen(streamKey)) === 1);
+
+    await subA.stop();
+    await subB.stop();
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
+  });
+
+  it("preserves evt.request history used by cursor recovery", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("tail-recovery")}`;
+    const streamKey = `${keyPrefix}:evt.request`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const commits: Array<() => Promise<void>> = [];
+    const sub = await raw.subscribe(
+      "evt.request",
+      {
+        mode: "fanout",
+        subscriptionId: "durable-group",
+        consumerId: "consumer",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async (_msg, ctx) => {
+        commits.push(ctx.commit);
+      },
+    );
+
+    await raw.publish(
+      { topic: "evt.request", type: "test", data: 1 },
+      { topic: "evt.request", type: "test" },
+    );
+    await raw.publish(
+      { topic: "evt.request", type: "test", data: 2 },
+      { topic: "evt.request", type: "test" },
+    );
+    await waitFor(() => commits.length === 2);
+    await commits[0]!();
+    await commits[1]!();
+    await Bun.sleep(200);
+    expect(await redis.xlen(streamKey)).toBe(2);
+
+    await sub.stop();
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
+  });
+
+  it("destroys ephemeral consumer groups on stop", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("ephemeral")}`;
+    const streamKey = `${keyPrefix}:topic`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const sub = await raw.subscribe(
+      "topic",
+      {
+        mode: "fanout",
+        subscriptionId: "temporary-group",
+        consumerId: "temporary-consumer",
+        ephemeral: true,
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async () => {},
+    );
+
+    await sub.stop();
+    expect(await redis.xinfo("GROUPS", streamKey)).toEqual([]);
+
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
+  });
+
+  it("requires exclusive ephemeral consumer groups", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("ephemeral-owner")}`;
+    const streamKey = `${keyPrefix}:topic`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const options = {
+      mode: "fanout" as const,
+      subscriptionId: "shared-temporary-group",
+      ephemeral: true,
+      offset: { type: "now" as const },
+      batch: { maxWaitMs: 50 },
+    };
+    const owner = await raw.subscribe("topic", { ...options, consumerId: "owner" }, async () => {});
+    await expect(
+      raw.subscribe("topic", { ...options, consumerId: "participant" }, async () => {}),
+    ).rejects.toThrow("Ephemeral consumer group already exists");
+
+    const durable = await raw.subscribe(
+      "topic",
+      {
+        mode: "fanout",
+        subscriptionId: "shared-temporary-group",
+        consumerId: "durable",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async () => {},
+    );
+
+    const groups = await redis.xinfo("GROUPS", streamKey);
+    expect(groups).toHaveLength(2);
+
+    await owner.stop();
+    expect(await redis.xinfo("GROUPS", streamKey)).toHaveLength(1);
+    await durable.stop();
+
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
   });
 
   it("publishes tool-call progress events on the output stream", async () => {

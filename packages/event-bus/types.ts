@@ -58,6 +58,8 @@ export type WorkOrFanoutSubscriptionOptions = {
   subscriptionId: string;
   /** Optional consumer identity within the group. */
   consumerId?: string;
+  /** Destroy this consumer group when the subscription stops. */
+  ephemeral?: boolean;
   /**
    * Only applied if the consumer group needs to be created.
    * If the group already exists, the offset is ignored.

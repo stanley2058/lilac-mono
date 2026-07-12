@@ -1153,6 +1153,7 @@ export function createDeferredSubagentManager(params: {
 }) {
   const { bus, logger, parentHeaders } = params;
   const handles = new Map<string, DeferredSubagentHandle>();
+  const detachedStops = new Set<Promise<void>>();
   const bufferedCompletions: DeferredSubagentBufferedCompletion[] = [];
   let waiters: Array<() => void> = [];
   let signalVersion = 0;
@@ -1214,7 +1215,7 @@ export function createDeferredSubagentManager(params: {
 
     if (evtSub) {
       if (options?.deferEvtSubStop) {
-        void evtSub.stop().catch((e: unknown) => {
+        const detachedStop = evtSub.stop().catch((e: unknown) => {
           logger.warn(
             "deferred subagent lifecycle subscription stop failed",
             {
@@ -1225,6 +1226,8 @@ export function createDeferredSubagentManager(params: {
             e,
           );
         });
+        detachedStops.add(detachedStop);
+        void detachedStop.finally(() => detachedStops.delete(detachedStop));
       } else {
         stopPromises.push(evtSub.stop());
       }
@@ -1302,7 +1305,7 @@ export function createDeferredSubagentManager(params: {
     notifyWaiters();
 
     if (handle.handlingEvtSubscriptionMessage) {
-      void stopHandle(handle, { deferEvtSubStop: true }).catch((e: unknown) => {
+      const detachedStop = stopHandle(handle, { deferEvtSubStop: true }).catch((e: unknown) => {
         logger.warn(
           "deferred subagent stop after settlement failed",
           {
@@ -1314,6 +1317,8 @@ export function createDeferredSubagentManager(params: {
           e,
         );
       });
+      detachedStops.add(detachedStop);
+      void detachedStop.finally(() => detachedStops.delete(detachedStop));
       return;
     }
 
@@ -1366,6 +1371,7 @@ export function createDeferredSubagentManager(params: {
             mode: "fanout",
             subscriptionId: `deferred-subagent:out:${subId}`,
             consumerId: `deferred-subagent:out:${subId}`,
+            ephemeral: true,
             offset: { type: "now" },
             batch: { maxWaitMs: 250 },
           },
@@ -1437,6 +1443,7 @@ export function createDeferredSubagentManager(params: {
             mode: "fanout",
             subscriptionId: `deferred-subagent:evt:${subId}`,
             consumerId: `deferred-subagent:evt:${subId}`,
+            ephemeral: true,
             offset: { type: "now" },
             batch: { maxWaitMs: 250 },
           },
@@ -1623,6 +1630,7 @@ export function createDeferredSubagentManager(params: {
           await stopHandle(handle);
         }),
       );
+      await Promise.all(detachedStops);
 
       bufferedCompletions.length = 0;
       notifyWaiters();
@@ -1632,7 +1640,7 @@ export function createDeferredSubagentManager(params: {
       const active = [...handles.values()];
       handles.clear();
       bufferedCompletions.length = 0;
-      await Promise.all(active.map((handle) => stopHandle(handle)));
+      await Promise.all([...active.map((handle) => stopHandle(handle)), ...detachedStops]);
       notifyWaiters();
     },
   };
@@ -1961,7 +1969,10 @@ export async function startBusAgentRunner(params: {
       batch: { maxWaitMs: 1000 },
     },
     async (msg, ctx) => {
-      if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
+      if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       const sessionId = msg.headers?.session_id;

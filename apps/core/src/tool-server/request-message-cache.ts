@@ -124,7 +124,10 @@ export async function createRequestMessageCache(
       batch: { maxWaitMs: 1000 },
     },
     async (msg: LilacMessageForTopic<"cmd.request">, ctx) => {
-      if (msg.type !== lilacEventTypes.CmdRequestMessage) return;
+      if (msg.type !== lilacEventTypes.CmdRequestMessage) {
+        await ctx.commit();
+        return;
+      }
 
       const requestId = msg.headers?.request_id;
       if (!requestId) {
