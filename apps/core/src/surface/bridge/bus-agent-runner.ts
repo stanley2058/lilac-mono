@@ -63,6 +63,7 @@ import {
   type ChildToolState,
   type DeferredSubagentRegistration,
 } from "../../tools/subagent";
+import { createSubagentIdleTimer, type SubagentIdleTimer } from "../../tools/subagent-idle-timer";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 import { isHeartbeatAckText, isHeartbeatSessionId } from "../../heartbeat/common";
 
@@ -518,8 +519,9 @@ type DeferredSubagentHandleSnapshot = {
   sessionName?: string;
   childRequestId: string;
   childSessionId: string;
-  timeoutMs: number;
-  startedAtMs: number;
+  idleTimeoutMs?: number;
+  /** Compatibility with snapshots written immediately before idle timeouts shipped. */
+  timeoutMs?: number;
   finalText: string;
   detail?: string;
   childUpdateSeq: number;
@@ -539,8 +541,7 @@ type DeferredSubagentHandle = {
   sessionName: string;
   childRequestId: string;
   childSessionId: string;
-  timeoutMs: number;
-  startedAtMs: number;
+  idleTimeoutMs: number;
   finalText: string;
   detail?: string;
   childUpdateSeq: number;
@@ -549,7 +550,7 @@ type DeferredSubagentHandle = {
   evtCursor?: string;
   outSub: { stop(): Promise<void> } | null;
   evtSub: { stop(): Promise<void> } | null;
-  timeout: ReturnType<typeof setTimeout> | null;
+  idleTimer: SubagentIdleTimer | null;
   settled: boolean;
   handlingEvtSubscriptionMessage: boolean;
 };
@@ -1116,8 +1117,7 @@ function buildDeferredSubagentRecoveryState(params: {
     sessionName: handle.sessionName,
     childRequestId: handle.childRequestId,
     childSessionId: handle.childSessionId,
-    timeoutMs: handle.timeoutMs,
-    startedAtMs: handle.startedAtMs,
+    idleTimeoutMs: handle.idleTimeoutMs,
     finalText: params.normalizeFinalText?.(handle.finalText) ?? handle.finalText,
     ...(handle.detail ? { detail: handle.detail } : {}),
     childUpdateSeq: handle.childUpdateSeq,
@@ -1198,10 +1198,8 @@ export function createDeferredSubagentManager(params: {
     handle: DeferredSubagentHandle,
     options?: { deferEvtSubStop?: boolean },
   ) => {
-    if (handle.timeout) {
-      clearTimeout(handle.timeout);
-      handle.timeout = null;
-    }
+    handle.idleTimer?.stop();
+    handle.idleTimer = null;
 
     const outSub = handle.outSub;
     const evtSub = handle.evtSub;
@@ -1252,6 +1250,7 @@ export function createDeferredSubagentManager(params: {
         raw: {
           cancel: true,
           requiresActive: true,
+          cancelQueued: true,
           subagent: {
             profile: handle.profile,
             parentRequestId: parentHeaders.request_id,
@@ -1276,6 +1275,7 @@ export function createDeferredSubagentManager(params: {
   ) => {
     if (handle.settled) return;
     handle.settled = true;
+    handle.idleTimer?.stop();
     handle.detail = detail ?? handle.detail;
 
     const finalText = params.normalizeFinalText
@@ -1324,14 +1324,18 @@ export function createDeferredSubagentManager(params: {
     snapshot: DeferredSubagentHandleSnapshot,
     options?: { replayExisting?: boolean },
   ) => {
+    const idleTimeoutMs = snapshot.idleTimeoutMs ?? snapshot.timeoutMs;
+    if (!idleTimeoutMs || idleTimeoutMs <= 0) {
+      throw new Error("deferred subagent snapshot is missing a valid idle timeout");
+    }
+
     const handle: DeferredSubagentHandle = {
       parentToolCallId: snapshot.parentToolCallId,
       profile: snapshot.profile,
       sessionName: resolveRecoveredSubagentSessionName(snapshot),
       childRequestId: snapshot.childRequestId,
       childSessionId: snapshot.childSessionId,
-      timeoutMs: snapshot.timeoutMs,
-      startedAtMs: snapshot.startedAtMs,
+      idleTimeoutMs,
       finalText: snapshot.finalText,
       detail: snapshot.detail,
       childUpdateSeq: snapshot.childUpdateSeq,
@@ -1340,7 +1344,7 @@ export function createDeferredSubagentManager(params: {
       evtCursor: snapshot.evtCursor,
       outSub: null,
       evtSub: null,
-      timeout: null,
+      idleTimer: null,
       settled: false,
       handlingEvtSubscriptionMessage: false,
     };
@@ -1370,6 +1374,8 @@ export function createDeferredSubagentManager(params: {
           await subCtx.commit();
           return;
         }
+
+        handle.idleTimer?.reset();
 
         if (msg.type === lilacEventTypes.EvtAgentOutputDeltaText) {
           handle.finalText += msg.data.delta;
@@ -1443,6 +1449,8 @@ export function createDeferredSubagentManager(params: {
             return;
           }
 
+          handle.idleTimer?.reset();
+
           if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
             handle.detail = msg.data.detail ?? handle.detail;
             if (msg.data.state === "failed") {
@@ -1465,12 +1473,17 @@ export function createDeferredSubagentManager(params: {
       },
     );
 
-    const elapsedMs = Math.max(0, Date.now() - handle.startedAtMs);
-    const remainingMs = Math.max(1, handle.timeoutMs - elapsedMs);
-    handle.timeout = setTimeout(() => {
-      void cancelChild(handle, `timed out after ${handle.timeoutMs}ms`).catch(() => undefined);
-      void settleHandle(handle, "timeout", `timed out after ${handle.timeoutMs}ms`);
-    }, remainingMs);
+    if (handle.settled) {
+      await stopHandle(handle);
+      return;
+    }
+
+    handle.idleTimer = createSubagentIdleTimer(handle.idleTimeoutMs, () => {
+      const detail = `idle timed out after ${handle.idleTimeoutMs}ms without child activity`;
+      void cancelChild(handle, detail).catch(() => undefined);
+      void settleHandle(handle, "timeout", detail);
+    });
+    handle.idleTimer.reset();
   };
 
   return {
@@ -1481,8 +1494,7 @@ export function createDeferredSubagentManager(params: {
         sessionName: registration.sessionName,
         childRequestId: registration.childRequestId,
         childSessionId: registration.childSessionId,
-        timeoutMs: registration.timeoutMs,
-        startedAtMs: Date.now(),
+        idleTimeoutMs: registration.idleTimeoutMs,
         finalText: "",
         childUpdateSeq: 0,
         childTools: [],
@@ -1797,8 +1809,7 @@ type SubagentConfig = NonNullable<CoreConfig["agent"]["subagents"]>;
 const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   enabled: true,
   maxDepth: 2,
-  defaultTimeoutMs: 3 * 60 * 1000,
-  maxTimeoutMs: 8 * 60 * 1000,
+  idleTimeoutMs: 6 * 60 * 1000,
   profiles: {
     explore: {
       modelSlot: "main",
@@ -3018,8 +3029,7 @@ export async function startBusAgentRunner(params: {
         subagentDepth: subagentMeta.depth,
         subagentConfig: {
           enabled: subagents.enabled,
-          defaultTimeoutMs: subagents.defaultTimeoutMs,
-          maxTimeoutMs: subagents.maxTimeoutMs,
+          idleTimeoutMs: subagents.idleTimeoutMs,
           maxDepth: subagents.maxDepth,
         },
         requestContext: {

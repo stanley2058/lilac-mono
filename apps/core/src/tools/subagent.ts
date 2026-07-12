@@ -9,6 +9,8 @@ import {
 import { createLogger } from "@stanley2058/lilac-utils";
 import { requireRequestContext } from "../shared/req-context";
 
+import { createSubagentIdleTimer } from "./subagent-idle-timer";
+
 const subagentProfileSchema = z.enum(["explore", "general", "self"]);
 const subagentModeSchema = z.enum(["deferred", "sync"]);
 const subagentSessionNameSchema = z
@@ -31,14 +33,6 @@ const subagentDelegateInputSchema = z.object({
     .optional()
     .describe(
       "Optional stable short slug for continuing a subagent session within this parent session/channel. When omitted, a reusable short name is generated and returned.",
-    ),
-  timeoutMs: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe(
-      "Optional timeout in ms. Clamped to agent.subagents.maxTimeoutMs (defaults to 8 minutes if unset).",
     ),
 });
 
@@ -131,18 +125,6 @@ function toAdapterPlatform(value: string): AdapterPlatform {
   }
 }
 
-function clampTimeoutMs(
-  input: number | undefined,
-  defaults: {
-    defaultTimeoutMs: number;
-    maxTimeoutMs: number;
-  },
-): number {
-  const requested = input ?? defaults.defaultTimeoutMs;
-  const normalized = Math.max(1_000, Math.trunc(requested));
-  return Math.min(normalized, defaults.maxTimeoutMs);
-}
-
 function generateSessionName(profile: SubagentProfile): string {
   const bytes = crypto.getRandomValues(new Uint8Array(4));
   const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -207,7 +189,7 @@ export type DeferredSubagentRegistration = {
   profile: SubagentProfile;
   sessionName: string;
   task: string;
-  timeoutMs: number;
+  idleTimeoutMs: number;
   depth: number;
   parentRequestId: string;
   parentSessionId: string;
@@ -234,8 +216,7 @@ export type DeferredSubagentRegistration = {
 
 export function subagentTools(params: {
   bus: LilacBus;
-  defaultTimeoutMs: number;
-  maxTimeoutMs: number;
+  idleTimeoutMs: number;
   maxDepth: number;
   onDeferredDelegate?: (registration: DeferredSubagentRegistration) => Promise<void>;
 }) {
@@ -275,10 +256,7 @@ export function subagentTools(params: {
           throw new Error("subagent_delegate is disabled in subagent runs (depth limit reached)");
         }
 
-        const timeoutMs = clampTimeoutMs(parsed.timeoutMs, {
-          defaultTimeoutMs: params.defaultTimeoutMs,
-          maxTimeoutMs: params.maxTimeoutMs,
-        });
+        const idleTimeoutMs = params.idleTimeoutMs;
 
         const startedAt = Date.now();
         const sessionName = parsed.sessionName ?? generateSessionName(profile);
@@ -310,7 +288,7 @@ export function subagentTools(params: {
           parentDepth: depth,
           childDepth: depth + 1,
           sessionName,
-          timeoutMs,
+          idleTimeoutMs,
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
         });
 
@@ -325,7 +303,7 @@ export function subagentTools(params: {
             profile,
             sessionName,
             task: parsed.task,
-            timeoutMs,
+            idleTimeoutMs,
             depth: depth + 1,
             parentRequestId: ctx.requestId,
             parentSessionId: ctx.sessionId,
@@ -346,7 +324,7 @@ export function subagentTools(params: {
             childSessionId,
             profile,
             mode: "deferred",
-            timeoutMs,
+            idleTimeoutMs,
           });
 
           return {
@@ -398,6 +376,13 @@ export function subagentTools(params: {
           settleFn?.(value);
         };
 
+        const idleTimer = createSubagentIdleTimer(idleTimeoutMs, () => {
+          settle({
+            status: "timeout",
+            detail: `idle timed out after ${idleTimeoutMs}ms without child activity`,
+          });
+        });
+
         const outSub = await bus.subscribeTopic(
           outReqTopic(childRequestId),
           {
@@ -412,6 +397,8 @@ export function subagentTools(params: {
               await subCtx.commit();
               return;
             }
+
+            idleTimer.reset();
 
             if (msg.type === lilacEventTypes.EvtAgentOutputDeltaText) {
               finalText += msg.data.delta;
@@ -478,6 +465,8 @@ export function subagentTools(params: {
               return;
             }
 
+            idleTimer.reset();
+
             if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
               lifecycleDetail = msg.data.detail;
               logger.debug("subagent lifecycle", {
@@ -503,12 +492,10 @@ export function subagentTools(params: {
           },
         );
 
-        const timeout = setTimeout(() => {
-          settle({ status: "timeout", detail: `timed out after ${timeoutMs}ms` });
-        }, timeoutMs);
+        idleTimer.reset();
 
         const stopAll = async () => {
-          clearTimeout(timeout);
+          idleTimer.stop();
           await Promise.all([outSub.stop(), evtSub.stop()]);
         };
 
@@ -529,6 +516,7 @@ export function subagentTools(params: {
               raw: {
                 cancel: true,
                 requiresActive: true,
+                cancelQueued: true,
                 subagent: {
                   profile,
                   depth: depth + 1,
@@ -593,7 +581,7 @@ export function subagentTools(params: {
             status,
             ok,
             durationMs,
-            timeoutMs,
+            idleTimeoutMs,
             childToolsTotal: childTools.size,
             childToolsDone: Array.from(childTools.values()).filter((c) => c.status === "done")
               .length,
@@ -618,7 +606,7 @@ export function subagentTools(params: {
               childRequestId,
               childSessionId,
               profile,
-              timeoutMs,
+              idleTimeoutMs,
             },
             e,
           );

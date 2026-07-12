@@ -56,8 +56,7 @@ export type Level1ToolFailureSummary = {
 
 export type Level1SubagentConfig = {
   enabled: boolean;
-  defaultTimeoutMs: number;
-  maxTimeoutMs: number;
+  idleTimeoutMs: number;
   maxDepth: number;
 };
 

@@ -681,10 +681,21 @@ export function parseCoreConfigV1(raw: unknown): ParsedCoreConfigV1 {
   return coreConfigInputSchemaV1.parse(raw);
 }
 
+function readExplicitV1SubagentTimeoutMs(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const agent = Reflect.get(raw, "agent");
+  if (!agent || typeof agent !== "object" || Array.isArray(agent)) return undefined;
+  const subagents = Reflect.get(agent, "subagents");
+  if (!subagents || typeof subagents !== "object" || Array.isArray(subagents)) return undefined;
+  const timeoutMs = Reflect.get(subagents, "defaultTimeoutMs");
+  return typeof timeoutMs === "number" ? timeoutMs : undefined;
+}
+
 export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig {
   const parsed = parseCoreConfigV1(raw);
   const { experimental_hashline_edit: hashline, ...toolsRest } = parsed.tools;
   const { previewFinalOutputStyle, experimental, ...discordRest } = parsed.surface.discord;
+  const { subagents, ...agentRest } = parsed.agent;
 
   return {
     ...parsed,
@@ -747,9 +758,15 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
       },
     },
     agent: {
-      ...parsed.agent,
+      ...agentRest,
       systemPrompt: "",
       retry: { ...DEFAULT_AGENT_RETRY },
+      subagents: {
+        enabled: subagents.enabled,
+        maxDepth: subagents.maxDepth,
+        idleTimeoutMs: readExplicitV1SubagentTimeoutMs(raw) ?? 6 * 60 * 1000,
+        profiles: subagents.profiles,
+      },
     },
   };
 }

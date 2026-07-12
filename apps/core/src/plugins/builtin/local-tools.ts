@@ -167,8 +167,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         }
         return subagentTools({
           bus: runtime.bus,
-          defaultTimeoutMs: subagentConfig.defaultTimeoutMs,
-          maxTimeoutMs: subagentConfig.maxTimeoutMs,
+          idleTimeoutMs: subagentConfig.idleTimeoutMs,
           maxDepth: subagentConfig.maxDepth,
           onDeferredDelegate: requestContext
             ? getDeferredDelegateHandler(requestContext)

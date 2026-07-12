@@ -108,8 +108,7 @@ describe("core config drift coverage", () => {
       baseDelayMs: 2_000,
       maxDelayMs: 30_000,
     });
-    expect(cfg.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
-    expect(cfg.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
+    expect(cfg.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
     expect(cfg.models.capability.forceUnknownProviders).toEqual(["openai-compatible"]);
   });
 });

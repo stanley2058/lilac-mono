@@ -26,8 +26,7 @@ export type BuildLevel1ToolsetParams = {
   subagentDepth: number;
   subagentConfig: {
     enabled: boolean;
-    defaultTimeoutMs: number;
-    maxTimeoutMs: number;
+    idleTimeoutMs: number;
     maxDepth: number;
   };
   requestContext?: Level1ExecutionRequestContext;

@@ -3120,6 +3120,121 @@ describe("custom command failures", () => {
 });
 
 describe("createDeferredSubagentManager", () => {
+  it("keeps a deferred child alive while matching activity continues", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const parentHeaders = {
+      request_id: "parent-idle-reset",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+    const childHeaders = {
+      request_id: "child-idle-reset",
+      session_id: "child-session",
+      request_client: "unknown" as const,
+      parent_request_id: parentHeaders.request_id,
+      parent_tool_call_id: "tool-idle-reset",
+      subagent_profile: "explore" as const,
+      subagent_depth: "1",
+    };
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger: createLogger({ module: "bus-agent-runner-test" }),
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      sessionName: "explore-idle-reset",
+      task: "Keep working",
+      idleTimeoutMs: 40,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-idle-reset",
+      childRequestId: childHeaders.request_id,
+      childSessionId: childHeaders.session_id,
+      parentHeaders,
+      childHeaders,
+      initialMessages: [{ role: "user", content: "Keep working" }],
+    });
+
+    await Bun.sleep(25);
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "thinking" },
+      { headers: childHeaders },
+    );
+    await Bun.sleep(25);
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputResponseBinary,
+      { mimeType: "text/plain", dataBase64: "YQ==" },
+      { headers: childHeaders },
+    );
+    await Bun.sleep(25);
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running" },
+      { headers: childHeaders },
+    );
+    await Bun.sleep(25);
+
+    expect(manager.snapshotWaitState().hasOutstandingChildren).toBe(true);
+    expect(manager.hasBufferedCompletions()).toBe(false);
+    await manager.stop();
+  });
+
+  it("grants restored deferred children a fresh idle interval", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const parentHeaders = {
+      request_id: "parent-recovery-idle",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+    const logger = createLogger({ module: "bus-agent-runner-test" });
+    const manager = createDeferredSubagentManager({ bus, logger, parentHeaders });
+
+    await manager.register({
+      profile: "explore",
+      sessionName: "explore-recovery-idle",
+      task: "Keep waiting",
+      idleTimeoutMs: 80,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-recovery-idle",
+      childRequestId: "child-recovery-idle",
+      childSessionId: "child-session",
+      parentHeaders,
+      childHeaders: {
+        request_id: "child-recovery-idle",
+        session_id: "child-session",
+        request_client: "unknown",
+        parent_request_id: parentHeaders.request_id,
+        parent_tool_call_id: "tool-recovery-idle",
+        subagent_profile: "explore",
+        subagent_depth: "1",
+      },
+      initialMessages: [{ role: "user", content: "Keep waiting" }],
+    });
+
+    const recovery = manager.buildRecoveryState();
+    await manager.stop();
+    await Bun.sleep(100);
+
+    const restored = createDeferredSubagentManager({ bus, logger, parentHeaders });
+    await restored.restore(recovery);
+    await Bun.sleep(40);
+
+    expect(restored.snapshotWaitState().hasOutstandingChildren).toBe(true);
+    expect(restored.hasBufferedCompletions()).toBe(false);
+
+    await waitFor(() => restored.hasBufferedCompletions(), 100);
+    expect(restored.snapshotWaitState().hasOutstandingChildren).toBe(false);
+    await restored.stop();
+  });
+
   it("bounds outstanding finalText in graceful-restart snapshots", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const parentHeaders = {
@@ -3138,7 +3253,7 @@ describe("createDeferredSubagentManager", () => {
       profile: "explore",
       sessionName: "explore-snapshot",
       task: "Map auth flow",
-      timeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
       depth: 1,
       parentRequestId: parentHeaders.request_id,
       parentSessionId: parentHeaders.session_id,
@@ -3192,7 +3307,7 @@ describe("createDeferredSubagentManager", () => {
       profile: "explore",
       sessionName: "explore-test0001",
       task: "Map auth flow",
-      timeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
       depth: 1,
       parentRequestId: parentHeaders.request_id,
       parentSessionId: parentHeaders.session_id,
@@ -3302,7 +3417,7 @@ describe("createDeferredSubagentManager", () => {
       profile: "explore",
       sessionName: "explore-test0002",
       task: "Map auth flow",
-      timeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
       depth: 1,
       parentRequestId: parentHeaders.request_id,
       parentSessionId: parentHeaders.session_id,
@@ -3404,7 +3519,7 @@ describe("createDeferredSubagentManager", () => {
       profile: "explore",
       sessionName: "explore-test0003",
       task: "Map auth flow",
-      timeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
       depth: 1,
       parentRequestId: parentHeaders.request_id,
       parentSessionId: parentHeaders.session_id,
@@ -3518,7 +3633,7 @@ describe("createDeferredSubagentManager", () => {
       profile: "explore",
       sessionName: "explore-test0004",
       task: "Map auth flow",
-      timeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
       depth: 1,
       parentRequestId: parentHeaders.request_id,
       parentSessionId: parentHeaders.session_id,

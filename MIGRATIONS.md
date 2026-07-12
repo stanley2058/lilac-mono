@@ -36,6 +36,11 @@ Field renames from v1:
 - `tools.experimental_hashline_edit` -> `tools.editFile.hashline`
 - `surface.discord.previewFinalOutputStyle` -> `surface.discord.outputPreviewModeFinalStyle`
 - `surface.discord.experimental.markdownTableRender` -> `surface.discord.markdownTableRender`
+- `agent.subagents.defaultTimeoutMs` -> `agent.subagents.idleTimeoutMs`; the timeout now measures inactivity rather than total runtime.
+
+Removed v2 fields:
+
+- `agent.subagents.maxTimeoutMs`; the universal runtime config no longer exposes a hard timeout cap. Frozen v1 configs may still contain this field, but it is not carried into the universal config.
 
 New v2 fields:
 
@@ -67,5 +72,4 @@ Default changes from v1:
 - `surface.discord.outputNotification: true`
 - `surface.discord.markdownTableRender: { enabled: true, style: unicode, maxWidth: 50, fallbackMode: list }`
 - `agent.reasoningDisplay: detailed`
-- `agent.subagents.defaultTimeoutMs: 600000`
-- `agent.subagents.maxTimeoutMs: 1200000`
+- `agent.subagents.idleTimeoutMs: 360000`; explicit v1 `defaultTimeoutMs` values are preserved, while omitted values use the new universal default.

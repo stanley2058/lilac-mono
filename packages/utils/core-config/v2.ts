@@ -128,41 +128,26 @@ const modelCapabilitySchemaV2 = z
     overrides: {},
   });
 
-const subagentsSchemaV2 = z
-  .object({
-    enabled: z.boolean().default(true),
-    maxDepth: z.number().int().min(0).max(2).default(2),
-    defaultTimeoutMs: z
-      .number()
-      .int()
-      .positive()
-      .default(10 * 60 * 1000),
-    maxTimeoutMs: z
-      .number()
-      .int()
-      .positive()
-      .default(20 * 60 * 1000),
-    profiles: z
-      .object({
-        explore: subagentProfileSchemaV2.default({ modelSlot: "main" }),
-        general: subagentProfileSchemaV2.default({ modelSlot: "main" }),
-        self: subagentProfileSchemaV2.default({ modelSlot: "main" }),
-      })
-      .default({
-        explore: { modelSlot: "main" },
-        general: { modelSlot: "main" },
-        self: { modelSlot: "main" },
-      }),
-  })
-  .superRefine((input, ctx) => {
-    if (input.defaultTimeoutMs > input.maxTimeoutMs) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["defaultTimeoutMs"],
-        message: "defaultTimeoutMs must be <= maxTimeoutMs",
-      });
-    }
-  });
+const subagentsSchemaV2 = z.object({
+  enabled: z.boolean().default(true),
+  maxDepth: z.number().int().min(0).max(2).default(2),
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(6 * 60 * 1000),
+  profiles: z
+    .object({
+      explore: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+      general: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+      self: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+    })
+    .default({
+      explore: { modelSlot: "main" },
+      general: { modelSlot: "main" },
+      self: { modelSlot: "main" },
+    }),
+});
 
 const discordMarkdownTableRenderSchema = z
   .object({
@@ -499,8 +484,7 @@ export const coreConfigInputSchemaV2 = z.object({
       subagents: subagentsSchemaV2.default({
         enabled: true,
         maxDepth: 2,
-        defaultTimeoutMs: 10 * 60 * 1000,
-        maxTimeoutMs: 20 * 60 * 1000,
+        idleTimeoutMs: 6 * 60 * 1000,
         profiles: {
           explore: { modelSlot: "main" },
           general: { modelSlot: "main" },
@@ -520,8 +504,7 @@ export const coreConfigInputSchemaV2 = z.object({
       subagents: {
         enabled: true,
         maxDepth: 2,
-        defaultTimeoutMs: 10 * 60 * 1000,
-        maxTimeoutMs: 20 * 60 * 1000,
+        idleTimeoutMs: 6 * 60 * 1000,
         profiles: {
           explore: { modelSlot: "main" },
           general: { modelSlot: "main" },

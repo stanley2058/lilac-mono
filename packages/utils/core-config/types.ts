@@ -197,8 +197,7 @@ export type UniversalCoreConfig = {
     subagents: {
       enabled: boolean;
       maxDepth: number;
-      defaultTimeoutMs: number;
-      maxTimeoutMs: number;
+      idleTimeoutMs: number;
       profiles: {
         explore: SubagentProfileConfig;
         general: SubagentProfileConfig;

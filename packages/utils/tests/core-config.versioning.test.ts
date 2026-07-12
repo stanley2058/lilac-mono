@@ -31,6 +31,7 @@ describe("core config versioning", () => {
     expect(parsed.tools.web.fetch.mode).toBe("auto");
     expect(parsed.tools.inspect.model).toBe("google/gemini-3-flash");
     expect(parsed.tools.editFile.hashline).toBe(false);
+    expect(parsed.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
   });
 
   it("parses explicit v2 configs with v2 defaults", async () => {
@@ -56,8 +57,7 @@ describe("core config versioning", () => {
       baseDelayMs: 2_000,
       maxDelayMs: 30_000,
     });
-    expect(parsed.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
-    expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
+    expect(parsed.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
     expect(parsed.models.main.reasoning).toBeUndefined();
   });
 
@@ -112,7 +112,7 @@ describe("core config versioning", () => {
     ).rejects.toThrow();
   });
 
-  it("uses v2 subagent timeout defaults for partial v2 subagent configs", async () => {
+  it("uses the v2 subagent idle timeout default for partial configs", async () => {
     const parsed = await parseCoreConfig({
       configVersion: 2,
       agent: {
@@ -122,8 +122,23 @@ describe("core config versioning", () => {
       },
     });
 
-    expect(parsed.agent.subagents.defaultTimeoutMs).toBe(10 * 60 * 1000);
-    expect(parsed.agent.subagents.maxTimeoutMs).toBe(20 * 60 * 1000);
+    expect(parsed.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
+  });
+
+  it("does not expose legacy subagent timeout fields in v2", async () => {
+    const parsed = await parseCoreConfig({
+      configVersion: 2,
+      agent: {
+        subagents: {
+          defaultTimeoutMs: 240_000,
+          maxTimeoutMs: 480_000,
+        },
+      },
+    });
+
+    expect(parsed.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
+    expect("defaultTimeoutMs" in parsed.agent.subagents).toBe(false);
+    expect("maxTimeoutMs" in parsed.agent.subagents).toBe(false);
   });
 
   it("parses v2 configs with universal field names", async () => {
@@ -149,6 +164,11 @@ describe("core config versioning", () => {
           },
         },
       },
+      agent: {
+        subagents: {
+          idleTimeoutMs: 240_000,
+        },
+      },
     });
 
     expect(parsed.tools.fsBackend).toBe("node-rg");
@@ -160,6 +180,16 @@ describe("core config versioning", () => {
       style: "ascii",
       maxWidth: 120,
       fallbackMode: "passthrough",
+    });
+    expect(parsed.agent.subagents).toEqual({
+      enabled: true,
+      maxDepth: 2,
+      idleTimeoutMs: 240_000,
+      profiles: {
+        explore: { modelSlot: "main" },
+        general: { modelSlot: "main" },
+        self: { modelSlot: "main" },
+      },
     });
   });
 
@@ -187,6 +217,12 @@ describe("core config versioning", () => {
           },
         },
       },
+      agent: {
+        subagents: {
+          defaultTimeoutMs: 240_000,
+          maxTimeoutMs: 480_000,
+        },
+      },
     });
 
     expect(parsed.tools.fsBackend).toBe("fff");
@@ -199,6 +235,9 @@ describe("core config versioning", () => {
       maxWidth: 100,
       fallbackMode: "passthrough",
     });
+    expect(parsed.agent.subagents.idleTimeoutMs).toBe(240_000);
+    expect("defaultTimeoutMs" in parsed.agent.subagents).toBe(false);
+    expect("maxTimeoutMs" in parsed.agent.subagents).toBe(false);
   });
 
   it("rejects unsupported config versions", async () => {

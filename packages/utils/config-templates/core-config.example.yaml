@@ -223,10 +223,8 @@ agent:
     # Max delegation depth (primary=0). Default 2 allows self->(explore|general)
     # while explore/general remain non-delegating by policy.
     maxDepth: 2
-    # Default timeout applied by subagent.delegate when timeoutMs is omitted.
-    defaultTimeoutMs: 600000
-    # Hard cap for subagent timeout.
-    maxTimeoutMs: 1200000
+    # Stop a subagent after this long without model or tool activity.
+    idleTimeoutMs: 360000
     profiles:
       explore:
         modelSlot: main
