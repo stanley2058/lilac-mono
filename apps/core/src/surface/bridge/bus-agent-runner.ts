@@ -71,7 +71,10 @@ import {
   extractHeartbeatSurfaceSendHandoffs,
   HEARTBEAT_HANDOFF_SESSION_ID,
 } from "../../transcript/heartbeat-handoff";
-import type { TranscriptStore } from "../../transcript/transcript-store";
+import {
+  COMPACTION_CHECKPOINT_FORMAT_VERSION,
+  type TranscriptStore,
+} from "../../transcript/transcript-store";
 import type {
   ConversationThreadSearchResult,
   ConversationThreadToolService,
@@ -2588,6 +2591,7 @@ export async function startBusAgentRunner(params: {
       lastTurnFinishReason?: FinishReason;
       lastTurnEndAt?: number;
     } = {};
+    let completedCompactionCount = 0;
     const streamWarnings: CallWarning[] = [];
     const modelCapabilityConfig = cfg.models.capability;
     const modelCapability = new ModelCapability({
@@ -3275,6 +3279,7 @@ export async function startBusAgentRunner(params: {
             estimatedOutputTokens,
           };
           if (status === "completed") {
+            completedCompactionCount += 1;
             logger.info("auto-compaction end", payload);
             return;
           }
@@ -3844,13 +3849,25 @@ export async function startBusAgentRunner(params: {
       if (params.transcriptStore && (!shouldSkipSurfaceReply || runProfile !== "primary")) {
         try {
           const finalMessagesForPersistence = runStats.finalMessages ?? agent.state.messages;
-          const responseMessages = finalMessagesForPersistence.slice(responseStartIndex);
+          const checkpointMeta = resolveCompactionCheckpointMeta({
+            runSucceeded: true,
+            isPrimary: runProfile === "primary",
+            isCancelled,
+            shouldSkipSurfaceReply,
+            completedCompactionCount,
+          });
+          const isCompactionCheckpoint = checkpointMeta !== undefined;
           const persistedMessages = (() => {
             if (isHeartbeatSessionId(headers.session_id)) {
               return buildPersistedHeartbeatMessages(finalText);
             }
 
-            return runProfile === "primary" ? responseMessages : finalMessagesForPersistence;
+            return selectPersistedTranscriptMessages({
+              finalMessages: finalMessagesForPersistence,
+              responseStartIndex,
+              isPrimary: runProfile === "primary",
+              didCompact: isCompactionCheckpoint,
+            });
           })();
 
           params.transcriptStore.saveRequestTranscript({
@@ -3862,7 +3879,17 @@ export async function startBusAgentRunner(params: {
             messages: persistedMessages,
             finalText,
             modelLabel: resolvedModelLabel,
+            contextMeta: checkpointMeta,
           });
+          if (isCompactionCheckpoint) {
+            logger.info("compaction checkpoint persisted", {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              messageCount: persistedMessages.length,
+              compactionCount: completedCompactionCount,
+              formatVersion: COMPACTION_CHECKPOINT_FORMAT_VERSION,
+            });
+          }
         } catch (e) {
           logger.error(
             "failed to persist transcript",
@@ -4264,6 +4291,39 @@ async function applyToRunningAgent(
       return _exhaustive;
     }
   }
+}
+
+export function selectPersistedTranscriptMessages(input: {
+  finalMessages: readonly ModelMessage[];
+  responseStartIndex: number;
+  isPrimary: boolean;
+  didCompact: boolean;
+}): ModelMessage[] {
+  if (!input.isPrimary || input.didCompact) return [...input.finalMessages];
+  return input.finalMessages.slice(input.responseStartIndex);
+}
+
+export function resolveCompactionCheckpointMeta(input: {
+  runSucceeded: boolean;
+  isPrimary: boolean;
+  isCancelled: boolean;
+  shouldSkipSurfaceReply: boolean;
+  completedCompactionCount: number;
+}) {
+  if (
+    !input.runSucceeded ||
+    !input.isPrimary ||
+    input.isCancelled ||
+    input.shouldSkipSurfaceReply ||
+    input.completedCompactionCount <= 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    type: "compaction",
+    formatVersion: COMPACTION_CHECKPOINT_FORMAT_VERSION,
+  } as const;
 }
 
 export function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {

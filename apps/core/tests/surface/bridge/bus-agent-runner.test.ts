@@ -51,6 +51,8 @@ import {
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
   shouldEnableAnthropicPromptCache,
+  selectPersistedTranscriptMessages,
+  resolveCompactionCheckpointMeta,
   toOpenAIPromptCacheKey,
   withReasoningDisplayDefaultForAnthropicModels,
   withBlankLineBetweenTextParts,
@@ -66,6 +68,81 @@ import {
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
 }
+
+describe("selectPersistedTranscriptMessages", () => {
+  const finalMessages = [
+    { role: "user", content: "compacted summary" },
+    { role: "assistant", content: "retained response" },
+    { role: "tool", content: [] },
+    { role: "assistant", content: "final response" },
+  ] satisfies ModelMessage[];
+
+  it("persists response-only messages for ordinary primary runs", () => {
+    expect(
+      selectPersistedTranscriptMessages({
+        finalMessages,
+        responseStartIndex: 3,
+        isPrimary: true,
+        didCompact: false,
+      }),
+    ).toEqual([finalMessages[3]!]);
+  });
+
+  it("persists the full final canonical transcript after compaction despite a stale index", () => {
+    expect(
+      selectPersistedTranscriptMessages({
+        finalMessages,
+        responseStartIndex: 99,
+        isPrimary: true,
+        didCompact: true,
+      }),
+    ).toEqual(finalMessages);
+  });
+
+  it("keeps non-primary full-transcript persistence unchanged", () => {
+    expect(
+      selectPersistedTranscriptMessages({
+        finalMessages,
+        responseStartIndex: 3,
+        isPrimary: false,
+        didCompact: false,
+      }),
+    ).toEqual(finalMessages);
+  });
+
+  it("creates one checkpoint marker after one or many completed compactions", () => {
+    for (const completedCompactionCount of [1, 3]) {
+      expect(
+        resolveCompactionCheckpointMeta({
+          runSucceeded: true,
+          isPrimary: true,
+          isCancelled: false,
+          shouldSkipSurfaceReply: false,
+          completedCompactionCount,
+        }),
+      ).toEqual({ type: "compaction", formatVersion: 1 });
+    }
+  });
+
+  it("does not mark failed, cancelled, skipped, uncompacted, or non-primary runs", () => {
+    const base = {
+      runSucceeded: true,
+      isPrimary: true,
+      isCancelled: false,
+      shouldSkipSurfaceReply: false,
+      completedCompactionCount: 1,
+    };
+    expect(resolveCompactionCheckpointMeta({ ...base, runSucceeded: false })).toBeUndefined();
+    expect(resolveCompactionCheckpointMeta({ ...base, isCancelled: true })).toBeUndefined();
+    expect(
+      resolveCompactionCheckpointMeta({ ...base, shouldSkipSurfaceReply: true }),
+    ).toBeUndefined();
+    expect(
+      resolveCompactionCheckpointMeta({ ...base, completedCompactionCount: 0 }),
+    ).toBeUndefined();
+    expect(resolveCompactionCheckpointMeta({ ...base, isPrimary: false })).toBeUndefined();
+  });
+});
 
 function formatExpectedLocalThreadTimeRange(start: string, end: string): string {
   const format = (value: string) => {

@@ -753,6 +753,7 @@ export async function startBusRequestRouter(params: {
       botUserId: self.userId,
       botName: cfg.surface.discord.botName,
       transcriptStore: params.transcriptStore,
+      currentRequestId: requestId,
       discordUserAliasById,
       transformUserText: transformPendingUserText(last),
       transformUserTextForMessageId: last.msgRef.messageId,

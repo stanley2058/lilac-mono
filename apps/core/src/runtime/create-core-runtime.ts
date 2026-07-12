@@ -566,6 +566,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         adapter,
         bus,
         subscriptionId: subId(subscriptionPrefix, "adapter-to-bus"),
+        transcriptStore: transcriptStore ?? undefined,
       });
 
       logger.info("bridgeAdapterToBus started", {

@@ -12,6 +12,7 @@ import {
   toBusEvtAdapterReactionRemoved,
 } from "../discord/discord-adapter";
 import { escapeSurfaceMetadataTags, formatSurfaceMetadataLine } from "./surface-metadata";
+import type { TranscriptStore } from "../../transcript/transcript-store";
 
 function buildSlashCommandUserMessageContent(
   evt: Extract<AdapterEvent, { type: "adapter.command.invoked" }>,
@@ -30,6 +31,7 @@ export async function bridgeAdapterToBus(params: {
   adapter: SurfaceAdapter;
   bus: LilacBus;
   subscriptionId: string;
+  transcriptStore?: TranscriptStore;
 }) {
   const { adapter, bus } = params;
   const logger = createLogger({
@@ -141,6 +143,33 @@ export async function bridgeAdapterToBus(params: {
       }
 
       case "adapter.message.deleted": {
+        try {
+          const unlinkResult = params.transcriptStore?.unlinkSurfaceMessage?.({
+            platform: evt.messageRef.platform,
+            channelId: evt.messageRef.channelId,
+            messageId: evt.messageRef.messageId,
+          });
+          if (unlinkResult?.checkpointDeleted) {
+            logger.info("compaction checkpoint deleted", {
+              requestId: unlinkResult.requestId,
+              platform: evt.messageRef.platform,
+              channelId: evt.messageRef.channelId,
+              messageId: evt.messageRef.messageId,
+              reason: "last_surface_link_deleted",
+            });
+          }
+        } catch (e) {
+          logger.warn(
+            "failed to unlink deleted surface message",
+            {
+              platform: evt.messageRef.platform,
+              channelId: evt.messageRef.channelId,
+              messageId: evt.messageRef.messageId,
+            },
+            e,
+          );
+        }
+
         try {
           await bus.publish(
             lilacEventTypes.EvtAdapterMessageDeleted,

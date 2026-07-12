@@ -399,4 +399,176 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
+
+  it("roundtrips compaction metadata and degrades invalid metadata to ordinary", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const store = new SqliteTranscriptStore(dbPath);
+
+    store.saveRequestTranscript({
+      requestId: "checkpoint",
+      sessionId: "chan",
+      requestClient: "discord",
+      messages: [{ role: "assistant", content: "checkpoint" }],
+      contextMeta: { type: "compaction", formatVersion: 1 },
+    });
+    store.linkSurfaceMessagesToRequest({
+      requestId: "checkpoint",
+      created: [{ platform: "discord", channelId: "chan", messageId: "m1" }],
+      last: { platform: "discord", channelId: "chan", messageId: "m1" },
+    });
+    expect(
+      store.getTranscriptBySurfaceMessage({
+        platform: "discord",
+        channelId: "chan",
+        messageId: "m1",
+      })?.contextMeta,
+    ).toEqual({ type: "compaction", formatVersion: 1 });
+
+    const db = new Database(dbPath);
+    db.run("UPDATE request_transcripts SET context_meta_json = ? WHERE request_id = ?", [
+      '{"type":"compaction","formatVersion":999}',
+      "checkpoint",
+    ]);
+    db.close();
+    expect(
+      store.getTranscriptBySurfaceMessage({
+        platform: "discord",
+        channelId: "chan",
+        messageId: "m1",
+      })?.contextMeta,
+    ).toBeUndefined();
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("migrates existing transcript databases with ordinary metadata defaults", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const db = new Database(dbPath);
+    db.run(`
+      CREATE TABLE request_transcripts (
+        request_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        request_client TEXT NOT NULL,
+        created_ts INTEGER NOT NULL,
+        updated_ts INTEGER NOT NULL,
+        model_label TEXT,
+        final_text TEXT,
+        messages_json TEXT NOT NULL
+      )
+    `);
+    db.run(`INSERT INTO request_transcripts VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+      "old",
+      "chan",
+      "discord",
+      1,
+      1,
+      null,
+      "old",
+      SuperJSON.stringify([{ role: "assistant", content: "old" }]),
+    ]);
+    db.close();
+
+    const store = new SqliteTranscriptStore(dbPath);
+    const old = store.getLatestTranscriptBySession({ sessionId: "chan" });
+    expect(old?.requestId).toBe("old");
+    expect(old?.contextMeta).toBeUndefined();
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("preserves split-output checkpoints until the final mapping is unlinked", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const store = new SqliteTranscriptStore(dbPath);
+    store.saveRequestTranscript({
+      requestId: "checkpoint",
+      sessionId: "chan",
+      requestClient: "discord",
+      messages: [{ role: "assistant", content: "checkpoint" }],
+      contextMeta: { type: "compaction", formatVersion: 1 },
+    });
+    store.linkSurfaceMessagesToRequest({
+      requestId: "checkpoint",
+      created: [
+        { platform: "discord", channelId: "chan", messageId: "m1" },
+        { platform: "discord", channelId: "chan", messageId: "m2" },
+      ],
+      last: { platform: "discord", channelId: "chan", messageId: "m2" },
+    });
+
+    expect(
+      store.unlinkSurfaceMessage({ platform: "discord", channelId: "chan", messageId: "m1" }),
+    ).toEqual({ requestId: "checkpoint", checkpointDeleted: false });
+    expect(
+      store.getTranscriptBySurfaceMessage({
+        platform: "discord",
+        channelId: "chan",
+        messageId: "m2",
+      })?.requestId,
+    ).toBe("checkpoint");
+    expect(
+      store.unlinkSurfaceMessage({ platform: "discord", channelId: "chan", messageId: "m2" }),
+    ).toEqual({ requestId: "checkpoint", checkpointDeleted: true });
+    expect(
+      store.unlinkSurfaceMessage({ platform: "discord", channelId: "chan", messageId: "m2" }),
+    ).toEqual({ checkpointDeleted: false });
+    expect(store.getLatestTranscriptBySession({ sessionId: "chan" })).toBeNull();
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("does not delete ordinary transcripts when their final mapping is unlinked", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const store = new SqliteTranscriptStore(path.join(dir, "transcripts.db"));
+    store.saveRequestTranscript({
+      requestId: "ordinary",
+      sessionId: "chan",
+      requestClient: "discord",
+      messages: [{ role: "assistant", content: "ordinary" }],
+    });
+    store.linkSurfaceMessagesToRequest({
+      requestId: "ordinary",
+      created: [{ platform: "discord", channelId: "chan", messageId: "m1" }],
+      last: { platform: "discord", channelId: "chan", messageId: "m1" },
+    });
+
+    expect(
+      store.unlinkSurfaceMessage({ platform: "discord", channelId: "chan", messageId: "m1" }),
+    ).toEqual({ requestId: "ordinary", checkpointDeleted: false });
+    expect(store.getLatestTranscriptBySession({ sessionId: "chan" })?.requestId).toBe("ordinary");
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("cleans only unlinked checkpoint candidates", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
+    const store = new SqliteTranscriptStore(path.join(dir, "transcripts.db"));
+    for (const requestId of ["unlinked", "linked"]) {
+      store.saveRequestTranscript({
+        requestId,
+        sessionId: "chan",
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: requestId }],
+        contextMeta: { type: "compaction", formatVersion: 1 },
+      });
+    }
+    store.linkSurfaceMessagesToRequest({
+      requestId: "linked",
+      created: [{ platform: "discord", channelId: "chan", messageId: "m1" }],
+      last: { platform: "discord", channelId: "chan", messageId: "m1" },
+    });
+
+    expect(store.deleteUnlinkedCheckpointCandidate({ requestId: "unlinked" })).toBe(true);
+    expect(store.deleteUnlinkedCheckpointCandidate({ requestId: "linked" })).toBe(false);
+    expect(store.getLatestTranscriptBySession({ sessionId: "chan" })?.requestId).toBe("linked");
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });

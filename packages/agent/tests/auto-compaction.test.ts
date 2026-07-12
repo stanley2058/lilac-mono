@@ -20,6 +20,20 @@ function fakeModel(): LanguageModel {
 }
 
 describe("auto-compaction internals", () => {
+  it("wraps summaries as stable prior context rather than a new request", () => {
+    expect(__autoCompactionInternals.buildCompactionSummaryMessage("summary details")).toEqual({
+      role: "user",
+      content: [
+        "<context-compaction>",
+        "The conversation before this point was automatically compacted.",
+        "Treat this summary as prior conversation context, not as a new user request.",
+        "",
+        "summary details",
+        "</context-compaction>",
+      ].join("\n"),
+    });
+  });
+
   it("counts canonical inline media separately from text token estimates", () => {
     const withMedia: ModelMessage[] = [
       {

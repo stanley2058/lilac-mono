@@ -12,11 +12,12 @@ import {
   isDiscordSessionDividerText,
 } from "../discord/discord-session-divider";
 
-import type { TranscriptSnapshot } from "../../transcript/transcript-store";
+import type { TranscriptSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import {
   appendDiscordAttachmentsToUserContent,
   createDiscordAttachmentState,
 } from "./request-composition/attachments";
+import { selectNewestReachableCheckpoint } from "./request-composition/checkpoint-selection";
 import {
   buildAssistantOnlyMessageFromTranscript,
   formatDiscordAttributionHeader,
@@ -50,6 +51,24 @@ export type {
 } from "./request-composition/types";
 
 const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+function resolveTranscriptSnapshot(input: {
+  messageId: string;
+  platform: "discord";
+  channelId: string;
+  transcriptStore: TranscriptStore;
+  resolvedSnapshotsBySurfaceMessageId: ReadonlyMap<string, TranscriptSnapshot | null>;
+}): TranscriptSnapshot | null {
+  if (input.resolvedSnapshotsBySurfaceMessageId.has(input.messageId)) {
+    return input.resolvedSnapshotsBySurfaceMessageId.get(input.messageId) ?? null;
+  }
+
+  return input.transcriptStore.getTranscriptBySurfaceMessage({
+    platform: input.platform,
+    channelId: input.channelId,
+    messageId: input.messageId,
+  });
+}
 
 function getDiscordIsChatFromRaw(raw: unknown): boolean | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -716,14 +735,27 @@ export async function composeRequestMessages(
   // they are explicitly re-opening that thread; we keep the full linked chain.
   // Divider markers are still always excluded from model context.
 
-  // Step 2: merge by Discord window rules (same author + <= 7 min).
-  const merged = mergeChainByDiscordWindow(transformedChain);
+  const checkpointSelection = selectNewestReachableCheckpoint({
+    chainOldestToNewest: transformedChain,
+    botUserId: opts.botUserId,
+    platform: opts.platform,
+    channelId: opts.trigger.msgRef.channelId,
+    transcriptStore: opts.transcriptStore,
+    currentRequestId: opts.currentRequestId,
+    getAuthorId: (message) => message.authorId,
+    getMessageId: (message) => message.messageId,
+  });
+
+  // Step 2: merge descendants by Discord window rules (same author + <= 7 min).
+  const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.
   const attState = createDiscordAttachmentState();
 
-  const modelMessages: ModelMessage[] = [];
-  const seenTranscriptRequestIds = new Set<string>();
+  const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+  const seenTranscriptRequestIds = new Set<string>(
+    checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+  );
 
   const reactionRefs = merged
     .filter((chunk) => chunk.authorId !== opts.botUserId)
@@ -748,10 +780,13 @@ export async function composeRequestMessages(
     const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
     if (isBot && opts.transcriptStore) {
-      const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+      const snap = resolveTranscriptSnapshot({
         platform: opts.platform,
         channelId: opts.trigger.msgRef.channelId,
         messageId,
+        transcriptStore: opts.transcriptStore,
+        resolvedSnapshotsBySurfaceMessageId:
+          checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
       });
 
       if (snap) {
@@ -885,11 +920,23 @@ export async function composeRecentChannelMessages(
           });
         });
 
-        const merged = mergeChainByDiscordWindow(transformedAnchored);
+        const checkpointSelection = selectNewestReachableCheckpoint({
+          chainOldestToNewest: transformedAnchored,
+          botUserId: opts.botUserId,
+          platform: opts.platform,
+          channelId: opts.sessionId,
+          transcriptStore: opts.transcriptStore,
+          currentRequestId: opts.currentRequestId,
+          getAuthorId: (message) => message.authorId,
+          getMessageId: (message) => message.messageId,
+        });
+        const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
         const attState = createDiscordAttachmentState();
 
-        const modelMessages: ModelMessage[] = [];
-        const seenTranscriptRequestIds = new Set<string>();
+        const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+        const seenTranscriptRequestIds = new Set<string>(
+          checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+        );
 
         const reactionRefs = merged
           .filter((chunk) => chunk.authorId !== opts.botUserId)
@@ -913,10 +960,13 @@ export async function composeRecentChannelMessages(
           const messageId = chunk.messageIds[chunk.messageIds.length - 1]!;
 
           if (isBot && opts.transcriptStore) {
-            const snap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+            const snap = resolveTranscriptSnapshot({
               platform: opts.platform,
               channelId: opts.sessionId,
               messageId,
+              transcriptStore: opts.transcriptStore,
+              resolvedSnapshotsBySurfaceMessageId:
+                checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
             });
             if (snap) {
               if (!seenTranscriptRequestIds.has(snap.requestId)) {
@@ -1105,12 +1155,24 @@ export async function composeRecentChannelMessages(
     });
   });
 
-  const merged = mergeChainByDiscordWindow(chain);
+  const checkpointSelection = selectNewestReachableCheckpoint({
+    chainOldestToNewest: chain,
+    botUserId: opts.botUserId,
+    platform: opts.platform,
+    channelId: opts.sessionId,
+    transcriptStore: opts.transcriptStore,
+    currentRequestId: opts.currentRequestId,
+    getAuthorId: (message) => message.authorId,
+    getMessageId: (message) => message.messageId,
+  });
+  const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
 
   const attState = createDiscordAttachmentState();
 
-  const modelMessages: ModelMessage[] = [];
-  const seenTranscriptRequestIds = new Set<string>();
+  const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+  const seenTranscriptRequestIds = new Set<string>(
+    checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+  );
 
   const reactionRefs = merged
     .filter((chunk) => chunk.authorId !== opts.botUserId)
@@ -1143,10 +1205,13 @@ export async function composeRecentChannelMessages(
 
     let botTranscriptSnap: TranscriptSnapshot | null = null;
     if (isBot && opts.transcriptStore) {
-      botTranscriptSnap = opts.transcriptStore.getTranscriptBySurfaceMessage({
+      botTranscriptSnap = resolveTranscriptSnapshot({
         platform: opts.platform,
         channelId: opts.sessionId,
         messageId,
+        transcriptStore: opts.transcriptStore,
+        resolvedSnapshotsBySurfaceMessageId:
+          checkpointSelection.resolvedSnapshotsBySurfaceMessageId,
       });
     }
 
