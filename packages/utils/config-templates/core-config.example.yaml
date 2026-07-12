@@ -86,7 +86,6 @@ tools:
       #       size: "1024x1024"
       #       options:
       #         quality: "high"
-      #         seed: 7
       #   "openai-compatible/gpt-image-2":
       #     useWhen: "Final high-fidelity product images and text-heavy layouts."
       #     defaults:
