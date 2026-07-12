@@ -5,8 +5,13 @@ import { join } from "node:path";
 import {
   buildImageGenerationPrompt,
   buildVideoGenerationPrompt,
+  DEFAULT_IMAGE_MODEL_FALLBACK_ORDER,
+  gptAspectRatioToSize,
   imageGenerateInputSchema,
+  orderImageModelIds,
   resolveImageEditInputs,
+  resolveImageDimensions,
+  validateImageGenerationInputForModel,
   videoGenerateInputSchema,
 } from "../src/tool-server/tools/generate";
 import { resolveRestrictedSessionTmpDir } from "../src/shared/attachment-utils";
@@ -15,6 +20,81 @@ const ONE_BY_ONE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+9n0AAAAASUVORK5CYII=";
 
 describe("tool-server image generation", () => {
+  it("uses gpt-image-2 as the recommended default", () => {
+    expect(DEFAULT_IMAGE_MODEL_FALLBACK_ORDER[0]).toBe("gpt-image-2");
+    expect(
+      orderImageModelIds(["nanobanana", "gpt-5-image", "gpt-image-2", "nanobanana-2"]),
+    ).toStrictEqual(["gpt-image-2", "nanobanana-2", "gpt-5-image", "nanobanana"]);
+  });
+
+  it("validates and maps gpt-image-2 dimensions", () => {
+    expect(gptAspectRatioToSize("1:1")).toBe("1024x1024");
+    expect(gptAspectRatioToSize("3:2")).toBe("1536x1024");
+    expect(gptAspectRatioToSize("2:3")).toBe("1024x1536");
+
+    expect(() =>
+      validateImageGenerationInputForModel("gpt-image-2", {
+        prompt: "Create a landscape",
+        inputImages: undefined,
+        size: "2048x2048",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateImageGenerationInputForModel("gpt-image-2", {
+        prompt: "Create a landscape",
+        inputImages: undefined,
+        size: "2047x2048",
+      }),
+    ).toThrow("Unsupported size '2047x2048' for gpt-image-2");
+    expect(() =>
+      validateImageGenerationInputForModel("gpt-image-2", {
+        prompt: "Edit this image",
+        inputImages: ["input.png"],
+        size: "2048x2048",
+      }),
+    ).toThrow("Unsupported size '2048x2048' for gpt-image-2 image edits");
+  });
+
+  it("converts GPT aspect ratios to size without forwarding aspectRatio", () => {
+    expect(resolveImageDimensions("gpt-image-2", { aspectRatio: "3:2" })).toStrictEqual({
+      size: "1536x1024",
+    });
+    expect(resolveImageDimensions("nanobanana-2", { aspectRatio: "16:9" })).toStrictEqual({
+      aspectRatio: "16:9",
+    });
+  });
+
+  it("enforces nanobanana-2-lite capabilities", () => {
+    expect(() =>
+      validateImageGenerationInputForModel("nanobanana-2-lite", {
+        prompt: "Create a wide banner",
+        inputImages: undefined,
+        aspectRatio: "8:1",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateImageGenerationInputForModel("nanobanana-2-lite", {
+        prompt: "Create a banner",
+        inputImages: undefined,
+        aspectRatio: "7:1",
+      }),
+    ).toThrow("Unsupported aspectRatio '7:1' for nanobanana-2-lite");
+    expect(() =>
+      validateImageGenerationInputForModel("nanobanana-2-lite", {
+        prompt: "Create an icon",
+        inputImages: undefined,
+        size: "1024x1024",
+      }),
+    ).toThrow("produces 1K output; use aspectRatio instead of size");
+    expect(() =>
+      validateImageGenerationInputForModel("nanobanana-2-lite", {
+        prompt: "Edit this image",
+        inputImages: ["input.png"],
+        maskImage: "mask.png",
+      }),
+    ).toThrow("does not support maskImage");
+  });
+
   it("normalizes a single inputImages value into an array", () => {
     const parsed = imageGenerateInputSchema.parse({
       outputDir: "outputs",

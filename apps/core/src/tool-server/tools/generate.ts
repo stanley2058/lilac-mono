@@ -21,6 +21,13 @@ import { zodObjectToCliLines } from "./zod-cli";
 
 type SupportedImageModelId =
   /**
+   * - Recommended default
+   * - Aspect ratio: 1:1, 3:2, 2:3
+   * - Generation sizes: arbitrary dimensions within the model limits
+   * - Edit sizes: 1024x1024, 1536x1024, 1024x1536
+   */
+  | "gpt-image-2"
+  /**
    * - Aspect ratio: 1:1, 3:2, 2:3
    * - Sizes: 1024x1024 (1:1); 1536x1024 (3:2 landscape); 1024x1536 (2:3 portrait)
    */
@@ -35,6 +42,12 @@ type SupportedImageModelId =
    * - Supported resolution tiers: 1K, 2K, 4K
    */
   | "nanobanana-2"
+  /**
+   * - Provider/slug: openrouter/google/gemini-3.1-flash-lite-image
+   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 1:4, 4:1, 1:8, 8:1
+   * - Resolution: 1K
+   */
+  | "nanobanana-2-lite"
   /**
    * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16
    * - Supported resolution tiers: 1K, 2K, 4K
@@ -60,8 +73,12 @@ type SupportedVideoModelId =
    */
   "grok-imagine-video";
 
-const GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS = ["1:1", "3:2", "2:3"] as const;
-const GPT_5_IMAGE_ALLOWED_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
+const GPT_IMAGE_ALLOWED_ASPECT_RATIOS = ["1:1", "3:2", "2:3"] as const;
+const GPT_IMAGE_STANDARD_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
+const GPT_IMAGE_2_MIN_PIXELS = 655_360;
+const GPT_IMAGE_2_MAX_PIXELS = 8_294_400;
+const GPT_IMAGE_2_MAX_EDGE = 3840;
+const GPT_IMAGE_2_MAX_ASPECT_RATIO = 3;
 
 const NANOBANANA_ALLOWED_ASPECT_RATIOS = [
   "21:9",
@@ -100,12 +117,14 @@ const GROK_IMAGE_ALLOWED_ASPECT_RATIOS = [
   "9:20",
 ] as const;
 
-const DEFAULT_IMAGE_MODEL_FALLBACK_ORDER: readonly SupportedImageModelId[] = [
+export const DEFAULT_IMAGE_MODEL_FALLBACK_ORDER: readonly SupportedImageModelId[] = [
+  "gpt-image-2",
   "nanobanana-2",
   "nanobanana-pro",
   "gpt-5-image",
   "grok-imagine-image-pro",
   "grok-imagine-image",
+  "nanobanana-2-lite",
   "nanobanana",
 ];
 
@@ -156,7 +175,9 @@ export const imageGenerateInputSchema = z
       .string()
       .min(1)
       .optional()
-      .describe("Image model to use. If omitted, picks first configured model in fallback order."),
+      .describe(
+        "Image model to use. Recommended/default: gpt-image-2 when available; otherwise picks the first configured fallback.",
+      ),
 
     size: z
       .string()
@@ -165,6 +186,7 @@ export const imageGenerateInputSchema = z
       .describe(
         [
           "Optional output size as '{width}x{height}'. (Use only one of --size or --aspect-ratio)",
+          "- For gpt-image-2 generation: both edges must be multiples of 16 and <=3840, ratio <=3:1, and total pixels 655360-8294400. Edits use 1024x1024 | 1536x1024 | 1024x1536.",
           "- For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
           "- For nanobanana(-2|-pro): calculate based-on 1K, 2K, 4K. E.g.,",
           "  - 1:1 @ 1K/2K/4K: 1024^2 / 2048^2 / 4096^2",
@@ -180,9 +202,9 @@ export const imageGenerateInputSchema = z
       .describe(
         [
           "Optional aspect ratio. (Use only one of --size or --aspect-ratio)",
-          "- For gpt-5-image: 1:1 | 3:2 | 2:3.",
+          "- For gpt-image-2/gpt-5-image: 1:1 | 3:2 | 2:3.",
           "- For nanobanana/nanobanana-pro: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
-          "- For nanobanana-2: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16 | 1:4 | 4:1 | 1:8 | 8:1.",
+          "- For nanobanana-2/nanobanana-2-lite: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16 | 1:4 | 4:1 | 1:8 | 8:1.",
           "- For grok-imagine-image(-pro): 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 2:1 | 1:2 | 19.5:9 | 9:19.5 | 20:9 | 9:20.",
         ].join("\n"),
       ),
@@ -280,26 +302,52 @@ function isOneOf<const T extends readonly string[]>(allowed: T, value: string): 
   return (allowed as readonly string[]).includes(value);
 }
 
-function validateGptImageInput(input: ImageGenerateInput): void {
-  if (input.aspectRatio && !isOneOf(GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
+function validateGptImageInput(
+  input: ImageGenerateInput,
+  modelId: "gpt-image-2" | "gpt-5-image",
+): void {
+  if (input.aspectRatio && !isOneOf(GPT_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
     throw new Error(
-      `Unsupported aspectRatio '${input.aspectRatio}' for gpt-5-image. Allowed: ${GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS.join(", ")}.`,
+      `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${GPT_IMAGE_ALLOWED_ASPECT_RATIOS.join(", ")}.`,
     );
   }
 
-  if (input.size && !isOneOf(GPT_5_IMAGE_ALLOWED_SIZES, input.size)) {
+  if (!input.size) return;
+
+  if (modelId === "gpt-5-image" || (input.inputImages?.length ?? 0) > 0) {
+    if (isOneOf(GPT_IMAGE_STANDARD_SIZES, input.size)) return;
+
+    const context = modelId === "gpt-image-2" ? " image edits" : "";
     throw new Error(
-      `Unsupported size '${input.size}' for gpt-5-image. Allowed: ${GPT_5_IMAGE_ALLOWED_SIZES.join(" | ")}.`,
+      `Unsupported size '${input.size}' for ${modelId}${context}. Allowed: ${GPT_IMAGE_STANDARD_SIZES.join(" | ")}.`,
+    );
+  }
+
+  const separatorIndex = input.size.indexOf("x");
+  const width = Number(input.size.slice(0, separatorIndex));
+  const height = Number(input.size.slice(separatorIndex + 1));
+  const pixels = width * height;
+  if (
+    width % 16 !== 0 ||
+    height % 16 !== 0 ||
+    width > GPT_IMAGE_2_MAX_EDGE ||
+    height > GPT_IMAGE_2_MAX_EDGE ||
+    Math.max(width, height) / Math.min(width, height) > GPT_IMAGE_2_MAX_ASPECT_RATIO ||
+    pixels < GPT_IMAGE_2_MIN_PIXELS ||
+    pixels > GPT_IMAGE_2_MAX_PIXELS
+  ) {
+    throw new Error(
+      `Unsupported size '${input.size}' for gpt-image-2. Both edges must be multiples of 16 and at most ${GPT_IMAGE_2_MAX_EDGE}px, the aspect ratio must not exceed 3:1, and total pixels must be ${GPT_IMAGE_2_MIN_PIXELS}-${GPT_IMAGE_2_MAX_PIXELS}.`,
     );
   }
 }
 
 function validateNanobananaInput(
   input: ImageGenerateInput,
-  modelId: "nanobanana" | "nanobanana-2" | "nanobanana-pro",
+  modelId: "nanobanana" | "nanobanana-2" | "nanobanana-2-lite" | "nanobanana-pro",
 ): void {
   const allowedAspectRatios =
-    modelId === "nanobanana-2"
+    modelId === "nanobanana-2" || modelId === "nanobanana-2-lite"
       ? NANOBANANA_2_ALLOWED_ASPECT_RATIOS
       : NANOBANANA_ALLOWED_ASPECT_RATIOS;
 
@@ -307,6 +355,36 @@ function validateNanobananaInput(
     throw new Error(
       `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${allowedAspectRatios.join(", ")}.`,
     );
+  }
+
+  if (modelId === "nanobanana-2-lite" && input.size) {
+    throw new Error("nanobanana-2-lite produces 1K output; use aspectRatio instead of size.");
+  }
+
+  if (modelId === "nanobanana-2-lite" && input.maskImage) {
+    throw new Error("nanobanana-2-lite does not support maskImage.");
+  }
+}
+
+export function validateImageGenerationInputForModel(
+  modelId: SupportedImageModelId,
+  input: ImageGenerateInput,
+): void {
+  switch (modelId) {
+    case "gpt-image-2":
+    case "gpt-5-image":
+      validateGptImageInput(input, modelId);
+      return;
+    case "nanobanana":
+    case "nanobanana-2":
+    case "nanobanana-2-lite":
+    case "nanobanana-pro":
+      validateNanobananaInput(input, modelId);
+      return;
+    case "grok-imagine-image":
+    case "grok-imagine-image-pro":
+      validateGrokImagineInput(input, modelId);
+      return;
   }
 }
 
@@ -335,6 +413,22 @@ function validateGrokImagineInput(
 
 const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
   {
+    id: "gpt-image-2",
+    createModel: (providers) => {
+      if (isConfiguredProvider("openai")) {
+        const model = providers.openai?.image("gpt-image-2");
+        if (model) return model;
+      }
+
+      if (isConfiguredProvider("openrouter")) {
+        return providers.openrouter?.imageModel("openai/gpt-image-2");
+      }
+
+      return undefined;
+    },
+    validateInput: (input) => validateImageGenerationInputForModel("gpt-image-2", input),
+  },
+  {
     id: "gpt-5-image",
     createModel: (providers) => {
       if (isConfiguredProvider("openai")) {
@@ -348,7 +442,7 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
 
       return undefined;
     },
-    validateInput: validateGptImageInput,
+    validateInput: (input) => validateImageGenerationInputForModel("gpt-5-image", input),
   },
   {
     id: "nanobanana",
@@ -358,7 +452,7 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       }
       return undefined;
     },
-    validateInput: (input) => validateNanobananaInput(input, "nanobanana"),
+    validateInput: (input) => validateImageGenerationInputForModel("nanobanana", input),
   },
   {
     id: "nanobanana-2",
@@ -368,7 +462,17 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       }
       return undefined;
     },
-    validateInput: (input) => validateNanobananaInput(input, "nanobanana-2"),
+    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-2", input),
+  },
+  {
+    id: "nanobanana-2-lite",
+    createModel: (providers) => {
+      if (isConfiguredProvider("openrouter")) {
+        return providers.openrouter?.imageModel("google/gemini-3.1-flash-lite-image");
+      }
+      return undefined;
+    },
+    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-2-lite", input),
   },
   {
     id: "nanobanana-pro",
@@ -378,7 +482,7 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       }
       return undefined;
     },
-    validateInput: (input) => validateNanobananaInput(input, "nanobanana-pro"),
+    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-pro", input),
   },
   {
     id: "grok-imagine-image",
@@ -388,7 +492,7 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       }
       return providers.xai?.image("grok-imagine-image");
     },
-    validateInput: (input) => validateGrokImagineInput(input, "grok-imagine-image"),
+    validateInput: (input) => validateImageGenerationInputForModel("grok-imagine-image", input),
   },
   {
     id: "grok-imagine-image-pro",
@@ -398,7 +502,7 @@ const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
       }
       return providers.xai?.image("grok-imagine-image-pro");
     },
-    validateInput: (input) => validateGrokImagineInput(input, "grok-imagine-image-pro"),
+    validateInput: (input) => validateImageGenerationInputForModel("grok-imagine-image-pro", input),
   },
 ];
 
@@ -509,9 +613,9 @@ function pickModel<TId extends string, TModel>(
   );
 }
 
-function gptAspectRatioToSize(
-  aspectRatio: (typeof GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
-): (typeof GPT_5_IMAGE_ALLOWED_SIZES)[number] {
+export function gptAspectRatioToSize(
+  aspectRatio: (typeof GPT_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
+): (typeof GPT_IMAGE_STANDARD_SIZES)[number] {
   switch (aspectRatio) {
     case "1:1":
       return "1024x1024";
@@ -520,6 +624,35 @@ function gptAspectRatioToSize(
     case "2:3":
       return "1024x1536";
   }
+}
+
+export function orderImageModelIds(ids: readonly SupportedImageModelId[]): SupportedImageModelId[] {
+  const available = new Set(ids);
+  return DEFAULT_IMAGE_MODEL_FALLBACK_ORDER.filter((id) => available.has(id));
+}
+
+export function resolveImageDimensions(
+  modelId: SupportedImageModelId,
+  input: Pick<ImageGenerateInput, "size" | "aspectRatio">,
+): {
+  size?: `${number}x${number}`;
+  aspectRatio?: `${number}:${number}`;
+} {
+  if (input.size) {
+    return { size: input.size as `${number}x${number}` };
+  }
+
+  if (!input.aspectRatio) return {};
+
+  if (modelId === "gpt-image-2" || modelId === "gpt-5-image") {
+    return {
+      size: gptAspectRatioToSize(
+        input.aspectRatio as (typeof GPT_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
+      ),
+    };
+  }
+
+  return { aspectRatio: input.aspectRatio as `${number}:${number}` };
 }
 
 function looksLikeSvg(bytes: Buffer): boolean {
@@ -714,7 +847,7 @@ export class Generate implements ServerTool {
   async destroy(): Promise<void> {}
 
   async list() {
-    const imageModels = getAvailableImageModels().ids;
+    const imageModels = orderImageModelIds(getAvailableImageModels().ids);
     const videoModels = getAvailableVideoModels().ids;
     const tools = [];
 
@@ -724,6 +857,7 @@ export class Generate implements ServerTool {
         name: "Generate Image",
         description:
           "Generate or edit an image with a configured provider and write it to a local file in outputDir (or cwd). Returns absolute output path + MIME type. " +
+          "Recommended/default: gpt-image-2 when available. " +
           `Available models: ${imageModels.join(", ")}`,
         shortInput: zodObjectToCliLines(imageGenerateInputSchema, {
           mode: "required",
@@ -801,19 +935,7 @@ export class Generate implements ServerTool {
       context: opts?.context,
     });
 
-    const size =
-      payload.size && payload.size.length > 0
-        ? (payload.size as `${number}x${number}`)
-        : picked.id === "gpt-5-image" && payload.aspectRatio
-          ? (gptAspectRatioToSize(
-              payload.aspectRatio as (typeof GPT_5_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
-            ) as `${number}x${number}`)
-          : undefined;
-
-    const aspectRatio =
-      !payload.size && payload.aspectRatio
-        ? (payload.aspectRatio as `${number}:${number}`)
-        : undefined;
+    const { size, aspectRatio } = resolveImageDimensions(picked.id, payload);
     const prompt = await buildImageGenerationPrompt(cwd, payload, opts?.context);
 
     const res = await generateImageWithModel(picked.model, prompt, {
