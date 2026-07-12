@@ -39,10 +39,7 @@ const REQUIRED_TOOL_POLICY_CONFIG = {
     maxInlineBytesPerPart: 10 * 1024 * 1024,
     maxInlineBytesTotal: 20 * 1024 * 1024,
   },
-} satisfies Pick<
-  CoreConfig["tools"],
-  "output" | "historicalResultPruning" | "batch" | "media"
->;
+} satisfies Pick<CoreConfig["tools"], "output" | "historicalResultPruning" | "batch" | "media">;
 
 describe("tool-server image generation", () => {
   it("normalizes a single inputImages value into an array", () => {
