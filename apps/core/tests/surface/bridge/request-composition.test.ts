@@ -2570,6 +2570,83 @@ describe("request-composition active channel burst rules", () => {
     expect(assistantText).not.toContain("[discord user_id=");
   });
 
+  it("applies an old reachable checkpoint before transcript-age fallback", async () => {
+    const sessionId = "c";
+    const anchorTs = 10_000_000;
+    const messages: SurfaceMessage[] = [
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "old-user" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "RAW_ANCESTOR",
+        ts: anchorTs - 2.5 * 60 * 60 * 1000,
+        raw: { reference: {} },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "checkpoint" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "bot",
+        userName: "lilac",
+        text: "RAW_CHECKPOINT_OUTPUT",
+        ts: anchorTs - 2 * 60 * 60 * 1000,
+        raw: { reference: {} },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "descendant" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "EXACT_DESCENDANT",
+        ts: anchorTs - 60 * 60 * 1000,
+        raw: { reference: {} },
+      },
+      {
+        ref: { platform: "discord", channelId: sessionId, messageId: "trigger" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u",
+        userName: "user",
+        text: "CURRENT_REQUEST",
+        ts: anchorTs,
+        raw: { reference: {} },
+      },
+    ];
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest() {},
+      close() {},
+      getTranscriptBySurfaceMessage(input) {
+        if (input.messageId !== "checkpoint") return null;
+        return {
+          requestId: "checkpoint-request",
+          sessionId,
+          requestClient: "discord",
+          createdTs: 0,
+          updatedTs: 0,
+          messages: [{ role: "user", content: "PERSISTED_CHECKPOINT" }],
+          contextMeta: { type: "compaction", formatVersion: 1 },
+        };
+      },
+    };
+
+    const out = await composeRecentChannelMessages(new ListFakeAdapter(messages), {
+      platform: "discord",
+      sessionId,
+      botUserId: "bot",
+      botName: "lilac",
+      limit: 8,
+      transcriptStore,
+      triggerMsgRef: { platform: "discord", channelId: sessionId, messageId: "trigger" },
+    });
+    const text = JSON.stringify(out.messages);
+    expect(text).toContain("PERSISTED_CHECKPOINT");
+    expect(text).toContain("EXACT_DESCENDANT");
+    expect(text).toContain("CURRENT_REQUEST");
+    expect(text).not.toContain("RAW_ANCESTOR");
+    expect(text).not.toContain("RAW_CHECKPOINT_OUTPUT");
+    expect(text).not.toContain("formatVersion");
+  });
+
   it("uses assistant-only transcript fallback for bot messages older than 1h (mention trigger)", async () => {
     const sessionId = "c";
     const anchorTs = 10_000_000;
@@ -2804,6 +2881,7 @@ describe("request-composition active channel burst rules", () => {
           createdTs: 0,
           updatedTs: 0,
           messages: [{ role: "assistant", content: "EXPANDED_ROOT" }],
+          contextMeta: { type: "compaction", formatVersion: 1 },
         };
       },
     };
@@ -2831,6 +2909,18 @@ describe("request-composition active channel burst rules", () => {
       .join("\n");
     expect(combined).toContain("EXPANDED_ROOT");
     expect(combined).not.toContain("old bot text");
+
+    const explicit = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      transcriptStore,
+      trigger: { type: "reply", msgRef: replyMention.ref },
+    });
+    const explicitCombined = JSON.stringify(explicit.messages);
+    expect(explicitCombined).toContain("EXPANDED_ROOT");
+    expect(explicitCombined).toContain("continuing");
+    expect(explicitCombined).not.toContain("old bot text");
   });
 });
 

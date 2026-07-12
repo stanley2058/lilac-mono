@@ -17,6 +17,7 @@ import {
   appendDiscordAttachmentsToUserContent,
   createDiscordAttachmentState,
 } from "./request-composition/attachments";
+import { selectNewestReachableCheckpoint } from "./request-composition/checkpoint-selection";
 import {
   buildAssistantOnlyMessageFromTranscript,
   formatDiscordAttributionHeader,
@@ -716,14 +717,27 @@ export async function composeRequestMessages(
   // they are explicitly re-opening that thread; we keep the full linked chain.
   // Divider markers are still always excluded from model context.
 
-  // Step 2: merge by Discord window rules (same author + <= 7 min).
-  const merged = mergeChainByDiscordWindow(transformedChain);
+  const checkpointSelection = selectNewestReachableCheckpoint({
+    chainOldestToNewest: transformedChain,
+    botUserId: opts.botUserId,
+    platform: opts.platform,
+    channelId: opts.trigger.msgRef.channelId,
+    transcriptStore: opts.transcriptStore,
+    currentRequestId: opts.currentRequestId,
+    getAuthorId: (message) => message.authorId,
+    getMessageId: (message) => message.messageId,
+  });
+
+  // Step 2: merge descendants by Discord window rules (same author + <= 7 min).
+  const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
 
   // Phase 3: normalize to ModelMessage[] with attribution headers.
   const attState = createDiscordAttachmentState();
 
-  const modelMessages: ModelMessage[] = [];
-  const seenTranscriptRequestIds = new Set<string>();
+  const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+  const seenTranscriptRequestIds = new Set<string>(
+    checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+  );
 
   const reactionRefs = merged
     .filter((chunk) => chunk.authorId !== opts.botUserId)
@@ -885,11 +899,23 @@ export async function composeRecentChannelMessages(
           });
         });
 
-        const merged = mergeChainByDiscordWindow(transformedAnchored);
+        const checkpointSelection = selectNewestReachableCheckpoint({
+          chainOldestToNewest: transformedAnchored,
+          botUserId: opts.botUserId,
+          platform: opts.platform,
+          channelId: opts.sessionId,
+          transcriptStore: opts.transcriptStore,
+          currentRequestId: opts.currentRequestId,
+          getAuthorId: (message) => message.authorId,
+          getMessageId: (message) => message.messageId,
+        });
+        const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
         const attState = createDiscordAttachmentState();
 
-        const modelMessages: ModelMessage[] = [];
-        const seenTranscriptRequestIds = new Set<string>();
+        const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+        const seenTranscriptRequestIds = new Set<string>(
+          checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+        );
 
         const reactionRefs = merged
           .filter((chunk) => chunk.authorId !== opts.botUserId)
@@ -1105,12 +1131,24 @@ export async function composeRecentChannelMessages(
     });
   });
 
-  const merged = mergeChainByDiscordWindow(chain);
+  const checkpointSelection = selectNewestReachableCheckpoint({
+    chainOldestToNewest: chain,
+    botUserId: opts.botUserId,
+    platform: opts.platform,
+    channelId: opts.sessionId,
+    transcriptStore: opts.transcriptStore,
+    currentRequestId: opts.currentRequestId,
+    getAuthorId: (message) => message.authorId,
+    getMessageId: (message) => message.messageId,
+  });
+  const merged = mergeChainByDiscordWindow(checkpointSelection.descendants);
 
   const attState = createDiscordAttachmentState();
 
-  const modelMessages: ModelMessage[] = [];
-  const seenTranscriptRequestIds = new Set<string>();
+  const modelMessages: ModelMessage[] = [...checkpointSelection.checkpointMessages];
+  const seenTranscriptRequestIds = new Set<string>(
+    checkpointSelection.checkpoint ? [checkpointSelection.checkpoint.requestId] : [],
+  );
 
   const reactionRefs = merged
     .filter((chunk) => chunk.authorId !== opts.botUserId)

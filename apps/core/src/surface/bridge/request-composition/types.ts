@@ -18,6 +18,7 @@ export type ComposeRecentChannelMessagesOpts = {
   botMentionNames?: readonly string[];
   limit: number;
   transcriptStore?: TranscriptStore;
+  currentRequestId?: string;
   discordUserAliasById?: ReadonlyMap<string, string>;
   /** Optional trigger message to force-include (mention/reply). */
   triggerMsgRef?: MsgRef;
@@ -41,6 +42,7 @@ export type ComposeRequestOpts = {
   botUserId: string;
   botName: string;
   transcriptStore?: TranscriptStore;
+  currentRequestId?: string;
   discordUserAliasById?: ReadonlyMap<string, string>;
   trigger: {
     type: "mention" | "reply";
