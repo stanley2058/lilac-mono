@@ -32,6 +32,7 @@ import type {
   SurfaceSession,
 } from "../../../src/surface/types";
 import { formatSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
+import type { TranscriptStore } from "../../../src/transcript/transcript-store";
 
 function createInMemoryRawBus(): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
@@ -185,6 +186,36 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("bridgeAdapterToBus cancel mapping", () => {
+  it("unlinks transcript mappings when adapter deletion events arrive", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const adapter = new FakeAdapter();
+    const unlinked: Array<{ platform: string; channelId: string; messageId: string }> = [];
+    const transcriptStore: TranscriptStore = {
+      saveRequestTranscript() {},
+      linkSurfaceMessagesToRequest() {},
+      getTranscriptBySurfaceMessage() {
+        return null;
+      },
+      unlinkSurfaceMessage(input) {
+        unlinked.push(input);
+        return { requestId: "request", checkpointDeleted: true };
+      },
+      close() {},
+    };
+    await bridgeAdapterToBus({ adapter, bus, subscriptionId: "test", transcriptStore });
+
+    adapter.emit({
+      type: "adapter.message.deleted",
+      platform: "discord",
+      ts: Date.now(),
+      messageRef: { platform: "discord", channelId: "chan", messageId: "m1" },
+      session: { platform: "discord", channelId: "chan" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(unlinked).toEqual([{ platform: "discord", channelId: "chan", messageId: "m1" }]);
+  });
+
   it("maps adapter message and reaction events to Lilac bus events", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const adapter = new FakeAdapter();

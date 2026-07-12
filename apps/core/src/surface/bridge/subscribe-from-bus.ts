@@ -787,6 +787,17 @@ export async function bridgeBusToAdapter(params: {
       }
     };
 
+    const deleteUnlinkedCheckpointCandidate = () => {
+      const candidateDeleted =
+        params.transcriptStore?.deleteUnlinkedCheckpointCandidate?.({ requestId }) ?? false;
+      if (!candidateDeleted) return;
+      logger.info("compaction checkpoint deleted", {
+        requestId,
+        sessionId,
+        reason: "unlinked_candidate_cleanup",
+      });
+    };
+
     const relayStop = async () => {
       if (stopped) return;
       stopped = true;
@@ -976,6 +987,7 @@ export async function bridgeBusToAdapter(params: {
                 if (delivery === "skip") {
                   await out.abort("skip").catch(() => undefined);
                   await deleteCreatedOutputMessages();
+                  deleteUnlinkedCheckpointCandidate();
                   await relayStop();
 
                   if (platform === "github") {
@@ -1035,6 +1047,7 @@ export async function bridgeBusToAdapter(params: {
                 if (streamFinalText.length === 0 && !streamHasVisibleOutput) {
                   await out.abort("skip").catch(() => undefined);
                   await deleteCreatedOutputMessages();
+                  deleteUnlinkedCheckpointCandidate();
                   await relayStop();
 
                   if (platform === "github") {

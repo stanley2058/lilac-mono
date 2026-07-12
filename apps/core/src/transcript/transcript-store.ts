@@ -1,9 +1,21 @@
 import { Database } from "bun:sqlite";
 import JSON from "superjson";
 import type { ModelMessage } from "ai";
+import { z } from "zod";
 import type { AdapterPlatform } from "@stanley2058/lilac-event-bus";
-import { normalizeReplayMessages } from "@stanley2058/lilac-utils";
+import { createLogger, normalizeReplayMessages } from "@stanley2058/lilac-utils";
 import type { MsgRef } from "../surface/types";
+
+const logger = createLogger({ module: "transcript-store" });
+
+export const COMPACTION_CHECKPOINT_FORMAT_VERSION = 1 as const;
+
+const compactionCheckpointMetaSchema = z.object({
+  type: z.literal("compaction"),
+  formatVersion: z.literal(COMPACTION_CHECKPOINT_FORMAT_VERSION),
+});
+
+export type CompactionCheckpointMeta = z.infer<typeof compactionCheckpointMetaSchema>;
 
 export type TranscriptSnapshot = {
   requestId: string;
@@ -14,6 +26,12 @@ export type TranscriptSnapshot = {
   messages: ModelMessage[];
   finalText?: string;
   modelLabel?: string;
+  contextMeta?: CompactionCheckpointMeta;
+};
+
+export type UnlinkSurfaceMessageResult = {
+  requestId?: string;
+  checkpointDeleted: boolean;
 };
 
 export type RecentAgentWriteSnapshot = {
@@ -42,6 +60,7 @@ export type TranscriptStore = {
     messages: readonly ModelMessage[];
     finalText?: string;
     modelLabel?: string;
+    contextMeta?: CompactionCheckpointMeta;
   }): void;
 
   linkSurfaceMessagesToRequest(input: {
@@ -55,6 +74,14 @@ export type TranscriptStore = {
     channelId: string;
     messageId: string;
   }): TranscriptSnapshot | null;
+
+  unlinkSurfaceMessage?(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+  }): UnlinkSurfaceMessageResult;
+
+  deleteUnlinkedCheckpointCandidate?(input: { requestId: string }): boolean;
 
   getLatestTranscriptBySession?(input: { sessionId: string }): TranscriptSnapshot | null;
 
@@ -93,9 +120,19 @@ export class SqliteTranscriptStore implements TranscriptStore {
         updated_ts INTEGER NOT NULL,
         model_label TEXT,
         final_text TEXT,
-        messages_json TEXT NOT NULL
+        messages_json TEXT NOT NULL,
+        context_meta_json TEXT
       );
     `);
+
+    const transcriptColumns = this.db
+      .query("PRAGMA table_info(request_transcripts)")
+      .all() as Array<{
+      name: string;
+    }>;
+    if (!transcriptColumns.some((column) => column.name === "context_meta_json")) {
+      this.db.run("ALTER TABLE request_transcripts ADD COLUMN context_meta_json TEXT");
+    }
 
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_request_transcripts_session
@@ -126,6 +163,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     messages: readonly ModelMessage[];
     finalText?: string;
     modelLabel?: string;
+    contextMeta?: CompactionCheckpointMeta;
   }): void {
     const now = Date.now();
     const normalizedMessages = normalizeReplayMessages(input.messages);
@@ -139,15 +177,16 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.db.run(
       `
       INSERT INTO request_transcripts (
-        request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json, context_meta_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(request_id) DO UPDATE SET
         session_id=excluded.session_id,
         request_client=excluded.request_client,
         updated_ts=excluded.updated_ts,
         model_label=excluded.model_label,
         final_text=excluded.final_text,
-        messages_json=excluded.messages_json;
+        messages_json=excluded.messages_json,
+        context_meta_json=excluded.context_meta_json;
       `,
       [
         input.requestId,
@@ -158,10 +197,67 @@ export class SqliteTranscriptStore implements TranscriptStore {
         input.modelLabel ?? null,
         input.finalText ?? null,
         finalJson,
+        input.contextMeta ? JSON.stringify(input.contextMeta) : null,
       ],
     );
 
     this.pruneRetention();
+  }
+
+  unlinkSurfaceMessage(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+  }): UnlinkSurfaceMessageResult {
+    const unlink = this.db.transaction((): UnlinkSurfaceMessageResult => {
+      const mapping = this.db
+        .query(
+          "SELECT request_id FROM surface_message_to_request WHERE platform = ? AND channel_id = ? AND message_id = ?",
+        )
+        .get(input.platform, input.channelId, input.messageId) as { request_id: string } | null;
+      if (!mapping) return { checkpointDeleted: false };
+
+      this.db.run(
+        "DELETE FROM surface_message_to_request WHERE platform = ? AND channel_id = ? AND message_id = ?",
+        [input.platform, input.channelId, input.messageId],
+      );
+
+      const remaining = this.db
+        .query("SELECT 1 FROM surface_message_to_request WHERE request_id = ? LIMIT 1")
+        .get(mapping.request_id);
+      if (remaining) return { requestId: mapping.request_id, checkpointDeleted: false };
+
+      const transcript = this.db
+        .query("SELECT context_meta_json FROM request_transcripts WHERE request_id = ?")
+        .get(mapping.request_id) as { context_meta_json: string | null } | null;
+      if (!isCompactionContextMetaJson(transcript?.context_meta_json)) {
+        return { requestId: mapping.request_id, checkpointDeleted: false };
+      }
+
+      this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [mapping.request_id]);
+      return { requestId: mapping.request_id, checkpointDeleted: true };
+    });
+
+    return unlink();
+  }
+
+  deleteUnlinkedCheckpointCandidate(input: { requestId: string }): boolean {
+    const remove = this.db.transaction(() => {
+      const linked = this.db
+        .query("SELECT 1 FROM surface_message_to_request WHERE request_id = ? LIMIT 1")
+        .get(input.requestId);
+      if (linked) return false;
+
+      const transcript = this.db
+        .query("SELECT context_meta_json FROM request_transcripts WHERE request_id = ?")
+        .get(input.requestId) as { context_meta_json: string | null } | null;
+      if (!isCompactionContextMetaJson(transcript?.context_meta_json)) return false;
+
+      this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [input.requestId]);
+      return true;
+    });
+
+    return remove();
   }
 
   linkSurfaceMessagesToRequest(input: {
@@ -216,7 +312,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     const row = this.db
       .query(
         `
-        SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json
+        SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json, context_meta_json
         FROM request_transcripts
         WHERE request_id = ?
         `,
@@ -230,6 +326,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       model_label: string | null;
       final_text: string | null;
       messages_json: string;
+      context_meta_json: string | null;
     } | null;
 
     return this.rowToSnapshot(row);
@@ -239,7 +336,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     const row = this.db
       .query(
         `
-        SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json
+        SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label, final_text, messages_json, context_meta_json
         FROM request_transcripts
         WHERE session_id = ?
         ORDER BY updated_ts DESC, created_ts DESC, rowid DESC
@@ -255,6 +352,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       model_label: string | null;
       final_text: string | null;
       messages_json: string;
+      context_meta_json: string | null;
     } | null;
 
     return this.rowToSnapshot(row);
@@ -423,6 +521,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       model_label: string | null;
       final_text: string | null;
       messages_json: string;
+      context_meta_json: string | null;
     } | null,
   ): TranscriptSnapshot | null {
     if (!row) return null;
@@ -434,6 +533,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
       return null;
     }
 
+    const contextMeta = parseCompactionContextMeta(row.context_meta_json);
+
     return {
       requestId: row.request_id,
       sessionId: row.session_id,
@@ -443,6 +544,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       messages,
       modelLabel: row.model_label ?? undefined,
       finalText: row.final_text ?? undefined,
+      contextMeta,
     };
   }
 
@@ -451,6 +553,32 @@ export class SqliteTranscriptStore implements TranscriptStore {
     const MAX_REQUESTS = 10_000;
 
     const cutoff = Date.now() - TTL_MS;
+    const checkpointCandidateCutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const candidates = this.db
+      .query(
+        `
+        SELECT request_id, context_meta_json
+        FROM request_transcripts
+        WHERE updated_ts < ?
+          AND context_meta_json IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM surface_message_to_request sm
+            WHERE sm.request_id = request_transcripts.request_id
+          )
+        `,
+      )
+      .all(checkpointCandidateCutoff) as Array<{
+      request_id: string;
+      context_meta_json: string;
+    }>;
+    for (const candidate of candidates) {
+      if (!isCompactionContextMetaJson(candidate.context_meta_json)) continue;
+      this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [candidate.request_id]);
+      logger.info("compaction checkpoint deleted", {
+        requestId: candidate.request_id,
+        reason: "unlinked_candidate_cleanup",
+      });
+    }
     this.db.run("DELETE FROM request_transcripts WHERE updated_ts < ?", [cutoff]);
 
     // Clamp max rows by deleting oldest.
@@ -471,4 +599,20 @@ export class SqliteTranscriptStore implements TranscriptStore {
       this.db.run("DELETE FROM surface_message_to_request WHERE request_id = ?", [v.request_id]);
     }
   }
+}
+
+function parseCompactionContextMeta(
+  raw: string | null | undefined,
+): CompactionCheckpointMeta | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = compactionCheckpointMetaSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isCompactionContextMetaJson(raw: string | null | undefined): boolean {
+  return parseCompactionContextMeta(raw) !== undefined;
 }
