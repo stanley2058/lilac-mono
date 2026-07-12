@@ -21,6 +21,29 @@ import { resolveRestrictedSessionTmpDir } from "../src/shared/attachment-utils";
 const ONE_BY_ONE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+9n0AAAAASUVORK5CYII=";
 
+const REQUIRED_TOOL_POLICY_CONFIG = {
+  output: {
+    maxPreviewBytes: 40 * 1024,
+    artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
+    artifactMaxBytesPerSession: 50 * 1024 * 1024,
+  },
+  historicalResultPruning: {
+    enabled: false,
+    protectTokens: 40_000,
+    minimumTokens: 20_000,
+  },
+  batch: {
+    maxCalls: 8,
+  },
+  media: {
+    maxInlineBytesPerPart: 10 * 1024 * 1024,
+    maxInlineBytesTotal: 20 * 1024 * 1024,
+  },
+} satisfies Pick<
+  CoreConfig["tools"],
+  "output" | "historicalResultPruning" | "batch" | "media"
+>;
+
 describe("tool-server image generation", () => {
   it("normalizes a single inputImages value into an array", () => {
     const parsed = imageGenerateInputSchema.parse({
@@ -73,6 +96,7 @@ describe("tool-server image generation", () => {
   it("uses configured image model specs as the default order", () => {
     const config = {
       tools: {
+        ...REQUIRED_TOOL_POLICY_CONFIG,
         fsBackend: "fff",
         web: {
           extract: {
@@ -221,6 +245,7 @@ describe("tool-server image generation", () => {
   it("resolves image generation parameters from global defaults and model profiles", () => {
     const config = {
       tools: {
+        ...REQUIRED_TOOL_POLICY_CONFIG,
         fsBackend: "fff",
         web: {
           extract: {
@@ -294,6 +319,7 @@ describe("tool-server image generation", () => {
   it("wraps nested shorthand provider options under the resolved namespace", () => {
     const config = {
       tools: {
+        ...REQUIRED_TOOL_POLICY_CONFIG,
         fsBackend: "fff",
         web: {
           extract: {
@@ -352,6 +378,7 @@ describe("tool-server image generation", () => {
   it("lets caller image parameters override configured defaults", () => {
     const config = {
       tools: {
+        ...REQUIRED_TOOL_POLICY_CONFIG,
         fsBackend: "fff",
         web: {
           extract: {
