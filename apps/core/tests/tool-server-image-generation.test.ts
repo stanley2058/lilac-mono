@@ -224,6 +224,40 @@ describe("tool-server image generation", () => {
     ]);
   });
 
+  it("accepts the gpt-image-2 maximum dimension boundary", () => {
+    const normalized = normalizeImageGenerationParametersForModel({
+      modelId: "openai-compatible/gpt-image-2",
+      parameters: {
+        size: "4096x16",
+      },
+    });
+
+    expect(normalized.parameters.size).toBe("4096x16");
+    expect(normalized.warnings).toEqual([]);
+  });
+
+  it("rejects gpt-image-2 dimensions above 4096 pixels", () => {
+    expect(() =>
+      normalizeImageGenerationParametersForModel({
+        modelId: "openai-compatible/gpt-image-2",
+        parameters: {
+          size: "4097x16",
+        },
+      }),
+    ).toThrow("no larger than 4096px per side");
+  });
+
+  it("rejects extreme gpt-image-2 aspect ratios before provider execution", () => {
+    expect(() =>
+      normalizeImageGenerationParametersForModel({
+        modelId: "openai-compatible/gpt-image-2",
+        parameters: {
+          aspectRatio: `${Number.MAX_SAFE_INTEGER}:1`,
+        },
+      }),
+    ).toThrow("no larger than 4096px per side");
+  });
+
   it("converts gpt-image-2 aspectRatio into a concrete provider size", () => {
     const normalized = normalizeImageGenerationParametersForModel({
       modelId: "openai-compatible/gpt-image-2",

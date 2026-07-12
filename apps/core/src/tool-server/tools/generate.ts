@@ -319,6 +319,8 @@ const CONFIGURABLE_IMAGE_PROVIDER_IDS = [
 ] as const satisfies readonly ImageProviderId[];
 
 const GPT_IMAGE_2_MAX_PIXELS = 8_294_400;
+// gpt-image-2 accepts at most 4096px per side; dimensions sent upstream must be 16px multiples.
+const GPT_IMAGE_2_MAX_DIMENSION = 4096;
 const GPT_IMAGE_2_SIZE_MULTIPLE = 16;
 const GPT_IMAGE_2_DEFAULT_PIXELS = 1024 * 1024;
 
@@ -610,6 +612,19 @@ function roundToMultiple(value: number, multiple: number): number {
 }
 
 function clampGptImage2Size(width: number, height: number): `${number}x${number}` {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > GPT_IMAGE_2_MAX_DIMENSION ||
+    height > GPT_IMAGE_2_MAX_DIMENSION
+  ) {
+    throw new Error(
+      `gpt-image-2 dimensions must be positive finite values no larger than ${GPT_IMAGE_2_MAX_DIMENSION}px per side.`,
+    );
+  }
+
   let normalizedWidth = roundToMultiple(width, GPT_IMAGE_2_SIZE_MULTIPLE);
   let normalizedHeight = roundToMultiple(height, GPT_IMAGE_2_SIZE_MULTIPLE);
 
@@ -617,14 +632,6 @@ function clampGptImage2Size(width: number, height: number): `${number}x${number}
     const scale = Math.sqrt(GPT_IMAGE_2_MAX_PIXELS / (normalizedWidth * normalizedHeight));
     normalizedWidth = floorToMultiple(normalizedWidth * scale, GPT_IMAGE_2_SIZE_MULTIPLE);
     normalizedHeight = floorToMultiple(normalizedHeight * scale, GPT_IMAGE_2_SIZE_MULTIPLE);
-  }
-
-  while (normalizedWidth * normalizedHeight > GPT_IMAGE_2_MAX_PIXELS) {
-    if (normalizedWidth >= normalizedHeight) {
-      normalizedWidth -= GPT_IMAGE_2_SIZE_MULTIPLE;
-    } else {
-      normalizedHeight -= GPT_IMAGE_2_SIZE_MULTIPLE;
-    }
   }
 
   return formatSize(normalizedWidth, normalizedHeight);
