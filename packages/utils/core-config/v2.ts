@@ -232,11 +232,11 @@ const imageGenerationParameterDefaultsSchema = z
       .trim()
       .regex(/^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/)
       .optional(),
-    seed: z.number().int().optional(),
     maxRetries: z.number().int().min(0).optional(),
     /** AI SDK providerOptions-style object, with shorthand support in generate.image. */
     options: jsonObjectSchema.optional(),
   })
+  .strict()
   .superRefine((input, ctx) => {
     if (input.size && input.aspectRatio) {
       ctx.addIssue({

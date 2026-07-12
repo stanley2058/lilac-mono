@@ -97,7 +97,6 @@ describe("core config versioning", () => {
           image: {
             defaults: {
               aspectRatio: "1:1",
-              seed: 7,
               options: {
                 quality: "standard",
               },
@@ -123,7 +122,6 @@ describe("core config versioning", () => {
 
     expect(parsed.tools.generate.image.defaults).toEqual({
       aspectRatio: "1:1",
-      seed: 7,
       options: {
         quality: "standard",
       },
@@ -140,6 +138,23 @@ describe("core config versioning", () => {
         },
       },
     });
+  });
+
+  it("rejects removed generate.image seed defaults", async () => {
+    await expect(
+      parseCoreConfig({
+        configVersion: 2,
+        tools: {
+          generate: {
+            image: {
+              defaults: {
+                seed: 7,
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("seed");
   });
 
   it("parses v2 portable model reasoning fields", async () => {

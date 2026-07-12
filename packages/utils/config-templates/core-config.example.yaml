@@ -53,7 +53,7 @@ tools:
       # Parameter precedence:
       # 1. tools.generate.image.defaults
       # 2. tools.generate.image.profiles.<model>.defaults
-      # 3. Caller tool input (`size`, `aspectRatio`, `seed`) wins for that call
+      # 3. Caller tool input (`size`, `aspectRatio`) wins for that call
       # 4. The upstream provider/AI SDK supplies anything still unset
       # 5. Model-specific local normalization runs after the final value is
       #    resolved, before the provider request is sent. Example: gpt-image-2

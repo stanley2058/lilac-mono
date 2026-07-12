@@ -263,7 +263,6 @@ describe("tool-server image generation", () => {
             models: ["openai-compatible/nanobanana", "openai-compatible/gpt-image-2"],
             defaults: {
               aspectRatio: "1:1",
-              seed: 11,
               options: {
                 quality: "standard",
               },
@@ -303,7 +302,6 @@ describe("tool-server image generation", () => {
     expect(params).toEqual({
       size: "1024x1024",
       aspectRatio: undefined,
-      seed: 11,
       providerOptions: {
         openaiCompatible: {
           quality: "high",
@@ -396,7 +394,6 @@ describe("tool-server image generation", () => {
             models: ["openai-compatible/gpt-image-2"],
             defaults: {
               aspectRatio: "1:1",
-              seed: 11,
             },
             profiles: {},
           },
@@ -418,13 +415,11 @@ describe("tool-server image generation", () => {
       },
       input: {
         size: "1536x1024",
-        seed: 42,
       },
     });
 
     expect(params.size).toBe("1536x1024");
     expect(params.aspectRatio).toBeUndefined();
-    expect(params.seed).toBe(42);
   });
 
   it("returns plain text prompt when inputImages are not provided", async () => {

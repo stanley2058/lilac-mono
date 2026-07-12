@@ -54,7 +54,7 @@ cat payload.json | tools <tool> --stdin
     - Raw HTML/raw response/status code -> `curl`, `urllib`, browser automation.
   - For programmatic summarization/parsing, pipe this output directly.
 - `search` — Search the web
-- `generate.image` — Generate or edit an image with a configured provider and write it to a local file. If a third-party OpenAI-compatible image API is configured, pass `model` as `openai-compatible/<provider-image-model-id>` or use the configured default. Tool descriptions may include per-model `useWhen` guidance and configured defaults; caller-provided `size`, `aspectRatio`, and `seed` override config for that call.
+- `generate.image` — Generate or edit an image with a configured provider and write it to a local file. If a third-party OpenAI-compatible image API is configured, pass `model` as `openai-compatible/<provider-image-model-id>` or use the configured default. Tool descriptions may include per-model `useWhen` guidance and configured defaults; caller-provided `size` and `aspectRatio` override config for that call.
 - `generate.video` — Generate a video with a configured provider and write it to a local file
 - `skills.list` — List and search skills discovered from common directories
 - `skills.brief` — Load a skill's frontmatter + a truncated SKILL.md body

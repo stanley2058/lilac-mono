@@ -193,12 +193,6 @@ export const imageGenerateInputSchema = z
           "- For grok-imagine-image(-pro): 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 2:1 | 1:2 | 19.5:9 | 9:19.5 | 20:9 | 9:20.",
         ].join("\n"),
       ),
-
-    seed: z.coerce
-      .number()
-      .int()
-      .optional()
-      .describe("Optional generation seed. If omitted, uses model/profile/provider default."),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -301,7 +295,6 @@ type ImageProviderOptions = NonNullable<GenerateImageCallOptions["providerOption
 type ImageGenerationResolvedParameters = {
   size?: `${number}x${number}`;
   aspectRatio?: `${number}:${number}`;
-  seed?: number;
   maxRetries?: number;
   providerOptions?: ImageProviderOptions;
 };
@@ -540,7 +533,6 @@ function applyParameterDefaults(
     next.size = undefined;
   }
 
-  if (defaults.seed !== undefined) next.seed = defaults.seed;
   if (defaults.maxRetries !== undefined) next.maxRetries = defaults.maxRetries;
 
   next.providerOptions = mergeImageProviderOptions(
@@ -555,7 +547,7 @@ export function resolveImageGenerationParameters(params: {
   config: Pick<CoreConfig, "tools"> | undefined;
   modelId: string;
   model: ImageModel;
-  input: Pick<ImageGenerateInput, "size" | "aspectRatio" | "seed">;
+  input: Pick<ImageGenerateInput, "size" | "aspectRatio">;
 }): ImageGenerationResolvedParameters {
   const imageConfig = params.config?.tools.generate.image;
   const providerNamespace = getImageModelProviderNamespace(params.model, params.modelId);
@@ -577,13 +569,6 @@ export function resolveImageGenerationParameters(params: {
       ...resolved,
       size: undefined,
       aspectRatio: params.input.aspectRatio as `${number}:${number}`,
-    };
-  }
-
-  if (params.input.seed !== undefined) {
-    resolved = {
-      ...resolved,
-      seed: params.input.seed,
     };
   }
 
@@ -1040,7 +1025,6 @@ function describeImageParameterDefaults(
   const parts: string[] = [];
   if (defaults.size) parts.push(`size=${defaults.size}`);
   if (defaults.aspectRatio) parts.push(`aspectRatio=${defaults.aspectRatio}`);
-  if (defaults.seed !== undefined) parts.push(`seed=${defaults.seed}`);
   if (defaults.maxRetries !== undefined) parts.push(`maxRetries=${defaults.maxRetries}`);
   if (defaults.options && Object.keys(defaults.options).length > 0) {
     parts.push("providerOptions=configured");
@@ -1360,7 +1344,6 @@ export function generateImageWithModel(
     abortSignal?: AbortSignal;
     size?: `${number}x${number}`;
     aspectRatio?: `${number}:${number}`;
-    seed?: number;
     maxRetries?: number;
     providerOptions?: ImageProviderOptions;
   },
@@ -1371,7 +1354,6 @@ export function generateImageWithModel(
     abortSignal: opts?.abortSignal,
     size: opts?.size,
     aspectRatio: opts?.aspectRatio,
-    seed: opts?.seed,
     maxRetries: opts?.maxRetries,
     providerOptions: opts?.providerOptions,
   });
@@ -1520,7 +1502,6 @@ export class Generate implements ServerTool {
       ...payload,
       size: generationParameters.size,
       aspectRatio: generationParameters.aspectRatio,
-      seed: generationParameters.seed,
     });
 
     const cwd = opts?.context?.cwd ?? process.cwd();
@@ -1547,7 +1528,6 @@ export class Generate implements ServerTool {
       abortSignal: opts?.signal,
       size,
       aspectRatio,
-      seed: generationParameters.seed,
       maxRetries: generationParameters.maxRetries,
       providerOptions: generationParameters.providerOptions,
     });

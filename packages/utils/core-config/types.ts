@@ -65,7 +65,6 @@ export type ModelCapabilityOverride = {
 export type ImageGenerationParameterDefaults = {
   size?: string;
   aspectRatio?: string;
-  seed?: number;
   maxRetries?: number;
   options?: JSONObject;
 };
