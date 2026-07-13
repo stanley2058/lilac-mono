@@ -2,8 +2,11 @@ import { z } from "zod";
 
 import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicators";
 
+import { collectUnknownConfigKeyPaths } from "./unknown-keys";
+
 import type {
   ConfigParser,
+  CoreConfigParseOptions,
   CoreConfigVersion,
   JSONObject,
   JSONValue,
@@ -691,8 +694,16 @@ function readExplicitV1SubagentTimeoutMs(raw: unknown): number | undefined {
   return typeof timeoutMs === "number" ? timeoutMs : undefined;
 }
 
-export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig {
+export function parseCoreConfigV1ToUniversal(
+  raw: unknown,
+  options?: CoreConfigParseOptions,
+): UniversalCoreConfig {
   const parsed = parseCoreConfigV1(raw);
+  if (options?.onUnknownKey) {
+    for (const path of collectUnknownConfigKeyPaths(raw, parsed)) {
+      options.onUnknownKey(path);
+    }
+  }
   const { experimental_hashline_edit: hashline, ...toolsRest } = parsed.tools;
   const { previewFinalOutputStyle, experimental, ...discordRest } = parsed.surface.discord;
   const { subagents, ...agentRest } = parsed.agent;
@@ -775,7 +786,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
 export class V1CoreConfigParser implements ConfigParser {
   readonly version = V1_CORE_CONFIG_VERSION;
 
-  async parse(input: object): Promise<UniversalCoreConfig> {
-    return parseCoreConfigV1ToUniversal(input);
+  async parse(input: object, options?: CoreConfigParseOptions): Promise<UniversalCoreConfig> {
+    return parseCoreConfigV1ToUniversal(input, options);
   }
 }

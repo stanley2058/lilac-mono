@@ -16,8 +16,14 @@ import {
   statsForNerdsSchema,
   webExtractConfigSchema,
 } from "./v1";
+import { collectUnknownConfigKeyPaths } from "./unknown-keys";
 
-import type { ConfigParser, CoreConfigVersion, UniversalCoreConfig } from "./types";
+import type {
+  ConfigParser,
+  CoreConfigParseOptions,
+  CoreConfigVersion,
+  UniversalCoreConfig,
+} from "./types";
 
 export const V2_CORE_CONFIG_VERSION = 2 satisfies CoreConfigVersion;
 export const CURRENT_CORE_CONFIG_VERSION = V2_CORE_CONFIG_VERSION;
@@ -530,8 +536,16 @@ export function parseCoreConfigV2(raw: unknown): ParsedCoreConfigV2 {
   return coreConfigInputSchemaV2.parse(raw);
 }
 
-export function parseCoreConfigV2ToUniversal(raw: unknown): UniversalCoreConfig {
+export function parseCoreConfigV2ToUniversal(
+  raw: unknown,
+  options?: CoreConfigParseOptions,
+): UniversalCoreConfig {
   const parsed = parseCoreConfigV2(raw);
+  if (options?.onUnknownKey) {
+    for (const path of collectUnknownConfigKeyPaths(raw, parsed)) {
+      options.onUnknownKey(path);
+    }
+  }
   const { artifactTtl, ...output } = parsed.tools.output;
 
   return {
@@ -553,7 +567,7 @@ export function parseCoreConfigV2ToUniversal(raw: unknown): UniversalCoreConfig 
 export class V2CoreConfigParser implements ConfigParser {
   readonly version = V2_CORE_CONFIG_VERSION;
 
-  async parse(input: object): Promise<UniversalCoreConfig> {
-    return parseCoreConfigV2ToUniversal(input);
+  async parse(input: object, options?: CoreConfigParseOptions): Promise<UniversalCoreConfig> {
+    return parseCoreConfigV2ToUniversal(input, options);
   }
 }

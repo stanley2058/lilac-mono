@@ -6,6 +6,12 @@ export type JSONObject = {
 
 export type CoreConfigVersion = 1 | 2;
 
+export type CoreConfigKeyPath = readonly (string | number)[];
+
+export type CoreConfigParseOptions = {
+  onUnknownKey?: (path: CoreConfigKeyPath) => void;
+};
+
 export type DiscordUserAliasConfig = {
   discord: string;
   comment?: string;
@@ -246,5 +252,5 @@ export type CoreConfig = UniversalCoreConfig;
 
 export interface ConfigParser {
   readonly version: CoreConfigVersion;
-  parse(input: object): Promise<UniversalCoreConfig>;
+  parse(input: object, options?: CoreConfigParseOptions): Promise<UniversalCoreConfig>;
 }

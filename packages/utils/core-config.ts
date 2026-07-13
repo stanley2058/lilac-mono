@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { env } from "./env";
 import { errorMessage, isRecord } from "./runtime-utils";
 import { findWorkspaceRoot } from "./find-root";
+import { createLogger } from "./logging";
 import {
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
@@ -25,9 +26,11 @@ import {
   parseCoreConfigV2,
   parseCoreConfigV2ToUniversal,
 } from "./core-config/v2";
+import { formatCoreConfigKeyPath } from "./core-config/unknown-keys";
 import type {
   ConfigParser,
   CoreConfig,
+  CoreConfigParseOptions,
   CoreConfigVersion,
   DiscordSessionAliasConfig,
   DiscordUserAliasConfig,
@@ -45,6 +48,8 @@ export {
 export type {
   ConfigParser,
   CoreConfig,
+  CoreConfigKeyPath,
+  CoreConfigParseOptions,
   CoreConfigVersion,
   DiscordSessionAliasConfig,
   DiscordUserAliasConfig,
@@ -62,6 +67,7 @@ const CORE_CONFIG_PARSERS: ReadonlyMap<CoreConfigVersion, ConfigParser> = new Ma
   [1, new V1CoreConfigParser()],
   [2, new V2CoreConfigParser()],
 ]);
+const logger = createLogger({ module: "core-config" });
 
 export function getDiscordUserAliasValue(alias: DiscordUserAliasConfig | undefined): {
   discordId: string;
@@ -162,7 +168,10 @@ export function readCoreConfigVersion(raw: unknown): CoreConfigVersion {
   );
 }
 
-export async function parseCoreConfig(raw: unknown): Promise<CoreConfig> {
+export async function parseCoreConfig(
+  raw: unknown,
+  options?: CoreConfigParseOptions,
+): Promise<CoreConfig> {
   const version = readCoreConfigVersion(raw);
   const parser = CORE_CONFIG_PARSERS.get(version);
 
@@ -176,7 +185,16 @@ export async function parseCoreConfig(raw: unknown): Promise<CoreConfig> {
     throw new Error("Core config must be an object");
   }
 
-  return parser.parse(raw);
+  const onUnknownKey =
+    options?.onUnknownKey ??
+    ((path) => {
+      logger.warn("unknown core-config key ignored", {
+        path: formatCoreConfigKeyPath(path),
+        parserVersion: version,
+      });
+    });
+
+  return parser.parse(raw, { onUnknownKey });
 }
 
 async function listPromptTemplateNewFiles(promptDir: string): Promise<string[]> {
