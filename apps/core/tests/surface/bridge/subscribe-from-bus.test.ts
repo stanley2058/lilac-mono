@@ -378,6 +378,50 @@ class FakeAdapter implements SurfaceAdapter {
 }
 
 describe("bridgeBusToAdapter", () => {
+  it("keeps an idle relay alive with invisible agent activity", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const adapter = new FakeAdapter();
+    const requestId = "discord:chan:msg_activity";
+
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 60,
+    });
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestReply,
+      {},
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "chan",
+          request_client: "discord",
+        },
+      },
+    );
+
+    await Bun.sleep(40);
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputActivity,
+      { source: "model" },
+      { headers: { request_id: requestId } },
+    );
+    await Bun.sleep(40);
+
+    expect(adapter.stream?.aborted).toBeUndefined();
+    expect(adapter.stream?.parts).toEqual([]);
+    expect(bridge.snapshotRelays()).toHaveLength(1);
+
+    await Bun.sleep(30);
+    expect(adapter.stream?.aborted).toBe("timeout");
+    expect(bridge.snapshotRelays()).toHaveLength(0);
+
+    await bridge.stop();
+  });
+
   it("starts an output relay on evt.request.reply and streams output parts", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

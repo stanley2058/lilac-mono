@@ -50,7 +50,8 @@ type OutputEventType =
   | typeof lilacEventTypes.EvtAgentOutputDeltaText
   | typeof lilacEventTypes.EvtAgentOutputResponseText
   | typeof lilacEventTypes.EvtAgentOutputResponseBinary
-  | typeof lilacEventTypes.EvtAgentOutputToolCall;
+  | typeof lilacEventTypes.EvtAgentOutputToolCall
+  | typeof lilacEventTypes.EvtAgentOutputActivity;
 
 function isOutputEventType(type: LilacEventType): type is OutputEventType {
   return (
@@ -58,7 +59,8 @@ function isOutputEventType(type: LilacEventType): type is OutputEventType {
     type === lilacEventTypes.EvtAgentOutputDeltaText ||
     type === lilacEventTypes.EvtAgentOutputResponseText ||
     type === lilacEventTypes.EvtAgentOutputResponseBinary ||
-    type === lilacEventTypes.EvtAgentOutputToolCall
+    type === lilacEventTypes.EvtAgentOutputToolCall ||
+    type === lilacEventTypes.EvtAgentOutputActivity
   );
 }
 
@@ -113,7 +115,8 @@ function getTopicForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputDeltaText:
     case lilacEventTypes.EvtAgentOutputResponseText:
     case lilacEventTypes.EvtAgentOutputResponseBinary:
-    case lilacEventTypes.EvtAgentOutputToolCall: {
+    case lilacEventTypes.EvtAgentOutputToolCall:
+    case lilacEventTypes.EvtAgentOutputActivity: {
       const requestId = assertRequestId(headers, `publish(${type})`);
       return outReqTopic(requestId) as LilacEventSpec[TType]["topic"];
     }
@@ -140,7 +143,8 @@ function getKeyForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtAgentOutputDeltaText:
     case lilacEventTypes.EvtAgentOutputResponseText:
     case lilacEventTypes.EvtAgentOutputResponseBinary:
-    case lilacEventTypes.EvtAgentOutputToolCall: {
+    case lilacEventTypes.EvtAgentOutputToolCall:
+    case lilacEventTypes.EvtAgentOutputActivity: {
       return assertRequestId(headers, `publish(${type})`);
     }
 

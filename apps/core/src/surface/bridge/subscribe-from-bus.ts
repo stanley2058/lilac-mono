@@ -908,6 +908,11 @@ export async function bridgeBusToAdapter(params: {
             let part: SurfaceOutputPart | null = null;
 
             switch (outMsg.type) {
+              case lilacEventTypes.EvtAgentOutputActivity: {
+                lastOutCursor = outCtx.cursor;
+                break;
+              }
+
               case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
                 if (platform === "discord") {
                   const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;

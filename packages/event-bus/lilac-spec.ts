@@ -41,6 +41,7 @@ export const lilacEventTypes = {
   EvtAgentOutputResponseText: "evt.agent.output.response.text",
   EvtAgentOutputResponseBinary: "evt.agent.output.response.binary",
   EvtAgentOutputToolCall: "evt.agent.output.toolcall",
+  EvtAgentOutputActivity: "evt.agent.output.activity",
 } as const;
 
 /** Union of all supported Lilac event types. */
@@ -279,6 +280,10 @@ export type EvtAgentOutputToolCallData = {
   error?: string;
 };
 
+export type EvtAgentOutputActivityData = {
+  source: "model" | "tool" | "subagent";
+};
+
 /**
  * Type-level map: event type -> topic + payload.
  */
@@ -419,6 +424,11 @@ export type LilacEventSpec = {
     topic: OutReqTopic;
     key: string;
     data: EvtAgentOutputToolCallData;
+  };
+  [lilacEventTypes.EvtAgentOutputActivity]: {
+    topic: OutReqTopic;
+    key: string;
+    data: EvtAgentOutputActivityData;
   };
 };
 
