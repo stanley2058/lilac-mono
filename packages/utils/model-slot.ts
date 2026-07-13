@@ -3,7 +3,12 @@ import type { LanguageModel } from "ai";
 import { providers, type Providers } from "./model-provider";
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import type { CoreConfig, JSONObject, JSONValue, ModelReasoningEffort } from "./core-config";
+import { createLogger } from "./logging";
 import { parseModelSpecifier } from "./model-capability";
+import { validateModelProviderOptions } from "./model-provider-option-validation";
+
+const logger = createLogger({ module: "utils:model-slot" });
+const warnedProviderOptions = new Set<string>();
 
 export type ModelSlot = "main" | "fast";
 
@@ -313,6 +318,19 @@ function resolveModel(params: {
   if (typeof p !== "function") {
     throw new Error(
       `Provider '${provider}' is not configured (${params.source}='${params.alias ?? params.spec}')`,
+    );
+  }
+
+  for (const warning of validateModelProviderOptions(providerOptions)) {
+    const warningKey = `${params.source}:${warning.namespace}:${warning.option}`;
+    if (warnedProviderOptions.has(warningKey)) continue;
+    warnedProviderOptions.add(warningKey);
+
+    const suggestion = warning.suggestion
+      ? ` Did you mean '${warning.namespace}.${warning.suggestion}'?`
+      : "";
+    logger.warn(
+      `Unknown model provider option '${warning.namespace}.${warning.option}' (${params.source}); AI SDK will ignore it.${suggestion}`,
     );
   }
 

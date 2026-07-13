@@ -6,20 +6,24 @@
   "scripts": {
     "build:info": "bun scripts/write-build-info.ts",
     "build:remote-fs": "bun --cwd=apps/core run build:remote-runner && bun --cwd=packages/remote-fs-runner run build",
+    "codegen:model-options": "bun scripts/generate-provider-option-shapes.ts",
+    "codegen:model-options:check": "bun scripts/generate-provider-option-shapes.ts --check",
     "docker:build": "bun scripts/docker-build.ts build",
     "docker:compose:build": "bun scripts/docker-build.ts compose-build",
-    "lint": "oxlint --tsconfig tsconfig.json apps packages examples __tests__",
-    "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages examples __tests__",
-    "typecheck": "set -e; pids=''; for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit & pids=\"$pids $!\"; fi; done; for pid in $pids; do wait \"$pid\"; done",
-    "fmt": "oxfmt --write \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
-    "fmt:check": "oxfmt --check \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
-    "ci": "bun test && bun run lint && bun run typecheck && bun run fmt:check && echo 'check passed'"
+    "lint": "oxlint --tsconfig tsconfig.json apps packages scripts/generate-provider-option-shapes.ts examples __tests__",
+    "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages scripts/generate-provider-option-shapes.ts examples __tests__",
+    "typecheck": "set -e; pids=''; for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit & pids=\"$pids $!\"; fi; done; for pid in $pids; do wait \"$pid\"; done; bun run typecheck:codegen",
+    "typecheck:codegen": "bunx tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ESNext --module Preserve --moduleResolution bundler --types bun scripts/generate-provider-option-shapes.ts",
+    "fmt": "oxfmt --write \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"scripts/generate-provider-option-shapes.ts\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
+    "fmt:check": "oxfmt --check \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"scripts/generate-provider-option-shapes.ts\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
+    "ci": "bun run codegen:model-options:check && bun test && bun run lint && bun run typecheck && bun run fmt:check && echo 'check passed'"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "oxfmt": "^0.44.0",
     "oxlint": "^1.59.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "typescript-codegen": "npm:typescript@6.0.3"
   },
   "workspaces": [
     "apps/*",
