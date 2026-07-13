@@ -1,24 +1,34 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 async function runBunTest(cwd: string): Promise<{
   exitCode: number;
   stdout: string;
   stderr: string;
 }> {
-  const proc = Bun.spawn(["bun", "test", "--pass-with-no-tests"], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "ignore",
-  });
+  const dataDir = await mkdtemp(path.join(tmpdir(), "lilac-workspace-test-data-"));
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  try {
+    const proc = Bun.spawn(["bun", "test", "--pass-with-no-tests"], {
+      cwd,
+      env: { ...process.env, DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
 
-  return { exitCode, stdout, stderr };
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    return { exitCode, stdout, stderr };
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 }
 
 describe("workspace tests", () => {
