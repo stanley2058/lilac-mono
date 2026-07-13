@@ -8,8 +8,15 @@ export type CoreConfigVersion = 1 | 2;
 
 export type CoreConfigKeyPath = readonly (string | number)[];
 
+export type CoreConfigModelOptionWarning = {
+  namespace: string;
+  option: string;
+  suggestion?: string;
+};
+
 export type CoreConfigParseOptions = {
   onUnknownKey?: (path: CoreConfigKeyPath) => void;
+  onUnknownModelOption?: (warning: CoreConfigModelOptionWarning, source: string) => void;
 };
 
 export type DiscordUserAliasConfig = {

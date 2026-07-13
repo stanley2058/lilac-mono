@@ -5,7 +5,11 @@ import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import type { CoreConfig, JSONObject, JSONValue, ModelReasoningEffort } from "./core-config";
 import { createLogger } from "./logging";
 import { parseModelSpecifier } from "./model-capability";
-import { validateModelProviderOptions } from "./model-provider-option-validation";
+import {
+  formatModelProviderOptionWarning,
+  normalizeConfiguredModelProviderOptions,
+  validateModelProviderOptions,
+} from "./model-provider-option-validation";
 
 const logger = createLogger({ module: "utils:model-slot" });
 const warnedProviderOptions = new Set<string>();
@@ -102,31 +106,6 @@ function deepMergeObjects(base?: JSONObject, override?: JSONObject): JSONObject 
   return deepMergeJson(base, override) as JSONObject;
 }
 
-function looksLikeProviderOptionsMap(obj: JSONObject): boolean {
-  const values = Object.values(obj);
-  if (values.length === 0) return false;
-  // A providerOptions map has only object values at the top-level.
-  // If there are scalars at the top-level, treat as shorthand.
-  for (const v of values) {
-    if (v === undefined) continue;
-    if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
-  }
-  return true;
-}
-
-function providerOptionsNamespace(provider: string): string {
-  // Codex uses the OpenAI provider under the hood.
-  if (provider === "codex") return "openai";
-
-  // The OpenAI-compatible provider uses the openaiCompatible options namespace.
-  if (provider === "openai-compatible") return "openaiCompatible";
-
-  // Our provider id is "vercel" but the AI SDK namespace is "gateway".
-  if (provider === "vercel") return "gateway";
-
-  return provider;
-}
-
 function withOpenAIParallelToolCallsDefault(
   provider: string,
   providerOptions?: { [x: string]: JSONObject },
@@ -163,14 +142,12 @@ function buildProviderOptions(params: { provider: string; options?: JSONObject }
 } {
   const options = params.options ?? {};
 
-  const { anthropic_prompt_cache, codex_instructions, response_commentary, ...rest } =
+  const { anthropic_prompt_cache, codex_instructions, response_commentary } =
     options as JSONObject & {
       anthropic_prompt_cache?: JSONValue;
       codex_instructions?: JSONValue;
       response_commentary?: JSONValue;
     };
-
-  const hasRest = Object.keys(rest).length > 0;
   const codexInstructions =
     typeof codex_instructions === "string" && codex_instructions.length > 0
       ? codex_instructions
@@ -184,15 +161,7 @@ function buildProviderOptions(params: { provider: string; options?: JSONObject }
   const anthropicPromptCache = anthropic_prompt_cache === true ? true : undefined;
 
   const provider = params.provider;
-  const ns = providerOptionsNamespace(provider);
-
-  let providerOptions: { [x: string]: JSONObject } | undefined;
-
-  if (hasRest) {
-    providerOptions = looksLikeProviderOptionsMap(rest)
-      ? (rest as unknown as { [x: string]: JSONObject })
-      : ({ [ns]: rest } as { [x: string]: JSONObject });
-  }
+  const providerOptions = normalizeConfiguredModelProviderOptions(provider, options);
 
   if (provider !== "codex") {
     // Non-codex: codex_instructions is ignored; also not forwarded.
@@ -326,12 +295,7 @@ function resolveModel(params: {
     if (warnedProviderOptions.has(warningKey)) continue;
     warnedProviderOptions.add(warningKey);
 
-    const suggestion = warning.suggestion
-      ? ` Did you mean '${warning.namespace}.${warning.suggestion}'?`
-      : "";
-    logger.warn(
-      `Unknown model provider option '${warning.namespace}.${warning.option}' (${params.source}); AI SDK will ignore it.${suggestion}`,
-    );
+    logger.warn(formatModelProviderOptionWarning(warning, params.source));
   }
 
   return {

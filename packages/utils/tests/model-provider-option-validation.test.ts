@@ -1,8 +1,43 @@
 import { describe, expect, it } from "bun:test";
 
+import { parseCoreConfig, type CoreConfigModelOptionWarning } from "../core-config";
 import { validateModelProviderOptions } from "../model-provider-option-validation";
 
 describe("validateModelProviderOptions", () => {
+  it("reports options from unused model presets during config parsing", async () => {
+    const warnings: Array<{ warning: CoreConfigModelOptionWarning; source: string }> = [];
+
+    await parseCoreConfig(
+      {
+        configVersion: 2,
+        models: {
+          def: {
+            unused: {
+              model: "openai/gpt-5.5",
+              options: { verbosity: "low" },
+            },
+          },
+        },
+      },
+      {
+        onUnknownModelOption(warning, source) {
+          warnings.push({ warning, source });
+        },
+      },
+    );
+
+    expect(warnings).toEqual([
+      {
+        source: "models.def.unused.options",
+        warning: {
+          namespace: "openai",
+          option: "verbosity",
+          suggestion: "textVerbosity",
+        },
+      },
+    ]);
+  });
+
   it("accepts generated provider option keys", () => {
     expect(
       validateModelProviderOptions({
