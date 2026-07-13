@@ -760,6 +760,7 @@ export function parseCoreConfigV1ToUniversal(raw: unknown): UniversalCoreConfig 
     agent: {
       ...agentRest,
       systemPrompt: "",
+      idleTimeoutMs: 15 * 60 * 1000,
       retry: { ...DEFAULT_AGENT_RETRY },
       subagents: {
         enabled: subagents.enabled,

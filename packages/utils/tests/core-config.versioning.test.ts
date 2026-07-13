@@ -21,6 +21,7 @@ describe("core config versioning", () => {
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("embed");
     expect(parsed.surface.discord.markdownTableRender.enabled).toBe(false);
     expect(parsed.agent.reasoningDisplay).toBe("simple");
+    expect(parsed.agent.idleTimeoutMs).toBe(15 * 60 * 1000);
     expect(parsed.agent.retry).toEqual({
       enabled: false,
       maxRetries: 0,
@@ -51,6 +52,7 @@ describe("core config versioning", () => {
       fallbackMode: "list",
     });
     expect(parsed.agent.reasoningDisplay).toBe("detailed");
+    expect(parsed.agent.idleTimeoutMs).toBe(15 * 60 * 1000);
     expect(parsed.agent.retry).toEqual({
       enabled: true,
       maxRetries: 3,
@@ -165,6 +167,7 @@ describe("core config versioning", () => {
         },
       },
       agent: {
+        idleTimeoutMs: 1_200_000,
         subagents: {
           idleTimeoutMs: 240_000,
         },
@@ -181,6 +184,7 @@ describe("core config versioning", () => {
       maxWidth: 120,
       fallbackMode: "passthrough",
     });
+    expect(parsed.agent.idleTimeoutMs).toBe(1_200_000);
     expect(parsed.agent.subagents).toEqual({
       enabled: true,
       maxDepth: 2,

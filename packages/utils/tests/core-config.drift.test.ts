@@ -102,6 +102,7 @@ describe("core config drift coverage", () => {
       fallbackMode: "list",
     });
     expect(cfg.agent.reasoningDisplay).toBe("detailed");
+    expect(cfg.agent.idleTimeoutMs).toBe(15 * 60 * 1000);
     expect(cfg.agent.retry).toEqual({
       enabled: true,
       maxRetries: 3,

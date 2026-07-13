@@ -480,6 +480,11 @@ export const coreConfigInputSchemaV2 = z.object({
     .object({
       statsForNerds: statsForNerdsSchema,
       reasoningDisplay: reasoningDisplaySchema,
+      idleTimeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .default(15 * 60 * 1000),
       retry: agentRetrySchema,
       subagents: subagentsSchemaV2.default({
         enabled: true,
@@ -495,6 +500,7 @@ export const coreConfigInputSchemaV2 = z.object({
     .default({
       statsForNerds: false,
       reasoningDisplay: "detailed",
+      idleTimeoutMs: 15 * 60 * 1000,
       retry: {
         enabled: true,
         maxRetries: 3,

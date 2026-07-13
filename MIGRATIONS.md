@@ -44,6 +44,7 @@ Removed v2 fields:
 
 New v2 fields:
 
+- `agent.idleTimeoutMs`: primary agent inactivity timeout; defaults to `900000` (15 minutes). Active runs have no total runtime cap. Frozen v1 configs receive the same universal fallback but cannot override it.
 - `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
 - `models.capability.overrides.<provider/model>.attachment`: optional manual override for model attachment input support.
 - `conversation.thread.summarization.enabled`: default-false gate for background conversation thread summarization.

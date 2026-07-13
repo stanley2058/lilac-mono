@@ -210,6 +210,10 @@ agent:
   # - detailed: also show blockquoted reasoning content (clamped to 500 chars)
   reasoningDisplay: detailed
 
+  # Stop a primary agent run after this long without model, tool, or subagent activity.
+  # Active runs may continue indefinitely.
+  idleTimeoutMs: 900000
+
   retry:
     # Retry transient upstream failures such as overloaded/503/rate-limit stream errors.
     enabled: true

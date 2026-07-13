@@ -369,6 +369,7 @@ Key sections:
 - `surface.discord`: bot token env var name, allowlists, botName.
 - `tools.web.extract.providers`: ordered web provider list shared by `web.search` and provider-backed `web.fetch`/extract (`tavily`, `exa`, `firecrawl`).
 - `tools.web.fetch.mode`: default fetch strategy (`auto`, `fetch`, `browser`, `extract`, or `provider-only`).
+- `agent.idleTimeoutMs`: primary agent inactivity timeout; active runs have no total runtime cap.
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.

@@ -188,6 +188,7 @@ export type UniversalCoreConfig = {
     systemPrompt: string;
     statsForNerds: boolean | { verbose: boolean };
     reasoningDisplay: "none" | "simple" | "detailed";
+    idleTimeoutMs: number;
     retry: {
       enabled: boolean;
       maxRetries: number;
