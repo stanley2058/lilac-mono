@@ -157,6 +157,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       name: "subagent_delegate",
       isEnabled: ({ runProfile, runtime, subagentConfig, subagentDepth, requestContext }) =>
         runProfile !== "explore" &&
+        runProfile !== "general" &&
         Boolean(runtime.bus) &&
         subagentConfig.enabled &&
         subagentDepth < subagentConfig.maxDepth &&

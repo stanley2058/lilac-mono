@@ -213,6 +213,39 @@ describe("core tool plugin manager", () => {
       subagentConfig: cfg.agent.subagents!,
     });
     expect([...exploreTools.specs.keys()].sort()).toEqual(["batch", "glob", "grep", "read_file"]);
+
+    const generalTools = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "general",
+      editingToolMode: "apply_patch",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+    });
+    expect(Object.keys(generalTools.tools).sort()).toEqual([
+      "apply_patch",
+      "bash",
+      "batch",
+      "glob",
+      "grep",
+      "read_file",
+    ]);
+
+    const selfTools = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "self",
+      editingToolMode: "apply_patch",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+    });
+    expect(Object.keys(selfTools.tools).sort()).toEqual([
+      "apply_patch",
+      "bash",
+      "batch",
+      "glob",
+      "grep",
+      "read_file",
+      "subagent_delegate",
+    ]);
   });
 
   it("hides unsandboxed local tools in restricted mode", async () => {
