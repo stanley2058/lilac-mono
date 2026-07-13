@@ -323,7 +323,11 @@ function isResponseBodyInit(value: unknown): value is BodyInit {
 export async function readSanitizedStreamTextCapped(
   stream: unknown,
   maxChars: number,
-  options?: { overflowFilePath?: string; literalSecrets?: readonly string[] },
+  options?: {
+    overflowFilePath?: string;
+    literalSecrets?: readonly string[];
+    onActivity?: () => void;
+  },
 ): Promise<SanitizedStreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, totalBytes: 0, capped: false };
@@ -412,6 +416,7 @@ export async function readSanitizedStreamTextCapped(
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
+          options?.onActivity?.();
           await retainRawChunk(value);
           await consumeSanitizedText(sanitizer.write(value));
           if (capped && !overflowInitialized) await flushBufferedRaw();

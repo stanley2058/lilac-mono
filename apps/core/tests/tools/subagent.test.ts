@@ -411,11 +411,27 @@ describe("subagent_delegate tool", () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
 
+    let localActivityCount = 0;
     const tools = subagentTools({
       bus,
       idleTimeoutMs: 40,
       maxDepth: 1,
+      onActivity: () => {
+        localActivityCount += 1;
+      },
     });
+    const parentActivitySources: string[] = [];
+
+    await bus.subscribeTopic(
+      outReqTopic("r:idle-reset"),
+      { mode: "tail", offset: { type: "begin" } },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.EvtAgentOutputActivity) {
+          parentActivitySources.push(msg.data.source);
+        }
+        await ctx.commit();
+      },
+    );
 
     await bus.subscribeTopic(
       "cmd.request",
@@ -482,6 +498,8 @@ describe("subagent_delegate tool", () => {
     if (res.mode !== "sync") throw new Error("expected sync subagent result");
     expect(res.status).toBe("resolved");
     expect(res.finalText).toBe("finished");
+    expect(parentActivitySources).toEqual(["subagent"]);
+    expect(localActivityCount).toBe(4);
   });
 
   it("supports general and self delegation profiles", async () => {

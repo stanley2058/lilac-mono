@@ -92,6 +92,7 @@ export function bashToolWithCwd(
   opts?: {
     artifacts?: ToolResultArtifactStore;
     outputConfig?: CoreConfig["tools"]["output"];
+    onActivity?: () => void;
   },
 ) {
   return {
@@ -126,6 +127,7 @@ export function bashToolWithCwd(
           toolCallId,
           artifacts: opts?.artifacts,
           outputConfig: opts?.outputConfig,
+          onActivity: opts?.onActivity,
         } as {
           context?: {
             requestId: string;
@@ -136,6 +138,7 @@ export function bashToolWithCwd(
           toolCallId?: string;
           artifacts?: ToolResultArtifactStore;
           outputConfig?: CoreConfig["tools"]["output"];
+          onActivity?: () => void;
         });
       },
     }),

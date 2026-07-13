@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   createLilacBus,
   lilacEventTypes,
+  outReqTopic,
   type HandleContext,
   type Message,
   type PublishOptions,
@@ -31,6 +32,7 @@ import {
   consumeAssistantTextDelta,
   computeTransientRetryDelayMs,
   createAssistantTextPartBoundaryState,
+  createAgentRunIdleWatchdog,
   createDeferredSubagentManager,
   createTransientModelRetryController,
   formatAutoCompactionToolDisplay,
@@ -58,6 +60,8 @@ import {
   withBlankLineBetweenTextParts,
   withReasoningSummaryDefaultForOpenAIModels,
 } from "../../../src/surface/bridge/bus-agent-runner";
+import { createAgentOutputActivityPublisher } from "../../../src/shared/agent-output-activity";
+import { createIdleTimer } from "../../../src/shared/idle-timer";
 import { formatSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
 import {
   buildExperimentalDownloadForAnthropicFallback,
@@ -68,6 +72,103 @@ import {
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
 }
+
+describe("agent run activity", () => {
+  it("fails a wait after the configured idle interval", async () => {
+    const timedOut: Error[] = [];
+    const watchdog = createAgentRunIdleWatchdog({
+      idleTimeoutMs: 30,
+      onTimeout: (error) => timedOut.push(error),
+    });
+
+    watchdog.start();
+    await expect(watchdog.waitFor(new Promise<void>(() => {}))).rejects.toThrow(
+      "agent idle timed out after 30ms",
+    );
+
+    expect(timedOut).toHaveLength(1);
+    watchdog.stop();
+  });
+
+  it("extends the idle deadline when activity continues", async () => {
+    let timeoutCount = 0;
+    const watchdog = createAgentRunIdleWatchdog({
+      idleTimeoutMs: 45,
+      onTimeout: () => {
+        timeoutCount += 1;
+      },
+    });
+
+    watchdog.start();
+    await Bun.sleep(30);
+    watchdog.reset();
+
+    await expect(watchdog.waitFor(Bun.sleep(30).then(() => "resolved"))).resolves.toBe("resolved");
+    watchdog.stop();
+    await Bun.sleep(20);
+    expect(timeoutCount).toBe(0);
+  });
+
+  it("can pause between separately raced operations", async () => {
+    let timeoutCount = 0;
+    const watchdog = createAgentRunIdleWatchdog({
+      idleTimeoutMs: 20,
+      onTimeout: () => {
+        timeoutCount += 1;
+      },
+    });
+
+    watchdog.start();
+    watchdog.pause();
+    await Bun.sleep(30);
+
+    expect(timeoutCount).toBe(0);
+    watchdog.stop();
+  });
+
+  it("does not clamp large idle deadlines to an immediate timer", async () => {
+    let timeoutCount = 0;
+    const timer = createIdleTimer(30 * 24 * 60 * 60 * 1000, () => {
+      timeoutCount += 1;
+    });
+
+    timer.reset();
+    await Bun.sleep(10);
+
+    expect(timeoutCount).toBe(0);
+    timer.stop();
+  });
+
+  it("publishes throttled activity on the request output topic", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const requestId = "activity-request";
+    const sources: string[] = [];
+    const sub = await bus.subscribeTopic(
+      outReqTopic(requestId),
+      { mode: "tail", offset: { type: "begin" } },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.EvtAgentOutputActivity) {
+          sources.push(msg.data.source);
+        }
+        await ctx.commit();
+      },
+    );
+    const publishActivity = createAgentOutputActivityPublisher({
+      bus,
+      headers: { request_id: requestId },
+      intervalMs: 25,
+    });
+
+    publishActivity("model");
+    publishActivity("tool");
+    await Bun.sleep(30);
+    publishActivity("subagent");
+    await Bun.sleep(0);
+
+    expect(sources).toEqual(["model", "subagent"]);
+    await sub.stop();
+  });
+});
 
 describe("selectPersistedTranscriptMessages", () => {
   const finalMessages = [
@@ -3136,10 +3237,14 @@ describe("createDeferredSubagentManager", () => {
       subagent_profile: "explore" as const,
       subagent_depth: "1",
     };
+    let activityCount = 0;
     const manager = createDeferredSubagentManager({
       bus,
       logger: createLogger({ module: "bus-agent-runner-test" }),
       parentHeaders,
+      onActivity: () => {
+        activityCount += 1;
+      },
     });
 
     await manager.register({
@@ -3181,6 +3286,7 @@ describe("createDeferredSubagentManager", () => {
 
     expect(manager.snapshotWaitState().hasOutstandingChildren).toBe(true);
     expect(manager.hasBufferedCompletions()).toBe(false);
+    expect(activityCount).toBe(3);
     await manager.stop();
   });
 

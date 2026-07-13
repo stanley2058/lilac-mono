@@ -71,7 +71,7 @@ async function appendOverflowChunk(params: {
 async function readStreamTextCapped(
   stream: unknown,
   maxChars: number,
-  options?: { overflowFilePath?: string },
+  options?: { overflowFilePath?: string; onActivity?: () => void },
 ): Promise<StreamTextResult> {
   if (!stream || typeof stream === "number") {
     return { text: "", totalChars: 0, capped: false };
@@ -138,6 +138,7 @@ async function readStreamTextCapped(
         if (done) break;
         if (!value) continue;
 
+        options?.onActivity?.();
         const chunkText = decoder.decode(value, { stream: true });
         await consumeChunkText(chunkText);
       }
@@ -262,6 +263,7 @@ export async function sshExecBash(params: {
   signal?: AbortSignal;
   maxOutputChars: number;
   overflowOutputPath?: string;
+  onActivity?: () => void;
 }): Promise<
   SshExecResult & {
     transportError?: { type: "hostkey" | "auth" | "connect" | "unknown"; message: string };
@@ -373,11 +375,13 @@ export async function sshExecBash(params: {
         overflowFilePath: params.overflowOutputPath
           ? `${params.overflowOutputPath}.stdout.part`
           : undefined,
+        onActivity: params.onActivity,
       }),
       readStreamTextCapped(child.stderr, params.maxOutputChars, {
         overflowFilePath: params.overflowOutputPath
           ? `${params.overflowOutputPath}.stderr.part`
           : undefined,
+        onActivity: params.onActivity,
       }),
       child.exited,
     ]);

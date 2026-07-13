@@ -84,17 +84,29 @@ function getDeferredDelegateHandler(requestContext: {
     : undefined;
 }
 
+function getAgentActivityHandler(requestContext: {
+  metadata?: Readonly<Record<string, unknown>>;
+}): ((source: "tool" | "subagent") => void) | undefined {
+  const candidate = requestContext.metadata?.["onActivity"];
+  return typeof candidate === "function"
+    ? (candidate as (source: "tool" | "subagent") => void)
+    : undefined;
+}
+
 function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
   return [
     withBoundedOutput({
       name: "bash",
       supportsBatch: true,
       isEnabled: ({ runProfile }) => runProfile !== "explore",
-      createTool: ({ cwd, runtime }) =>
-        bashToolWithCwd(cwd, {
+      createTool: ({ cwd, runtime, requestContext }) => {
+        const onActivity = requestContext ? getAgentActivityHandler(requestContext) : undefined;
+        return bashToolWithCwd(cwd, {
           artifacts: runtime.toolResultArtifacts,
           outputConfig: runtime.config?.tools.output,
-        }).bash,
+          onActivity: onActivity ? () => onActivity("tool") : undefined,
+        }).bash;
+      },
     }),
     withBoundedOutput({
       name: "read_file",
@@ -166,6 +178,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         if (!runtime.bus) {
           throw new Error("subagent_delegate requires bus");
         }
+        const onActivity = requestContext ? getAgentActivityHandler(requestContext) : undefined;
         return subagentTools({
           bus: runtime.bus,
           idleTimeoutMs: subagentConfig.idleTimeoutMs,
@@ -173,6 +186,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
           onDeferredDelegate: requestContext
             ? getDeferredDelegateHandler(requestContext)
             : undefined,
+          onActivity: onActivity ? () => onActivity("subagent") : undefined,
         }).subagent_delegate;
       },
     }),

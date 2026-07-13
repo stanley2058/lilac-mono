@@ -96,6 +96,8 @@ export type CustomCommandContext = {
   commandName: string;
   requestId: string;
   sessionId: string;
+  abortSignal?: AbortSignal;
+  reportActivity?: () => void;
 };
 
 export type CustomCommandModule = {

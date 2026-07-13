@@ -536,6 +536,7 @@ export async function executeBash(
       artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
       artifactMaxBytesPerSession: 50 * 1024 * 1024,
     },
+    onActivity,
   }: {
     context?: {
       requestId: string;
@@ -546,6 +547,7 @@ export async function executeBash(
     toolCallId?: string;
     artifacts?: ToolResultArtifactStore;
     outputConfig?: CoreConfig["tools"]["output"];
+    onActivity?: () => void;
   } = {},
 ): Promise<BashToolOutput> {
   const cwdTarget = parseSshCwdTarget(cwd);
@@ -696,6 +698,7 @@ export async function executeBash(
             signal: controller.signal,
             maxOutputChars: outputConfig.maxPreviewBytes,
             overflowOutputPath: truncatedOutputPaths.outputPath,
+            onActivity,
           })
         : null;
 
@@ -946,10 +949,12 @@ export async function executeBash(
       readSanitizedStreamTextCapped(child.stdout, outputConfig.maxPreviewBytes, {
         overflowFilePath: truncatedOutputPaths.stdoutOverflowPath,
         literalSecrets: outputSecrets,
+        onActivity,
       }),
       readSanitizedStreamTextCapped(child.stderr, outputConfig.maxPreviewBytes, {
         overflowFilePath: truncatedOutputPaths.stderrOverflowPath,
         literalSecrets: outputSecrets,
+        onActivity,
       }),
       child.exited,
     ]);

@@ -63,6 +63,18 @@ function streamFromBytes(chunks: readonly Uint8Array[]): ReadableStream<Uint8Arr
 }
 
 describe("bash output sanitizer stream", () => {
+  it("reports activity for each received output chunk", async () => {
+    let activityCount = 0;
+    const result = await readSanitizedStreamTextCapped(streamFromStrings(["one", "two"]), 100, {
+      onActivity: () => {
+        activityCount += 1;
+      },
+    });
+
+    expect(result.text).toBe("onetwo");
+    expect(activityCount).toBe(2);
+  });
+
   it("redacts secrets split across chunks", async () => {
     expect(await sanitizeChunks(["before secret-", "token after"], ["secret-token"])).toBe(
       "before <redacted> after",

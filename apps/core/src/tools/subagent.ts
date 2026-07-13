@@ -7,9 +7,9 @@ import {
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
+import { createAgentOutputActivityPublisher } from "../shared/agent-output-activity";
+import { createIdleTimer } from "../shared/idle-timer";
 import { requireRequestContext } from "../shared/req-context";
-
-import { createSubagentIdleTimer } from "./subagent-idle-timer";
 
 const subagentProfileSchema = z.enum(["explore", "general", "self"]);
 const subagentModeSchema = z.enum(["deferred", "sync"]);
@@ -219,6 +219,7 @@ export function subagentTools(params: {
   idleTimeoutMs: number;
   maxDepth: number;
   onDeferredDelegate?: (registration: DeferredSubagentRegistration) => Promise<void>;
+  onActivity?: () => void;
 }) {
   const { bus } = params;
   const logger = createLogger({
@@ -278,6 +279,17 @@ export function subagentTools(params: {
           session_id: ctx.sessionId,
           request_client: toAdapterPlatform(ctx.requestClient),
         };
+        const publishParentActivity = createAgentOutputActivityPublisher({
+          bus,
+          headers: parentHeaders,
+          onError: (error) => {
+            logger.debug("subagent parent activity publish failed", {
+              requestId: ctx.requestId,
+              childRequestId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
 
         logger.info("subagent delegate start", {
           requestId: ctx.requestId,
@@ -376,7 +388,7 @@ export function subagentTools(params: {
           settleFn?.(value);
         };
 
-        const idleTimer = createSubagentIdleTimer(idleTimeoutMs, () => {
+        const idleTimer = createIdleTimer(idleTimeoutMs, () => {
           settle({
             status: "timeout",
             detail: `idle timed out after ${idleTimeoutMs}ms without child activity`,
@@ -399,6 +411,8 @@ export function subagentTools(params: {
               return;
             }
 
+            params.onActivity?.();
+            publishParentActivity("subagent");
             idleTimer.reset();
 
             if (msg.type === lilacEventTypes.EvtAgentOutputDeltaText) {
@@ -467,6 +481,8 @@ export function subagentTools(params: {
               return;
             }
 
+            params.onActivity?.();
+            publishParentActivity("subagent");
             idleTimer.reset();
 
             if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
