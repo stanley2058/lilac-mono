@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   createLogger,
   ensurePromptWorkspace,
+  extractAiErrorLogDetails,
   resolveModelRef,
   resolveModelSlot,
   resolvePromptDir,
@@ -797,34 +798,8 @@ function computeAboutnessCoverage(
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function readNumberField(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === "number" ? value : undefined;
-}
-
 function truncateErrorDetail(input: string): string {
   return input.length > 2000 ? `${input.slice(0, 2000)}...` : input;
-}
-
-function parseProviderResponseMessage(responseBody: string): string | undefined {
-  try {
-    const parsed = JSON.parse(responseBody) as unknown;
-    if (!isRecord(parsed)) return undefined;
-    const error = parsed.error;
-    if (isRecord(error)) return readStringField(error, "message");
-    return readStringField(parsed, "message");
-  } catch {
-    return undefined;
-  }
 }
 
 function extractJsonObject(text: string): string {
@@ -894,24 +869,6 @@ function isSummaryStreamDecodeError(error: unknown): boolean {
     message.includes("Controller is already closed") ||
     message.includes("Invalid state")
   );
-}
-
-function summarizeProviderError(error: unknown): {
-  message: string;
-  statusCode?: number;
-  providerMessage?: string;
-  responseBody?: string;
-} {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!isRecord(error)) return { message };
-
-  const responseBody = readStringField(error, "responseBody");
-  return {
-    message,
-    statusCode: readNumberField(error, "statusCode"),
-    providerMessage: responseBody ? parseProviderResponseMessage(responseBody) : undefined,
-    responseBody: responseBody ? truncateErrorDetail(responseBody) : undefined,
-  };
 }
 
 function resolveSummarizationModel(cfg: CoreConfig) {
@@ -1676,18 +1633,17 @@ export class ConversationThreadService {
           summarized: summaryIsStale,
         });
       } catch (e) {
-        const error = summarizeProviderError(e);
-        const failureMessage = error.providerMessage
-          ? `${error.message}: ${error.providerMessage}`
-          : error.message;
+        const aiError = extractAiErrorLogDetails(e);
+        const message = e instanceof Error ? e.message : String(e);
+        const failureMessage = aiError?.providerMessage
+          ? `${message}: ${aiError.providerMessage}`
+          : message;
         this.logger.error(
           "thread summarization failed",
           {
             jobId,
             threadId: thread.thread_id,
-            statusCode: error.statusCode,
-            providerMessage: error.providerMessage,
-            responseBody: error.responseBody,
+            ...aiError,
           },
           e,
         );
@@ -1929,6 +1885,7 @@ export class ConversationThreadService {
       const message = e instanceof Error ? e.message : String(e);
       this.logger.warn("thread query aboutness capture failed; using fallback coverage", {
         error: message,
+        ...extractAiErrorLogDetails(e),
       });
       return {
         aboutness: buildFallbackQueryAboutness(input.queries),
@@ -2032,6 +1989,7 @@ export class ConversationThreadService {
       } catch (e) {
         this.logger.warn("thread semantic search failed; using lexical fallback", {
           error: e instanceof Error ? e.message : String(e),
+          ...extractAiErrorLogDetails(e),
         });
       }
     }

@@ -9,7 +9,12 @@ import {
 import { z } from "zod";
 import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
 import { google, type GoogleLanguageModelOptions } from "@ai-sdk/google";
-import { createLogger, providers, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  extractAiErrorLogDetails,
+  providers,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 import { extname } from "node:path";
 
 import type { ServerTool } from "../types";
@@ -139,6 +144,7 @@ export class ContentInspect implements ServerTool {
         text,
       } as const;
     } catch (e) {
+      logger.error("content.inspect failed", { ...extractAiErrorLogDetails(e) }, e);
       return {
         isError: true,
         error: e instanceof Error ? e.message : String(e),

@@ -2,6 +2,7 @@ import { type ModelMessage } from "ai";
 
 import {
   createLogger,
+  extractAiErrorLogDetails,
   getCoreConfig,
   env,
   errorMessage,
@@ -580,7 +581,11 @@ export async function startBusRequestRouter(params: {
             repliedToMessageText,
           },
         }).catch((e: unknown) => {
-          logger.error("router direct-reply gate failed; forwarding", { sessionId }, e);
+          logger.error(
+            "router direct-reply gate failed; forwarding",
+            { sessionId, ...extractAiErrorLogDetails(e) },
+            e,
+          );
           return {
             forward: true,
             reason: "error-fail-open",
@@ -1378,7 +1383,11 @@ export async function startBusRequestRouter(params: {
             previousMessageText,
           },
         }).catch((e: unknown) => {
-          logger.error("router gate failed; skipping", { sessionId }, e);
+          logger.error(
+            "router gate failed; skipping",
+            { sessionId, ...extractAiErrorLogDetails(e) },
+            e,
+          );
           return { forward: false, reason: "error" };
         })
       : ({ forward: true as const, reason: "disabled" } satisfies {

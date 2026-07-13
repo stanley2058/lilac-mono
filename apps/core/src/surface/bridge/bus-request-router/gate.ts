@@ -1,7 +1,11 @@
 import { generateText, Output, type ModelMessage } from "ai";
 import { z } from "zod";
 
-import { resolveModelSlot, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  extractAiErrorLogDetails,
+  resolveModelSlot,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import type { MsgRef } from "../../types";
 import { escapeSurfaceMetadataTags, formatSurfaceMetadataLine } from "../surface-metadata";
@@ -169,6 +173,7 @@ export async function shouldForwardByGate(params: {
         sessionId: params.input.sessionId,
         mode: params.input.context?.mode ?? "active-batch",
         failOpen,
+        ...extractAiErrorLogDetails(e),
       },
       e,
     );

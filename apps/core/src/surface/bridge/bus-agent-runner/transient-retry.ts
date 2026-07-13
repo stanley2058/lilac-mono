@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { isLikelyContextOverflowError, type TurnErrorHandler } from "@stanley2058/lilac-agent";
-import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
+import { createLogger, extractAiErrorLogDetails, type CoreConfig } from "@stanley2058/lilac-utils";
 
 import { formatUnknownErrorForDisplay } from "./error-display";
 
@@ -142,6 +142,7 @@ export function createTransientModelRetryController(params: {
           attempts,
           maxRetries: params.retry.maxRetries,
           error: summarizeRetryableError(error),
+          ...extractAiErrorLogDetails(error),
         });
         return "fail";
       }
@@ -161,6 +162,7 @@ export function createTransientModelRetryController(params: {
         maxRetries: params.retry.maxRetries,
         delayMs,
         error: summarizeRetryableError(error),
+        ...extractAiErrorLogDetails(error),
       });
 
       if (delayMs > 0) {

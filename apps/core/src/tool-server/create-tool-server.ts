@@ -1,5 +1,10 @@
 import Elysia, { NotFoundError } from "elysia";
-import { createLogger, getBuildInfo, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  extractAiErrorLogDetails,
+  getBuildInfo,
+  type CoreConfig,
+} from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -560,6 +565,7 @@ export function createToolServer(options: ToolServerOptions) {
             ok: false,
             errorClass: e instanceof Error ? e.name : "unknown",
             cancelled: combinedSignal.aborted,
+            ...extractAiErrorLogDetails(e),
           },
           e,
         );

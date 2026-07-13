@@ -18,6 +18,7 @@ import {
   CUSTOM_COMMAND_TOOL_NAME,
   discoverSkills,
   env,
+  extractAiErrorLogDetails,
   findWorkspaceRoot,
   formatAvailableSkillsSection,
   getCoreConfig,
@@ -3544,7 +3545,11 @@ export async function startBusAgentRunner(params: {
               logger.info("auto-compaction end", payload);
               return;
             }
-            logger.warn("auto-compaction end", payload, error);
+            logger.warn(
+              "auto-compaction end",
+              { ...payload, ...extractAiErrorLogDetails(error) },
+              error,
+            );
           },
         }),
       );
@@ -4027,6 +4032,7 @@ export async function startBusAgentRunner(params: {
                       {
                         requestId: headers.request_id,
                         sessionId: headers.session_id,
+                        ...extractAiErrorLogDetails(error),
                       },
                       error,
                     );
@@ -4442,6 +4448,8 @@ export async function startBusAgentRunner(params: {
           requestId: headers.request_id,
           sessionId: headers.session_id,
           durationMs: Date.now() - runStartedAt,
+          model: resolvedModelLabel,
+          ...extractAiErrorLogDetails(e),
         },
         e,
       );
