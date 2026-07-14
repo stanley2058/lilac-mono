@@ -183,6 +183,8 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
           bus: runtime.bus,
           idleTimeoutMs: subagentConfig.idleTimeoutMs,
           maxDepth: subagentConfig.maxDepth,
+          modelPresets: runtime.config?.models.def,
+          delegatePromptOverlay: runtime.config?.agent.subagents.delegatePromptOverlay,
           onDeferredDelegate: requestContext
             ? getDeferredDelegateHandler(requestContext)
             : undefined,

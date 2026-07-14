@@ -39,14 +39,17 @@ export type SubagentProfileConfig = {
   promptOverlay?: string;
 };
 
-export type ModelReasoningEffort =
-  | "provider-default"
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+export const MODEL_REASONING_EFFORTS = [
+  "provider-default",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+
+export type ModelReasoningEffort = (typeof MODEL_REASONING_EFFORTS)[number];
 
 export type ModelCapabilityOverride = {
   inherit?: string;
@@ -212,6 +215,7 @@ export type UniversalCoreConfig = {
       enabled: boolean;
       maxDepth: number;
       idleTimeoutMs: number;
+      delegatePromptOverlay?: string;
       profiles: {
         explore: SubagentProfileConfig;
         general: SubagentProfileConfig;
@@ -227,6 +231,8 @@ export type UniversalCoreConfig = {
         model: string;
         reasoning?: ModelReasoningEffort;
         options?: JSONObject;
+        comment?: string;
+        agentCanSelect?: boolean;
       }
     >;
     main: {

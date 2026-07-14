@@ -13,6 +13,7 @@ import type {
   CoreConfig,
   CustomCommandResult,
   ModelCapabilityInfo,
+  ModelReasoningEffort,
 } from "@stanley2058/lilac-utils";
 import {
   CUSTOM_COMMAND_TOOL_NAME,
@@ -120,6 +121,7 @@ import {
   parseSessionConfigIdFromRaw,
   parseSubagentMetaFromRaw,
   requestRawReferencesMessage,
+  type AgentRunProfile,
 } from "./bus-agent-runner/raw";
 import { latestUserText, shouldRunAutoInjectedThreadSearch } from "./bus-agent-runner/text-units";
 import {
@@ -1537,12 +1539,16 @@ export function createDeferredSubagentManager(params: {
           {
             queue: "prompt",
             messages: registration.initialMessages,
+            ...(registration.modelOverride ? { modelOverride: registration.modelOverride } : {}),
             raw: {
               subagent: {
                 profile: registration.profile,
                 depth: registration.depth,
                 parentRequestId: registration.parentRequestId,
                 parentToolCallId: registration.parentToolCallId,
+                ...(registration.reasoningOverride
+                  ? { reasoning: registration.reasoningOverride }
+                  : {}),
               },
             },
           },
@@ -1967,6 +1973,57 @@ export function shouldCancelRunPolicyRequest(params: {
 
   const state = params.states.get(params.sessionId);
   return Boolean(state?.running);
+}
+
+export function resolveAgentRunModel(params: {
+  cfg: CoreConfig;
+  runProfile: AgentRunProfile;
+  requestModelOverride?: string;
+  reasoningOverride?: ModelReasoningEffort;
+}) {
+  const subagentProfileConfig =
+    params.runProfile === "primary" ? null : params.cfg.agent.subagents.profiles[params.runProfile];
+
+  if (params.runProfile !== "primary" && params.requestModelOverride) {
+    const selectedPreset = params.cfg.models.def[params.requestModelOverride];
+    if (!selectedPreset || params.requestModelOverride.includes("/")) {
+      throw new Error(
+        `Subagent model override must be a models.def alias (got '${params.requestModelOverride}')`,
+      );
+    }
+    if (selectedPreset.agentCanSelect !== true) {
+      throw new Error(
+        `Subagent model alias '${params.requestModelOverride}' is not available for agent selection`,
+      );
+    }
+  }
+
+  if (params.requestModelOverride) {
+    return resolveModelRef(
+      params.cfg,
+      {
+        model: params.requestModelOverride,
+        reasoning: params.runProfile === "primary" ? undefined : params.reasoningOverride,
+      },
+      "cmd.request.message.modelOverride",
+    );
+  }
+
+  if (subagentProfileConfig?.model) {
+    return resolveModelRef(
+      params.cfg,
+      {
+        model: subagentProfileConfig.model,
+        reasoning: params.reasoningOverride ?? subagentProfileConfig.reasoning,
+        options: subagentProfileConfig.options,
+      },
+      `agent.subagents.profiles.${params.runProfile}.model`,
+    );
+  }
+
+  const slotResolved = resolveModelSlot(params.cfg, subagentProfileConfig?.modelSlot ?? "main");
+  const reasoning = params.reasoningOverride ?? subagentProfileConfig?.reasoning;
+  return reasoning ? { ...slotResolved, reasoning } : slotResolved;
 }
 
 type SessionQueue = {
@@ -3003,41 +3060,16 @@ export async function startBusAgentRunner(params: {
         }
       }
 
-      const subagentProfileConfig =
-        runProfile === "primary" ? null : subagents.profiles[runProfile];
-
       const requestModelOverride =
         runProfile === "primary"
           ? (next.modelOverride ?? parseRequestModelOverrideFromRaw(next.raw) ?? undefined)
-          : undefined;
-
-      const resolved = requestModelOverride
-        ? resolveModelRef(
-            cfg,
-            {
-              model: requestModelOverride,
-            },
-            "cmd.request.message.modelOverride",
-          )
-        : subagentProfileConfig?.model
-          ? resolveModelRef(
-              cfg,
-              {
-                model: subagentProfileConfig.model,
-                reasoning: subagentProfileConfig.reasoning,
-                options: subagentProfileConfig.options,
-              },
-              `agent.subagents.profiles.${runProfile}.model`,
-            )
-          : (() => {
-              const slotResolved = resolveModelSlot(
-                cfg,
-                subagentProfileConfig?.modelSlot ?? "main",
-              );
-              return subagentProfileConfig?.reasoning
-                ? { ...slotResolved, reasoning: subagentProfileConfig.reasoning }
-                : slotResolved;
-            })();
+          : next.modelOverride;
+      const resolved = resolveAgentRunModel({
+        cfg,
+        runProfile,
+        requestModelOverride,
+        reasoningOverride: subagentMeta.reasoning,
+      });
       resolvedModelLabel = resolved.modelId;
       try {
         modelCapabilityInfo = await waitForPreAgent(modelCapability.resolve(resolved.spec));

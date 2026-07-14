@@ -229,6 +229,12 @@ agent:
     maxDepth: 2
     # Stop a subagent after this long without model or tool activity.
     idleTimeoutMs: 360000
+    # Optional free-form guidance appended to the parent-visible
+    # subagent_delegate tool description. Use this for model-routing policy,
+    # escalation rules, cost guidance, or workflow-specific preferences.
+    # delegatePromptOverlay: |
+    #   Prefer inexpensive models for mechanical exploration.
+    #   Escalate difficult architecture and review work to a stronger model.
     profiles:
       explore:
         modelSlot: main
@@ -272,6 +278,11 @@ models:
   # def:
   #   gpt-5.5:
   #     model: openai/gpt-5.5
+  #     # Optional guidance shown to agents selecting a subagent model.
+  #     comment: "Strong default for bounded coding and mechanical work."
+  #     # Explicitly allow dynamic selection by subagent_delegate. Defaults to
+  #     # false; static profiles, model slots, and human overrides are unaffected.
+  #     agentCanSelect: true
   #     # Portable AI SDK reasoning effort:
   #     # provider-default | none | minimal | low | medium | high | xhigh
   #     reasoning: high
@@ -282,6 +293,7 @@ models:
   # def:
   #   opus:
   #     model: vercel/anthropic/claude-opus-4.8
+  #     comment: "Use for architecture, difficult debugging, and critical review."
   #     reasoning: high
   #     options:
   #       anthropic:

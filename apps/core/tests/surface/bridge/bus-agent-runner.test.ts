@@ -49,6 +49,7 @@ import {
   mergeToSingleUserMessage,
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
+  resolveAgentRunModel,
   shouldRunAutoInjectedThreadSearch,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
@@ -63,6 +64,7 @@ import {
 import { createAgentOutputActivityPublisher } from "../../../src/shared/agent-output-activity";
 import { createIdleTimer } from "../../../src/shared/idle-timer";
 import { formatSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
+import { parseSubagentMetaFromRaw } from "../../../src/surface/bridge/bus-agent-runner/raw";
 import {
   buildExperimentalDownloadForAnthropicFallback,
   shouldForceUrlDownloadForAnthropicFallback,
@@ -72,6 +74,109 @@ import {
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
 }
+
+describe("subagent model selection", () => {
+  it("parses a subagent reasoning override from raw request metadata", () => {
+    expect(
+      parseSubagentMetaFromRaw({
+        subagent: { profile: "explore", depth: 1, reasoning: "xhigh" },
+      }),
+    ).toEqual({ profile: "explore", depth: 1, reasoning: "xhigh" });
+  });
+
+  it("preserves subagent profile and depth when reasoning metadata is invalid", () => {
+    expect(
+      parseSubagentMetaFromRaw({
+        subagent: { profile: "explore", depth: 2, reasoning: "future-effort" },
+      }),
+    ).toEqual({ profile: "explore", depth: 2 });
+  });
+
+  it("resolves an agent-selectable alias and applies per-call reasoning", () => {
+    const cfg = parseCoreConfigV1ToUniversal({});
+    cfg.models.def = {
+      scout: {
+        model: "openai/gpt-4o-mini",
+        reasoning: "low",
+        agentCanSelect: true,
+      },
+    };
+
+    const resolved = resolveAgentRunModel({
+      cfg,
+      runProfile: "explore",
+      requestModelOverride: "scout",
+      reasoningOverride: "high",
+    });
+
+    expect(resolved.alias).toBe("scout");
+    expect(resolved.spec).toBe("openai/gpt-4o-mini");
+    expect(resolved.reasoning).toBe("high");
+  });
+
+  it("rejects direct and opted-out subagent model overrides", () => {
+    const cfg = parseCoreConfigV1ToUniversal({});
+    cfg.models.def = {
+      manual: {
+        model: "openai/gpt-4o",
+        agentCanSelect: false,
+      },
+    };
+
+    expect(() =>
+      resolveAgentRunModel({
+        cfg,
+        runProfile: "general",
+        requestModelOverride: "openai/gpt-4o",
+      }),
+    ).toThrow("must be a models.def alias");
+    expect(() =>
+      resolveAgentRunModel({
+        cfg,
+        runProfile: "general",
+        requestModelOverride: "manual",
+      }),
+    ).toThrow("not available for agent selection");
+  });
+
+  it("allows an opted-out alias in an explicit static profile", () => {
+    const cfg = parseCoreConfigV1ToUniversal({});
+    cfg.models.def = {
+      manual: {
+        model: "openai/gpt-4o",
+        agentCanSelect: false,
+      },
+    };
+    cfg.agent.subagents.profiles.general = {
+      modelSlot: "main",
+      model: "manual",
+    };
+
+    const resolved = resolveAgentRunModel({
+      cfg,
+      runProfile: "general",
+    });
+
+    expect(resolved.alias).toBe("manual");
+  });
+
+  it("applies reasoning overrides to the configured profile fallback", () => {
+    const cfg = parseCoreConfigV1ToUniversal({});
+    cfg.agent.subagents.profiles.explore = {
+      modelSlot: "fast",
+      reasoning: "low",
+    };
+
+    const resolved = resolveAgentRunModel({
+      cfg,
+      runProfile: "explore",
+      reasoningOverride: "medium",
+    });
+
+    expect(resolved).toMatchObject({ slot: "fast" });
+    expect(resolved.reasoning).toBe("medium");
+  });
+});
 
 describe("agent run activity", () => {
   it("fails a wait after the configured idle interval", async () => {
@@ -3221,6 +3326,75 @@ describe("custom command failures", () => {
 });
 
 describe("createDeferredSubagentManager", () => {
+  it("publishes deferred model and reasoning overrides", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const parentHeaders = {
+      request_id: "parent-model-override",
+      session_id: "parent-session",
+      request_client: "discord" as const,
+    };
+    const childHeaders = {
+      request_id: "child-model-override",
+      session_id: "child-session",
+      request_client: "unknown" as const,
+      parent_request_id: parentHeaders.request_id,
+      parent_tool_call_id: "tool-model-override",
+      subagent_profile: "explore" as const,
+      subagent_depth: "1",
+    };
+    let publishedModel: string | undefined;
+    let publishedReasoning: unknown;
+    const commandSub = await bus.subscribeTopic(
+      "cmd.request",
+      {
+        mode: "fanout",
+        subscriptionId: "deferred-model-override-test",
+        consumerId: "deferred-model-override-test",
+        offset: { type: "now" },
+      },
+      async (msg, ctx) => {
+        if (msg.type === lilacEventTypes.CmdRequestMessage && msg.data.queue === "prompt") {
+          publishedModel = msg.data.modelOverride;
+          const subagent = Reflect.get(msg.data.raw ?? {}, "subagent");
+          publishedReasoning =
+            subagent && typeof subagent === "object"
+              ? Reflect.get(subagent, "reasoning")
+              : undefined;
+        }
+        await ctx.commit();
+      },
+    );
+    const manager = createDeferredSubagentManager({
+      bus,
+      logger: createLogger({ module: "bus-agent-runner-test" }),
+      parentHeaders,
+    });
+
+    await manager.register({
+      profile: "explore",
+      sessionName: "explore-model-override",
+      task: "Map auth flow",
+      idleTimeoutMs: 2_000,
+      depth: 1,
+      parentRequestId: parentHeaders.request_id,
+      parentSessionId: parentHeaders.session_id,
+      parentRequestClient: parentHeaders.request_client,
+      parentToolCallId: "tool-model-override",
+      childRequestId: childHeaders.request_id,
+      childSessionId: childHeaders.session_id,
+      parentHeaders,
+      childHeaders,
+      initialMessages: [{ role: "user", content: "Map auth flow" }],
+      modelOverride: "scout",
+      reasoningOverride: "high",
+    });
+
+    expect(publishedModel).toBe("scout");
+    expect(publishedReasoning).toBe("high");
+    await manager.stop();
+    await commandSub.stop();
+  });
+
   it("keeps a deferred child alive while matching activity continues", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const parentHeaders = {

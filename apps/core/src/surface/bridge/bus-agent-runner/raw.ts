@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_REASONING_EFFORTS, type ModelReasoningEffort } from "@stanley2058/lilac-utils";
 
 const SUBAGENT_PROFILES = ["explore", "general", "self"] as const;
 const SESSION_MODES = ["mention", "active"] as const;
@@ -10,6 +11,7 @@ export type AgentRunProfile = "primary" | SubagentProfile;
 export type ParsedSubagentMeta = {
   profile: AgentRunProfile;
   depth: number;
+  reasoning?: ModelReasoningEffort;
 };
 
 const nonEmptyStringSchema = z
@@ -42,6 +44,15 @@ const optionalFiniteNumberSchema = z.preprocess(
   z.number().optional(),
 );
 
+function isModelReasoningEffort(value: unknown): value is ModelReasoningEffort {
+  return typeof value === "string" && MODEL_REASONING_EFFORTS.some((effort) => effort === value);
+}
+
+const modelReasoningEffortSchema = z.preprocess(
+  (value) => (isModelReasoningEffort(value) ? value : undefined),
+  z.enum(MODEL_REASONING_EFFORTS).optional(),
+);
+
 const routerRawSchema = z
   .object({
     sessionMode: sessionModeSchema,
@@ -69,6 +80,7 @@ const subagentRawSchema = z
       .object({
         profile: subagentProfileSchema,
         depth: optionalFiniteNumberSchema,
+        reasoning: modelReasoningEffortSchema,
       })
       .optional(),
   })
@@ -174,7 +186,11 @@ export function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {
   const depth =
     typeof subagent.depth === "number" ? Math.max(0, Math.trunc(subagent.depth)) : defaultDepth;
 
-  return { profile, depth };
+  return {
+    profile,
+    depth,
+    ...(subagent.reasoning ? { reasoning: subagent.reasoning } : {}),
+  };
 }
 
 export type ParsedCustomCommand = {

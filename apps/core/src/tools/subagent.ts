@@ -6,7 +6,11 @@ import {
   type AdapterPlatform,
   type LilacBus,
 } from "@stanley2058/lilac-event-bus";
-import { createLogger } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  MODEL_REASONING_EFFORTS,
+  type ModelReasoningEffort,
+} from "@stanley2058/lilac-utils";
 import { createAgentOutputActivityPublisher } from "../shared/agent-output-activity";
 import { createIdleTimer } from "../shared/idle-timer";
 import { requireRequestContext } from "../shared/req-context";
@@ -19,7 +23,9 @@ const subagentSessionNameSchema = z
   .max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
 
-const subagentDelegateInputSchema = z.object({
+const modelReasoningEffortSchema = z.enum(MODEL_REASONING_EFFORTS);
+
+const subagentDelegateBaseInputSchema = z.object({
   profile: subagentProfileSchema
     .default("explore")
     .describe("Subagent profile to run (explore, general, self)."),
@@ -35,6 +41,62 @@ const subagentDelegateInputSchema = z.object({
       "Optional stable short slug for continuing a subagent session within this parent session/channel. When omitted, a reusable short name is generated and returned.",
     ),
 });
+
+type AgentSelectableModelPreset = {
+  model: string;
+  reasoning?: ModelReasoningEffort;
+  comment?: string;
+  agentCanSelect?: boolean;
+};
+
+type SubagentDelegateInput = z.input<typeof subagentDelegateBaseInputSchema> & {
+  model?: string;
+  reasoning?: ModelReasoningEffort;
+};
+
+type ParsedSubagentDelegateInput = z.output<typeof subagentDelegateBaseInputSchema> & {
+  model?: string;
+  reasoning?: ModelReasoningEffort;
+};
+
+function isSelectableModelPreset(entry: readonly [string, AgentSelectableModelPreset]): boolean {
+  const [alias, preset] = entry;
+  return preset.agentCanSelect === true && !alias.includes("/") && /^[^/]+\/.+/u.test(preset.model);
+}
+
+function createSubagentDelegateInputSchema(
+  selectableModels: ReadonlyArray<readonly [string, AgentSelectableModelPreset]>,
+): z.ZodType<ParsedSubagentDelegateInput> {
+  const documentedModels = selectableModels.slice(0, 5).map(([alias, preset]) => {
+    const detail = preset.comment?.trim()
+      ? truncateEnd(normalizeToolDisplay(preset.comment), 240)
+      : `${preset.model}${preset.reasoning ? `; default reasoning: ${preset.reasoning}` : ""}`;
+    return `- ${alias}: ${detail}`;
+  });
+  const modelDescription = [
+    "Optional agent-selectable alias from models.def. Direct provider/model values are not accepted.",
+    selectableModels.length > 0
+      ? `Configured aliases${selectableModels.length > 5 ? " (first 5 documented; all aliases are in the enum)" : ""}:\n${documentedModels.join("\n")}`
+      : "No agent-selectable model aliases are configured; omit this field.",
+  ].join("\n");
+
+  if (selectableModels.length === 0) {
+    return subagentDelegateBaseInputSchema;
+  }
+
+  const [firstAlias, ...remainingAliases] = selectableModels.map(([alias]) => alias);
+  return subagentDelegateBaseInputSchema.extend({
+    model: z
+      .enum([firstAlias!, ...remainingAliases])
+      .optional()
+      .describe(modelDescription),
+    reasoning: modelReasoningEffortSchema
+      .optional()
+      .describe(
+        "Optional reasoning-effort override for this child run. When omitted, the selected alias or profile default applies.",
+      ),
+  });
+}
 
 const subagentTerminalStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
 
@@ -61,7 +123,6 @@ const subagentDelegateOutputSchema = z.discriminatedUnion("mode", [
   subagentDelegateSyncOutputSchema,
 ]);
 
-type SubagentDelegateInput = z.input<typeof subagentDelegateInputSchema>;
 export type SubagentDelegateOutput = z.output<typeof subagentDelegateOutputSchema>;
 type SubagentTerminalStatus = z.infer<typeof subagentTerminalStatusSchema>;
 export type SubagentProfile = z.infer<typeof subagentProfileSchema>;
@@ -212,33 +273,53 @@ export type DeferredSubagentRegistration = {
     subagent_depth: string;
   };
   initialMessages: ModelMessage[];
+  modelOverride?: string;
+  reasoningOverride?: ModelReasoningEffort;
 };
 
 export function subagentTools(params: {
   bus: LilacBus;
   idleTimeoutMs: number;
   maxDepth: number;
+  modelPresets?: Readonly<Record<string, AgentSelectableModelPreset>>;
+  delegatePromptOverlay?: string;
   onDeferredDelegate?: (registration: DeferredSubagentRegistration) => Promise<void>;
   onActivity?: () => void;
 }) {
   const { bus } = params;
+  const selectableModels = Object.entries(params.modelPresets ?? {}).filter(
+    isSelectableModelPreset,
+  );
+  const selectableModelAliases = new Set(selectableModels.map(([alias]) => alias));
+  const inputSchema = createSubagentDelegateInputSchema(selectableModels);
+  const description = [
+    "Delegate work to a subagent profile (explore, general, self).",
+    "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
+    "Use sync only when the child result is immediately required before any meaningful next step.",
+    "Prefer deferred for: repository exploration, independent evidence gathering, parallel investigations, or work whose result can be incorporated later.",
+    "Prefer sync for: child answers that determine the next edit or decision, child results needed before responding, or the one blocking computation.",
+    params.delegatePromptOverlay?.trim(),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
   const logger = createLogger({
     module: "tool:subagent_delegate",
   });
 
   return {
     subagent_delegate: tool({
-      description: [
-        "Delegate work to a subagent profile (explore, general, self).",
-        "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
-        "Use sync only when the child result is immediately required before any meaningful next step.",
-        "Prefer deferred for: repository exploration, independent evidence gathering, parallel investigations, or work whose result can be incorporated later.",
-        "Prefer sync for: child answers that determine the next edit or decision, child results needed before responding, or the one blocking computation.",
-      ].join("\n"),
-      inputSchema: subagentDelegateInputSchema,
+      description,
+      inputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input: SubagentDelegateInput, { abortSignal, context, toolCallId }) => {
-        const parsed = subagentDelegateInputSchema.parse(input);
+        const requestedModel = input.model;
+        if (requestedModel !== undefined && !selectableModelAliases.has(requestedModel)) {
+          throw new Error(`Model alias '${requestedModel}' is not available for agent selection`);
+        }
+        if (input.reasoning !== undefined && selectableModels.length === 0) {
+          throw new Error("Reasoning override requires an agent-selectable model alias");
+        }
+        const parsed = inputSchema.parse(input);
         const ctx = requireRequestContext(context, "subagent_delegate") as RequestContextLike;
         const profile = parsed.profile;
         const mode = parsed.mode;
@@ -302,6 +383,8 @@ export function subagentTools(params: {
           sessionName,
           idleTimeoutMs,
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
+          modelOverride: parsed.model,
+          reasoningOverride: parsed.reasoning,
         });
 
         const subId = `${childRequestId}:${Math.random().toString(16).slice(2)}`;
@@ -326,6 +409,8 @@ export function subagentTools(params: {
             parentHeaders,
             childHeaders,
             initialMessages: [buildDelegatedTaskPrompt(parsed.task)],
+            modelOverride: parsed.model,
+            reasoningOverride: parsed.reasoning,
           });
 
           logger.info("subagent delegate accepted", {
@@ -565,12 +650,14 @@ export function subagentTools(params: {
             {
               queue: "prompt",
               messages: [buildDelegatedTaskPrompt(parsed.task)],
+              ...(parsed.model ? { modelOverride: parsed.model } : {}),
               raw: {
                 subagent: {
                   profile,
                   depth: depth + 1,
                   parentRequestId: ctx.requestId,
                   parentToolCallId: toolCallId,
+                  ...(parsed.reasoning ? { reasoning: parsed.reasoning } : {}),
                 },
               },
             },

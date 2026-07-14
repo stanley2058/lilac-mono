@@ -100,6 +100,88 @@ describe("core config versioning", () => {
     expect(parsed.agent.subagents.profiles.explore.reasoning).toBe("minimal");
   });
 
+  it("parses v2 subagent delegation guidance and model selection metadata", async () => {
+    const parsed = await parseCoreConfig({
+      configVersion: 2,
+      agent: {
+        subagents: {
+          delegatePromptOverlay: "Prefer scout for mechanical exploration.",
+        },
+      },
+      models: {
+        def: {
+          scout: {
+            model: "openrouter/google/gemini-2.5-flash",
+            comment: "Fast and inexpensive.",
+            agentCanSelect: true,
+          },
+          defaultAlias: {
+            model: "openai/gpt-5.5-mini",
+          },
+          manual: {
+            model: "openai/gpt-5.5",
+            agentCanSelect: false,
+          },
+        },
+      },
+    });
+
+    expect(parsed.agent.subagents.delegatePromptOverlay).toBe(
+      "Prefer scout for mechanical exploration.",
+    );
+    expect(parsed.models.def.scout).toMatchObject({
+      comment: "Fast and inexpensive.",
+      agentCanSelect: true,
+    });
+    expect(parsed.models.def.defaultAlias?.agentCanSelect).toBe(false);
+    expect(parsed.models.def.manual?.agentCanSelect).toBe(false);
+  });
+
+  it("normalizes v1 model aliases as unavailable for agent selection", async () => {
+    const parsed = await parseCoreConfig({
+      configVersion: 1,
+      models: {
+        def: {
+          legacy: {
+            model: "openai/gpt-4o",
+          },
+        },
+      },
+    });
+
+    expect(parsed.models.def.legacy?.agentCanSelect).toBe(false);
+    expect(parsed.models.def.legacy?.comment).toBeUndefined();
+    expect(parsed.agent.subagents.delegatePromptOverlay).toBeUndefined();
+  });
+
+  it("rejects v2 model aliases that cannot be resolved as aliases", async () => {
+    await expect(
+      parseCoreConfig({
+        configVersion: 2,
+        models: {
+          def: {
+            "invalid/alias": {
+              model: "openai/gpt-5.5",
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("model alias must not contain '/'");
+
+    await expect(
+      parseCoreConfig({
+        configVersion: 2,
+        models: {
+          def: {
+            invalidTarget: {
+              model: "gpt-5.5",
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("models.def model must use provider/model format");
+  });
+
   it("rejects invalid v2 model reasoning values", async () => {
     await expect(
       parseCoreConfig({

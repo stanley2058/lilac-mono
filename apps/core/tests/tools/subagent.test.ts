@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { asSchema } from "ai";
 import {
   createLilacBus,
   lilacEventTypes,
@@ -118,6 +119,233 @@ async function sleep(ms: number): Promise<void> {
 }
 
 describe("subagent_delegate tool", () => {
+  it("documents selectable model aliases and appends delegation guidance", () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const tools = subagentTools({
+      bus,
+      idleTimeoutMs: 2_000,
+      maxDepth: 1,
+      delegatePromptOverlay: "Escalate critical reviews to a stronger model.",
+      modelPresets: {
+        scout: {
+          model: "openrouter/google/gemini-2.5-flash",
+          comment: "Fast repository exploration.",
+          agentCanSelect: true,
+        },
+        coder: {
+          model: "openai/gpt-5.5",
+          comment: "Bounded implementation work.",
+          agentCanSelect: true,
+        },
+        architect: {
+          model: "vercel/anthropic/claude-opus-4.8",
+          reasoning: "high",
+          comment: "Architecture and critical review.",
+          agentCanSelect: true,
+        },
+        reviewer: {
+          model: "openai/gpt-5.5",
+          comment: "Independent review.",
+          agentCanSelect: true,
+        },
+        vision: {
+          model: "openai/gpt-5.5",
+          comment: "Visual analysis.",
+          agentCanSelect: true,
+        },
+        overflow: {
+          model: "openai/gpt-5.5",
+          comment: "Sixth comment is omitted.",
+          agentCanSelect: true,
+        },
+        manual: {
+          model: "openai/gpt-5.5",
+          comment: "Operator-only model.",
+          agentCanSelect: false,
+        },
+        "invalid/alias": {
+          model: "openai/gpt-5.5",
+          comment: "Alias cannot be resolved as an alias.",
+          agentCanSelect: true,
+        },
+        invalidTarget: {
+          model: "gpt-5.5",
+          comment: "Target is not a canonical model spec.",
+          agentCanSelect: true,
+        },
+      },
+    });
+    const delegate = tools.subagent_delegate as unknown as {
+      description?: string;
+      inputSchema: unknown;
+    };
+    const schema = asSchema(delegate.inputSchema as never).jsonSchema as unknown as {
+      properties?: {
+        model?: { enum?: string[]; description?: string };
+        reasoning?: { enum?: string[] };
+      };
+    };
+
+    expect(schema.properties?.model?.enum).toEqual([
+      "scout",
+      "coder",
+      "architect",
+      "reviewer",
+      "vision",
+      "overflow",
+    ]);
+    expect(schema.properties?.model?.description).toContain("scout: Fast repository exploration.");
+    expect(schema.properties?.model?.description).toContain(
+      "architect: Architecture and critical review.",
+    );
+    expect(schema.properties?.model?.description).not.toContain("Sixth comment is omitted.");
+    expect(schema.properties?.model?.description).not.toContain("Operator-only model.");
+    expect(schema.properties?.model?.enum).not.toContain("invalid/alias");
+    expect(schema.properties?.model?.enum).not.toContain("invalidTarget");
+    expect(schema.properties?.reasoning?.enum).toContain("xhigh");
+    expect(delegate.description).toContain("Escalate critical reviews to a stronger model.");
+  });
+
+  it("omits the model field when no aliases are selectable", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const tools = subagentTools({
+      bus,
+      idleTimeoutMs: 2_000,
+      maxDepth: 1,
+      modelPresets: {
+        defaultAlias: {
+          model: "openai/gpt-5.5-mini",
+        },
+        manual: {
+          model: "openai/gpt-5.5",
+          agentCanSelect: false,
+        },
+      },
+    });
+    const delegate = tools.subagent_delegate as unknown as { inputSchema: unknown };
+    const schema = asSchema(delegate.inputSchema as never).jsonSchema as unknown as {
+      properties?: { model?: unknown; reasoning?: unknown };
+    };
+
+    expect(schema.properties?.model).toBeUndefined();
+    expect(schema.properties?.reasoning).toBeUndefined();
+    await expect(
+      resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          {
+            profile: "explore",
+            task: "Try a hidden model",
+            mode: "deferred",
+            model: "manual",
+          },
+          {
+            toolCallId: "tool-no-selectable-models",
+            messages: [],
+            context: {
+              requestId: "r:no-selectable-models",
+              sessionId: "s:no-selectable-models",
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
+          },
+        ),
+      ),
+    ).rejects.toThrow("not available for agent selection");
+    await expect(
+      resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          {
+            profile: "explore",
+            task: "Try a reasoning override",
+            mode: "deferred",
+            reasoning: "high",
+          },
+          {
+            toolCallId: "tool-no-reasoning-override",
+            messages: [],
+            context: {
+              requestId: "r:no-reasoning-override",
+              sessionId: "s:no-reasoning-override",
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
+          },
+        ),
+      ),
+    ).rejects.toThrow("Reasoning override requires an agent-selectable model alias");
+  });
+
+  it("passes selected model and reasoning to deferred registration", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    let selected:
+      | {
+          modelOverride?: string;
+          reasoningOverride?: string;
+        }
+      | undefined;
+    const tools = subagentTools({
+      bus,
+      idleTimeoutMs: 2_000,
+      maxDepth: 1,
+      modelPresets: {
+        scout: {
+          model: "openrouter/google/gemini-2.5-flash",
+          agentCanSelect: true,
+        },
+        manual: {
+          model: "openai/gpt-5.5",
+          agentCanSelect: false,
+        },
+      },
+      onDeferredDelegate: async (registration) => {
+        selected = registration;
+      },
+    });
+
+    await resolveExecuteResult(
+      tools.subagent_delegate.execute!(
+        {
+          profile: "explore",
+          task: "Map auth flow",
+          mode: "deferred",
+          model: "scout",
+          reasoning: "high",
+        },
+        {
+          toolCallId: "tool-model-override",
+          messages: [],
+          context: {
+            requestId: "r:model-override",
+            sessionId: "s:model-override",
+            requestClient: "discord",
+            subagentDepth: 0,
+          },
+        },
+      ),
+    );
+
+    expect(selected?.modelOverride).toBe("scout");
+    expect(selected?.reasoningOverride).toBe("high");
+
+    await expect(
+      resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          { profile: "explore", task: "Try manual", mode: "deferred", model: "manual" },
+          {
+            toolCallId: "tool-manual-model",
+            messages: [],
+            context: {
+              requestId: "r:manual-model",
+              sessionId: "s:manual-model",
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
+          },
+        ),
+      ),
+    ).rejects.toThrow();
+  });
+
   it("returns an accepted handle by default in deferred mode", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);

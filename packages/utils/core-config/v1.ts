@@ -780,6 +780,15 @@ export function parseCoreConfigV1ToUniversal(
         profiles: subagents.profiles,
       },
     },
+    models: {
+      ...parsed.models,
+      def: Object.fromEntries(
+        Object.entries(parsed.models.def).map(([alias, preset]) => [
+          alias,
+          { ...preset, agentCanSelect: false },
+        ]),
+      ),
+    },
   };
 }
 

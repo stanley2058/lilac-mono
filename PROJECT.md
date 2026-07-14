@@ -286,7 +286,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
       - `read_file`, `glob`, `grep` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg` unless `dangerouslyAllow=true`).
       - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`; remote denylist can be bypassed with `dangerouslyAllow=true`).
       - `batch` (`apps/core/src/tools/batch.ts`) for concurrent tool execution.
-      - `subagent_delegate` (`apps/core/src/tools/subagent.ts`) when `agent.subagents` is enabled and depth limits allow delegation.
+      - `subagent_delegate` (`apps/core/src/tools/subagent.ts`) when `agent.subagents` is enabled and depth limits allow delegation. Its model argument is generated from agent-selectable `models.def` aliases, with optional per-call reasoning overrides and config-authored routing guidance.
 
 2. Level 2: tool server tools + the `tools` CLI
    - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.
@@ -372,6 +372,8 @@ Key sections:
 - `agent.idleTimeoutMs`: primary agent inactivity timeout; active runs have no total runtime cap.
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
   - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
+  - `delegatePromptOverlay` appends free-form routing policy to the parent-visible `subagent_delegate` description.
+- `models.def`: reusable model aliases. `comment` documents an alias to the orchestrating agent, while `agentCanSelect: true` explicitly opts it into dynamic subagent selection without changing explicit static or human selection.
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
 - `plugins.disabled`: plugin ids to disable without uninstalling them.
 - `plugins.config`: opaque per-plugin config passed through to plugin code.

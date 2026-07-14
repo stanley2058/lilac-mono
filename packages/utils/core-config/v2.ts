@@ -17,6 +17,7 @@ import {
   webExtractConfigSchema,
 } from "./v1";
 import { collectUnknownConfigKeyPaths } from "./unknown-keys";
+import { MODEL_REASONING_EFFORTS } from "./types";
 
 import type {
   ConfigParser,
@@ -36,15 +37,7 @@ const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CO
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
 
-const modelReasoningEffortSchema = z.enum([
-  "provider-default",
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+const modelReasoningEffortSchema = z.enum(MODEL_REASONING_EFFORTS);
 
 const subagentProfileSchemaV2 = z
   .object({
@@ -142,6 +135,7 @@ const subagentsSchemaV2 = z.object({
     .int()
     .positive()
     .default(6 * 60 * 1000),
+  delegatePromptOverlay: z.string().trim().min(1).optional(),
   profiles: z
     .object({
       explore: subagentProfileSchemaV2.default({ modelSlot: "main" }),
@@ -396,6 +390,10 @@ const modelsSchemaV2 = z
           reasoning: modelReasoningEffortSchema.optional(),
           /** AI SDK providerOptions-style object (nested JSON allowed). */
           options: jsonObjectSchema.optional(),
+          /** Optional parent-agent guidance shown alongside this model alias. */
+          comment: z.string().trim().min(1).optional(),
+          /** Whether subagent_delegate may dynamically select this alias. */
+          agentCanSelect: z.boolean().default(false),
         }),
       )
       .default({}),
@@ -425,6 +423,24 @@ const modelsSchemaV2 = z
       }),
 
     capability: modelCapabilitySchemaV2,
+  })
+  .superRefine((models, ctx) => {
+    for (const [alias, preset] of Object.entries(models.def)) {
+      if (alias.includes("/")) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["def", alias],
+          message: "model alias must not contain '/'",
+        });
+      }
+      if (!/^[^/]+\/.+/u.test(preset.model)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["def", alias, "model"],
+          message: "models.def model must use provider/model format",
+        });
+      }
+    }
   })
   .default({
     def: {},
