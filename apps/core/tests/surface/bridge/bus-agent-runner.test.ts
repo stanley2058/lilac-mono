@@ -1941,6 +1941,24 @@ describe("transient model retry", () => {
     ).toBe(true);
   });
 
+  it("classifies SSE socket closures as retryable", () => {
+    const message =
+      "The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()";
+
+    expect(
+      isRetryableTransientModelError(
+        Object.assign(new Error(message), { code: "ConnectionClosed" }),
+      ),
+    ).toBe(true);
+    expect(isRetryableTransientModelError(new Error(message))).toBe(true);
+    expect(
+      isRetryableTransientModelError({
+        cause: Object.assign(new Error("connection reset"), { code: "ConnectionClosed" }),
+      }),
+    ).toBe(true);
+    expect(isRetryableTransientModelError({ code: "ECONNRESET" })).toBe(true);
+  });
+
   it("does not classify context overflow or exhausted AI SDK retries", () => {
     expect(isRetryableTransientModelError("maximum context length is 128000 tokens")).toBe(false);
     expect(
@@ -1961,9 +1979,11 @@ describe("transient model retry", () => {
     ).toBe(30_000);
   });
 
-  it("retries transient errors up to the configured max and resets after success", async () => {
+  it("retries ConnectionClosed errors up to the configured max and resets after success", async () => {
     const logger = createLogger({ module: "bus-agent-runner-test" });
-    const error = { statusCode: 503, message: "Service unavailable" };
+    const error = Object.assign(new Error("The socket connection was closed unexpectedly"), {
+      code: "ConnectionClosed",
+    });
     const controller = createTransientModelRetryController({
       retry,
       logger,
