@@ -174,9 +174,11 @@ describe("DurableWorkflowStore", () => {
       const policy = {
         runId: invocation.run.runId,
         operationId: "operation-1",
+        dispatchEpoch: "dispatch-epoch-0001",
         profile: "explore" as const,
         safetyMode: "trusted" as const,
         editing: false,
+        isolation: "shared" as const,
         externalTools: false,
         surfaceSends: false,
         subagents: false,
@@ -206,6 +208,25 @@ describe("DurableWorkflowStore", () => {
           staleOwnerBefore: 0,
         }),
       ).toMatchObject({ state: "dispatched", requestId: "wfr:request-1" });
+      expect(
+        store.claimWorkflowRequestPromptPublication({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-1",
+          now: 13,
+        }),
+      ).toBe(true);
+      expect(
+        store.recordWorkflowRequestTerminal({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          dispatchEpoch: "stale-dispatch-epoch",
+          state: "resolved",
+          now: 14,
+        }),
+      ).toBe(false);
       expect(
         store.authorizeWorkflowRequest({
           requestId: "wfr:request-1",
@@ -422,12 +443,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 2 trigger and delivery durability",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 7,
+          name: "round 4 request and adapter stream linearization",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(6);
+      expect(reopened.listMigrations()).toHaveLength(7);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -902,9 +928,11 @@ describe("DurableWorkflowStore", () => {
           policy: {
             runId: "run-1",
             operationId: "operation-1",
+            dispatchEpoch: "dispatch-epoch-pause",
             profile: "explore",
             safetyMode: "trusted",
             editing: false,
+            isolation: "shared",
             externalTools: false,
             surfaceSends: false,
             subagents: false,

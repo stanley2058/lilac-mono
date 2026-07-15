@@ -18,10 +18,11 @@ import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store"
 import { WorkflowLiveParentBridge } from "../../src/workflow/workflow-live-parent-bridge";
 import { WorkflowSubagentDispatcher } from "../../src/workflow/workflow-subagent-dispatcher";
 import { WorkflowEngine } from "../../src/workflow/workflow-engine";
+import { createToolResultArtifactStore } from "../../src/artifacts/tool-result-artifact-store";
 
 const roots: string[] = [];
 
-function createInMemoryRawBus(): RawBus {
+function createInMemoryRawBus(): RawBus & { activeSubscriptions(): number } {
   const topics = new Map<string, Array<Message<unknown>>>();
   const subscriptions = new Set<{
     topic: string;
@@ -72,6 +73,7 @@ function createInMemoryRawBus(): RawBus {
         cursor: message.id,
       })),
     }),
+    activeSubscriptions: () => subscriptions.size,
     close: async () => {},
   };
 }
@@ -176,6 +178,76 @@ describe("workflow subagent convergence", () => {
       handle.runId,
     ]);
     store.close();
+  });
+
+  it("keeps ordinary editing subagents on safe shared workspace isolation", async () => {
+    const { store, dispatcher } = await setup();
+    const handle = await dispatcher.delegate(
+      {
+        ...registration(),
+        profile: "general",
+        childHeaders: { ...registration().childHeaders, subagent_profile: "general" },
+      },
+      { editing: true, externalTools: false },
+    );
+    const run = store.getRun(handle.runId);
+    const revision = run ? store.getRevision(run.revisionId) : null;
+    expect(revision?.capabilities.agents).toMatchObject({
+      profiles: ["general"],
+      editing: true,
+      isolation: "shared",
+      maxConcurrent: 1,
+    });
+    store.close();
+  });
+
+  it("transfers child tool-result wrappers before parent delivery", async () => {
+    const setupResult = await setup();
+    const artifacts = createToolResultArtifactStore(path.join(setupResult.dataDir, "tool-results"));
+    await artifacts.init();
+    const dispatcher = await WorkflowSubagentDispatcher.create({
+      store: setupResult.store,
+      workspaceRoot: setupResult.workspaceRoot,
+      dataDir: setupResult.dataDir,
+      toolResultArtifacts: artifacts,
+      pollMs: 1,
+    });
+    const child = registration();
+    const artifact = await artifacts.create({
+      sessionId: child.childSessionId,
+      requestId: child.childRequestId,
+      toolCallId: "child-tool-call",
+      toolName: "grep",
+      content: "complete child tool output",
+      ttlMs: 60_000,
+      maxBytesPerSession: 1_000_000,
+    });
+    const handle = await dispatcher.delegate(child, { editing: false, externalTools: false });
+    const run = setupResult.store.getRun(handle.runId);
+    if (!run) throw new Error("generated run missing");
+    expect(
+      setupResult.store.transitionRun({
+        runId: run.runId,
+        from: "queued",
+        to: "running",
+        now: 20,
+      }),
+    ).toBe(true);
+    const wrapper = `head\n\n[tool result truncated: 10 characters omitted]\nComplete output: ${artifact.uri}\nUse read_file with this URI and start: { "type": "offset", "offset": 0 }. Reuse the returned nextStart unchanged while more content remains.\n\ntail`;
+    expect(
+      setupResult.store.transitionRun({
+        runId: run.runId,
+        from: "running",
+        to: "succeeded",
+        now: 21,
+        result: wrapper,
+      }),
+    ).toBe(true);
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "resolved",
+      finalText: "complete child tool output",
+    });
+    setupResult.store.close();
   });
 
   it("uses the same durable terminal run without deferred delivery for synchronous completion", async () => {
@@ -313,7 +385,7 @@ describe("workflow subagent convergence", () => {
 
     await engine.stop();
     parent.acknowledge([run.runId]);
-    parent.close();
+    await parent.close();
     await bridge.stop();
     await bus.close();
     store.close();
@@ -351,7 +423,7 @@ describe("workflow subagent convergence", () => {
     parent.acknowledge([run.runId]);
     expect(parent.snapshot().hasPendingCompletions).toBe(false);
 
-    parent.close();
+    await parent.close();
     await bridge.stop();
     await bus.close();
     store.close();
@@ -377,7 +449,7 @@ describe("workflow subagent convergence", () => {
     const parent = bridge.registerParent({ parentRequestId: "parent:1" });
     await expect(parent.listPendingAsync()).rejects.toThrow();
     expect(parent.snapshot().hasPendingCompletions).toBe(true);
-    parent.close();
+    await parent.close();
     await expect(bridge.enableFallbacks()).rejects.toThrow();
     expect(store.listOrphanedLiveParentCompletions().map((item) => item.runId)).toEqual([
       run.runId,
@@ -443,7 +515,7 @@ describe("workflow subagent convergence", () => {
       first.runId,
     ]);
 
-    parent.close();
+    await parent.close();
     await bridge.stop();
     await bus.close();
     setupResult.store.close();
@@ -466,10 +538,132 @@ describe("workflow subagent convergence", () => {
       hasOutstandingRuns: false,
     });
 
-    parent.close();
+    await parent.close();
     await bridge.stop();
     await bus.close();
     store.close();
+  });
+
+  it("releases each child activity subscription across many sequential children", async () => {
+    const setupResult = await setup();
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store: setupResult.store,
+      subscriptionId: "test-live-parent-sequential",
+    });
+    await bridge.start();
+    const parent = bridge.registerParent({ parentRequestId: "parent:sequential" });
+    await parent.ready;
+    expect(raw.activeSubscriptions()).toBe(1);
+
+    for (let index = 0; index < 30; index += 1) {
+      const childRequestId = `sub:sequential:${index}`;
+      const handle = await setupResult.dispatcher.delegate(
+        {
+          ...registration("parent:sequential"),
+          childRequestId,
+          childSessionId: `sub:session:${index}`,
+        },
+        { editing: false, externalTools: false },
+      );
+      const run = setupResult.store.getRun(handle.runId);
+      if (!run) throw new Error("sequential child run missing");
+      expect(
+        setupResult.store.tryClaimApprovedRun({
+          runId: run.runId,
+          claimerId: "sequential-engine",
+          now: 100 + index,
+        }),
+      ).not.toBeNull();
+      const operationId = `operation-${index}`;
+      expect(
+        setupResult.store.createOperation(
+          {
+            runId: run.runId,
+            operationId,
+            callSiteId: `site-${index}`,
+            parentOperationId: null,
+            phase: null,
+            label: "sequential child",
+            kind: "agent",
+            input: {},
+            inputSha256: "a".repeat(64),
+            state: "running",
+            attempt: 0,
+            requestId: childRequestId,
+            output: null,
+            resultArtifactId: null,
+            error: null,
+            usage: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 100 + index,
+            startedAt: 100 + index,
+            updatedAt: 100 + index,
+            terminalAt: null,
+          },
+          "sequential-engine",
+        ),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowOperationChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        operationId,
+        kind: "agent",
+        state: "running",
+        ts: 100 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(2);
+      expect(
+        setupResult.store.transitionOperation({
+          runOwnerId: "sequential-engine",
+          runId: run.runId,
+          operationId,
+          from: "running",
+          to: "succeeded",
+          now: 190 + index,
+          output: `result-${index}`,
+        }),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowOperationChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        operationId,
+        kind: "agent",
+        state: "succeeded",
+        previousState: "running",
+        ts: 190 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(1);
+      expect(
+        setupResult.store.terminalizeRun({
+          runId: run.runId,
+          from: "running",
+          to: "succeeded",
+          ownerId: "sequential-engine",
+          now: 200 + index,
+          detail: "complete",
+          result: `result-${index}`,
+          resultArtifactId: null,
+        }),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowRunChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        state: "succeeded",
+        previousState: "running",
+        ts: 200 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(1);
+    }
+
+    await parent.close();
+    await bridge.stop();
+    expect(raw.activeSubscriptions()).toBe(0);
+    await bus.close();
+    setupResult.store.close();
   });
 
   it("activates the persisted surface fallback when the parent is absent", async () => {
@@ -540,7 +734,7 @@ describe("workflow subagent convergence", () => {
     expect(store.getRun(run.runId)?.progressTarget).toBeNull();
     expect(parent.listPending()).toHaveLength(1);
 
-    parent.close();
+    await parent.close();
     await bridge.stop();
     await bus.close();
     store.close();

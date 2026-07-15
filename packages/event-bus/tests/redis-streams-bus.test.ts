@@ -22,6 +22,30 @@ async function waitFor(
 }
 
 describe("RedisStreamsBus", () => {
+  it("returns the latest durable topic watermark", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const raw = createRedisStreamsBus({
+      redis,
+      keyPrefix: `test:lilac-event-bus:${randomId("watermark")}`,
+      ownsRedis: true,
+    });
+    try {
+      expect(await raw.watermark("evt.adapter")).toBeNull();
+      const first = await raw.publish(
+        { topic: "evt.adapter", type: "test.first", data: {} },
+        { topic: "evt.adapter", type: "test.first" },
+      );
+      const second = await raw.publish(
+        { topic: "evt.adapter", type: "test.second", data: {} },
+        { topic: "evt.adapter", type: "test.second" },
+      );
+      expect(await raw.watermark("evt.adapter")).toBe(second.cursor);
+      expect(second.cursor).not.toBe(first.cursor);
+    } finally {
+      await raw.close();
+    }
+  });
+
   it("does not block publish while a tail subscription is blocked", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("hol")}`;

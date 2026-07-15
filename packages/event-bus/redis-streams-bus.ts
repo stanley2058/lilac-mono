@@ -406,6 +406,19 @@ export class RedisStreamsBus implements RawBus {
     return { messages, next };
   }
 
+  async watermark(topic: Topic): Promise<Cursor | null> {
+    const entries = (await this.redis.xrevrange(
+      this.streamKey(topic),
+      "+",
+      "-",
+      "COUNT",
+      1,
+    )) as unknown;
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+    const latest = entries[0];
+    return Array.isArray(latest) && typeof latest[0] === "string" ? latest[0] : null;
+  }
+
   /**
    * Subscribe to a topic.
    *

@@ -24,9 +24,11 @@ import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver"
 
 class IdleRawBus implements RawBus {
   private sequence = 0;
+  private readonly watermarks = new Map<string, string>();
 
-  async publish<TData>(_message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
+  async publish<TData>(message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
     const id = `${++this.sequence}-0`;
+    this.watermarks.set(message.topic, id);
     return { id, cursor: id };
   }
 
@@ -40,6 +42,12 @@ class IdleRawBus implements RawBus {
 
   async fetch<TData>(_topic: string, _options: FetchOptions) {
     return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
+  }
+  async watermark(topic: string) {
+    return this.watermarks.get(topic) ?? null;
+  }
+  setWatermark(topic: string, cursor: string): void {
+    this.watermarks.set(topic, cursor);
   }
   async close() {}
 }
@@ -56,6 +64,9 @@ class HistoricalReplyRawBus extends IdleRawBus {
           ? [{ msg: this.historical as Message<TData>, cursor: this.historical.id }]
           : [],
     };
+  }
+  override async watermark(topic: string) {
+    return topic === this.historical.topic ? this.historical.id : await super.watermark(topic);
   }
 }
 
@@ -312,6 +323,13 @@ describe("WorkflowWaitResolver", () => {
       await resolver.resolveAdapterEvent({ ...event, messageId: "historical", ts: 2 }, "0-1");
       await resolver.resolveAdapterEvent({ ...event, messageId: "late", ts: 1_001 }, "0-2");
       expect(store.getWait("reply-wait", "wait-1")?.state).toBe("pending");
+      expect(
+        shouldSuppressRouterForWorkflowReply({
+          store,
+          event: { ...event, messageId: "exact", ts: 1_000 },
+          now: 20,
+        }).suppress,
+      ).toBe(false);
       await resolver.resolveAdapterEvent(event, "1-0");
       await waitFor(() => store.getWait("reply-wait", "wait-1")?.state === "resolved");
       const resolved = store.getWait("reply-wait", "wait-1");
@@ -383,6 +401,57 @@ describe("WorkflowWaitResolver", () => {
       expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("expired");
       await resolver.resolveAdapterEvent(event, "1-1");
       expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("expired");
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("waits for the durable adapter watermark before expiring a reply", async () => {
+    const dbPath = join(tmpdir(), `workflow-wait-watermark-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new IdleRawBus();
+    raw.setWatermark("evt.adapter", "5-0");
+    const bus = createLilacBus(raw);
+    const resolver = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "test-wait-watermark",
+      now: () => 100,
+    });
+    try {
+      createRunAndWait(store, {
+        runId: "watermark-wait",
+        operationId: "wait-1",
+        wait: {
+          state: "pending",
+          match: {
+            kind: "reply",
+            platform: "discord",
+            channelId: "channel-1",
+            messageId: "anchor-1",
+            fromUserId: "user-1",
+          },
+          matchKey: "discord:channel-1",
+          dueAt: null,
+          deadlineAt: 100,
+          resolverCursor: null,
+          result: null,
+          resolvedBy: null,
+          claimedBy: null,
+          claimedAt: null,
+          createdAt: 3,
+          updatedAt: 3,
+          resolvedAt: null,
+        },
+      });
+      await resolver.reconcileTimers();
+      expect(store.getWait("watermark-wait", "wait-1")?.state).toBe("pending");
+
+      store.advanceAdapterStreamWatermark({ topic: "evt.adapter", cursor: "5-0", now: 101 });
+      await resolver.reconcileTimers();
+      expect(store.getWait("watermark-wait", "wait-1")?.state).toBe("expired");
     } finally {
       await bus.close();
       store.close();

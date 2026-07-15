@@ -151,6 +151,13 @@ export class WorkflowEngine {
       startSandbox?: typeof startWorkflowSandbox;
       loadSnapshot?: (revision: WorkflowRevision) => Promise<string>;
       compileSource?: (source: string, sourceSha256: string) => string;
+      beforePromptPublication?: (input: {
+        requestId: string;
+        runId: string;
+        operationId: string;
+        dispatchEpoch: string;
+      }) => Promise<void>;
+      createDispatchEpoch?: () => string;
       dispatchAgentRequest?: (input: {
         run: WorkflowRun;
         revision: WorkflowRevision;
@@ -798,14 +805,20 @@ export class WorkflowEngine {
         WORKFLOW_REQUEST_LEASE_STALE_MS,
       );
     let capability: string | null = null;
+    const dispatchEpoch = liveOwner
+      ? this.input.store.getActiveWorkflowRequestDispatchEpoch(reqId, this.now())
+      : (this.input.createDispatchEpoch?.() ?? crypto.randomUUID());
+    if (!dispatchEpoch) throw new Error("Workflow dispatch epoch is missing");
     if (!liveOwner) {
       capability = crypto.randomUUID() + crypto.randomUUID();
       const policy = {
         runId: run.runId,
         operationId: operation.operationId,
+        dispatchEpoch,
         profile,
         safetyMode: run.origin.safetyMode,
         editing: revision.capabilities.agents.editing,
+        isolation: revision.capabilities.agents.isolation,
         externalTools: revision.capabilities.externalTools,
         surfaceSends: revision.capabilities.surfaceSends,
         subagents: run.completionTarget.kind === "live_parent",
@@ -856,6 +869,7 @@ export class WorkflowEngine {
         signal,
         reconcile,
         capability,
+        dispatchEpoch,
         sessionId,
         publishRequest: !liveOwner,
       };
@@ -998,6 +1012,7 @@ export class WorkflowEngine {
     signal: AbortSignal;
     reconcile: boolean;
     capability: string | null;
+    dispatchEpoch: string;
     sessionId: string;
     publishRequest: boolean;
   }): Promise<AgentRequestResult> {
@@ -1031,7 +1046,12 @@ export class WorkflowEngine {
     const handleOutputMessage = async (
       message: Awaited<ReturnType<LilacBus["fetchTopic"]>>["messages"][number]["msg"],
     ): Promise<void> => {
-      if (message.headers?.request_id !== input.requestId) return;
+      if (
+        message.headers?.request_id !== input.requestId ||
+        message.headers?.workflow_dispatch_epoch !== input.dispatchEpoch
+      ) {
+        return;
+      }
       resetIdle();
       if (message.type === lilacEventTypes.EvtAgentOutputDeltaText) output += message.data.delta;
       if (message.type === lilacEventTypes.EvtAgentOutputResponseText) {
@@ -1045,7 +1065,8 @@ export class WorkflowEngine {
     ): Promise<void> => {
       if (
         message.type !== lilacEventTypes.EvtRequestLifecycleChanged ||
-        message.headers?.request_id !== input.requestId
+        message.headers?.request_id !== input.requestId ||
+        message.headers?.workflow_dispatch_epoch !== input.dispatchEpoch
       ) {
         return;
       }
@@ -1137,6 +1158,25 @@ export class WorkflowEngine {
     }
     if (input.publishRequest && !settled) {
       if (!input.capability) throw new Error("Workflow dispatch capability is missing");
+      await this.input.beforePromptPublication?.({
+        requestId: input.requestId,
+        runId: input.run.runId,
+        operationId: input.operation.operationId,
+        dispatchEpoch: input.dispatchEpoch,
+      });
+      const publicationClaimed = this.input.store.claimWorkflowRequestPromptPublication({
+        requestId: input.requestId,
+        runId: input.run.runId,
+        operationId: input.operation.operationId,
+        runOwnerId: this.workerId,
+        now: this.now(),
+      });
+      if (!publicationClaimed) {
+        const terminal = await result;
+        input.signal.removeEventListener("abort", abort);
+        await Promise.all([outSub.stop(), evtSub.stop()]);
+        return terminal;
+      }
       const liveParent =
         input.run.completionTarget.kind === "live_parent" ? input.run.completionTarget : null;
       await this.input.bus.publish(
@@ -1149,6 +1189,7 @@ export class WorkflowEngine {
             workflow: {
               runId: input.run.runId,
               operationId: input.operation.operationId,
+              dispatchEpoch: input.dispatchEpoch,
               capability: input.capability,
             },
             subagent: {
@@ -1171,6 +1212,7 @@ export class WorkflowEngine {
             request_client: "unknown",
             workflow_run_id: input.run.runId,
             workflow_operation_id: input.operation.operationId,
+            workflow_dispatch_epoch: input.dispatchEpoch,
           },
         },
       );

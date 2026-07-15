@@ -663,6 +663,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: durableWorkflowStore,
         subscriptionId: subId(subscriptionPrefix, "workflow-live-parents"),
         dataDir: env.dataDir,
+        toolResultArtifacts,
       });
       await workflowLiveParentBridge.start();
 
@@ -670,6 +671,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: durableWorkflowStore,
         workspaceRoot: cwd,
         dataDir: env.dataDir,
+        toolResultArtifacts,
         onRunCreated: async (run) => {
           await bus.publish(lilacEventTypes.EvtWorkflowRunChanged, {
             runId: run.runId,

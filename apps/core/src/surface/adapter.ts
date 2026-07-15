@@ -20,6 +20,17 @@ export type SurfaceToolStatusUpdate = {
   error?: string;
 };
 
+export class SurfaceMessageNotFoundError extends Error {
+  constructor(
+    readonly platform: "discord" | "github",
+    readonly code: number | string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SurfaceMessageNotFoundError";
+  }
+}
+
 export type SurfaceReasoningStatusUpdate = {
   startedAtMs: number;
   /** Freeze timer at this timestamp once text starts streaming. */

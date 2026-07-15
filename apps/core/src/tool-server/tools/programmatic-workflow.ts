@@ -225,9 +225,12 @@ function redactRun(run: WorkflowRun) {
   };
 }
 
-function redactTrigger(trigger: WorkflowTrigger, revision: WorkflowRevision): WorkflowTrigger {
+function redactTrigger(trigger: WorkflowTrigger, revision: WorkflowRevision) {
+  const { argsSha256, ...safeTrigger } = trigger;
+  const sensitive = hasSensitiveSchema(revision.inputSchema);
   return {
-    ...trigger,
+    ...safeTrigger,
+    ...(sensitive ? {} : { argsSha256 }),
     args: jsonObjectSchema.parse(redactWorkflowValue(trigger.args, revision.inputSchema)),
   };
 }

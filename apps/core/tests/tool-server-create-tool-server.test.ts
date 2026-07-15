@@ -102,6 +102,13 @@ describe("createToolServer", () => {
       async list() {
         return [
           { callableId: "fetch", name: "Fetch", description: "read", shortInput: [] },
+          {
+            callableId: "content.inspect",
+            name: "Inspect",
+            description: "inspect",
+            shortInput: [],
+          },
+          { callableId: "search", name: "Search", description: "read", shortInput: [] },
           { callableId: "generate.image", name: "Generate", description: "write", shortInput: [] },
         ];
       },
@@ -126,9 +133,11 @@ describe("createToolServer", () => {
               policy: {
                 runId: "run-1",
                 operationId: "operation-1",
+                dispatchEpoch: "dispatch-epoch-0001",
                 profile: "explore",
                 safetyMode: "trusted",
                 editing: false,
+                isolation: "shared",
                 externalTools: true,
                 surfaceSends: false,
                 subagents: false,
@@ -155,21 +164,48 @@ describe("createToolServer", () => {
     };
     try {
       const list = await server.app.handle(new Request("http://localhost/list", { headers }));
-      expect(await list.json()).toMatchObject({ tools: [{ callableId: "fetch" }] });
-      const help = await server.app.handle(
-        new Request("http://localhost/help/generate.image", { headers }),
-      );
+      expect(await list.json()).toMatchObject({ tools: [{ callableId: "search" }] });
+      const help = await server.app.handle(new Request("http://localhost/help/fetch", { headers }));
       expect(help.status).toBe(404);
+      for (const url of ["file:///etc/passwd", "http://127.0.0.1:3000/private"]) {
+        const denied = await server.app.handle(
+          new Request("http://localhost/call", {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" },
+            body: JSON.stringify({ callableId: "fetch", input: { url } }),
+          }),
+        );
+        expect(await denied.json()).toMatchObject({
+          isError: true,
+          output: expect.stringContaining("outside the approved workflow capability"),
+        });
+      }
+      for (const input of [
+        { url: "http://169.254.169.254/latest/meta-data" },
+        { path: "/etc/passwd" },
+      ]) {
+        const denied = await server.app.handle(
+          new Request("http://localhost/call", {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" },
+            body: JSON.stringify({ callableId: "content.inspect", input }),
+          }),
+        );
+        expect(await denied.json()).toMatchObject({
+          isError: true,
+          output: expect.stringContaining("outside the approved workflow capability"),
+        });
+      }
       const call = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ callableId: "fetch", input: { url: "https://example.com" } }),
+          body: JSON.stringify({ callableId: "search", input: { query: "example" } }),
         }),
       );
       expect(await call.json()).toMatchObject({ isError: false, output: { ok: true } });
       expect(calls).toEqual([
-        { callableId: "fetch", sessionId: "origin-channel", cwd: "/approved" },
+        { callableId: "search", sessionId: "origin-channel", cwd: "/approved" },
       ]);
     } finally {
       await server.stop();
@@ -325,6 +361,21 @@ describe("createToolServer", () => {
         output: expect.stringContaining("outside the internal request capability"),
       });
 
+      const deniedAttachment = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { content: "due", paths: ["secret.txt"] },
+          }),
+        }),
+      );
+      expect(await deniedAttachment.json()).toMatchObject({
+        isError: true,
+        output: expect.stringContaining("text-only"),
+      });
+
       const allowedCall = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
@@ -388,7 +439,12 @@ describe("createToolServer", () => {
       },
       async call(_callableId, input) {
         seen.push(input);
-        const descriptorPath = typeof input.path === "string" ? input.path : undefined;
+        const descriptorPath =
+          typeof input.path === "string"
+            ? input.path
+            : Array.isArray(input.paths) && typeof input.paths[0] === "string"
+              ? input.paths[0]
+              : undefined;
         return descriptorPath ? await fs.readFile(descriptorPath, "utf8") : { ok: true };
       },
     };
@@ -404,9 +460,11 @@ describe("createToolServer", () => {
               policy: {
                 runId: "run-path",
                 operationId: "operation-path",
+                dispatchEpoch: "dispatch-epoch-path",
                 profile: "explore",
                 safetyMode: "trusted",
                 editing: false,
+                isolation: "shared",
                 externalTools: true,
                 surfaceSends: true,
                 subagents: false,
@@ -438,26 +496,43 @@ describe("createToolServer", () => {
         ((await list.json()) as { tools: Array<{ callableId: string }> }).tools.map(
           (item) => item.callableId,
         ),
-      ).toEqual(["content.inspect", "surface.messages.send"]);
+      ).toEqual(["surface.messages.send"]);
       const inspect = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
           headers,
-          body: JSON.stringify({ callableId: "content.inspect", input: { path: "inside.txt" } }),
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { text: "attached", paths: ["inside.txt"] },
+          }),
         }),
       );
       expect(await inspect.json()).toMatchObject({ isError: false, output: "contained" });
-      expect(seen[0]?.path).toMatch(/^\/proc\/self\/fd\/\d+$/);
+      expect(seen[0]?.paths).toEqual([expect.stringMatching(/^\/proc\/self\/fd\/\d+$/)]);
       for (const forbidden of [outside, "linked.txt"]) {
         const response = await server.app.handle(
           new Request("http://localhost/call", {
             method: "POST",
             headers,
-            body: JSON.stringify({ callableId: "content.inspect", input: { path: forbidden } }),
+            body: JSON.stringify({
+              callableId: "surface.messages.send",
+              input: { text: "attached", paths: [forbidden] },
+            }),
           }),
         );
         expect(response.status).toBe(500);
       }
+      const tooMany = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { text: "attached", paths: Array.from({ length: 11 }, () => "inside.txt") },
+          }),
+        }),
+      );
+      expect(tooMany.status).toBe(500);
     } finally {
       await server.stop();
     }

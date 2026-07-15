@@ -45,6 +45,9 @@ class CapturingRawBus implements RawBus {
         .map((msg) => ({ msg: msg as Message<TData>, cursor: msg.id })),
     };
   }
+  async watermark(topic: string) {
+    return this.history.filter((message) => message.topic === topic).at(-1)?.id ?? null;
+  }
   async close() {}
 }
 
@@ -175,10 +178,12 @@ describe("WorkflowEngine", () => {
     createApprovedRun(store);
     const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
     const requestId = workflowAgentRequestId("run-1", operationId, 0);
+    const dispatchEpoch = "historical-epoch-0001";
     const headers = {
       request_id: requestId,
       session_id: `workflow:run-1:${operationId}`,
       request_client: "unknown",
+      workflow_dispatch_epoch: dispatchEpoch,
     };
     raw.history.push(
       {
@@ -207,6 +212,7 @@ describe("WorkflowEngine", () => {
       assertSandbox: async () => {},
       loadSnapshot: async () => "immutable",
       compileSource: (source) => source,
+      createDispatchEpoch: () => dispatchEpoch,
       startSandbox: (input) => ({
         cancel: async () => {},
         result: input.onCall({
@@ -232,6 +238,70 @@ describe("WorkflowEngine", () => {
           (message) =>
             message.type === lilacEventTypes.CmdRequestMessage &&
             message.headers?.request_id === requestId &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "prompt",
+        ),
+      ).toBe(false);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("does not publish when a durable terminal receipt wins after history scan", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-terminal-race-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(store);
+    let receiptRecorded = false;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "terminal-race",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      beforePromptPublication: async ({ requestId, runId, operationId }) => {
+        receiptRecorded = store.recordWorkflowRequestTerminal({
+          requestId,
+          runId,
+          operationId,
+          dispatchEpoch: "stale-dispatch-epoch",
+          state: "resolved",
+          now: 20,
+        });
+      },
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => receiptRecorded);
+      await Bun.sleep(20);
+      expect(
+        raw.messages.some(
+          (message) =>
+            message.type === lilacEventTypes.CmdRequestMessage &&
             typeof message.data === "object" &&
             message.data !== null &&
             "queue" in message.data &&

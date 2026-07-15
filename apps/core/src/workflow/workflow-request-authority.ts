@@ -5,9 +5,11 @@ import { workflowAgentProfileSchema, workflowSafetyModeSchema } from "./workflow
 export const workflowRequestPolicySchema = z.strictObject({
   runId: z.string().min(1).max(200),
   operationId: z.string().min(1).max(200),
+  dispatchEpoch: z.string().min(16).max(200),
   profile: workflowAgentProfileSchema,
   safetyMode: workflowSafetyModeSchema,
   editing: z.boolean(),
+  isolation: z.enum(["shared", "worktree"]),
   externalTools: z.boolean(),
   surfaceSends: z.boolean(),
   subagents: z.boolean(),

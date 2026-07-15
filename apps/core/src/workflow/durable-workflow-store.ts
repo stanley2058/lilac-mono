@@ -52,6 +52,20 @@ function resolveWorkflowDbPath(): string {
 const nullableStringSchema = z.string().nullable();
 const nullableNumberSchema = z.number().nullable();
 
+function compareStreamCursors(left: string, right: string): number {
+  const cursorSchema = z.string().regex(/^\d+-\d+$/u);
+  const cursorPartsSchema = z.tuple([z.string(), z.string()]);
+  const leftParts = cursorPartsSchema.parse(cursorSchema.parse(left).split("-"));
+  const rightParts = cursorPartsSchema.parse(cursorSchema.parse(right).split("-"));
+  const leftMs = BigInt(leftParts[0]);
+  const leftSequence = BigInt(leftParts[1]);
+  const rightMs = BigInt(rightParts[0]);
+  const rightSequence = BigInt(rightParts[1]);
+  if (leftMs !== rightMs) return leftMs < rightMs ? -1 : 1;
+  if (leftSequence === rightSequence) return 0;
+  return leftSequence < rightSequence ? -1 : 1;
+}
+
 const revisionRowSchema = z.object({
   revision_id: z.string(),
   canonical_project_id: z.string(),
@@ -211,6 +225,7 @@ const requestDispatchRowSchema = z.object({
   request_id: z.string(),
   run_id: z.string(),
   operation_id: z.string(),
+  dispatch_epoch: z.string(),
   token_sha256: z.string(),
   session_id: z.string(),
   platform: z.string(),
@@ -1434,14 +1449,15 @@ export class DurableWorkflowStore {
       ]);
       this.db.run(
         `INSERT INTO workflow_request_dispatches (
-           request_id, run_id, operation_id, token_sha256, session_id, platform,
+           request_id, run_id, operation_id, dispatch_epoch, token_sha256, session_id, platform,
            canonical_cwd, policy_json, expires_at, owner_id, owner_heartbeat_at,
            active, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
         [
           input.requestId,
           input.runId,
           input.operationId,
+          policy.dispatchEpoch,
           sha256(input.token),
           input.sessionId,
           input.platform,
@@ -1490,6 +1506,7 @@ export class DurableWorkflowStore {
         approval.revisionId !== revision.revisionId ||
         operation.requestId !== input.requestId ||
         !["dispatched", "running"].includes(operation.state) ||
+        row.dispatch_epoch !== policy.dispatchEpoch ||
         row.canonical_cwd !== policy.canonicalCwd ||
         policy.runId !== run.runId ||
         policy.operationId !== operation.operationId ||
@@ -1512,6 +1529,81 @@ export class DurableWorkflowStore {
       };
     });
     return authorize.immediate();
+  }
+
+  recordWorkflowRequestTerminal(input: {
+    requestId: string;
+    runId: string;
+    operationId: string;
+    dispatchEpoch: string;
+    state: "resolved" | "failed" | "cancelled";
+    detail?: string;
+    now: number;
+  }): boolean {
+    const result = this.db
+      .query(
+        `INSERT INTO workflow_request_terminal_receipts (
+           request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM workflow_operations
+           WHERE run_id = ? AND operation_id = ? AND request_id = ?
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM workflow_request_dispatches
+             WHERE request_id = ? AND prompt_published_at IS NOT NULL AND dispatch_epoch <> ?
+           )
+         ON CONFLICT(request_id) DO NOTHING`,
+      )
+      .run(
+        input.requestId,
+        input.runId,
+        input.operationId,
+        input.dispatchEpoch,
+        input.state,
+        input.detail ?? null,
+        input.now,
+        input.runId,
+        input.operationId,
+        input.requestId,
+        input.requestId,
+        input.dispatchEpoch,
+      );
+    if (result.changes === 1) {
+      this.db.run(
+        `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+         WHERE request_id = ? AND prompt_published_at IS NULL`,
+        [input.now, input.requestId],
+      );
+    }
+    return result.changes === 1;
+  }
+
+  claimWorkflowRequestPromptPublication(input: {
+    requestId: string;
+    runId: string;
+    operationId: string;
+    runOwnerId: string;
+    now: number;
+  }): boolean {
+    const result = this.db
+      .query(
+        `UPDATE workflow_request_dispatches SET prompt_published_at = ?, updated_at = ?
+         WHERE request_id = ? AND run_id = ? AND operation_id = ? AND active = 1
+           AND prompt_published_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipts
+             WHERE workflow_request_terminal_receipts.request_id = workflow_request_dispatches.request_id
+           )
+           AND EXISTS (
+             SELECT 1 FROM workflow_runs
+             WHERE workflow_runs.run_id = workflow_request_dispatches.run_id
+               AND workflow_runs.state = 'running' AND workflow_runs.claimed_by = ?
+           )`,
+      )
+      .run(input.now, input.now, input.requestId, input.runId, input.operationId, input.runOwnerId);
+    return result.changes === 1;
   }
 
   claimWorkflowRequest(input: {
@@ -1575,6 +1667,16 @@ export class DurableWorkflowStore {
       )
       .get(requestId, now, now - staleAfterMs);
     return row?.present === 1;
+  }
+
+  getActiveWorkflowRequestDispatchEpoch(requestId: string, now: number): string | null {
+    const row = this.db
+      .query<{ dispatch_epoch: string }, [string, number]>(
+        `SELECT dispatch_epoch FROM workflow_request_dispatches
+         WHERE request_id = ? AND active = 1 AND expires_at > ?`,
+      )
+      .get(requestId, now);
+    return row?.dispatch_epoch ?? null;
   }
 
   expireWorkflowRequest(requestId: string, now: number, ownerId?: string): boolean {
@@ -1874,6 +1976,60 @@ export class DurableWorkflowStore {
       )
       .all(now, now);
     return tolerantRows(rows, parseWait);
+  }
+
+  captureWaitExpiryCutoff(input: {
+    runId: string;
+    operationId: string;
+    cutoffCursor: string;
+    now: number;
+  }): string | null {
+    const capture = this.db.transaction(() => {
+      this.db.run(
+        `UPDATE workflow_waits SET expiry_cutoff_cursor = ?, updated_at = ?
+         WHERE run_id = ? AND operation_id = ? AND state IN ('pending', 'claimed')
+           AND expiry_cutoff_cursor IS NULL`,
+        [input.cutoffCursor, input.now, input.runId, input.operationId],
+      );
+      const row = this.db
+        .query<{ expiry_cutoff_cursor: string | null }, [string, string]>(
+          `SELECT expiry_cutoff_cursor FROM workflow_waits
+           WHERE run_id = ? AND operation_id = ?`,
+        )
+        .get(input.runId, input.operationId);
+      return row?.expiry_cutoff_cursor ?? null;
+    });
+    return capture.immediate();
+  }
+
+  advanceAdapterStreamWatermark(input: { topic: string; cursor: string; now: number }): void {
+    const advance = this.db.transaction(() => {
+      const current = this.db
+        .query<{ processed_cursor: string }, [string]>(
+          `SELECT processed_cursor FROM workflow_adapter_stream_watermarks WHERE topic = ?`,
+        )
+        .get(input.topic);
+      if (current && compareStreamCursors(current.processed_cursor, input.cursor) >= 0) return;
+      this.db.run(
+        `INSERT INTO workflow_adapter_stream_watermarks (topic, processed_cursor, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(topic) DO UPDATE SET
+           processed_cursor = excluded.processed_cursor,
+           updated_at = excluded.updated_at`,
+        [input.topic, input.cursor, input.now],
+      );
+    });
+    advance.immediate();
+  }
+
+  hasAdapterStreamReached(topic: string, cutoffCursor: string): boolean {
+    if (cutoffCursor === "0-0") return true;
+    const row = this.db
+      .query<{ processed_cursor: string }, [string]>(
+        `SELECT processed_cursor FROM workflow_adapter_stream_watermarks WHERE topic = ?`,
+      )
+      .get(topic);
+    return row !== null && compareStreamCursors(row.processed_cursor, cutoffCursor) >= 0;
   }
 
   transitionWait(input: {

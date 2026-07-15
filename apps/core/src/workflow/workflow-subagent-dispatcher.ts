@@ -3,6 +3,7 @@ import type {
   SubagentDelegationOutcome,
   SubagentDelegationRegistration,
 } from "../tools/subagent";
+import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import { DurableWorkflowStore } from "./durable-workflow-store";
 import {
   canonicalJsonSha256,
@@ -20,6 +21,7 @@ import type {
   WorkflowRun,
 } from "./workflow-domain";
 import { readWorkflowValueArtifact } from "./workflow-artifact-store";
+import { resolveWorkflowSubagentToolResult } from "./workflow-subagent-output";
 
 const GENERATED_WORKFLOW_NAME = "subagent-delegate";
 
@@ -97,6 +99,7 @@ async function completionStatus(
   run: WorkflowRun,
   store: DurableWorkflowStore,
   dataDir: string,
+  toolResultArtifacts?: ToolResultArtifactStore,
 ): Promise<SubagentDelegationOutcome> {
   if (run.state === "succeeded") {
     const revision = store.getRevision(run.revisionId);
@@ -108,7 +111,15 @@ async function completionStatus(
           maxBytes: revision.limits.maxResultBytes,
         })
       : run.result;
-    const finalText = typeof result === "string" ? result : JSON.stringify(result);
+    const rawFinalText = typeof result === "string" ? result : JSON.stringify(result);
+    const finalText =
+      run.completionTarget.kind === "live_parent"
+        ? await resolveWorkflowSubagentToolResult({
+            finalText: rawFinalText,
+            childSessionId: run.completionTarget.childSessionId,
+            artifacts: toolResultArtifacts,
+          })
+        : rawFinalText;
     return { status: "resolved", finalText };
   }
   if (run.state === "cancelled") {
@@ -134,6 +145,7 @@ export class WorkflowSubagentDispatcher {
       store: DurableWorkflowStore;
       definitions: WorkflowDefinitionStore;
       dataDir: string;
+      toolResultArtifacts?: ToolResultArtifactStore;
       now?: () => number;
       pollMs?: number;
       onRunCreated?: (run: WorkflowRun) => Promise<void>;
@@ -145,6 +157,7 @@ export class WorkflowSubagentDispatcher {
     store: DurableWorkflowStore;
     workspaceRoot: string;
     dataDir: string;
+    toolResultArtifacts?: ToolResultArtifactStore;
     now?: () => number;
     pollMs?: number;
     onRunCreated?: (run: WorkflowRun) => Promise<void>;
@@ -318,7 +331,12 @@ export class WorkflowSubagentDispatcher {
       const run = this.input.store.getRun(runId);
       if (!run) throw new Error(`Subagent workflow run disappeared: ${runId}`);
       if (["succeeded", "failed", "rejected", "cancelled"].includes(run.state)) {
-        const completion = await completionStatus(run, this.input.store, this.input.dataDir);
+        const completion = await completionStatus(
+          run,
+          this.input.store,
+          this.input.dataDir,
+          this.input.toolResultArtifacts,
+        );
         if (acknowledgeSynchronousDelivery) {
           this.input.store.markLiveParentCompletionDelivered(
             runId,

@@ -135,3 +135,45 @@ Status: implementation and repository validation complete. Production readiness 
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 4
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Runtime-v1 workflow external tools no longer expose direct `fetch` or `content.inspect`. Workflow children cannot route `file://`, loopback, link-local, private-network, redirect, browser, URL-context, or local-path inputs through those callables. The remaining external allowlist is search/discovery and bounded skill metadata only.
+2. Core `content.inspect` now caps remote, local, and decoded base64 sources at 25 MiB. Content-Length is rejected before body reads, streamed responses are cancelled when the cap is crossed, base64 input length is schema-bounded, and decoded/local byte counts are checked before model submission.
+3. Trigger create/get/list/cancel responses omit `argsSha256` whenever the pinned revision schema contains any sensitive field, matching run/progress correlation redaction.
+4. Request redispatch uses schema-v7 durable terminal receipts, per-dispatch epochs, and a transactional prompt-publication claim. Runners record terminal state before lifecycle publication; a stale epoch blocks a pending redispatch but cannot terminate a newer epoch that already won publication. Output/lifecycle history and live subscriptions are epoch-filtered.
+5. Reply expiry captures the durable `evt.adapter` stream watermark and persists it on the wait. A timer can expire a reply only after resolver ingestion has durably advanced through that cutoff. Reply resolution and router suppression both use the same half-open interval (`createdAt <= event.ts < deadlineAt`).
+6. Projector retries now re-read bound messages before unchanged-hash short-circuiting, clear retry state when found, clear/recreate on authoritative absence, and retain bindings on transient failures. Discord unknown-channel/message codes 10003/10008 map to a common typed not-found error; GitHub typed 404 handling remains authoritative.
+7. Heartbeat `surface.messages.send` is text-only. Attachment path, filename, or MIME fields are rejected before the surface tool or path-opening authority runs.
+8. Workflow request policy now carries authoritative `shared` versus `worktree` isolation. Shared editing is confined to the canonical workspace root; worktree editing still requires an owned verified worktree. Both retain canonical path, symlink, protected-file, SSH-cwd, and dangerous-override rejection, and ordinary one-agent editing delegation remains shared.
+9. Live-parent child activity subscriptions are removed when the agent operation, run, delivery, cancellation, fallback, or parent session becomes terminal/closed. Sequential child runs no longer accumulate tail subscriptions or Redis subscriber-pool leases.
+10. The reported workflow-backed `tool-result://` issue was confirmed as a regression. Child-owned truncation artifacts are now resolved under the child session before parent delivery; the existing parent normalizer then re-bounds and re-homes output. Unavailable child artifacts produce a bounded explanatory preview rather than an unusable cross-session URI.
+
+### Adjacent Boundary Hardening
+
+- Workflow path authority caps attachment path and filename arrays at ten before opening any descriptor, matching the surface schema limit.
+- Schema migration 7 backfills active dispatch isolation and epochs while adding terminal receipts, publication state, wait cutoffs, and adapter-stream watermarks.
+
+### Regression Coverage
+
+- Added workflow denial tests for `file://`, loopback/link-local HTTP, URL inspect, and host-file inspect inputs, plus remote/base64 inspect size limits.
+- Added sensitive trigger hash assertions across create, replay, get, list, and cancel.
+- Added a deterministic terminal-after-history-scan/before-publication race and stale/new epoch ordering coverage.
+- Added watermark-gated expiry, exact-deadline router parity, retry lookup/found/absence behavior, Discord typed not-found, heartbeat attachment, shared/worktree editing, and pre-open attachment-count tests.
+- Added thirty sequential child subscription lifecycle checks and child artifact transfer coverage.
+- Full validation passed: core 1084 tests, event bus 21 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, lint, format, and diff checks.
+
+### Proven False Positives
+
+None. The `tool-result://` report reproduced as a cross-session ownership failure and was fixed.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

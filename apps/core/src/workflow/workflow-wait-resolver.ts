@@ -40,6 +40,11 @@ export class WorkflowWaitResolver {
         if (message.type === lilacEventTypes.EvtAdapterMessageCreated) {
           await this.resolveAdapterEvent(message.data, context.cursor);
         }
+        this.input.store.advanceAdapterStreamWatermark({
+          topic: "evt.adapter",
+          cursor: context.cursor,
+          now: this.now(),
+        });
         await context.commit();
       },
     );
@@ -71,6 +76,11 @@ export class WorkflowWaitResolver {
         if (entry.msg.type === lilacEventTypes.EvtAdapterMessageCreated) {
           await this.resolveAdapterEvent(entry.msg.data, entry.cursor);
         }
+        this.input.store.advanceAdapterStreamWatermark({
+          topic: "evt.adapter",
+          cursor: entry.cursor,
+          now: this.now(),
+        });
       }
       const previous = cursor;
       cursor = batch.next;
@@ -105,7 +115,17 @@ export class WorkflowWaitResolver {
     try {
       const now = this.now();
       const candidates = this.input.store.listDueWaits(now);
+      const currentAdapterCutoff = (await this.input.bus.getTopicWatermark("evt.adapter")) ?? "0-0";
       for (const candidate of candidates) {
+        if (candidate.match.kind === "reply") {
+          const cutoff = this.input.store.captureWaitExpiryCutoff({
+            runId: candidate.runId,
+            operationId: candidate.operationId,
+            cutoffCursor: currentAdapterCutoff,
+            now,
+          });
+          if (!cutoff || !this.input.store.hasAdapterStreamReached("evt.adapter", cutoff)) continue;
+        }
         const runOwnerId = this.input.store.getRun(candidate.runId)?.claimedBy;
         if (!runOwnerId) continue;
         const claimed = this.input.store.tryClaimWait({

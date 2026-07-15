@@ -14,13 +14,19 @@ async function execute(tool: unknown, input: Record<string, unknown>): Promise<u
   return await Reflect.apply(tool["execute"], tool, [input, {}]);
 }
 
-function policy(root: string, editing: boolean): WorkflowRequestPolicy {
+function policy(
+  root: string,
+  editing: boolean,
+  isolation: "shared" | "worktree" = editing ? "worktree" : "shared",
+): WorkflowRequestPolicy {
   return {
     runId: "run-1",
     operationId: "operation-1",
+    dispatchEpoch: "dispatch-epoch-0001",
     profile: editing ? "general" : "explore",
     safetyMode: "restricted",
     editing,
+    isolation,
     externalTools: false,
     surfaceSends: false,
     subagents: false,
@@ -137,6 +143,42 @@ describe("workflow Level-1 filesystem boundary", () => {
           { path: "inside.txt", oldText: "inside", newText: "changed" },
         ),
       ).rejects.toThrow("owned worktree");
+    } finally {
+      await fs.rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("allows shared editing only at the canonical workspace root", async () => {
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-level1-shared-write-"));
+    const workspace = path.join(temp, "workspace");
+    await fs.mkdir(workspace);
+    await fs.writeFile(path.join(workspace, "inside.txt"), "inside", "utf8");
+    const original = { execute: async () => ({ success: true }) };
+    try {
+      const shared = enforceWorkflowLevel1Boundary({
+        tool: original,
+        toolName: "edit_file",
+        policy: policy(workspace, true, "shared"),
+      });
+      await expect(
+        execute(shared, { path: "inside.txt", oldText: "inside", newText: "changed" }),
+      ).resolves.toMatchObject({ success: true });
+
+      const escapedAuthority = enforceWorkflowLevel1Boundary({
+        tool: original,
+        toolName: "edit_file",
+        policy: {
+          ...policy(workspace, true, "shared"),
+          canonicalWorkspaceRoot: temp,
+        },
+      });
+      await expect(
+        execute(escapedAuthority, {
+          path: "inside.txt",
+          oldText: "inside",
+          newText: "changed",
+        }),
+      ).rejects.toThrow("canonical workspace root");
     } finally {
       await fs.rm(temp, { recursive: true, force: true });
     }

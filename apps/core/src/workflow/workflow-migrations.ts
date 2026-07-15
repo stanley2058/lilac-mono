@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 6;
+export const WORKFLOW_SCHEMA_VERSION = 7;
 
 type WorkflowMigration = {
   version: number;
@@ -397,6 +397,46 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
          'pending', NULL, created_at, updated_at
        FROM workflow_runs
        WHERE json_extract(completion_target_json, '$.kind') = 'live_parent'`,
+    ],
+  },
+  {
+    version: 7,
+    name: "round 4 request and adapter stream linearization",
+    statements: [
+      `ALTER TABLE workflow_request_dispatches ADD COLUMN prompt_published_at INTEGER`,
+      `ALTER TABLE workflow_request_dispatches ADD COLUMN dispatch_epoch TEXT`,
+      `UPDATE workflow_request_dispatches SET dispatch_epoch = lower(hex(randomblob(16)))
+       WHERE dispatch_epoch IS NULL`,
+      `CREATE TABLE workflow_request_terminal_receipts (
+        request_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        dispatch_epoch TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('resolved', 'failed', 'cancelled')),
+        detail TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+      `ALTER TABLE workflow_waits ADD COLUMN expiry_cutoff_cursor TEXT`,
+      `CREATE TABLE workflow_adapter_stream_watermarks (
+        topic TEXT PRIMARY KEY,
+        processed_cursor TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `UPDATE workflow_request_dispatches
+       SET policy_json = json_set(
+         policy_json,
+         '$.isolation',
+         CASE
+           WHEN json_extract(policy_json, '$.editing') = 1
+             AND canonical_cwd <> json_extract(policy_json, '$.canonicalWorkspaceRoot')
+           THEN 'worktree'
+           ELSE 'shared'
+         END
+       )
+       WHERE json_type(policy_json, '$.isolation') IS NULL`,
+      `UPDATE workflow_request_dispatches
+       SET policy_json = json_set(policy_json, '$.dispatchEpoch', dispatch_epoch)
+       WHERE json_type(policy_json, '$.dispatchEpoch') IS NULL`,
     ],
   },
 ];

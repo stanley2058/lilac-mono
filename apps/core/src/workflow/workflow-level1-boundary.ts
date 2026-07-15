@@ -111,12 +111,19 @@ async function authorizeInput(input: {
   await assertCanonicalRoot(root);
 
   if (WORKFLOW_WRITE_TOOLS.has(input.toolName)) {
-    if (!input.policy.editing || !input.ownedWorktreeRoot) {
-      throw new Error("Workflow write tools require an approved owned worktree");
-    }
-    await assertCanonicalRoot(input.ownedWorktreeRoot);
-    if (!isContained(input.ownedWorktreeRoot, root) || root === input.ownedWorktreeRoot) {
-      throw new Error("Workflow write root is outside the owned worktree directory");
+    if (!input.policy.editing) throw new Error("Workflow write tools require editing authority");
+    if (input.policy.isolation === "shared") {
+      if (root !== input.policy.canonicalWorkspaceRoot) {
+        throw new Error("Shared workflow writes must use the canonical workspace root");
+      }
+    } else {
+      if (!input.ownedWorktreeRoot) {
+        throw new Error("Worktree workflow writes require an approved owned worktree");
+      }
+      await assertCanonicalRoot(input.ownedWorktreeRoot);
+      if (!isContained(input.ownedWorktreeRoot, root) || root === input.ownedWorktreeRoot) {
+        throw new Error("Workflow write root is outside the owned worktree directory");
+      }
     }
   } else if (!WORKFLOW_READ_TOOLS.has(input.toolName)) {
     throw new Error(`Unsupported workflow Level-1 filesystem tool: ${input.toolName}`);

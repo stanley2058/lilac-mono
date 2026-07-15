@@ -3,6 +3,7 @@ import {
   createLogger,
   extractAiErrorLogDetails,
   getBuildInfo,
+  isRecord,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
@@ -361,13 +362,11 @@ export function createToolServer(options: ToolServerOptions) {
 
   const SURFACE_CREATE_CALLABLES = new Set(["surface.messages.send"]);
   const WORKFLOW_EXTERNAL_READ_CALLABLES = new Set([
-    "fetch",
     "search",
     "discovery.search",
     "skills.list",
     "skills.brief",
     "skills.full",
-    "content.inspect",
   ]);
 
   function isCallableAllowedForWorkflowChild(
@@ -570,6 +569,17 @@ export function createToolServer(options: ToolServerOptions) {
       const { context: ctx, messages } = authenticateContext(headers);
       const safetyMode = await resolveSafetyMode(ctx);
       ctx.safetyMode = safetyMode;
+      if (
+        ctx.controlPolicy?.kind === "heartbeat" &&
+        body.callableId === "surface.messages.send" &&
+        isRecord(body.input) &&
+        ["paths", "filenames", "mimeTypes"].some((key) => body.input[key] !== undefined)
+      ) {
+        return {
+          isError: true,
+          output: "Heartbeat surface messages are text-only and cannot include attachments",
+        };
+      }
       if (!isCallableAllowedForControlCapability(body.callableId, ctx)) {
         return {
           isError: true,

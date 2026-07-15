@@ -2085,6 +2085,7 @@ export async function startBusAgentRunner(params: {
     const subagentMeta = parseSubagentMetaFromRaw(next.raw);
     const runProfile = subagentMeta.profile;
     const workflowHint = parseWorkflowRequestHintFromRaw(next.raw);
+    let workflowDispatchEpoch = workflowHint?.dispatchEpoch;
     let workflowPolicy: WorkflowRequestPolicy | null = null;
     let workflowClaimTimer: ReturnType<typeof setInterval> | null = null;
     let preserveWorkflowClaim = false;
@@ -2105,11 +2106,39 @@ export async function startBusAgentRunner(params: {
     let unsubscribe = () => {};
     let unsubscribeCompaction = () => {};
 
-    const headers = {
+    const headers: {
+      request_id: string;
+      session_id: string;
+      request_client: AdapterPlatform;
+      workflow_dispatch_epoch?: string;
+      router_session_mode?: "mention" | "active";
+    } = {
       request_id: next.requestId,
       session_id: next.sessionId,
       request_client: next.requestClient,
+      ...(workflowDispatchEpoch ? { workflow_dispatch_epoch: workflowDispatchEpoch } : {}),
       ...(routerSessionMode ? { router_session_mode: routerSessionMode } : {}),
+    };
+    const publishCurrentLifecycle = async (input: {
+      state: RequestLifecycleState;
+      detail?: string;
+    }): Promise<void> => {
+      if (
+        workflowHint &&
+        workflowDispatchEpoch &&
+        (input.state === "resolved" || input.state === "failed" || input.state === "cancelled")
+      ) {
+        params.durableWorkflowStore?.recordWorkflowRequestTerminal({
+          requestId: next.requestId,
+          runId: workflowHint.runId,
+          operationId: workflowHint.operationId,
+          dispatchEpoch: workflowDispatchEpoch,
+          state: input.state,
+          detail: input.detail,
+          now: Date.now(),
+        });
+      }
+      await publishLifecycle({ bus, headers, ...input });
     };
     const publishAgentActivity = createAgentOutputActivityPublisher({
       bus,
@@ -2252,10 +2281,14 @@ export async function startBusAgentRunner(params: {
         if (
           !authorized ||
           authorized.policy.runId !== workflowHint.runId ||
-          authorized.policy.operationId !== workflowHint.operationId
+          authorized.policy.operationId !== workflowHint.operationId ||
+          (workflowHint.dispatchEpoch !== undefined &&
+            authorized.policy.dispatchEpoch !== workflowHint.dispatchEpoch)
         ) {
           throw new Error("Workflow request dispatch authority is invalid or inactive");
         }
+        workflowDispatchEpoch = authorized.policy.dispatchEpoch;
+        headers.workflow_dispatch_epoch = workflowDispatchEpoch;
         if (
           !params.durableWorkflowStore.claimWorkflowRequest({
             requestId: next.requestId,
@@ -2281,7 +2314,14 @@ export async function startBusAgentRunner(params: {
         ) {
           throw new Error("Read-only workflow request cwd escaped the approved workspace");
         }
-        if (authorized.policy.editing) {
+        if (
+          authorized.policy.editing &&
+          authorized.policy.isolation === "shared" &&
+          canonicalCwd !== authorized.policy.canonicalWorkspaceRoot
+        ) {
+          throw new Error("Shared editing workflow request escaped the approved workspace");
+        }
+        if (authorized.policy.editing && authorized.policy.isolation === "worktree") {
           const worktreeRoot = path.resolve(env.dataDir, "workflow-worktrees");
           const relative = path.relative(worktreeRoot, canonicalCwd);
           if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
@@ -2308,9 +2348,7 @@ export async function startBusAgentRunner(params: {
       const maxSubagentDepth = subagents.maxDepth;
       if (subagentMeta.depth > maxSubagentDepth) {
         const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
-        await publishLifecycle({
-          bus,
-          headers,
+        await publishCurrentLifecycle({
           state: "failed",
           detail,
         });
@@ -2322,9 +2360,7 @@ export async function startBusAgentRunner(params: {
         return;
       }
 
-      await publishLifecycle({
-        bus,
-        headers,
+      await publishCurrentLifecycle({
         state: "running",
         detail: next.recovery
           ? "resumed after server restart"
@@ -2415,9 +2451,7 @@ export async function startBusAgentRunner(params: {
             { headers },
           );
           activeCustomCommandTool = null;
-          await publishLifecycle({
-            bus,
-            headers,
+          await publishCurrentLifecycle({
             state: "cancelled",
             detail: "cancelled by interrupt",
           });
@@ -2490,7 +2524,7 @@ export async function startBusAgentRunner(params: {
             }
           }
 
-          await publishLifecycle({ bus, headers, state: "failed", detail: customError });
+          await publishCurrentLifecycle({ state: "failed", detail: customError });
           await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
 
           logger.warn("custom command failed", {
@@ -2797,9 +2831,10 @@ export async function startBusAgentRunner(params: {
             metadata: {
               workflowPolicy: workflowPolicy ?? undefined,
               workflowCapability: workflowHint?.capability,
-              workflowOwnedWorktreeRoot: workflowPolicy?.editing
-                ? path.resolve(env.dataDir, "workflow-worktrees")
-                : undefined,
+              workflowOwnedWorktreeRoot:
+                workflowPolicy?.editing && workflowPolicy.isolation === "worktree"
+                  ? path.resolve(env.dataDir, "workflow-worktrees")
+                  : undefined,
               controlCapability: controlCapability ?? undefined,
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
@@ -3595,9 +3630,7 @@ export async function startBusAgentRunner(params: {
 
       if (cancelledByRequestId.has(headers.request_id)) {
         const finalText = "Cancelled.";
-        await publishLifecycle({
-          bus,
-          headers,
+        await publishCurrentLifecycle({
           state: "cancelled",
           detail: "cancelled by interrupt",
         });
@@ -3674,7 +3707,7 @@ export async function startBusAgentRunner(params: {
           }
           if (cancelledByRequestId.has(headers.request_id)) break;
           if (unseen.length > 0) await waitForRun(agent.continue());
-          liveParentSession.acknowledge(normalized.map((completion) => completion.runId));
+          await liveParentSession.acknowledge(normalized.map((completion) => completion.runId));
           continue;
         }
 
@@ -3887,9 +3920,7 @@ export async function startBusAgentRunner(params: {
         costEstimateReason: resolvedCostEstimateReason,
       });
 
-      await publishLifecycle({
-        bus,
-        headers,
+      await publishCurrentLifecycle({
         state: isCancelled ? "cancelled" : "resolved",
         detail: isCancelled ? "cancelled by interrupt" : undefined,
       });
@@ -3961,9 +3992,7 @@ export async function startBusAgentRunner(params: {
       if (e instanceof PreAgentRunCancelledError) {
         await liveParentSession?.cancelAll("parent request cancelled").catch(() => undefined);
         const finalText = "Cancelled.";
-        await publishLifecycle({
-          bus,
-          headers,
+        await publishCurrentLifecycle({
           state: "cancelled",
           detail: "cancelled by interrupt",
         });
@@ -4038,7 +4067,7 @@ export async function startBusAgentRunner(params: {
           );
         }
       }
-      await publishLifecycle({ bus, headers, state: "failed", detail: msg });
+      await publishCurrentLifecycle({ state: "failed", detail: msg });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
         { finalText: `Error: ${msg}` },
@@ -4070,7 +4099,7 @@ export async function startBusAgentRunner(params: {
       rejectPreAgentCancellation = null;
       unsubscribe();
       unsubscribeCompaction();
-      liveParentSession?.close();
+      await liveParentSession?.close();
       state.agent = null;
       state.activeRequestId = null;
       state.activeRun = null;

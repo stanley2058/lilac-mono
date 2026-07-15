@@ -4,6 +4,7 @@ import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lila
 
 import {
   DiscordAdapter,
+  classifyDiscordSurfaceNotFound,
   buildDiscordSlashOption,
   hasExplicitDiscordUserMentionInContent,
   isExplicitDiscordUserMention,
@@ -12,6 +13,7 @@ import {
   resolveOutputNotificationEnabled,
   resolveEffectiveSessionModelOverride,
 } from "../../../src/surface/discord/discord-adapter";
+import { SurfaceMessageNotFoundError } from "../../../src/surface/adapter";
 
 function testConfigWithStatusMessage(statusMessage?: string): CoreConfig {
   const discord = {
@@ -34,6 +36,18 @@ function makeMessage(input: { bot: boolean; system: boolean; type: MessageType }
     type: input.type,
   } as unknown as Message;
 }
+
+describe("classifyDiscordSurfaceNotFound", () => {
+  it("maps only Discord unknown-channel/message codes to the common typed error", () => {
+    for (const code of [10_003, 10_008]) {
+      const classified = classifyDiscordSurfaceNotFound({ code }, "missing");
+      expect(classified).toBeInstanceOf(SurfaceMessageNotFoundError);
+      expect(classified).toMatchObject({ platform: "discord", code });
+    }
+    expect(classifyDiscordSurfaceNotFound({ code: 50_013 }, "forbidden")).toBeNull();
+    expect(classifyDiscordSurfaceNotFound(new Error("network"), "network")).toBeNull();
+  });
+});
 
 describe("isRoutableDiscordUserMessage", () => {
   it("accepts normal user chat messages", () => {

@@ -37,6 +37,9 @@ export interface RawBus {
     next?: Cursor;
   }>;
 
+  /** Return the latest durable cursor currently present on a topic. */
+  watermark?(topic: Topic): Promise<Cursor | null>;
+
   /** Close any owned resources (connections, timers, etc). */
   close(): Promise<void>;
 }

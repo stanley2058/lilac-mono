@@ -249,6 +249,22 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
         ),
       ).toMatchObject({ resultArtifact: largeResult });
 
+      const scheduledResult = await tool.call(
+        "workflow.trigger.create",
+        {
+          scope: "auto",
+          name: "audit-routes",
+          args: { directory: "scheduled", token: "scheduled-secret" },
+          schedule: { kind: "timestamp", at: "1970-01-01T00:00:01.000Z" },
+          idempotencyKey: "scheduled-once",
+        },
+        { context },
+      );
+      expect(
+        z.object({ trigger: z.record(z.string(), z.unknown()) }).parse(scheduledResult).trigger[
+          "argsSha256"
+        ],
+      ).toBeUndefined();
       const scheduled = z
         .object({
           trigger: z.object({
@@ -257,36 +273,34 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
             revisionId: z.string(),
           }),
         })
-        .parse(
-          await tool.call(
-            "workflow.trigger.create",
-            {
-              scope: "auto",
-              name: "audit-routes",
-              args: { directory: "scheduled", token: "scheduled-secret" },
-              schedule: { kind: "timestamp", at: "1970-01-01T00:00:01.000Z" },
-              idempotencyKey: "scheduled-once",
-            },
-            { context },
-          ),
-        );
+        .parse(scheduledResult);
       expect(scheduled.trigger).toMatchObject({
         nextFireAt: 1_000,
         revisionId: first.revisionId,
       });
-      expect(
-        await tool.call(
-          "workflow.trigger.get",
-          { triggerId: scheduled.trigger.triggerId },
-          { context },
-        ),
-      ).toMatchObject({
+      const triggerGet = await tool.call(
+        "workflow.trigger.get",
+        { triggerId: scheduled.trigger.triggerId },
+        { context },
+      );
+      expect(triggerGet).toMatchObject({
         trigger: { state: "active", args: { token: "<redacted>" } },
         lastRun: null,
       });
-      expect(await tool.call("workflow.trigger.list", {}, { context })).toMatchObject({
+      expect(
+        z.object({ trigger: z.record(z.string(), z.unknown()) }).parse(triggerGet).trigger[
+          "argsSha256"
+        ],
+      ).toBeUndefined();
+      const triggerList = await tool.call("workflow.trigger.list", {}, { context });
+      expect(triggerList).toMatchObject({
         triggers: [{ trigger: { triggerId: scheduled.trigger.triggerId } }],
       });
+      expect(
+        z
+          .object({ triggers: z.array(z.object({ trigger: z.record(z.string(), z.unknown()) })) })
+          .parse(triggerList).triggers[0]?.trigger["argsSha256"],
+      ).toBeUndefined();
       const duplicate = await tool.call(
         "workflow.trigger.create",
         {
@@ -326,16 +340,20 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
           { context: otherTriggerPrincipalContext },
         ),
       ).rejects.toThrow("principal scope");
-      expect(
-        await tool.call(
-          "workflow.trigger.cancel",
-          { triggerId: scheduled.trigger.triggerId },
-          { context },
-        ),
-      ).toMatchObject({
+      const cancelledTrigger = await tool.call(
+        "workflow.trigger.cancel",
+        { triggerId: scheduled.trigger.triggerId },
+        { context },
+      );
+      expect(cancelledTrigger).toMatchObject({
         changed: true,
         trigger: { state: "cancelled", args: { token: "<redacted>" } },
       });
+      expect(
+        z.object({ trigger: z.record(z.string(), z.unknown()) }).parse(cancelledTrigger).trigger[
+          "argsSha256"
+        ],
+      ).toBeUndefined();
 
       reviewerAvailable = false;
       context.toolCallId = "tool-call-3";

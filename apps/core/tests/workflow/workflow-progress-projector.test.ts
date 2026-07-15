@@ -17,6 +17,7 @@ import type {
   SurfaceAdapter,
   SurfaceOutputStream,
 } from "../../src/surface/adapter";
+import { SurfaceMessageNotFoundError } from "../../src/surface/adapter";
 import type {
   ContentOpts,
   LimitOpts,
@@ -36,7 +37,6 @@ import {
   isMarkedGithubAgentComment,
   markGithubAgentComment,
 } from "../../src/github/github-comment-marker";
-import { GithubApiError } from "../../src/github/github-api";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -63,6 +63,7 @@ class ProjectionAdapter implements SurfaceAdapter {
   readonly messages = new Map<string, SurfaceMessage>();
   sends = 0;
   edits = 0;
+  reads = 0;
   failNextSend = false;
   failNextRead = false;
   failNextEditNotFound = false;
@@ -112,6 +113,7 @@ class ProjectionAdapter implements SurfaceAdapter {
     return ref;
   }
   async readMsg(ref: MsgRef) {
+    this.reads += 1;
     if (this.failNextRead) {
       this.failNextRead = false;
       throw new Error("transient lookup failure");
@@ -124,7 +126,7 @@ class ProjectionAdapter implements SurfaceAdapter {
   async editMsg(ref: MsgRef, content: ContentOpts) {
     if (this.failNextEditNotFound) {
       this.failNextEditNotFound = false;
-      throw new GithubApiError(404, "/issues/comments/missing", "missing");
+      throw new SurfaceMessageNotFoundError("discord", 10_008, "missing");
     }
     this.edits += 1;
     this.contents.push(content);
@@ -478,6 +480,66 @@ describe("WorkflowProgressProjector", () => {
       expect(store.getSurfaceBinding("run-1")?.messageRef).toBeNull();
       const recreated = await projector.ensureInitialCard("run-1");
       expect(recreated.messageId).not.toBe(first.messageId);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("rechecks retry bindings before unchanged-hash short-circuiting", async () => {
+    const dbPath = join(tmpdir(), `workflow-projector-retry-lookup-${crypto.randomUUID()}.sqlite`);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const store = new DurableWorkflowStore(dbPath);
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "test-projector-retry-lookup",
+      now: () => 20,
+    });
+    try {
+      createInvocation(store);
+      const first = await projector.ensureInitialCard("run-1");
+      const binding = store.getSurfaceBinding("run-1");
+      if (!binding) throw new Error("surface binding missing");
+      store.upsertSurfaceBinding({
+        ...binding,
+        lastError: "transient lookup failure",
+        retryCount: 1,
+        nextAttemptAt: 20,
+        updatedAt: 20,
+      });
+      const editsBefore = adapter.edits;
+      const readsBefore = adapter.reads;
+      expect((await projector.ensureInitialCard("run-1")).messageId).toBe(first.messageId);
+      expect(adapter.reads).toBe(readsBefore + 1);
+      expect(adapter.edits).toBe(editsBefore);
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        retryCount: 0,
+        lastError: null,
+        nextAttemptAt: null,
+      });
+
+      const foundBinding = store.getSurfaceBinding("run-1");
+      if (!foundBinding) throw new Error("surface binding missing after retry");
+      store.upsertSurfaceBinding({
+        ...foundBinding,
+        lastError: "retry authoritative lookup",
+        retryCount: 1,
+        nextAttemptAt: 20,
+        updatedAt: 20,
+      });
+      adapter.messages.delete(first.messageId);
+      const recreated = await projector.ensureInitialCard("run-1");
+      expect(recreated.messageId).not.toBe(first.messageId);
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: recreated,
+        retryCount: 0,
+        lastError: null,
+      });
     } finally {
       await projector.stop();
       await bus.close();

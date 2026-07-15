@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  CONTENT_INSPECT_MAX_SOURCE_BYTES,
   ContentInspect,
   contentInspectInputSchema,
   isTextLikeMediaType,
@@ -119,5 +120,22 @@ describe("content.inspect", () => {
       expect(source.charset).toBe("windows-1252");
       expect(source.text).toBe("café");
     }
+  });
+
+  it("rejects oversized remote and base64 sources before buffering or decoding", async () => {
+    installMockFetch(
+      async () =>
+        new Response("", {
+          headers: { "content-length": String(CONTENT_INSPECT_MAX_SOURCE_BYTES + 1) },
+        }),
+    );
+    const remote = contentInspectInputSchema.parse({ url: "https://example.com/large.bin" });
+    if (remote.type !== "binary") throw new Error("expected binary input");
+    await expect(loadInspectSource(remote)).rejects.toThrow("exceeds");
+
+    const oversizedBase64 = Buffer.alloc(CONTENT_INSPECT_MAX_SOURCE_BYTES + 1).toString("base64");
+    const base64 = contentInspectInputSchema.parse({ base64: oversizedBase64 });
+    if (base64.type !== "binary") throw new Error("expected binary input");
+    await expect(loadInspectSource(base64)).rejects.toThrow("exceeds");
   });
 });

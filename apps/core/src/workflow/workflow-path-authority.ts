@@ -8,8 +8,8 @@ type WorkflowPathPolicy = { canonicalCwd: string };
 const contentInspectPathSchema = z.object({ path: z.string().min(1).optional() }).passthrough();
 const surfaceSendPathsSchema = z
   .object({
-    paths: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
-    filenames: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
+    paths: z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)]).optional(),
+    filenames: z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)]).optional(),
   })
   .passthrough();
 

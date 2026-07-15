@@ -62,6 +62,7 @@ import type {
   StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
+import { SurfaceMessageNotFoundError } from "../adapter";
 import { createDiscordEntityMapper, type EntityMapper } from "../../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../store/discord-surface-store";
 import { splitByDiscordWindowOldestToNewest } from "./merge-window";
@@ -72,6 +73,19 @@ import { buildDiscordActionComponents, parseDiscordActionCustomId } from "./disc
 const discordNotFoundErrorSchema = z
   .object({ code: z.union([z.literal(10_003), z.literal(10_008)]) })
   .passthrough();
+
+function discordNotFoundCode(error: unknown): 10_003 | 10_008 | null {
+  const parsed = discordNotFoundErrorSchema.safeParse(error);
+  return parsed.success ? parsed.data.code : null;
+}
+
+export function classifyDiscordSurfaceNotFound(
+  error: unknown,
+  message: string,
+): SurfaceMessageNotFoundError | null {
+  const code = discordNotFoundCode(error);
+  return code === null ? null : new SurfaceMessageNotFoundError("discord", code, message);
+}
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
@@ -874,12 +888,30 @@ export class DiscordAdapter implements SurfaceAdapter {
       throw new Error("Discord client user is unavailable");
     }
 
-    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch((error: unknown) => {
+      const notFound = classifyDiscordSurfaceNotFound(
+        error,
+        `Discord channel not found: ${msgRef.channelId}`,
+      );
+      if (notFound) throw notFound;
+      throw error;
+    });
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
-      throw new Error(`Discord channel not found: ${msgRef.channelId}`);
+      throw new SurfaceMessageNotFoundError(
+        "discord",
+        10_003,
+        `Discord channel not found: ${msgRef.channelId}`,
+      );
     }
 
-    const msg = await channel.messages.fetch(msgRef.messageId);
+    const msg = await channel.messages.fetch(msgRef.messageId).catch((error: unknown) => {
+      const notFound = classifyDiscordSurfaceNotFound(
+        error,
+        `Discord message not found: ${msgRef.messageId}`,
+      );
+      if (notFound) throw notFound;
+      throw error;
+    });
 
     const raw = content.text ?? "";
     const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;

@@ -7,7 +7,7 @@ import {
   type UserModelMessage,
 } from "ai";
 import { z } from "zod";
-import { fileTypeFromBlob, fileTypeFromBuffer } from "file-type";
+import { fileTypeFromBuffer } from "file-type";
 import { google, type GoogleLanguageModelOptions } from "@ai-sdk/google";
 import {
   createLogger,
@@ -21,6 +21,8 @@ import type { ServerTool } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 
 const V2_CONTENT_INSPECT_DEFAULT_MODEL = "google/gemini-3.5-flash";
+export const CONTENT_INSPECT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
+const CONTENT_INSPECT_MAX_BASE64_CHARACTERS = Math.ceil(CONTENT_INSPECT_MAX_SOURCE_BYTES / 3) * 4;
 
 type ContentInspectOptions = {
   getConfig?: () => Promise<CoreConfig>;
@@ -195,7 +197,11 @@ export const contentInspectInputSchema = z
 
     path: z.string().min(1).optional().describe("Local file path for binary content."),
 
-    base64: z.base64().optional().describe("Base64-encoded binary content."),
+    base64: z
+      .base64()
+      .max(CONTENT_INSPECT_MAX_BASE64_CHARACTERS)
+      .optional()
+      .describe("Base64-encoded binary content."),
 
     additionalInstructions: z
       .string()
@@ -410,10 +416,9 @@ export async function loadInspectSource(
       throw new Error(`Failed to fetch ${input.url}: ${res.status} ${res.statusText}`.trim());
     }
 
-    const blob = await res.blob();
-    const bytes = await blob.bytes();
-    const meta = await fileTypeFromBlob(blob);
-    const declared = res.headers.get("content-type") ?? blob.type;
+    const bytes = await readInspectResponseBytes(res);
+    const meta = await fileTypeFromBuffer(Buffer.from(bytes));
+    const declared = res.headers.get("content-type") ?? undefined;
     const mediaType = resolveInspectMediaType({
       detected: meta?.mime,
       declared,
@@ -430,6 +435,11 @@ export async function loadInspectSource(
 
   if (typeof input.path === "string") {
     const file = Bun.file(input.path);
+    if (file.size > CONTENT_INSPECT_MAX_SOURCE_BYTES) {
+      throw new Error(
+        `Content inspect source exceeds ${CONTENT_INSPECT_MAX_SOURCE_BYTES} bytes: ${input.path}`,
+      );
+    }
     const bytes = await file.bytes();
     const buf = Buffer.from(bytes);
     const meta = await fileTypeFromBuffer(buf);
@@ -453,6 +463,9 @@ export async function loadInspectSource(
   }
 
   const buf = Buffer.from(input.base64, "base64");
+  if (buf.byteLength > CONTENT_INSPECT_MAX_SOURCE_BYTES) {
+    throw new Error(`Content inspect source exceeds ${CONTENT_INSPECT_MAX_SOURCE_BYTES} bytes`);
+  }
   const meta = await fileTypeFromBuffer(buf);
   const mediaType = resolveInspectMediaType({
     detected: meta?.mime,
@@ -460,6 +473,44 @@ export async function loadInspectSource(
     bytes: buf,
   });
   return sourceFromBytes({ bytes: buf, mediaType, source: "base64 input" });
+}
+
+async function readInspectResponseBytes(response: Response): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    const parsed = Number(declaredLength);
+    if (Number.isFinite(parsed) && parsed > CONTENT_INSPECT_MAX_SOURCE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Content inspect source exceeds ${CONTENT_INSPECT_MAX_SOURCE_BYTES} bytes`);
+    }
+  }
+  if (!response.body) return new Uint8Array();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+      if (total > CONTENT_INSPECT_MAX_SOURCE_BYTES) {
+        await reader.cancel();
+        throw new Error(`Content inspect source exceeds ${CONTENT_INSPECT_MAX_SOURCE_BYTES} bytes`);
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function sourceFromBytes(input: {

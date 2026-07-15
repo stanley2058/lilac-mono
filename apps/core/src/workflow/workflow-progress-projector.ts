@@ -2,7 +2,7 @@ import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import { GithubApiError } from "../github/github-api";
-import type { SurfaceAdapter } from "../surface/adapter";
+import { SurfaceMessageNotFoundError, type SurfaceAdapter } from "../surface/adapter";
 import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
 import { DurableWorkflowStore } from "./durable-workflow-store";
@@ -271,8 +271,41 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     const adapter = this.input.adapters.get(target.platform);
     if (!adapter) throw new Error(`Workflow progress adapter is unavailable: ${target.platform}`);
 
-    const existing = this.input.store.getSurfaceBinding(runId);
-    const messageRef = existing?.messageRef ? asMsgRef(existing.messageRef) : null;
+    let existing = this.input.store.getSurfaceBinding(runId);
+    let messageRef = existing?.messageRef ? asMsgRef(existing.messageRef) : null;
+    const retryBinding = existing;
+    if (
+      messageRef &&
+      retryBinding &&
+      retryBinding.nextAttemptAt !== null &&
+      retryBinding.nextAttemptAt <= now
+    ) {
+      let found;
+      try {
+        found = await adapter.readMsg(messageRef);
+      } catch (error) {
+        const retryCount = retryBinding.retryCount + 1;
+        this.input.store.upsertSurfaceBinding({
+          ...retryBinding,
+          lastError: error instanceof Error ? error.message : String(error),
+          retryCount,
+          nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+          updatedAt: now,
+        });
+        throw error;
+      }
+      existing = {
+        ...retryBinding,
+        messageRef: found ? retryBinding.messageRef : null,
+        lastRenderedSha256: found ? retryBinding.lastRenderedSha256 : null,
+        lastError: null,
+        retryCount: 0,
+        nextAttemptAt: null,
+        updatedAt: now,
+      };
+      this.input.store.upsertSurfaceBinding(existing);
+      if (!found) messageRef = null;
+    }
     const issued = this.issueActions(runId, view, messageRef, now);
     const surfaceActions = toSurfaceActions({ view, actionIds: issued.ids });
     const rendered = renderWorkflowProgressView({
@@ -351,7 +384,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     } catch (error) {
       const createdRef = error instanceof GithubMessageCreatedError ? error.messageRef : null;
       const editTargetMissing =
-        messageRef !== null && error instanceof GithubApiError && error.status === 404;
+        messageRef !== null &&
+        ((error instanceof GithubApiError && error.status === 404) ||
+          error instanceof SurfaceMessageNotFoundError);
       if (createdRef) this.input.store.bindSurfaceActions(issued.recordIds, createdRef);
       const retryCount = (existing?.retryCount ?? 0) + 1;
       this.input.store.upsertSurfaceBinding({

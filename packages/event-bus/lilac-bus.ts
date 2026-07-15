@@ -237,6 +237,9 @@ export interface LilacBus {
     next?: Cursor;
   }>;
 
+  /** Return the latest durable cursor currently present on a topic. */
+  getTopicWatermark(topic: LilacTopic): Promise<Cursor | null>;
+
   /** Close the underlying transport. */
   close(): Promise<void>;
 }
@@ -324,6 +327,13 @@ export function createLilacBus(raw: RawBus): LilacBus {
         }>,
         next: res.next,
       };
+    },
+
+    getTopicWatermark: async (topic) => {
+      if (!raw.watermark) {
+        throw new Error("The configured event bus does not expose durable topic watermarks");
+      }
+      return await raw.watermark(topic);
     },
 
     close: async () => {
