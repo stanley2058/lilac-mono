@@ -252,6 +252,13 @@ export interface LilacBus {
     safetyMargin: number,
   ): Promise<number>;
 
+  /** Remove a retired durable consumer group after checking for registered old-version consumers. */
+  retireTopicConsumerGroup(
+    topic: LilacTopic,
+    group: string,
+    confirmSingleVersionRollout?: boolean,
+  ): Promise<"absent" | "destroyed">;
+
   /** Close the underlying transport. */
   close(): Promise<void>;
 }
@@ -350,6 +357,12 @@ export function createLilacBus(raw: RawBus): LilacBus {
 
     trimTopicBeforeCheckpoint: async (topic, checkpoint, safetyMargin) => {
       return (await raw.trimBeforeCheckpoint?.(topic, checkpoint, safetyMargin)) ?? 0;
+    },
+
+    retireTopicConsumerGroup: async (topic, group, confirmSingleVersionRollout = false) => {
+      return (
+        (await raw.retireConsumerGroup?.(topic, group, confirmSingleVersionRollout)) ?? "absent"
+      );
     },
 
     close: async () => {

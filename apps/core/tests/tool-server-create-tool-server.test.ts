@@ -413,9 +413,11 @@ describe("createToolServer", () => {
     );
     await fs.mkdir(path.join(workspace, ".git"));
     await fs.mkdir(path.join(workspace, ".secrets"));
+    await fs.mkdir(path.join(workspace, ".env.local"));
     await fs.writeFile(path.join(workspace, ".git", "index"), "git secret", "utf8");
     await fs.writeFile(path.join(workspace, ".secrets", "token"), "token secret", "utf8");
     await fs.writeFile(path.join(workspace, ".envrc"), "TOKEN=secret", "utf8");
+    await fs.writeFile(path.join(workspace, ".env.local", "token"), "nested secret", "utf8");
     await fs.writeFile(outside, "secret", "utf8");
     await fs.symlink(outside, path.join(workspace, "linked.txt"));
     const seen: Record<string, unknown>[] = [];
@@ -536,6 +538,7 @@ describe("createToolServer", () => {
         ".git/index",
         ".secrets/token",
         ".envrc",
+        ".env.local/token",
       ]) {
         const response = await server.app.handle(
           new Request("http://localhost/call", {

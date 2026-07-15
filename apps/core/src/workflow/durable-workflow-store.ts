@@ -187,6 +187,7 @@ const bindingRowSchema = z.object({
   last_error: nullableStringSchema,
   retry_count: z.number(),
   next_attempt_at: nullableNumberSchema,
+  repair_required: z.number().int().min(0).max(1),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -444,6 +445,7 @@ function parseBinding(value: unknown): WorkflowSurfaceBinding {
     lastError: row.last_error,
     retryCount: row.retry_count,
     nextAttemptAt: row.next_attempt_at,
+    repairRequired: row.repair_required === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -1563,6 +1565,15 @@ export class DurableWorkflowStore {
         )
         .get(input.runId, input.operationId);
       if (quarantined) return null;
+      const terminalReceipt = this.db
+        .query(
+          `SELECT 1 FROM workflow_request_terminal_receipts
+           WHERE request_id = ? OR (
+             run_id = ? AND operation_id = ? AND dispatch_epoch = ?
+           ) LIMIT 1`,
+        )
+        .get(input.requestId, input.runId, input.operationId, policy.dispatchEpoch);
+      if (terminalReceipt) return null;
       const run = this.getRun(input.runId);
       const revision = run ? this.getRevision(run.revisionId) : null;
       const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
@@ -1652,7 +1663,15 @@ export class DurableWorkflowStore {
         .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, string, number]>(
           `SELECT * FROM workflow_request_dispatches
          WHERE request_id = ? AND token_sha256 = ? AND session_id = ? AND platform = ?
-           AND active = 1 AND expires_at > ?`,
+            AND active = 1 AND expires_at > ?
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_request_terminal_receipts receipt
+              WHERE receipt.request_id = workflow_request_dispatches.request_id OR (
+                receipt.run_id = workflow_request_dispatches.run_id
+                AND receipt.operation_id = workflow_request_dispatches.operation_id
+                AND receipt.dispatch_epoch = workflow_request_dispatches.dispatch_epoch
+              )
+            )`,
         )
         .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
       if (!raw) return null;
@@ -1714,46 +1733,63 @@ export class DurableWorkflowStore {
     const output = input.output === undefined ? null : jsonValueSchema.parse(input.output);
     const usage = input.usage === undefined ? null : workflowUsageSchema.parse(input.usage);
     if (input.state === "resolved" && output === null && !input.resultArtifactId) return false;
-    const result = this.db
-      .query(
-        `INSERT INTO workflow_request_terminal_receipts (
-           request_id, run_id, operation_id, dispatch_epoch, state, detail, output_json,
-           result_artifact_id, usage_json, created_at
-         )
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (
-            SELECT 1 FROM workflow_request_dispatches
-            WHERE request_id = ? AND run_id = ? AND operation_id = ?
-              AND dispatch_epoch = ? AND owner_id = ? AND active = 1
-              AND prompt_published_at IS NOT NULL
-          )
-         ON CONFLICT(request_id) DO NOTHING`,
-      )
-      .run(
-        input.requestId,
-        input.runId,
-        input.operationId,
-        input.dispatchEpoch,
-        input.state,
-        input.detail ?? null,
-        output === null ? null : JSON.stringify(output),
-        input.resultArtifactId ?? null,
-        usage === null ? null : JSON.stringify(usage),
-        input.now,
-        input.requestId,
-        input.runId,
-        input.operationId,
-        input.dispatchEpoch,
-        input.ownerId,
-      );
-    if (result.changes === 1) {
-      this.db.run(
-        `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
-         WHERE request_id = ? AND prompt_published_at IS NULL`,
-        [input.now, input.requestId],
-      );
-    }
-    return result.changes === 1;
+    const record = this.db.transaction(() => {
+      const inserted = this.db
+        .query(
+          `INSERT INTO workflow_request_terminal_receipts (
+             request_id, run_id, operation_id, dispatch_epoch, state, detail, output_json,
+             result_artifact_id, usage_json, created_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (
+              SELECT 1 FROM workflow_request_dispatches
+              WHERE request_id = ? AND run_id = ? AND operation_id = ?
+                AND dispatch_epoch = ? AND owner_id = ? AND active = 1
+                AND prompt_published_at IS NOT NULL
+            )
+           ON CONFLICT(request_id) DO NOTHING`,
+        )
+        .run(
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.state,
+          input.detail ?? null,
+          output === null ? null : JSON.stringify(output),
+          input.resultArtifactId ?? null,
+          usage === null ? null : JSON.stringify(usage),
+          input.now,
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.ownerId,
+        );
+      if (inserted.changes !== 1) return false;
+      const deactivated = this.db
+        .query(
+          `UPDATE workflow_request_dispatches
+           SET active = 0, expires_at = MIN(expires_at, ?), updated_at = ?
+           WHERE request_id = ? AND run_id = ? AND operation_id = ?
+             AND dispatch_epoch = ? AND owner_id = ? AND active = 1
+             AND prompt_published_at IS NOT NULL`,
+        )
+        .run(
+          input.now,
+          input.now,
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.ownerId,
+        );
+      if (deactivated.changes !== 1) {
+        throw new Error(`Workflow terminal receipt lost its exact dispatch: ${input.requestId}`);
+      }
+      return true;
+    });
+    return record.immediate();
   }
 
   getWorkflowRequestTerminalReceipt(requestId: string): WorkflowRequestTerminalReceipt | null {
@@ -1809,8 +1845,16 @@ export class DurableWorkflowStore {
           `UPDATE workflow_request_dispatches
            SET owner_id = ?, owner_heartbeat_at = ?, updated_at = ?
            WHERE request_id = ? AND token_sha256 = ? AND dispatch_epoch = ?
-             AND active = 1 AND expires_at > ?
-              AND (owner_id IS NULL OR owner_id = ? OR owner_heartbeat_at <= ?)`,
+              AND active = 1 AND expires_at > ?
+              AND NOT EXISTS (
+                SELECT 1 FROM workflow_request_terminal_receipts receipt
+                WHERE receipt.request_id = workflow_request_dispatches.request_id OR (
+                  receipt.run_id = workflow_request_dispatches.run_id
+                  AND receipt.operation_id = workflow_request_dispatches.operation_id
+                  AND receipt.dispatch_epoch = workflow_request_dispatches.dispatch_epoch
+                )
+              )
+               AND (owner_id IS NULL OR owner_id = ? OR owner_heartbeat_at <= ?)`,
         )
         .run(
           input.ownerId,
@@ -2887,8 +2931,8 @@ export class DurableWorkflowStore {
     this.db.run(
       `INSERT INTO workflow_surface_bindings (
         run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
-        retry_count, next_attempt_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        retry_count, next_attempt_at, repair_required, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         target_json = excluded.target_json,
         message_ref_json = excluded.message_ref_json,
@@ -2896,6 +2940,7 @@ export class DurableWorkflowStore {
         last_error = excluded.last_error,
         retry_count = excluded.retry_count,
         next_attempt_at = excluded.next_attempt_at,
+        repair_required = excluded.repair_required,
         updated_at = excluded.updated_at`,
       [
         binding.runId,
@@ -2905,10 +2950,37 @@ export class DurableWorkflowStore {
         binding.lastError,
         binding.retryCount,
         binding.nextAttemptAt,
+        binding.repairRequired ? 1 : 0,
         binding.createdAt,
         binding.updatedAt,
       ],
     );
+  }
+
+  markSurfaceBindingRepairRequired(runId: string, now: number): boolean {
+    const mark = this.db.transaction(() => {
+      const binding = this.db
+        .query(
+          `UPDATE workflow_surface_bindings
+           SET repair_required = 1, last_rendered_sha256 = NULL,
+             last_error = 'Projection ownership changed during external I/O',
+             next_attempt_at = CASE
+               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
+               ELSE next_attempt_at
+             END,
+             updated_at = MAX(updated_at, ?)
+           WHERE run_id = ?`,
+        )
+        .run(now, now, now, runId);
+      if (binding.changes !== 1) return false;
+      this.db.run(
+        `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
+         WHERE run_id = ? AND consumed_at IS NULL`,
+        [now, runId],
+      );
+      return true;
+    });
+    return mark.immediate();
   }
 
   getSurfaceBinding(runId: string): WorkflowSurfaceBinding | null {

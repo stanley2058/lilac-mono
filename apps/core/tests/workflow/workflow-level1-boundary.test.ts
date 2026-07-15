@@ -52,9 +52,11 @@ describe("workflow Level-1 filesystem boundary", () => {
     await fs.writeFile(path.join(root, "inside.txt"), "inside", "utf8");
     await fs.mkdir(path.join(root, ".git"));
     await fs.mkdir(path.join(root, ".secrets"));
+    await fs.mkdir(path.join(root, ".env.local"));
     await fs.writeFile(path.join(root, ".git", "index"), "index", "utf8");
     await fs.writeFile(path.join(root, ".secrets", "token"), "token", "utf8");
     await fs.writeFile(path.join(root, ".envrc"), "TOKEN=1", "utf8");
+    await fs.writeFile(path.join(root, ".env.local", "token"), "DESCENDANT=1", "utf8");
     await fs.writeFile(outside, "outside", "utf8");
     await fs.symlink(outside, path.join(root, "escape-link"));
     const calls: unknown[] = [];
@@ -88,6 +90,7 @@ describe("workflow Level-1 filesystem boundary", () => {
       await expect(execute(glob, { patterns: ["../**"] })).rejects.toThrow("remain relative");
       await expect(execute(read, { path: ".env" })).rejects.toThrow("protected");
       await expect(execute(read, { path: ".envrc" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".env.local/token" })).rejects.toThrow("protected");
       await expect(execute(read, { path: ".git/index" })).rejects.toThrow("protected");
       await expect(execute(read, { path: ".secrets/token" })).rejects.toThrow("protected");
       await expect(execute(read, { path: "inside.txt" })).resolves.toMatchObject({ success: true });
@@ -192,12 +195,19 @@ describe("workflow Level-1 filesystem boundary", () => {
         policy: policy(workspace, false),
       });
       await expect(execute(read, { path: "env-alias.txt" })).rejects.toThrow("hard-linked");
+      let grepExecuted = false;
       const grep = enforceWorkflowLevel1Boundary({
-        tool: { execute: async () => ({ results: [{ file: "git-alias.txt", line: "safe" }] }) },
+        tool: {
+          execute: async () => {
+            grepExecuted = true;
+            return { results: [{ file: "git-alias.txt", line: "safe" }] };
+          },
+        },
         toolName: "grep",
         policy: policy(workspace, false),
       });
-      await expect(execute(grep, { pattern: "safe" })).rejects.toThrow("hard-linked");
+      await expect(execute(grep, { pattern: "safe" })).rejects.toThrow("Unsupported workflow");
+      expect(grepExecuted).toBe(false);
       const glob = enforceWorkflowLevel1Boundary({
         tool: { execute: async () => ({ paths: ["env-alias.txt"] }) },
         toolName: "glob",

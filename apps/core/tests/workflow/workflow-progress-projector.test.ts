@@ -215,6 +215,30 @@ class FirstSendBlockingProjectionAdapter extends ProjectionAdapter {
   }
 }
 
+class FirstEditBlockingProjectionAdapter extends ProjectionAdapter {
+  private first = true;
+  private releaseFirst: (() => void) | null = null;
+  private resolveFirstStarted: () => void = () => {};
+  readonly firstStarted = new Promise<void>((resolve) => {
+    this.resolveFirstStarted = resolve;
+  });
+
+  release(): void {
+    this.releaseFirst?.();
+  }
+
+  override async editMsg(ref: MsgRef, content: ContentOpts): Promise<void> {
+    if (this.first) {
+      this.first = false;
+      this.resolveFirstStarted();
+      await new Promise<void>((resolve) => {
+        this.releaseFirst = resolve;
+      });
+    }
+    await super.editMsg(ref, content);
+  }
+}
+
 function createInvocation(store: DurableWorkflowStore) {
   return store.createInvocation({
     revision: {
@@ -481,7 +505,7 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("prevents a stale in-flight projector from overwriting a newer generation", async () => {
+  it("repairs a stale send and deletes its visible orphan card", async () => {
     const dbPath = join(tmpdir(), `workflow-stale-projector-${crypto.randomUUID()}.sqlite`);
     const storeA = new DurableWorkflowStore(dbPath);
     const storeB = new DurableWorkflowStore(dbPath);
@@ -509,12 +533,34 @@ describe("WorkflowProgressProjector", () => {
       expect(currentRef.messageId).toBe("card-1");
       adapter.release();
       await expect(staleProjection).rejects.toThrow("claim was lost");
-      expect(storeA.getSurfaceBinding("run-1")?.messageRef).toEqual(currentRef);
+      expect(storeA.getSurfaceBinding("run-1")?.repairRequired).toBe(true);
+      const repairedRef = await projectorB.ensureInitialCard("run-1");
+      expect(repairedRef).toEqual(currentRef);
+      expect(adapter.sends).toBe(2);
+      expect(adapter.messages.size).toBe(1);
+      expect([...adapter.messages.keys()]).toEqual([currentRef.messageId]);
+      expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: currentRef,
+        repairRequired: false,
+      });
       expect(
         storeA
           .listSurfaceActions("run-1", { activeAt: 40_000 })
           .every((action) => action.expectedMessageRef?.messageId === currentRef.messageId),
       ).toBe(true);
+      const approveToken = adapter.contents
+        .at(-1)
+        ?.actions?.find((action) => action.label === "Approve")?.actionId;
+      if (!approveToken) throw new Error("Missing repaired approval action");
+      expect(
+        storeB.applySurfaceAction({
+          tokenSha256: sha256(approveToken),
+          platform: "discord",
+          userId: "user-1",
+          messageRef: currentRef,
+          now: 40_001,
+        }).status,
+      ).toBe("applied");
     } finally {
       adapter.release();
       await projectorA.stop();
@@ -522,6 +568,120 @@ describe("WorkflowProgressProjector", () => {
       await bus.close();
       storeA.close();
       storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("repairs stale edit content on the one visible current card", async () => {
+    const dbPath = join(tmpdir(), `workflow-stale-edit-repair-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const adapter = new FirstEditBlockingProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const initial = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-initial",
+      now: () => 10,
+    });
+    const projectorA = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-a",
+      now: () => 20,
+    });
+    const projectorB = new WorkflowProgressProjector({
+      bus,
+      store: storeB,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-b",
+      now: () => 40_000,
+    });
+    try {
+      createInvocation(storeA);
+      const cardRef = await initial.ensureInitialCard("run-1");
+      await initial.stop();
+      storeA.transitionApproval({
+        approvalId: "approval-1",
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+
+      const staleEdit = projectorA.ensureInitialCard("run-1");
+      await adapter.firstStarted;
+      expect(
+        storeB.tryClaimApprovedRun({
+          runId: "run-1",
+          claimerId: "engine",
+          now: 40_000,
+        })?.state,
+      ).toBe("running");
+      await projectorB.ensureInitialCard("run-1");
+      adapter.release();
+      await expect(staleEdit).rejects.toThrow("claim was lost");
+      expect(storeA.getSurfaceBinding("run-1")?.repairRequired).toBe(true);
+
+      await projectorB.ensureInitialCard("run-1");
+      expect(adapter.sends).toBe(1);
+      expect(adapter.edits).toBe(3);
+      expect(adapter.messages.size).toBe(1);
+      expect(adapter.messages.get(cardRef.messageId)?.text).toContain("State: **running**");
+      expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: cardRef,
+        repairRequired: false,
+      });
+    } finally {
+      adapter.release();
+      await initial.stop();
+      await projectorA.stop();
+      await projectorB.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("consumes a durable repair marker during startup reconciliation", async () => {
+    const dbPath = join(tmpdir(), `workflow-startup-repair-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const initial = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "startup-repair-initial",
+      now: () => 10,
+    });
+    const restarted = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "startup-repair-restarted",
+      now: () => 20,
+    });
+    try {
+      createInvocation(store);
+      const cardRef = await initial.ensureInitialCard("run-1");
+      await initial.stop();
+      expect(store.markSurfaceBindingRepairRequired("run-1", 15)).toBe(true);
+      expect(store.getSurfaceBinding("run-1")?.repairRequired).toBe(true);
+
+      await restarted.start();
+      expect(adapter.messages.size).toBe(1);
+      expect(adapter.messages.has(cardRef.messageId)).toBe(true);
+      expect(adapter.reads).toBe(1);
+      expect(adapter.edits).toBe(1);
+      expect(store.getSurfaceBinding("run-1")?.repairRequired).toBe(false);
+    } finally {
+      await initial.stop();
+      await restarted.stop();
+      await bus.close();
+      store.close();
       rmSync(dbPath, { force: true });
     }
   });

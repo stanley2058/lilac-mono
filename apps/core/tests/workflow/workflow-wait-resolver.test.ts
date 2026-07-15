@@ -23,6 +23,7 @@ import { shouldSuppressRouterForWorkflowReply } from "../../src/workflow/workflo
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
 
 class IdleRawBus implements RawBus {
+  readonly retiredGroups: Array<{ topic: string; group: string; activated: boolean }> = [];
   private sequence = 0;
   private readonly watermarks = new Map<string, string>();
   private readonly history: Message<unknown>[];
@@ -89,6 +90,14 @@ class IdleRawBus implements RawBus {
   }
   setWatermark(topic: string, cursor: string): void {
     this.watermarks.set(topic, cursor);
+  }
+  async retireConsumerGroup(topic: string, group: string) {
+    this.retiredGroups.push({
+      topic,
+      group,
+      activated: this.subscriptions.some((subscription) => subscription.topic === topic),
+    });
+    return "absent" as const;
   }
   async close() {}
 }
@@ -236,7 +245,8 @@ describe("WorkflowWaitResolver", () => {
   it("enforces one ordered resolver consumer and releases its durable lease", async () => {
     const dbPath = join(tmpdir(), `workflow-wait-lease-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new IdleRawBus());
+    const raw = new IdleRawBus();
+    const bus = createLilacBus(raw);
     const first = new WorkflowWaitResolver({
       bus,
       store,
@@ -253,6 +263,11 @@ describe("WorkflowWaitResolver", () => {
     });
     try {
       await first.start();
+      expect(raw.retiredGroups[0]).toEqual({
+        topic: "evt.adapter",
+        group: "ordered-resolver-first",
+        activated: true,
+      });
       await expect(second.start()).rejects.toThrow("ordered workflow wait resolver");
       await first.stop();
       await second.start();

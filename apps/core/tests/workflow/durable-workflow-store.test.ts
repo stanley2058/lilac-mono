@@ -327,6 +327,118 @@ describe("DurableWorkflowStore", () => {
     }
   });
 
+  it("tombstones the exact terminal epoch before a restored snapshot can rerun it", () => {
+    const path = dbPath("terminal-receipt-rerun");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-terminal-rerun"),
+        pendingApproval: approval("run-terminal-rerun"),
+      });
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      store.tryClaimApprovedRun({ runId: invocation.run.runId, claimerId: "engine", now: 12 });
+      store.createOperation(operation(invocation.run.runId), "engine");
+      const token = crypto.randomUUID() + crypto.randomUUID();
+      const policy = {
+        runId: invocation.run.runId,
+        operationId: "operation-1",
+        dispatchEpoch: "dispatch-epoch-terminal-rerun",
+        profile: "explore" as const,
+        safetyMode: "trusted" as const,
+        editing: false,
+        isolation: "shared" as const,
+        externalTools: false,
+        surfaceSends: false,
+        subagents: false,
+        canonicalWorkspaceRoot: "/workspace",
+        canonicalCwd: "/workspace",
+        canonicalProjectId: "project-1",
+        originSessionId: "session-1",
+        originClient: "discord" as const,
+        revisionId: "revision-1",
+        sourceSha256: HASH_A,
+        inputSchemaSha256: HASH_A,
+        capabilitySha256: HASH_B,
+        argsSha256: HASH_A,
+      };
+      const requestId = "wfr:terminal-rerun";
+      const dispatchInput = {
+        requestId,
+        runId: invocation.run.runId,
+        operationId: "operation-1",
+        runOwnerId: "engine",
+        token,
+        sessionId: "workflow:run-terminal-rerun:operation-1",
+        platform: "unknown",
+        policy,
+        now: 13,
+        expiresAt: 1_000,
+        staleOwnerBefore: 0,
+      };
+      expect(store.authorizeAgentDispatch(dispatchInput)).not.toBeNull();
+      expect(
+        store.claimWorkflowRequestPromptPublication({
+          requestId,
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine",
+          now: 14,
+        }),
+      ).toBe(true);
+      expect(
+        store.claimWorkflowRequest({
+          requestId,
+          token,
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "runner",
+          now: 15,
+        }),
+      ).toBe(true);
+      expect(
+        store.recordWorkflowRequestTerminal({
+          requestId,
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "runner",
+          state: "resolved",
+          output: "durable result",
+          now: 16,
+        }),
+      ).toBe(true);
+
+      expect(store.getActiveWorkflowRequestDispatchEpoch(requestId, 16)).toBeNull();
+      expect(
+        store.authorizeWorkflowRequest({
+          requestId,
+          token,
+          sessionId: dispatchInput.sessionId,
+          platform: "unknown",
+          now: 16,
+        }),
+      ).toBeNull();
+      expect(
+        store.claimWorkflowRequest({
+          requestId,
+          token,
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "restored-runner",
+          now: 17,
+        }),
+      ).toBe(false);
+      expect(store.authorizeAgentDispatch({ ...dispatchInput, now: 17 })).toBeNull();
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
   it("fences operation and wait writes after run ownership takeover", () => {
     const path = dbPath("owned-child-fencing");
     const store = new DurableWorkflowStore(path);
@@ -497,12 +609,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 7 blocking legacy receipt quarantine",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 11,
+          name: "round 8 projection repair marker",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(10);
+      expect(reopened.listMigrations()).toHaveLength(11);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -821,6 +938,7 @@ describe("DurableWorkflowStore", () => {
         lastError: null,
         retryCount: 0,
         nextAttemptAt: 210,
+        repairRequired: false,
         createdAt: 150,
         updatedAt: 150,
       };

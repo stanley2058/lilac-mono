@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 10;
+export const WORKFLOW_SCHEMA_VERSION = 11;
 
 type WorkflowMigration = {
   version: number;
@@ -573,7 +573,15 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
          AND EXISTS (
            SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
            WHERE quarantine.run_id = workflow_runs.run_id
-         )`,
+      )`,
+    ],
+  },
+  {
+    version: 11,
+    name: "round 8 projection repair marker",
+    statements: [
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN repair_required INTEGER NOT NULL DEFAULT 0 CHECK (repair_required IN (0, 1))`,
     ],
   },
 ];

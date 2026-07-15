@@ -324,6 +324,70 @@ describe("RedisStreamsBus", () => {
     }
   });
 
+  it("retires the pre-tail workflow wait group without pinning adapter retention", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("retired-workflow-waits")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    try {
+      const first = await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 1 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      const second = await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 2 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      await redis.xgroup("CREATE", streamKey, "core:workflow-waits", first.cursor);
+
+      expect(await raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", true)).toBe(
+        "destroyed",
+      );
+      expect(await redis.xinfo("GROUPS", streamKey)).toEqual([]);
+      expect(await raw.trimBeforeCheckpoint("evt.adapter", second.cursor, 1)).toBe(1);
+      expect(await redis.xlen(streamKey)).toBe(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("requires single-version confirmation before retiring registered pre-tail consumers", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("workflow-waits-rollout-guard")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    try {
+      await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 1 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      await redis.xgroup("CREATE", streamKey, "core:workflow-waits", "0-0");
+      await redis.xreadgroup(
+        "GROUP",
+        "core:workflow-waits",
+        "old-core",
+        "COUNT",
+        1,
+        "STREAMS",
+        streamKey,
+        ">",
+      );
+
+      await expect(
+        raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", false),
+      ).rejects.toThrow("confirmed single-version rollout");
+      expect(await raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", true)).toBe(
+        "destroyed",
+      );
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
   it("preserves lagged evt.adapter entries when other groups acknowledge later entries", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("adapter-recovery")}`;

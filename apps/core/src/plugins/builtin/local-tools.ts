@@ -170,8 +170,8 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       name: "grep",
       supportsBatch: true,
       isEnabled: (context) =>
-        context.requestContext?.safetyMode !== "restricted" ||
-        workflowPolicy(context) !== undefined,
+        workflowPolicy(context) === undefined &&
+        context.requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
     withBoundedOutput({

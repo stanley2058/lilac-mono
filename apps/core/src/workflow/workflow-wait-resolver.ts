@@ -27,6 +27,7 @@ export class WorkflowWaitResolver {
       leaseStaleMs?: number;
       leaseAcquireTimeoutMs?: number;
       leaseRetryMs?: number;
+      confirmLegacyGroupSingleVersionRollout?: boolean;
     },
   ) {}
 
@@ -83,7 +84,14 @@ export class WorkflowWaitResolver {
           }
         },
       );
+      await this.input.bus.retireTopicConsumerGroup(
+        "evt.adapter",
+        this.input.subscriptionId,
+        this.input.confirmLegacyGroupSingleVersionRollout ?? false,
+      );
     } catch (error) {
+      await this.subscription?.stop();
+      this.subscription = null;
       this.input.store.releaseWorkflowWaitResolverLease(this.workerId);
       this.leaseOwned = false;
       throw error;

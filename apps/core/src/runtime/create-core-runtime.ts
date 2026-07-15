@@ -613,6 +613,8 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         bus,
         store: durableWorkflowStore,
         subscriptionId: subId(subscriptionPrefix, "workflow-waits"),
+        confirmLegacyGroupSingleVersionRollout:
+          process.env.LILAC_CONFIRM_SINGLE_VERSION_WORKFLOW_WAIT_RESOLVER === "1",
       });
       await workflowWaitResolver.start();
 

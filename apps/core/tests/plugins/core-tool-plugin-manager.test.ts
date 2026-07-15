@@ -320,7 +320,7 @@ describe("core tool plugin manager", () => {
       editingToolMode: "none",
       subagentDepth: 1,
       subagentConfig: cfg.agent.subagents!,
-      allowedToolNames: new Set(["bash", "read_file", "glob", "grep"]),
+      allowedToolNames: new Set(["bash", "read_file", "glob"]),
       requestContext: {
         requestId: "workflow-explore",
         sessionId: "public-channel",
@@ -331,7 +331,7 @@ describe("core tool plugin manager", () => {
         metadata: { workflowPolicy },
       },
     });
-    expect([...workflowExplore.specs.keys()].sort()).toEqual(["glob", "grep", "read_file"]);
+    expect([...workflowExplore.specs.keys()].sort()).toEqual(["glob", "read_file"]);
 
     const workflowGeneral = await manager.buildLevel1Toolset({
       cwd: dataDir,
@@ -339,7 +339,7 @@ describe("core tool plugin manager", () => {
       editingToolMode: "apply_patch",
       subagentDepth: 1,
       subagentConfig: cfg.agent.subagents!,
-      allowedToolNames: new Set(["bash", "read_file", "glob", "grep", "apply_patch"]),
+      allowedToolNames: new Set(["bash", "read_file", "glob", "apply_patch"]),
       requestContext: {
         requestId: "workflow-general",
         sessionId: "public-channel",
@@ -354,7 +354,6 @@ describe("core tool plugin manager", () => {
       "apply_patch",
       "bash",
       "glob",
-      "grep",
       "read_file",
     ]);
   });

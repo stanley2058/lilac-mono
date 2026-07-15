@@ -284,3 +284,36 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 8
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. The centralized workflow protected-path predicate now rejects every path containing a segment that begins with `.env`, not only a `.env*` leaf. Restricted bash, Level-1 reads/edits, and descriptor-backed attachments therefore reject descendants such as `.env.local/token` through the same shared policy.
+2. Native Level-1 `grep` is disabled for all runtime-v1 workflow children because its backend searches content before result-path authorization. It is absent from workflow tool profiles and the runner allowlist, and the defensive workflow Level-1 boundary rejects direct invocation before backend execution. Restricted-bash content search remains available because its filesystem authorizes every file before reading it; the separate path-only glob existence-oracle residual was not expanded.
+3. Terminal receipt insertion and exact published-dispatch deactivation now share one immediate SQLite transaction. The receipt tombstones both its request ID and exact run/operation/epoch; workflow authorization, restored runner claim, prompt publication, and agent redispatch reject tombstoned identities before a restored snapshot can rerun them.
+4. Schema-v11 surface bindings carry a durable projection repair marker. Claim loss after send/edit marks the binding dirty, clears its rendered hash, schedules immediate retry, expires active controls, and invalidates local action caches. Newly sent stale orphan messages are deleted best-effort unless they have become the current durable binding. The current owner must rotate controls and re-render before clearing repair state, regardless of hash equality.
+5. Startup reconciliation continues to verify and mutate bindings only under the durable projection claim and now consumes the repair marker. Deterministic stale-send and stale-edit races converge to one visible current card with current content and usable current controls rather than only preserving a database binding.
+6. After the ordered tail resolver activates, startup explicitly retires the obsolete `${subscriptionPrefix}:workflow-waits` durable Redis group so it no longer pins `evt.adapter` retention. Any existing group requires `LILAC_CONFIRM_SINGLE_VERSION_WORKFLOW_WAIT_RESOLVER=1`; without confirmed single-version rollout, startup fails closed rather than risking deletion during mixed-version deployment. The standalone cleanup migration applies the same confirmation guard and supports custom subscription prefixes.
+
+### Regression Coverage
+
+- Added all-boundary `.env.local/token` denial tests for restricted-bash reads/writes, Level-1 reads, and descriptor-backed attachments.
+- Added workflow tool-profile and pre-execution native-grep denial tests proving the backend is never invoked.
+- Added exact receipt/dispatch tombstoning and restored-snapshot rerun rejection coverage.
+- Added deterministic stale-send orphan cleanup, stale-edit visible-content repair, current-action usability, and startup repair-marker reconciliation tests.
+- Added real Redis legacy-group upgrade, retention-unpinning, and explicit single-version rollout-guard tests, plus tail-activation ordering coverage.
+- Full validation passed: core 1100 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

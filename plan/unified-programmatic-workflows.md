@@ -534,6 +534,7 @@ The workflow engine dispatches each agent operation through the existing request
 - Use a synthetic child session that cannot deadlock behind the originating parent session.
 - Publish `cmd.request.message` with workflow run/operation/attempt headers.
 - Apply the approved profile, model, safety mode, tool restrictions, and worktree policy.
+- Runtime-v1 workflow children expose contained `read_file` and path-only `glob`, but not native Level-1 `grep`: its backend searches content before result-path authorization and would expose a protected-file match oracle. Content search is available only through restricted bash, whose filesystem authorizes every file before reading it.
 - Subscribe durably to request lifecycle and output.
 - Mark an operation successful only when the request resolves successfully and its final output is captured.
 - Distinguish queued, dispatched, running, succeeded, failed, cancelled, and timed-out states.
@@ -551,6 +552,7 @@ Implement waits as operation handlers under the same engine:
 - Cron and timestamp schedules create distinct workflow runs pinned to a revision.
 - Event matching is surface-neutral at the domain layer, with adapter-specific normalized match data.
 - Adapter event consumption must be durable enough to recover replies received around service restarts.
+- After the ordered tail resolver activates, startup retires the obsolete `${subscriptionPrefix}:workflow-waits` Redis group so it cannot pin adapter retention. Any existing legacy group fails startup without explicit rollout confirmation; stop every old core instance and set `LILAC_CONFIRM_SINGLE_VERSION_WORKFLOW_WAIT_RESOLVER=1` only for the confirmed single-version rollout.
 - Router suppression applies only to active approval/reply waits and expires when the wait is consumed or terminal.
 
 Current V2 wait-for-reply and V3 scheduling APIs are removed after equivalent workflow templates and tools exist.

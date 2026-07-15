@@ -399,8 +399,10 @@ describe("executeRestrictedBash", () => {
     const outside = path.join(root, "outside.txt");
     const sessionId = "restricted-protected-writes";
     await fs.mkdir(path.join(workspace, ".git", "hooks"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".env.local"));
     await fs.writeFile(path.join(workspace, ".env"), "SECRET=original\n");
     await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=original\n");
+    await fs.writeFile(path.join(workspace, ".env.local", "token"), "DESCENDANT=secret\n");
     await fs.writeFile(path.join(workspace, "core-config.yaml"), "safe: true\n");
     await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]\n");
     await fs.writeFile(path.join(workspace, "source.txt"), "source\n");
@@ -417,6 +419,7 @@ describe("executeRestrictedBash", () => {
     const commands = [
       "printf hacked > .env",
       "printf hacked > .envrc",
+      "printf hacked > .env.local/token",
       "printf hacked > env-alias.txt",
       "printf hacked >> git-config-alias.txt",
       "rm env-alias.txt",
@@ -447,6 +450,19 @@ describe("executeRestrictedBash", () => {
       expect(hardLinkRead.exitCode).not.toBe(0);
       expect(hardLinkRead.stdout).not.toContain("SECRET=original");
       expect(hardLinkRead.stdout).not.toContain("[safe]");
+      const envDescendantRead = await executeRestrictedBash(
+        { command: "cat .env.local/token", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-env-descendant-read",
+            sessionId,
+            requestClient: "test",
+          },
+        },
+      );
+      expect(envDescendantRead.exitCode).not.toBe(0);
+      expect(envDescendantRead.stdout).not.toContain("DESCENDANT=secret");
 
       for (const [index, command] of commands.entries()) {
         const result = await executeRestrictedBash(
@@ -468,6 +484,9 @@ describe("executeRestrictedBash", () => {
       expect(await fs.readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=original\n");
       expect(await fs.readFile(path.join(workspace, ".envrc"), "utf8")).toBe(
         "export SECRET=original\n",
+      );
+      expect(await fs.readFile(path.join(workspace, ".env.local", "token"), "utf8")).toBe(
+        "DESCENDANT=secret\n",
       );
       expect(await fs.readFile(path.join(workspace, "core-config.yaml"), "utf8")).toBe(
         "safe: true\n",

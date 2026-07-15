@@ -126,6 +126,20 @@ local cutoff = retained[#retained][1]
 return redis.call("XTRIM", KEYS[1], "MINID", "=", cutoff)
 `;
 
+const RETIRE_CONSUMER_GROUP_SCRIPT = `
+if redis.call("TYPE", KEYS[1]).ok ~= "stream" then return 0 end
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+local found = false
+for _, fields in ipairs(groups) do
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" and fields[index + 1] == ARGV[1] then found = true end
+  end
+end
+if not found then return 0 end
+if ARGV[2] ~= "1" then return -1 end
+return redis.call("XGROUP", "DESTROY", KEYS[1], ARGV[1])
+`;
+
 function randomConsumerId(): string {
   // Bun + modern Node both support this.
   return crypto.randomUUID();
@@ -380,6 +394,28 @@ export class RedisStreamsBus implements RawBus {
       this.logger.debug("event_bus.checkpoint_trimmed", { topic, checkpoint, trimmed });
     }
     return trimmed;
+  }
+
+  async retireConsumerGroup(
+    topic: Topic,
+    group: string,
+    confirmSingleVersionRollout: boolean,
+  ): Promise<"absent" | "destroyed"> {
+    const result = await this.redis.eval(
+      RETIRE_CONSUMER_GROUP_SCRIPT,
+      1,
+      this.streamKey(topic),
+      group,
+      confirmSingleVersionRollout ? "1" : "0",
+    );
+    if (result === -1) {
+      throw new Error(
+        `Refusing to retire consumer group ${group} without a confirmed single-version rollout`,
+      );
+    }
+    if (result === 0) return "absent";
+    if (result === 1) return "destroyed";
+    throw new Error("Redis XGROUP DESTROY returned an invalid result");
   }
 
   /** Publish a message via `XADD`. */

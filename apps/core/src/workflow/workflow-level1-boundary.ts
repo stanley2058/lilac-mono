@@ -9,7 +9,7 @@ import type { WorkflowRequestPolicy } from "./workflow-request-authority";
 import { isWorkflowProtectedPath } from "./workflow-protected-path";
 
 const toolInputSchema = z.record(z.string(), z.unknown());
-const WORKFLOW_READ_TOOLS = new Set(["read_file", "glob", "grep"]);
+const WORKFLOW_READ_TOOLS = new Set(["read_file", "glob"]);
 const WORKFLOW_WRITE_TOOLS = new Set(["edit_file", "apply_patch"]);
 
 function isContained(root: string, candidate: string): boolean {
@@ -176,7 +176,7 @@ async function assertOutputContained(
   if (Array.isArray(results)) {
     for (const result of results) {
       if (!isRecord(result)) continue;
-      const value = result[toolName === "grep" ? "file" : "path"];
+      const value = result["path"];
       if (typeof value === "string") paths.push(value);
     }
   }
@@ -190,7 +190,7 @@ async function assertOutputContained(
     await assertContainedPath({
       root,
       value: resultPath,
-      requireFile: toolName === "grep",
+      requireFile: false,
       rejectHardLinks: true,
     });
   }

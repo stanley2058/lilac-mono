@@ -308,6 +308,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     verifyExisting: boolean,
   ): Promise<MsgRef> {
     const heldClaim = this.projectionClaims.get(runId);
+    if (!heldClaim) this.actions.delete(runId);
     const claimToken = heldClaim ?? crypto.randomUUID();
     const now = this.input.now?.() ?? Date.now();
     const claimed = heldClaim
@@ -326,6 +327,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         });
     if (!claimed) {
       this.projectionClaims.delete(runId);
+      this.actions.delete(runId);
       throw new ProjectionClaimUnavailableError(
         `Workflow progress projection is already claimed: ${runId}`,
       );
@@ -341,6 +343,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         })
       ) {
         this.projectionClaims.delete(runId);
+        this.actions.delete(runId);
       }
     }, this.input.claimHeartbeatMs ?? 10_000);
     heartbeat.unref?.();
@@ -363,6 +366,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         })
       ) {
         this.projectionClaims.delete(runId);
+        this.actions.delete(runId);
       }
     }
   }
@@ -443,6 +447,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private assertFencedWrite(runId: string, changed: boolean): void {
     if (!changed) {
       this.projectionClaims.delete(runId);
+      this.actions.delete(runId);
       throw new ProjectionClaimUnavailableError(`Workflow projection claim was lost: ${runId}`);
     }
   }
@@ -472,6 +477,35 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     );
   }
 
+  private async repairAfterIoClaimLoss(
+    runId: string,
+    adapter: SurfaceAdapter,
+    orphanRef: MsgRef | null,
+  ): Promise<void> {
+    this.actions.delete(runId);
+    this.input.store.markSurfaceBindingRepairRequired(runId, this.input.now?.() ?? Date.now());
+    if (!orphanRef) return;
+    const currentRef = this.input.store.getSurfaceBinding(runId)?.messageRef;
+    if (
+      currentRef?.platform === orphanRef.platform &&
+      currentRef.channelId === orphanRef.channelId &&
+      currentRef.messageId === orphanRef.messageId
+    ) {
+      return;
+    }
+    try {
+      await adapter.deleteMsg(orphanRef);
+    } catch (error) {
+      this.logger.warn("Failed to delete stale workflow projection orphan", {
+        runId,
+        platform: orphanRef.platform,
+        channelId: orphanRef.channelId,
+        messageId: orphanRef.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async projectOwned(
     runId: string,
     claimToken: string,
@@ -494,6 +528,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
 
     let existing = this.input.store.getSurfaceBinding(runId);
     let messageRef = existing?.messageRef ? asMsgRef(existing.messageRef) : null;
+    if (existing?.repairRequired) this.actions.delete(runId);
     const retryBinding = existing;
     if (
       messageRef &&
@@ -559,13 +594,20 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           lastError: null,
           retryCount: 0,
           nextAttemptAt: null,
+          repairRequired: false,
           createdAt: now,
           updatedAt: now,
         },
         claimToken,
       );
     }
-    if (messageRef && existing?.lastRenderedSha256 === renderedSha256) return messageRef;
+    if (
+      messageRef &&
+      !existing?.repairRequired &&
+      existing?.lastRenderedSha256 === renderedSha256
+    ) {
+      return messageRef;
+    }
 
     try {
       this.refreshClaim(runId, claimToken);
@@ -585,7 +627,14 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
                 }
               : { silent: true },
           );
-      this.refreshClaim(runId, claimToken);
+      try {
+        this.refreshClaim(runId, claimToken);
+      } catch (error) {
+        if (error instanceof ProjectionClaimUnavailableError) {
+          await this.repairAfterIoClaimLoss(runId, adapter, messageRef ? null : projectedRef);
+        }
+        throw error;
+      }
       if (!messageRef) {
         this.assertFencedWrite(
           runId,
@@ -604,6 +653,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           lastError: null,
           retryCount: 0,
           nextAttemptAt: null,
+          repairRequired: false,
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         },
@@ -626,8 +676,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       return projectedRef;
     } catch (error) {
       if (error instanceof ProjectionClaimUnavailableError) throw error;
-      this.refreshClaim(runId, claimToken);
       const createdRef = error instanceof GithubMessageCreatedError ? error.messageRef : null;
+      try {
+        this.refreshClaim(runId, claimToken);
+      } catch (claimError) {
+        if (claimError instanceof ProjectionClaimUnavailableError) {
+          await this.repairAfterIoClaimLoss(runId, adapter, createdRef);
+        }
+        throw claimError;
+      }
       const editTargetMissing =
         messageRef !== null &&
         ((error instanceof GithubApiError && error.status === 404) ||
@@ -651,6 +708,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           lastError: error instanceof Error ? error.message : String(error),
           retryCount,
           nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+          repairRequired: existing?.repairRequired ?? false,
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         },

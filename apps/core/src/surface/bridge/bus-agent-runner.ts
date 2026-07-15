@@ -2874,7 +2874,6 @@ export async function startBusAgentRunner(params: {
                 "bash",
                 "read_file",
                 "glob",
-                "grep",
                 "fuzzy_search",
                 ...(workflowPolicy.editing ? ["edit_file", "apply_patch"] : []),
                 ...(workflowPolicy.subagents ? ["subagent_delegate"] : []),
