@@ -25,6 +25,7 @@ import {
 
 import { DiscordAdapter } from "../surface/discord/discord-adapter";
 import { GithubAdapter } from "../surface/github/github-adapter";
+import type { SurfaceAdapter } from "../surface/adapter";
 import { bridgeAdapterToBus } from "../surface/bridge/publish-to-bus";
 import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
@@ -625,10 +626,10 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         platform: "discord",
       });
 
-      const workflowAdapters = new Map([
+      const workflowAdapters = new Map<"discord" | "github", SurfaceAdapter>([
         ["discord", adapter],
         ["github", githubAdapter],
-      ] as const);
+      ]);
       workflowProgressProjector = new WorkflowProgressProjector({
         bus,
         store: durableWorkflowStore,

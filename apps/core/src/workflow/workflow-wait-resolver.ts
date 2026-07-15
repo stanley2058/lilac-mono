@@ -133,7 +133,7 @@ export class WorkflowWaitResolver {
         result,
         now,
       });
-      if (resolved) await this.publishWakeup(resolved);
+      if (resolved) await this.publishWakeupAdvisory(resolved);
     }
   }
 
@@ -202,7 +202,7 @@ export class WorkflowWaitResolver {
           resolvedBy: `${to}:${now}`,
           runOwnerId,
         });
-        if (changed) await this.publishWakeup(claimed);
+        if (changed) await this.publishWakeupAdvisory(claimed);
       }
     } catch (error) {
       this.logger.error("Workflow wait timer reconciliation failed", error);
@@ -220,5 +220,17 @@ export class WorkflowWaitResolver {
       reason: "operation_changed",
       ts: this.now(),
     });
+  }
+
+  private async publishWakeupAdvisory(wait: WorkflowWait): Promise<void> {
+    try {
+      await this.publishWakeup(wait);
+    } catch (error) {
+      this.logger.warn("Workflow wait wakeup publication failed after durable resolution", {
+        runId: wait.runId,
+        operationId: wait.operationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

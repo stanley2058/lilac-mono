@@ -1267,9 +1267,9 @@ describe("DurableWorkflowStore", () => {
         expect(store.getRun("run-1")?.state).toBe(expectedState);
         if (kind === "pause") {
           expect(store.getOperation("run-1", "operation-1")).toMatchObject({
-            state: "queued",
-            attempt: 1,
-            requestId: null,
+            state: "dispatched",
+            attempt: 0,
+            requestId: "wfr:surface-pause",
           });
           expect(
             store.authorizeWorkflowRequest({

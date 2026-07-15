@@ -108,6 +108,24 @@ class HistoricalReplyRawBus extends IdleRawBus {
   }
 }
 
+class FailingFirstWakeupRawBus extends IdleRawBus {
+  wakeupFailures = 0;
+
+  override async publish<TData>(
+    message: Omit<Message<TData>, "id" | "ts">,
+    options: PublishOptions,
+  ) {
+    if (
+      message.type === lilacEventTypes.EvtWorkflowProgressRequested &&
+      this.wakeupFailures === 0
+    ) {
+      this.wakeupFailures += 1;
+      throw new Error("simulated advisory wakeup failure");
+    }
+    return await super.publish(message, options);
+  }
+}
+
 function createRunAndWait(
   store: DurableWorkflowStore,
   input: { runId: string; operationId: string; wait: Omit<WorkflowWait, "runId" | "operationId"> },
@@ -242,6 +260,78 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowWaitResolver", () => {
+  it("advances its checkpoint and processes the next reply after wakeup publication fails", async () => {
+    const dbPath = join(tmpdir(), `workflow-wait-advisory-wakeup-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new FailingFirstWakeupRawBus();
+    const bus = createLilacBus(raw);
+    const resolver = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "advisory-wakeup",
+      now: () => 10,
+    });
+    try {
+      for (const index of [1, 2]) {
+        createRunAndWait(store, {
+          runId: `run-${index}`,
+          operationId: `wait-${index}`,
+          wait: {
+            state: "pending",
+            match: {
+              kind: "reply",
+              platform: "discord",
+              channelId: `channel-${index}`,
+              messageId: `anchor-${index}`,
+              fromUserId: "user-1",
+            },
+            matchKey: `discord:channel-${index}`,
+            dueAt: null,
+            deadlineAt: 1_000,
+            resolverCursor: null,
+            result: null,
+            resolvedBy: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 3,
+            updatedAt: 3,
+            resolvedAt: null,
+          },
+        });
+      }
+      await resolver.start();
+      const first = await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+        platform: "discord",
+        channelId: "channel-1",
+        messageId: "reply-1",
+        userId: "user-1",
+        text: "first",
+        ts: 10,
+        raw: { discord: { replyToMessageId: "anchor-1" } },
+      });
+      const second = await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+        platform: "discord",
+        channelId: "channel-2",
+        messageId: "reply-2",
+        userId: "user-1",
+        text: "second",
+        ts: 10,
+        raw: { discord: { replyToMessageId: "anchor-2" } },
+      });
+
+      expect(raw.wakeupFailures).toBe(1);
+      expect(store.getWait("run-1", "wait-1")?.state).toBe("resolved");
+      expect(store.getWait("run-2", "wait-2")?.state).toBe("resolved");
+      expect(store.getWorkflowWaitResolverCheckpoint("evt.adapter")).toBe(second.cursor);
+      expect(first.cursor).not.toBe(second.cursor);
+    } finally {
+      await resolver.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("enforces one ordered resolver consumer and releases its durable lease", async () => {
     const dbPath = join(tmpdir(), `workflow-wait-lease-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);

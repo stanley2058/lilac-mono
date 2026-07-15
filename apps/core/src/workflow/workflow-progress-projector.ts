@@ -3,7 +3,11 @@ import { createLogger } from "@stanley2058/lilac-utils";
 
 import { GithubApiError } from "../github/github-api";
 import { isMarkedGithubAgentComment } from "../github/github-comment-marker";
-import { SurfaceMessageNotFoundError, type SurfaceAdapter } from "../surface/adapter";
+import {
+  hasAuthoritativeSelfMessageProvider,
+  SurfaceMessageNotFoundError,
+  type SurfaceAdapter,
+} from "../surface/adapter";
 import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef, SurfaceMessage } from "../surface/types";
 import {
@@ -37,10 +41,11 @@ type CachedActions = {
 
 class ProjectionClaimUnavailableError extends Error {}
 class ProjectionRepairChangedError extends ProjectionClaimUnavailableError {}
+class ProjectionDiscoveryIncompleteError extends Error {}
 
 const WORKFLOW_CARD_TEXT_LIMIT = 4_000;
 const DISCOVERY_PAGE_SIZE = 100;
-const DISCOVERY_MAX_PAGES = 5;
+const DISCOVERY_MAX_PAGES = 10;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 function workflowCardId(runId: string): string {
@@ -141,6 +146,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private readonly lastEditAt = new Map<string, number>();
   private readonly actions = new Map<string, CachedActions>();
   private readonly actionRotationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly remoteVerificationRequested = new Set<string>();
+  private readonly lastRemoteVerificationAt = new Map<string, number>();
   private subscription: { stop(): Promise<void> } | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private claimTimer: ReturnType<typeof setInterval> | null = null;
@@ -161,6 +168,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       minEditIntervalMs?: number;
       claimStaleMs?: number;
       claimHeartbeatMs?: number;
+      remoteVerificationIntervalMs?: number;
       afterExternalIo?: (input: {
         runId: string;
         kind: "send" | "edit";
@@ -223,6 +231,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     for (const timer of this.actionRotationTimers.values()) clearTimeout(timer);
     this.timers.clear();
     this.actionRotationTimers.clear();
+    this.remoteVerificationRequested.clear();
+    this.lastRemoteVerificationAt.clear();
     await this.subscription?.stop();
     this.subscription = null;
     await this.actionOutboxDrain;
@@ -251,7 +261,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     const timer = setTimeout(
       () => {
         this.timers.delete(runId);
-        void this.project(runId).catch((error: unknown) => {
+        const verifyExisting = this.remoteVerificationRequested.delete(runId);
+        void this.project(runId, false, verifyExisting).catch((error: unknown) => {
           this.logger.warn("Workflow projection failed", {
             runId,
             error: error instanceof Error ? error.message : String(error),
@@ -289,8 +300,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
 
   private retryDue(): void {
     const now = this.input.now?.() ?? Date.now();
-    for (const binding of this.input.store.listSurfaceBindings({ dueBefore: now, limit: 1_000 })) {
-      this.requestProjection(binding.runId);
+    const verificationInterval = this.input.remoteVerificationIntervalMs ?? 60_000;
+    for (const binding of this.input.store.listSurfaceBindings({ limit: 1_000 })) {
+      if (binding.nextAttemptAt !== null && binding.nextAttemptAt <= now) {
+        this.requestProjection(binding.runId);
+      }
+      if ((this.lastRemoteVerificationAt.get(binding.runId) ?? 0) + verificationInterval <= now) {
+        this.remoteVerificationRequested.add(binding.runId);
+        this.requestProjection(binding.runId);
+      }
     }
     for (const orphan of this.input.store.listPendingSurfaceProjectionOrphans({
       dueBefore: now,
@@ -685,16 +703,26 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     adapter: SurfaceAdapter,
     runId: string,
     claimToken: string,
-  ): Promise<Array<{ message: SurfaceMessage; generation: number }>> {
+  ): Promise<{
+    candidates: Array<{ message: SurfaceMessage; generation: number }>;
+    exhaustive: boolean;
+  }> {
     const startedAt = Date.now();
     const messages = new Map<string, SurfaceMessage>();
     let beforeMessageId: string | undefined;
+    let exhaustive = false;
     for (let page = 1; page <= DISCOVERY_MAX_PAGES; page += 1) {
+      const remainingMs = DISCOVERY_TIMEOUT_MS - (Date.now() - startedAt);
+      if (remainingMs <= 0) break;
       this.refreshClaim(runId, claimToken);
-      const batch = await adapter.listMsg(asSessionRef(target.platform, target.channelId), {
-        limit: DISCOVERY_PAGE_SIZE,
-        ...(target.platform === "github" ? { page } : { beforeMessageId }),
-      });
+      const batch = await Promise.race([
+        adapter.listMsg(asSessionRef(target.platform, target.channelId), {
+          limit: DISCOVERY_PAGE_SIZE,
+          ...(target.platform === "github" ? { page } : { beforeMessageId }),
+        }),
+        Bun.sleep(remainingMs).then(() => null),
+      ]);
+      if (batch === null) break;
       this.refreshClaim(runId, claimToken);
       let added = 0;
       for (const message of batch) {
@@ -702,7 +730,11 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         if (!messages.has(key)) added += 1;
         messages.set(key, message);
       }
-      if (batch.length < DISCOVERY_PAGE_SIZE || added === 0) break;
+      if (batch.length < DISCOVERY_PAGE_SIZE) {
+        exhaustive = true;
+        break;
+      }
+      if (added === 0) break;
       if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) break;
       if (target.platform === "discord") {
         const nextBefore = batch.at(-1)?.ref.messageId;
@@ -712,19 +744,26 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     }
 
     const self = target.platform === "discord" ? await adapter.getSelf() : null;
-    return [...messages.values()].flatMap((message) => {
+    const authoritativeProvider = hasAuthoritativeSelfMessageProvider(adapter) ? adapter : null;
+    if (target.platform === "github" && !authoritativeProvider) {
+      return { candidates: [], exhaustive: false };
+    }
+    const candidates: Array<{ message: SurfaceMessage; generation: number }> = [];
+    for (const message of messages.values()) {
       if (
         message.ref.platform !== target.platform ||
         message.ref.channelId !== target.channelId ||
         (target.platform === "github"
-          ? !isMarkedGithubAgentComment(message.text)
+          ? !isMarkedGithubAgentComment(message.text) ||
+            !(await authoritativeProvider?.isAuthoritativelySelfAuthored(message))
           : message.userId !== self?.userId)
       ) {
-        return [];
+        continue;
       }
       const generation = workflowCardGeneration(message.text, runId, target.platform);
-      return generation === null ? [] : [{ message, generation }];
-    });
+      if (generation !== null) candidates.push({ message, generation });
+    }
+    return { candidates, exhaustive };
   }
 
   private async discoverWorkflowCards(
@@ -733,8 +772,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     adapter: SurfaceAdapter,
     claimToken: string,
     expectedGeneration: number,
-  ): Promise<{ canonical: MsgRef | null; duplicates: MsgRef[] }> {
-    const candidates = await this.listWorkflowCardCandidates(target, adapter, runId, claimToken);
+  ): Promise<{ canonical: MsgRef | null; duplicates: MsgRef[]; exhaustive: boolean }> {
+    const discovery = await this.listWorkflowCardCandidates(target, adapter, runId, claimToken);
+    const candidates = discovery.candidates;
     candidates.sort((left, right) => {
       const leftCurrent = left.generation === expectedGeneration ? 1 : 0;
       const rightCurrent = right.generation === expectedGeneration ? 1 : 0;
@@ -747,6 +787,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     return {
       canonical: candidates.at(0)?.message.ref ?? null,
       duplicates: candidates.slice(1).map((candidate) => candidate.message.ref),
+      exhaustive: discovery.exhaustive,
     };
   }
 
@@ -811,6 +852,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         this.refreshClaim(runId, claimToken);
         found = await adapter.readMsg(messageRef);
         this.refreshClaim(runId, claimToken);
+        this.lastRemoteVerificationAt.set(runId, now);
       } catch (error) {
         if (error instanceof ProjectionClaimUnavailableError) throw error;
         this.refreshClaim(runId, claimToken);
@@ -876,6 +918,21 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           });
         }
         await this.processPendingOrphans(runId, adapter, claimToken);
+      } else if (!discovered.exhaustive) {
+        const retryCount = existing.retryCount + 1;
+        this.writeBinding(
+          {
+            ...existing,
+            lastError: "Workflow card discovery did not exhaust bounded surface history",
+            retryCount,
+            nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+            updatedAt: now,
+          },
+          claimToken,
+        );
+        throw new ProjectionDiscoveryIncompleteError(
+          `Workflow card discovery is incomplete: ${runId}`,
+        );
       }
     }
     existing = this.input.store.getSurfaceBinding(runId) ?? existing;

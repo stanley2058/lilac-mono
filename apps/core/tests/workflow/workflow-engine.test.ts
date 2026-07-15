@@ -812,15 +812,21 @@ describe("WorkflowEngine", () => {
     });
   }
 
-  it("preserves and adopts a receipt committed immediately before pause and resume", async () => {
+  it("keeps the exact dispatch alive when its receipt commits immediately after pause", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-pause-receipt-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
     createApprovedRun(store);
     let now = 10;
     let dispatches = 0;
-    let requestId: string | null = null;
-    let receiptCommitted = false;
+    let captured:
+      | {
+          requestId: string;
+          runId: string;
+          operationId: string;
+          dispatchEpoch: string;
+        }
+      | undefined;
     const engine = new WorkflowEngine({
       bus,
       store,
@@ -848,7 +854,6 @@ describe("WorkflowEngine", () => {
       }),
       dispatchAgentRequest: async (request) => {
         dispatches += 1;
-        requestId = request.requestId;
         if (!request.capability) throw new Error("Missing dispatch capability");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing run owner");
@@ -870,18 +875,12 @@ describe("WorkflowEngine", () => {
             now,
           }),
         ).toBe(true);
-        now += 1;
-        receiptCommitted = store.recordWorkflowRequestTerminal({
+        captured = {
           requestId: request.requestId,
           runId: request.run.runId,
           operationId: request.operation.operationId,
           dispatchEpoch: request.dispatchEpoch,
-          ownerId: "pause-runner",
-          state: "resolved",
-          output: "receipt survived pause",
-          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
-          now,
-        });
+        };
         return await new Promise((resolve) => {
           request.signal.addEventListener(
             "abort",
@@ -893,15 +892,26 @@ describe("WorkflowEngine", () => {
     });
     try {
       await engine.start();
-      await waitFor(() => receiptCommitted);
+      await waitFor(() => captured !== undefined);
       now += 1;
       expect(store.pauseRunAndChildren({ runId: "run-1", now, detail: "pause race" })?.state).toBe(
         "paused",
       );
-      await waitFor(() => store.listOperations("run-1")[0]?.state === "queued");
+      if (!captured) throw new Error("Missing captured pause dispatch");
+      expect(
+        store.recordWorkflowRequestTerminal({
+          ...captured,
+          ownerId: "pause-runner",
+          state: "resolved",
+          output: "receipt survived pause",
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          now,
+        }),
+      ).toBe(true);
+      await waitFor(() => store.listOperations("run-1")[0]?.state === "dispatched");
       expect(store.listOperations("run-1")[0]).toMatchObject({
         attempt: 0,
-        requestId,
+        requestId: captured.requestId,
       });
       now += 1;
       expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now })).toBe(true);
@@ -1388,8 +1398,8 @@ describe("WorkflowEngine", () => {
       expect(
         store.pauseRunAndChildren({ runId: "run-1", now: 10, detail: "test pause" })?.state,
       ).toBe("paused");
-      await waitFor(() => store.listOperations("run-1", { state: "queued" }).length === 1);
-      expect(store.listOperations("run-1")[0]?.attempt).toBe(1);
+      await waitFor(() => store.listOperations("run-1", { state: "dispatched" }).length === 1);
+      expect(store.listOperations("run-1")[0]?.attempt).toBe(0);
       expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 11 })).toBe(
         true,
       );

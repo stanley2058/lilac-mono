@@ -185,6 +185,7 @@ export async function getIssueComment(input: {
   created_at?: string;
   updated_at?: string;
   html_url?: string;
+  performed_via_github_app?: { id?: number; slug?: string } | null;
 }> {
   const c = await ctx();
   return await githubFetchJson({
@@ -251,6 +252,7 @@ export async function listIssueComments(input: {
     created_at?: string;
     updated_at?: string;
     html_url?: string;
+    performed_via_github_app?: { id?: number; slug?: string } | null;
   }>
 > {
   const c = await ctx();
@@ -345,6 +347,10 @@ export async function getPullRequest(input: {
 
 export async function getGithubUserLoginOrNull(): Promise<string | null> {
   return await getGithubUserLoginFromAuth({ dataDir: env.dataDir });
+}
+
+export async function getConfiguredGithubAppIdOrNull(): Promise<number | null> {
+  return (await readGithubAppSecret(env.dataDir))?.appId ?? null;
 }
 
 export async function getPreferredGithubActorLoginOrNull(): Promise<string | null> {

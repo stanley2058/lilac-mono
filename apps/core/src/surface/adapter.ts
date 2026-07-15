@@ -135,6 +135,17 @@ export interface SurfaceAdapter {
   markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void>;
 }
 
+export interface SurfaceAuthoritativeSelfMessageProvider {
+  isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean>;
+}
+
+export function hasAuthoritativeSelfMessageProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & SurfaceAuthoritativeSelfMessageProvider {
+  const maybe = adapter as unknown as { isAuthoritativelySelfAuthored?: unknown };
+  return typeof maybe.isAuthoritativelySelfAuthored === "function";
+}
+
 /** Optional capability: plan reply-chain traversal using local metadata/indexes. */
 export interface SurfaceReplyChainPlannerProvider {
   planReplyChain(msgRef: MsgRef, opts?: SurfaceReplyChainPlanOptions): Promise<readonly MsgRef[]>;

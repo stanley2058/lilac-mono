@@ -1330,6 +1330,22 @@ export class DurableWorkflowStore {
     if (!current) return false;
     if (current.state === input.to) return true;
     if (current.state !== input.from) return false;
+    if (input.from === "paused" && input.to === "queued") {
+      const resume = this.db.transaction(() => {
+        const paused = this.getRun(input.runId);
+        if (!paused || paused.state !== "paused") return false;
+        this.preparePausedOperationsForResume(input.runId, input.now);
+        return (
+          this.db
+            .query(
+              `UPDATE workflow_runs SET state = 'queued', terminal_detail = ?, updated_at = ?
+               WHERE run_id = ? AND state = 'paused'`,
+            )
+            .run(input.detail ?? paused.terminalDetail, input.now, input.runId).changes === 1
+        );
+      });
+      return resume.immediate();
+    }
     const terminal = ["succeeded", "failed", "rejected", "cancelled"].includes(input.to);
     const result = this.db
       .query(
@@ -1456,26 +1472,7 @@ export class DurableWorkflowStore {
     const pause = this.db.transaction(() => {
       const run = this.getRun(input.runId);
       if (!run || !["queued", "running", "blocked"].includes(run.state)) return run;
-      this.db.run(
-        `UPDATE workflow_operations SET state = 'queued',
-         attempt = attempt + CASE WHEN EXISTS (
-           SELECT 1 FROM workflow_request_terminal_receipts receipt
-           WHERE receipt.request_id = workflow_operations.request_id
-         ) THEN 0 ELSE 1 END,
-         request_id = CASE WHEN EXISTS (
-           SELECT 1 FROM workflow_request_terminal_receipts receipt
-           WHERE receipt.request_id = workflow_operations.request_id
-         ) THEN request_id ELSE NULL END,
-         error = ?, claimed_by = NULL, claimed_at = NULL,
-         started_at = NULL, terminal_at = NULL, updated_at = ?
-         WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-        [input.detail, input.now, input.runId],
-      );
-      this.db.run(
-        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-         updated_at = ? WHERE run_id = ? AND active = 1`,
-        [input.now, input.now, input.runId],
-      );
+      this.prepareOperationsForPause(input.runId, input.now, input.detail);
       const changed = this.db
         .query(
           `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
@@ -1485,6 +1482,144 @@ export class DurableWorkflowStore {
       return changed.changes === 1 ? this.getRun(input.runId) : null;
     });
     return pause.immediate();
+  }
+
+  private prepareOperationsForPause(runId: string, now: number, detail: string): void {
+    this.db.run(
+      `UPDATE workflow_operations SET
+       state = CASE WHEN request_id IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) OR EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1
+         )
+       ) THEN state ELSE 'queued' END,
+       attempt = attempt + CASE WHEN request_id IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) OR EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1
+         )
+       ) THEN 0 ELSE 1 END,
+       request_id = CASE WHEN request_id IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) OR EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1
+         )
+       ) THEN request_id ELSE NULL END,
+       error = CASE WHEN request_id IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) OR EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1
+         )
+       ) THEN 'Paused request awaiting durable terminal handoff' ELSE ? END,
+       claimed_by = NULL, claimed_at = NULL,
+       started_at = CASE WHEN request_id IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) OR EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1
+         )
+       ) THEN started_at ELSE NULL END,
+       terminal_at = NULL, updated_at = ?
+       WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+      [detail, now, runId],
+    );
+  }
+
+  private preparePausedOperationsForResume(runId: string, now: number): void {
+    this.db.run(
+      `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+       request_id = NULL, error = 'Paused request reached durable cancellation',
+       claimed_by = NULL, claimed_at = NULL, started_at = NULL, terminal_at = NULL,
+       updated_at = ?
+       WHERE run_id = ? AND request_id IS NOT NULL
+         AND state IN ('queued', 'dispatched', 'running', 'blocked')
+         AND EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+             AND receipt.state = 'cancelled'
+         )`,
+      [now, runId],
+    );
+    this.db.run(
+      `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+       request_id = NULL, error = 'Paused request has no active durable dispatch',
+       claimed_by = NULL, claimed_at = NULL, started_at = NULL, terminal_at = NULL,
+       updated_at = ?
+       WHERE run_id = ? AND request_id IS NOT NULL
+         AND state IN ('queued', 'dispatched', 'running', 'blocked')
+         AND NOT EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM workflow_request_dispatches dispatch
+           WHERE dispatch.request_id = workflow_operations.request_id
+             AND dispatch.run_id = workflow_operations.run_id
+             AND dispatch.operation_id = workflow_operations.operation_id
+             AND dispatch.active = 1 AND dispatch.expires_at > ?
+         )`,
+      [now, runId, now],
+    );
+  }
+
+  requeuePausedCancelledOperation(input: {
+    runId: string;
+    operationId: string;
+    requestId: string;
+    runOwnerId: string;
+    now: number;
+  }): boolean {
+    const changed = this.db
+      .query(
+        `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+         request_id = NULL, error = 'Paused request reached durable cancellation',
+         claimed_by = NULL, claimed_at = NULL, started_at = NULL, terminal_at = NULL,
+         updated_at = ?
+         WHERE run_id = ? AND operation_id = ? AND request_id = ?
+           AND state IN ('queued', 'dispatched', 'running', 'blocked')
+           AND error = 'Paused request awaiting durable terminal handoff'
+           AND EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipts receipt
+             WHERE receipt.request_id = workflow_operations.request_id
+               AND receipt.state = 'cancelled'
+           )
+           AND EXISTS (
+             SELECT 1 FROM workflow_runs run
+             WHERE run.run_id = workflow_operations.run_id
+               AND run.state = 'running' AND run.claimed_by = ?
+           )`,
+      )
+      .run(input.now, input.runId, input.operationId, input.requestId, input.runOwnerId);
+    return changed.changes === 1;
   }
 
   tryClaimRun(input: {
@@ -2175,7 +2310,7 @@ export class DurableWorkflowStore {
           claimed_by = ?, claimed_at = ?, updated_at = ?
          WHERE run_id = ? AND operation_id = ? AND (
            state = 'queued' OR
-           (state IN ('dispatched', 'running') AND claimed_at IS NOT NULL AND claimed_at <= ?)
+            (state IN ('dispatched', 'running') AND (claimed_by IS NULL OR claimed_at <= ?))
           ) AND EXISTS (
             SELECT 1 FROM workflow_runs
             WHERE workflow_runs.run_id = workflow_operations.run_id
@@ -3565,27 +3700,7 @@ export class DurableWorkflowStore {
           );
         if (result.changes !== 1) return { status: "stale" };
         if (action.kind === "pause") {
-          this.db.run(
-            `UPDATE workflow_operations SET state = 'queued',
-             attempt = attempt + CASE WHEN EXISTS (
-               SELECT 1 FROM workflow_request_terminal_receipts receipt
-               WHERE receipt.request_id = workflow_operations.request_id
-             ) THEN 0 ELSE 1 END,
-             request_id = CASE WHEN EXISTS (
-               SELECT 1 FROM workflow_request_terminal_receipts receipt
-               WHERE receipt.request_id = workflow_operations.request_id
-             ) THEN request_id ELSE NULL END,
-             error = 'Paused from surface control', claimed_by = NULL,
-             claimed_at = NULL, started_at = NULL, terminal_at = NULL, updated_at = ?
-             WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-            [input.now, run.runId],
-          );
-          this.db.run(
-            `UPDATE workflow_request_dispatches SET active = 0,
-             expires_at = MIN(expires_at, ?), updated_at = ?
-             WHERE run_id = ? AND active = 1`,
-            [input.now, input.now, run.runId],
-          );
+          this.prepareOperationsForPause(run.runId, input.now, "Paused from surface control");
         } else if (action.kind === "cancel") {
           this.db.run(
             `UPDATE workflow_operations SET state = 'cancelled', error = 'Cancelled from surface control',
@@ -3606,6 +3721,7 @@ export class DurableWorkflowStore {
             [input.now, input.now, run.runId],
           );
         }
+        if (action.kind === "resume") this.preparePausedOperationsForResume(run.runId, input.now);
         runIds = [run.runId];
       }
 

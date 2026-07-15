@@ -378,3 +378,33 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 11
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Engine and surface pause now preserve an exact active request/dispatch while clearing only local operation ownership, so the interrupt can be delivered without revoking the runner's ability to commit its owner/epoch-fenced receipt. Resume transactionally distinguishes resolved/failed receipts, durable cancellation, inactive/expired absence, and still-live handoff before retaining identity or creating a new attempt. A cancellation receipt that arrives after resume is adopted and atomically requeued before replay.
+2. GitHub card discovery requires an authoritative adapter capability. The production adapter validates `performed_via_github_app.id` from server-returned raw comment metadata against the configured GitHub App ID; public agent/workflow body markers and author login text alone grant no authority.
+3. Discovery now reports exhaustive versus incomplete history. GitHub and Discord scan at most ten 100-entry pages under a hard five-second bound; only a short final page proves absence. Timeout, repeated cursors, or a full final bounded page persist retry state and forbid a new card send, while authenticated cards beyond 500 comments remain discoverable.
+4. Every bound workflow card, including terminal cards, is reread on a bounded periodic cadence. Remote marker-generation mismatch enters or retains durable repair, expires stale controls, and re-renders through the existing generation CAS, allowing a live successor to repair a stale process's late edit without restart or workflow events.
+5. Wait-resolution wakeup publication is advisory after the durable wait/suppression transaction. Publication failures are logged and contained, allowing ordered resolver checkpoint advancement, stream acknowledgement/reclamation, and processing of the next adapter event.
+
+### Regression Coverage
+
+- Added pause-then-exact-receipt commit/resume coverage asserting preserved request identity, one child side effect, usage, and final result.
+- Added authenticated GitHub App raw-metadata coverage beyond 500 comments, a user-copied marker that is neither adopted nor neutralized, and GitHub/Discord incomplete-history no-send retry tests.
+- Added live periodic stale-generation repair without restart/event and advisory wakeup failure followed by next-reply/checkpoint advancement coverage.
+- Full validation passed: core 1112 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

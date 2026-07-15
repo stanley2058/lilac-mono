@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -21,6 +23,7 @@ import {
   editIssueComment,
   getIssue,
   getIssueComment,
+  getConfiguredGithubAppIdOrNull,
   GithubApiError,
   listIssueComments,
 } from "../../github/github-api";
@@ -42,6 +45,8 @@ function assertGithubMsgRef(msgRef: MsgRef) {
 }
 
 export class GithubAdapter implements SurfaceAdapter {
+  private configuredAppId: Promise<number | null> | null = null;
+
   async connect(): Promise<void> {
     // No persistent connection.
   }
@@ -54,6 +59,22 @@ export class GithubAdapter implements SurfaceAdapter {
     // We don't have a stable user id for GitHub App installation tokens.
     // Best-effort: return a placeholder; webhook matching uses gh/app slug.
     return { platform: "github", userId: "github", userName: "github" };
+  }
+
+  async isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean> {
+    if (message.ref.platform !== "github") return false;
+    this.configuredAppId ??= getConfiguredGithubAppIdOrNull();
+    const appId = await this.configuredAppId;
+    if (appId === null) return false;
+    const parsed = z
+      .object({
+        performed_via_github_app: z
+          .object({ id: z.number().int().positive() })
+          .nullable()
+          .optional(),
+      })
+      .safeParse(message.raw);
+    return parsed.success && parsed.data.performed_via_github_app?.id === appId;
   }
 
   async getCapabilities(): Promise<AdapterCapabilities> {

@@ -42,6 +42,7 @@ import {
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+const GITHUB_APP_RAW = { performed_via_github_app: { id: 42 } };
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3_000;
@@ -116,6 +117,9 @@ class ProjectionAdapter implements SurfaceAdapter {
   async getSelf() {
     return { platform: this.platform, userId: "bot", userName: "bot" };
   }
+  async isAuthoritativelySelfAuthored(message: SurfaceMessage) {
+    return message.raw === GITHUB_APP_RAW;
+  }
   async getCapabilities() {
     return {
       platform: this.platform,
@@ -165,6 +169,7 @@ class ProjectionAdapter implements SurfaceAdapter {
           ? markGithubAgentComment(content.text ?? "")
           : (content.text ?? ""),
       ts: Date.now(),
+      raw: this.platform === "github" ? GITHUB_APP_RAW : undefined,
     });
     this.messageContents.set(ref.messageId, content);
     return ref;
@@ -644,7 +649,7 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("paginates real-shape GitHub agent comments and neutralizes duplicate workflow cards", async () => {
+  it("finds an authenticated GitHub card beyond 500 comments without trusting copied markers", async () => {
     const dbPath = join(tmpdir(), `workflow-github-deep-discovery-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const adapter = new ProjectionAdapter("github");
@@ -662,7 +667,7 @@ describe("WorkflowProgressProjector", () => {
     )}:generation:0 -->`;
     try {
       createInvocation(store, "github");
-      for (let index = 0; index < 120; index += 1) {
+      for (let index = 0; index < 520; index += 1) {
         const messageId = `noise-${index}`;
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
@@ -673,8 +678,8 @@ describe("WorkflowProgressProjector", () => {
         });
       }
       for (const [messageId, ts] of [
-        ["deep-card-1", 120],
-        ["deep-card-2", 121],
+        ["deep-card-1", 520],
+        ["deep-card-2", 521],
       ] as const) {
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
@@ -682,12 +687,24 @@ describe("WorkflowProgressProjector", () => {
           userId: "lilac-workflow[bot]",
           text: markGithubAgentComment(`Workflow card\n${workflowMarker}`),
           ts,
+          raw: GITHUB_APP_RAW,
         });
         adapter.messageContents.set(messageId, {
           text: `Workflow card\n${workflowMarker}`,
           actions: [{ label: "Stale", actionId: `stale-${messageId}`, style: "danger" }],
         });
       }
+      adapter.messages.set("copied-card", {
+        ref: { ...session, messageId: "copied-card" },
+        session,
+        userId: "untrusted-user",
+        text: markGithubAgentComment(`Workflow card\n${workflowMarker}`),
+        ts: 999,
+      });
+      adapter.messageContents.set("copied-card", {
+        text: `Workflow card\n${workflowMarker}`,
+        actions: [{ label: "Copied", actionId: "copied", style: "danger" }],
+      });
 
       const recovered = await projector.ensureInitialCard("run-1");
       expect(recovered.messageId).toBe("deep-card-2");
@@ -696,7 +713,97 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.messageContents.get("deep-card-1")?.text).toContain("superseded");
       expect(adapter.messageContents.get("deep-card-1")?.actions).toEqual([]);
       expect(adapter.messageContents.get("deep-card-2")?.actions?.length).toBe(2);
+      expect(adapter.messageContents.get("copied-card")?.actions?.[0]?.label).toBe("Copied");
+      expect(adapter.messageContents.get("copied-card")?.text).not.toContain("superseded");
       expect(store.listPendingSurfaceProjectionOrphans({ runId: "run-1" })).toEqual([]);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("persists retry and does not send when bounded GitHub discovery is incomplete", async () => {
+    const dbPath = join(
+      tmpdir(),
+      `workflow-github-incomplete-discovery-${crypto.randomUUID()}.sqlite`,
+    );
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter("github");
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["github", adapter]]),
+      subscriptionId: "github-incomplete-discovery",
+      now: () => 20,
+    });
+    const session = { platform: "github" as const, channelId: "channel-1" };
+    try {
+      createInvocation(store, "github");
+      for (let index = 0; index < 1_000; index += 1) {
+        const messageId = `noise-${index}`;
+        adapter.messages.set(messageId, {
+          ref: { ...session, messageId },
+          session,
+          userId: "user",
+          text: `unrelated ${index}`,
+          ts: index,
+        });
+      }
+
+      await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("discovery is incomplete");
+      expect(adapter.sends).toBe(0);
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: null,
+        retryCount: 1,
+        nextAttemptAt: 1_020,
+      });
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("does not treat a full bounded Discord history scan as authoritative absence", async () => {
+    const dbPath = join(
+      tmpdir(),
+      `workflow-discord-incomplete-discovery-${crypto.randomUUID()}.sqlite`,
+    );
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter("discord");
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "discord-incomplete-discovery",
+      now: () => 20,
+    });
+    const session = { platform: "discord" as const, channelId: "channel-1" };
+    try {
+      createInvocation(store);
+      for (let index = 0; index < 1_000; index += 1) {
+        const messageId = `noise-${index}`;
+        adapter.messages.set(messageId, {
+          ref: { ...session, messageId },
+          session,
+          userId: "user",
+          text: `unrelated ${index}`,
+          ts: index,
+        });
+      }
+
+      await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("discovery is incomplete");
+      expect(adapter.sends).toBe(0);
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: null,
+        retryCount: 1,
+        nextAttemptAt: 1_020,
+      });
     } finally {
       await projector.stop();
       await bus.close();
@@ -939,11 +1046,10 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("repairs a stale remote generation after the stale editor process dies", async () => {
+  it("periodically repairs a late stale edit without a restart or workflow event", async () => {
     const dbPath = join(tmpdir(), `workflow-stale-edit-crash-${crypto.randomUUID()}.sqlite`);
     const storeA = new DurableWorkflowStore(dbPath);
     const storeB = new DurableWorkflowStore(dbPath);
-    const storeC = new DurableWorkflowStore(dbPath);
     const adapter = new FirstEditBlockingProjectionAdapter();
     const bus = createLilacBus(new IdleRawBus());
     const initial = new WorkflowProgressProjector({
@@ -966,14 +1072,10 @@ describe("WorkflowProgressProjector", () => {
       store: storeB,
       adapters: new Map([["discord", adapter]]),
       subscriptionId: "stale-edit-crash-current",
-      now: () => 40_000,
-    });
-    const replacement = new WorkflowProgressProjector({
-      bus,
-      store: storeC,
-      adapters: new Map([["discord", adapter]]),
-      subscriptionId: "stale-edit-crash-replacement",
-      now: () => 50_000,
+      now: Date.now,
+      coalesceMs: 0,
+      minEditIntervalMs: 0,
+      remoteVerificationIntervalMs: 20,
     });
     try {
       createInvocation(storeA);
@@ -992,10 +1094,10 @@ describe("WorkflowProgressProjector", () => {
         storeB.tryClaimApprovedRun({
           runId: "run-1",
           claimerId: "engine",
-          now: 40_000,
+          now: Date.now(),
         })?.state,
       ).toBe("running");
-      await current.ensureInitialCard("run-1");
+      await current.start();
       expect(storeB.getSurfaceBinding("run-1")).toMatchObject({
         repairGeneration: 1,
         renderedRepairGeneration: 1,
@@ -1004,13 +1106,11 @@ describe("WorkflowProgressProjector", () => {
       adapter.release();
       await waitFor(() => adapter.edits === 2);
       expect(adapter.messages.get(cardRef.messageId)?.text).toContain("State: **queued**");
-      await current.stop();
 
-      await replacement.start();
       await waitFor(
         () => adapter.messages.get(cardRef.messageId)?.text.includes("State: **running**") ?? false,
       );
-      expect(storeC.getSurfaceBinding("run-1")).toMatchObject({
+      expect(storeB.getSurfaceBinding("run-1")).toMatchObject({
         messageRef: cardRef,
         repairGeneration: 2,
         renderedRepairGeneration: 2,
@@ -1022,11 +1122,9 @@ describe("WorkflowProgressProjector", () => {
       adapter.release();
       await initial.stop();
       await current.stop();
-      await replacement.stop();
       await bus.close();
       storeA.close();
       storeB.close();
-      storeC.close();
       rmSync(dbPath, { force: true });
     }
   });
