@@ -136,14 +136,21 @@ export interface SurfaceAdapter {
 }
 
 export interface SurfaceAuthoritativeSelfMessageProvider {
+  resolveAuthoritativeSelfMessageVerifier(): Promise<(message: SurfaceMessage) => boolean>;
   isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean>;
 }
 
 export function hasAuthoritativeSelfMessageProvider(
   adapter: SurfaceAdapter,
 ): adapter is SurfaceAdapter & SurfaceAuthoritativeSelfMessageProvider {
-  const maybe = adapter as unknown as { isAuthoritativelySelfAuthored?: unknown };
-  return typeof maybe.isAuthoritativelySelfAuthored === "function";
+  const maybe = adapter as unknown as {
+    resolveAuthoritativeSelfMessageVerifier?: unknown;
+    isAuthoritativelySelfAuthored?: unknown;
+  };
+  return (
+    typeof maybe.resolveAuthoritativeSelfMessageVerifier === "function" &&
+    typeof maybe.isAuthoritativelySelfAuthored === "function"
+  );
 }
 
 /** Optional capability: plan reply-chain traversal using local metadata/indexes. */

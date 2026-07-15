@@ -81,10 +81,16 @@ export class GithubAdapter implements SurfaceAdapter {
   }
 
   async isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean> {
-    if (message.ref.platform !== "github") return false;
+    const verify = await this.resolveAuthoritativeSelfMessageVerifier();
+    return verify(message);
+  }
+
+  async resolveAuthoritativeSelfMessageVerifier(): Promise<(message: SurfaceMessage) => boolean> {
     const actor = await this.resolveAuthoritativeActor();
-    if (!actor) return false;
-    return isGithubCommentAuthoredByActor(message.raw, actor);
+    return (message) =>
+      message.ref.platform === "github" &&
+      actor !== null &&
+      isGithubCommentAuthoredByActor(message.raw, actor);
   }
 
   async getCapabilities(): Promise<AdapterCapabilities> {

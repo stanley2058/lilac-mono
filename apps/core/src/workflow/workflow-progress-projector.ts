@@ -710,11 +710,30 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     nextCursor: WorkflowSurfaceBinding["discoveryCursor"];
   }> {
     const startedAt = Date.now();
+    const initialCursor = cursor ?? { page: 1, beforeMessageId: null, scannedEntries: 0 };
     const messages = new Map<string, SurfaceMessage>();
     let page = cursor?.page ?? 1;
     let beforeMessageId = cursor?.beforeMessageId ?? undefined;
     let scannedEntries = cursor?.scannedEntries ?? 0;
     let exhaustive = false;
+    const self = target.platform === "discord" ? await adapter.getSelf() : null;
+    const authoritativeProvider = hasAuthoritativeSelfMessageProvider(adapter) ? adapter : null;
+    let verifyAuthor: ((message: SurfaceMessage) => boolean) | null = null;
+    if (target.platform === "github") {
+      if (!authoritativeProvider) {
+        return { candidates: [], exhaustive: false, nextCursor: initialCursor };
+      }
+      const verifierResolution = await Promise.race([
+        authoritativeProvider.resolveAuthoritativeSelfMessageVerifier().then((verify) => ({
+          verify,
+        })),
+        Bun.sleep(DISCOVERY_TIMEOUT_MS).then(() => null),
+      ]);
+      if (verifierResolution === null) {
+        return { candidates: [], exhaustive: false, nextCursor: initialCursor };
+      }
+      verifyAuthor = verifierResolution.verify;
+    }
     for (let passPage = 0; passPage < DISCOVERY_MAX_PAGES; passPage += 1) {
       const remainingMs = DISCOVERY_TIMEOUT_MS - (Date.now() - startedAt);
       if (remainingMs <= 0) break;
@@ -750,23 +769,18 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) break;
     }
 
-    const self = target.platform === "discord" ? await adapter.getSelf() : null;
-    const authoritativeProvider = hasAuthoritativeSelfMessageProvider(adapter) ? adapter : null;
-    if (target.platform === "github" && !authoritativeProvider) {
-      return {
-        candidates: [],
-        exhaustive: false,
-        nextCursor: { page, beforeMessageId: beforeMessageId ?? null, scannedEntries },
-      };
-    }
     const candidates: Array<{ message: SurfaceMessage; generation: number }> = [];
+    let validationTimedOut = false;
     for (const message of messages.values()) {
+      if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) {
+        validationTimedOut = true;
+        break;
+      }
       if (
         message.ref.platform !== target.platform ||
         message.ref.channelId !== target.channelId ||
         (target.platform === "github"
-          ? !isMarkedGithubAgentComment(message.text) ||
-            !(await authoritativeProvider?.isAuthoritativelySelfAuthored(message))
+          ? !isMarkedGithubAgentComment(message.text) || !verifyAuthor?.(message)
           : message.userId !== self?.userId)
       ) {
         continue;
@@ -776,10 +790,12 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     }
     return {
       candidates,
-      exhaustive,
-      nextCursor: exhaustive
-        ? null
-        : { page, beforeMessageId: beforeMessageId ?? null, scannedEntries },
+      exhaustive: exhaustive && !validationTimedOut,
+      nextCursor: validationTimedOut
+        ? initialCursor
+        : exhaustive
+          ? null
+          : { page, beforeMessageId: beforeMessageId ?? null, scannedEntries },
     };
   }
 

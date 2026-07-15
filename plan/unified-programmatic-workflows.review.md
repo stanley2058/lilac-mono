@@ -517,3 +517,28 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 16
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regression Fixed
+
+1. Bounded workflow-card discovery now resolves one immutable authoritative self-message verifier per pass. GitHub PAT `/user` and configured App identity resolution happen once inside the existing five-second deadline, after which every candidate raw comment is validated synchronously against that snapshot. Candidate validation is deadline-bounded, page work remains capped at ten 100-entry pages, and a later recovery attempt resolves a fresh identity so token rotation or account rename remains visible.
+
+### Regression Coverage
+
+- Strengthened deep GitHub discovery with more than 1,000 public forged agent/workflow markers before the genuine PAT-authored card. The first pass performs exactly one `/user` lookup and ten page reads, rejects every spoof, persists page 11, and sends nothing; the next pass performs one fresh lookup, recovers the genuine card, preserves the forged card, and still sends no duplicate.
+- Added elapsed-time assertions for both attempts and exact page/identity lookup counts, covering bounded time, bounded work, pass-local identity immutability, and uncached identity refresh across attempts.
+- Full validation passed: core 1123 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

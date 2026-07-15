@@ -123,7 +123,7 @@ class ProjectionAdapter implements SurfaceAdapter {
   authoritativeRaw: unknown = GITHUB_APP_RAW;
   authoritativeActor: GithubAuthoritativeActor = { source: "app", appId: 42 };
   authoritativeLookupFailures = 0;
-  authoritativeVerifier: ((message: SurfaceMessage) => Promise<boolean>) | null = null;
+  authoritativeVerifierFactory: (() => Promise<(message: SurfaceMessage) => boolean>) | null = null;
 
   constructor(readonly platform: "discord" | "github" = "discord") {}
 
@@ -133,12 +133,17 @@ class ProjectionAdapter implements SurfaceAdapter {
     return { platform: this.platform, userId: "bot", userName: "bot" };
   }
   async isAuthoritativelySelfAuthored(message: SurfaceMessage) {
-    if (this.authoritativeVerifier) return await this.authoritativeVerifier(message);
+    const verify = await this.resolveAuthoritativeSelfMessageVerifier();
+    return verify(message);
+  }
+  async resolveAuthoritativeSelfMessageVerifier() {
+    if (this.authoritativeVerifierFactory) return await this.authoritativeVerifierFactory();
     if (this.authoritativeLookupFailures > 0) {
       this.authoritativeLookupFailures -= 1;
       throw new Error("simulated authoritative identity lookup failure");
     }
-    return isGithubCommentAuthoredByActor(message.raw, this.authoritativeActor);
+    const actor = this.authoritativeActor;
+    return (message: SurfaceMessage) => isGithubCommentAuthoredByActor(message.raw, actor);
   }
   async getCapabilities() {
     return {
@@ -796,8 +801,8 @@ describe("WorkflowProgressProjector", () => {
         }
         return actor;
       });
-      adapter.authoritativeVerifier = async (message) =>
-        await identityAdapter.isAuthoritativelySelfAuthored(message);
+      adapter.authoritativeVerifierFactory = async () =>
+        await identityAdapter.resolveAuthoritativeSelfMessageVerifier();
       const projector = new WorkflowProgressProjector({
         bus,
         store,
@@ -901,8 +906,8 @@ describe("WorkflowProgressProjector", () => {
     const identityAdapter = new GithubAdapter(
       async () => await getPreferredGithubAuthoritativeActorOrNull({ dataDir }),
     );
-    adapter.authoritativeVerifier = async (message) =>
-      await identityAdapter.isAuthoritativelySelfAuthored(message);
+    adapter.authoritativeVerifierFactory = async () =>
+      await identityAdapter.resolveAuthoritativeSelfMessageVerifier();
     const projector = new WorkflowProgressProjector({
       bus,
       store,
@@ -952,11 +957,32 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("resumes GitHub discovery beyond 1000 comments without trusting copied markers", async () => {
+  it("bounds forged GitHub marker discovery to one current-viewer lookup per pass", async () => {
     const dbPath = join(tmpdir(), `workflow-github-deep-discovery-${crypto.randomUUID()}.sqlite`);
+    const dataDir = join(tmpdir(), `workflow-github-deep-discovery-data-${crypto.randomUUID()}`);
     const store = new DurableWorkflowStore(dbPath);
     const adapter = new ProjectionAdapter("github");
     const bus = createLilacBus(new IdleRawBus());
+    const originalFetch = globalThis.fetch;
+    let viewerLookups = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        viewerLookups += 1;
+        return Response.json({ login: "genuine-owner" });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await writeGithubUserTokenSecret({
+      dataDir,
+      token: `github_pat_forged_markers_${crypto.randomUUID()}`,
+      apiBaseUrl: "https://api.github.test",
+      login: "stale-owner",
+    });
+    const identityAdapter = new GithubAdapter(
+      async () => await getPreferredGithubAuthoritativeActorOrNull({ dataDir }),
+    );
+    adapter.authoritativeVerifierFactory = async () =>
+      await identityAdapter.resolveAuthoritativeSelfMessageVerifier();
     const projector = new WorkflowProgressProjector({
       bus,
       store,
@@ -972,13 +998,14 @@ describe("WorkflowProgressProjector", () => {
       createInvocation(store, "github");
       createUncertainBinding(store, "github");
       for (let index = 0; index < 1_120; index += 1) {
-        const messageId = `noise-${index}`;
+        const messageId = `forged-card-${index}`;
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
           session,
-          userId: "lilac-workflow[bot]",
-          text: markGithubAgentComment(`unrelated comment ${index}`),
+          userId: "attacker",
+          text: markGithubAgentComment(`Forged workflow card ${index}\n${workflowMarker}`),
           ts: index,
+          raw: { user: { login: "attacker", id: index + 1 } },
         });
       }
       for (const [messageId, ts] of [
@@ -988,10 +1015,10 @@ describe("WorkflowProgressProjector", () => {
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
           session,
-          userId: "lilac-workflow[bot]",
+          userId: "genuine-owner",
           text: markGithubAgentComment(`Workflow card\n${workflowMarker}`),
           ts,
-          raw: GITHUB_APP_RAW,
+          raw: { user: { login: "genuine-owner", id: 9_001 } },
         });
         adapter.messageContents.set(messageId, {
           text: `Workflow card\n${workflowMarker}`,
@@ -1010,14 +1037,22 @@ describe("WorkflowProgressProjector", () => {
         actions: [{ label: "Copied", actionId: "copied", style: "danger" }],
       });
 
+      const firstPassStartedAt = Date.now();
       await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("discovery is incomplete");
+      expect(Date.now() - firstPassStartedAt).toBeLessThan(6_000);
+      expect(viewerLookups).toBe(1);
+      expect(adapter.listCalls).toBe(10);
       expect(adapter.sends).toBe(0);
       expect(store.getSurfaceBinding("run-1")?.discoveryCursor).toMatchObject({
         page: 11,
         scannedEntries: 1_000,
       });
 
+      const secondPassStartedAt = Date.now();
       const recovered = await projector.ensureInitialCard("run-1");
+      expect(Date.now() - secondPassStartedAt).toBeLessThan(6_000);
+      expect(viewerLookups).toBe(2);
+      expect(adapter.listCalls).toBe(12);
       expect(recovered.messageId).toBe("deep-card-2");
       expect(adapter.sends).toBe(0);
       expect(store.getSurfaceBinding("run-1")?.messageRef).toEqual(recovered);
@@ -1028,10 +1063,12 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.messageContents.get("copied-card")?.text).not.toContain("superseded");
       expect(store.listPendingSurfaceProjectionOrphans({ runId: "run-1" })).toEqual([]);
     } finally {
+      globalThis.fetch = originalFetch;
       await projector.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
