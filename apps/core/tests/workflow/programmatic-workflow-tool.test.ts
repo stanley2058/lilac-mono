@@ -8,6 +8,7 @@ import { createToolServer } from "../../src/tool-server/create-tool-server";
 import { ProgrammaticWorkflow } from "../../src/tool-server/tools/programmatic-workflow";
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { writeWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
+import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "../../src/workflow/workflow-domain";
 
 const invocationSchema = z.object({
   runId: z.string(),
@@ -207,6 +208,27 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       expect(second.revisionId).toBe(first.revisionId);
       expect(second.argsSha256).not.toBe(first.argsSha256);
       expect(ensuredCards).toEqual([first.runId, second.runId]);
+
+      const manualStore = new DurableWorkflowStore(dbPath);
+      try {
+        expect(
+          manualStore.transitionRun({
+            runId: second.runId,
+            from: "queued",
+            to: "paused",
+            now: 102,
+            detail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+          }),
+        ).toBe(true);
+      } finally {
+        manualStore.close();
+      }
+      await expect(
+        tool.call("workflow.run.resume", { runId: second.runId }, { context }),
+      ).rejects.toThrow(WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
+      const manualVerifier = new DurableWorkflowStore(dbPath);
+      expect(manualVerifier.getRun(second.runId)?.state).toBe("paused");
+      manualVerifier.close();
 
       const largeResult = "r".repeat(70_000);
       const resultArtifactId = await writeWorkflowValueArtifact({

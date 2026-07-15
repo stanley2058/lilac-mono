@@ -1055,7 +1055,7 @@ export class ProgrammaticWorkflow implements ServerTool {
             });
       const updated = paused ?? this.store().getRun(run.runId);
       if (to === "queued" && !changed) {
-        const ambiguity = this.store().getPausedCancellationAmbiguityDetail(run.runId);
+        const ambiguity = this.store().getManualReconciliationDetail(run.runId);
         if (ambiguity) throw new Error(ambiguity);
       }
       if (changed && updated) {

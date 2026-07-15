@@ -20,6 +20,7 @@ import { WorkflowEngine, workflowAgentRequestId } from "../../src/workflow/workf
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
 import {
   normalizeWorkflowCapabilityProfile,
+  WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
   type WorkflowCompletionTarget,
 } from "../../src/workflow/workflow-domain";
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
@@ -247,85 +248,250 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowEngine", () => {
-  it("fails closed when terminal request history has no exact durable receipt", async () => {
-    const dbPath = join(tmpdir(), `workflow-engine-terminal-barrier-${crypto.randomUUID()}.sqlite`);
+  it("fails closed for every receiptless terminal request outcome", async () => {
+    for (const terminalState of ["resolved", "failed", "cancelled"] as const) {
+      const dbPath = join(
+        tmpdir(),
+        `workflow-engine-terminal-${terminalState}-${crypto.randomUUID()}.sqlite`,
+      );
+      const store = new DurableWorkflowStore(dbPath);
+      const raw = new CapturingRawBus();
+      const bus = createLilacBus(raw);
+      createApprovedRun(store);
+      const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
+      const requestId = workflowAgentRequestId("run-1", operationId, 0);
+      const dispatchEpoch = `historical-epoch-${terminalState}`;
+      const headers = {
+        request_id: requestId,
+        session_id: `workflow:run-1:${operationId}`,
+        request_client: "unknown",
+        workflow_dispatch_epoch: dispatchEpoch,
+      };
+      raw.history.push(
+        {
+          topic: outReqTopic(requestId),
+          id: "1-0",
+          ts: 10,
+          type: lilacEventTypes.EvtAgentOutputResponseText,
+          headers,
+          data: { finalText: "historical result" },
+        },
+        {
+          topic: "evt.request",
+          id: "2-0",
+          ts: 11,
+          type: lilacEventTypes.EvtRequestLifecycleChanged,
+          headers,
+          data: { state: terminalState, ts: 11 },
+        },
+      );
+      const engine = new WorkflowEngine({
+        bus,
+        store,
+        dataDir: "/unused",
+        subscriptionId: `terminal-${terminalState}`,
+        pollMs: 5,
+        assertSandbox: async () => {},
+        loadSnapshot: async () => "immutable",
+        compileSource: (source) => source,
+        createDispatchEpoch: () => dispatchEpoch,
+        startSandbox: (input) => ({
+          cancel: async () => {},
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        }),
+      });
+      try {
+        await engine.start();
+        await waitFor(() => store.getRun("run-1")?.state === "paused");
+        expect(store.getRun("run-1")?.terminalDetail).toBe(WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
+        expect(store.listOperations("run-1")[0]).toMatchObject({
+          state: "blocked",
+          attempt: 0,
+          requestId,
+          error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+        });
+        expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 12 })).toBe(
+          false,
+        );
+        expect(
+          raw.messages.some(
+            (message) =>
+              message.type === lilacEventTypes.CmdRequestMessage &&
+              message.headers?.request_id === requestId &&
+              typeof message.data === "object" &&
+              message.data !== null &&
+              "queue" in message.data &&
+              message.data.queue === "prompt",
+          ),
+        ).toBe(false);
+      } finally {
+        await engine.stop();
+        await bus.close();
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    }
+  });
+
+  it("fails closed for every terminal lifecycle state that mismatches its exact receipt", async () => {
+    const cases = [
+      { lifecycleState: "resolved", receiptState: "failed" },
+      { lifecycleState: "failed", receiptState: "resolved" },
+      { lifecycleState: "cancelled", receiptState: "failed" },
+    ] as const;
+    for (const { lifecycleState, receiptState } of cases) {
+      const dbPath = join(
+        tmpdir(),
+        `workflow-engine-mismatched-${lifecycleState}-${crypto.randomUUID()}.sqlite`,
+      );
+      const store = new DurableWorkflowStore(dbPath);
+      const raw = new LiveCapturingRawBus();
+      const bus = createLilacBus(raw);
+      createApprovedRun(store);
+      const responder = await bus.subscribeTopic(
+        "cmd.request",
+        { mode: "fanout", subscriptionId: `mismatch-${lifecycleState}`, offset: { type: "now" } },
+        async (message, context) => {
+          if (
+            message.type === lilacEventTypes.CmdRequestMessage &&
+            message.data.queue === "prompt"
+          ) {
+            const requestId = message.headers?.request_id;
+            if (!requestId) throw new Error("Missing workflow request ID");
+            const workflow = z
+              .object({
+                workflow: z.object({
+                  runId: z.string(),
+                  operationId: z.string(),
+                  dispatchEpoch: z.string(),
+                  capability: z.string(),
+                }),
+              })
+              .parse(message.data.raw).workflow;
+            expect(
+              store.claimWorkflowRequest({
+                requestId,
+                token: workflow.capability,
+                dispatchEpoch: workflow.dispatchEpoch,
+                ownerId: "mismatch-runner",
+                now: 10,
+              }),
+            ).toBe(true);
+            expect(
+              store.recordWorkflowRequestTerminal({
+                requestId,
+                runId: workflow.runId,
+                operationId: workflow.operationId,
+                dispatchEpoch: workflow.dispatchEpoch,
+                ownerId: "mismatch-runner",
+                state: receiptState,
+                detail: `receipt ${receiptState}`,
+                ...(receiptState === "resolved" ? { output: "receipt output" } : {}),
+                now: 11,
+              }),
+            ).toBe(true);
+            await bus.publish(
+              lilacEventTypes.EvtRequestLifecycleChanged,
+              { state: lifecycleState, ts: 12 },
+              { headers: message.headers },
+            );
+          }
+          await context.commit();
+        },
+      );
+      const engine = new WorkflowEngine({
+        bus,
+        store,
+        dataDir: "/unused",
+        subscriptionId: `mismatched-${lifecycleState}`,
+        pollMs: 5,
+        receiptPollMs: 10_000,
+        now: () => 10,
+        assertSandbox: async () => {},
+        loadSnapshot: async () => "immutable",
+        compileSource: (source) => source,
+        startSandbox: (input) => ({
+          cancel: async () => {},
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        }),
+      });
+      try {
+        await engine.start();
+        await waitFor(() => store.getRun("run-1")?.state === "paused");
+        expect(store.getRun("run-1")?.terminalDetail).toBe(WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
+        expect(store.listOperations("run-1")[0]).toMatchObject({
+          state: "blocked",
+          attempt: 0,
+          requestId: expect.stringMatching(/^wfr:/u),
+          error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+        });
+        expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 13 })).toBe(
+          false,
+        );
+      } finally {
+        await engine.stop();
+        await responder.stop();
+        await bus.close();
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    }
+  });
+
+  it("does not auto-resume a blocked run marked for manual reconciliation", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-manual-block-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
-    const raw = new CapturingRawBus();
-    const bus = createLilacBus(raw);
+    const bus = createLilacBus(new CapturingRawBus());
     createApprovedRun(store);
-    const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
-    const requestId = workflowAgentRequestId("run-1", operationId, 0);
-    const dispatchEpoch = "historical-epoch-0001";
-    const headers = {
-      request_id: requestId,
-      session_id: `workflow:run-1:${operationId}`,
-      request_client: "unknown",
-      workflow_dispatch_epoch: dispatchEpoch,
-    };
-    raw.history.push(
-      {
-        topic: outReqTopic(requestId),
-        id: "1-0",
-        ts: 10,
-        type: lilacEventTypes.EvtAgentOutputResponseText,
-        headers,
-        data: { finalText: "historical result" },
-      },
-      {
-        topic: "evt.request",
-        id: "2-0",
-        ts: 11,
-        type: lilacEventTypes.EvtRequestLifecycleChanged,
-        headers,
-        data: { state: "resolved", ts: 11 },
-      },
+    expect(store.transitionRun({ runId: "run-1", from: "queued", to: "running", now: 3 })).toBe(
+      true,
     );
+    expect(
+      store.transitionRun({
+        runId: "run-1",
+        from: "running",
+        to: "blocked",
+        now: 4,
+        detail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+      }),
+    ).toBe(true);
     const engine = new WorkflowEngine({
       bus,
       store,
       dataDir: "/unused",
-      subscriptionId: "terminal-barrier",
+      subscriptionId: "manual-block",
       pollMs: 5,
       assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      createDispatchEpoch: () => dispatchEpoch,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: {} },
-        }),
-      }),
     });
     try {
       await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "paused");
-      expect(store.getRun("run-1")?.terminalDetail).toContain("Manual reconciliation required");
-      expect(store.listOperations("run-1")[0]).toMatchObject({
+      await Bun.sleep(25);
+      expect(store.getRun("run-1")).toMatchObject({
         state: "blocked",
-        requestId,
-        error: expect.stringContaining("Manual reconciliation required"),
+        terminalDetail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
-      expect(
-        raw.messages.some(
-          (message) =>
-            message.type === lilacEventTypes.CmdRequestMessage &&
-            message.headers?.request_id === requestId &&
-            typeof message.data === "object" &&
-            message.data !== null &&
-            "queue" in message.data &&
-            message.data.queue === "prompt",
-        ),
-      ).toBe(false);
     } finally {
       await engine.stop();
       await bus.close();
@@ -1025,13 +1191,13 @@ describe("WorkflowEngine", () => {
       ).toBe(false);
       expect(store.getRun("run-cancelled-receipt")).toMatchObject({
         state: "paused",
-        terminalDetail: expect.stringContaining("Manual reconciliation required"),
+        terminalDetail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
       expect(store.listOperations("run-cancelled-receipt")[0]).toMatchObject({
         state: "blocked",
         attempt: 0,
         requestId: cancelledCapture.requestId,
-        error: expect.stringContaining("Manual reconciliation required"),
+        error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
       await Bun.sleep(25);
       expect(dispatches).toBe(2);
@@ -1210,12 +1376,12 @@ describe("WorkflowEngine", () => {
 
       expect(sideEffects).toBe(1);
       expect(removeCalls).toBe(0);
-      expect(store.getRun("run-1")?.terminalDetail).toContain("Manual reconciliation required");
+      expect(store.getRun("run-1")?.terminalDetail).toBe(WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
       expect(store.listOperations("run-1")[0]).toMatchObject({
         state: "blocked",
         attempt: 0,
         requestId: captured.requestId,
-        error: expect.stringContaining("Manual reconciliation required"),
+        error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
       expect(
         raw.messages.filter(

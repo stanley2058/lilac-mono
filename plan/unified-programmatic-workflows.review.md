@@ -490,3 +490,30 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 15
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Schema v14 gives every ambiguous terminal outcome one canonical persisted manual-reconciliation detail, including legacy quarantine, receiptless lifecycle, lifecycle/receipt state mismatch, and cancelled receipt paths. Migration rewrites prior ambiguity details. Direct store resume, surface Resume, `workflow.run.resume`, progress controls, and engine blocked-run startup all reject the marker; only Cancel remains available, and request ID/attempt are preserved so the run must be cancelled and replaced.
+2. PAT authoritative recovery verification no longer trusts persisted `user.login` or the general viewer cache. Every verification resolves the current `/user` identity directly for the configured token, so same-token account rename is visible immediately; lookup failures remain indeterminate and never fall back to stored login metadata.
+
+### Regression Coverage
+
+- Added receiptless and mismatched `resolved`, `failed`, and `cancelled` lifecycle coverage asserting the same canonical paused/blocked state, unchanged request/attempt, and rejected direct resume.
+- Added canonical-state store, surface Resume, programmatic `workflow.run.resume`, progress-control, and engine auto-resume coverage. Progress exposes only Cancel and all resume paths leave the run and operation identity unchanged.
+- Added production PAT tests proving stored login is ignored on lookup failure and that consecutive same-token verifications observe account renames. Projector recovery adopts the renamed current-viewer card with zero duplicate sends.
+- Full validation passed: core 1123 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

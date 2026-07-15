@@ -6,7 +6,7 @@ import { deriveApiBaseUrl, readGithubAppPrivateKeyPem, readGithubAppSecret } fro
 import {
   getGithubUserLoginOrNull as getGithubUserLoginFromAuth,
   getGithubViewerLoginOrNull as getGithubViewerLoginByTokenOrNull,
-  getGithubViewerLoginOrThrow,
+  resolveGithubViewerLoginOrThrow,
   getGithubUserAuthOrNull,
   getPreferredGithubAuthOrNull,
   getPreferredGithubAuthOrThrow,
@@ -364,12 +364,10 @@ export async function getPreferredGithubAuthoritativeActorOrNull(
 ): Promise<GithubAuthoritativeActor | null> {
   const user = await getGithubUserAuthOrNull(params);
   if (user) {
-    const login =
-      user.login ??
-      (await getGithubViewerLoginOrThrow({
-        apiBaseUrl: user.apiBaseUrl,
-        token: user.token,
-      }));
+    const login = await resolveGithubViewerLoginOrThrow({
+      apiBaseUrl: user.apiBaseUrl,
+      token: user.token,
+    });
     return { source: "user", login: login.toLowerCase() };
   }
   const app = await readGithubAppSecret(params.dataDir);

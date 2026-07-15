@@ -8,6 +8,7 @@ import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store"
 import { sha256 } from "../../src/workflow/workflow-definition";
 import {
   normalizeWorkflowCapabilityProfile,
+  WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
   type WorkflowApproval,
   type WorkflowOperation,
   type WorkflowRevision,
@@ -17,6 +18,7 @@ import {
   type WorkflowTrigger,
   type WorkflowWait,
 } from "../../src/workflow/workflow-domain";
+import { buildWorkflowProgressView } from "../../src/workflow/workflow-progress-view";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -624,12 +626,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 12 incremental projection discovery",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 14,
+          name: "round 15 canonical manual reconciliation state",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(13);
+      expect(reopened.listMigrations()).toHaveLength(14);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -703,7 +710,7 @@ describe("DurableWorkflowStore", () => {
         repairGeneration: 1,
         renderedRepairGeneration: 0,
       });
-      expect(upgraded.listMigrations()).toHaveLength(13);
+      expect(upgraded.listMigrations()).toHaveLength(14);
     } finally {
       upgraded.close();
       rmSync(path, { force: true });
@@ -743,12 +750,12 @@ describe("DurableWorkflowStore", () => {
       expect(upgraded.getRun("legacy-run")).toMatchObject({
         state: "paused",
         claimedBy: null,
-        terminalDetail: expect.stringContaining("Manual reconciliation required"),
+        terminalDetail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
       expect(upgraded.getOperation("legacy-run", "legacy-operation")).toMatchObject({
         state: "blocked",
         claimedBy: null,
-        error: expect.stringContaining("Manual reconciliation required"),
+        error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
       });
       expect(
         upgraded.claimWorkflowRequestPromptPublication({
@@ -771,6 +778,131 @@ describe("DurableWorkflowStore", () => {
       ).toEqual({ quarantine_reason: "legacy_resolved_receipt_missing_payload" });
       verified.close();
     } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("rejects direct and surface resume for canonical manual reconciliation state", async () => {
+    const path = dbPath("manual-reconciliation-resume");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-manual"),
+        pendingApproval: approval("run-manual"),
+      });
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      store.tryClaimApprovedRun({ runId: "run-manual", claimerId: "engine", now: 12 });
+      store.createOperation(operation("run-manual"), "engine");
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:manual",
+          runId: "run-manual",
+          operationId: "operation-1",
+          runOwnerId: "engine",
+          token: "manual-reconciliation-token-123456",
+          sessionId: "workflow:run-manual:operation-1",
+          platform: "unknown",
+          policy: {
+            runId: "run-manual",
+            operationId: "operation-1",
+            dispatchEpoch: "manual-dispatch-epoch",
+            profile: "explore",
+            safetyMode: "trusted",
+            editing: false,
+            isolation: "shared",
+            externalTools: false,
+            surfaceSends: false,
+            subagents: false,
+            canonicalWorkspaceRoot: "/workspace",
+            canonicalCwd: "/workspace",
+            canonicalProjectId: "project-1",
+            originSessionId: "session-1",
+            originClient: "discord",
+            revisionId: "revision-1",
+            sourceSha256: HASH_A,
+            inputSchemaSha256: HASH_A,
+            capabilitySha256: HASH_B,
+            argsSha256: HASH_A,
+          },
+          now: 13,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).not.toBeNull();
+      expect(
+        store.blockAmbiguousTerminalLifecycleOperation({
+          runId: "run-manual",
+          operationId: "operation-1",
+          requestId: "wfr:manual",
+          runOwnerId: "engine",
+          now: 14,
+        }),
+      ).toBe(true);
+      expect(store.getManualReconciliationDetail("run-manual")).toBe(
+        WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+      );
+
+      expect(
+        store.transitionRun({
+          runId: "run-manual",
+          from: "paused",
+          to: "queued",
+          now: 15,
+        }),
+      ).toBe(false);
+      const messageRef = {
+        platform: "discord" as const,
+        channelId: "channel-1",
+        messageId: "card-manual",
+      };
+      const resumeToken = "manual-resume-token-123456";
+      expect(
+        store.createSurfaceAction({
+          actionId: "manual-resume",
+          tokenSha256: sha256(resumeToken),
+          runId: "run-manual",
+          approvalId: null,
+          kind: "resume",
+          expectedPlatform: "discord",
+          expectedUserId: "user-1",
+          expectedMessageRef: messageRef,
+          expiresAt: 1_000,
+          consumedAt: null,
+          consumedByPlatform: null,
+          consumedByUserId: null,
+          createdAt: 15,
+        }),
+      ).toBe(true);
+      expect(
+        store.applySurfaceAction({
+          tokenSha256: sha256(resumeToken),
+          platform: "discord",
+          userId: "user-1",
+          messageRef,
+          now: 16,
+        }).status,
+      ).toBe("stale");
+      expect(store.getRun("run-manual")).toMatchObject({
+        state: "paused",
+        terminalDetail: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+      });
+      expect(store.getOperation("run-manual", "operation-1")).toMatchObject({
+        state: "blocked",
+        attempt: 0,
+        requestId: "wfr:manual",
+        error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
+      });
+      expect(
+        (await buildWorkflowProgressView({ store, runId: "run-manual" })).availableActions,
+      ).toEqual(["cancel"]);
+    } finally {
+      store.close();
       rmSync(path, { force: true });
     }
   });

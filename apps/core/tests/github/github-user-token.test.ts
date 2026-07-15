@@ -130,6 +130,7 @@ describe("github user token secret", () => {
       dataDir,
       token: `github_pat_authority_${crypto.randomUUID()}`,
       apiBaseUrl: "https://api.github.test",
+      login: "stale-persisted-owner",
     });
     let calls = 0;
     installMockFetch(async () => {
@@ -144,6 +145,29 @@ describe("github user token secret", () => {
     await expect(getPreferredGithubAuthoritativeActorOrNull({ dataDir })).resolves.toEqual({
       source: "user",
       login: "canonical-owner",
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("resolves the current PAT viewer on every authoritative verification", async () => {
+    const token = `github_pat_rename_${crypto.randomUUID()}`;
+    await writeGithubUserTokenSecret({
+      dataDir,
+      token,
+      apiBaseUrl: "https://api.github.test",
+      login: "persisted-old-owner",
+    });
+    const viewers = ["Renamed-Owner", "Renamed-Again"];
+    let calls = 0;
+    installMockFetch(async () => Response.json({ login: viewers[calls++] }));
+
+    await expect(getPreferredGithubAuthoritativeActorOrNull({ dataDir })).resolves.toEqual({
+      source: "user",
+      login: "renamed-owner",
+    });
+    await expect(getPreferredGithubAuthoritativeActorOrNull({ dataDir })).resolves.toEqual({
+      source: "user",
+      login: "renamed-again",
     });
     expect(calls).toBe(2);
   });

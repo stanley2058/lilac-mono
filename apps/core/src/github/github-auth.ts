@@ -51,6 +51,13 @@ async function fetchViewerLoginFromGithub(input: {
   return parsed.data.login;
 }
 
+export async function resolveGithubViewerLoginOrThrow(input: {
+  apiBaseUrl: string;
+  token: string;
+}): Promise<string> {
+  return await fetchViewerLoginFromGithub(input);
+}
+
 export async function getGithubViewerLoginOrThrow(input: {
   apiBaseUrl: string;
   token: string;

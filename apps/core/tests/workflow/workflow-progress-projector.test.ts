@@ -22,7 +22,11 @@ import {
   GithubAdapter,
   isGithubCommentAuthoredByActor,
 } from "../../src/surface/github/github-adapter";
-import type { GithubAuthoritativeActor } from "../../src/github/github-api";
+import {
+  getPreferredGithubAuthoritativeActorOrNull,
+  type GithubAuthoritativeActor,
+} from "../../src/github/github-api";
+import { writeGithubUserTokenSecret } from "../../src/github/github-user-token";
 import type {
   ContentOpts,
   LimitOpts,
@@ -870,6 +874,82 @@ describe("WorkflowProgressProjector", () => {
       currentRaw: GITHUB_APP_RAW,
       failFirstLookup: true,
     });
+  });
+
+  it("recovers a same-token PAT card after the current viewer account is renamed", async () => {
+    const dbPath = join(tmpdir(), `workflow-github-pat-rename-${crypto.randomUUID()}.sqlite`);
+    const dataDir = join(tmpdir(), `workflow-github-pat-rename-data-${crypto.randomUUID()}`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter("github");
+    const bus = createLilacBus(new IdleRawBus());
+    const originalFetch = globalThis.fetch;
+    let viewer = "old-owner";
+    let viewerLookups = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        viewerLookups += 1;
+        return Response.json({ login: viewer });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await writeGithubUserTokenSecret({
+      dataDir,
+      token: `github_pat_same_token_${crypto.randomUUID()}`,
+      apiBaseUrl: "https://api.github.test",
+      login: "old-owner",
+    });
+    const identityAdapter = new GithubAdapter(
+      async () => await getPreferredGithubAuthoritativeActorOrNull({ dataDir }),
+    );
+    adapter.authoritativeVerifier = async (message) =>
+      await identityAdapter.isAuthoritativelySelfAuthored(message);
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["github", adapter]]),
+      subscriptionId: "pat-account-rename",
+      now: () => 20,
+    });
+    const session = { platform: "github" as const, channelId: "channel-1" };
+    try {
+      createInvocation(store, "github");
+      createUncertainBinding(store, "github");
+      expect(
+        await identityAdapter.isAuthoritativelySelfAuthored({
+          ref: { ...session, messageId: "old-account-probe" },
+          session,
+          userId: "old-owner",
+          text: "probe",
+          ts: 1,
+          raw: { user: { login: "old-owner", id: 84 } },
+        }),
+      ).toBe(true);
+
+      viewer = "renamed-owner";
+      const marker = `<!-- lilac-workflow-card:${sha256(
+        "workflow-progress-card:run-1",
+      )}:generation:0 -->`;
+      adapter.messages.set("renamed-account-card", {
+        ref: { ...session, messageId: "renamed-account-card" },
+        session,
+        userId: "renamed-owner",
+        text: markGithubAgentComment(`Workflow card\n${marker}`),
+        ts: 10,
+        raw: { user: { login: "renamed-owner", id: 84 } },
+      });
+
+      const recovered = await projector.ensureInitialCard("run-1");
+      expect(recovered.messageId).toBe("renamed-account-card");
+      expect(adapter.sends).toBe(0);
+      expect(viewerLookups).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("resumes GitHub discovery beyond 1000 comments without trusting copied markers", async () => {

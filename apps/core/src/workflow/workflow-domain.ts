@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const WORKFLOW_MANUAL_RECONCILIATION_DETAIL =
+  "Manual reconciliation required: terminal request outcome is ambiguous; cancel this run and create a new run";
+
 export type JsonValue =
   | null
   | boolean

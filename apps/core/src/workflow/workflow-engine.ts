@@ -213,6 +213,7 @@ export class WorkflowEngine {
       await this.claimAndLaunch(run, WORKFLOW_LEASE_STALE_MS);
     }
     for (const run of this.input.store.listRuns({ state: "blocked", limit: 1_000 })) {
+      if (this.input.store.getManualReconciliationDetail(run.runId)) continue;
       this.input.store.transitionRun({
         runId: run.runId,
         from: "blocked",

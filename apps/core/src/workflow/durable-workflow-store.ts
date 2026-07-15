@@ -21,6 +21,7 @@ import {
   workflowTriggerSchema,
   workflowUsageSchema,
   workflowWaitSchema,
+  WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
   type WorkflowApproval,
   type WorkflowApprovalState,
   type WorkflowOperation,
@@ -44,11 +45,6 @@ import {
   type WorkflowRequestPolicy,
 } from "./workflow-request-authority";
 import { sha256 } from "./workflow-definition";
-
-const PAUSED_CANCELLATION_AMBIGUITY_DETAIL =
-  "Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run";
-const TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL =
-  "Manual reconciliation required: terminal request lifecycle could not be reconciled with its exact durable receipt; cancel this run and create a new run";
 
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
@@ -706,15 +702,15 @@ export class DurableWorkflowStore {
       );
       this.db.run(
         `UPDATE workflow_operations
-         SET state = 'blocked', error = 'Manual reconciliation required: ambiguous legacy terminal receipt',
-           claimed_by = NULL, claimed_at = NULL, updated_at = ?
+         SET state = 'blocked', error = ?,
+            claimed_by = NULL, claimed_at = NULL, updated_at = ?
          WHERE state IN ('queued', 'dispatched', 'running')
            AND EXISTS (
              SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
              WHERE quarantine.run_id = workflow_operations.run_id
                AND quarantine.operation_id = workflow_operations.operation_id
            )`,
-        [now],
+        [WORKFLOW_MANUAL_RECONCILIATION_DETAIL, now],
       );
       this.db.run(
         `UPDATE workflow_request_dispatches
@@ -729,14 +725,14 @@ export class DurableWorkflowStore {
       this.db.run(
         `UPDATE workflow_runs
          SET state = 'paused',
-           terminal_detail = 'Manual reconciliation required: ambiguous legacy terminal receipt',
-           claimed_by = NULL, claimed_at = NULL, updated_at = ?
+            terminal_detail = ?,
+            claimed_by = NULL, claimed_at = NULL, updated_at = ?
          WHERE state NOT IN ('paused', 'succeeded', 'failed', 'rejected', 'cancelled')
            AND EXISTS (
              SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
              WHERE quarantine.run_id = workflow_runs.run_id
            )`,
-        [now],
+        [WORKFLOW_MANUAL_RECONCILIATION_DETAIL, now],
       );
     });
     quarantine.immediate();
@@ -1573,6 +1569,7 @@ export class DurableWorkflowStore {
   }
 
   private preparePausedOperationsForResume(runId: string, now: number): boolean {
+    if (this.getManualReconciliationDetail(runId)) return false;
     const ambiguous = this.db.run(
       `UPDATE workflow_operations SET state = 'blocked', error = ?,
        claimed_by = NULL, claimed_at = NULL, updated_at = ?
@@ -1583,13 +1580,13 @@ export class DurableWorkflowStore {
            WHERE receipt.request_id = workflow_operations.request_id
              AND receipt.state = 'cancelled'
          )`,
-      [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, now, runId],
+      [WORKFLOW_MANUAL_RECONCILIATION_DETAIL, now, runId],
     );
     if (ambiguous.changes > 0) {
       this.db.run(
         `UPDATE workflow_runs SET terminal_detail = ?, claimed_by = NULL, claimed_at = NULL,
          updated_at = ? WHERE run_id = ? AND state = 'paused'`,
-        [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, now, runId],
+        [WORKFLOW_MANUAL_RECONCILIATION_DETAIL, now, runId],
       );
       return false;
     }
@@ -1643,7 +1640,7 @@ export class DurableWorkflowStore {
            )`,
         )
         .run(
-          PAUSED_CANCELLATION_AMBIGUITY_DETAIL,
+          WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
           input.now,
           input.runId,
           input.operationId,
@@ -1655,7 +1652,7 @@ export class DurableWorkflowStore {
         `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
          claimed_at = NULL, updated_at = ?
          WHERE run_id = ? AND state = 'running' AND claimed_by = ?`,
-        [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, input.now, input.runId, input.runOwnerId],
+        [WORKFLOW_MANUAL_RECONCILIATION_DETAIL, input.now, input.runId, input.runOwnerId],
       );
       return true;
     });
@@ -1683,7 +1680,7 @@ export class DurableWorkflowStore {
              )`,
         )
         .run(
-          TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL,
+          WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
           input.now,
           input.runId,
           input.operationId,
@@ -1697,21 +1694,28 @@ export class DurableWorkflowStore {
            claimed_at = NULL, updated_at = ?
            WHERE run_id = ? AND state = 'running' AND claimed_by = ?`,
         )
-        .run(TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL, input.now, input.runId, input.runOwnerId);
+        .run(WORKFLOW_MANUAL_RECONCILIATION_DETAIL, input.now, input.runId, input.runOwnerId);
       return paused.changes === 1;
     });
     return block.immediate();
   }
 
-  getPausedCancellationAmbiguityDetail(runId: string): string | null {
-    const row = this.db
+  getManualReconciliationDetail(runId: string): string | null {
+    const run = this.db
+      .query<{ terminal_detail: string }, [string, string]>(
+        `SELECT terminal_detail FROM workflow_runs
+         WHERE run_id = ? AND terminal_detail = ?`,
+      )
+      .get(runId, WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
+    if (run) return run.terminal_detail;
+    const operation = this.db
       .query<{ error: string }, [string, string]>(
         `SELECT error FROM workflow_operations
          WHERE run_id = ? AND state = 'blocked' AND request_id IS NOT NULL AND error = ?
          LIMIT 1`,
       )
-      .get(runId, PAUSED_CANCELLATION_AMBIGUITY_DETAIL);
-    return row?.error ?? null;
+      .get(runId, WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
+    return operation?.error ?? null;
   }
 
   tryClaimRun(input: {

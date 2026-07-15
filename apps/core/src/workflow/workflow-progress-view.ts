@@ -90,7 +90,14 @@ export function redactWorkflowValue(value: JsonValue, schema: JsonValue | undefi
 function availableActions(input: {
   run: WorkflowRun;
   approval: WorkflowApproval | null;
+  manualReconciliationRequired: boolean;
 }): WorkflowSurfaceActionKind[] {
+  if (
+    input.manualReconciliationRequired &&
+    ["queued", "running", "blocked", "paused"].includes(input.run.state)
+  ) {
+    return ["cancel"];
+  }
   if (
     input.run.state === "awaiting_review" &&
     input.approval?.state === "pending" &&
@@ -171,7 +178,11 @@ export async function buildWorkflowProgressView(input: {
     })),
     usage,
     nextTriggerAt: trigger?.nextFireAt ?? null,
-    availableActions: availableActions({ run, approval }),
+    availableActions: availableActions({
+      run,
+      approval,
+      manualReconciliationRequired: input.store.getManualReconciliationDetail(run.runId) !== null,
+    }),
     sensitive,
   };
 }

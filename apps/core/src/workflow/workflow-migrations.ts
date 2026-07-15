@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 13;
+import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
+
+export const WORKFLOW_SCHEMA_VERSION = 14;
 
 type WorkflowMigration = {
   version: number;
@@ -627,6 +629,24 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        CHECK (discovery_scanned_entries >= 0)`,
       `UPDATE workflow_surface_bindings SET send_may_have_succeeded = 1
        WHERE message_ref_json IS NULL`,
+    ],
+  },
+  {
+    version: 14,
+    name: "round 15 canonical manual reconciliation state",
+    statements: [
+      `UPDATE workflow_operations SET error = '${WORKFLOW_MANUAL_RECONCILIATION_DETAIL}'
+       WHERE error IN (
+         'Manual reconciliation required: ambiguous legacy terminal receipt',
+         'Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run',
+         'Manual reconciliation required: terminal request lifecycle could not be reconciled with its exact durable receipt; cancel this run and create a new run'
+       )`,
+      `UPDATE workflow_runs SET terminal_detail = '${WORKFLOW_MANUAL_RECONCILIATION_DETAIL}'
+       WHERE terminal_detail IN (
+         'Manual reconciliation required: ambiguous legacy terminal receipt',
+         'Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run',
+         'Manual reconciliation required: terminal request lifecycle could not be reconciled with its exact durable receipt; cancel this run and create a new run'
+       )`,
     ],
   },
 ];
