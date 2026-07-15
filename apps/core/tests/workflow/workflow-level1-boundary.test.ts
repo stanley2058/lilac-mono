@@ -153,6 +153,12 @@ describe("workflow Level-1 filesystem boundary", () => {
     const workspace = path.join(temp, "workspace");
     await fs.mkdir(workspace);
     await fs.writeFile(path.join(workspace, "inside.txt"), "inside", "utf8");
+    await fs.mkdir(path.join(workspace, ".git"));
+    await fs.writeFile(path.join(workspace, ".env"), "SECRET=1", "utf8");
+    await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=1", "utf8");
+    await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]", "utf8");
+    await fs.link(path.join(workspace, ".env"), path.join(workspace, "env-alias.txt"));
+    await fs.link(path.join(workspace, ".git", "config"), path.join(workspace, "git-alias.txt"));
     const original = { execute: async () => ({ success: true }) };
     try {
       const shared = enforceWorkflowLevel1Boundary({
@@ -163,6 +169,26 @@ describe("workflow Level-1 filesystem boundary", () => {
       await expect(
         execute(shared, { path: "inside.txt", oldText: "inside", newText: "changed" }),
       ).resolves.toMatchObject({ success: true });
+      await expect(
+        execute(shared, { path: ".envrc", oldText: "SECRET", newText: "TOKEN" }),
+      ).rejects.toThrow("protected");
+      await expect(
+        execute(shared, { path: "env-alias.txt", oldText: "SECRET", newText: "TOKEN" }),
+      ).rejects.toThrow("hard-linked");
+      await expect(
+        execute(shared, { path: "git-alias.txt", oldText: "safe", newText: "unsafe" }),
+      ).rejects.toThrow("hard-linked");
+      const sharedPatch = enforceWorkflowLevel1Boundary({
+        tool: original,
+        toolName: "apply_patch",
+        policy: policy(workspace, true, "shared"),
+      });
+      await expect(
+        execute(sharedPatch, {
+          patchText:
+            "*** Begin Patch\n*** Update File: env-alias.txt\n@@\n-SECRET=1\n+SECRET=2\n*** End Patch",
+        }),
+      ).rejects.toThrow("hard-linked");
 
       const escapedAuthority = enforceWorkflowLevel1Boundary({
         tool: original,

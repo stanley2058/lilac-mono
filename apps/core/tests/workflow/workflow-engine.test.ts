@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { z } from "zod";
 import {
   createLilacBus,
   lilacEventTypes,
@@ -17,7 +18,10 @@ import {
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { WorkflowEngine, workflowAgentRequestId } from "../../src/workflow/workflow-engine";
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
-import { normalizeWorkflowCapabilityProfile } from "../../src/workflow/workflow-domain";
+import {
+  normalizeWorkflowCapabilityProfile,
+  type WorkflowCompletionTarget,
+} from "../../src/workflow/workflow-domain";
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
 import { readWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
 
@@ -56,6 +60,7 @@ function createApprovedRun(
   runId = "run-1",
   args: Record<string, boolean> = {},
   outputLimits: { operation: number; result: number } = { operation: 10_000, result: 10_000 },
+  completionTarget: WorkflowCompletionTarget = { kind: "detached" },
 ) {
   const inputSchema = {
     type: "object",
@@ -122,7 +127,7 @@ function createApprovedRun(
         safetyMode: "trusted",
         projectCwd: "/workspace",
       },
-      completionTarget: { kind: "detached" },
+      completionTarget,
       progressTarget: null,
       terminalDetail: null,
       result: null,
@@ -341,6 +346,134 @@ describe("WorkflowEngine", () => {
             message.data.queue === "prompt",
         ),
       ).toBe(false);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("adopts a post-publication receipt when the runner crashes before terminal streams", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-live-receipt-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      {
+        kind: "live_parent",
+        parentRequestId: "parent-crash",
+        parentSessionId: "parent-session",
+        parentRequestClient: "discord",
+        parentToolCallId: "parent-tool",
+        childRequestId: "child-crash",
+        childSessionId: "child-session",
+        profile: "explore",
+        sessionName: "crash-test",
+        depth: 1,
+        reasoning: null,
+        fallbackToSurface: false,
+        fallbackProgressTarget: null,
+        deferredDelivery: true,
+      },
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "live-terminal-receipt",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() =>
+        raw.messages.some(
+          (message) =>
+            message.type === lilacEventTypes.CmdRequestMessage &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "prompt",
+        ),
+      );
+      const command = raw.messages.find(
+        (message) => message.type === lilacEventTypes.CmdRequestMessage,
+      );
+      if (!command?.headers) throw new Error("Missing workflow prompt command");
+      const commandData = z
+        .object({
+          raw: z.object({
+            workflow: z.object({ capability: z.string(), dispatchEpoch: z.string() }),
+          }),
+        })
+        .parse(command.data);
+      const requestId = command.headers["request_id"];
+      const sessionId = command.headers["session_id"];
+      if (!requestId || !sessionId) throw new Error("Missing workflow command identity");
+      const authorized = store.authorizeWorkflowRequest({
+        requestId,
+        token: commandData.raw.workflow.capability,
+        sessionId,
+        platform: "unknown",
+        now: Date.now(),
+      });
+      if (!authorized) throw new Error("Workflow command was not authorized");
+      expect(
+        store.claimWorkflowRequest({
+          requestId,
+          token: commandData.raw.workflow.capability,
+          dispatchEpoch: commandData.raw.workflow.dispatchEpoch,
+          ownerId: "crashing-runner",
+          now: Date.now(),
+        }),
+      ).toBe(true);
+      expect(
+        store.recordWorkflowRequestTerminal({
+          requestId,
+          runId: authorized.policy.runId,
+          operationId: authorized.policy.operationId,
+          dispatchEpoch: commandData.raw.workflow.dispatchEpoch,
+          ownerId: "crashing-runner",
+          state: "resolved",
+          output: "durable crash result",
+          usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+          now: Date.now(),
+        }),
+      ).toBe(true);
+      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
+      expect(store.getRun("run-1")?.result).toBe("durable crash result");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "succeeded",
+        output: "durable crash result",
+        usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      });
+      expect(store.listPendingLiveParentCompletions("parent-crash", 100, true)).toMatchObject([
+        { runId: "run-1", result: "durable crash result" },
+      ]);
+      expect(store.markLiveParentCompletionDelivered("run-1", Date.now())).toBe(true);
+      expect(store.listPendingLiveParentCompletions("parent-crash", 100, true)).toEqual([]);
     } finally {
       await engine.stop();
       await bus.close();

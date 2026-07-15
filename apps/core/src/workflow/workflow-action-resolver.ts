@@ -69,37 +69,58 @@ export async function startWorkflowActionResolver(input: {
   now?: () => number;
 }): Promise<{ stop(): Promise<void> }> {
   const logger = createLogger({ module: "workflow-action-resolver" });
+  const ownerId = `workflow-action-outbox:${process.pid}:${crypto.randomUUID()}`;
   let draining = false;
   const drainOutbox = async (): Promise<void> => {
     if (draining) return;
     draining = true;
     try {
       const now = input.now?.() ?? Date.now();
-      for (const entry of input.store.listPendingActionOutboxEvents(now)) {
+      const claimToken = crypto.randomUUID();
+      for (const entry of input.store.claimPendingActionOutboxEvents({
+        ownerId,
+        claimToken,
+        now,
+        staleBefore: now - 30_000,
+      })) {
         try {
           if (entry.eventType === lilacEventTypes.EvtWorkflowApprovalChanged) {
             await input.bus.publish(
               lilacEventTypes.EvtWorkflowApprovalChanged,
               approvalChangedSchema.parse(entry.payload),
+              { headers: { workflow_outbox_id: entry.outboxId } },
             );
           } else if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
             await input.bus.publish(
               lilacEventTypes.EvtWorkflowRunChanged,
               runChangedSchema.parse(entry.payload),
+              { headers: { workflow_outbox_id: entry.outboxId } },
             );
           } else if (entry.eventType === lilacEventTypes.EvtWorkflowProgressRequested) {
             await input.bus.publish(
               lilacEventTypes.EvtWorkflowProgressRequested,
               progressRequestedSchema.parse(entry.payload),
+              { headers: { workflow_outbox_id: entry.outboxId } },
             );
           } else {
             throw new Error(`Unsupported workflow action outbox event: ${entry.eventType}`);
           }
-          input.store.markActionOutboxPublished(entry.outboxId, input.now?.() ?? Date.now());
+          if (
+            !input.store.markActionOutboxPublished({
+              outboxId: entry.outboxId,
+              ownerId,
+              claimToken,
+              now: input.now?.() ?? Date.now(),
+            })
+          ) {
+            throw new Error("Workflow action outbox publication lost its fenced claim");
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           input.store.recordActionOutboxFailure({
             outboxId: entry.outboxId,
+            ownerId,
+            claimToken,
             error: message,
             now: input.now?.() ?? Date.now(),
           });

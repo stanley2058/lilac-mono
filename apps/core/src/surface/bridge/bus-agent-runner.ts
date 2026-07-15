@@ -2133,7 +2133,7 @@ export async function startBusAgentRunner(params: {
         workflowDispatchEpoch &&
         (input.state === "resolved" || input.state === "failed" || input.state === "cancelled")
       ) {
-        params.durableWorkflowStore?.recordWorkflowRequestTerminal({
+        const recorded = params.durableWorkflowStore?.recordWorkflowRequestTerminal({
           requestId: next.requestId,
           runId: workflowPolicy.runId,
           operationId: workflowPolicy.operationId,
@@ -2145,6 +2145,9 @@ export async function startBusAgentRunner(params: {
           usage: input.usage,
           now: Date.now(),
         });
+        if (recorded !== true) {
+          throw new Error("Workflow terminal receipt persistence lost its fenced dispatch claim");
+        }
       }
       await publishLifecycle({ bus, headers, ...input });
     };
@@ -3898,6 +3901,19 @@ export async function startBusAgentRunner(params: {
       const resolvedCostEstimateReason =
         estimatedCostUsdTotal !== undefined ? undefined : costEstimateReason;
 
+      await publishCurrentLifecycle({
+        state: isCancelled ? "cancelled" : "resolved",
+        detail: isCancelled ? "cancelled by interrupt" : undefined,
+        output: finalText,
+        usage: runStats.totalUsage
+          ? {
+              inputTokens: runStats.totalUsage.inputTokens ?? 0,
+              outputTokens: runStats.totalUsage.outputTokens ?? 0,
+              totalTokens: runStats.totalUsage.totalTokens ?? 0,
+            }
+          : undefined,
+      });
+
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
         {
@@ -3935,19 +3951,6 @@ export async function startBusAgentRunner(params: {
         estimatedCostUsd: estimatedCostUsdTotal,
         costEstimateStatus: resolvedCostEstimateStatus,
         costEstimateReason: resolvedCostEstimateReason,
-      });
-
-      await publishCurrentLifecycle({
-        state: isCancelled ? "cancelled" : "resolved",
-        detail: isCancelled ? "cancelled by interrupt" : undefined,
-        output: finalText,
-        usage: runStats.totalUsage
-          ? {
-              inputTokens: runStats.totalUsage.inputTokens ?? 0,
-              outputTokens: runStats.totalUsage.outputTokens ?? 0,
-              totalTokens: runStats.totalUsage.totalTokens ?? 0,
-            }
-          : undefined,
       });
     } catch (e) {
       runIdleWatchdog?.stop();
@@ -4097,6 +4100,13 @@ export async function startBusAgentRunner(params: {
         state: "failed",
         detail: msg,
         output: `Error: ${msg}`,
+        usage: runStats.totalUsage
+          ? {
+              inputTokens: runStats.totalUsage.inputTokens ?? 0,
+              outputTokens: runStats.totalUsage.outputTokens ?? 0,
+              totalTokens: runStats.totalUsage.totalTokens ?? 0,
+            }
+          : undefined,
       });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,

@@ -31,7 +31,8 @@ function assertUnprotected(root: string, candidate: string): void {
     parts.some((part) => part === ".git") ||
     parts.some((part) => part === "core-config.yaml" || part === "core-config.yml") ||
     leaf === ".env" ||
-    leaf.startsWith(".env.")
+    leaf.startsWith(".env.") ||
+    leaf === ".envrc"
   ) {
     throw new Error("Workflow Level-1 tools cannot access protected workspace paths");
   }
@@ -48,6 +49,7 @@ async function assertContainedPath(input: {
   root: string;
   value: string;
   requireFile: boolean;
+  rejectHardLinks?: boolean;
 }): Promise<string> {
   if (input.value.includes("\0")) throw new Error("Workflow Level-1 path contains NUL");
   const candidate = path.resolve(input.root, input.value);
@@ -79,6 +81,15 @@ async function assertContainedPath(input: {
     const stat = await fs.lstat(candidate);
     if (!stat.isFile() || stat.isSymbolicLink() || (await fs.realpath(candidate)) !== candidate) {
       throw new Error("Workflow Level-1 read/edit target must be a canonical regular file");
+    }
+  }
+  if (input.rejectHardLinks) {
+    const stat = await fs.lstat(candidate).catch((error: unknown) => {
+      if (isRecord(error) && error["code"] === "ENOENT") return null;
+      throw error;
+    });
+    if (stat?.isFile() && stat.nlink > 1) {
+      throw new Error("Workflow Level-1 mutation target must not be a hard-linked file");
     }
   }
   return candidate;
@@ -138,7 +149,12 @@ async function authorizeInput(input: {
 
   if (input.toolName === "read_file" || input.toolName === "edit_file") {
     const target = z.string().min(1).parse(input.value["path"]);
-    await assertContainedPath({ root, value: target, requireFile: true });
+    await assertContainedPath({
+      root,
+      value: target,
+      requireFile: true,
+      rejectHardLinks: input.toolName === "edit_file",
+    });
   } else if (input.toolName === "glob") {
     assertSafeGlobPatterns(input.value);
   } else if (input.toolName === "apply_patch") {
@@ -148,7 +164,12 @@ async function authorizeInput(input: {
       if (!target.startsWith("file://")) {
         throw new Error("Workflow patch target escaped the local authoritative root");
       }
-      await assertContainedPath({ root, value: fileURLToPath(target), requireFile: false });
+      await assertContainedPath({
+        root,
+        value: fileURLToPath(target),
+        requireFile: false,
+        rejectHardLinks: true,
+      });
     }
   }
 

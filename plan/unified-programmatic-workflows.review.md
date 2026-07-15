@@ -214,3 +214,39 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 6
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. `evt.adapter` is excluded from both acknowledged-prefix and publisher-requested approximate trimming. The ordered wait resolver persists a fenced SQLite checkpoint after each processed adapter entry and resumes its sequential tail read strictly after that cursor. Reply and barrier entries therefore survive resolver downtime or lag even when unrelated consumer groups acknowledge later entries.
+2. Resolver startup now retries the durable lease instead of immediately failing core startup. The default lease becomes stale after five seconds and acquisition waits boundedly for up to 7.5 seconds; a replacement process takes over while the previous generation loses checkpoint authority.
+3. Workflow runner terminal publication is receipt-first for success, failure, and cancellation. The exact fenced, payload-bearing receipt, including final output and available usage, must commit successfully before any terminal lifecycle or final response event is published. Receipt persistence failure suppresses terminal stream publication.
+4. After prompt publication, the engine polls the durable receipt alongside retained output/lifecycle streams. A runner crash after committing the receipt but before either terminal stream now converges the operation, usage, final run result, and completion delivery without waiting for idle timeout. Legacy retained epoch output/lifecycle replay remains available for pre-ordering gaps.
+5. Schema migration 9 explicitly quarantines schema-v7 resolved receipts that have neither inline output nor an artifact. Quarantined tombstones are removed from the active receipt table so they cannot block prompt publication or force failed adoption; startup reconciliation repeats the quarantine safely for partially upgraded databases.
+6. Action outbox publication and projection rows now use leased owner/token claims with fenced completion/failure writes. Published events carry the stable `workflow_outbox_id`. Per-run progress projection leases are held and heartbeated by one projector generation, preventing overlapping runtimes from publishing/projecting the same row or rotating each other's controls; standby runtimes retry and take over stale claims.
+7. Restricted-bash mutation checks now reject existing regular files with multiple hard links and deny workspace hard-link creation. Level-1 edit/patch mutation targets apply the same hard-link rejection. This blocks innocent-looking aliases to `.env` and `.git/config`; `.envrc` is also protected. Existing protected-path, canonical-root, symlink, recursive-operation, and mount-containment checks remain enforced.
+8. Receipt adoption terminates the same durable workflow run used by live-parent subagents. The unique completion-delivery row carries the adopted result exactly once and remains pending only until its existing acknowledgement fence succeeds.
+
+### Regression Coverage
+
+- Added real Redis coverage proving `evt.adapter` survives later acknowledgements and explicit `MAXLEN` retention hints.
+- Added resolver checkpoint downtime replay, ordered barrier continuation, bounded lease contention, and crashed-generation stale takeover tests.
+- Added a post-publication receipt-before-lifecycle crash test asserting operation output/usage, final run result, and deduplicated live-parent delivery.
+- Added schema-v7 payloadless resolved-receipt quarantine/upgrade coverage.
+- Added two-runtime outbox publication and projector/action-rotation races with stable event-ID assertions.
+- Added restricted-bash and Level-1 `.env`, `.git/config`, and `.envrc` hard-link alias exploit coverage.
+- Full validation passed: core 1092 tests, event bus 22 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

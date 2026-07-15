@@ -268,6 +268,46 @@ describe("RedisStreamsBus", () => {
     await redis.quit();
   });
 
+  it("preserves lagged evt.adapter entries when other groups acknowledge later entries", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-recovery")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const commits: Array<() => Promise<void>> = [];
+    const sub = await raw.subscribe(
+      "evt.adapter",
+      {
+        mode: "fanout",
+        subscriptionId: "other-adapter-group",
+        consumerId: "other-consumer",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async (_msg, ctx) => {
+        commits.push(ctx.commit);
+      },
+    );
+
+    await raw.publish(
+      { topic: "evt.adapter", type: "test.reply", data: 1 },
+      { topic: "evt.adapter", type: "test.reply", retention: { maxLenApprox: 1 } },
+    );
+    await raw.publish(
+      { topic: "evt.adapter", type: "test.barrier", data: 2 },
+      { topic: "evt.adapter", type: "test.barrier", retention: { maxLenApprox: 1 } },
+    );
+    await waitFor(() => commits.length === 2);
+    await commits[1]!();
+    await commits[0]!();
+    await Bun.sleep(200);
+    expect(await redis.xlen(streamKey)).toBe(2);
+
+    await sub.stop();
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
+  });
+
   it("destroys ephemeral consumer groups on stop", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("ephemeral")}`;

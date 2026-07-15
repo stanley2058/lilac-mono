@@ -69,6 +69,20 @@ class FailingPublishRawBus extends IdleRawBus {
   }
 }
 
+class DelayedCapturingRawBus extends IdleRawBus {
+  readonly outboxIds: string[] = [];
+
+  override async publish<TData>(
+    message: Omit<Message<TData>, "id" | "ts">,
+    options: PublishOptions,
+  ) {
+    const outboxId = options.headers?.["workflow_outbox_id"];
+    if (outboxId) this.outboxIds.push(outboxId);
+    await Bun.sleep(5);
+    return await super.publish(message, options);
+  }
+}
+
 class ProjectionAdapter implements SurfaceAdapter {
   readonly contents: ContentOpts[] = [];
   readonly messages = new Map<string, SurfaceMessage>();
@@ -274,6 +288,78 @@ function createInvocation(store: DurableWorkflowStore) {
 }
 
 describe("WorkflowProgressProjector", () => {
+  it("fences two runtimes from duplicate outbox publication or action rotation", async () => {
+    const dbPath = join(tmpdir(), `workflow-action-race-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const raw = new DelayedCapturingRawBus();
+    const bus = createLilacBus(raw);
+    let resolverA: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+    let resolverB: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+    const projectorA = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projector-race",
+      now: () => 100,
+      loadSource: async () => "export default 'immutable';",
+    });
+    const projectorB = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projector-race",
+      now: () => 100,
+      loadSource: async () => "export default 'immutable';",
+    });
+    try {
+      createInvocation(store);
+      const initial = new WorkflowProgressProjector({
+        bus,
+        store,
+        adapters: new Map([["discord", adapter]]),
+        subscriptionId: "projector-race-initial",
+        now: () => 90,
+        loadSource: async () => "export default 'immutable';",
+      });
+      const messageRef = await initial.ensureInitialCard("run-1");
+      const approveToken = adapter.contents
+        .at(-1)
+        ?.actions?.find((action) => action.label === "Approve")?.actionId;
+      if (!approveToken) throw new Error("Missing approval token");
+      await initial.stop();
+      expect(
+        store.applySurfaceAction({
+          tokenSha256: sha256(approveToken),
+          platform: "discord",
+          userId: "user-1",
+          messageRef,
+          now: 91,
+        }).status,
+      ).toBe("applied");
+
+      [resolverA, resolverB] = await Promise.all([
+        startWorkflowActionResolver({ bus, store, subscriptionId: "action-race", now: () => 100 }),
+        startWorkflowActionResolver({ bus, store, subscriptionId: "action-race", now: () => 100 }),
+      ]);
+      expect(raw.outboxIds).toHaveLength(3);
+      expect(new Set(raw.outboxIds).size).toBe(3);
+
+      await Promise.all([projectorA.start(), projectorB.start()]);
+      expect(adapter.sends).toBe(1);
+      expect(adapter.edits).toBe(1);
+      expect(store.listPendingActionOutboxProjections()).toHaveLength(0);
+    } finally {
+      await projectorA.stop();
+      await projectorB.stop();
+      await resolverA?.stop();
+      await resolverB?.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("recovers action publication and card projection from the durable outbox after restart", async () => {
     const dbPath = join(tmpdir(), `workflow-action-outbox-${crypto.randomUUID()}.sqlite`);
     const adapter = new ProjectionAdapter();
@@ -317,6 +403,7 @@ describe("WorkflowProgressProjector", () => {
       expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(3);
       await failedResolver.stop();
       failedResolver = null;
+      await initialProjector.stop();
       store.close();
 
       store = new DurableWorkflowStore(dbPath);
@@ -425,6 +512,7 @@ describe("WorkflowProgressProjector", () => {
         "Cancel",
       ]);
 
+      await projector.stop();
       store.close();
       store = new DurableWorkflowStore(dbPath);
       projector = new WorkflowProgressProjector({

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 8;
+export const WORKFLOW_SCHEMA_VERSION = 9;
 
 type WorkflowMigration = {
   version: number;
@@ -476,6 +476,50 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
          ON workflow_action_outbox(published_at, next_attempt_at, created_at)`,
       `CREATE INDEX idx_workflow_action_outbox_project
          ON workflow_action_outbox(projected_at, event_type, created_at)`,
+    ],
+  },
+  {
+    version: 9,
+    name: "round 6 recoverable streams and fenced projection",
+    statements: [
+      `CREATE TABLE workflow_request_terminal_receipt_quarantine (
+        request_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        dispatch_epoch TEXT NOT NULL,
+        state TEXT NOT NULL,
+        detail TEXT,
+        created_at INTEGER NOT NULL,
+        quarantine_reason TEXT NOT NULL,
+        quarantined_at INTEGER NOT NULL
+      )`,
+      `INSERT INTO workflow_request_terminal_receipt_quarantine (
+         request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at,
+         quarantine_reason, quarantined_at
+       )
+       SELECT request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at,
+         'legacy_resolved_receipt_missing_payload', created_at
+       FROM workflow_request_terminal_receipts
+       WHERE state = 'resolved' AND output_json IS NULL AND result_artifact_id IS NULL`,
+      `DELETE FROM workflow_request_terminal_receipts
+       WHERE state = 'resolved' AND output_json IS NULL AND result_artifact_id IS NULL`,
+      `CREATE TABLE workflow_wait_resolver_checkpoints (
+        topic TEXT PRIMARY KEY,
+        processed_cursor TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN publish_claim_owner TEXT`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN publish_claim_token TEXT`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN publish_claimed_at INTEGER`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN project_claim_owner TEXT`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN project_claim_token TEXT`,
+      `ALTER TABLE workflow_action_outbox ADD COLUMN project_claimed_at INTEGER`,
+      `CREATE TABLE workflow_surface_projection_claims (
+        run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL,
+        claim_token TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL
+      )`,
     ],
   },
 ];

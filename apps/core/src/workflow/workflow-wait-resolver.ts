@@ -15,7 +15,6 @@ export class WorkflowWaitResolver {
   private subscription: { stop(): Promise<void> } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
-  private readonly leaseStaleMs = 30_000;
   private leaseOwned = false;
 
   constructor(
@@ -25,27 +24,34 @@ export class WorkflowWaitResolver {
       subscriptionId: string;
       now?: () => number;
       pollMs?: number;
+      leaseStaleMs?: number;
+      leaseAcquireTimeoutMs?: number;
+      leaseRetryMs?: number;
     },
   ) {}
 
   async start(): Promise<void> {
-    const now = this.now();
-    if (
-      !this.input.store.claimWorkflowWaitResolverLease({
+    const acquireDeadline = Date.now() + (this.input.leaseAcquireTimeoutMs ?? 7_500);
+    while (!this.leaseOwned) {
+      const now = this.now();
+      this.leaseOwned = this.input.store.claimWorkflowWaitResolverLease({
         ownerId: this.workerId,
         now,
-        staleBefore: now - this.leaseStaleMs,
-      })
-    ) {
-      throw new Error("Another ordered workflow wait resolver owns the durable lease");
+        staleBefore: now - (this.input.leaseStaleMs ?? 5_000),
+      });
+      if (this.leaseOwned) break;
+      if (Date.now() >= acquireDeadline) {
+        throw new Error("Timed out waiting for the ordered workflow wait resolver lease");
+      }
+      await Bun.sleep(this.input.leaseRetryMs ?? 100);
     }
-    this.leaseOwned = true;
+    const checkpoint = this.input.store.getWorkflowWaitResolverCheckpoint("evt.adapter");
     try {
       this.subscription = await this.input.bus.subscribeTopic(
         "evt.adapter",
         {
           mode: "tail",
-          offset: { type: "begin" },
+          offset: checkpoint ? { type: "cursor", cursor: checkpoint } : { type: "begin" },
           batch: { maxWaitMs: 500 },
         },
         async (message, context) => {
@@ -58,6 +64,16 @@ export class WorkflowWaitResolver {
               context.cursor,
               this.now(),
             );
+          }
+          if (
+            !this.input.store.advanceWorkflowWaitResolverCheckpoint({
+              ownerId: this.workerId,
+              topic: "evt.adapter",
+              cursor: context.cursor,
+              now: this.now(),
+            })
+          ) {
+            return;
           }
           await context.commit();
         },

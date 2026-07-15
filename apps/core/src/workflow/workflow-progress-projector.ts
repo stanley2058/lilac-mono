@@ -26,6 +26,8 @@ type CachedActions = {
   expiresAt: number;
 };
 
+class ProjectionClaimUnavailableError extends Error {}
+
 function asSessionRef(platform: "discord" | "github", channelId: string): SessionRef {
   return { platform, channelId };
 }
@@ -56,13 +58,16 @@ function asMsgRef(input: {
 
 export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private readonly logger = createLogger({ module: "workflow-progress-projector" });
+  private readonly ownerId = `workflow-progress-projector:${process.pid}:${crypto.randomUUID()}`;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly lastEditAt = new Map<string, number>();
   private readonly actions = new Map<string, CachedActions>();
   private readonly actionRotationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private subscription: { stop(): Promise<void> } | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
+  private claimTimer: ReturnType<typeof setInterval> | null = null;
   private drainingActionOutbox = false;
+  private readonly projectionClaims = new Map<string, string>();
 
   constructor(
     private readonly input: {
@@ -113,15 +118,27 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       void this.drainActionOutboxProjections();
     }, 1_000);
     this.retryTimer.unref?.();
+    this.claimTimer = setInterval(() => this.refreshProjectionClaims(), 10_000);
+    this.claimTimer.unref?.();
   }
 
   async stop(): Promise<void> {
     if (this.retryTimer) clearInterval(this.retryTimer);
     this.retryTimer = null;
+    if (this.claimTimer) clearInterval(this.claimTimer);
+    this.claimTimer = null;
     for (const timer of this.timers.values()) clearTimeout(timer);
     for (const timer of this.actionRotationTimers.values()) clearTimeout(timer);
     this.timers.clear();
     this.actionRotationTimers.clear();
+    for (const [runId, claimToken] of this.projectionClaims) {
+      this.input.store.releaseSurfaceProjectionClaim({
+        runId,
+        ownerId: this.ownerId,
+        claimToken,
+      });
+    }
+    this.projectionClaims.clear();
     await this.subscription?.stop();
     this.subscription = null;
   }
@@ -142,6 +159,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
             runId,
             error: error instanceof Error ? error.message : String(error),
           });
+          if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(runId);
         });
       },
       Math.max(0, delay),
@@ -187,11 +205,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           });
         }
       }
-      await this.project(run.runId).catch(() => undefined);
+      await this.project(run.runId).catch((error: unknown) => {
+        if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(run.runId);
+      });
     }
     for (const run of this.input.store.listRunsMissingSurfaceBindings(1_000)) {
       if (boundRunIds.has(run.runId)) continue;
-      await this.project(run.runId).catch(() => undefined);
+      await this.project(run.runId).catch((error: unknown) => {
+        if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(run.runId);
+      });
     }
   }
 
@@ -206,14 +228,32 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     if (this.drainingActionOutbox) return;
     this.drainingActionOutbox = true;
     try {
-      for (const entry of this.input.store.listPendingActionOutboxProjections()) {
+      const now = this.input.now?.() ?? Date.now();
+      const claimToken = crypto.randomUUID();
+      for (const entry of this.input.store.claimPendingActionOutboxProjections({
+        ownerId: this.ownerId,
+        claimToken,
+        now,
+        staleBefore: now - 30_000,
+      })) {
         try {
           await this.project(entry.runId);
-          this.input.store.markActionOutboxProjected(
-            entry.outboxId,
-            this.input.now?.() ?? Date.now(),
-          );
+          if (
+            !this.input.store.markActionOutboxProjected({
+              outboxId: entry.outboxId,
+              ownerId: this.ownerId,
+              claimToken,
+              now: this.input.now?.() ?? Date.now(),
+            })
+          ) {
+            throw new Error("Workflow action projection lost its fenced outbox claim");
+          }
         } catch (error) {
+          this.input.store.releaseActionOutboxProjectionClaim({
+            outboxId: entry.outboxId,
+            ownerId: this.ownerId,
+            claimToken,
+          });
           this.logger.warn("Workflow action outbox projection failed", {
             outboxId: entry.outboxId,
             runId: entry.runId,
@@ -223,6 +263,50 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       }
     } finally {
       this.drainingActionOutbox = false;
+    }
+  }
+
+  private async project(runId: string, requireMessage = false): Promise<MsgRef> {
+    const heldClaim = this.projectionClaims.get(runId);
+    const claimToken = heldClaim ?? crypto.randomUUID();
+    const now = this.input.now?.() ?? Date.now();
+    const claimed = heldClaim
+      ? this.input.store.refreshSurfaceProjectionClaim({
+          runId,
+          ownerId: this.ownerId,
+          claimToken,
+          now,
+        })
+      : this.input.store.claimSurfaceProjection({
+          runId,
+          ownerId: this.ownerId,
+          claimToken,
+          now,
+          staleBefore: now - 30_000,
+        });
+    if (!claimed) {
+      this.projectionClaims.delete(runId);
+      throw new ProjectionClaimUnavailableError(
+        `Workflow progress projection is already claimed: ${runId}`,
+      );
+    }
+    this.projectionClaims.set(runId, claimToken);
+    return await this.projectOwned(runId, requireMessage);
+  }
+
+  private refreshProjectionClaims(): void {
+    const now = this.input.now?.() ?? Date.now();
+    for (const [runId, claimToken] of this.projectionClaims) {
+      if (
+        !this.input.store.refreshSurfaceProjectionClaim({
+          runId,
+          ownerId: this.ownerId,
+          claimToken,
+          now,
+        })
+      ) {
+        this.projectionClaims.delete(runId);
+      }
     }
   }
 
@@ -285,7 +369,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     return next;
   }
 
-  private async project(runId: string, requireMessage = false): Promise<MsgRef> {
+  private async projectOwned(runId: string, requireMessage = false): Promise<MsgRef> {
     const now = this.input.now?.() ?? Date.now();
     const view = await buildWorkflowProgressView({
       store: this.input.store,

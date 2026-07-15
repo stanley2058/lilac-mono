@@ -249,6 +249,12 @@ const actionOutboxRowSchema = z.object({
   attempt_count: z.number(),
   next_attempt_at: nullableNumberSchema,
   last_error: nullableStringSchema,
+  publish_claim_owner: nullableStringSchema,
+  publish_claim_token: nullableStringSchema,
+  publish_claimed_at: nullableNumberSchema,
+  project_claim_owner: nullableStringSchema,
+  project_claim_token: nullableStringSchema,
+  project_claimed_at: nullableNumberSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -504,6 +510,12 @@ function parseActionOutboxEntry(value: unknown): WorkflowActionOutboxEntry {
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at,
     lastError: row.last_error,
+    publishClaimOwner: row.publish_claim_owner,
+    publishClaimToken: row.publish_claim_token,
+    publishClaimedAt: row.publish_claimed_at,
+    projectClaimOwner: row.project_claim_owner,
+    projectClaimToken: row.project_claim_token,
+    projectClaimedAt: row.project_claimed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -577,6 +589,12 @@ export type WorkflowActionOutboxEntry = {
   attemptCount: number;
   nextAttemptAt: number | null;
   lastError: string | null;
+  publishClaimOwner: string | null;
+  publishClaimToken: string | null;
+  publishClaimedAt: number | null;
+  projectClaimOwner: string | null;
+  projectClaimToken: string | null;
+  projectClaimedAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -589,10 +607,32 @@ export class DurableWorkflowStore {
     configureSqliteConnection(this.db);
     this.db.run("PRAGMA foreign_keys = ON");
     applyWorkflowSchemaMigrations(this.db);
+    this.quarantineLegacyResolvedReceipts(Date.now());
   }
 
   close(): void {
     this.db.close();
+  }
+
+  private quarantineLegacyResolvedReceipts(now: number): void {
+    const quarantine = this.db.transaction(() => {
+      this.db.run(
+        `INSERT OR IGNORE INTO workflow_request_terminal_receipt_quarantine (
+           request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at,
+           quarantine_reason, quarantined_at
+         )
+         SELECT request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at,
+           'legacy_resolved_receipt_missing_payload', ?
+         FROM workflow_request_terminal_receipts
+         WHERE state = 'resolved' AND output_json IS NULL AND result_artifact_id IS NULL`,
+        [now],
+      );
+      this.db.run(
+        `DELETE FROM workflow_request_terminal_receipts
+         WHERE state = 'resolved' AND output_json IS NULL AND result_artifact_id IS NULL`,
+      );
+    });
+    quarantine.immediate();
   }
 
   listMigrations(): WorkflowSchemaMigration[] {
@@ -1632,6 +1672,7 @@ export class DurableWorkflowStore {
   }): boolean {
     const output = input.output === undefined ? null : jsonValueSchema.parse(input.output);
     const usage = input.usage === undefined ? null : workflowUsageSchema.parse(input.usage);
+    if (input.state === "resolved" && output === null && !input.resultArtifactId) return false;
     const result = this.db
       .query(
         `INSERT INTO workflow_request_terminal_receipts (
@@ -2100,6 +2141,42 @@ export class DurableWorkflowStore {
         )
         .run(input.ownerId, input.now, input.staleBefore).changes === 1
     );
+  }
+
+  getWorkflowWaitResolverCheckpoint(topic: string): string | null {
+    return (
+      this.db
+        .query<{ processed_cursor: string }, [string]>(
+          `SELECT processed_cursor FROM workflow_wait_resolver_checkpoints WHERE topic = ?`,
+        )
+        .get(topic)?.processed_cursor ?? null
+    );
+  }
+
+  advanceWorkflowWaitResolverCheckpoint(input: {
+    ownerId: string;
+    topic: string;
+    cursor: string;
+    now: number;
+  }): boolean {
+    const advance = this.db.transaction(() => {
+      const lease = this.db
+        .query<{ owner_id: string }, []>(
+          "SELECT owner_id FROM workflow_wait_resolver_lease WHERE singleton = 1",
+        )
+        .get();
+      if (lease?.owner_id !== input.ownerId) return false;
+      this.db.run(
+        `INSERT INTO workflow_wait_resolver_checkpoints (topic, processed_cursor, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(topic) DO UPDATE SET
+           processed_cursor = excluded.processed_cursor,
+           updated_at = excluded.updated_at`,
+        [input.topic, input.cursor, input.now],
+      );
+      return true;
+    });
+    return advance.immediate();
   }
 
   refreshWorkflowWaitResolverLease(ownerId: string, now: number): boolean {
@@ -2671,6 +2748,66 @@ export class DurableWorkflowStore {
     return row?.count ?? 0;
   }
 
+  claimSurfaceProjection(input: {
+    runId: string;
+    ownerId: string;
+    claimToken: string;
+    now: number;
+    staleBefore: number;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `INSERT INTO workflow_surface_projection_claims (
+             run_id, owner_id, claim_token, claimed_at
+           ) SELECT ?, ?, ?, ? WHERE EXISTS (
+             SELECT 1 FROM workflow_runs WHERE run_id = ?
+           )
+           ON CONFLICT(run_id) DO UPDATE SET
+             owner_id = excluded.owner_id,
+             claim_token = excluded.claim_token,
+             claimed_at = excluded.claimed_at
+           WHERE workflow_surface_projection_claims.claimed_at <= ?`,
+        )
+        .run(
+          input.runId,
+          input.ownerId,
+          input.claimToken,
+          input.now,
+          input.runId,
+          input.staleBefore,
+        ).changes === 1
+    );
+  }
+
+  refreshSurfaceProjectionClaim(input: {
+    runId: string;
+    ownerId: string;
+    claimToken: string;
+    now: number;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_surface_projection_claims SET claimed_at = ?
+           WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
+        )
+        .run(input.now, input.runId, input.ownerId, input.claimToken).changes === 1
+    );
+  }
+
+  releaseSurfaceProjectionClaim(input: {
+    runId: string;
+    ownerId: string;
+    claimToken: string;
+  }): void {
+    this.db.run(
+      `DELETE FROM workflow_surface_projection_claims
+       WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
+      [input.runId, input.ownerId, input.claimToken],
+    );
+  }
+
   upsertSurfaceBinding(bindingInput: WorkflowSurfaceBinding): void {
     const binding = workflowSurfaceBindingSchema.parse(bindingInput);
     this.db.run(
@@ -3065,24 +3202,90 @@ export class DurableWorkflowStore {
       .map(parseActionOutboxEntry);
   }
 
-  markActionOutboxPublished(outboxId: string, now: number): boolean {
+  claimPendingActionOutboxEvents(input: {
+    ownerId: string;
+    claimToken: string;
+    now: number;
+    staleBefore: number;
+    limit?: number;
+  }): WorkflowActionOutboxEntry[] {
+    const claim = this.db.transaction(() => {
+      const candidates = this.db
+        .query<{ outbox_id: string }, [number, number, number]>(
+          `SELECT outbox_id FROM workflow_action_outbox
+           WHERE published_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+             AND (publish_claim_owner IS NULL OR publish_claimed_at <= ?)
+           ORDER BY created_at, outbox_id LIMIT ?`,
+        )
+        .all(input.now, input.staleBefore, boundedLimit(input.limit));
+      const claimed: WorkflowActionOutboxEntry[] = [];
+      for (const candidate of candidates) {
+        const changed = this.db
+          .query(
+            `UPDATE workflow_action_outbox SET publish_claim_owner = ?,
+               publish_claim_token = ?, publish_claimed_at = ?, updated_at = ?
+             WHERE outbox_id = ? AND published_at IS NULL
+               AND (publish_claim_owner IS NULL OR publish_claimed_at <= ?)`,
+          )
+          .run(
+            input.ownerId,
+            input.claimToken,
+            input.now,
+            input.now,
+            candidate.outbox_id,
+            input.staleBefore,
+          );
+        if (changed.changes !== 1) continue;
+        const row = this.db
+          .query("SELECT * FROM workflow_action_outbox WHERE outbox_id = ?")
+          .get(candidate.outbox_id);
+        if (row) claimed.push(parseActionOutboxEntry(row));
+      }
+      return claimed;
+    });
+    return claim.immediate();
+  }
+
+  markActionOutboxPublished(input: {
+    outboxId: string;
+    ownerId: string;
+    claimToken: string;
+    now: number;
+  }): boolean {
     return (
       this.db
         .query(
           `UPDATE workflow_action_outbox SET published_at = ?, next_attempt_at = NULL,
-             last_error = NULL, updated_at = ?
-           WHERE outbox_id = ? AND published_at IS NULL`,
+             last_error = NULL, publish_claim_owner = NULL, publish_claim_token = NULL,
+             publish_claimed_at = NULL, updated_at = ?
+           WHERE outbox_id = ? AND published_at IS NULL AND publish_claim_owner = ?
+             AND publish_claim_token = ?`,
         )
-        .run(now, now, outboxId).changes === 1
+        .run(input.now, input.now, input.outboxId, input.ownerId, input.claimToken).changes === 1
     );
   }
 
-  recordActionOutboxFailure(input: { outboxId: string; error: string; now: number }): void {
+  recordActionOutboxFailure(input: {
+    outboxId: string;
+    ownerId: string;
+    claimToken: string;
+    error: string;
+    now: number;
+  }): void {
     this.db.run(
       `UPDATE workflow_action_outbox SET attempt_count = attempt_count + 1,
-         next_attempt_at = ?, last_error = ?, updated_at = ?
-       WHERE outbox_id = ? AND published_at IS NULL`,
-      [input.now + 1_000, input.error.slice(0, 16_384), input.now, input.outboxId],
+         next_attempt_at = ?, last_error = ?, publish_claim_owner = NULL,
+         publish_claim_token = NULL, publish_claimed_at = NULL, updated_at = ?
+       WHERE outbox_id = ? AND published_at IS NULL AND publish_claim_owner = ?
+         AND publish_claim_token = ?`,
+      [
+        input.now + 1_000,
+        input.error.slice(0, 16_384),
+        input.now,
+        input.outboxId,
+        input.ownerId,
+        input.claimToken,
+      ],
     );
   }
 
@@ -3097,14 +3300,79 @@ export class DurableWorkflowStore {
       .map(parseActionOutboxEntry);
   }
 
-  markActionOutboxProjected(outboxId: string, now: number): boolean {
+  claimPendingActionOutboxProjections(input: {
+    ownerId: string;
+    claimToken: string;
+    now: number;
+    staleBefore: number;
+    limit?: number;
+  }): WorkflowActionOutboxEntry[] {
+    const claim = this.db.transaction(() => {
+      const candidates = this.db
+        .query<{ outbox_id: string }, [number, number]>(
+          `SELECT outbox_id FROM workflow_action_outbox
+           WHERE event_type = 'evt.workflow.progress.requested' AND projected_at IS NULL
+             AND (project_claim_owner IS NULL OR project_claimed_at <= ?)
+           ORDER BY created_at, outbox_id LIMIT ?`,
+        )
+        .all(input.staleBefore, boundedLimit(input.limit));
+      const claimed: WorkflowActionOutboxEntry[] = [];
+      for (const candidate of candidates) {
+        const changed = this.db
+          .query(
+            `UPDATE workflow_action_outbox SET project_claim_owner = ?,
+               project_claim_token = ?, project_claimed_at = ?, updated_at = ?
+             WHERE outbox_id = ? AND projected_at IS NULL
+               AND (project_claim_owner IS NULL OR project_claimed_at <= ?)`,
+          )
+          .run(
+            input.ownerId,
+            input.claimToken,
+            input.now,
+            input.now,
+            candidate.outbox_id,
+            input.staleBefore,
+          );
+        if (changed.changes !== 1) continue;
+        const row = this.db
+          .query("SELECT * FROM workflow_action_outbox WHERE outbox_id = ?")
+          .get(candidate.outbox_id);
+        if (row) claimed.push(parseActionOutboxEntry(row));
+      }
+      return claimed;
+    });
+    return claim.immediate();
+  }
+
+  markActionOutboxProjected(input: {
+    outboxId: string;
+    ownerId: string;
+    claimToken: string;
+    now: number;
+  }): boolean {
     return (
       this.db
         .query(
-          `UPDATE workflow_action_outbox SET projected_at = ?, updated_at = ?
-           WHERE outbox_id = ? AND projected_at IS NULL`,
+          `UPDATE workflow_action_outbox SET projected_at = ?, project_claim_owner = NULL,
+             project_claim_token = NULL, project_claimed_at = NULL, updated_at = ?
+           WHERE outbox_id = ? AND projected_at IS NULL AND project_claim_owner = ?
+             AND project_claim_token = ?`,
         )
-        .run(now, now, outboxId).changes === 1
+        .run(input.now, input.now, input.outboxId, input.ownerId, input.claimToken).changes === 1
+    );
+  }
+
+  releaseActionOutboxProjectionClaim(input: {
+    outboxId: string;
+    ownerId: string;
+    claimToken: string;
+  }): void {
+    this.db.run(
+      `UPDATE workflow_action_outbox SET project_claim_owner = NULL,
+         project_claim_token = NULL, project_claimed_at = NULL
+       WHERE outbox_id = ? AND projected_at IS NULL AND project_claim_owner = ?
+         AND project_claim_token = ?`,
+      [input.outboxId, input.ownerId, input.claimToken],
     );
   }
 

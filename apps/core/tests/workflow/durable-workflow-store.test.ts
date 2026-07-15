@@ -487,12 +487,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 5 terminal adoption and durable workflow actions",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 9,
+          name: "round 6 recoverable streams and fenced projection",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(8);
+      expect(reopened.listMigrations()).toHaveLength(9);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -517,6 +522,39 @@ describe("DurableWorkflowStore", () => {
       expect(indexes).toContain("idx_workflow_waits_match");
       expect(indexes).toContain("idx_workflow_triggers_due");
       db.close();
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("quarantines upgraded resolved receipts that have no adoptable payload", () => {
+    const path = dbPath("legacy-terminal-receipt");
+    try {
+      const initialized = new DurableWorkflowStore(path);
+      initialized.close();
+      const db = new Database(path);
+      db.run(
+        `INSERT INTO workflow_request_terminal_receipts (
+           request_id, run_id, operation_id, dispatch_epoch, state, detail,
+           output_json, result_artifact_id, usage_json, created_at
+         ) VALUES (?, ?, ?, ?, 'resolved', NULL, NULL, NULL, NULL, ?)`,
+        ["legacy-request", "legacy-run", "legacy-operation", "legacy-epoch-0001", 10],
+      );
+      db.close();
+
+      const upgraded = new DurableWorkflowStore(path);
+      expect(upgraded.getWorkflowRequestTerminalReceipt("legacy-request")).toBeNull();
+      upgraded.close();
+      const verified = new Database(path, { readonly: true });
+      expect(
+        verified
+          .query<{ quarantine_reason: string }, [string]>(
+            `SELECT quarantine_reason FROM workflow_request_terminal_receipt_quarantine
+             WHERE request_id = ?`,
+          )
+          .get("legacy-request"),
+      ).toEqual({ quarantine_reason: "legacy_resolved_receipt_missing_payload" });
+      verified.close();
     } finally {
       rmSync(path, { force: true });
     }

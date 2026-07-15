@@ -400,9 +400,15 @@ describe("executeRestrictedBash", () => {
     const sessionId = "restricted-protected-writes";
     await fs.mkdir(path.join(workspace, ".git", "hooks"), { recursive: true });
     await fs.writeFile(path.join(workspace, ".env"), "SECRET=original\n");
+    await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=original\n");
     await fs.writeFile(path.join(workspace, "core-config.yaml"), "safe: true\n");
     await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]\n");
     await fs.writeFile(path.join(workspace, "source.txt"), "source\n");
+    await fs.link(path.join(workspace, ".env"), path.join(workspace, "env-alias.txt"));
+    await fs.link(
+      path.join(workspace, ".git", "config"),
+      path.join(workspace, "git-config-alias.txt"),
+    );
     await fs.mkdir(path.join(workspace, "nested", ".git"), { recursive: true });
     await fs.writeFile(path.join(workspace, "nested", ".env"), "NESTED=secret\n");
     await fs.writeFile(path.join(workspace, "nested", ".git", "config"), "[nested]\n");
@@ -410,6 +416,10 @@ describe("executeRestrictedBash", () => {
 
     const commands = [
       "printf hacked > .env",
+      "printf hacked > .envrc",
+      "printf hacked > env-alias.txt",
+      "printf hacked >> git-config-alias.txt",
+      "rm env-alias.txt",
       "printf hacked >> core-config.yaml",
       "rm .git/config",
       "mv source.txt .git/hooks/pre-commit",
@@ -441,10 +451,19 @@ describe("executeRestrictedBash", () => {
         }
       }
       expect(await fs.readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=original\n");
+      expect(await fs.readFile(path.join(workspace, ".envrc"), "utf8")).toBe(
+        "export SECRET=original\n",
+      );
       expect(await fs.readFile(path.join(workspace, "core-config.yaml"), "utf8")).toBe(
         "safe: true\n",
       );
       expect(await fs.readFile(path.join(workspace, ".git", "config"), "utf8")).toBe("[safe]\n");
+      expect(await fs.readFile(path.join(workspace, "env-alias.txt"), "utf8")).toBe(
+        "SECRET=original\n",
+      );
+      expect(await fs.readFile(path.join(workspace, "git-config-alias.txt"), "utf8")).toBe(
+        "[safe]\n",
+      );
       expect(await fs.readFile(path.join(workspace, "source.txt"), "utf8")).toBe("source\n");
       expect(await fs.readFile(path.join(workspace, "nested", ".env"), "utf8")).toBe(
         "NESTED=secret\n",

@@ -58,9 +58,14 @@ class IdleRawBus implements RawBus {
         handler(message as Message<TData>, context),
     };
     this.subscriptions.push(subscription);
-    if (options.offset?.type === "begin") {
-      for (const message of this.history) {
-        if (message.topic !== topic) continue;
+    if (options.offset?.type === "begin" || options.offset?.type === "cursor") {
+      const topicHistory = this.history.filter((message) => message.topic === topic);
+      const requestedCursor = options.offset.type === "cursor" ? options.offset.cursor : null;
+      const start =
+        requestedCursor !== null
+          ? topicHistory.findIndex((message) => message.id === requestedCursor) + 1
+          : 0;
+      for (const message of topicHistory.slice(Math.max(0, start))) {
         await subscription.handler(message, { cursor: message.id, commit: async () => {} });
       }
     }
@@ -243,6 +248,8 @@ describe("WorkflowWaitResolver", () => {
       store,
       subscriptionId: "ordered-resolver-second",
       now: () => 100,
+      leaseAcquireTimeoutMs: 10,
+      leaseRetryMs: 2,
     });
     try {
       await first.start();
@@ -253,6 +260,42 @@ describe("WorkflowWaitResolver", () => {
     } finally {
       await first.stop();
       await second.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("waits for and takes over a crashed resolver lease after it becomes stale", async () => {
+    const dbPath = join(tmpdir(), `workflow-wait-crash-lease-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new IdleRawBus());
+    let now = 100;
+    const crashed = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "crashed-resolver",
+      now: () => now,
+      leaseStaleMs: 20,
+    });
+    const replacement = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "replacement-resolver",
+      now: () => now,
+      leaseStaleMs: 20,
+      leaseAcquireTimeoutMs: 200,
+      leaseRetryMs: 5,
+    });
+    try {
+      await crashed.start();
+      const takeover = replacement.start();
+      await Bun.sleep(15);
+      now = 121;
+      await takeover;
+    } finally {
+      await replacement.stop();
+      await crashed.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });
@@ -320,6 +363,91 @@ describe("WorkflowWaitResolver", () => {
       });
       await resolver.stop();
     } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("resumes after its durable checkpoint and processes replies published during downtime", async () => {
+    const dbPath = join(tmpdir(), `workflow-reply-checkpoint-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new IdleRawBus([
+      {
+        topic: "evt.adapter",
+        id: "checkpoint-1",
+        ts: 10,
+        type: lilacEventTypes.EvtAdapterMessageCreated,
+        data: {
+          platform: "discord",
+          channelId: "other-channel",
+          messageId: "irrelevant",
+          userId: "user-1",
+          text: "ignore",
+          ts: 10,
+        },
+      },
+    ]);
+    const bus = createLilacBus(raw);
+    const first = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "checkpoint-first",
+      now: () => 20,
+    });
+    const restarted = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "checkpoint-restarted",
+      now: () => 20,
+    });
+    try {
+      createRunAndWait(store, {
+        runId: "checkpoint-run",
+        operationId: "checkpoint-wait",
+        wait: {
+          state: "pending",
+          match: {
+            kind: "reply",
+            platform: "discord",
+            channelId: "channel-1",
+            messageId: "anchor-1",
+            fromUserId: "user-1",
+          },
+          matchKey: "discord:channel-1",
+          dueAt: null,
+          deadlineAt: 1_000,
+          resolverCursor: null,
+          result: null,
+          resolvedBy: null,
+          claimedBy: null,
+          claimedAt: null,
+          createdAt: 3,
+          updatedAt: 3,
+          resolvedAt: null,
+        },
+      });
+      await first.start();
+      await first.stop();
+      expect(store.getWorkflowWaitResolverCheckpoint("evt.adapter")).toBe("checkpoint-1");
+      await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+        platform: "discord",
+        channelId: "channel-1",
+        messageId: "reply-during-downtime",
+        userId: "user-1",
+        text: "resume",
+        ts: 19,
+        raw: { discord: { replyToMessageId: "anchor-1" } },
+      });
+      expect(store.getWait("checkpoint-run", "checkpoint-wait")?.state).toBe("pending");
+      await restarted.start();
+      expect(store.getWait("checkpoint-run", "checkpoint-wait")).toMatchObject({
+        state: "resolved",
+        result: { messageId: "reply-during-downtime", text: "resume" },
+      });
+    } finally {
+      await restarted.stop();
+      await first.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });

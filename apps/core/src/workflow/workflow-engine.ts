@@ -1027,14 +1027,41 @@ export class WorkflowEngine {
     let detail: string | null = null;
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let receiptTimer: ReturnType<typeof setTimeout> | null = null;
+    let readingReceipt = false;
     let settle: (value: AgentRequestResult) => void = () => {};
     const result = new Promise<AgentRequestResult>((resolve) => (settle = resolve));
-    const finish = (state: AgentRequestResult["state"]): void => {
+    const finishResult = (value: AgentRequestResult): void => {
       if (settled) return;
-      if (state === "resolved" && lifecycle === "resolved" && !output) return;
       settled = true;
       if (idleTimer) clearTimeout(idleTimer);
-      settle({ state, output, detail, usage });
+      if (receiptTimer) clearTimeout(receiptTimer);
+      settle(value);
+    };
+    const finish = (state: AgentRequestResult["state"]): void => {
+      if (state === "resolved" && lifecycle === "resolved" && !output) return;
+      finishResult({ state, output, detail, usage });
+    };
+    const pollReceipt = async (): Promise<void> => {
+      if (settled || readingReceipt || this.stopping) return;
+      const receipt = this.input.store.getWorkflowRequestTerminalReceipt(input.requestId);
+      if (!receipt || receipt.dispatchEpoch !== input.dispatchEpoch) return;
+      readingReceipt = true;
+      try {
+        finishResult(await this.adoptTerminalReceipt(receipt, input.revision));
+      } catch (error) {
+        finishResult({ state: "failed", output: "", detail: boundedError(error), usage: null });
+      } finally {
+        readingReceipt = false;
+      }
+    };
+    const scheduleReceiptPoll = (): void => {
+      if (settled || this.stopping) return;
+      receiptTimer = setTimeout(async () => {
+        await pollReceipt();
+        scheduleReceiptPoll();
+      }, 25);
+      receiptTimer.unref?.();
     };
     const armIdle = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1135,6 +1162,8 @@ export class WorkflowEngine {
     };
     input.signal.addEventListener("abort", abort, { once: true });
     armIdle();
+    await pollReceipt();
+    scheduleReceiptPoll();
     if (input.reconcile || input.publishRequest) {
       let outputCursor: string | undefined;
       do {

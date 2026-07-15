@@ -93,7 +93,7 @@ function isDeniedWorkspacePath(p: string): boolean {
   }
 
   const leaf = parts[parts.length - 1] ?? "";
-  if (leaf === ".env" || leaf.startsWith(".env.")) return true;
+  if (leaf === ".env" || leaf.startsWith(".env.") || leaf === ".envrc") return true;
 
   return false;
 }
@@ -107,6 +107,7 @@ class RestrictedReadFs implements IFileSystem {
   constructor(
     private readonly inner: IFileSystem,
     private readonly denyOutsideMount = false,
+    private readonly hostRoot?: string,
   ) {}
 
   private assertReadable(pathName: string): void {
@@ -116,11 +117,25 @@ class RestrictedReadFs implements IFileSystem {
     if (isDeniedWorkspacePath(pathName)) throw accessDenied(pathName);
   }
 
-  private assertWritable(pathName: string): void {
+  private async assertWritable(pathName: string): Promise<void> {
     if (this.denyOutsideMount || normalizeVirtualPath(pathName) === "/") {
       throw accessDenied(pathName);
     }
     if (isDeniedWorkspacePath(pathName)) throw accessDenied(pathName);
+    if (!this.hostRoot) return;
+    const virtual = normalizeVirtualPath(pathName);
+    const relative = virtual.startsWith(`${WORKSPACE_MOUNT}/`)
+      ? virtual.slice(WORKSPACE_MOUNT.length + 1)
+      : virtual.slice(1);
+    const candidate = path.resolve(this.hostRoot, relative);
+    if (candidate !== this.hostRoot && !candidate.startsWith(`${this.hostRoot}${path.sep}`)) {
+      throw accessDenied(pathName);
+    }
+    const stat = await fs.lstat(candidate).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (stat?.isFile() && stat.nlink > 1) throw accessDenied(pathName);
   }
 
   private async assertNoProtectedDescendants(pathName: string): Promise<void> {
@@ -160,7 +175,7 @@ class RestrictedReadFs implements IFileSystem {
     content: Parameters<IFileSystem["writeFile"]>[1],
     options?: Parameters<IFileSystem["writeFile"]>[2],
   ) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     return await this.inner.writeFile(pathName, content, options);
   }
 
@@ -169,7 +184,7 @@ class RestrictedReadFs implements IFileSystem {
     content: Parameters<IFileSystem["appendFile"]>[1],
     options?: Parameters<IFileSystem["appendFile"]>[2],
   ) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     return await this.inner.appendFile(pathName, content, options);
   }
 
@@ -185,7 +200,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async mkdir(pathName: string, options?: Parameters<IFileSystem["mkdir"]>[1]) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     return await this.inner.mkdir(pathName, options);
   }
 
@@ -203,7 +218,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async rm(pathName: string, options?: Parameters<IFileSystem["rm"]>[1]) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     await this.assertNoProtectedDescendants(pathName);
     return await this.inner.rm(pathName, options);
   }
@@ -211,14 +226,14 @@ class RestrictedReadFs implements IFileSystem {
   async cp(src: string, dest: string, options?: Parameters<IFileSystem["cp"]>[2]) {
     this.assertReadable(src);
     await this.assertNoProtectedDescendants(src);
-    this.assertWritable(dest);
+    await this.assertWritable(dest);
     return await this.inner.cp(src, dest, options);
   }
 
   async mv(src: string, dest: string) {
-    this.assertWritable(src);
+    await this.assertWritable(src);
     await this.assertNoProtectedDescendants(src);
-    this.assertWritable(dest);
+    await this.assertWritable(dest);
     return await this.inner.mv(src, dest);
   }
 
@@ -232,19 +247,19 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async chmod(pathName: string, mode: number) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     return await this.inner.chmod(pathName, mode);
   }
 
   async symlink(target: string, linkPath: string) {
-    this.assertWritable(linkPath);
+    await this.assertWritable(linkPath);
     throw accessDenied(`${linkPath} -> ${target}`);
   }
 
   async link(existingPath: string, newPath: string) {
     this.assertReadable(existingPath);
-    this.assertWritable(newPath);
-    return await this.inner.link(existingPath, newPath);
+    await this.assertWritable(newPath);
+    throw accessDenied(`${newPath} -> ${existingPath}`);
   }
 
   async readlink(pathName: string) {
@@ -263,7 +278,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async utimes(pathName: string, atime: Date, mtime: Date) {
-    this.assertWritable(pathName);
+    await this.assertWritable(pathName);
     return await this.inner.utimes(pathName, atime, mtime);
   }
 }
@@ -547,6 +562,8 @@ async function createRestrictedBash(params: {
           maxFileReadSize: MAX_RESTRICTED_FILE_READ_BYTES,
           allowSymlinks: false,
         }),
+    false,
+    params.context.workspaceWritable ? params.workspaceRoot : undefined,
   );
 
   const tmpFs = new ReadWriteFs({

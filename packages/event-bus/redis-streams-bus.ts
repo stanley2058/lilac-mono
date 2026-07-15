@@ -25,7 +25,7 @@ const DEFAULT_BLOCK_MS = 1000;
 const OUTPUT_STREAM_TTL_SECONDS = 24 * 60 * 60;
 const TRIM_DEBOUNCE_MS = 100;
 const EPHEMERAL_GROUP_PREFIX = "__lilac_ephemeral__:";
-const TAIL_REPLAY_TOPICS = new Set<Topic>(["evt.request"]);
+const TAIL_REPLAY_TOPICS = new Set<Topic>(["evt.request", "evt.adapter"]);
 
 const XADD_WITH_EXPIRY_SCRIPT = `
 local id = redis.call("XADD", KEYS[1], unpack(ARGV, 2))
@@ -341,9 +341,10 @@ export class RedisStreamsBus implements RawBus {
 
     // If requested, apply approximate trimming.
     // TODO: decide retention policy and move to config.
-    const xaddArgs = opts.retention?.maxLenApprox
-      ? ["MAXLEN", "~", String(opts.retention.maxLenApprox), "*", ...fields]
-      : ["*", ...fields];
+    const xaddArgs =
+      opts.retention?.maxLenApprox && !TAIL_REPLAY_TOPICS.has(opts.topic)
+        ? ["MAXLEN", "~", String(opts.retention.maxLenApprox), "*", ...fields]
+        : ["*", ...fields];
     const id = this.isOutputTopic(opts.topic)
       ? await this.redis.eval(
           XADD_WITH_EXPIRY_SCRIPT,
