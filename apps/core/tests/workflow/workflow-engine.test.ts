@@ -75,6 +75,7 @@ function createApprovedRun(
   outputLimits: { operation: number; result: number } = { operation: 10_000, result: 10_000 },
   completionTarget: WorkflowCompletionTarget = { kind: "detached" },
   maxWallTimeMs = 10_000,
+  editing = false,
 ) {
   const inputSchema = {
     type: "object",
@@ -83,11 +84,11 @@ function createApprovedRun(
   };
   const capabilities = normalizeWorkflowCapabilityProfile({
     agents: {
-      profiles: ["explore"],
+      profiles: editing ? ["general"] : ["explore"],
       models: ["inherit"],
-      editing: false,
-      isolation: "shared",
-      maxConcurrent: 2,
+      editing,
+      isolation: editing ? "worktree" : "shared",
+      maxConcurrent: editing ? 1 : 2,
       maxTotal: 4,
     },
     maxNestingDepth: 4,
@@ -974,6 +975,180 @@ describe("WorkflowEngine", () => {
       expect(dispatches).toBe(2);
     } finally {
       await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
+    const dbPath = join(tmpdir(), `workflow-live-cancelled-handoff-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+    );
+    let captured:
+      | {
+          requestId: string;
+          runId: string;
+          operationId: string;
+          dispatchEpoch: string;
+        }
+      | undefined;
+    let sideEffects = 0;
+    let prepareCalls = 0;
+    let removeCalls = 0;
+    let resolveLiveSelection: () => void = () => {};
+    const liveSelection = new Promise<void>((resolve) => {
+      resolveLiveSelection = resolve;
+    });
+    const prepareWorktree = async () => {
+      prepareCalls += 1;
+      if (prepareCalls === 2) resolveLiveSelection();
+      return "/preserved/worktree";
+    };
+    const removeWorktree = async () => {
+      removeCalls += 1;
+    };
+    const startSandbox = (
+      input: Parameters<
+        NonNullable<ConstructorParameters<typeof WorkflowEngine>[0]["startSandbox"]>
+      >[0],
+    ) => ({
+      cancel: async () => {},
+      result: input.onCall({
+        type: "call" as const,
+        id: 1,
+        kind: "agent" as const,
+        callSiteId: "site-agent",
+        occurrence: 0,
+        path: "root:site-agent:0",
+        parentPath: null,
+        phase: null,
+        depth: 0,
+        input: { prompt: "apply side effect", options: {} },
+      }),
+    });
+    const first = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "live-cancelled-first",
+      pollMs: 5,
+      now: () => 10,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      prepareWorktree,
+      removeWorktree,
+      startSandbox,
+      dispatchAgentRequest: async (request) => {
+        sideEffects += 1;
+        if (!request.capability) throw new Error("Missing live handoff capability");
+        const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
+        if (!runOwnerId) throw new Error("Missing live handoff run owner");
+        expect(
+          store.claimWorkflowRequestPromptPublication({
+            requestId: request.requestId,
+            runId: request.run.runId,
+            operationId: request.operation.operationId,
+            runOwnerId,
+            now: 10,
+          }),
+        ).toBe(true);
+        expect(
+          store.claimWorkflowRequest({
+            requestId: request.requestId,
+            token: request.capability,
+            dispatchEpoch: request.dispatchEpoch,
+            ownerId: "live-runner",
+            now: 10,
+          }),
+        ).toBe(true);
+        captured = {
+          requestId: request.requestId,
+          runId: request.run.runId,
+          operationId: request.operation.operationId,
+          dispatchEpoch: request.dispatchEpoch,
+        };
+        return await new Promise((resolve) => {
+          request.signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "paused", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    const replacement = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "live-cancelled-replacement",
+      pollMs: 5,
+      now: () => 12,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      prepareWorktree,
+      removeWorktree,
+      startSandbox,
+    });
+    try {
+      await first.start();
+      await waitFor(() => captured !== undefined);
+      expect(store.pauseRunAndChildren({ runId: "run-1", now: 11, detail: "pause" })?.state).toBe(
+        "paused",
+      );
+      await first.stop();
+      expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 12 })).toBe(
+        true,
+      );
+
+      await replacement.start();
+      await liveSelection;
+      if (!captured) throw new Error("Missing selected live dispatch");
+      expect(
+        store.recordWorkflowRequestTerminal({
+          ...captured,
+          ownerId: "live-runner",
+          state: "cancelled",
+          detail: "cancelled after side effect",
+          now: 13,
+        }),
+      ).toBe(true);
+      await waitFor(() => store.getRun("run-1")?.state === "paused");
+
+      expect(sideEffects).toBe(1);
+      expect(removeCalls).toBe(0);
+      expect(store.getRun("run-1")?.terminalDetail).toContain("Manual reconciliation required");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "blocked",
+        attempt: 0,
+        requestId: captured.requestId,
+        error: expect.stringContaining("Manual reconciliation required"),
+      });
+      expect(
+        raw.messages.filter(
+          (message) =>
+            message.type === lilacEventTypes.CmdRequestMessage &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "prompt",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await first.stop();
+      await replacement.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });

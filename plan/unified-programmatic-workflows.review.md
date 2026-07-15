@@ -437,3 +437,29 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 13
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Agent request results now retain durable terminal-receipt provenance when `waitForAgentRequest` observes a receipt after live-handoff selection, including polling and prompt-publication races. A cancelled receipt enters the same owner-fenced paused/blocked manual-reconciliation state before cleanup; editing worktrees are preserved, request ID and attempt remain unchanged, and the engine neither terminalizes nor redispatches the run.
+2. GitHub authoritative actor resolution is no longer permanently cached by the adapter. Every recovery verification resolves the currently preferred App or PAT/account identity, while token-scoped viewer lookup retains its existing credential-keyed cache. Runtime PAT-to-App, App-to-PAT/account, and transient lookup changes therefore recover the current authenticated card without adopting spoofed identities or sending duplicates.
+
+### Regression Coverage
+
+- Added a deterministic two-engine live-handoff cancellation race asserting the exact receipt is blocked after selection, the editing worktree is not removed, request/attempt are preserved, and no prompt or second side effect is dispatched.
+- Added credential-rotation recovery coverage for PAT-to-App and App-to-different-PAT account changes, plus an initial transient identity lookup failure followed by successful recovery, all with zero duplicate sends.
+- Full validation passed: core 1116 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

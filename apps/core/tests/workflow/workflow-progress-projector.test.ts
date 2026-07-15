@@ -18,7 +18,10 @@ import type {
   SurfaceOutputStream,
 } from "../../src/surface/adapter";
 import { SurfaceMessageNotFoundError } from "../../src/surface/adapter";
-import { isGithubCommentAuthoredByActor } from "../../src/surface/github/github-adapter";
+import {
+  GithubAdapter,
+  isGithubCommentAuthoredByActor,
+} from "../../src/surface/github/github-adapter";
 import type { GithubAuthoritativeActor } from "../../src/github/github-api";
 import type {
   ContentOpts,
@@ -115,6 +118,8 @@ class ProjectionAdapter implements SurfaceAdapter {
   failNextEdit = false;
   authoritativeRaw: unknown = GITHUB_APP_RAW;
   authoritativeActor: GithubAuthoritativeActor = { source: "app", appId: 42 };
+  authoritativeLookupFailures = 0;
+  authoritativeVerifier: ((message: SurfaceMessage) => Promise<boolean>) | null = null;
 
   constructor(readonly platform: "discord" | "github" = "discord") {}
 
@@ -124,6 +129,11 @@ class ProjectionAdapter implements SurfaceAdapter {
     return { platform: this.platform, userId: "bot", userName: "bot" };
   }
   async isAuthoritativelySelfAuthored(message: SurfaceMessage) {
+    if (this.authoritativeVerifier) return await this.authoritativeVerifier(message);
+    if (this.authoritativeLookupFailures > 0) {
+      this.authoritativeLookupFailures -= 1;
+      throw new Error("simulated authoritative identity lookup failure");
+    }
     return isGithubCommentAuthoredByActor(message.raw, this.authoritativeActor);
   }
   async getCapabilities() {
@@ -756,6 +766,110 @@ describe("WorkflowProgressProjector", () => {
       store.close();
       rmSync(dbPath, { force: true });
     }
+  });
+
+  it("tracks PAT, App, account, and transient authoritative identity changes without duplicates", async () => {
+    const recoverAfterIdentityChange = async (input: {
+      label: string;
+      initialActor: GithubAuthoritativeActor;
+      currentActor: GithubAuthoritativeActor;
+      currentRaw: unknown;
+      failFirstLookup?: boolean;
+    }) => {
+      const dbPath = join(
+        tmpdir(),
+        `workflow-github-identity-${input.label}-${crypto.randomUUID()}.sqlite`,
+      );
+      const store = new DurableWorkflowStore(dbPath);
+      const adapter = new ProjectionAdapter("github");
+      const bus = createLilacBus(new IdleRawBus());
+      let actor = input.initialActor;
+      let failLookup = input.failFirstLookup ?? false;
+      const identityAdapter = new GithubAdapter(async () => {
+        if (failLookup) {
+          failLookup = false;
+          throw new Error("transient identity lookup failure");
+        }
+        return actor;
+      });
+      adapter.authoritativeVerifier = async (message) =>
+        await identityAdapter.isAuthoritativelySelfAuthored(message);
+      const projector = new WorkflowProgressProjector({
+        bus,
+        store,
+        adapters: new Map([["github", adapter]]),
+        subscriptionId: `identity-${input.label}`,
+        now: () => 20,
+      });
+      const session = { platform: "github" as const, channelId: "channel-1" };
+      const messageId = `identity-card-${input.label}`;
+      try {
+        createInvocation(store, "github");
+        createUncertainBinding(store, "github");
+        if (!input.failFirstLookup) {
+          const initialRaw =
+            input.initialActor.source === "app"
+              ? { performed_via_github_app: { id: input.initialActor.appId } }
+              : { user: { login: input.initialActor.login, id: 1 } };
+          expect(
+            await identityAdapter.isAuthoritativelySelfAuthored({
+              ref: { ...session, messageId: "identity-probe" },
+              session,
+              userId: "identity-probe",
+              text: "probe",
+              ts: 1,
+              raw: initialRaw,
+            }),
+          ).toBe(true);
+        }
+        actor = input.currentActor;
+        const marker = `<!-- lilac-workflow-card:${sha256(
+          "workflow-progress-card:run-1",
+        )}:generation:0 -->`;
+        adapter.messages.set(messageId, {
+          ref: { ...session, messageId },
+          session,
+          userId: "authenticated-actor",
+          text: markGithubAgentComment(`Workflow card\n${marker}`),
+          ts: 10,
+          raw: input.currentRaw,
+        });
+
+        if (input.failFirstLookup) {
+          await expect(projector.ensureInitialCard("run-1")).rejects.toThrow(
+            "transient identity lookup failure",
+          );
+        }
+        const recovered = await projector.ensureInitialCard("run-1");
+        expect(recovered.messageId).toBe(messageId);
+        expect(adapter.sends).toBe(0);
+      } finally {
+        await projector.stop();
+        await bus.close();
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    };
+
+    await recoverAfterIdentityChange({
+      label: "pat-to-app",
+      initialActor: { source: "user", login: "old-user" },
+      currentActor: { source: "app", appId: 42 },
+      currentRaw: GITHUB_APP_RAW,
+    });
+    await recoverAfterIdentityChange({
+      label: "app-to-pat-account",
+      initialActor: { source: "app", appId: 42 },
+      currentActor: { source: "user", login: "new-owner" },
+      currentRaw: { user: { login: "new-owner", id: 85 } },
+    });
+    await recoverAfterIdentityChange({
+      label: "transient",
+      initialActor: { source: "app", appId: 42 },
+      currentActor: { source: "app", appId: 42 },
+      currentRaw: GITHUB_APP_RAW,
+      failFirstLookup: true,
+    });
   });
 
   it("resumes GitHub discovery beyond 1000 comments without trusting copied markers", async () => {

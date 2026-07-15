@@ -62,8 +62,9 @@ export function isGithubCommentAuthoredByActor(
 }
 
 export class GithubAdapter implements SurfaceAdapter {
-  private authoritativeActor: ReturnType<typeof getPreferredGithubAuthoritativeActorOrNull> | null =
-    null;
+  constructor(
+    private readonly resolveAuthoritativeActor: typeof getPreferredGithubAuthoritativeActorOrNull = getPreferredGithubAuthoritativeActorOrNull,
+  ) {}
 
   async connect(): Promise<void> {
     // No persistent connection.
@@ -81,8 +82,7 @@ export class GithubAdapter implements SurfaceAdapter {
 
   async isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean> {
     if (message.ref.platform !== "github") return false;
-    this.authoritativeActor ??= getPreferredGithubAuthoritativeActorOrNull();
-    const actor = await this.authoritativeActor;
+    const actor = await this.resolveAuthoritativeActor();
     if (!actor) return false;
     return isGithubCommentAuthoredByActor(message.raw, actor);
   }

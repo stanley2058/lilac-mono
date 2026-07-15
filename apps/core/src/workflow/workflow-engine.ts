@@ -87,6 +87,7 @@ type AgentRequestResult = {
   output: string;
   detail: string | null;
   usage: WorkflowUsage | null;
+  source?: "receipt";
 };
 
 type ActiveRun = {
@@ -154,6 +155,12 @@ export class WorkflowEngine {
       startSandbox?: typeof startWorkflowSandbox;
       loadSnapshot?: (revision: WorkflowRevision) => Promise<string>;
       compileSource?: (source: string, sourceSha256: string) => string;
+      prepareWorktree?: (
+        run: WorkflowRun,
+        operation: WorkflowOperation,
+        revision: WorkflowRevision,
+      ) => Promise<string>;
+      removeWorktree?: (revision: WorkflowRevision, worktree: string) => Promise<void>;
       beforePromptPublication?: (input: {
         requestId: string;
         runId: string;
@@ -803,6 +810,7 @@ export class WorkflowEngine {
         ? run.completionTarget.childSessionId
         : `workflow:${run.runId}:${operation.operationId}`;
     let adoptedTerminalReceipt = false;
+    let ambiguousCancelledReceipt = false;
     const adoptReceipt = async (
       receipt: WorkflowRequestTerminalReceipt,
     ): Promise<AgentRequestResult> => {
@@ -829,7 +837,11 @@ export class WorkflowEngine {
       const agentCwd =
         revision.capabilities.agents.editing &&
         revision.capabilities.agents.isolation === "worktree"
-          ? await this.prepareWorktree(run, operation, revision)
+          ? await (this.input.prepareWorktree ?? this.prepareWorktree.bind(this))(
+              run,
+              operation,
+              revision,
+            )
           : revision.canonicalWorkspaceRoot;
       const liveOwner = reconcile && handoff.status === "live";
       let capability: string | null = null;
@@ -910,26 +922,42 @@ export class WorkflowEngine {
             ? await this.input.dispatchAgentRequest(request)
             : await this.waitForAgentRequest(request);
         }
+        adoptedTerminalReceipt ||= result.source === "receipt";
+        if (
+          adoptedTerminalReceipt &&
+          result.state === "cancelled" &&
+          this.input.store.blockAmbiguousPausedCancelledOperation({
+            runId: run.runId,
+            operationId: operation.operationId,
+            requestId: reqId,
+            runOwnerId: this.workerId,
+            now: this.now(),
+          })
+        ) {
+          ambiguousCancelledReceipt = true;
+        }
       } finally {
         if (
           revision.capabilities.agents.editing &&
           revision.capabilities.agents.isolation === "worktree" &&
-          !signal.aborted
+          !signal.aborted &&
+          !ambiguousCancelledReceipt
         ) {
-          await this.removeWorktree(revision, agentCwd);
+          await (this.input.removeWorktree ?? this.removeWorktree.bind(this))(revision, agentCwd);
         }
       }
     }
     if (
-      adoptedTerminalReceipt &&
-      result.state === "cancelled" &&
-      this.input.store.blockAmbiguousPausedCancelledOperation({
-        runId: run.runId,
-        operationId: operation.operationId,
-        requestId: reqId,
-        runOwnerId: this.workerId,
-        now: this.now(),
-      })
+      ambiguousCancelledReceipt ||
+      (adoptedTerminalReceipt &&
+        result.state === "cancelled" &&
+        this.input.store.blockAmbiguousPausedCancelledOperation({
+          runId: run.runId,
+          operationId: operation.operationId,
+          requestId: reqId,
+          runOwnerId: this.workerId,
+          now: this.now(),
+        }))
     ) {
       throw new Error(
         "Paused workflow request has an ambiguous cancelled receipt and requires manual reconciliation",
@@ -1342,6 +1370,7 @@ export class WorkflowEngine {
       output: typeof storedOutput === "string" ? storedOutput : "",
       detail: receipt.detail,
       usage: receipt.usage,
+      source: "receipt",
     };
   }
 
