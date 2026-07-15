@@ -18,11 +18,19 @@ import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-displ
 import { markBoundedBuiltinOutput, type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
 
 type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
+type CoreToolRunContext = Parameters<CoreLevel1ToolSpec["isEnabled"]>[0];
 
 const localFsToolsByBuildContext = new WeakMap<CoreToolBuildContext, ReturnType<typeof fsTool>>();
 
 function getReadFileDirectAttachmentSupported(context: CoreToolBuildContext): boolean {
   return context.requestContext?.metadata?.["readFileDirectAttachmentSupported"] === true;
+}
+
+function workflowPolicy(context: CoreToolRunContext) {
+  const value = context.requestContext?.metadata?.["workflowPolicy"];
+  return value && typeof value === "object"
+    ? (value as import("../../workflow/workflow-request-authority").WorkflowRequestPolicy)
+    : undefined;
 }
 
 function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
@@ -38,7 +46,8 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
     readFileDirectAttachmentSupported: getReadFileDirectAttachmentSupported(context),
     maxOutputBytes: context.runtime.config?.tools.output.maxPreviewBytes,
     maxInlineMediaBytesPerPart: context.runtime.config?.tools.media.maxInlineBytesPerPart,
-    artifactOnly: context.requestContext?.safetyMode === "restricted",
+    artifactOnly:
+      context.requestContext?.safetyMode === "restricted" && workflowPolicy(context) === undefined,
     toolResultArtifacts: context.runtime.toolResultArtifacts,
     requestContext: context.requestContext
       ? {
@@ -111,6 +120,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         const onActivity = requestContext ? getAgentActivityHandler(requestContext) : undefined;
         const workflowPolicy = requestContext?.metadata?.["workflowPolicy"];
         const workflowCapability = requestContext?.metadata?.["workflowCapability"];
+        const controlCapability = requestContext?.metadata?.["controlCapability"];
         return bashToolWithCwd(cwd, {
           artifacts: runtime.toolResultArtifacts,
           outputConfig: runtime.config?.tools.output,
@@ -121,6 +131,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
               : undefined,
           workflowCapability:
             typeof workflowCapability === "string" ? workflowCapability : undefined,
+          controlCapability: typeof controlCapability === "string" ? controlCapability : undefined,
         }).bash;
       },
     }),
@@ -133,29 +144,36 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     withBoundedOutput({
       name: "glob",
       supportsBatch: true,
-      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
+      isEnabled: (context) =>
+        context.requestContext?.safetyMode !== "restricted" ||
+        workflowPolicy(context) !== undefined,
       createTool: (context) => getFsReadOnlyTool("glob", context),
     }),
     withBoundedOutput({
       name: "grep",
       supportsBatch: true,
-      isEnabled: ({ requestContext }) => requestContext?.safetyMode !== "restricted",
+      isEnabled: (context) =>
+        context.requestContext?.safetyMode !== "restricted" ||
+        workflowPolicy(context) !== undefined,
       createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
     withBoundedOutput({
       name: "fuzzy_search",
       supportsBatch: true,
-      isEnabled: ({ runtime, requestContext }) =>
-        runtime.config?.tools.fsBackend === "fff" && requestContext?.safetyMode !== "restricted",
+      isEnabled: (context) =>
+        context.runtime.config?.tools.fsBackend === "fff" &&
+        (context.requestContext?.safetyMode !== "restricted" ||
+          workflowPolicy(context) !== undefined),
       createTool: (context) => getFsReadOnlyTool("fuzzy_search", context),
     }),
     withBoundedOutput({
       name: "edit_file",
       supportsBatch: true,
-      isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
-        runProfile !== "explore" &&
-        editingToolMode === "edit_file" &&
-        requestContext?.safetyMode !== "restricted",
+      isEnabled: (context) =>
+        context.runProfile !== "explore" &&
+        context.editingToolMode === "edit_file" &&
+        (context.requestContext?.safetyMode !== "restricted" ||
+          workflowPolicy(context)?.editing === true),
       createTool: (context) => getEditFileTool(context),
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;
@@ -168,10 +186,11 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     withBoundedOutput({
       name: "apply_patch",
       supportsBatch: true,
-      isEnabled: ({ runProfile, editingToolMode, requestContext }) =>
-        runProfile !== "explore" &&
-        editingToolMode === "apply_patch" &&
-        requestContext?.safetyMode !== "restricted",
+      isEnabled: (context) =>
+        context.runProfile !== "explore" &&
+        context.editingToolMode === "apply_patch" &&
+        (context.requestContext?.safetyMode !== "restricted" ||
+          workflowPolicy(context)?.editing === true),
       createTool: ({ cwd }) => applyPatchTool({ cwd }).apply_patch,
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;

@@ -98,6 +98,13 @@ const workflowCapabilityProfileInputSchema = z
         message: "parallel edit-capable agents require worktree isolation",
       });
     }
+    if (profile.agents.editing && profile.agents.profiles.includes("explore")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "profiles"],
+        message: "edit-capable workflows cannot enable the explore profile",
+      });
+    }
     if (
       profile.safety.originatingMode === "restricted" &&
       profile.safety.escalation === "trusted_with_review"

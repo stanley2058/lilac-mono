@@ -38,6 +38,7 @@ type RestrictedBashContext = {
   sessionId?: string;
   requestClient?: string;
   workflowCapability?: string;
+  controlCapability?: string;
   toolCallId?: string;
   workspaceWritable?: boolean;
 };
@@ -258,6 +259,9 @@ function buildToolServerHeaders(
   if (context.requestClient) headers["x-lilac-request-client"] = context.requestClient;
   if (context.workflowCapability) {
     headers["x-lilac-workflow-capability"] = context.workflowCapability;
+  }
+  if (context.controlCapability) {
+    headers["x-lilac-control-capability"] = context.controlCapability;
   }
   if (context.toolCallId) headers["x-lilac-tool-call-id"] = context.toolCallId;
   headers["x-lilac-cwd"] = cwd;

@@ -65,6 +65,7 @@ import { WorkflowLiveParentBridge } from "../workflow/workflow-live-parent-bridg
 import { WorkflowSubagentDispatcher } from "../workflow/workflow-subagent-dispatcher";
 
 import { createToolServer } from "../tool-server/create-tool-server";
+import { RequestControlAuthority } from "../tool-server/request-control-authority";
 import type {
   ToolServerHealthCheck,
   ToolServerHealthProviderResult,
@@ -227,6 +228,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   let stopGithubWebhook: { stop(): Promise<void> } | null = null;
 
   let requestMessageCache: RequestMessageCache | null = null;
+  const requestControlAuthority = new RequestControlAuthority();
   let gracefulRestartStore: SqliteGracefulRestartStore | null = null;
   let pluginManager: CoreToolPluginManager | null = null;
   const toolResultArtifacts = createToolResultArtifactStore(path.join(env.dataDir, "tool-results"));
@@ -743,6 +745,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         dataDir: env.dataDir,
       });
 
+      const canonicalWorkspaceRoot = await fs.realpath(cwd);
       toolServer = createToolServer({
         pluginManager,
         logger: createLogger({
@@ -755,9 +758,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           get: requestMessageCache.get,
           getOrigin: requestMessageCache.getOrigin,
         },
-        canonicalWorkspaceRoot: await fs.realpath(cwd),
+        canonicalWorkspaceRoot,
         authorizeWorkflowRequest: (input) => durableWorkflowStore.authorizeWorkflowRequest(input),
+        authorizeControlRequest: (input) => requestControlAuthority.authorize(input),
         resolveServerSafetyMode: async (context) => {
+          if (context.serverOwnedRequest && context.requestClient === "github") return "trusted";
           if (context.requestClient !== "discord" || !context.sessionId) return "restricted";
           const config = await getCoreConfig();
           const session = discordSurfaceStore?.getSession(context.sessionId);
@@ -829,6 +834,31 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         workflowLiveParentBridge,
         workflowSubagentDispatcher,
         durableWorkflowStore,
+        issueControlCapability: async (input) => {
+          let origin = requestMessageCache?.getOrigin(input.requestId);
+          for (let attempt = 0; !origin && attempt < 20; attempt += 1) {
+            await Bun.sleep(5);
+            origin = requestMessageCache?.getOrigin(input.requestId);
+          }
+          if (
+            !origin?.actorUserId ||
+            origin.sessionId !== input.sessionId ||
+            origin.platform !== input.requestClient ||
+            input.canonicalCwd !== canonicalWorkspaceRoot
+          ) {
+            throw new Error("Cannot issue Level-2 authority for an unauthenticated request origin");
+          }
+          return requestControlAuthority.issue({
+            requestId: input.requestId,
+            sessionId: input.sessionId,
+            platform: origin.platform,
+            principal: { platform: origin.platform, userId: origin.actorUserId },
+            canonicalCwd: input.canonicalCwd,
+            safetyMode: input.safetyMode,
+            expiresAt: input.expiresAt,
+          });
+        },
+        expireControlCapability: (requestId) => requestControlAuthority.expire(requestId),
         resolveParentChannelId: (sessionId) => {
           const session = discordSurfaceStore?.getSession(sessionId);
           return session ? session.parent_channel_id : undefined;

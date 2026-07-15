@@ -169,7 +169,7 @@ describe("DurableWorkflowStore", () => {
           now: 12,
         }),
       ).not.toBeNull();
-      expect(store.createOperation(operation(invocation.run.runId))).toBe(true);
+      expect(store.createOperation(operation(invocation.run.runId), "engine-1")).toBe(true);
       const token = crypto.randomUUID() + crypto.randomUUID();
       const policy = {
         runId: invocation.run.runId,
@@ -231,6 +231,15 @@ describe("DurableWorkflowStore", () => {
           now: 15,
         }),
       ).toBe(false);
+      expect(store.releaseWorkflowRequestClaim("wfr:request-1", "runner-1", 15)).toBe(true);
+      expect(
+        store.claimWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          ownerId: "runner-2",
+          now: 16,
+        }),
+      ).toBe(true);
       store.transitionApproval({
         approvalId: invocation.approval.approvalId,
         from: "approved",
@@ -247,6 +256,112 @@ describe("DurableWorkflowStore", () => {
         }),
       ).toBeNull();
       expect(store.getRun(invocation.run.runId)?.state).toBe("paused");
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("fences operation and wait writes after run ownership takeover", () => {
+    const path = dbPath("owned-child-fencing");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-fenced"),
+        pendingApproval: approval("run-fenced"),
+      });
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 2,
+      });
+      store.tryClaimApprovedRun({ runId: "run-fenced", claimerId: "owner-old", now: 3 });
+      expect(store.createOperation(operation("run-fenced"), "owner-old")).toBe(true);
+      store.tryClaimApprovedRun({
+        runId: "run-fenced",
+        claimerId: "owner-new",
+        now: 100,
+        staleAfterMs: 50,
+      });
+      expect(
+        store.transitionOperation({
+          runOwnerId: "owner-old",
+          runId: "run-fenced",
+          operationId: "operation-1",
+          from: "queued",
+          to: "dispatched",
+          now: 101,
+        }),
+      ).toBe(false);
+      expect(
+        store.transitionOperation({
+          runOwnerId: "owner-new",
+          runId: "run-fenced",
+          operationId: "operation-1",
+          from: "queued",
+          to: "dispatched",
+          now: 102,
+        }),
+      ).toBe(true);
+      expect(
+        store.createWait(
+          {
+            runId: "run-fenced",
+            operationId: "operation-1",
+            state: "pending",
+            match: { kind: "sleep" },
+            matchKey: "sleep",
+            dueAt: 200,
+            deadlineAt: null,
+            resolverCursor: null,
+            result: null,
+            resolvedBy: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 102,
+            updatedAt: 102,
+            resolvedAt: null,
+          },
+          "owner-old",
+        ),
+      ).toBe(false);
+      expect(
+        store.createWait(
+          {
+            runId: "run-fenced",
+            operationId: "operation-1",
+            state: "pending",
+            match: { kind: "sleep" },
+            matchKey: "sleep",
+            dueAt: 200,
+            deadlineAt: null,
+            resolverCursor: null,
+            result: null,
+            resolvedBy: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 102,
+            updatedAt: 102,
+            resolvedAt: null,
+          },
+          "owner-new",
+        ),
+      ).toBe(true);
+      expect(
+        store.terminalizeRun({
+          runId: "run-fenced",
+          from: "running",
+          to: "failed",
+          ownerId: "owner-old",
+          now: 103,
+          detail: "stale owner",
+          result: null,
+          resultArtifactId: null,
+        }),
+      ).toBe(false);
+      expect(store.getRun("run-fenced")?.claimedBy).toBe("owner-new");
     } finally {
       store.close();
       rmSync(path, { force: true });
@@ -279,12 +394,17 @@ describe("DurableWorkflowStore", () => {
           name: "scheduled run admission tracking",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 6,
+          name: "round 2 trigger and delivery durability",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(5);
+      expect(reopened.listMigrations()).toHaveLength(6);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -403,13 +523,14 @@ describe("DurableWorkflowStore", () => {
         })?.claimedBy,
       ).toBe("worker-2");
 
-      expect(store.createOperation(operation())).toBe(true);
-      expect(store.createOperation(operation())).toBe(false);
+      expect(store.createOperation(operation(), "worker-2")).toBe(true);
+      expect(store.createOperation(operation(), "worker-2")).toBe(false);
       expect(
         store.tryClaimOperation({
           runId: "run-1",
           operationId: "operation-1",
           claimerId: "worker-1",
+          runOwnerId: "worker-2",
           now: 110,
         })?.state,
       ).toBe("dispatched");
@@ -418,11 +539,13 @@ describe("DurableWorkflowStore", () => {
           runId: "run-1",
           operationId: "operation-1",
           claimerId: "worker-2",
+          runOwnerId: "worker-2",
           now: 111,
         }),
       ).toBeNull();
       expect(
         store.transitionOperation({
+          runOwnerId: "worker-2",
           runId: "run-1",
           operationId: "operation-1",
           from: "dispatched",
@@ -455,7 +578,7 @@ describe("DurableWorkflowStore", () => {
         updatedAt: 120,
         resolvedAt: null,
       };
-      expect(store.createWait(wait)).toBe(true);
+      expect(store.createWait(wait, "worker-2")).toBe(true);
       expect(store.listWaits({ matchKind: "reply", matchKey: "discord:channel-1" })).toHaveLength(
         1,
       );
@@ -464,11 +587,13 @@ describe("DurableWorkflowStore", () => {
           runId: "run-1",
           operationId: "operation-1",
           claimerId: "resolver-1",
+          runOwnerId: "worker-2",
           now: 130,
         })?.state,
       ).toBe("claimed");
       expect(
         store.transitionWait({
+          runOwnerId: "worker-2",
           runId: "run-1",
           operationId: "operation-1",
           from: "claimed",
@@ -480,6 +605,7 @@ describe("DurableWorkflowStore", () => {
       ).toBe(true);
       expect(
         store.transitionWait({
+          runOwnerId: "worker-2",
           runId: "run-1",
           operationId: "operation-1",
           from: "claimed",
@@ -588,6 +714,7 @@ describe("DurableWorkflowStore", () => {
 
       expect(
         store.transitionOperation({
+          runOwnerId: "worker-2",
           runId: "run-1",
           operationId: "operation-1",
           from: "running",

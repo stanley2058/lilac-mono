@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   createLilacBus,
+  lilacEventTypes,
   type FetchOptions,
   type HandleContext,
   type Message,
@@ -41,6 +42,21 @@ class IdleRawBus implements RawBus {
     return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
   }
   async close() {}
+}
+
+class HistoricalReplyRawBus extends IdleRawBus {
+  constructor(private readonly historical: Message<unknown>) {
+    super();
+  }
+
+  override async fetch<TData>(topic: string, _options: FetchOptions) {
+    return {
+      messages:
+        topic === this.historical.topic
+          ? [{ msg: this.historical as Message<TData>, cursor: this.historical.id }]
+          : [],
+    };
+  }
 }
 
 function createRunAndWait(
@@ -138,31 +154,34 @@ function createRunAndWait(
   });
   store.transitionApproval({ approvalId, from: "pending", to: "approved", now: 2 });
   store.tryClaimApprovedRun({ runId: input.runId, claimerId: "engine", now: 3 });
-  store.createOperation({
-    runId: input.runId,
-    operationId: input.operationId,
-    callSiteId: `site-${input.operationId}`,
-    parentOperationId: null,
-    phase: null,
-    label: "wait",
-    kind: "wait",
-    input: {},
-    inputSha256: canonicalJsonSha256({}),
-    state: "blocked",
-    attempt: 0,
-    requestId: null,
-    output: null,
-    resultArtifactId: null,
-    error: null,
-    usage: null,
-    claimedBy: null,
-    claimedAt: null,
-    createdAt: 3,
-    startedAt: 3,
-    updatedAt: 3,
-    terminalAt: null,
-  });
-  store.createWait({ ...input.wait, runId: input.runId, operationId: input.operationId });
+  store.createOperation(
+    {
+      runId: input.runId,
+      operationId: input.operationId,
+      callSiteId: `site-${input.operationId}`,
+      parentOperationId: null,
+      phase: null,
+      label: "wait",
+      kind: "wait",
+      input: {},
+      inputSha256: canonicalJsonSha256({}),
+      state: "blocked",
+      attempt: 0,
+      requestId: null,
+      output: null,
+      resultArtifactId: null,
+      error: null,
+      usage: null,
+      claimedBy: null,
+      claimedAt: null,
+      createdAt: 3,
+      startedAt: 3,
+      updatedAt: 3,
+      terminalAt: null,
+    },
+    "engine",
+  );
+  store.createWait({ ...input.wait, runId: input.runId, operationId: input.operationId }, "engine");
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -174,6 +193,73 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowWaitResolver", () => {
+  it("resolves an offline on-time reply before expiring its deadline on restart", async () => {
+    const dbPath = join(tmpdir(), `workflow-reply-catchup-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const event = {
+      platform: "discord" as const,
+      channelId: "channel-1",
+      messageId: "reply-before-deadline",
+      userId: "user-1",
+      text: "on time",
+      ts: 90,
+      raw: { discord: { replyToMessageId: "anchor-1" } },
+    };
+    const raw = new HistoricalReplyRawBus({
+      topic: "evt.adapter",
+      id: "9-0",
+      ts: 90,
+      type: lilacEventTypes.EvtAdapterMessageCreated,
+      data: event,
+    });
+    const bus = createLilacBus(raw);
+    try {
+      createRunAndWait(store, {
+        runId: "reply-catchup",
+        operationId: "wait-catchup",
+        wait: {
+          state: "pending",
+          match: {
+            kind: "reply",
+            platform: "discord",
+            channelId: "channel-1",
+            messageId: "anchor-1",
+            fromUserId: "user-1",
+          },
+          matchKey: "discord:channel-1",
+          dueAt: null,
+          deadlineAt: 100,
+          resolverCursor: null,
+          result: null,
+          resolvedBy: null,
+          claimedBy: null,
+          claimedAt: null,
+          createdAt: 3,
+          updatedAt: 3,
+          resolvedAt: null,
+        },
+      });
+      const resolver = new WorkflowWaitResolver({
+        bus,
+        store,
+        subscriptionId: "historical-before-expiry",
+        now: () => 200,
+        pollMs: 10,
+      });
+      await resolver.start();
+      expect(store.getWait("reply-catchup", "wait-catchup")).toMatchObject({
+        state: "resolved",
+        resolverCursor: "9-0",
+        result: { text: "on time", messageId: "reply-before-deadline" },
+      });
+      await resolver.stop();
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("replays an offline reply, persists its cursor, and expires router suppression after consumption", async () => {
     const dbPath = join(tmpdir(), `workflow-reply-wait-${crypto.randomUUID()}.sqlite`);
     let store = new DurableWorkflowStore(dbPath);

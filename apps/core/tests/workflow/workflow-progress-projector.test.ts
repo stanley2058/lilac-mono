@@ -63,6 +63,7 @@ class ProjectionAdapter implements SurfaceAdapter {
   sends = 0;
   edits = 0;
   failNextSend = false;
+  failNextRead = false;
 
   async connect() {}
   async disconnect() {}
@@ -109,6 +110,10 @@ class ProjectionAdapter implements SurfaceAdapter {
     return ref;
   }
   async readMsg(ref: MsgRef) {
+    if (this.failNextRead) {
+      this.failNextRead = false;
+      throw new Error("transient lookup failure");
+    }
     return this.messages.get(ref.messageId) ?? null;
   }
   async listMsg(_session: SessionRef, _opts?: LimitOpts) {
@@ -326,6 +331,24 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.edits).toBeGreaterThan(0);
       await projector.stop();
 
+      adapter.failNextRead = true;
+      const transientLookup = new WorkflowProgressProjector({
+        bus,
+        store,
+        adapters: new Map([["discord", adapter]]),
+        subscriptionId: "test-projector-transient-read",
+        now: () => 35,
+        loadSource: async () => "export default 'immutable';",
+      });
+      const sendsBeforeTransientLookup = adapter.sends;
+      await transientLookup.start();
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: firstRef,
+        lastError: "transient lookup failure",
+      });
+      expect(adapter.sends).toBe(sendsBeforeTransientLookup);
+      await transientLookup.stop();
+
       adapter.messages.delete(firstRef.messageId);
       const restarted = new WorkflowProgressProjector({
         bus,
@@ -339,12 +362,36 @@ describe("WorkflowProgressProjector", () => {
       expect(store.getSurfaceBinding("run-1")?.messageRef?.messageId).toBe("card-2");
 
       expect(
-        store.transitionRun({
-          runId: "run-1",
-          from: "queued",
-          to: "running",
-          now: 50,
-        }),
+        store.tryClaimApprovedRun({ runId: "run-1", claimerId: "engine", now: 50 })?.state,
+      ).toBe("running");
+      expect(
+        store.createOperation(
+          {
+            runId: "run-1",
+            operationId: "operation-sensitive",
+            callSiteId: "site-sensitive",
+            parentOperationId: null,
+            phase: "secret phase value",
+            label: "secret wait prompt value",
+            kind: "wait",
+            input: {},
+            inputSha256: HASH_A,
+            state: "succeeded",
+            attempt: 0,
+            requestId: null,
+            output: null,
+            resultArtifactId: null,
+            error: null,
+            usage: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 50,
+            startedAt: 50,
+            updatedAt: 50,
+            terminalAt: 50,
+          },
+          "engine",
+        ),
       ).toBe(true);
       expect(
         store.transitionRun({
@@ -362,7 +409,9 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.contents.at(-1)?.actions).toEqual([]);
       expect(adapter.contents.at(-1)?.text).toContain("State: **succeeded**");
       expect(adapter.contents.at(-1)?.text).not.toContain('"token": "secret"');
-      expect(adapter.contents.at(-1)?.text).not.toContain('"token": "secret"');
+      expect(adapter.contents.at(-1)?.text).not.toContain("Origin request ended");
+      expect(adapter.contents.at(-1)?.text).not.toContain("secret phase value");
+      expect(adapter.contents.at(-1)?.text).not.toContain("secret wait prompt value");
       expect(adapter.contents.at(-1)?.text?.length).toBeLessThanOrEqual(4_000);
 
       const terminalView = await buildWorkflowProgressView({ store, runId: "run-1", now: 52 });

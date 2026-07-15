@@ -157,8 +157,21 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       if (binding?.messageRef) {
         const boundRef = asMsgRef(binding.messageRef);
         const adapter = boundRef ? this.input.adapters.get(boundRef.platform) : undefined;
-        const exists =
-          adapter && boundRef ? await adapter.readMsg(boundRef).catch(() => null) : null;
+        let exists;
+        try {
+          exists = adapter && boundRef ? await adapter.readMsg(boundRef) : null;
+        } catch (error) {
+          const now = this.input.now?.() ?? Date.now();
+          const retryCount = binding.retryCount + 1;
+          this.input.store.upsertSurfaceBinding({
+            ...binding,
+            lastError: error instanceof Error ? error.message : String(error),
+            retryCount,
+            nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+            updatedAt: now,
+          });
+          continue;
+        }
         if (!exists) {
           this.input.store.upsertSurfaceBinding({
             ...binding,

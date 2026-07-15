@@ -286,7 +286,7 @@ export class WorkflowSubagentDispatcher {
       approval,
     });
     await this.input.onRunCreated?.(run);
-    const waitForCompletion = () => this.waitForCompletion(runId);
+    const waitForCompletion = () => this.waitForCompletion(runId, registration.mode === "sync");
 
     return {
       runId,
@@ -298,28 +298,34 @@ export class WorkflowSubagentDispatcher {
         if (!current || ["succeeded", "failed", "rejected", "cancelled"].includes(current.state)) {
           return;
         }
-        if (
-          this.input.store.transitionRun({
-            runId,
-            from: current.state,
-            to: "cancelled",
-            now: this.input.now?.() ?? Date.now(),
-            detail,
-          })
-        ) {
-          const cancelled = this.input.store.getRun(runId);
-          if (cancelled) await this.input.onRunCancelled?.(cancelled, current.state);
+        const cancelled = this.input.store.cancelRunAndChildren({
+          runId,
+          now: this.input.now?.() ?? Date.now(),
+          detail,
+        });
+        if (cancelled?.state === "cancelled") {
+          await this.input.onRunCancelled?.(cancelled, current.state);
         }
       },
     };
   }
 
-  private async waitForCompletion(runId: string): Promise<SubagentDelegationOutcome> {
+  private async waitForCompletion(
+    runId: string,
+    acknowledgeSynchronousDelivery: boolean,
+  ): Promise<SubagentDelegationOutcome> {
     while (true) {
       const run = this.input.store.getRun(runId);
       if (!run) throw new Error(`Subagent workflow run disappeared: ${runId}`);
       if (["succeeded", "failed", "rejected", "cancelled"].includes(run.state)) {
-        return await completionStatus(run, this.input.store, this.input.dataDir);
+        const completion = await completionStatus(run, this.input.store, this.input.dataDir);
+        if (acknowledgeSynchronousDelivery) {
+          this.input.store.markLiveParentCompletionDelivered(
+            runId,
+            this.input.now?.() ?? Date.now(),
+          );
+        }
+        return completion;
       }
       await Bun.sleep(this.input.pollMs ?? 100);
     }

@@ -96,6 +96,7 @@ export function bashToolWithCwd(
     onActivity?: () => void;
     workflowPolicy?: WorkflowRequestPolicy;
     workflowCapability?: string;
+    controlCapability?: string;
   },
 ) {
   return {
@@ -120,6 +121,7 @@ export function bashToolWithCwd(
             context: {
               ...typedContext,
               workflowCapability: opts?.workflowCapability,
+              controlCapability: opts?.controlCapability,
               workspaceWritable: opts?.workflowPolicy?.editing === true,
             },
             abortSignal,
@@ -135,6 +137,7 @@ export function bashToolWithCwd(
           artifacts: opts?.artifacts,
           outputConfig: opts?.outputConfig,
           onActivity: opts?.onActivity,
+          controlCapability: opts?.controlCapability,
         } as {
           context?: {
             requestId: string;
@@ -146,6 +149,7 @@ export function bashToolWithCwd(
           artifacts?: ToolResultArtifactStore;
           outputConfig?: CoreConfig["tools"]["output"];
           onActivity?: () => void;
+          controlCapability?: string;
         });
       },
     }),

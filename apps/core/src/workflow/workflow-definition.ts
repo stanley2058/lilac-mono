@@ -27,7 +27,6 @@ const MAX_SCHEMA_DEPTH = 16;
 const MAX_SCHEMA_PROPERTIES = 256;
 const MAX_SCHEMA_ENUM_VALUES = 256;
 const MAX_SCHEMA_STRING_LENGTH = 16_384;
-const MAX_SAFE_PATTERN_LENGTH = 256;
 const WORKFLOW_RUN_CONTEXT_NAMES = new Set([
   "args",
   "agent",
@@ -70,7 +69,6 @@ type WorkflowJsonSchema =
       const?: JsonValue;
       minLength?: number;
       maxLength?: number;
-      pattern?: string;
       description?: string;
       sensitive?: boolean;
     }
@@ -115,7 +113,6 @@ const workflowJsonSchema: z.ZodType<WorkflowJsonSchema> = z.lazy(() =>
       const: jsonPrimitiveSchema.optional(),
       minLength: z.number().int().nonnegative().max(MAX_SCHEMA_STRING_LENGTH).optional(),
       maxLength: z.number().int().nonnegative().max(MAX_SCHEMA_STRING_LENGTH).optional(),
-      pattern: z.string().max(1_000).optional(),
       description: z.string().max(MAX_SCHEMA_STRING_LENGTH).optional(),
       sensitive: sensitiveSchema,
     }),
@@ -469,7 +466,10 @@ function assertNoShadowedWorkflowBindings(
     const names =
       ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)
         ? bindingNames(node.name)
-        : ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)
+        : ts.isFunctionDeclaration(node) ||
+            ts.isClassDeclaration(node) ||
+            ts.isFunctionExpression(node) ||
+            ts.isClassExpression(node)
           ? node.name
             ? [node.name.text]
             : []
@@ -482,23 +482,6 @@ function assertNoShadowedWorkflowBindings(
     ts.forEachChild(node, visit);
   };
   visit(body);
-}
-
-function assertSafeWorkflowPattern(pattern: string): void {
-  if (pattern.length > MAX_SAFE_PATTERN_LENGTH) {
-    throw new Error(`Input schema pattern exceeds ${MAX_SAFE_PATTERN_LENGTH} characters`);
-  }
-  // Workflow schemas intentionally support the linear-time subset needed for basic
-  // validation. Grouping, alternation, assertions, and backreferences are rejected.
-  if (/[()|]/u.test(pattern) || /\\[1-9k]/u.test(pattern) || /\(\?[<!=:]/u.test(pattern)) {
-    throw new Error("Input schema pattern uses unsupported backtracking regex syntax");
-  }
-  try {
-    new RegExp(pattern, "u");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Invalid input schema pattern: ${message}`);
-  }
 }
 
 function assertSchemaBounds(schema: WorkflowJsonSchema, depth = 0): void {
@@ -576,9 +559,6 @@ function normalizeInputSchema(schema: WorkflowJsonSchema): WorkflowJsonSchema {
     };
   }
   if (schema.type === "array") return { ...schema, items: normalizeInputSchema(schema.items) };
-  if (schema.type === "string" && schema.pattern !== undefined) {
-    assertSafeWorkflowPattern(schema.pattern);
-  }
   return schema;
 }
 
@@ -691,8 +671,6 @@ function validateSchemaValue(
       addInputIssue(ctx, path, `requires at least ${schema.minLength} characters`);
     if (schema.maxLength !== undefined && value.length > schema.maxLength)
       addInputIssue(ctx, path, `allows at most ${schema.maxLength} characters`);
-    if (schema.pattern !== undefined && !new RegExp(schema.pattern, "u").test(value))
-      addInputIssue(ctx, path, "does not match pattern");
   } else if ((schema.type === "number" || schema.type === "integer") && typeof value === "number") {
     if (schema.minimum !== undefined && value < schema.minimum)
       addInputIssue(ctx, path, `must be at least ${schema.minimum}`);

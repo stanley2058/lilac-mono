@@ -86,7 +86,7 @@ Supported constraints:
 
 - Objects: `properties`, `required`, and `additionalProperties: false`. Omitted `additionalProperties` normalizes to `false`.
 - Arrays: `items`, `minItems`, and `maxItems`.
-- Strings: `minLength`, `maxLength`, and `pattern`.
+- Strings: `minLength` and `maxLength`. User-defined regex patterns are not supported.
 - Numbers: `minimum` and `maximum`.
 - Scalar schemas: `enum` and `const`.
 - All schemas: `description` and `sensitive`.

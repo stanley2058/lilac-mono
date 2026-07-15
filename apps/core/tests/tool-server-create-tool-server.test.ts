@@ -172,6 +172,197 @@ describe("createToolServer", () => {
     }
   });
 
+  it("requires a request-bound control capability on list, help, and call", async () => {
+    const tool: ServerTool = {
+      id: "control-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [{ callableId: "control.read", name: "read", description: "read", shortInput: [] }];
+      },
+      async call() {
+        return { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      canonicalWorkspaceRoot: "/workspace",
+      authorizeControlRequest: (input) =>
+        input.token === "unguessable-primary-token" &&
+        input.requestId === "request-1" &&
+        input.sessionId === "channel-1" &&
+        input.platform === "discord" &&
+        input.canonicalCwd === "/workspace" &&
+        input.safetyMode === "trusted"
+          ? { principal: { platform: "discord", userId: "user-1" } }
+          : null,
+    });
+    await server.init();
+    const headers = {
+      "x-lilac-request-id": "request-1",
+      "x-lilac-session-id": "channel-1",
+      "x-lilac-request-client": "discord",
+      "x-lilac-cwd": "/workspace",
+      "x-lilac-control-capability": "unguessable-primary-token",
+    };
+    try {
+      expect((await server.app.handle(new Request("http://localhost/list"))).status).toBe(500);
+      expect(
+        (await server.app.handle(new Request("http://localhost/list", { headers }))).status,
+      ).toBe(200);
+      expect(
+        (await server.app.handle(new Request("http://localhost/help/control.read", { headers })))
+          .status,
+      ).toBe(200);
+      expect(
+        await (
+          await server.app.handle(
+            new Request("http://localhost/call", {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body: JSON.stringify({ callableId: "control.read", input: {} }),
+            }),
+          )
+        ).json(),
+      ).toMatchObject({ isError: false, output: { ok: true } });
+      expect(
+        (
+          await server.app.handle(
+            new Request("http://localhost/list", {
+              headers: { ...headers, "x-lilac-session-id": "other-channel" },
+            }),
+          )
+        ).status,
+      ).toBe(500);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("allows workflow surface creation only and pins path inputs to contained file descriptors", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-path-authority-"));
+    const workspace = path.join(tmpRoot, "workspace");
+    const outside = path.join(tmpRoot, "outside.txt");
+    await fs.mkdir(workspace);
+    await fs.writeFile(path.join(workspace, "inside.txt"), "contained", "utf8");
+    await fs.writeFile(outside, "secret", "utf8");
+    await fs.symlink(outside, path.join(workspace, "linked.txt"));
+    const seen: Record<string, unknown>[] = [];
+    const tool: ServerTool = {
+      id: "workflow-path-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "content.inspect",
+            name: "inspect",
+            description: "inspect",
+            shortInput: [],
+          },
+          {
+            callableId: "surface.messages.send",
+            name: "send",
+            description: "send",
+            shortInput: [],
+          },
+          {
+            callableId: "surface.messages.edit",
+            name: "edit",
+            description: "edit",
+            shortInput: [],
+          },
+          {
+            callableId: "surface.messages.delete",
+            name: "delete",
+            description: "delete",
+            shortInput: [],
+          },
+          {
+            callableId: "surface.reactions.add",
+            name: "react",
+            description: "react",
+            shortInput: [],
+          },
+        ];
+      },
+      async call(_callableId, input) {
+        seen.push(input);
+        const descriptorPath = typeof input.path === "string" ? input.path : undefined;
+        return descriptorPath ? await fs.readFile(descriptorPath, "utf8") : { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      authorizeWorkflowRequest: ({ token }) =>
+        token === "workflow-path-token-unguessable"
+          ? {
+              requestId: "wfr:path",
+              sessionId: "workflow:path",
+              platform: "unknown",
+              expiresAt: Date.now() + 60_000,
+              policy: {
+                runId: "run-path",
+                operationId: "operation-path",
+                profile: "explore",
+                safetyMode: "trusted",
+                editing: false,
+                externalTools: true,
+                surfaceSends: true,
+                subagents: false,
+                canonicalWorkspaceRoot: workspace,
+                canonicalCwd: workspace,
+                canonicalProjectId: "project-path",
+                originSessionId: "origin-channel",
+                originClient: "discord",
+                revisionId: "revision-path",
+                sourceSha256: "a".repeat(64),
+                inputSchemaSha256: "b".repeat(64),
+                capabilitySha256: "c".repeat(64),
+                argsSha256: "d".repeat(64),
+              },
+            }
+          : null,
+    });
+    await server.init();
+    const headers = {
+      "x-lilac-request-id": "wfr:path",
+      "x-lilac-session-id": "workflow:path",
+      "x-lilac-request-client": "unknown",
+      "x-lilac-workflow-capability": "workflow-path-token-unguessable",
+      "content-type": "application/json",
+    };
+    try {
+      const list = await server.app.handle(new Request("http://localhost/list", { headers }));
+      expect(
+        ((await list.json()) as { tools: Array<{ callableId: string }> }).tools.map(
+          (item) => item.callableId,
+        ),
+      ).toEqual(["content.inspect", "surface.messages.send"]);
+      const inspect = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ callableId: "content.inspect", input: { path: "inside.txt" } }),
+        }),
+      );
+      expect(await inspect.json()).toMatchObject({ isError: false, output: "contained" });
+      expect(seen[0]?.path).toMatch(/^\/proc\/self\/fd\/\d+$/);
+      for (const forbidden of [outside, "linked.txt"]) {
+        const response = await server.app.handle(
+          new Request("http://localhost/call", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ callableId: "content.inspect", input: { path: forbidden } }),
+          }),
+        );
+        expect(response.status).toBe(500);
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
   let tmpRoot: string | null = null;
 
   afterEach(async () => {

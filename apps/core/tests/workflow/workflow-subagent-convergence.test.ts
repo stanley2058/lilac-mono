@@ -187,7 +187,9 @@ describe("workflow subagent convergence", () => {
     const run = setupResult.store.getRun(handle.runId);
     if (!run) throw new Error("generated subagent run not found");
     const { store } = setupResult;
-    expect(store.listActiveLiveParentRuns("parent:1")).toEqual([]);
+    expect(store.listActiveLiveParentRuns("parent:1").map((item) => item.runId)).toEqual([
+      handle.runId,
+    ]);
     expect(store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 })).toBe(
       true,
     );
@@ -205,6 +207,7 @@ describe("workflow subagent convergence", () => {
       status: "resolved",
       finalText: "audit complete",
     });
+    expect(store.listPendingLiveParentCompletions("parent:1", 100, true)).toEqual([]);
     store.close();
   });
 
@@ -231,6 +234,7 @@ describe("workflow subagent convergence", () => {
     });
     await bridge.start();
     const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+    await parent.ready;
     await bus.subscribeTopic(
       "cmd.request",
       { mode: "fanout", subscriptionId: "generated-agent", offset: { type: "now" } },
@@ -243,6 +247,11 @@ describe("workflow subagent convergence", () => {
             typeof workflow === "object" &&
             typeof Reflect.get(workflow, "capability") === "string" &&
             Reflect.get(workflow, "editing") === undefined;
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputDeltaText,
+            { delta: "checking authentication middleware" },
+            { headers: message.headers },
+          );
           await bus.publish(
             lilacEventTypes.EvtAgentOutputResponseText,
             { finalText: "engine result" },
@@ -287,9 +296,15 @@ describe("workflow subagent convergence", () => {
 
     await engine.start();
     await waitFor(() => store.getRun(run.runId)?.state === "succeeded");
+    await waitFor(() =>
+      progress.some((display) => display.includes("checking authentication middleware")),
+    );
     expect(childSessionId).toBe("sub:channel:1:named:audit");
     expect(hasOpaqueAuthority).toBe(true);
     expect(progress.some((display) => display.includes("subagent (explore;"))).toBe(true);
+    expect(progress.some((display) => display.includes("checking authentication middleware"))).toBe(
+      true,
+    );
     expect(parent.listPending().map((completion) => completion.runId)).toEqual([run.runId]);
     await expect(handle.completion).resolves.toEqual({
       status: "resolved",
@@ -337,6 +352,36 @@ describe("workflow subagent convergence", () => {
     expect(parent.snapshot().hasPendingCompletions).toBe(false);
 
     parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("keeps artifact-backed completion pending when artifact loading fails", async () => {
+    const { store, run, dataDir } = await createRun();
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      resultArtifactId: `workflow-value:${"f".repeat(64)}`,
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "missing-artifact-delivery",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+    await expect(parent.listPendingAsync()).rejects.toThrow();
+    expect(parent.snapshot().hasPendingCompletions).toBe(true);
+    parent.close();
+    await expect(bridge.enableFallbacks()).rejects.toThrow();
+    expect(store.listOrphanedLiveParentCompletions().map((item) => item.runId)).toEqual([
+      run.runId,
+    ]);
     await bridge.stop();
     await bus.close();
     store.close();

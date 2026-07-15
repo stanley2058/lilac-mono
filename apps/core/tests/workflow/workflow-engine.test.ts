@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   createLilacBus,
+  lilacEventTypes,
+  outReqTopic,
   type FetchOptions,
   type HandleContext,
   type Message,
@@ -13,7 +15,7 @@ import {
 } from "@stanley2058/lilac-event-bus";
 
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
-import { WorkflowEngine } from "../../src/workflow/workflow-engine";
+import { WorkflowEngine, workflowAgentRequestId } from "../../src/workflow/workflow-engine";
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
 import { normalizeWorkflowCapabilityProfile } from "../../src/workflow/workflow-domain";
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
@@ -23,6 +25,7 @@ const HASH_A = "a".repeat(64);
 
 class CapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
+  readonly history: Message<unknown>[] = [];
 
   async publish<TData>(message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
     this.messages.push(message);
@@ -35,8 +38,12 @@ class CapturingRawBus implements RawBus {
   ) {
     return { stop: async () => {} };
   }
-  async fetch<TData>(_topic: string, _options: FetchOptions) {
-    return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
+  async fetch<TData>(topic: string, _options: FetchOptions) {
+    return {
+      messages: this.history
+        .filter((message) => message.topic === topic)
+        .map((msg) => ({ msg: msg as Message<TData>, cursor: msg.id })),
+    };
   }
   async close() {}
 }
@@ -160,6 +167,158 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowEngine", () => {
+  it("uses terminal request history as a barrier and never redispatches", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-terminal-barrier-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(store);
+    const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
+    const requestId = workflowAgentRequestId("run-1", operationId, 0);
+    const headers = {
+      request_id: requestId,
+      session_id: `workflow:run-1:${operationId}`,
+      request_client: "unknown",
+    };
+    raw.history.push(
+      {
+        topic: outReqTopic(requestId),
+        id: "1-0",
+        ts: 10,
+        type: lilacEventTypes.EvtAgentOutputResponseText,
+        headers,
+        data: { finalText: "historical result" },
+      },
+      {
+        topic: "evt.request",
+        id: "2-0",
+        ts: 11,
+        type: lilacEventTypes.EvtRequestLifecycleChanged,
+        headers,
+        data: { state: "resolved", ts: 11 },
+      },
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "terminal-barrier",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
+      expect(store.getRun("run-1")?.result).toBe("historical result");
+      expect(
+        raw.messages.some(
+          (message) =>
+            message.type === lilacEventTypes.CmdRequestMessage &&
+            message.headers?.request_id === requestId &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "prompt",
+        ),
+      ).toBe(false);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("stops only the local sandbox after lease loss without interrupting successor requests", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-lease-loss-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    let now = 3;
+    createApprovedRun(store);
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "lease-loss-local-only",
+      pollMs: 5,
+      now: () => now,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+      dispatchAgentRequest: async ({ signal }) =>
+        await new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "lease lost", usage: null }),
+            { once: true },
+          );
+        }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.listOperations("run-1", { state: "dispatched" }).length === 1);
+      expect(
+        store.tryClaimApprovedRun({
+          runId: "run-1",
+          claimerId: "successor",
+          now: 100,
+          staleAfterMs: 50,
+        })?.claimedBy,
+      ).toBe("successor");
+      now = 101;
+      await waitFor(() => store.getRun("run-1")?.claimedBy === "successor");
+      await Bun.sleep(25);
+      expect(
+        raw.messages.some(
+          (message) =>
+            message.type === lilacEventTypes.CmdRequestMessage &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "interrupt",
+        ),
+      ).toBe(false);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("journals deterministic operations, captures usage/output, and caches replayed calls", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -283,30 +442,33 @@ describe("WorkflowEngine", () => {
     createApprovedRun(store);
     const claimed = store.tryClaimApprovedRun({ runId: "run-1", claimerId: "dead", now: 3 });
     expect(claimed?.state).toBe("running");
-    store.createOperation({
-      runId: "run-1",
-      operationId: `wfop:${sha256("root:site-agent:0").slice(0, 40)}`,
-      callSiteId: "site-agent",
-      parentOperationId: null,
-      phase: null,
-      label: null,
-      kind: "agent",
-      input: { prompt: "inspect", options: {} },
-      inputSha256: canonicalJsonSha256({ prompt: "inspect", options: {} }),
-      state: "succeeded",
-      attempt: 0,
-      requestId: "wfr:completed",
-      output: "cached",
-      resultArtifactId: null,
-      error: null,
-      usage: null,
-      claimedBy: null,
-      claimedAt: null,
-      createdAt: 3,
-      startedAt: 3,
-      updatedAt: 3,
-      terminalAt: 3,
-    });
+    store.createOperation(
+      {
+        runId: "run-1",
+        operationId: `wfop:${sha256("root:site-agent:0").slice(0, 40)}`,
+        callSiteId: "site-agent",
+        parentOperationId: null,
+        phase: null,
+        label: null,
+        kind: "agent",
+        input: { prompt: "inspect", options: {} },
+        inputSha256: canonicalJsonSha256({ prompt: "inspect", options: {} }),
+        state: "succeeded",
+        attempt: 0,
+        requestId: "wfr:completed",
+        output: "cached",
+        resultArtifactId: null,
+        error: null,
+        usage: null,
+        claimedBy: null,
+        claimedAt: null,
+        createdAt: 3,
+        startedAt: 3,
+        updatedAt: 3,
+        terminalAt: 3,
+      },
+      "dead",
+    );
     let dispatches = 0;
     const engine = new WorkflowEngine({
       bus,
@@ -547,9 +709,9 @@ describe("WorkflowEngine", () => {
     try {
       await engine.start();
       await waitFor(() => store.listOperations("run-1", { state: "dispatched" }).length === 1);
-      expect(store.transitionRun({ runId: "run-1", from: "running", to: "paused", now: 10 })).toBe(
-        true,
-      );
+      expect(
+        store.pauseRunAndChildren({ runId: "run-1", now: 10, detail: "test pause" })?.state,
+      ).toBe("paused");
       await waitFor(() => store.listOperations("run-1", { state: "queued" }).length === 1);
       expect(store.listOperations("run-1")[0]?.attempt).toBe(1);
       expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 11 })).toBe(
@@ -562,15 +724,23 @@ describe("WorkflowEngine", () => {
       createApprovedRun(store, "run-cancel");
       await waitFor(() => store.listOperations("run-cancel", { state: "dispatched" }).length === 1);
       expect(
-        store.transitionRun({
+        store.cancelRunAndChildren({
           runId: "run-cancel",
-          from: "running",
-          to: "cancelled",
           now: 12,
           detail: "test cancellation",
-        }),
-      ).toBe(true);
+        })?.state,
+      ).toBe("cancelled");
       await waitFor(() => store.listOperations("run-cancel", { state: "cancelled" }).length === 1);
+      await waitFor(() =>
+        raw.messages.some(
+          (message) =>
+            message.type === "cmd.request.message" &&
+            typeof message.data === "object" &&
+            message.data !== null &&
+            "queue" in message.data &&
+            message.data.queue === "interrupt",
+        ),
+      );
       expect(
         raw.messages.some(
           (message) =>

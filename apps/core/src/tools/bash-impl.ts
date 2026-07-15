@@ -499,6 +499,7 @@ function buildBashChildEnv(params: {
   };
   resolvedCwd: string;
   toolCallId?: string;
+  controlCapability?: string;
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -510,6 +511,7 @@ function buildBashChildEnv(params: {
     LILAC_REQUEST_CLIENT: params.context?.requestClient,
     LILAC_CWD: params.resolvedCwd,
     LILAC_TOOL_CALL_ID: params.toolCallId,
+    LILAC_CONTROL_CAPABILITY: params.controlCapability,
   };
 
   delete childEnv.FORCE_COLOR;
@@ -539,6 +541,7 @@ export async function executeBash(
       artifactMaxBytesPerSession: 50 * 1024 * 1024,
     },
     onActivity,
+    controlCapability,
   }: {
     context?: {
       requestId: string;
@@ -550,6 +553,7 @@ export async function executeBash(
     artifacts?: ToolResultArtifactStore;
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
+    controlCapability?: string;
   } = {},
 ): Promise<BashToolOutput> {
   const cwdTarget = parseSshCwdTarget(cwd);
@@ -945,6 +949,7 @@ export async function executeBash(
         context,
         resolvedCwd,
         toolCallId,
+        controlCapability,
       }),
     });
 

@@ -293,6 +293,70 @@ describe("core tool plugin manager", () => {
     });
 
     expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch", "read_file"]);
+
+    const workflowPolicy = {
+      runId: "run-1",
+      operationId: "operation-1",
+      profile: "explore",
+      safetyMode: "restricted",
+      editing: false,
+      externalTools: false,
+      surfaceSends: false,
+      subagents: false,
+      canonicalWorkspaceRoot: dataDir,
+      canonicalCwd: dataDir,
+      canonicalProjectId: "project-1",
+      originSessionId: "public-channel",
+      originClient: "discord",
+      revisionId: "revision-1",
+      sourceSha256: "a".repeat(64),
+      inputSchemaSha256: "b".repeat(64),
+      capabilitySha256: "c".repeat(64),
+      argsSha256: "d".repeat(64),
+    } as const;
+    const workflowExplore = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "explore",
+      editingToolMode: "none",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+      allowedToolNames: new Set(["bash", "read_file", "glob", "grep"]),
+      requestContext: {
+        requestId: "workflow-explore",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 1,
+        subagentProfile: "explore",
+        safetyMode: "restricted",
+        metadata: { workflowPolicy },
+      },
+    });
+    expect([...workflowExplore.specs.keys()].sort()).toEqual(["glob", "grep", "read_file"]);
+
+    const workflowGeneral = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "general",
+      editingToolMode: "apply_patch",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+      allowedToolNames: new Set(["bash", "read_file", "glob", "grep", "apply_patch"]),
+      requestContext: {
+        requestId: "workflow-general",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 1,
+        subagentProfile: "general",
+        safetyMode: "restricted",
+        metadata: { workflowPolicy: { ...workflowPolicy, profile: "general", editing: true } },
+      },
+    });
+    expect([...workflowGeneral.specs.keys()].sort()).toEqual([
+      "apply_patch",
+      "bash",
+      "glob",
+      "grep",
+      "read_file",
+    ]);
   });
 
   it("threads direct attachment support metadata into read_file description", async () => {

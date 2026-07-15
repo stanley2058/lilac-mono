@@ -103,6 +103,7 @@ const scheduledTriggerCreateInputSchema = z.strictObject({
   args: z.record(z.string(), z.unknown()),
   schedule: scheduledTriggerDefinitionSchema,
   progress: progressInputSchema.optional(),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 const scheduledTriggerGetInputSchema = z.strictObject({
   triggerId: z.string().min(1).max(200),
@@ -168,10 +169,18 @@ function assertPrincipalScope(input: {
   revision: WorkflowRevision;
   run?: WorkflowRun | null;
   approval?: WorkflowApproval | null;
+  trigger?: WorkflowTrigger | null;
 }): void {
   const principal = input.context.authenticatedPrincipal;
   if (!principal || input.revision.canonicalProjectId !== input.definitions.canonicalProjectId) {
     throw new Error("Workflow record is outside the authenticated project scope");
+  }
+  if (
+    input.trigger &&
+    (input.trigger.origin.client !== principal.platform ||
+      input.trigger.origin.userId !== principal.userId)
+  ) {
+    throw new Error("Workflow trigger is outside the authenticated principal scope");
   }
   if (
     input.run &&
@@ -211,6 +220,13 @@ function redactRun(run: WorkflowRun): WorkflowRun {
           : run.result,
     terminalDetail:
       sensitive && run.terminalDetail ? "<redacted terminal detail>" : run.terminalDetail,
+  };
+}
+
+function redactTrigger(trigger: WorkflowTrigger, revision: WorkflowRevision): WorkflowTrigger {
+  return {
+    ...trigger,
+    args: jsonObjectSchema.parse(redactWorkflowValue(trigger.args, revision.inputSchema)),
   };
 }
 
@@ -556,7 +572,21 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!storedRevision || storedRevision.revisionId !== revisionId) {
         throw new Error("Scheduled workflow revision identity collision");
       }
-      const triggerId = `wftrigger:${crypto.randomUUID()}`;
+      const idempotencyKey =
+        input.idempotencyKey ??
+        `tool:${context.requestId ?? "missing"}:${context.toolCallId ?? canonicalJsonSha256(args)}`;
+      const triggerFingerprint = canonicalJsonSha256(
+        jsonObjectSchema.parse({
+          revisionId,
+          args,
+          schedule: input.schedule,
+          progress: input.progress ?? null,
+          principal: context.authenticatedPrincipal,
+        }),
+      );
+      const triggerId = `wftrigger:${canonicalJsonSha256(
+        jsonObjectSchema.parse({ idempotencyKey, triggerFingerprint }),
+      )}`;
       const schedule = input.schedule;
       const timestampAt =
         schedule.kind === "timestamp"
@@ -619,12 +649,14 @@ export class ProgrammaticWorkflow implements ServerTool {
         createdAt: now,
         updatedAt: now,
       };
-      if (!this.store().createTrigger(trigger)) {
-        throw new Error(`Workflow trigger already exists: ${triggerId}`);
-      }
+      const stored = this.store().createTriggerInvocation({
+        trigger,
+        idempotency: { key: idempotencyKey, fingerprintSha256: triggerFingerprint },
+      });
       return {
         ok: true as const,
-        trigger,
+        trigger: redactTrigger(stored.trigger, revision),
+        created: stored.created,
         revisionId,
         sourceSha256: revision.sourceSha256,
         message:
@@ -641,11 +673,13 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!trigger) throw new Error(`Workflow trigger not found: ${input.triggerId}`);
       const revision = this.store().getRevision(trigger.revisionId);
       if (!revision) throw new Error(`Workflow revision not found: ${trigger.revisionId}`);
-      assertPrincipalScope({ context: controlContext, definitions, revision });
+      assertPrincipalScope({ context: controlContext, definitions, revision, trigger });
       return {
         ok: true as const,
-        trigger,
-        lastRun: trigger.lastRunId ? this.store().getRun(trigger.lastRunId) : null,
+        trigger: redactTrigger(trigger, revision),
+        lastRun: trigger.lastRunId
+          ? ((run) => (run ? redactRun(run) : null))(this.store().getRun(trigger.lastRunId))
+          : null,
       };
     }
     if (callableId === "workflow.trigger.list") {
@@ -666,10 +700,15 @@ export class ProgrammaticWorkflow implements ServerTool {
         });
       return {
         ok: true as const,
-        triggers: triggers.map((trigger) => ({
-          trigger,
-          lastRun: trigger.lastRunId ? this.store().getRun(trigger.lastRunId) : null,
-        })),
+        triggers: triggers.map((trigger) => {
+          const revision = this.store().getRevision(trigger.revisionId);
+          if (!revision) throw new Error(`Workflow revision not found: ${trigger.revisionId}`);
+          const lastRun = trigger.lastRunId ? this.store().getRun(trigger.lastRunId) : null;
+          return {
+            trigger: redactTrigger(trigger, revision),
+            lastRun: lastRun ? redactRun(lastRun) : null,
+          };
+        }),
       };
     }
     if (callableId === "workflow.trigger.cancel") {
@@ -682,9 +721,13 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!trigger) throw new Error(`Workflow trigger not found: ${input.triggerId}`);
       const revision = this.store().getRevision(trigger.revisionId);
       if (!revision) throw new Error(`Workflow revision not found: ${trigger.revisionId}`);
-      assertPrincipalScope({ context: controlContext, definitions, revision });
+      assertPrincipalScope({ context: controlContext, definitions, revision, trigger });
       if (trigger.state === "completed" || trigger.state === "cancelled") {
-        return { ok: true as const, trigger, changed: false };
+        return {
+          ok: true as const,
+          trigger: redactTrigger(trigger, revision),
+          changed: false,
+        };
       }
       const changed = this.store().transitionTrigger({
         triggerId: trigger.triggerId,
@@ -693,7 +736,12 @@ export class ProgrammaticWorkflow implements ServerTool {
         now: this.params.now?.() ?? Date.now(),
         nextFireAt: null,
       });
-      return { ok: true as const, trigger: this.store().getTrigger(trigger.triggerId), changed };
+      const updated = this.store().getTrigger(trigger.triggerId);
+      return {
+        ok: true as const,
+        trigger: updated ? redactTrigger(updated, revision) : null,
+        changed,
+      };
     }
     if (callableId === "workflow.run.trigger") {
       const context = requireTrustedTriggerContext(opts?.context);
@@ -979,13 +1027,24 @@ export class ProgrammaticWorkflow implements ServerTool {
           : run.state === "paused";
       if (!allowed) return { ok: true as const, run, changed: false };
       const now = this.params.now?.() ?? Date.now();
-      const changed = this.store().transitionRun({
-        runId: run.runId,
-        from: run.state,
-        to,
-        now,
-      });
-      const updated = this.store().getRun(run.runId);
+      const paused =
+        to === "paused"
+          ? this.store().pauseRunAndChildren({
+              runId: run.runId,
+              now,
+              detail: "Paused through workflow.run.pause",
+            })
+          : null;
+      const changed =
+        to === "paused"
+          ? paused?.state === "paused"
+          : this.store().transitionRun({
+              runId: run.runId,
+              from: run.state,
+              to,
+              now,
+            });
+      const updated = paused ?? this.store().getRun(run.runId);
       if (changed && updated) {
         await this.params.bus?.publish(lilacEventTypes.EvtWorkflowRunChanged, {
           runId: updated.runId,

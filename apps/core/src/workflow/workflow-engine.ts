@@ -239,26 +239,19 @@ export class WorkflowEngine {
         approval?.state !== "approved"
       ) {
         if (run?.state === "running" && approval?.state !== "approved") {
-          this.input.store.transitionRun({
+          this.input.store.pauseRunAndChildren({
             runId,
-            from: "running",
-            to: "paused",
             now: this.now(),
             detail: "Exact revision approval is no longer active",
           });
         }
         active.controller.abort(run?.state ?? "approval_revoked");
         await active.sandbox.cancel();
-        await this.stopAgentRequests(
-          runId,
-          "workflow run stopped",
-          run?.state === "paused" || approval?.state !== "approved",
-        );
+        await this.stopAgentRequests(runId);
       } else {
         if (!this.input.store.refreshRunClaim(runId, this.workerId, this.now())) {
           active.controller.abort("workflow lease lost");
           await active.sandbox.cancel();
-          await this.stopAgentRequests(runId, "workflow lease lost", true, false);
         }
       }
     }
@@ -519,7 +512,7 @@ export class WorkflowEngine {
       updatedAt: this.now(),
       terminalAt: null,
     };
-    if (!this.input.store.createOperation(operation)) {
+    if (!this.input.store.createOperation(operation, this.workerId)) {
       throw new Error(`Failed to journal workflow operation ${id}`);
     }
     await this.publishOperation(revision, operation, "queued");
@@ -642,7 +635,7 @@ export class WorkflowEngine {
           resolvedAt: null,
         };
       }
-      if (!this.input.store.createWait(wait)) {
+      if (!this.input.store.createWait(wait, this.workerId)) {
         const concurrentlyCreated = this.input.store.getWait(run.runId, operation.operationId);
         if (!concurrentlyCreated) {
           throw new Error(`Failed to journal workflow wait ${operation.operationId}`);
@@ -666,6 +659,7 @@ export class WorkflowEngine {
         continue;
       }
       this.input.store.transitionOperation({
+        runOwnerId: this.workerId,
         runId: run.runId,
         operationId: operation.operationId,
         from: current.state,
@@ -683,6 +677,7 @@ export class WorkflowEngine {
         if (wait.state === "resolved") {
           if (latest?.state === "blocked") {
             this.input.store.transitionOperation({
+              runOwnerId: this.workerId,
               runId: run.runId,
               operationId: operation.operationId,
               from: "blocked",
@@ -697,6 +692,7 @@ export class WorkflowEngine {
         if (latest?.state === "blocked") {
           const terminalState = wait.state === "expired" ? "timed_out" : "cancelled";
           this.input.store.transitionOperation({
+            runOwnerId: this.workerId,
             runId: run.runId,
             operationId: operation.operationId,
             from: "blocked",
@@ -729,6 +725,7 @@ export class WorkflowEngine {
             : [];
     for (const to of transitions) {
       const changed = this.input.store.transitionOperation({
+        runOwnerId: this.workerId,
         runId: run.runId,
         operationId: operation.operationId,
         from: current.state,
@@ -913,6 +910,7 @@ export class WorkflowEngine {
         : null;
     if (latest.state === "dispatched" && result.state === "resolved") {
       this.input.store.transitionOperation({
+        runOwnerId: this.workerId,
         runId: run.runId,
         operationId: operation.operationId,
         from: "dispatched",
@@ -924,6 +922,7 @@ export class WorkflowEngine {
     const terminalFrom =
       this.input.store.getOperation(run.runId, operation.operationId)?.state ?? latest.state;
     this.input.store.transitionOperation({
+      runOwnerId: this.workerId,
       runId: run.runId,
       operationId: operation.operationId,
       from: terminalFrom,
@@ -961,6 +960,7 @@ export class WorkflowEngine {
         const state = signal.aborted ? "cancelled" : "failed";
         if (current.state === "queued" && state === "failed") {
           this.input.store.transitionOperation({
+            runOwnerId: this.workerId,
             runId: run.runId,
             operationId: operation.operationId,
             from: "queued",
@@ -971,6 +971,7 @@ export class WorkflowEngine {
         const from =
           this.input.store.getOperation(run.runId, operation.operationId)?.state ?? current.state;
         this.input.store.transitionOperation({
+          runOwnerId: this.workerId,
           runId: run.runId,
           operationId: operation.operationId,
           from,
@@ -1026,20 +1027,51 @@ export class WorkflowEngine {
       armIdle();
     };
     const suffix = `${input.requestId}:${crypto.randomUUID()}`;
+    const handleOutputMessage = async (
+      message: Awaited<ReturnType<LilacBus["fetchTopic"]>>["messages"][number]["msg"],
+    ): Promise<void> => {
+      if (message.headers?.request_id !== input.requestId) return;
+      resetIdle();
+      if (message.type === lilacEventTypes.EvtAgentOutputDeltaText) output += message.data.delta;
+      if (message.type === lilacEventTypes.EvtAgentOutputResponseText) {
+        output = message.data.finalText;
+        usage = message.data.usage ?? null;
+        if (lifecycle === "resolved") finish("resolved");
+      }
+    };
+    const handleLifecycleMessage = async (
+      message: Awaited<ReturnType<LilacBus["fetchTopic"]>>["messages"][number]["msg"],
+    ): Promise<void> => {
+      if (
+        message.type !== lilacEventTypes.EvtRequestLifecycleChanged ||
+        message.headers?.request_id !== input.requestId
+      ) {
+        return;
+      }
+      resetIdle();
+      lifecycle = message.data.state;
+      detail = message.data.detail ?? null;
+      const current = this.input.store.getOperation(input.run.runId, input.operation.operationId);
+      if (message.data.state === "running" && current?.state === "dispatched") {
+        this.input.store.transitionOperation({
+          runOwnerId: this.workerId,
+          runId: input.run.runId,
+          operationId: input.operation.operationId,
+          from: "dispatched",
+          to: "running",
+          now: this.now(),
+        });
+        await this.publishOperation(input.revision, input.operation, "running", "dispatched");
+      }
+      if (message.data.state === "resolved") finish("resolved");
+      if (message.data.state === "failed") finish("failed");
+      if (message.data.state === "cancelled") finish("cancelled");
+    };
     const outSub = await this.input.bus.subscribeTopic(
       outReqTopic(input.requestId),
       { mode: "tail", offset: { type: "begin" }, batch: { maxWaitMs: 100 } },
       async (message, context) => {
-        if (message.headers?.request_id === input.requestId) {
-          resetIdle();
-          if (message.type === lilacEventTypes.EvtAgentOutputDeltaText)
-            output += message.data.delta;
-          if (message.type === lilacEventTypes.EvtAgentOutputResponseText) {
-            output = message.data.finalText;
-            usage = message.data.usage ?? null;
-            if (lifecycle === "resolved") finish("resolved");
-          }
-        }
+        await handleOutputMessage(message);
         await context.commit();
       },
     );
@@ -1054,40 +1086,55 @@ export class WorkflowEngine {
         batch: { maxWaitMs: 100 },
       },
       async (message, context) => {
-        if (
-          message.type === lilacEventTypes.EvtRequestLifecycleChanged &&
-          message.headers?.request_id === input.requestId
-        ) {
-          resetIdle();
-          lifecycle = message.data.state;
-          detail = message.data.detail ?? null;
-          const current = this.input.store.getOperation(
-            input.run.runId,
-            input.operation.operationId,
-          );
-          if (message.data.state === "running" && current?.state === "dispatched") {
-            this.input.store.transitionOperation({
-              runId: input.run.runId,
-              operationId: input.operation.operationId,
-              from: "dispatched",
-              to: "running",
-              now: this.now(),
-            });
-            await this.publishOperation(input.revision, input.operation, "running", "dispatched");
-          }
-          if (message.data.state === "resolved") finish("resolved");
-          if (message.data.state === "failed") setTimeout(() => finish("failed"), 100).unref?.();
-          if (message.data.state === "cancelled")
-            setTimeout(() => finish("cancelled"), 100).unref?.();
-        }
+        await handleLifecycleMessage(message);
         await context.commit();
       },
     );
-    const abort = (): void => finish("cancelled");
+    const abort = (): void => {
+      if (input.signal.reason !== "workflow lease lost" && input.signal.reason !== "shutdown") {
+        void this.input.bus.publish(
+          lilacEventTypes.CmdRequestMessage,
+          { queue: "interrupt", messages: [], raw: { cancel: true, cancelQueued: true } },
+          {
+            headers: {
+              request_id: input.requestId,
+              session_id: input.sessionId,
+              request_client: "unknown",
+            },
+          },
+        );
+      }
+      finish("cancelled");
+    };
     input.signal.addEventListener("abort", abort, { once: true });
     armIdle();
-    if (input.reconcile) await Bun.sleep(250);
-    if (input.publishRequest) {
+    if (input.reconcile || input.publishRequest) {
+      let outputCursor: string | undefined;
+      do {
+        const batch = await this.input.bus.fetchTopic(outReqTopic(input.requestId), {
+          offset: outputCursor ? { type: "cursor", cursor: outputCursor } : { type: "begin" },
+          limit: 1_000,
+        });
+        for (const entry of batch.messages) await handleOutputMessage(entry.msg);
+        const previous = outputCursor;
+        outputCursor = batch.next;
+        if (batch.messages.length < 1_000 || !outputCursor || outputCursor === previous) break;
+      } while (!settled);
+
+      let lifecycleCursor: string | undefined;
+      do {
+        const batch = await this.input.bus.fetchTopic("evt.request", {
+          offset: lifecycleCursor ? { type: "cursor", cursor: lifecycleCursor } : { type: "begin" },
+          limit: 1_000,
+        });
+        for (const entry of batch.messages) await handleLifecycleMessage(entry.msg);
+        const previous = lifecycleCursor;
+        lifecycleCursor = batch.next;
+        if (batch.messages.length < 1_000 || !lifecycleCursor || lifecycleCursor === previous)
+          break;
+      } while (!settled);
+    }
+    if (input.publishRequest && !settled) {
       if (!input.capability) throw new Error("Workflow dispatch capability is missing");
       const liveParent =
         input.run.completionTarget.kind === "live_parent" ? input.run.completionTarget : null;
@@ -1221,16 +1268,11 @@ export class WorkflowEngine {
     await remove.exited;
   }
 
-  private async stopAgentRequests(
-    runId: string,
-    reason: string,
-    requeue: boolean,
-    mutate = true,
-  ): Promise<void> {
+  private async stopAgentRequests(runId: string): Promise<void> {
     const target = this.input.store.getRun(runId)?.completionTarget;
     const operations = this.input.store
       .listOperations(runId, { limit: 1_000 })
-      .filter((operation) => operation.kind === "agent" && !isTerminalOperation(operation.state));
+      .filter((operation) => operation.kind === "agent" && operation.requestId !== null);
     for (const operation of operations) {
       if (operation.requestId) {
         await this.input.bus.publish(
@@ -1251,19 +1293,6 @@ export class WorkflowEngine {
             },
           },
         );
-      }
-    }
-    if (!mutate) return;
-    const changed = requeue
-      ? this.input.store.requeueActiveOperations(runId, this.now(), reason)
-      : this.input.store.cancelActiveOperations(runId, this.now(), reason);
-    this.input.store.expireWorkflowRequestsForRun(runId, this.now());
-    if (!requeue) this.input.store.cancelActiveWaits(runId, this.now());
-    const run = this.input.store.getRun(runId);
-    const revision = run ? this.input.store.getRevision(run.revisionId) : null;
-    if (revision) {
-      for (const operation of changed) {
-        await this.publishOperation(revision, operation, operation.state);
       }
     }
   }
@@ -1289,9 +1318,6 @@ export class WorkflowEngine {
       finalResult = null;
       finalDetail = "Workflow returned with outstanding unawaited host operations";
     }
-    if (finalState === "failed") {
-      await this.stopAgentRequests(current.runId, finalDetail, false);
-    }
     const resultBytes = Buffer.byteLength(canonicalJson(finalResult), "utf8");
     const resultArtifactId =
       finalState === "succeeded" && resultBytes > WORKFLOW_INLINE_VALUE_BYTES
@@ -1312,6 +1338,25 @@ export class WorkflowEngine {
       resultArtifactId,
     });
     if (!changed) throw new Error("Workflow terminal transition lost its fenced lease");
+    if (finalState === "failed") {
+      for (const operation of activeOperations) {
+        if (!operation.requestId) continue;
+        await this.input.bus.publish(
+          lilacEventTypes.CmdRequestMessage,
+          { queue: "interrupt", messages: [], raw: { cancel: true, cancelQueued: true } },
+          {
+            headers: {
+              request_id: operation.requestId,
+              session_id:
+                current.completionTarget.kind === "live_parent"
+                  ? current.completionTarget.childSessionId
+                  : `workflow:${current.runId}:${operation.operationId}`,
+              request_client: "unknown",
+            },
+          },
+        );
+      }
+    }
     const updated = this.input.store.getRun(current.runId);
     if (!updated) return;
     await this.publishRun(updated, finalState, "running");

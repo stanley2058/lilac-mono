@@ -12,6 +12,7 @@ export type RequestContext = {
   serverOwnedRequest?: boolean;
   authenticatedPrincipal?: { platform: "discord" | "github"; userId: string };
   toolCallId?: string;
+  controlCapability?: string;
   workflowCapability?: string;
   workflowPolicy?: {
     runId: string;

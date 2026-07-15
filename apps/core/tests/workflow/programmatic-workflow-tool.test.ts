@@ -25,7 +25,7 @@ function source() {
 export default defineWorkflow({
   name: "audit-routes",
   description: "Audit routes",
-  input: { type: "object", required: ["directory"], properties: { directory: { type: "string" } } },
+  input: { type: "object", required: ["directory"], properties: { directory: { type: "string" }, token: { type: "string", sensitive: true } } },
   capabilities: {
     agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 2, editing: false, isolation: "shared" },
     waits: [],
@@ -263,8 +263,9 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
             {
               scope: "auto",
               name: "audit-routes",
-              args: { directory: "scheduled" },
+              args: { directory: "scheduled", token: "scheduled-secret" },
               schedule: { kind: "timestamp", at: "1970-01-01T00:00:01.000Z" },
+              idempotencyKey: "scheduled-once",
             },
             { context },
           ),
@@ -279,17 +280,62 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
           { triggerId: scheduled.trigger.triggerId },
           { context },
         ),
-      ).toMatchObject({ trigger: { state: "active" }, lastRun: null });
+      ).toMatchObject({
+        trigger: { state: "active", args: { token: "<redacted>" } },
+        lastRun: null,
+      });
       expect(await tool.call("workflow.trigger.list", {}, { context })).toMatchObject({
         triggers: [{ trigger: { triggerId: scheduled.trigger.triggerId } }],
       });
+      const duplicate = await tool.call(
+        "workflow.trigger.create",
+        {
+          scope: "auto",
+          name: "audit-routes",
+          args: { directory: "scheduled", token: "scheduled-secret" },
+          schedule: { kind: "timestamp", at: "1970-01-01T00:00:01.000Z" },
+          idempotencyKey: "scheduled-once",
+        },
+        { context },
+      );
+      expect(duplicate).toMatchObject({
+        created: false,
+        trigger: { triggerId: scheduled.trigger.triggerId },
+      });
+      await expect(
+        tool.call(
+          "workflow.trigger.create",
+          {
+            scope: "auto",
+            name: "audit-routes",
+            args: { directory: "different" },
+            schedule: { kind: "timestamp", at: "1970-01-01T00:00:01.000Z" },
+            idempotencyKey: "scheduled-once",
+          },
+          { context },
+        ),
+      ).rejects.toThrow("idempotency key was reused");
+      const otherTriggerPrincipalContext = {
+        ...context,
+        authenticatedPrincipal: { platform: "discord" as const, userId: "user-other" },
+      };
+      await expect(
+        tool.call(
+          "workflow.trigger.get",
+          { triggerId: scheduled.trigger.triggerId },
+          { context: otherTriggerPrincipalContext },
+        ),
+      ).rejects.toThrow("principal scope");
       expect(
         await tool.call(
           "workflow.trigger.cancel",
           { triggerId: scheduled.trigger.triggerId },
           { context },
         ),
-      ).toMatchObject({ changed: true, trigger: { state: "cancelled" } });
+      ).toMatchObject({
+        changed: true,
+        trigger: { state: "cancelled", args: { token: "<redacted>" } },
+      });
 
       reviewerAvailable = false;
       context.toolCallId = "tool-call-3";

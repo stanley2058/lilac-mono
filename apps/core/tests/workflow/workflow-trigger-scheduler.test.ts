@@ -299,7 +299,10 @@ describe("WorkflowTriggerScheduler", () => {
         store.createTrigger(
           trigger({
             triggerId: `capped-${index}`,
-            definition: { kind: "cron", expression: "* * * * *", timezone: "UTC" },
+            definition:
+              index === 64
+                ? { kind: "timestamp", at: now }
+                : { kind: "cron", expression: "* * * * *", timezone: "UTC" },
             nextFireAt: now,
             overlap: "parallel",
           }),
@@ -314,7 +317,10 @@ describe("WorkflowTriggerScheduler", () => {
       expect(triggers.filter((candidate) => candidate.lastRunId !== null)).toHaveLength(64);
       expect(
         triggers.filter(
-          (candidate) => candidate.lastRunId === null && candidate.lastFireAt === now,
+          (candidate) =>
+            candidate.lastRunId === null &&
+            candidate.lastFireAt === now &&
+            candidate.nextFireAt === now,
         ),
       ).toHaveLength(1);
     } finally {

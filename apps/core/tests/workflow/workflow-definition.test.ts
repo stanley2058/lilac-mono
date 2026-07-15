@@ -150,7 +150,7 @@ describe("workflow definition validation", () => {
     ).toThrow("declared maxSourceBytes");
   });
 
-  it("rejects shadowed host APIs and backtracking-capable input regexes", () => {
+  it("rejects all shadowed host APIs and user-defined input regexes", () => {
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -165,6 +165,33 @@ describe("workflow definition validation", () => {
         name: "audit-routes",
         source: source().replace("minLength: 1", 'pattern: "(a+)+$"'),
       }),
-    ).toThrow("backtracking regex syntax");
+    ).toThrow("pattern");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          "return agent(`Audit ${args.directory}`);",
+          "const helper = function agent() {}; return helper();",
+        ),
+      }),
+    ).toThrow("shadow reserved host API");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          "return agent(`Audit ${args.directory}`);",
+          "const Helper = class agent {}; return String(Helper);",
+        ),
+      }),
+    ).toThrow("shadow reserved host API");
+  });
+
+  it("rejects edit-capable explore profiles statically", () => {
+    const editingExplore = source()
+      .replace("editing: false", "editing: true")
+      .replace('isolation: "shared"', 'isolation: "worktree"');
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: editingExplore })).toThrow(
+      "cannot enable the explore profile",
+    );
   });
 });

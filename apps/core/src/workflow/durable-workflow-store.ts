@@ -924,18 +924,25 @@ export class DurableWorkflowStore {
     return tolerantRows(rows, parseRun);
   }
 
-  listPendingLiveParentCompletions(parentRequestId: string, limit = 1_000): WorkflowRun[] {
+  listPendingLiveParentCompletions(
+    parentRequestId: string,
+    limit = 1_000,
+    includeSynchronous = false,
+  ): WorkflowRun[] {
     const rows = this.db
       .query(
         `SELECT workflow_runs.* FROM workflow_runs
          JOIN workflow_completion_deliveries
            ON workflow_completion_deliveries.run_id = workflow_runs.run_id
-         WHERE workflow_completion_deliveries.parent_request_id = ?
-           AND workflow_completion_deliveries.state = 'pending'
-           AND workflow_runs.state IN ('succeeded', 'failed', 'rejected', 'cancelled')
+          WHERE workflow_completion_deliveries.parent_request_id = ?
+            AND workflow_completion_deliveries.state = 'pending'
+            AND (? = 1 OR COALESCE(
+              json_extract(workflow_runs.completion_target_json, '$.deferredDelivery'), 1
+            ) = 1)
+            AND workflow_runs.state IN ('succeeded', 'failed', 'rejected', 'cancelled')
          ORDER BY workflow_runs.terminal_at, workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
-      .all(parentRequestId, boundedLimit(limit));
+      .all(parentRequestId, includeSynchronous ? 1 : 0, boundedLimit(limit));
     return tolerantRows(rows, parseRun);
   }
 
@@ -1041,8 +1048,26 @@ export class DurableWorkflowStore {
         );
       } else if (input.to === "revoked") {
         this.db.run(
-          `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, updated_at = ?
-            WHERE approval_id = ? AND state IN ('queued', 'running', 'blocked')`,
+          `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+           request_id = NULL, error = ?, claimed_by = NULL, claimed_at = NULL,
+           started_at = NULL, terminal_at = NULL, updated_at = ?
+           WHERE run_id IN (
+             SELECT run_id FROM workflow_runs WHERE approval_id = ?
+               AND state IN ('running', 'blocked')
+           ) AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+          [input.reason ?? "Approval revoked before execution", input.now, input.approvalId],
+        );
+        this.db.run(
+          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+           updated_at = ? WHERE run_id IN (
+             SELECT run_id FROM workflow_runs WHERE approval_id = ?
+           ) AND active = 1`,
+          [input.now, input.now, input.approvalId],
+        );
+        this.db.run(
+          `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
+             claimed_at = NULL, updated_at = ?
+             WHERE approval_id = ? AND state IN ('queued', 'running', 'blocked')`,
           [input.reason ?? "Approval revoked before execution", input.now, input.approvalId],
         );
       }
@@ -1189,6 +1214,33 @@ export class DurableWorkflowStore {
     return cancel.immediate();
   }
 
+  pauseRunAndChildren(input: { runId: string; now: number; detail: string }): WorkflowRun | null {
+    const pause = this.db.transaction(() => {
+      const run = this.getRun(input.runId);
+      if (!run || !["queued", "running", "blocked"].includes(run.state)) return run;
+      this.db.run(
+        `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+         request_id = NULL, error = ?, claimed_by = NULL, claimed_at = NULL,
+         started_at = NULL, terminal_at = NULL, updated_at = ?
+         WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+        [input.detail, input.now, input.runId],
+      );
+      this.db.run(
+        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+         updated_at = ? WHERE run_id = ? AND active = 1`,
+        [input.now, input.now, input.runId],
+      );
+      const changed = this.db
+        .query(
+          `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
+           claimed_at = NULL, updated_at = ? WHERE run_id = ? AND state = ?`,
+        )
+        .run(input.detail, input.now, input.runId, run.state);
+      return changed.changes === 1 ? this.getRun(input.runId) : null;
+    });
+    return pause.immediate();
+  }
+
   tryClaimRun(input: {
     runId: string;
     claimerId: string;
@@ -1247,7 +1299,7 @@ export class DurableWorkflowStore {
     );
   }
 
-  createOperation(operationInput: WorkflowOperation): boolean {
+  createOperation(operationInput: WorkflowOperation, runOwnerId: string): boolean {
     const operation = workflowOperationSchema.parse(operationInput);
     const result = this.db
       .query(
@@ -1256,7 +1308,11 @@ export class DurableWorkflowStore {
           kind, input_json, input_sha256, state, attempt, request_id, output_json,
           result_artifact_id, error, usage_json, claimed_by, claimed_at, created_at,
           started_at, updated_at, terminal_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM workflow_runs
+            WHERE run_id = ? AND state = 'running' AND claimed_by = ?
+          )
         ON CONFLICT(run_id, operation_id) DO NOTHING`,
       )
       .run(
@@ -1282,6 +1338,8 @@ export class DurableWorkflowStore {
         operation.startedAt,
         operation.updatedAt,
         operation.terminalAt,
+        operation.runId,
+        runOwnerId,
       );
     return result.changes === 1;
   }
@@ -1493,6 +1551,18 @@ export class DurableWorkflowStore {
     );
   }
 
+  releaseWorkflowRequestClaim(requestId: string, ownerId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_request_dispatches
+           SET owner_id = NULL, owner_heartbeat_at = NULL, updated_at = ?
+           WHERE request_id = ? AND owner_id = ? AND active = 1 AND expires_at > ?`,
+        )
+        .run(now, requestId, ownerId, now).changes === 1
+    );
+  }
+
   hasLiveWorkflowRequestOwner(requestId: string, now: number, staleAfterMs = 60_000): boolean {
     const row = this.db
       .query<{ present: number }, [string, number, number]>(
@@ -1562,6 +1632,7 @@ export class DurableWorkflowStore {
     resultArtifactId?: string | null;
     error?: string | null;
     usage?: WorkflowOperation["usage"];
+    runOwnerId: string;
   }): boolean {
     if (!canTransitionWorkflowOperation(input.from, input.to)) {
       throw new Error(`Illegal workflow operation transition: ${input.from} -> ${input.to}`);
@@ -1577,7 +1648,12 @@ export class DurableWorkflowStore {
           result_artifact_id = ?, error = ?, usage_json = ?,
           started_at = CASE WHEN ? = 'running' THEN COALESCE(started_at, ?) ELSE started_at END,
           terminal_at = CASE WHEN ? THEN ? ELSE terminal_at END, updated_at = ?
-         WHERE run_id = ? AND operation_id = ? AND state = ?`,
+         WHERE run_id = ? AND operation_id = ? AND state = ?
+           AND EXISTS (
+             SELECT 1 FROM workflow_runs
+             WHERE workflow_runs.run_id = workflow_operations.run_id
+               AND workflow_runs.state = 'running' AND workflow_runs.claimed_by = ?
+           )`,
       )
       .run(
         input.to,
@@ -1606,34 +1682,16 @@ export class DurableWorkflowStore {
         input.runId,
         input.operationId,
         input.from,
+        input.runOwnerId,
       );
     return result.changes === 1;
-  }
-
-  cancelActiveOperations(runId: string, now: number, error: string): WorkflowOperation[] {
-    this.db.run(
-      `UPDATE workflow_operations SET state = 'cancelled', error = ?, terminal_at = ?, updated_at = ?
-       WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-      [error, now, now, runId],
-    );
-    return this.listOperations(runId, { state: "cancelled", limit: 1_000 });
-  }
-
-  requeueActiveOperations(runId: string, now: number, error: string): WorkflowOperation[] {
-    this.db.run(
-      `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-        request_id = NULL, error = ?, claimed_by = NULL, claimed_at = NULL,
-        started_at = NULL, terminal_at = NULL, updated_at = ?
-       WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-      [error, now, runId],
-    );
-    return this.listOperations(runId, { state: "queued", limit: 1_000 });
   }
 
   tryClaimOperation(input: {
     runId: string;
     operationId: string;
     claimerId: string;
+    runOwnerId: string;
     now: number;
     staleAfterMs?: number;
   }): WorkflowOperation | null {
@@ -1646,13 +1704,25 @@ export class DurableWorkflowStore {
          WHERE run_id = ? AND operation_id = ? AND (
            state = 'queued' OR
            (state IN ('dispatched', 'running') AND claimed_at IS NOT NULL AND claimed_at <= ?)
-         )`,
+          ) AND EXISTS (
+            SELECT 1 FROM workflow_runs
+            WHERE workflow_runs.run_id = workflow_operations.run_id
+              AND workflow_runs.state = 'running' AND workflow_runs.claimed_by = ?
+          )`,
       )
-      .run(input.claimerId, input.now, input.now, input.runId, input.operationId, staleBefore);
+      .run(
+        input.claimerId,
+        input.now,
+        input.now,
+        input.runId,
+        input.operationId,
+        staleBefore,
+        input.runOwnerId,
+      );
     return result.changes === 1 ? this.getOperation(input.runId, input.operationId) : null;
   }
 
-  createWait(waitInput: WorkflowWait): boolean {
+  createWait(waitInput: WorkflowWait, runOwnerId: string): boolean {
     const wait = workflowWaitSchema.parse(waitInput);
     const result = this.db
       .query(
@@ -1660,7 +1730,11 @@ export class DurableWorkflowStore {
           run_id, operation_id, state, match_kind, match_key, match_json, due_at,
           deadline_at, resolver_cursor, result_json, resolved_by, claimed_by,
           claimed_at, created_at, updated_at, resolved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM workflow_runs
+            WHERE run_id = ? AND state = 'running' AND claimed_by = ?
+          )
         ON CONFLICT(run_id, operation_id) DO NOTHING`,
       )
       .run(
@@ -1680,6 +1754,8 @@ export class DurableWorkflowStore {
         wait.createdAt,
         wait.updatedAt,
         wait.resolvedAt,
+        wait.runId,
+        runOwnerId,
       );
     return result.changes === 1;
   }
@@ -1770,6 +1846,7 @@ export class DurableWorkflowStore {
     resolverCursor?: string | null;
     result?: WorkflowWait["result"];
     resolvedBy?: string | null;
+    runOwnerId: string;
   }): boolean {
     if (!canTransitionWorkflowWait(input.from, input.to)) {
       throw new Error(`Illegal workflow wait transition: ${input.from} -> ${input.to}`);
@@ -1783,7 +1860,12 @@ export class DurableWorkflowStore {
       .query(
         `UPDATE workflow_waits SET state = ?, resolver_cursor = ?, result_json = ?,
           resolved_by = ?, resolved_at = CASE WHEN ? THEN ? ELSE resolved_at END, updated_at = ?
-         WHERE run_id = ? AND operation_id = ? AND state = ?`,
+          WHERE run_id = ? AND operation_id = ? AND state = ?
+            AND EXISTS (
+              SELECT 1 FROM workflow_runs
+              WHERE workflow_runs.run_id = workflow_waits.run_id
+                AND workflow_runs.state = 'running' AND workflow_runs.claimed_by = ?
+            )`,
       )
       .run(
         input.to,
@@ -1802,6 +1884,7 @@ export class DurableWorkflowStore {
         input.runId,
         input.operationId,
         input.from,
+        input.runOwnerId,
       );
     return result.changes === 1;
   }
@@ -1867,6 +1950,7 @@ export class DurableWorkflowStore {
     runId: string;
     operationId: string;
     claimerId: string;
+    runOwnerId: string;
     now: number;
     staleAfterMs?: number;
   }): WorkflowWait | null {
@@ -1876,20 +1960,22 @@ export class DurableWorkflowStore {
         `UPDATE workflow_waits SET state = 'claimed', claimed_by = ?, claimed_at = ?, updated_at = ?
          WHERE run_id = ? AND operation_id = ? AND (
            state = 'pending' OR (state = 'claimed' AND claimed_at IS NOT NULL AND claimed_at <= ?)
-         )`,
+          ) AND EXISTS (
+            SELECT 1 FROM workflow_runs
+            WHERE workflow_runs.run_id = workflow_waits.run_id
+              AND workflow_runs.state = 'running' AND workflow_runs.claimed_by = ?
+          )`,
       )
-      .run(input.claimerId, input.now, input.now, input.runId, input.operationId, staleBefore);
+      .run(
+        input.claimerId,
+        input.now,
+        input.now,
+        input.runId,
+        input.operationId,
+        staleBefore,
+        input.runOwnerId,
+      );
     return result.changes === 1 ? this.getWait(input.runId, input.operationId) : null;
-  }
-
-  cancelActiveWaits(runId: string, now: number): WorkflowWait[] {
-    this.db.run(
-      `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
-       resolved_at = ?, updated_at = ?
-       WHERE run_id = ? AND state IN ('pending', 'claimed')`,
-      [now, now, runId],
-    );
-    return this.listWaits({ runId, state: "cancelled", limit: 1_000 });
   }
 
   recordAdapterEventSuppression(input: {
@@ -1973,6 +2059,45 @@ export class DurableWorkflowStore {
         trigger.updatedAt,
       );
     return result.changes === 1;
+  }
+
+  createTriggerInvocation(input: {
+    trigger: WorkflowTrigger;
+    idempotency: { key: string; fingerprintSha256: string };
+  }): { trigger: WorkflowTrigger; created: boolean } {
+    const trigger = workflowTriggerSchema.parse(input.trigger);
+    const create = this.db.transaction(() => {
+      const receipt = this.db
+        .query<{ trigger_id: string; fingerprint_sha256: string }, [string]>(
+          `SELECT trigger_id, fingerprint_sha256 FROM workflow_trigger_invocation_receipts
+           WHERE idempotency_key = ?`,
+        )
+        .get(input.idempotency.key);
+      if (receipt) {
+        if (receipt.fingerprint_sha256 !== input.idempotency.fingerprintSha256) {
+          throw new Error("Workflow trigger idempotency key was reused with different input");
+        }
+        const existing = this.getTrigger(receipt.trigger_id);
+        if (!existing) throw new Error("Workflow trigger receipt references a missing trigger");
+        return { trigger: existing, created: false };
+      }
+      if (!this.createTrigger(trigger)) {
+        throw new Error(`Workflow trigger already exists: ${trigger.triggerId}`);
+      }
+      this.db.run(
+        `INSERT INTO workflow_trigger_invocation_receipts (
+           idempotency_key, trigger_id, fingerprint_sha256, created_at
+         ) VALUES (?, ?, ?, ?)`,
+        [
+          input.idempotency.key,
+          trigger.triggerId,
+          input.idempotency.fingerprintSha256,
+          trigger.createdAt,
+        ],
+      );
+      return { trigger, created: true };
+    });
+    return create.immediate();
   }
 
   getTrigger(triggerId: string): WorkflowTrigger | null {
@@ -2102,6 +2227,10 @@ export class DurableWorkflowStore {
         (trigger.schedulingPolicy.overlap === "coalesce" && activeTriggerRuns > 0) ||
         activeScheduledRuns >= input.maxActiveScheduledRuns
       ) {
+        const retryAt =
+          trigger.definition.kind === "timestamp" && input.nextFireAt === null
+            ? input.expectedFireAt
+            : input.nextFireAt;
         const skipped = this.db
           .query(
             `UPDATE workflow_triggers SET next_fire_at = ?, last_fire_at = ?,
@@ -2109,7 +2238,7 @@ export class DurableWorkflowStore {
              WHERE trigger_id = ? AND claimed_by = ? AND next_fire_at = ?`,
           )
           .run(
-            input.nextFireAt,
+            retryAt,
             input.expectedFireAt,
             input.now,
             trigger.triggerId,

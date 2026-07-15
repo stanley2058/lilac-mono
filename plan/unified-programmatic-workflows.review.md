@@ -55,4 +55,46 @@ None. Code inspection confirmed each reported blocker or an equivalent unsafe ed
 
 - Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter tests cover the code paths in CI.
 - Production hosts still must provide Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. There is no unsandboxed fallback.
-- Authentication of non-workflow Level-2 tools remains the existing trusted-network deployment assumption. Workflow child and workflow control authority are independently authenticated and fail closed.
+
+## Round 2
+
+Status: implementation and repository validation complete.
+
+### Critical/High Regressions Fixed
+
+1. Workflow path-bearing Level-2 inputs are resolved under the authoritative canonical workflow cwd, reject outside/symlink/protected paths, and are opened with `O_NOFOLLOW`. `content.inspect.path` and surface-send attachments receive stable `/proc/self/fd` descriptors held open through the call, preventing path-swap exfiltration.
+2. `surfaceSends` now exposes only `surface.messages.send` in the originating session. Edit, delete, reactions, reads, global sessions, activity, and other surface APIs are excluded.
+3. Every authenticated primary surface request receives an unguessable server-issued Level-2 control capability. It is bound to request, principal, session, platform, canonical cwd, safety mode, expiry, and active runner lifecycle; list/help/suggestions/call all carry it and terminal cleanup expires it.
+4. Trigger get/list/cancel now enforce both project scope and trigger-origin principal. Trigger args and last-run fields use schema-aware default redaction.
+5. Sensitive schemas collapse phase names and suppress labels, wait prompts, terminal detail, results, and artifact references from progress cards.
+6. User-defined input-schema `pattern` is unsupported in runtime v1; no user regex executes in the JavaScript regex engine.
+7. Authenticated GitHub requests derive trusted control safety from the signed-webhook/server-owned request origin instead of being categorically restricted.
+8. Explore workflows receive contained `read_file`, `glob`, and `grep`; edit-capable explore definitions are rejected statically.
+9. AST shadow validation now includes named function expressions and named class expressions.
+10. Discord workflow actions await every adapter handler and acknowledge success only after durable publication; failures produce a retry response.
+11. GitHub and Discord `readMsg` return null only for authoritative not-found outcomes and propagate transient failures.
+12. Agent reconciliation fetches retained output/lifecycle history behind a terminal barrier and never publishes a prompt after a terminal result has been observed.
+13. Graceful restart explicitly releases the workflow request-owner lease while preserving dispatch authority, allowing immediate atomic takeover by the restored runner.
+14. Worker-created operations/waits and their transitions require the current run owner in the same SQL statement. Stale owners cannot create, claim, transition, or terminalize child journal state after takeover.
+15. Run-lease loss aborts only the local workflow sandbox. It does not publish a shared child-request interrupt that could kill a successor's request.
+16. Capacity-skipped timestamp triggers retain their original due time and retry instead of becoming inert.
+17. Trigger creation has a durable idempotency receipt and fingerprint, deterministic trigger identity, same-input replay, and conflicting-input rejection.
+18. Artifact-backed completion loading happens before acknowledgement or fallback activation. Read/normalization failures leave delivery pending.
+19. Live-parent and subagent-handle cancellation use `cancelRunAndChildren`, atomically cancelling operations, waits, and dispatch authority.
+20. `finishRun` performs its owner-fenced atomic terminal transition before interrupting captured child requests; a stale owner cannot clean up a successor journal.
+21. Wait resolver startup catches up retained adapter history before expiring due deadlines, preserving deterministic event-time arbitration for offline on-time replies.
+22. Projector reconciliation retains existing bindings and schedules retry on transient GitHub/Discord lookup failures; only authoritative absence clears a binding.
+23. Sensitive progress redaction covers every free-form operation phase, label, wait prompt, terminal detail, result, and artifact field.
+24. Sync subagent runs now retain a durable completion delivery. Uninterrupted sync loads then acknowledges before return; restored parents opt into pending sync recovery, while live uninterrupted parents cannot receive duplicate injection.
+25. The live-parent bridge tails each durable child request output stream, refreshes the parent watchdog on output/reasoning/tool activity, and publishes bounded parent tool-status updates containing actual child activity.
+26. Approved profiles are usable without host escape: explore has contained read/search, general/self add contained patch/edit, and all workflow shell access remains the no-network `just-bash` interpreter rooted in the approved workspace/worktree with no secret host environment.
+
+### Proven False Positives
+
+None. Each report identified a reproducible regression or an equivalent unsafe race in the same path.
+
+### Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter and projector tests cover failure classification and retry behavior.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Broader command execution requires a separately reviewed OS-sandbox executable allow-policy; current implementation/verification uses contained read/search/edit and the restricted interpreter.

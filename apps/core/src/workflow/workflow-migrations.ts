@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 5;
+export const WORKFLOW_SCHEMA_VERSION = 6;
 
 type WorkflowMigration = {
   version: number;
@@ -362,6 +362,41 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        SELECT workflow_triggers.trigger_id, workflow_runs.run_id, workflow_runs.created_at
        FROM workflow_triggers
        JOIN workflow_runs ON workflow_runs.run_id = workflow_triggers.last_run_id`,
+    ],
+  },
+  {
+    version: 6,
+    name: "round 2 trigger and delivery durability",
+    statements: [
+      `CREATE TABLE workflow_trigger_invocation_receipts (
+        idempotency_key TEXT PRIMARY KEY,
+        trigger_id TEXT NOT NULL UNIQUE REFERENCES workflow_triggers(trigger_id) ON DELETE CASCADE,
+        fingerprint_sha256 TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+      `DROP TRIGGER workflow_completion_delivery_after_run_insert`,
+      `CREATE TRIGGER workflow_completion_delivery_after_run_insert
+        AFTER INSERT ON workflow_runs
+        WHEN json_extract(NEW.completion_target_json, '$.kind') = 'live_parent'
+        BEGIN
+          INSERT INTO workflow_completion_deliveries (
+            run_id, parent_request_id, state, delivered_at, created_at, updated_at
+          ) VALUES (
+            NEW.run_id,
+            json_extract(NEW.completion_target_json, '$.parentRequestId'),
+            'pending',
+            NULL,
+            NEW.created_at,
+            NEW.created_at
+          );
+        END`,
+      `INSERT OR IGNORE INTO workflow_completion_deliveries (
+         run_id, parent_request_id, state, delivered_at, created_at, updated_at
+       )
+       SELECT run_id, json_extract(completion_target_json, '$.parentRequestId'),
+         'pending', NULL, created_at, updated_at
+       FROM workflow_runs
+       WHERE json_extract(completion_target_json, '$.kind') = 'live_parent'`,
     ],
   },
 ];

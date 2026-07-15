@@ -1405,6 +1405,15 @@ export async function startBusAgentRunner(params: {
   workflowSubagentDispatcher?: WorkflowSubagentDispatcher;
   durableWorkflowStore?: DurableWorkflowStore;
   resolveParentChannelId?: (sessionId: string) => string | null | undefined;
+  issueControlCapability?: (input: {
+    requestId: string;
+    sessionId: string;
+    requestClient: AdapterPlatform;
+    canonicalCwd: string;
+    safetyMode: SessionSafetyMode;
+    expiresAt: number;
+  }) => string | Promise<string>;
+  expireControlCapability?: (requestId: string) => void;
 }) {
   const { bus, subscriptionId } = params;
 
@@ -2072,6 +2081,7 @@ export async function startBusAgentRunner(params: {
     let workflowPolicy: WorkflowRequestPolicy | null = null;
     let workflowClaimTimer: ReturnType<typeof setInterval> | null = null;
     let preserveWorkflowClaim = false;
+    let controlCapability: string | null = null;
     const subagents = cfg.agent.subagents ?? DEFAULT_SUBAGENT_CONFIG;
 
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
@@ -2150,7 +2160,9 @@ export async function startBusAgentRunner(params: {
     const liveParentSession = params.workflowLiveParentBridge?.registerParent({
       parentRequestId: next.requestId,
       onActivity: () => markRunActivity("subagent"),
+      recoverSynchronousDeliveries: next.recovery !== undefined,
     });
+    await liveParentSession?.ready;
     const workflowSubagentDispatcher = params.workflowSubagentDispatcher;
     let continuationSignalVersion = 0;
     let continuationWaiters: Array<() => void> = [];
@@ -2597,6 +2609,24 @@ export async function startBusAgentRunner(params: {
         : next.requestClient === "discord" && parentChannelResolution === undefined
           ? "restricted"
           : resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
+      if (
+        runProfile === "primary" &&
+        !workflowPolicy &&
+        (next.requestClient === "discord" || next.requestClient === "github")
+      ) {
+        controlCapability =
+          (await params.issueControlCapability?.({
+            requestId: next.requestId,
+            sessionId: next.sessionId,
+            requestClient: next.requestClient,
+            canonicalCwd: cwd,
+            safetyMode,
+            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+          })) ?? null;
+        if (!controlCapability) {
+          throw new Error("Primary request is missing server-issued Level-2 control authority");
+        }
+      }
 
       const additionalSessionPrompts = await waitForPreAgent(
         resolveSessionAdditionalPrompts({
@@ -2748,6 +2778,7 @@ export async function startBusAgentRunner(params: {
             metadata: {
               workflowPolicy: workflowPolicy ?? undefined,
               workflowCapability: workflowHint?.capability,
+              controlCapability: controlCapability ?? undefined,
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
               onActivity: (source: "tool" | "subagent") => markRunActivity(source),
@@ -2763,7 +2794,15 @@ export async function startBusAgentRunner(params: {
             },
           },
           allowedToolNames: workflowPolicy
-            ? new Set(["bash", ...(workflowPolicy.subagents ? ["subagent_delegate"] : [])])
+            ? new Set([
+                "bash",
+                "read_file",
+                "glob",
+                "grep",
+                "fuzzy_search",
+                ...(workflowPolicy.editing ? ["edit_file", "apply_patch"] : []),
+                ...(workflowPolicy.subagents ? ["subagent_delegate"] : []),
+              ])
             : undefined,
           reportToolStatus: (update) => {
             bus
@@ -3882,6 +3921,13 @@ export async function startBusAgentRunner(params: {
 
       if (e instanceof RestartDrainingAbort) {
         preserveWorkflowClaim = true;
+        if (workflowHint) {
+          params.durableWorkflowStore?.releaseWorkflowRequestClaim(
+            next.requestId,
+            workflowRunnerOwnerId,
+            Date.now(),
+          );
+        }
         logger.info("agent run interrupted for graceful restart", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
@@ -3990,6 +4036,7 @@ export async function startBusAgentRunner(params: {
       );
     } finally {
       if (workflowClaimTimer) clearInterval(workflowClaimTimer);
+      if (controlCapability) params.expireControlCapability?.(next.requestId);
       if (workflowHint && !preserveWorkflowClaim) {
         params.durableWorkflowStore?.expireWorkflowRequest(next.requestId, Date.now());
       }

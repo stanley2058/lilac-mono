@@ -36,6 +36,7 @@ export type WorkflowProgressView = {
   usage: WorkflowUsage & { agentCount: number; activeAgents: number };
   nextTriggerAt: number | null;
   availableActions: WorkflowSurfaceActionKind[];
+  sensitive: boolean;
 };
 
 function schemaContainsSensitive(value: JsonValue): boolean {
@@ -103,10 +104,13 @@ function availableActions(input: {
   return [];
 }
 
-function summarizePhases(operations: readonly WorkflowOperation[]): WorkflowProgressPhase[] {
+function summarizePhases(
+  operations: readonly WorkflowOperation[],
+  sensitive: boolean,
+): WorkflowProgressPhase[] {
   const phases = new Map<string, WorkflowProgressPhase>();
   for (const operation of operations) {
-    const name = operation.phase ?? "workflow";
+    const name = sensitive ? "workflow" : (operation.phase ?? "workflow");
     const phase = phases.get(name) ?? { name, completed: 0, running: 0, failed: 0, total: 0 };
     phase.total += 1;
     if (operation.state === "succeeded") phase.completed += 1;
@@ -144,6 +148,7 @@ export async function buildWorkflowProgressView(input: {
     { inputTokens: 0, outputTokens: 0, totalTokens: 0, agentCount: 0, activeAgents: 0 },
   );
   const end = run.terminalAt ?? input.now ?? Date.now();
+  const sensitive = schemaContainsSensitive(run.inputSchemaSnapshot);
   return {
     run,
     revision,
@@ -157,16 +162,17 @@ export async function buildWorkflowProgressView(input: {
       ),
       inputSchema: run.inputSchemaSnapshot,
     },
-    phases: summarizePhases(operations),
+    phases: summarizePhases(operations, sensitive),
     recentOperations: operations.slice(-5).map(({ label, phase, kind, state }) => ({
-      label,
-      phase,
+      label: sensitive ? null : label,
+      phase: sensitive ? null : phase,
       kind,
       state,
     })),
     usage,
     nextTriggerAt: trigger?.nextFireAt ?? null,
     availableActions: availableActions({ run, approval }),
+    sensitive,
   };
 }
 
@@ -285,14 +291,16 @@ export function renderWorkflowProgressView(input: {
     ...(view.nextTriggerAt !== null
       ? [`Next trigger: ${new Date(view.nextTriggerAt).toISOString()}`]
       : []),
-    ...(view.run.terminalDetail ? ["", `Terminal detail: ${view.run.terminalDetail}`] : []),
-    ...(view.run.result !== null && !schemaContainsSensitive(view.run.inputSchemaSnapshot)
+    ...(view.run.terminalDetail && !view.sensitive
+      ? ["", `Terminal detail: ${view.run.terminalDetail}`]
+      : []),
+    ...(view.run.result !== null && !view.sensitive
       ? [
           "",
           `Result: \`${bounded(json(redactWorkflowValue(view.run.result, view.run.inputSchemaSnapshot)), 1_000)}\``,
         ]
       : []),
-    ...(view.run.resultArtifactId && !schemaContainsSensitive(view.run.inputSchemaSnapshot)
+    ...(view.run.resultArtifactId && !view.sensitive
       ? ["", `Result artifact: \`${view.run.resultArtifactId}\` (inspect with workflow.run.get)`]
       : []),
   ].join("\n");

@@ -43,6 +43,7 @@ export class WorkflowWaitResolver {
         await context.commit();
       },
     );
+    await this.catchUpHistoricalReplies();
     this.timer = setInterval(() => void this.reconcileTimers(), this.input.pollMs ?? 250);
     this.timer.unref?.();
     await this.reconcileTimers();
@@ -57,6 +58,24 @@ export class WorkflowWaitResolver {
 
   private now(): number {
     return this.input.now?.() ?? Date.now();
+  }
+
+  private async catchUpHistoricalReplies(): Promise<void> {
+    let cursor: string | undefined;
+    while (true) {
+      const batch = await this.input.bus.fetchTopic("evt.adapter", {
+        offset: cursor ? { type: "cursor", cursor } : { type: "begin" },
+        limit: 1_000,
+      });
+      for (const entry of batch.messages) {
+        if (entry.msg.type === lilacEventTypes.EvtAdapterMessageCreated) {
+          await this.resolveAdapterEvent(entry.msg.data, entry.cursor);
+        }
+      }
+      const previous = cursor;
+      cursor = batch.next;
+      if (batch.messages.length < 1_000 || !cursor || cursor === previous) return;
+    }
   }
 
   async resolveAdapterEvent(event: EvtAdapterMessageCreatedData, cursor: string): Promise<void> {
@@ -87,10 +106,13 @@ export class WorkflowWaitResolver {
       const now = this.now();
       const candidates = this.input.store.listDueWaits(now);
       for (const candidate of candidates) {
+        const runOwnerId = this.input.store.getRun(candidate.runId)?.claimedBy;
+        if (!runOwnerId) continue;
         const claimed = this.input.store.tryClaimWait({
           runId: candidate.runId,
           operationId: candidate.operationId,
           claimerId: this.workerId,
+          runOwnerId,
           now,
         });
         if (!claimed) continue;
@@ -104,6 +126,7 @@ export class WorkflowWaitResolver {
             from: "claimed",
             to: "pending",
             now,
+            runOwnerId,
           });
           continue;
         }
@@ -116,6 +139,7 @@ export class WorkflowWaitResolver {
           now,
           result: isSleep ? { kind: "sleep", dueAt: claimed.dueAt, resolvedAt: now } : null,
           resolvedBy: `${to}:${now}`,
+          runOwnerId,
         });
         if (changed) await this.publishWakeup(claimed);
       }

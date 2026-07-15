@@ -24,6 +24,7 @@ import {
 } from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
 import type { AuthorizedWorkflowRequest } from "../workflow/workflow-request-authority";
+import { authorizeWorkflowPathInput } from "../workflow/workflow-path-authority";
 import { ToolInputValidationError } from "./validation-error-message";
 
 type ToolPluginManagerLike = {
@@ -91,6 +92,7 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
     requestClient: headerStr(headers["x-lilac-request-client"]),
     cwd: headerStr(headers["x-lilac-cwd"]),
     toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
+    controlCapability: headerStr(headers["x-lilac-control-capability"]),
     workflowCapability: headerStr(headers["x-lilac-workflow-capability"]),
     safetyMode:
       headerStr(headers["x-lilac-safety-mode"]) === "restricted" ? "restricted" : undefined,
@@ -206,6 +208,17 @@ export type ToolServerOptions = {
     platform: string;
     now: number;
   }) => AuthorizedWorkflowRequest | null;
+  authorizeControlRequest?: (input: {
+    requestId: string;
+    token: string;
+    sessionId: string;
+    platform: string;
+    canonicalCwd: string;
+    safetyMode: SafetyMode;
+    now: number;
+  }) => {
+    principal: { platform: "discord" | "github"; userId: string };
+  } | null;
   resolveServerSafetyMode?: (context: RequestContext) => Promise<SafetyMode>;
 };
 
@@ -342,13 +355,7 @@ export function createToolServer(options: ToolServerOptions) {
     };
   }
 
-  const SURFACE_SEND_CALLABLES = new Set([
-    "surface.messages.send",
-    "surface.messages.edit",
-    "surface.messages.delete",
-    "surface.reactions.add",
-    "surface.reactions.remove",
-  ]);
+  const SURFACE_CREATE_CALLABLES = new Set(["surface.messages.send"]);
   const WORKFLOW_EXTERNAL_READ_CALLABLES = new Set([
     "fetch",
     "search",
@@ -368,8 +375,7 @@ export function createToolServer(options: ToolServerOptions) {
     if (!policy) return true;
     if (callableId.startsWith("workflow.")) return false;
     if (callableId.startsWith("surface.")) {
-      if (SURFACE_SEND_CALLABLES.has(callableId) && !policy.surfaceSends) return false;
-      if (!SURFACE_SEND_CALLABLES.has(callableId) && !policy.externalTools) return false;
+      if (!SURFACE_CREATE_CALLABLES.has(callableId) || !policy.surfaceSends) return false;
       return isCurrentSessionScopedSurfaceCall({
         callableId,
         input,
@@ -408,6 +414,28 @@ export function createToolServer(options: ToolServerOptions) {
         context.sessionId = authorized.policy.originSessionId;
         context.requestClient = authorized.policy.originClient;
       }
+    } else if (options.authorizeControlRequest) {
+      if (
+        !context.controlCapability ||
+        !context.requestId ||
+        !context.sessionId ||
+        !context.requestClient ||
+        !context.cwd
+      ) {
+        throw new Error("Level-2 tools require an active server-issued request capability");
+      }
+      const authorized = options.authorizeControlRequest?.({
+        requestId: context.requestId,
+        token: context.controlCapability,
+        sessionId: context.sessionId,
+        platform: context.requestClient,
+        canonicalCwd: context.cwd,
+        safetyMode: context.safetyMode ?? "trusted",
+        now: Date.now(),
+      });
+      if (!authorized) throw new Error("Request control capability is invalid or expired");
+      context.serverOwnedRequest = true;
+      context.authenticatedPrincipal = authorized.principal;
     }
     return { context, messages };
   }
@@ -549,7 +577,15 @@ export function createToolServer(options: ToolServerOptions) {
           output: `Tool '${body.callableId}' is not allowed in restricted public-session mode`,
         };
       }
-      const inputBytes = estimateJsonBytes(body.input);
+      const pathAuthorization = ctx.workflowPolicy
+        ? await authorizeWorkflowPathInput({
+            callableId: body.callableId,
+            value: body.input,
+            policy: ctx.workflowPolicy,
+          })
+        : { value: body.input, close: async () => {} };
+      const authorizedInput = pathAuthorization.value;
+      const inputBytes = estimateJsonBytes(authorizedInput);
       const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
       const deadlineAt = Date.now() + timeoutMs;
       const timeoutSignal = createDeadlineSignal(timeoutMs);
@@ -593,7 +629,7 @@ export function createToolServer(options: ToolServerOptions) {
 
         const callResult = Promise.resolve()
           .then(() =>
-            tool.call(body.callableId, body.input, {
+            tool.call(body.callableId, authorizedInput, {
               signal: combinedSignal,
               context: ctx,
               messages,
@@ -610,6 +646,9 @@ export function createToolServer(options: ToolServerOptions) {
           })
           .finally(() => {
             timeoutSignal.cancel();
+          })
+          .finally(async () => {
+            await pathAuthorization.close();
           });
 
         const timeoutResult = new Promise<{ kind: "timeout" }>((resolve) => {

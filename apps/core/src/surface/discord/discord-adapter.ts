@@ -22,6 +22,7 @@ import {
   type TextBasedChannel,
   type User,
 } from "discord.js";
+import { z } from "zod";
 import type {
   EvtAdapterMessageCreatedData,
   EvtAdapterMessageDeletedData,
@@ -67,6 +68,10 @@ import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
 import { buildDiscordActionComponents, parseDiscordActionCustomId } from "./discord-actions";
+
+const discordNotFoundErrorSchema = z
+  .object({ code: z.union([z.literal(10_003), z.literal(10_008)]) })
+  .passthrough();
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
@@ -1626,15 +1631,23 @@ export class DiscordAdapter implements SurfaceAdapter {
         await tryReplyEphemeral(interaction, "Unable to authenticate this workflow action.");
         return;
       }
-      this.emit({
-        type: "adapter.action.invoked",
-        platform: "discord",
-        ts: Date.now(),
-        actionId,
-        userId,
-        messageRef: { platform: "discord", channelId, messageId },
-      });
-      await tryReplyEphemeral(interaction, "Workflow action received.");
+      try {
+        await this.emitAndWait({
+          type: "adapter.action.invoked",
+          platform: "discord",
+          ts: Date.now(),
+          actionId,
+          userId,
+          messageRef: { platform: "discord", channelId, messageId },
+        });
+        await tryReplyEphemeral(interaction, "Workflow action received.");
+      } catch (error) {
+        this.logger.error("workflow action durable publication failed", { actionId }, error);
+        await tryReplyEphemeral(
+          interaction,
+          "Workflow action could not be recorded. Please retry.",
+        );
+      }
       return;
     }
 
@@ -2091,12 +2104,18 @@ export class DiscordAdapter implements SurfaceAdapter {
   }): Promise<Message | null> {
     const cfg = this.cfg;
     const client = this.client;
-    if (!cfg || !client) return null;
+    if (!cfg || !client) throw new Error("Discord adapter is not connected");
 
-    const ch = await client.channels.fetch(input.channelId).catch(() => null);
+    const ch = await client.channels.fetch(input.channelId).catch((error: unknown) => {
+      if (discordNotFoundErrorSchema.safeParse(error).success) return null;
+      throw error;
+    });
     if (!ch || !("messages" in ch) || !ch.messages?.fetch) return null;
 
-    const msg = await ch.messages.fetch(input.messageId).catch(() => null);
+    const msg = await ch.messages.fetch(input.messageId).catch((error: unknown) => {
+      if (discordNotFoundErrorSchema.safeParse(error).success) return null;
+      throw error;
+    });
     if (!msg) return null;
 
     if (
