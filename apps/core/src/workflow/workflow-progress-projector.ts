@@ -66,8 +66,10 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private subscription: { stop(): Promise<void> } | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private claimTimer: ReturnType<typeof setInterval> | null = null;
-  private drainingActionOutbox = false;
+  private actionOutboxDrain: Promise<void> | null = null;
   private readonly projectionClaims = new Map<string, string>();
+  private readonly projectionInFlight = new Map<string, Promise<MsgRef>>();
+  private stopping = false;
 
   constructor(
     private readonly input: {
@@ -79,10 +81,13 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       now?: () => number;
       coalesceMs?: number;
       minEditIntervalMs?: number;
+      claimStaleMs?: number;
+      claimHeartbeatMs?: number;
     },
   ) {}
 
   async start(): Promise<void> {
+    this.stopping = false;
     this.subscription = await this.input.bus.subscribeTopic(
       "evt.workflow",
       {
@@ -118,11 +123,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       void this.drainActionOutboxProjections();
     }, 1_000);
     this.retryTimer.unref?.();
-    this.claimTimer = setInterval(() => this.refreshProjectionClaims(), 10_000);
+    this.claimTimer = setInterval(
+      () => this.refreshProjectionClaims(),
+      this.input.claimHeartbeatMs ?? 10_000,
+    );
     this.claimTimer.unref?.();
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     if (this.retryTimer) clearInterval(this.retryTimer);
     this.retryTimer = null;
     if (this.claimTimer) clearInterval(this.claimTimer);
@@ -131,6 +140,12 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     for (const timer of this.actionRotationTimers.values()) clearTimeout(timer);
     this.timers.clear();
     this.actionRotationTimers.clear();
+    await this.subscription?.stop();
+    this.subscription = null;
+    await this.actionOutboxDrain;
+    while (this.projectionInFlight.size > 0) {
+      await Promise.allSettled(this.projectionInFlight.values());
+    }
     for (const [runId, claimToken] of this.projectionClaims) {
       this.input.store.releaseSurfaceProjectionClaim({
         runId,
@@ -139,11 +154,10 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       });
     }
     this.projectionClaims.clear();
-    await this.subscription?.stop();
-    this.subscription = null;
   }
 
   requestProjection(runId: string): void {
+    if (this.stopping) return;
     if (this.timers.has(runId)) return;
     const now = this.input.now?.() ?? Date.now();
     const last = this.lastEditAt.get(runId) ?? 0;
@@ -178,34 +192,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       const run = this.input.store.getRun(binding.runId);
       if (!run) continue;
       boundRunIds.add(run.runId);
-      if (binding?.messageRef) {
-        const boundRef = asMsgRef(binding.messageRef);
-        const adapter = boundRef ? this.input.adapters.get(boundRef.platform) : undefined;
-        let exists;
-        try {
-          exists = adapter && boundRef ? await adapter.readMsg(boundRef) : null;
-        } catch (error) {
-          const now = this.input.now?.() ?? Date.now();
-          const retryCount = binding.retryCount + 1;
-          this.input.store.upsertSurfaceBinding({
-            ...binding,
-            lastError: error instanceof Error ? error.message : String(error),
-            retryCount,
-            nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
-            updatedAt: now,
-          });
-          continue;
-        }
-        if (!exists) {
-          this.input.store.upsertSurfaceBinding({
-            ...binding,
-            messageRef: null,
-            lastRenderedSha256: null,
-            updatedAt: this.input.now?.() ?? Date.now(),
-          });
-        }
-      }
-      await this.project(run.runId).catch((error: unknown) => {
+      await this.project(run.runId, false, true).catch((error: unknown) => {
         if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(run.runId);
       });
     }
@@ -224,18 +211,40 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     }
   }
 
-  private async drainActionOutboxProjections(): Promise<void> {
-    if (this.drainingActionOutbox) return;
-    this.drainingActionOutbox = true;
-    try {
-      const now = this.input.now?.() ?? Date.now();
-      const claimToken = crypto.randomUUID();
-      for (const entry of this.input.store.claimPendingActionOutboxProjections({
+  private drainActionOutboxProjections(): Promise<void> {
+    if (this.actionOutboxDrain) return this.actionOutboxDrain;
+    const drain = this.drainClaimedActionOutboxProjections();
+    this.actionOutboxDrain = drain;
+    void drain.then(
+      () => {
+        if (this.actionOutboxDrain === drain) this.actionOutboxDrain = null;
+      },
+      () => {
+        if (this.actionOutboxDrain === drain) this.actionOutboxDrain = null;
+      },
+    );
+    return drain;
+  }
+
+  private async drainClaimedActionOutboxProjections(): Promise<void> {
+    const now = this.input.now?.() ?? Date.now();
+    const claimToken = crypto.randomUUID();
+    const entries = this.input.store.claimPendingActionOutboxProjections({
+      ownerId: this.ownerId,
+      claimToken,
+      now,
+      staleBefore: now - (this.input.claimStaleMs ?? 30_000),
+    });
+    const heartbeat = setInterval(() => {
+      this.input.store.refreshActionOutboxProjectionClaims({
         ownerId: this.ownerId,
         claimToken,
-        now,
-        staleBefore: now - 30_000,
-      })) {
+        now: this.input.now?.() ?? Date.now(),
+      });
+    }, this.input.claimHeartbeatMs ?? 10_000);
+    heartbeat.unref?.();
+    try {
+      for (const entry of entries) {
         try {
           await this.project(entry.runId);
           if (
@@ -262,11 +271,42 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         }
       }
     } finally {
-      this.drainingActionOutbox = false;
+      clearInterval(heartbeat);
     }
   }
 
-  private async project(runId: string, requireMessage = false): Promise<MsgRef> {
+  private async project(
+    runId: string,
+    requireMessage = false,
+    verifyExisting = false,
+  ): Promise<MsgRef> {
+    const previous = this.projectionInFlight.get(runId);
+    let projection: Promise<MsgRef>;
+    projection = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      return await this.projectWithClaim(runId, requireMessage, verifyExisting);
+    })();
+    this.projectionInFlight.set(runId, projection);
+    void projection.then(
+      () => {
+        if (this.projectionInFlight.get(runId) === projection) {
+          this.projectionInFlight.delete(runId);
+        }
+      },
+      () => {
+        if (this.projectionInFlight.get(runId) === projection) {
+          this.projectionInFlight.delete(runId);
+        }
+      },
+    );
+    return await projection;
+  }
+
+  private async projectWithClaim(
+    runId: string,
+    requireMessage: boolean,
+    verifyExisting: boolean,
+  ): Promise<MsgRef> {
     const heldClaim = this.projectionClaims.get(runId);
     const claimToken = heldClaim ?? crypto.randomUUID();
     const now = this.input.now?.() ?? Date.now();
@@ -282,7 +322,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           ownerId: this.ownerId,
           claimToken,
           now,
-          staleBefore: now - 30_000,
+          staleBefore: now - (this.input.claimStaleMs ?? 30_000),
         });
     if (!claimed) {
       this.projectionClaims.delete(runId);
@@ -291,7 +331,24 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       );
     }
     this.projectionClaims.set(runId, claimToken);
-    return await this.projectOwned(runId, requireMessage);
+    const heartbeat = setInterval(() => {
+      if (
+        !this.input.store.refreshSurfaceProjectionClaim({
+          runId,
+          ownerId: this.ownerId,
+          claimToken,
+          now: this.input.now?.() ?? Date.now(),
+        })
+      ) {
+        this.projectionClaims.delete(runId);
+      }
+    }, this.input.claimHeartbeatMs ?? 10_000);
+    heartbeat.unref?.();
+    try {
+      return await this.projectOwned(runId, claimToken, requireMessage, verifyExisting);
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
   private refreshProjectionClaims(): void {
@@ -315,6 +372,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     view: Awaited<ReturnType<typeof buildWorkflowProgressView>>,
     messageRef: MsgRef | null,
     now: number,
+    claimToken: string,
   ): CachedActions {
     const isReview = view.availableActions.some((kind) => kind === "approve" || kind === "reject");
     const expectedUserId = isReview
@@ -327,7 +385,13 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     const cached = this.actions.get(runId);
     if (cached?.key === key && cached.expiresAt > now + 60_000) return cached;
 
-    this.input.store.expireActiveSurfaceActions(runId, now);
+    this.assertFencedWrite(
+      runId,
+      this.input.store.expireActiveSurfaceActionsFenced(runId, now, {
+        ownerId: this.ownerId,
+        claimToken,
+      }),
+    );
     const ids = new Map<WorkflowSurfaceActionKind, string>();
     const recordIds: string[] = [];
     let expiresAt = now + 86_400_000;
@@ -339,23 +403,30 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       for (const kind of view.availableActions) {
         const token = crypto.randomUUID();
         const actionId = `wfaction:${crypto.randomUUID()}`;
-        const created = this.input.store.createSurfaceAction({
-          actionId,
-          tokenSha256: sha256(token),
-          runId,
-          approvalId:
-            kind === "approve" || kind === "reject" ? (view.approval?.approvalId ?? null) : null,
-          kind,
-          expectedPlatform,
-          expectedUserId,
-          expectedMessageRef: messageRef,
-          expiresAt: now + (kind === "approve" || kind === "reject" ? 7 * 86_400_000 : 86_400_000),
-          consumedAt: null,
-          consumedByPlatform: null,
-          consumedByUserId: null,
-          createdAt: now,
-        });
-        if (!created) continue;
+        const created = this.input.store.createSurfaceActionFenced(
+          {
+            actionId,
+            tokenSha256: sha256(token),
+            runId,
+            approvalId:
+              kind === "approve" || kind === "reject" ? (view.approval?.approvalId ?? null) : null,
+            kind,
+            expectedPlatform,
+            expectedUserId,
+            expectedMessageRef: messageRef,
+            expiresAt:
+              now + (kind === "approve" || kind === "reject" ? 7 * 86_400_000 : 86_400_000),
+            consumedAt: null,
+            consumedByPlatform: null,
+            consumedByUserId: null,
+            createdAt: now,
+          },
+          { ownerId: this.ownerId, claimToken },
+        );
+        if (!created) {
+          this.refreshClaim(runId, claimToken);
+          continue;
+        }
         ids.set(kind, token);
         recordIds.push(actionId);
         expiresAt = Math.min(
@@ -369,7 +440,44 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     return next;
   }
 
-  private async projectOwned(runId: string, requireMessage = false): Promise<MsgRef> {
+  private assertFencedWrite(runId: string, changed: boolean): void {
+    if (!changed) {
+      this.projectionClaims.delete(runId);
+      throw new ProjectionClaimUnavailableError(`Workflow projection claim was lost: ${runId}`);
+    }
+  }
+
+  private refreshClaim(runId: string, claimToken: string): void {
+    this.assertFencedWrite(
+      runId,
+      this.input.store.refreshSurfaceProjectionClaim({
+        runId,
+        ownerId: this.ownerId,
+        claimToken,
+        now: this.input.now?.() ?? Date.now(),
+      }),
+    );
+  }
+
+  private writeBinding(
+    binding: Parameters<DurableWorkflowStore["upsertSurfaceBinding"]>[0],
+    claimToken: string,
+  ): void {
+    this.assertFencedWrite(
+      binding.runId,
+      this.input.store.upsertSurfaceBindingFenced(binding, {
+        ownerId: this.ownerId,
+        claimToken,
+      }),
+    );
+  }
+
+  private async projectOwned(
+    runId: string,
+    claimToken: string,
+    requireMessage = false,
+    verifyExisting = false,
+  ): Promise<MsgRef> {
     const now = this.input.now?.() ?? Date.now();
     const view = await buildWorkflowProgressView({
       store: this.input.store,
@@ -390,21 +498,27 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     if (
       messageRef &&
       retryBinding &&
-      retryBinding.nextAttemptAt !== null &&
-      retryBinding.nextAttemptAt <= now
+      (verifyExisting || (retryBinding.nextAttemptAt !== null && retryBinding.nextAttemptAt <= now))
     ) {
       let found;
       try {
+        this.refreshClaim(runId, claimToken);
         found = await adapter.readMsg(messageRef);
+        this.refreshClaim(runId, claimToken);
       } catch (error) {
+        if (error instanceof ProjectionClaimUnavailableError) throw error;
+        this.refreshClaim(runId, claimToken);
         const retryCount = retryBinding.retryCount + 1;
-        this.input.store.upsertSurfaceBinding({
-          ...retryBinding,
-          lastError: error instanceof Error ? error.message : String(error),
-          retryCount,
-          nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
-          updatedAt: now,
-        });
+        this.writeBinding(
+          {
+            ...retryBinding,
+            lastError: error instanceof Error ? error.message : String(error),
+            retryCount,
+            nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+            updatedAt: now,
+          },
+          claimToken,
+        );
         throw error;
       }
       existing = {
@@ -416,10 +530,10 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         nextAttemptAt: null,
         updatedAt: now,
       };
-      this.input.store.upsertSurfaceBinding(existing);
+      this.writeBinding(existing, claimToken);
       if (!found) messageRef = null;
     }
-    const issued = this.issueActions(runId, view, messageRef, now);
+    const issued = this.issueActions(runId, view, messageRef, now, claimToken);
     const surfaceActions = toSurfaceActions({ view, actionIds: issued.ids });
     const rendered = renderWorkflowProgressView({
       view,
@@ -436,21 +550,25 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     );
 
     if (!existing) {
-      this.input.store.upsertSurfaceBinding({
-        runId,
-        target,
-        messageRef: null,
-        lastRenderedSha256: null,
-        lastError: null,
-        retryCount: 0,
-        nextAttemptAt: null,
-        createdAt: now,
-        updatedAt: now,
-      });
+      this.writeBinding(
+        {
+          runId,
+          target,
+          messageRef: null,
+          lastRenderedSha256: null,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        claimToken,
+      );
     }
     if (messageRef && existing?.lastRenderedSha256 === renderedSha256) return messageRef;
 
     try {
+      this.refreshClaim(runId, claimToken);
       const projectedRef = messageRef
         ? (await adapter.editMsg(messageRef, content), messageRef)
         : await adapter.sendMsg(
@@ -467,18 +585,30 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
                 }
               : { silent: true },
           );
-      if (!messageRef) this.input.store.bindSurfaceActions(issued.recordIds, projectedRef);
-      this.input.store.upsertSurfaceBinding({
-        runId,
-        target,
-        messageRef: projectedRef,
-        lastRenderedSha256: renderedSha256,
-        lastError: null,
-        retryCount: 0,
-        nextAttemptAt: null,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      });
+      this.refreshClaim(runId, claimToken);
+      if (!messageRef) {
+        this.assertFencedWrite(
+          runId,
+          this.input.store.bindSurfaceActionsFenced(runId, issued.recordIds, projectedRef, {
+            ownerId: this.ownerId,
+            claimToken,
+          }),
+        );
+      }
+      this.writeBinding(
+        {
+          runId,
+          target,
+          messageRef: projectedRef,
+          lastRenderedSha256: renderedSha256,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        },
+        claimToken,
+      );
       this.lastEditAt.set(runId, now);
       const priorRotation = this.actionRotationTimers.get(runId);
       if (priorRotation) clearTimeout(priorRotation);
@@ -495,24 +625,37 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       }
       return projectedRef;
     } catch (error) {
+      if (error instanceof ProjectionClaimUnavailableError) throw error;
+      this.refreshClaim(runId, claimToken);
       const createdRef = error instanceof GithubMessageCreatedError ? error.messageRef : null;
       const editTargetMissing =
         messageRef !== null &&
         ((error instanceof GithubApiError && error.status === 404) ||
           error instanceof SurfaceMessageNotFoundError);
-      if (createdRef) this.input.store.bindSurfaceActions(issued.recordIds, createdRef);
+      if (createdRef) {
+        this.assertFencedWrite(
+          runId,
+          this.input.store.bindSurfaceActionsFenced(runId, issued.recordIds, createdRef, {
+            ownerId: this.ownerId,
+            claimToken,
+          }),
+        );
+      }
       const retryCount = (existing?.retryCount ?? 0) + 1;
-      this.input.store.upsertSurfaceBinding({
-        runId,
-        target,
-        messageRef: editTargetMissing ? null : (createdRef ?? messageRef),
-        lastRenderedSha256: editTargetMissing ? null : (existing?.lastRenderedSha256 ?? null),
-        lastError: error instanceof Error ? error.message : String(error),
-        retryCount,
-        nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      });
+      this.writeBinding(
+        {
+          runId,
+          target,
+          messageRef: editTargetMissing ? null : (createdRef ?? messageRef),
+          lastRenderedSha256: editTargetMissing ? null : (existing?.lastRenderedSha256 ?? null),
+          lastError: error instanceof Error ? error.message : String(error),
+          retryCount,
+          nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        },
+        claimToken,
+      );
       if (requireMessage) {
         if (createdRef) return createdRef;
         throw new Error(

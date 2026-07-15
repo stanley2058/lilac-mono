@@ -76,6 +76,11 @@ export class WorkflowWaitResolver {
             return;
           }
           await context.commit();
+          try {
+            await this.input.bus.trimTopicBeforeCheckpoint("evt.adapter", context.cursor, 100);
+          } catch (error) {
+            this.logger.error("Workflow adapter stream reclamation failed", error);
+          }
         },
       );
     } catch (error) {

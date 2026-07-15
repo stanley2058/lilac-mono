@@ -40,6 +40,9 @@ export interface RawBus {
   /** Return the latest durable cursor currently present on a topic. */
   watermark?(topic: Topic): Promise<Cursor | null>;
 
+  /** Reclaim entries older than a durable tail checkpoint and every durable group frontier. */
+  trimBeforeCheckpoint?(topic: Topic, checkpoint: Cursor, safetyMargin: number): Promise<number>;
+
   /** Close any owned resources (connections, timers, etc). */
   close(): Promise<void>;
 }

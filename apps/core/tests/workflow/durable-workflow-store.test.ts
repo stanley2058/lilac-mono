@@ -492,12 +492,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 6 recoverable streams and fenced projection",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 10,
+          name: "round 7 blocking legacy receipt quarantine",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(9);
+      expect(reopened.listMigrations()).toHaveLength(10);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -531,6 +536,19 @@ describe("DurableWorkflowStore", () => {
     const path = dbPath("legacy-terminal-receipt");
     try {
       const initialized = new DurableWorkflowStore(path);
+      const invocation = initialized.createInvocation({
+        revision: revision(),
+        run: run("legacy-run"),
+        pendingApproval: approval("legacy-run"),
+      });
+      initialized.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      initialized.tryClaimApprovedRun({ runId: "legacy-run", claimerId: "engine", now: 12 });
+      initialized.createOperation(operation("legacy-run", "legacy-operation"), "engine");
       initialized.close();
       const db = new Database(path);
       db.run(
@@ -544,6 +562,25 @@ describe("DurableWorkflowStore", () => {
 
       const upgraded = new DurableWorkflowStore(path);
       expect(upgraded.getWorkflowRequestTerminalReceipt("legacy-request")).toBeNull();
+      expect(upgraded.getRun("legacy-run")).toMatchObject({
+        state: "paused",
+        claimedBy: null,
+        terminalDetail: expect.stringContaining("Manual reconciliation required"),
+      });
+      expect(upgraded.getOperation("legacy-run", "legacy-operation")).toMatchObject({
+        state: "blocked",
+        claimedBy: null,
+        error: expect.stringContaining("Manual reconciliation required"),
+      });
+      expect(
+        upgraded.claimWorkflowRequestPromptPublication({
+          requestId: "legacy-request",
+          runId: "legacy-run",
+          operationId: "legacy-operation",
+          runOwnerId: "engine",
+          now: 20,
+        }),
+      ).toBe(false);
       upgraded.close();
       const verified = new Database(path, { readonly: true });
       expect(

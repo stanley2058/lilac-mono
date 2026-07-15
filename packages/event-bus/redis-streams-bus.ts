@@ -78,6 +78,54 @@ end
 return redis.call("XTRIM", KEYS[1], "MINID", "=", watermark)
 `;
 
+const TRIM_BEFORE_CHECKPOINT_SCRIPT = `
+if redis.call("TYPE", KEYS[1]).ok ~= "stream" then return 0 end
+
+local function component_less_than(left, right)
+  if string.len(left) ~= string.len(right) then return string.len(left) < string.len(right) end
+  return left < right
+end
+
+local function less_than(left, right)
+  local left_dash = string.find(left, "-", 1, true)
+  local right_dash = string.find(right, "-", 1, true)
+  local left_time = string.sub(left, 1, left_dash - 1)
+  local right_time = string.sub(right, 1, right_dash - 1)
+  if left_time ~= right_time then return component_less_than(left_time, right_time) end
+  return component_less_than(string.sub(left, left_dash + 1), string.sub(right, right_dash + 1))
+end
+
+local watermark = ARGV[1]
+if watermark == "0-0" then return 0 end
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+for _, fields in ipairs(groups) do
+  local name = nil
+  local pending = nil
+  local last_delivered_id = nil
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" then name = fields[index + 1] end
+    if fields[index] == "pending" then pending = fields[index + 1] end
+    if fields[index] == "last-delivered-id" then last_delivered_id = fields[index + 1] end
+  end
+  if not name or pending == nil or not last_delivered_id then return 0 end
+  if string.sub(name, 1, string.len(ARGV[3])) ~= ARGV[3] then
+    local boundary = last_delivered_id
+    if pending > 0 then
+      local pending_summary = redis.call("XPENDING", KEYS[1], name)
+      boundary = pending_summary[2]
+      if not boundary then return 0 end
+    end
+    if boundary == "0-0" then return 0 end
+    if less_than(boundary, watermark) then watermark = boundary end
+  end
+end
+
+local retained = redis.call("XREVRANGE", KEYS[1], watermark, "-", "COUNT", ARGV[2])
+if #retained < tonumber(ARGV[2]) then return 0 end
+local cutoff = retained[#retained][1]
+return redis.call("XTRIM", KEYS[1], "MINID", "=", cutoff)
+`;
+
 function randomConsumerId(): string {
   // Bun + modern Node both support this.
   return crypto.randomUUID();
@@ -311,6 +359,27 @@ export class RedisStreamsBus implements RawBus {
     if (typeof trimmed === "number" && trimmed > 0) {
       this.logger.debug("event_bus.trimmed", { topic, trimmed });
     }
+  }
+
+  async trimBeforeCheckpoint(
+    topic: Topic,
+    checkpoint: Cursor,
+    safetyMargin: number,
+  ): Promise<number> {
+    const retainedCount = Math.max(1, Math.floor(safetyMargin));
+    const trimmed = await this.redis.eval(
+      TRIM_BEFORE_CHECKPOINT_SCRIPT,
+      1,
+      this.streamKey(topic),
+      checkpoint,
+      String(retainedCount),
+      EPHEMERAL_GROUP_PREFIX,
+    );
+    if (typeof trimmed !== "number") throw new Error("Redis XTRIM returned an invalid count");
+    if (trimmed > 0) {
+      this.logger.debug("event_bus.checkpoint_trimmed", { topic, checkpoint, trimmed });
+    }
+    return trimmed;
   }
 
   /** Publish a message via `XADD`. */

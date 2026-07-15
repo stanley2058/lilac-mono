@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { collectApplyPatchTouchedPaths } from "../tools/batch";
 import type { WorkflowRequestPolicy } from "./workflow-request-authority";
+import { isWorkflowProtectedPath } from "./workflow-protected-path";
 
 const toolInputSchema = z.record(z.string(), z.unknown());
 const WORKFLOW_READ_TOOLS = new Set(["read_file", "glob", "grep"]);
@@ -17,23 +18,7 @@ function isContained(root: string, candidate: string): boolean {
 }
 
 function assertUnprotected(root: string, candidate: string): void {
-  const parts = path.relative(root, candidate).split(path.sep).filter(Boolean);
-  const leaf = parts.at(-1) ?? "";
-  if (
-    parts.some(
-      (part) =>
-        part === ".ssh" ||
-        part === ".aws" ||
-        part === ".gnupg" ||
-        part === ".secrets" ||
-        part === "secrets",
-    ) ||
-    parts.some((part) => part === ".git") ||
-    parts.some((part) => part === "core-config.yaml" || part === "core-config.yml") ||
-    leaf === ".env" ||
-    leaf.startsWith(".env.") ||
-    leaf === ".envrc"
-  ) {
+  if (isWorkflowProtectedPath(root, candidate)) {
     throw new Error("Workflow Level-1 tools cannot access protected workspace paths");
   }
 }
@@ -89,7 +74,7 @@ async function assertContainedPath(input: {
       throw error;
     });
     if (stat?.isFile() && stat.nlink > 1) {
-      throw new Error("Workflow Level-1 mutation target must not be a hard-linked file");
+      throw new Error("Workflow Level-1 target must not be a hard-linked file");
     }
   }
   return candidate;
@@ -153,7 +138,7 @@ async function authorizeInput(input: {
       root,
       value: target,
       requireFile: true,
-      rejectHardLinks: input.toolName === "edit_file",
+      rejectHardLinks: true,
     });
   } else if (input.toolName === "glob") {
     assertSafeGlobPatterns(input.value);
@@ -202,7 +187,12 @@ async function assertOutputContained(
     }
   }
   for (const resultPath of paths) {
-    await assertContainedPath({ root, value: resultPath, requireFile: toolName === "grep" });
+    await assertContainedPath({
+      root,
+      value: resultPath,
+      requireFile: toolName === "grep",
+      rejectHardLinks: true,
+    });
   }
 }
 

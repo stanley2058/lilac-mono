@@ -3,6 +3,8 @@ import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import { isWorkflowProtectedPath } from "./workflow-protected-path";
+
 type WorkflowPathPolicy = { canonicalCwd: string };
 
 const contentInspectPathSchema = z.object({ path: z.string().min(1).optional() }).passthrough();
@@ -19,15 +21,7 @@ function isContained(root: string, candidate: string): boolean {
 }
 
 function assertNonSecretWorkspacePath(root: string, candidate: string): void {
-  const parts = path.relative(root, candidate).split(path.sep).filter(Boolean);
-  const leaf = parts.at(-1) ?? "";
-  if (
-    parts.some((part) => part === ".ssh" || part === ".aws" || part === ".gnupg") ||
-    (parts[0] === ".git" && parts[1] === "config") ||
-    parts.some((part) => part === "core-config.yaml" || part === "core-config.yml") ||
-    leaf === ".env" ||
-    leaf.startsWith(".env.")
-  ) {
+  if (isWorkflowProtectedPath(root, candidate)) {
     throw new Error("Workflow external tools cannot read protected workspace files");
   }
 }
@@ -46,7 +40,7 @@ async function openContainedFile(
     throw new Error("Workflow tool paths must not contain symbolic links");
   }
   const before = await fs.lstat(canonical);
-  if (!before.isFile() || before.isSymbolicLink()) {
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1) {
     throw new Error("Workflow tool path must identify a regular non-symlink file");
   }
 
@@ -58,6 +52,7 @@ async function openContainedFile(
       after !== canonical ||
       opened.dev !== before.dev ||
       opened.ino !== before.ino ||
+      opened.nlink > 1 ||
       !opened.isFile()
     ) {
       throw new Error("Workflow tool path changed during authorization");

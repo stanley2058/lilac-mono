@@ -245,6 +245,13 @@ export interface LilacBus {
   /** Return the latest durable cursor currently present on a topic. */
   getTopicWatermark(topic: LilacTopic): Promise<Cursor | null>;
 
+  /** Reclaim a processed prefix while retaining a safety margin behind all durable frontiers. */
+  trimTopicBeforeCheckpoint(
+    topic: LilacTopic,
+    checkpoint: Cursor,
+    safetyMargin: number,
+  ): Promise<number>;
+
   /** Close the underlying transport. */
   close(): Promise<void>;
 }
@@ -339,6 +346,10 @@ export function createLilacBus(raw: RawBus): LilacBus {
         throw new Error("The configured event bus does not expose durable topic watermarks");
       }
       return await raw.watermark(topic);
+    },
+
+    trimTopicBeforeCheckpoint: async (topic, checkpoint, safetyMargin) => {
+      return (await raw.trimBeforeCheckpoint?.(topic, checkpoint, safetyMargin)) ?? 0;
     },
 
     close: async () => {

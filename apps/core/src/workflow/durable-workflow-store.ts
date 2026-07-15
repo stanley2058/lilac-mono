@@ -607,14 +607,14 @@ export class DurableWorkflowStore {
     configureSqliteConnection(this.db);
     this.db.run("PRAGMA foreign_keys = ON");
     applyWorkflowSchemaMigrations(this.db);
-    this.quarantineLegacyResolvedReceipts(Date.now());
+    this.quarantineAndPauseLegacyResolvedReceipts(Date.now());
   }
 
   close(): void {
     this.db.close();
   }
 
-  private quarantineLegacyResolvedReceipts(now: number): void {
+  private quarantineAndPauseLegacyResolvedReceipts(now: number): void {
     const quarantine = this.db.transaction(() => {
       this.db.run(
         `INSERT OR IGNORE INTO workflow_request_terminal_receipt_quarantine (
@@ -630,6 +630,40 @@ export class DurableWorkflowStore {
       this.db.run(
         `DELETE FROM workflow_request_terminal_receipts
          WHERE state = 'resolved' AND output_json IS NULL AND result_artifact_id IS NULL`,
+      );
+      this.db.run(
+        `UPDATE workflow_operations
+         SET state = 'blocked', error = 'Manual reconciliation required: ambiguous legacy terminal receipt',
+           claimed_by = NULL, claimed_at = NULL, updated_at = ?
+         WHERE state IN ('queued', 'dispatched', 'running')
+           AND EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+             WHERE quarantine.run_id = workflow_operations.run_id
+               AND quarantine.operation_id = workflow_operations.operation_id
+           )`,
+        [now],
+      );
+      this.db.run(
+        `UPDATE workflow_request_dispatches
+         SET active = 0, expires_at = MIN(expires_at, ?), updated_at = ?
+         WHERE active = 1 AND EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_request_dispatches.run_id
+             AND quarantine.operation_id = workflow_request_dispatches.operation_id
+         )`,
+        [now, now],
+      );
+      this.db.run(
+        `UPDATE workflow_runs
+         SET state = 'paused',
+           terminal_detail = 'Manual reconciliation required: ambiguous legacy terminal receipt',
+           claimed_by = NULL, claimed_at = NULL, updated_at = ?
+         WHERE state NOT IN ('paused', 'succeeded', 'failed', 'rejected', 'cancelled')
+           AND EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+             WHERE quarantine.run_id = workflow_runs.run_id
+           )`,
+        [now],
       );
     });
     quarantine.immediate();
@@ -1522,6 +1556,13 @@ export class DurableWorkflowStore {
       return null;
     }
     const authorize = this.db.transaction(() => {
+      const quarantined = this.db
+        .query(
+          `SELECT 1 FROM workflow_request_terminal_receipt_quarantine
+           WHERE run_id = ? AND operation_id = ? LIMIT 1`,
+        )
+        .get(input.runId, input.operationId);
+      if (quarantined) return null;
       const run = this.getRun(input.runId);
       const revision = run ? this.getRevision(run.revisionId) : null;
       const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
@@ -1734,10 +1775,15 @@ export class DurableWorkflowStore {
         `UPDATE workflow_request_dispatches SET prompt_published_at = ?, updated_at = ?
          WHERE request_id = ? AND run_id = ? AND operation_id = ? AND active = 1
            AND prompt_published_at IS NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM workflow_request_terminal_receipts
-             WHERE workflow_request_terminal_receipts.request_id = workflow_request_dispatches.request_id
-           )
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_request_terminal_receipts
+              WHERE workflow_request_terminal_receipts.request_id = workflow_request_dispatches.request_id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+              WHERE quarantine.run_id = workflow_request_dispatches.run_id
+                AND quarantine.operation_id = workflow_request_dispatches.operation_id
+            )
            AND EXISTS (
              SELECT 1 FROM workflow_runs
              WHERE workflow_runs.run_id = workflow_request_dispatches.run_id
@@ -2808,6 +2854,34 @@ export class DurableWorkflowStore {
     );
   }
 
+  private ownsSurfaceProjectionClaim(input: {
+    runId: string;
+    ownerId: string;
+    claimToken: string;
+  }): boolean {
+    return Boolean(
+      this.db
+        .query(
+          `SELECT 1 FROM workflow_surface_projection_claims
+           WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
+        )
+        .get(input.runId, input.ownerId, input.claimToken),
+    );
+  }
+
+  upsertSurfaceBindingFenced(
+    bindingInput: WorkflowSurfaceBinding,
+    claim: { ownerId: string; claimToken: string },
+  ): boolean {
+    const binding = workflowSurfaceBindingSchema.parse(bindingInput);
+    const update = this.db.transaction(() => {
+      if (!this.ownsSurfaceProjectionClaim({ runId: binding.runId, ...claim })) return false;
+      this.upsertSurfaceBinding(binding);
+      return true;
+    });
+    return update.immediate();
+  }
+
   upsertSurfaceBinding(bindingInput: WorkflowSurfaceBinding): void {
     const binding = workflowSurfaceBindingSchema.parse(bindingInput);
     this.db.run(
@@ -2899,6 +2973,18 @@ export class DurableWorkflowStore {
     return result.changes === 1;
   }
 
+  createSurfaceActionFenced(
+    actionInput: WorkflowSurfaceAction,
+    claim: { ownerId: string; claimToken: string },
+  ): boolean {
+    const action = workflowSurfaceActionSchema.parse(actionInput);
+    const create = this.db.transaction(() => {
+      if (!this.ownsSurfaceProjectionClaim({ runId: action.runId, ...claim })) return false;
+      return this.createSurfaceAction(action);
+    });
+    return create.immediate();
+  }
+
   getSurfaceAction(actionId: string): WorkflowSurfaceAction | null {
     const row = this.db
       .query("SELECT * FROM workflow_surface_actions WHERE action_id = ?")
@@ -2951,12 +3037,39 @@ export class DurableWorkflowStore {
     bind.immediate();
   }
 
+  bindSurfaceActionsFenced(
+    runId: string,
+    actionIds: readonly string[],
+    messageRef: NonNullable<WorkflowSurfaceAction["expectedMessageRef"]>,
+    claim: { ownerId: string; claimToken: string },
+  ): boolean {
+    const bind = this.db.transaction(() => {
+      if (!this.ownsSurfaceProjectionClaim({ runId, ...claim })) return false;
+      this.bindSurfaceActions(actionIds, messageRef);
+      return true;
+    });
+    return bind.immediate();
+  }
+
   expireActiveSurfaceActions(runId: string, now: number): void {
     this.db.run(
       `UPDATE workflow_surface_actions SET expires_at = ?
        WHERE run_id = ? AND consumed_at IS NULL AND expires_at > ?`,
       [now, runId, now],
     );
+  }
+
+  expireActiveSurfaceActionsFenced(
+    runId: string,
+    now: number,
+    claim: { ownerId: string; claimToken: string },
+  ): boolean {
+    const expire = this.db.transaction(() => {
+      if (!this.ownsSurfaceProjectionClaim({ runId, ...claim })) return false;
+      this.expireActiveSurfaceActions(runId, now);
+      return true;
+    });
+    return expire.immediate();
   }
 
   applySurfaceAction(input: {
@@ -3246,6 +3359,19 @@ export class DurableWorkflowStore {
     return claim.immediate();
   }
 
+  refreshActionOutboxPublishClaims(input: {
+    ownerId: string;
+    claimToken: string;
+    now: number;
+  }): number {
+    return this.db
+      .query(
+        `UPDATE workflow_action_outbox SET publish_claimed_at = ?
+         WHERE published_at IS NULL AND publish_claim_owner = ? AND publish_claim_token = ?`,
+      )
+      .run(input.now, input.ownerId, input.claimToken).changes;
+  }
+
   markActionOutboxPublished(input: {
     outboxId: string;
     ownerId: string;
@@ -3342,6 +3468,19 @@ export class DurableWorkflowStore {
       return claimed;
     });
     return claim.immediate();
+  }
+
+  refreshActionOutboxProjectionClaims(input: {
+    ownerId: string;
+    claimToken: string;
+    now: number;
+  }): number {
+    return this.db
+      .query(
+        `UPDATE workflow_action_outbox SET project_claimed_at = ?
+         WHERE projected_at IS NULL AND project_claim_owner = ? AND project_claim_token = ?`,
+      )
+      .run(input.now, input.ownerId, input.claimToken).changes;
   }
 
   markActionOutboxProjected(input: {

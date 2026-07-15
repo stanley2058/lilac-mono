@@ -50,6 +50,11 @@ describe("workflow Level-1 filesystem boundary", () => {
     const outside = path.join(temp, "outside.txt");
     await fs.mkdir(root);
     await fs.writeFile(path.join(root, "inside.txt"), "inside", "utf8");
+    await fs.mkdir(path.join(root, ".git"));
+    await fs.mkdir(path.join(root, ".secrets"));
+    await fs.writeFile(path.join(root, ".git", "index"), "index", "utf8");
+    await fs.writeFile(path.join(root, ".secrets", "token"), "token", "utf8");
+    await fs.writeFile(path.join(root, ".envrc"), "TOKEN=1", "utf8");
     await fs.writeFile(outside, "outside", "utf8");
     await fs.symlink(outside, path.join(root, "escape-link"));
     const calls: unknown[] = [];
@@ -82,6 +87,9 @@ describe("workflow Level-1 filesystem boundary", () => {
       await expect(execute(glob, { patterns: ["/etc/**"] })).rejects.toThrow("remain relative");
       await expect(execute(glob, { patterns: ["../**"] })).rejects.toThrow("remain relative");
       await expect(execute(read, { path: ".env" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".envrc" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".git/index" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".secrets/token" })).rejects.toThrow("protected");
       await expect(execute(read, { path: "inside.txt" })).resolves.toMatchObject({ success: true });
       expect(calls).toHaveLength(1);
     } finally {
@@ -178,6 +186,24 @@ describe("workflow Level-1 filesystem boundary", () => {
       await expect(
         execute(shared, { path: "git-alias.txt", oldText: "safe", newText: "unsafe" }),
       ).rejects.toThrow("hard-linked");
+      const read = enforceWorkflowLevel1Boundary({
+        tool: original,
+        toolName: "read_file",
+        policy: policy(workspace, false),
+      });
+      await expect(execute(read, { path: "env-alias.txt" })).rejects.toThrow("hard-linked");
+      const grep = enforceWorkflowLevel1Boundary({
+        tool: { execute: async () => ({ results: [{ file: "git-alias.txt", line: "safe" }] }) },
+        toolName: "grep",
+        policy: policy(workspace, false),
+      });
+      await expect(execute(grep, { pattern: "safe" })).rejects.toThrow("hard-linked");
+      const glob = enforceWorkflowLevel1Boundary({
+        tool: { execute: async () => ({ paths: ["env-alias.txt"] }) },
+        toolName: "glob",
+        policy: policy(workspace, false),
+      });
+      await expect(execute(glob, { patterns: ["*.txt"] })).rejects.toThrow("hard-linked");
       const sharedPatch = enforceWorkflowLevel1Boundary({
         tool: original,
         toolName: "apply_patch",

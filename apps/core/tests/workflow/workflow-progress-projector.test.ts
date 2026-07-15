@@ -72,13 +72,17 @@ class FailingPublishRawBus extends IdleRawBus {
 class DelayedCapturingRawBus extends IdleRawBus {
   readonly outboxIds: string[] = [];
 
+  constructor(private readonly delayMs = 5) {
+    super();
+  }
+
   override async publish<TData>(
     message: Omit<Message<TData>, "id" | "ts">,
     options: PublishOptions,
   ) {
     const outboxId = options.headers?.["workflow_outbox_id"];
     if (outboxId) this.outboxIds.push(outboxId);
-    await Bun.sleep(5);
+    await Bun.sleep(this.delayMs);
     return await super.publish(message, options);
   }
 }
@@ -88,6 +92,8 @@ class ProjectionAdapter implements SurfaceAdapter {
   readonly messages = new Map<string, SurfaceMessage>();
   sends = 0;
   edits = 0;
+  editStarts = 0;
+  editDelayMs = 0;
   reads = 0;
   failNextSend = false;
   failNextRead = false;
@@ -149,6 +155,8 @@ class ProjectionAdapter implements SurfaceAdapter {
     return [...this.messages.values()];
   }
   async editMsg(ref: MsgRef, content: ContentOpts) {
+    this.editStarts += 1;
+    if (this.editDelayMs > 0) await Bun.sleep(this.editDelayMs);
     if (this.failNextEditNotFound) {
       this.failNextEditNotFound = false;
       throw new SurfaceMessageNotFoundError("discord", 10_008, "missing");
@@ -177,6 +185,34 @@ class ProjectionAdapter implements SurfaceAdapter {
     return [];
   }
   async markRead() {}
+}
+
+class FirstSendBlockingProjectionAdapter extends ProjectionAdapter {
+  private first = true;
+  private releaseFirst: (() => void) | null = null;
+  private resolveFirstStarted: () => void = () => {};
+  readonly firstStarted = new Promise<void>((resolve) => {
+    this.resolveFirstStarted = resolve;
+  });
+
+  release(): void {
+    this.releaseFirst?.();
+  }
+
+  override async sendMsg(
+    session: SessionRef,
+    content: ContentOpts,
+    options?: SendOpts,
+  ): Promise<MsgRef> {
+    if (this.first) {
+      this.first = false;
+      this.resolveFirstStarted();
+      await new Promise<void>((resolve) => {
+        this.releaseFirst = resolve;
+      });
+    }
+    return await super.sendMsg(session, content, options);
+  }
 }
 
 function createInvocation(store: DurableWorkflowStore) {
@@ -288,6 +324,251 @@ function createInvocation(store: DurableWorkflowStore) {
 }
 
 describe("WorkflowProgressProjector", () => {
+  it("heartbeats delayed outbox publication claims to prevent takeover", async () => {
+    const dbPath = join(tmpdir(), `workflow-outbox-heartbeat-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const raw = new DelayedCapturingRawBus(80);
+    const bus = createLilacBus(raw);
+    let resolverA: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+    let resolverB: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+    const initial = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "outbox-heartbeat-initial",
+    });
+    try {
+      createInvocation(storeA);
+      const messageRef = await initial.ensureInitialCard("run-1");
+      const approveToken = adapter.contents
+        .at(-1)
+        ?.actions?.find((action) => action.label === "Approve")?.actionId;
+      if (!approveToken) throw new Error("Missing approval token");
+      expect(
+        storeA.applySurfaceAction({
+          tokenSha256: sha256(approveToken),
+          platform: "discord",
+          userId: "user-1",
+          messageRef,
+          now: Date.now(),
+        }).status,
+      ).toBe("applied");
+
+      const startingA = startWorkflowActionResolver({
+        bus,
+        store: storeA,
+        subscriptionId: "outbox-heartbeat-a",
+        claimStaleMs: 30,
+        claimHeartbeatMs: 10,
+      });
+      await Bun.sleep(45);
+      resolverB = await startWorkflowActionResolver({
+        bus,
+        store: storeB,
+        subscriptionId: "outbox-heartbeat-b",
+        claimStaleMs: 30,
+        claimHeartbeatMs: 10,
+      });
+      resolverA = await startingA;
+      expect(raw.outboxIds).toHaveLength(3);
+      expect(new Set(raw.outboxIds).size).toBe(3);
+    } finally {
+      await initial.stop();
+      await resolverA?.stop();
+      await resolverB?.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("heartbeats a delayed card edit so another runtime cannot take over", async () => {
+    const dbPath = join(tmpdir(), `workflow-projection-heartbeat-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const initial = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projection-heartbeat-initial",
+    });
+    const projectorA = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projection-heartbeat-a",
+      claimStaleMs: 30,
+      claimHeartbeatMs: 10,
+    });
+    const projectorB = new WorkflowProgressProjector({
+      bus,
+      store: storeB,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projection-heartbeat-b",
+      claimStaleMs: 30,
+      claimHeartbeatMs: 10,
+    });
+    try {
+      createInvocation(storeA);
+      await initial.ensureInitialCard("run-1");
+      await initial.stop();
+      storeA.transitionApproval({
+        approvalId: "approval-1",
+        from: "pending",
+        to: "approved",
+        now: Date.now(),
+      });
+      adapter.editDelayMs = 80;
+      const editing = projectorA.ensureInitialCard("run-1");
+      while (adapter.editStarts === 0) await Bun.sleep(1);
+      await Bun.sleep(45);
+      await expect(projectorB.ensureInitialCard("run-1")).rejects.toThrow("already claimed");
+      await editing;
+      expect(adapter.edits).toBe(1);
+      expect(storeA.getSurfaceBinding("run-1")?.messageRef?.messageId).toBe("card-1");
+    } finally {
+      await initial.stop();
+      await projectorA.stop();
+      await projectorB.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("serializes two-runtime missing-card reconciliation to one durable card", async () => {
+    const dbPath = join(tmpdir(), `workflow-missing-card-race-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projectorA = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "missing-card-a",
+      now: () => 100,
+    });
+    const projectorB = new WorkflowProgressProjector({
+      bus,
+      store: storeB,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "missing-card-b",
+      now: () => 100,
+    });
+    try {
+      createInvocation(storeA);
+      const results = await Promise.allSettled([
+        projectorA.ensureInitialCard("run-1"),
+        projectorB.ensureInitialCard("run-1"),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(adapter.sends).toBe(1);
+      expect(storeA.getSurfaceBinding("run-1")?.messageRef?.messageId).toBe("card-1");
+    } finally {
+      await projectorA.stop();
+      await projectorB.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("prevents a stale in-flight projector from overwriting a newer generation", async () => {
+    const dbPath = join(tmpdir(), `workflow-stale-projector-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const adapter = new FirstSendBlockingProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projectorA = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-projector-a",
+      now: () => 0,
+    });
+    const projectorB = new WorkflowProgressProjector({
+      bus,
+      store: storeB,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-projector-b",
+      now: () => 40_000,
+    });
+    try {
+      createInvocation(storeA);
+      const staleProjection = projectorA.ensureInitialCard("run-1");
+      await adapter.firstStarted;
+      const currentRef = await projectorB.ensureInitialCard("run-1");
+      expect(currentRef.messageId).toBe("card-1");
+      adapter.release();
+      await expect(staleProjection).rejects.toThrow("claim was lost");
+      expect(storeA.getSurfaceBinding("run-1")?.messageRef).toEqual(currentRef);
+      expect(
+        storeA
+          .listSurfaceActions("run-1", { activeAt: 40_000 })
+          .every((action) => action.expectedMessageRef?.messageId === currentRef.messageId),
+      ).toBe(true);
+    } finally {
+      adapter.release();
+      await projectorA.stop();
+      await projectorB.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("waits for an in-flight projection before releasing claims on shutdown", async () => {
+    const dbPath = join(tmpdir(), `workflow-projector-shutdown-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new FirstSendBlockingProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "projector-shutdown",
+    });
+    try {
+      createInvocation(store);
+      const projection = projector.ensureInitialCard("run-1");
+      await adapter.firstStarted;
+      let stopped = false;
+      const stopping = projector.stop().then(() => {
+        stopped = true;
+      });
+      await Bun.sleep(10);
+      expect(stopped).toBe(false);
+      adapter.release();
+      await projection;
+      await stopping;
+      expect(stopped).toBe(true);
+      expect(
+        store.claimSurfaceProjection({
+          runId: "run-1",
+          ownerId: "replacement",
+          claimToken: "replacement-token",
+          now: Date.now(),
+          staleBefore: Number.MIN_SAFE_INTEGER,
+        }),
+      ).toBe(true);
+    } finally {
+      adapter.release();
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("fences two runtimes from duplicate outbox publication or action rotation", async () => {
     const dbPath = join(tmpdir(), `workflow-action-race-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);

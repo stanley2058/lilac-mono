@@ -14,7 +14,9 @@ const STALE_CONSUMER_IDLE_MS = 60 * 60 * 1000;
 const REQUIRED_DEPLOY_CONFIRMATION = "--confirm-deployed-fc24e98";
 const REQUIRED_LEGACY_PROCESS_CONFIRMATION = "--confirm-no-legacy-processes";
 const LEGACY_EPHEMERAL_GROUP_PREFIXES = ["subagent:", "deferred-subagent:"] as const;
-const TAIL_REPLAY_TOPICS = new Set(["evt.request"]);
+// These topics require application-owned durable checkpoints that this standalone migration
+// cannot observe. Runtime reclamation combines those checkpoints with consumer-group frontiers.
+const TAIL_REPLAY_TOPICS = new Set(["evt.request", "evt.adapter"]);
 
 const TRIM_ACKNOWLEDGED_PREFIX_SCRIPT = `
 local groups = redis.call("XINFO", "GROUPS", KEYS[1])

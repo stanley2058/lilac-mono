@@ -268,6 +268,62 @@ describe("RedisStreamsBus", () => {
     await redis.quit();
   });
 
+  it("bounds evt.adapter history behind the durable checkpoint safety margin", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-checkpoint-trim")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const cursors: string[] = [];
+    try {
+      for (let index = 0; index < 150; index += 1) {
+        const published = await raw.publish(
+          { topic: "evt.adapter", type: "test", data: index },
+          { topic: "evt.adapter", type: "test" },
+        );
+        cursors.push(published.cursor);
+      }
+      expect(await raw.trimBeforeCheckpoint("evt.adapter", cursors.at(-1)!, 20)).toBe(130);
+      expect(await redis.xlen(streamKey)).toBe(20);
+      expect(await redis.xrange(streamKey, cursors[129]!, cursors[129]!)).toHaveLength(0);
+      expect(await redis.xrange(streamKey, cursors[130]!, cursors[130]!)).toHaveLength(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("does not reclaim beyond a lagging resolver checkpoint or durable group frontier", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-lag-frontier")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const cursors: string[] = [];
+    try {
+      for (let index = 0; index < 120; index += 1) {
+        const published = await raw.publish(
+          { topic: "evt.adapter", type: index === 100 ? "test.barrier" : "test", data: index },
+          { topic: "evt.adapter", type: index === 100 ? "test.barrier" : "test" },
+        );
+        cursors.push(published.cursor);
+      }
+
+      await raw.trimBeforeCheckpoint("evt.adapter", cursors[49]!, 10);
+      expect(await redis.xrange(streamKey, cursors[49]!, cursors[49]!)).toHaveLength(1);
+      expect(await redis.xrange(streamKey, cursors[39]!, cursors[39]!)).toHaveLength(0);
+
+      await redis.xgroup("CREATE", streamKey, "durable-adapter-reader", cursors[79]!);
+      await raw.trimBeforeCheckpoint("evt.adapter", cursors.at(-1)!, 10);
+      expect(await redis.xrange(streamKey, cursors[79]!, cursors[79]!)).toHaveLength(1);
+      expect(await redis.xrange(streamKey, cursors[69]!, cursors[69]!)).toHaveLength(0);
+      expect(await redis.xrange(streamKey, cursors[100]!, cursors[100]!)).toHaveLength(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
   it("preserves lagged evt.adapter entries when other groups acknowledge later entries", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("adapter-recovery")}`;

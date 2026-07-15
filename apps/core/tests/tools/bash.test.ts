@@ -433,6 +433,21 @@ describe("executeRestrictedBash", () => {
       "cp -r nested copied-nested",
     ];
     try {
+      const hardLinkRead = await executeRestrictedBash(
+        { command: "cat env-alias.txt; grep safe git-config-alias.txt", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-protected-hard-link-read",
+            sessionId,
+            requestClient: "test",
+          },
+        },
+      );
+      expect(hardLinkRead.exitCode).not.toBe(0);
+      expect(hardLinkRead.stdout).not.toContain("SECRET=original");
+      expect(hardLinkRead.stdout).not.toContain("[safe]");
+
       for (const [index, command] of commands.entries()) {
         const result = await executeRestrictedBash(
           { command, cwd: workspace },

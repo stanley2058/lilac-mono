@@ -25,6 +25,7 @@ import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-
 import { expandTilde } from "@stanley2058/lilac-fs";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
+import { isWorkflowProtectedPath } from "../workflow/workflow-protected-path";
 
 const WORKSPACE_MOUNT = "/workspace";
 const TMP_MOUNT = "/tmp";
@@ -71,31 +72,7 @@ function isDeniedWorkspacePath(p: string): boolean {
   const rel = normalized.startsWith(`${WORKSPACE_MOUNT}/`)
     ? normalized.slice(WORKSPACE_MOUNT.length + 1)
     : normalized.slice(1);
-  const parts = rel.split("/").filter(Boolean);
-  if (parts.length === 0) return false;
-
-  if (
-    parts.some(
-      (part) =>
-        part === ".ssh" ||
-        part === ".aws" ||
-        part === ".gnupg" ||
-        part === ".secrets" ||
-        part === "secrets",
-    )
-  ) {
-    return true;
-  }
-
-  if (parts.some((part) => part === ".git")) return true;
-  if (parts.some((part) => part === "core-config.yaml" || part === "core-config.yml")) {
-    return true;
-  }
-
-  const leaf = parts[parts.length - 1] ?? "";
-  if (leaf === ".env" || leaf.startsWith(".env.") || leaf === ".envrc") return true;
-
-  return false;
+  return isWorkflowProtectedPath("/", path.resolve("/", rel));
 }
 
 function accessDenied(pathName: string): Error {
@@ -110,11 +87,25 @@ class RestrictedReadFs implements IFileSystem {
     private readonly hostRoot?: string,
   ) {}
 
-  private assertReadable(pathName: string): void {
+  private async assertReadable(pathName: string): Promise<void> {
     if (this.denyOutsideMount && normalizeVirtualPath(pathName) !== "/") {
       throw accessDenied(pathName);
     }
     if (isDeniedWorkspacePath(pathName)) throw accessDenied(pathName);
+    if (!this.hostRoot) return;
+    const virtual = normalizeVirtualPath(pathName);
+    const relative = virtual.startsWith(`${WORKSPACE_MOUNT}/`)
+      ? virtual.slice(WORKSPACE_MOUNT.length + 1)
+      : virtual.slice(1);
+    const candidate = path.resolve(this.hostRoot, relative);
+    if (candidate !== this.hostRoot && !candidate.startsWith(`${this.hostRoot}${path.sep}`)) {
+      throw accessDenied(pathName);
+    }
+    const stat = await fs.lstat(candidate).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (stat?.isFile() && stat.nlink > 1) throw accessDenied(pathName);
   }
 
   private async assertWritable(pathName: string): Promise<void> {
@@ -154,19 +145,19 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async readFile(pathName: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.readFile(pathName, options);
   }
 
   async readFileBytes(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     if (this.inner.readFileBytes) return await this.inner.readFileBytes(pathName);
     const buffer = await this.inner.readFileBuffer(pathName);
     return unsafeBytesFromLatin1(Buffer.from(buffer).toString("latin1"));
   }
 
   async readFileBuffer(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.readFileBuffer(pathName);
   }
 
@@ -191,11 +182,17 @@ class RestrictedReadFs implements IFileSystem {
   async exists(pathName: string) {
     if (this.denyOutsideMount && normalizeVirtualPath(pathName) !== "/") return false;
     if (isDeniedWorkspacePath(pathName)) return false;
+    try {
+      await this.assertReadable(pathName);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EACCES") return false;
+      throw error;
+    }
     return await this.inner.exists(pathName);
   }
 
   async stat(pathName: string): Promise<FsStat> {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.stat(pathName);
   }
 
@@ -205,13 +202,13 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async readdir(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     const entries = await this.inner.readdir(pathName);
     return entries.filter((name) => this.filterChild(pathName, name));
   }
 
   async readdirWithFileTypes(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     const entries = await this.inner.readdirWithFileTypes?.(pathName);
     if (entries) return entries.filter((entry) => this.filterChild(pathName, entry.name));
     return [];
@@ -224,7 +221,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: Parameters<IFileSystem["cp"]>[2]) {
-    this.assertReadable(src);
+    await this.assertReadable(src);
     await this.assertNoProtectedDescendants(src);
     await this.assertWritable(dest);
     return await this.inner.cp(src, dest, options);
@@ -257,23 +254,23 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async link(existingPath: string, newPath: string) {
-    this.assertReadable(existingPath);
+    await this.assertReadable(existingPath);
     await this.assertWritable(newPath);
     throw accessDenied(`${newPath} -> ${existingPath}`);
   }
 
   async readlink(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.readlink(pathName);
   }
 
   async lstat(pathName: string): Promise<FsStat> {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.lstat(pathName);
   }
 
   async realpath(pathName: string) {
-    this.assertReadable(pathName);
+    await this.assertReadable(pathName);
     return await this.inner.realpath(pathName);
   }
 
@@ -563,7 +560,7 @@ async function createRestrictedBash(params: {
           allowSymlinks: false,
         }),
     false,
-    params.context.workspaceWritable ? params.workspaceRoot : undefined,
+    params.workspaceRoot,
   );
 
   const tmpFs = new ReadWriteFs({

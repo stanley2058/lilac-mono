@@ -250,3 +250,37 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 7
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Workflow protected-path policy is centralized and shared by restricted bash, Level-1 filesystem tools, and descriptor-backed external-tool attachments. Every boundary now rejects all `.git` content, `.env*` including `.envrc`, `core-config.yaml`/`core-config.yml`, credential directories, and secret directories instead of maintaining divergent allow/deny rules.
+2. Restricted-bash reads, Level-1 `read_file` and search outputs, and descriptor-backed attachments reject multiply-linked regular files. Descriptor authorization validates link count both before and after the `O_NOFOLLOW` open, preventing innocent-looking hard-link aliases from bypassing secret-path confidentiality.
+3. Schema-v10 payloadless legacy terminal-receipt quarantine is a durable blocking tombstone. Startup blocks the affected operation, pauses and unclaims its run for explicit manual reconciliation, revokes active dispatch authority, and rejects both redispatch authorization and prompt publication instead of silently making the operation runnable again.
+4. The standalone Redis cleanup migration never trims `evt.adapter`, because it cannot observe the application-owned SQLite resolver checkpoint. Runtime reclamation is the sole adapter-stream trimming authority and therefore no cleanup path can advance beyond unprocessed resolver state.
+5. `evt.adapter` retention is checkpoint-bounded rather than permanently untrimmed. After durably advancing and committing each resolver cursor, Redis atomically computes the minimum of that checkpoint and every required non-ephemeral consumer-group frontier, retains a 100-entry safety margin, and trims only the older prefix. Lagging checkpoints, lagging groups, pending entries, and resolver barriers remain retained.
+6. Progress projection is serialized per run in-process and all binding/action mutations are fenced by the exact persisted projector owner and generation token in the same SQLite transaction. Claims are refreshed before and after adapter reads/sends/edits, so an expired in-flight generation cannot overwrite a newer binding or controls after takeover.
+7. Startup binding verification now runs only inside the claimed projection path. Two runtimes reconciling a missing card converge on one durable card/binding, and shutdown stops new work, waits for the complete outbox drain and every in-flight per-run projection, then releases its claims.
+8. Action-outbox publication, action-outbox projection, and long-running surface projection now heartbeat leased claims throughout external bus/adapter calls. Stable outbox IDs and fenced completion writes remain unchanged; delayed work cannot be stolen merely because one publish or edit exceeds the stale interval.
+
+### Regression Coverage
+
+- Added restricted-bash, Level-1 read/grep/glob, and descriptor-attachment hard-link exploits plus shared `.git`, `.envrc`, and secret-directory policy assertions.
+- Added blocking legacy-receipt migration/startup coverage asserting paused run state, blocked operation state, revoked ownership, retained tombstone, and rejected prompt publication.
+- Added real Redis bounded-growth, lagging-checkpoint, durable-group-frontier, and barrier-retention coverage for `evt.adapter`.
+- Added two-runtime missing-card, stale in-flight generation, delayed publication/edit heartbeat, and shutdown-waits-for-in-flight projection tests.
+- Full validation passed: core 1097 tests, event bus 24 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

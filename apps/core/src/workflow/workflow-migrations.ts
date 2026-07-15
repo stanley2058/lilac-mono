@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 9;
+export const WORKFLOW_SCHEMA_VERSION = 10;
 
 type WorkflowMigration = {
   version: number;
@@ -520,6 +520,60 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
         claim_token TEXT NOT NULL,
         claimed_at INTEGER NOT NULL
       )`,
+    ],
+  },
+  {
+    version: 10,
+    name: "round 7 blocking legacy receipt quarantine",
+    statements: [
+      `UPDATE workflow_operations
+       SET state = 'blocked', error = 'Manual reconciliation required: ambiguous legacy terminal receipt',
+         claimed_by = NULL, claimed_at = NULL,
+         updated_at = MAX(updated_at, COALESCE((
+           SELECT MAX(quarantine.quarantined_at)
+           FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_operations.run_id
+             AND quarantine.operation_id = workflow_operations.operation_id
+         ), updated_at))
+       WHERE state IN ('queued', 'dispatched', 'running', 'blocked')
+         AND EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_operations.run_id
+             AND quarantine.operation_id = workflow_operations.operation_id
+         )`,
+      `UPDATE workflow_request_dispatches
+       SET active = 0,
+         expires_at = MIN(expires_at, COALESCE((
+           SELECT MAX(quarantine.quarantined_at)
+           FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_request_dispatches.run_id
+             AND quarantine.operation_id = workflow_request_dispatches.operation_id
+         ), expires_at)),
+         updated_at = MAX(updated_at, COALESCE((
+           SELECT MAX(quarantine.quarantined_at)
+           FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_request_dispatches.run_id
+             AND quarantine.operation_id = workflow_request_dispatches.operation_id
+         ), updated_at))
+       WHERE active = 1 AND EXISTS (
+         SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+         WHERE quarantine.run_id = workflow_request_dispatches.run_id
+           AND quarantine.operation_id = workflow_request_dispatches.operation_id
+       )`,
+      `UPDATE workflow_runs
+       SET state = 'paused',
+         terminal_detail = 'Manual reconciliation required: ambiguous legacy terminal receipt',
+         claimed_by = NULL, claimed_at = NULL,
+         updated_at = MAX(updated_at, COALESCE((
+           SELECT MAX(quarantine.quarantined_at)
+           FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_runs.run_id
+         ), updated_at))
+       WHERE state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')
+         AND EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
+           WHERE quarantine.run_id = workflow_runs.run_id
+         )`,
     ],
   },
 ];
