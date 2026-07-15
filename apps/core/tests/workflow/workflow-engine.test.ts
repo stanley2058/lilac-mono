@@ -20,7 +20,6 @@ import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver"
 import { readWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
 
 const HASH_A = "a".repeat(64);
-const HASH_B = "b".repeat(64);
 
 class CapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
@@ -48,6 +47,35 @@ function createApprovedRun(
   args: Record<string, boolean> = {},
   outputLimits: { operation: number; result: number } = { operation: 10_000, result: 10_000 },
 ) {
+  const inputSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { timeout: { type: "boolean" } },
+  };
+  const capabilities = normalizeWorkflowCapabilityProfile({
+    agents: {
+      profiles: ["explore"],
+      models: ["inherit"],
+      editing: false,
+      isolation: "shared",
+      maxConcurrent: 2,
+      maxTotal: 4,
+    },
+    maxNestingDepth: 4,
+    maxWallTimeMs: 10_000,
+    operationIdleTimeoutMs: 2_000,
+    waits: ["reply", "sleep"],
+    surfaceSends: false,
+    externalTools: false,
+    safety: { originatingMode: "trusted", escalation: "none" },
+  });
+  const limits = {
+    maxSourceBytes: 100_000,
+    maxInputBytes: 10_000,
+    maxOperationOutputBytes: outputLimits.operation,
+    maxResultBytes: outputLimits.result,
+    maxRuntimeMemoryBytes: 256 * 1024 * 1024,
+  };
   const revision = {
     revisionId: "revision-1",
     canonicalProjectId: "project-1",
@@ -57,34 +85,12 @@ function createApprovedRun(
     name: "audit",
     snapshotArtifactId: `workflow-source:${HASH_A}`,
     sourceSha256: HASH_A,
-    inputSchemaSha256: HASH_B,
-    capabilitySha256: "c".repeat(64),
+    inputSchemaSha256: canonicalJsonSha256(inputSchema),
+    capabilitySha256: canonicalJsonSha256({ capabilities, limits }),
     metadata: { name: "audit", description: "Audit" },
-    inputSchema: { type: "object", additionalProperties: false },
-    capabilities: normalizeWorkflowCapabilityProfile({
-      agents: {
-        profiles: ["explore"],
-        models: ["inherit"],
-        editing: false,
-        isolation: "shared",
-        maxConcurrent: 2,
-        maxTotal: 4,
-      },
-      maxNestingDepth: 4,
-      maxWallTimeMs: 10_000,
-      operationIdleTimeoutMs: 2_000,
-      waits: ["reply", "sleep"],
-      surfaceSends: false,
-      externalTools: false,
-      safety: { originatingMode: "trusted", escalation: "none" },
-    }),
-    limits: {
-      maxSourceBytes: 100_000,
-      maxInputBytes: 10_000,
-      maxOperationOutputBytes: outputLimits.operation,
-      maxResultBytes: outputLimits.result,
-      maxRuntimeMemoryBytes: 256 * 1024 * 1024,
-    },
+    inputSchema,
+    capabilities,
+    limits,
     runtimeVersion: "lilac-workflow-js-v1",
     createdAt: 1,
   };
@@ -626,8 +632,8 @@ describe("WorkflowEngine", () => {
     try {
       await resolver.start();
       await engine.start();
-      await waitFor(() => store.getRun("run-sleep")?.state === "blocked");
-      await waitFor(() => store.getRun("run-timeout")?.state === "blocked");
+      await waitFor(() => store.listOperations("run-sleep")[0]?.state === "blocked");
+      await waitFor(() => store.listOperations("run-timeout")[0]?.state === "blocked");
       now = 110;
       await resolver.reconcileTimers();
       await waitFor(() => store.getRun("run-sleep")?.state === "succeeded");
@@ -654,6 +660,7 @@ describe("WorkflowEngine", () => {
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
     createApprovedRun(store, "run-reply");
+    let now = 10;
     const makeEngine = () =>
       new WorkflowEngine({
         bus,
@@ -661,6 +668,7 @@ describe("WorkflowEngine", () => {
         dataDir: "/unused",
         subscriptionId: `test-reply-restart-${crypto.randomUUID()}`,
         pollMs: 5,
+        now: () => now,
         assertSandbox: async () => {},
         loadSnapshot: async () => "immutable",
         compileSource: (source) => source,
@@ -690,7 +698,7 @@ describe("WorkflowEngine", () => {
     let engine = makeEngine();
     try {
       await engine.start();
-      await waitFor(() => store.getRun("run-reply")?.state === "blocked");
+      await waitFor(() => store.listOperations("run-reply")[0]?.state === "blocked");
       await engine.stop();
       expect(
         store.getWait("run-reply", store.listOperations("run-reply")[0]!.operationId)?.state,
@@ -707,6 +715,7 @@ describe("WorkflowEngine", () => {
         },
         "offline-cursor",
       );
+      now = 60_011;
       engine = makeEngine();
       await engine.start();
       await waitFor(() => store.getRun("run-reply")?.state === "succeeded");

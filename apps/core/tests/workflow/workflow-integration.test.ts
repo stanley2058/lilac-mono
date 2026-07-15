@@ -273,6 +273,7 @@ describe("unified workflow integration", () => {
       dataDir,
       subscriptionId: "integration-engine",
       pollMs: 5,
+      now: () => 100,
     });
     const context = {
       requestId: "discord:channel-1:origin-1",
@@ -281,6 +282,8 @@ describe("unified workflow integration", () => {
       cwd: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
+      authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
+      toolCallId: "integration-tool-1",
     };
 
     try {
@@ -356,7 +359,7 @@ describe("unified workflow integration", () => {
       expect(requestIds).toHaveLength(1);
       expect(operations[1]?.requestId).toBe(requestIds[0]);
       expect(requestIds[0]).toMatch(/^wfr:/u);
-      expect(adapter.contents.at(-1)?.text).toContain("integration result");
+      expect(adapter.contents.at(-1)?.text).not.toContain("integration result");
       expect(adapter.contents.at(-1)?.actions).toEqual([]);
       expect(JSON.stringify(adapter.contents)).not.toContain("super-secret-value");
     } finally {
@@ -387,6 +390,8 @@ describe("unified workflow integration", () => {
       cwd: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
+      authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
+      toolCallId: "restart-tool-1",
     };
     const reviewerResolver = {
       resolve: async () => ({
@@ -443,6 +448,7 @@ describe("unified workflow integration", () => {
       dataDir,
       subscriptionId: "restart-engine-first",
       pollMs: 5,
+      now: () => 100,
       assertSandbox: async () => {},
       loadSnapshot: async () => "immutable",
       compileSource: (value) => value,
@@ -502,6 +508,7 @@ describe("unified workflow integration", () => {
         dataDir,
         subscriptionId: "restart-engine-second",
         pollMs: 5,
+        now: () => 60_101,
         assertSandbox: async () => {},
         loadSnapshot: async () => "immutable",
         compileSource: (value) => value,

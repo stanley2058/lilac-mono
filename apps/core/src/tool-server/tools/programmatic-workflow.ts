@@ -27,6 +27,7 @@ import type { WorkflowReviewerResolver } from "../../workflow/workflow-reviewer"
 import { parseToolInput } from "../validation-error-message";
 import { zodObjectToCliLines } from "./zod-cli";
 import { readWorkflowValueArtifact } from "../../workflow/workflow-artifact-store";
+import { redactWorkflowValue } from "../../workflow/workflow-progress-view";
 
 const definitionScopeSchema = z.enum(["project", "personal", "auto"]);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -73,6 +74,7 @@ const runTriggerInputSchema = z.strictObject({
   name: workflowDefinitionNameSchema,
   args: z.record(z.string(), z.unknown()),
   progress: progressInputSchema.optional(),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 const scheduledTriggerDefinitionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -92,6 +94,7 @@ const scheduledTriggerDefinitionSchema = z.discriminatedUnion("kind", [
     timezone: z.string().min(1).max(200).optional(),
     startAt: z.number().int().nonnegative().optional(),
     skipMissed: z.boolean().default(true),
+    overlap: z.enum(["coalesce", "parallel"]).default("coalesce"),
   }),
 ]);
 const scheduledTriggerCreateInputSchema = z.strictObject({
@@ -114,6 +117,7 @@ const runGetInputSchema = z.strictObject({
   runId: z.string().min(1).max(200),
   includeSource: z.coerce.boolean().default(false),
   includeResultArtifact: z.coerce.boolean().default(false),
+  includeSensitiveResult: z.coerce.boolean().default(false),
 });
 const runListInputSchema = z.strictObject({
   state: workflowRunStateSchema.optional(),
@@ -141,7 +145,73 @@ function requireWorkflowControlContext(context: RequestContext | undefined): Req
   if (context.safetyMode !== "trusted") {
     throw new Error("Workflow tools require a trusted request context");
   }
+  if (!context.authenticatedPrincipal) {
+    throw new Error("Workflow tools require an authenticated canonical principal");
+  }
   return context;
+}
+
+function principalReviewer(context: RequestContext) {
+  const principal = context.authenticatedPrincipal;
+  if (!principal || !context.sessionId) return null;
+  return {
+    platform: principal.platform,
+    userId: principal.userId,
+    sessionRef: { platform: principal.platform, channelId: context.sessionId },
+    originMessageRef: null,
+  } as const;
+}
+
+function assertPrincipalScope(input: {
+  context: RequestContext;
+  definitions: WorkflowDefinitionStore;
+  revision: WorkflowRevision;
+  run?: WorkflowRun | null;
+  approval?: WorkflowApproval | null;
+}): void {
+  const principal = input.context.authenticatedPrincipal;
+  if (!principal || input.revision.canonicalProjectId !== input.definitions.canonicalProjectId) {
+    throw new Error("Workflow record is outside the authenticated project scope");
+  }
+  if (
+    input.run &&
+    (input.run.origin.client !== principal.platform || input.run.origin.userId !== principal.userId)
+  ) {
+    throw new Error("Workflow record is outside the authenticated principal scope");
+  }
+  if (
+    input.approval &&
+    (input.approval.expectedReviewerPlatform !== principal.platform ||
+      input.approval.expectedReviewerUserId !== principal.userId)
+  ) {
+    throw new Error("Workflow grant is outside the authenticated principal scope");
+  }
+}
+
+function hasSensitiveSchema(schema: WorkflowRun["inputSchemaSnapshot"]): boolean {
+  const visit = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    if (Array.isArray(value)) return value.some(visit);
+    if (Reflect.get(value, "sensitive") === true) return true;
+    return Object.values(value).some(visit);
+  };
+  return visit(schema);
+}
+
+function redactRun(run: WorkflowRun): WorkflowRun {
+  const sensitive = hasSensitiveSchema(run.inputSchemaSnapshot);
+  return {
+    ...run,
+    args: jsonObjectSchema.parse(redactWorkflowValue(run.args, run.inputSchemaSnapshot)),
+    result:
+      run.result === null
+        ? null
+        : sensitive
+          ? "<redacted; owner may request explicit full inspection>"
+          : run.result,
+    terminalDetail:
+      sensitive && run.terminalDetail ? "<redacted terminal detail>" : run.terminalDetail,
+  };
 }
 
 function requireTrustedTriggerContext(context: RequestContext | undefined): RequestContext & {
@@ -225,7 +295,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         shortInput: zodObjectToCliLines(definitionValidateInputSchema, { mode: "required" }),
         input: [
           ...zodObjectToCliLines(definitionValidateInputSchema),
-          'Example: tools workflow.definition.validate --scope=auto --name=audit-routes --args:json={"directory":"src"}',
+          'Example: tools workflow.definition.validate --scope=auto --name=audit-routes --args:json=\'{"directory":"src"}\'',
         ],
       },
       {
@@ -252,7 +322,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         shortInput: zodObjectToCliLines(runTriggerInputSchema, { mode: "required" }),
         input: [
           ...zodObjectToCliLines(runTriggerInputSchema),
-          'Example: tools workflow.run.trigger --scope=auto --name=audit-routes --args:json={"directory":"src"}',
+          'Example: tools workflow.run.trigger --scope=auto --name=audit-routes --args:json=\'{"directory":"src"}\'',
         ],
       },
       {
@@ -361,7 +431,7 @@ export class ProgrammaticWorkflow implements ServerTool {
     rawInput: Record<string, unknown>,
     opts?: { signal?: AbortSignal; context?: RequestContext; messages?: readonly unknown[] },
   ): Promise<unknown> {
-    requireWorkflowControlContext(opts?.context);
+    const controlContext = requireWorkflowControlContext(opts?.context);
     const definitions = await this.definitions(opts?.context);
     const mode = safetyMode(opts?.context);
 
@@ -425,9 +495,10 @@ export class ProgrammaticWorkflow implements ServerTool {
     }
     if (callableId === "workflow.trigger.create") {
       const context = requireTrustedTriggerContext(opts?.context);
-      const reviewer = this.params.reviewerResolver
-        ? await this.params.reviewerResolver.resolve(context)
-        : null;
+      const reviewer =
+        (this.params.reviewerResolver
+          ? await this.params.reviewerResolver.resolve(context)
+          : null) ?? principalReviewer(context);
       if (!reviewer) {
         throw new Error("workflow.trigger.create requires an authenticated originating reviewer");
       }
@@ -528,6 +599,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         argsSha256: canonicalJsonSha256(args),
         schedulingPolicy: {
           skipMissed: schedule.kind === "cron" ? schedule.skipMissed : true,
+          overlap: schedule.kind === "cron" ? schedule.overlap : "coalesce",
         },
         origin: {
           requestId: context.requestId ?? null,
@@ -567,6 +639,9 @@ export class ProgrammaticWorkflow implements ServerTool {
       });
       const trigger = this.store().getTrigger(input.triggerId);
       if (!trigger) throw new Error(`Workflow trigger not found: ${input.triggerId}`);
+      const revision = this.store().getRevision(trigger.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${trigger.revisionId}`);
+      assertPrincipalScope({ context: controlContext, definitions, revision });
       return {
         ok: true as const,
         trigger,
@@ -579,14 +654,22 @@ export class ProgrammaticWorkflow implements ServerTool {
         input: rawInput,
         schema: scheduledTriggerListInputSchema,
       });
+      const triggers = this.store()
+        .listTriggers(input)
+        .filter((trigger) => {
+          const revision = this.store().getRevision(trigger.revisionId);
+          return (
+            revision?.canonicalProjectId === definitions.canonicalProjectId &&
+            trigger.origin.client === controlContext.authenticatedPrincipal?.platform &&
+            trigger.origin.userId === controlContext.authenticatedPrincipal?.userId
+          );
+        });
       return {
         ok: true as const,
-        triggers: this.store()
-          .listTriggers(input)
-          .map((trigger) => ({
-            trigger,
-            lastRun: trigger.lastRunId ? this.store().getRun(trigger.lastRunId) : null,
-          })),
+        triggers: triggers.map((trigger) => ({
+          trigger,
+          lastRun: trigger.lastRunId ? this.store().getRun(trigger.lastRunId) : null,
+        })),
       };
     }
     if (callableId === "workflow.trigger.cancel") {
@@ -597,6 +680,9 @@ export class ProgrammaticWorkflow implements ServerTool {
       });
       const trigger = this.store().getTrigger(input.triggerId);
       if (!trigger) throw new Error(`Workflow trigger not found: ${input.triggerId}`);
+      const revision = this.store().getRevision(trigger.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${trigger.revisionId}`);
+      assertPrincipalScope({ context: controlContext, definitions, revision });
       if (trigger.state === "completed" || trigger.state === "cancelled") {
         return { ok: true as const, trigger, changed: false };
       }
@@ -611,9 +697,10 @@ export class ProgrammaticWorkflow implements ServerTool {
     }
     if (callableId === "workflow.run.trigger") {
       const context = requireTrustedTriggerContext(opts?.context);
-      const reviewer = this.params.reviewerResolver
-        ? await this.params.reviewerResolver.resolve(context)
-        : null;
+      const reviewer =
+        (this.params.reviewerResolver
+          ? await this.params.reviewerResolver.resolve(context)
+          : null) ?? principalReviewer(context);
       const input = parseToolInput({ callableId, input: rawInput, schema: runTriggerInputSchema });
       const definition = await definitions.get({
         scope: input.scope,
@@ -652,7 +739,20 @@ export class ProgrammaticWorkflow implements ServerTool {
         limits: definition.validation.limits,
         createdAt: now,
       };
-      const runId = `wfrun:${crypto.randomUUID()}`;
+      const idempotencyKey =
+        input.idempotencyKey ??
+        `tool:${context.requestId ?? "missing"}:${context.toolCallId ?? canonicalJsonSha256(args)}`;
+      const invocationFingerprint = canonicalJsonSha256(
+        jsonObjectSchema.parse({
+          revisionId,
+          args,
+          progress: input.progress ?? null,
+          principal: context.authenticatedPrincipal,
+        }),
+      );
+      const runId = `wfrun:${canonicalJsonSha256(
+        jsonObjectSchema.parse({ idempotencyKey, invocationFingerprint }),
+      )}`;
       const requestedProgress = input.progress;
       if (
         reviewer &&
@@ -721,7 +821,8 @@ export class ProgrammaticWorkflow implements ServerTool {
         revision,
         run,
         pendingApproval: approval,
-        queueApproved: reviewer !== null,
+        queueApproved: true,
+        idempotency: { key: idempotencyKey, fingerprintSha256: invocationFingerprint },
       });
       let card: { platform: string; channelId: string; messageId: string } | null = null;
       if (invocation.run.progressTarget) {
@@ -772,17 +873,21 @@ export class ProgrammaticWorkflow implements ServerTool {
       const run = this.store().getRun(input.runId);
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
       const revision = this.store().getRevision(run.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
+      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
+      assertPrincipalScope({ context: controlContext, definitions, revision, run, approval });
+      const fullResultAllowed = input.includeSensitiveResult;
       return {
         ok: true as const,
-        run,
+        run: fullResultAllowed ? run : redactRun(run),
         revision,
-        approval: run.approvalId ? this.store().getApproval(run.approvalId) : null,
+        approval,
         source:
           input.includeSource && revision
             ? await definitions.readSnapshot(revision.sourceSha256)
             : undefined,
         resultArtifact:
-          input.includeResultArtifact && run.resultArtifactId && revision
+          input.includeResultArtifact && fullResultAllowed && run.resultArtifactId
             ? await readWorkflowValueArtifact({
                 dataDir: this.params.dataDir ?? env.dataDir,
                 artifactId: run.resultArtifactId,
@@ -793,23 +898,54 @@ export class ProgrammaticWorkflow implements ServerTool {
     }
     if (callableId === "workflow.run.list") {
       const input = parseToolInput({ callableId, input: rawInput, schema: runListInputSchema });
-      return { ok: true as const, runs: this.store().listRuns(input) };
+      return {
+        ok: true as const,
+        runs: this.store()
+          .listRuns(input)
+          .filter((run) => {
+            const revision = this.store().getRevision(run.revisionId);
+            return (
+              revision?.canonicalProjectId === definitions.canonicalProjectId &&
+              run.origin.client === controlContext.authenticatedPrincipal?.platform &&
+              run.origin.userId === controlContext.authenticatedPrincipal?.userId
+            );
+          })
+          .map(redactRun),
+      };
     }
     if (callableId === "workflow.run.cancel") {
       const input = parseToolInput({ callableId, input: rawInput, schema: runCancelInputSchema });
       const run = this.store().getRun(input.runId);
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
+      const revision = this.store().getRevision(run.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
+      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
+      assertPrincipalScope({ context: controlContext, definitions, revision, run, approval });
       const terminal = ["succeeded", "failed", "rejected", "cancelled"].includes(run.state);
       if (terminal) return { ok: true as const, run, changed: false };
       const now = this.params.now?.() ?? Date.now();
-      const changed = this.store().transitionRun({
+      const activeRequests = this.store()
+        .listOperations(run.runId, { limit: 1_000 })
+        .flatMap((operation) => (operation.requestId ? [operation.requestId] : []));
+      const cancelled = this.store().cancelRunAndChildren({
         runId: run.runId,
-        from: run.state,
-        to: "cancelled",
         now,
         detail: input.reason ?? "Cancelled through workflow.run.cancel",
       });
-      const cancelled = this.store().getRun(run.runId);
+      const changed = cancelled?.state === "cancelled";
+      for (const requestId of activeRequests) {
+        await this.params.bus?.publish(
+          lilacEventTypes.CmdRequestMessage,
+          { queue: "interrupt", messages: [], raw: { cancel: true, cancelQueued: true } },
+          {
+            headers: {
+              request_id: requestId,
+              session_id: `workflow:${run.runId}:cancel`,
+              request_client: "unknown",
+            },
+          },
+        );
+      }
       if (changed && cancelled) {
         await this.params.bus?.publish(lilacEventTypes.EvtWorkflowRunChanged, {
           runId: cancelled.runId,
@@ -829,7 +965,14 @@ export class ProgrammaticWorkflow implements ServerTool {
       const input = parseToolInput({ callableId, input: rawInput, schema });
       const run = this.store().getRun(input.runId);
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
+      const revision = this.store().getRevision(run.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
+      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
+      assertPrincipalScope({ context: controlContext, definitions, revision, run, approval });
       const to = callableId === "workflow.run.pause" ? "paused" : "queued";
+      if (to === "queued" && approval?.state !== "approved") {
+        throw new Error("Cannot resume a workflow without an active exact-revision grant");
+      }
       const allowed =
         to === "paused"
           ? ["queued", "running", "blocked"].includes(run.state)
@@ -863,6 +1006,9 @@ export class ProgrammaticWorkflow implements ServerTool {
       });
       const approval = this.store().getApproval(input.approvalId);
       if (!approval) throw new Error(`Workflow approval not found: ${input.approvalId}`);
+      const revision = this.store().getRevision(approval.revisionId);
+      if (!revision) throw new Error(`Workflow revision not found: ${approval.revisionId}`);
+      assertPrincipalScope({ context: controlContext, definitions, revision, approval });
       if (approval.state !== "approved") {
         return { ok: true as const, approval, changed: false };
       }

@@ -66,6 +66,8 @@ import type {
   WorkflowLiveParentCompletion,
 } from "../../workflow/workflow-live-parent-bridge";
 import type { WorkflowSubagentDispatcher } from "../../workflow/workflow-subagent-dispatcher";
+import type { DurableWorkflowStore } from "../../workflow/durable-workflow-store";
+import type { WorkflowRequestPolicy } from "../../workflow/workflow-request-authority";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 import { isHeartbeatAckText, isHeartbeatSessionId } from "../../heartbeat/common";
 
@@ -113,13 +115,12 @@ import {
   parseCustomCommandFromRaw,
   parseBufferedForActiveRequestIdFromRaw,
   getParticipantUserIdsFromRaw,
-  parseParentChannelIdFromRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
   parseRouterSessionModeFromRaw,
   parseSessionConfigIdFromRaw,
   parseSubagentMetaFromRaw,
-  parseWorkflowPolicyFromRaw,
+  parseWorkflowRequestHintFromRaw,
   requestRawReferencesMessage,
   type AgentRunProfile,
 } from "./bus-agent-runner/raw";
@@ -1402,6 +1403,8 @@ export async function startBusAgentRunner(params: {
   toolResultArtifacts?: ToolResultArtifactStore;
   workflowLiveParentBridge?: WorkflowLiveParentBridge;
   workflowSubagentDispatcher?: WorkflowSubagentDispatcher;
+  durableWorkflowStore?: DurableWorkflowStore;
+  resolveParentChannelId?: (sessionId: string) => string | null | undefined;
 }) {
   const { bus, subscriptionId } = params;
 
@@ -1441,6 +1444,7 @@ export async function startBusAgentRunner(params: {
     }
   }
   const cwd = params.cwd ?? process.env.LILAC_WORKSPACE_DIR ?? process.cwd();
+  const workflowRunnerOwnerId = `agent-runner:${process.pid}:${crypto.randomUUID()}`;
 
   const bySession = new Map<string, SessionQueue>();
   const cancelledByRequestId = new Set<string>();
@@ -2064,7 +2068,10 @@ export async function startBusAgentRunner(params: {
 
     const subagentMeta = parseSubagentMetaFromRaw(next.raw);
     const runProfile = subagentMeta.profile;
-    const workflowPolicy = parseWorkflowPolicyFromRaw(next.raw);
+    const workflowHint = parseWorkflowRequestHintFromRaw(next.raw);
+    let workflowPolicy: WorkflowRequestPolicy | null = null;
+    let workflowClaimTimer: ReturnType<typeof setInterval> | null = null;
+    let preserveWorkflowClaim = false;
     const subagents = cfg.agent.subagents ?? DEFAULT_SUBAGENT_CONFIG;
 
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
@@ -2210,6 +2217,72 @@ export async function startBusAgentRunner(params: {
 
     let resolvedModelLabel = "unknown";
     try {
+      const looksLikeWorkflowRequest =
+        next.requestId.startsWith("wfr:") || next.sessionId.startsWith("workflow:");
+      if (workflowHint || looksLikeWorkflowRequest) {
+        if (!workflowHint || !params.durableWorkflowStore) {
+          throw new Error("Workflow request is missing server-issued dispatch authority");
+        }
+        const authorized = params.durableWorkflowStore.authorizeWorkflowRequest({
+          requestId: next.requestId,
+          token: workflowHint.capability,
+          sessionId: next.sessionId,
+          platform: next.requestClient,
+          now: Date.now(),
+        });
+        if (
+          !authorized ||
+          authorized.policy.runId !== workflowHint.runId ||
+          authorized.policy.operationId !== workflowHint.operationId
+        ) {
+          throw new Error("Workflow request dispatch authority is invalid or inactive");
+        }
+        if (
+          !params.durableWorkflowStore.claimWorkflowRequest({
+            requestId: next.requestId,
+            token: workflowHint.capability,
+            ownerId: workflowRunnerOwnerId,
+            now: Date.now(),
+          })
+        ) {
+          throw new Error("Workflow request dispatch is owned by another live runner");
+        }
+        const cwdStats = await fs.lstat(authorized.policy.canonicalCwd);
+        const canonicalCwd = await fs.realpath(authorized.policy.canonicalCwd);
+        if (
+          cwdStats.isSymbolicLink() ||
+          !cwdStats.isDirectory() ||
+          canonicalCwd !== authorized.policy.canonicalCwd
+        ) {
+          throw new Error("Workflow request cwd is not a canonical real directory");
+        }
+        if (
+          !authorized.policy.editing &&
+          canonicalCwd !== authorized.policy.canonicalWorkspaceRoot
+        ) {
+          throw new Error("Read-only workflow request cwd escaped the approved workspace");
+        }
+        if (authorized.policy.editing) {
+          const worktreeRoot = path.resolve(env.dataDir, "workflow-worktrees");
+          const relative = path.relative(worktreeRoot, canonicalCwd);
+          if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+            throw new Error("Editing workflow request cwd is not an owned workflow worktree");
+          }
+        }
+        workflowPolicy = authorized.policy;
+        workflowClaimTimer = setInterval(() => {
+          const refreshed = params.durableWorkflowStore?.refreshWorkflowRequestClaim(
+            next.requestId,
+            workflowRunnerOwnerId,
+            Date.now(),
+          );
+          if (refreshed === false) {
+            activeAgent?.abort();
+            rejectPreAgentCancellation?.(new PreAgentRunCancelledError());
+          }
+        }, 5_000);
+        workflowClaimTimer.unref?.();
+      }
       if (workflowPolicy && workflowPolicy.profile !== runProfile) {
         throw new Error("Workflow request profile envelope does not match the runner profile");
       }
@@ -2516,9 +2589,14 @@ export async function startBusAgentRunner(params: {
       });
 
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
-      const parentChannelId = parseParentChannelIdFromRaw(next.raw) ?? undefined;
-      const safetyMode: SessionSafetyMode =
-        workflowPolicy?.safetyMode ?? resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
+      const parentChannelResolution =
+        next.requestClient === "discord" ? params.resolveParentChannelId?.(sessionId) : null;
+      const parentChannelId = parentChannelResolution ?? undefined;
+      const safetyMode: SessionSafetyMode = workflowPolicy?.safetyMode
+        ? workflowPolicy.safetyMode
+        : next.requestClient === "discord" && parentChannelResolution === undefined
+          ? "restricted"
+          : resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
 
       const additionalSessionPrompts = await waitForPreAgent(
         resolveSessionAdditionalPrompts({
@@ -2646,7 +2724,7 @@ export async function startBusAgentRunner(params: {
         genericOutputNormalizerBypassTools,
       } = await waitForPreAgent(
         params.pluginManager.buildLevel1Toolset({
-          cwd: workflowPolicy?.cwd ?? cwd,
+          cwd: workflowPolicy?.canonicalCwd ?? cwd,
           runProfile,
           editingToolMode:
             workflowPolicy && !workflowPolicy.editing
@@ -2668,6 +2746,8 @@ export async function startBusAgentRunner(params: {
             subagentProfile: runProfile,
             safetyMode,
             metadata: {
+              workflowPolicy: workflowPolicy ?? undefined,
+              workflowCapability: workflowHint?.capability,
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
               onActivity: (source: "tool" | "subagent") => markRunActivity(source),
@@ -2683,16 +2763,7 @@ export async function startBusAgentRunner(params: {
             },
           },
           allowedToolNames: workflowPolicy
-            ? new Set([
-                "read_file",
-                "glob",
-                "grep",
-                "fuzzy_search",
-                "batch",
-                ...(workflowPolicy.externalTools ? ["bash"] : []),
-                ...(workflowPolicy.editing ? ["edit_file", "apply_patch"] : []),
-                ...(workflowPolicy.subagents ? ["subagent_delegate"] : []),
-              ])
+            ? new Set(["bash", ...(workflowPolicy.subagents ? ["subagent_delegate"] : [])])
             : undefined,
           reportToolStatus: (update) => {
             bus
@@ -3496,7 +3567,7 @@ export async function startBusAgentRunner(params: {
         const deferredWaitState = liveParentSession?.snapshot();
 
         if (liveParentSession && deferredWaitState?.hasPendingCompletions) {
-          const completions = liveParentSession.listPending();
+          const completions = await liveParentSession.listPendingAsync();
           const normalized = await Promise.all(
             completions.map(async (completion) => ({
               ...completion,
@@ -3810,6 +3881,7 @@ export async function startBusAgentRunner(params: {
       }
 
       if (e instanceof RestartDrainingAbort) {
+        preserveWorkflowClaim = true;
         logger.info("agent run interrupted for graceful restart", {
           requestId: headers.request_id,
           sessionId: headers.session_id,
@@ -3917,6 +3989,10 @@ export async function startBusAgentRunner(params: {
         e,
       );
     } finally {
+      if (workflowClaimTimer) clearInterval(workflowClaimTimer);
+      if (workflowHint && !preserveWorkflowClaim) {
+        params.durableWorkflowStore?.expireWorkflowRequest(next.requestId, Date.now());
+      }
       runIdleWatchdog?.stop();
       rejectPreAgentCancellation = null;
       unsubscribe();

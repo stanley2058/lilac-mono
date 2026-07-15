@@ -29,7 +29,7 @@ function buildSnapshot(
   overrides?: Partial<Pick<GracefulRestartSnapshot, "createdAt" | "deadlineMs">>,
 ): GracefulRestartSnapshot {
   return {
-    version: 1,
+    version: 2,
     createdAt: overrides?.createdAt ?? Date.now(),
     deadlineMs: overrides?.deadlineMs ?? 3_000,
     agent: [
@@ -124,7 +124,7 @@ describe("SqliteGracefulRestartStore", () => {
 
     const loaded = store.loadAndConsumeCompletedSnapshot();
     expect(loaded).not.toBeNull();
-    expect(loaded?.version).toBe(1);
+    expect(loaded?.version).toBe(2);
     expect(loaded?.agent.length).toBe(2);
     expect(loaded?.relays.length).toBe(1);
 

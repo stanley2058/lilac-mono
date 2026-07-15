@@ -64,37 +64,19 @@ export class WorkflowWaitResolver {
     for (const candidate of this.input.store.listActiveWaitsByMatchKey("reply", key)) {
       const result = matchWorkflowReplyWait(candidate, event);
       if (result === null) continue;
-      const claimed = this.input.store.tryClaimWait({
+      const now = this.now();
+      const resolved = this.input.store.resolveReplyWaitAndSuppress({
         runId: candidate.runId,
         operationId: candidate.operationId,
-        claimerId: this.workerId,
-        now: this.now(),
-      });
-      if (!claimed || matchWorkflowReplyWait(claimed, event) === null) continue;
-      const now = this.now();
-      if (
-        !this.input.store.transitionWait({
-          runId: claimed.runId,
-          operationId: claimed.operationId,
-          from: "claimed",
-          to: "resolved",
-          now,
-          resolverCursor: cursor,
-          result,
-          resolvedBy: `${event.platform}:${event.channelId}:${event.messageId}`,
-        })
-      ) {
-        continue;
-      }
-      this.input.store.recordAdapterEventSuppression({
         platform: event.platform,
         channelId: event.channelId,
         messageId: event.messageId,
-        runId: claimed.runId,
-        operationId: claimed.operationId,
+        eventTs: event.ts,
+        cursor,
+        result,
         now,
       });
-      await this.publishWakeup(claimed);
+      if (resolved) await this.publishWakeup(resolved);
     }
   }
 

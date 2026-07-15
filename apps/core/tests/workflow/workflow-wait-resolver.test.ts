@@ -163,7 +163,6 @@ function createRunAndWait(
     terminalAt: null,
   });
   store.createWait({ ...input.wait, runId: input.runId, operationId: input.operationId });
-  store.transitionRun({ runId: input.runId, from: "running", to: "blocked", now: 3 });
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -224,6 +223,9 @@ describe("WorkflowWaitResolver", () => {
         pollMs: 10,
       });
       await resolver.start();
+      await resolver.resolveAdapterEvent({ ...event, messageId: "historical", ts: 2 }, "0-1");
+      await resolver.resolveAdapterEvent({ ...event, messageId: "late", ts: 1_001 }, "0-2");
+      expect(store.getWait("reply-wait", "wait-1")?.state).toBe("pending");
       await resolver.resolveAdapterEvent(event, "1-0");
       await waitFor(() => store.getWait("reply-wait", "wait-1")?.state === "resolved");
       const resolved = store.getWait("reply-wait", "wait-1");
@@ -232,7 +234,10 @@ describe("WorkflowWaitResolver", () => {
         result: { text: "continue", messageId: "reply-1" },
       });
       expect(shouldSuppressRouterForWorkflowReply({ store, event, now: 21 }).suppress).toBe(true);
-      expect(shouldSuppressRouterForWorkflowReply({ store, event, now: 22 }).suppress).toBe(false);
+      expect(shouldSuppressRouterForWorkflowReply({ store, event, now: 22 }).suppress).toBe(true);
+      expect(
+        shouldSuppressRouterForWorkflowReply({ store, event, now: 20 + 5 * 60_000 }).suppress,
+      ).toBe(false);
       await resolver.stop();
     } finally {
       await bus.close();

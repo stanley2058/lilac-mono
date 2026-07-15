@@ -4,6 +4,7 @@ import { executeBash } from "./bash-impl";
 import { executeRestrictedBash } from "./restricted-bash";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
+import type { WorkflowRequestPolicy } from "../workflow/workflow-request-authority";
 
 export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
@@ -93,6 +94,8 @@ export function bashToolWithCwd(
     artifacts?: ToolResultArtifactStore;
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
+    workflowPolicy?: WorkflowRequestPolicy;
+    workflowCapability?: string;
   },
 ) {
   return {
@@ -111,10 +114,14 @@ export function bashToolWithCwd(
             }
           | undefined;
         const payload = { ...input, cwd: input.cwd ?? defaultCwd };
-        if (typedContext?.safetyMode === "restricted") {
+        if (typedContext?.safetyMode === "restricted" || opts?.workflowPolicy) {
           return executeRestrictedBash(payload, {
             workspaceRoot: defaultCwd,
-            context: typedContext,
+            context: {
+              ...typedContext,
+              workflowCapability: opts?.workflowCapability,
+              workspaceWritable: opts?.workflowPolicy?.editing === true,
+            },
             abortSignal,
             toolCallId,
             artifacts: opts?.artifacts,

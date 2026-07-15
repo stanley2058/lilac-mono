@@ -657,6 +657,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         bus,
         store: durableWorkflowStore,
         subscriptionId: subId(subscriptionPrefix, "workflow-live-parents"),
+        dataDir: env.dataDir,
       });
       await workflowLiveParentBridge.start();
 
@@ -754,6 +755,21 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           get: requestMessageCache.get,
           getOrigin: requestMessageCache.getOrigin,
         },
+        canonicalWorkspaceRoot: await fs.realpath(cwd),
+        authorizeWorkflowRequest: (input) => durableWorkflowStore.authorizeWorkflowRequest(input),
+        resolveServerSafetyMode: async (context) => {
+          if (context.requestClient !== "discord" || !context.sessionId) return "restricted";
+          const config = await getCoreConfig();
+          const session = discordSurfaceStore?.getSession(context.sessionId);
+          if (!session) return "restricted";
+          return (
+            config.surface.router.sessionModes[context.sessionId]?.safetyMode ??
+            (session.parent_channel_id
+              ? config.surface.router.sessionModes[session.parent_channel_id]?.safetyMode
+              : undefined) ??
+            "trusted"
+          );
+        },
       });
 
       await toolServer.init();
@@ -812,6 +828,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         toolResultArtifacts,
         workflowLiveParentBridge,
         workflowSubagentDispatcher,
+        durableWorkflowStore,
+        resolveParentChannelId: (sessionId) => {
+          const session = discordSurfaceStore?.getSession(sessionId);
+          return session ? session.parent_channel_id : undefined;
+        },
       });
 
       logger.info("Bus agent runner started", {
@@ -996,7 +1017,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
       if (agentRecoverables.length > 0 || relayRecoverables.length > 0) {
         await safe("graceful.store.saveCompletedSnapshot", async () => {
           gracefulRestartStore?.saveCompletedSnapshot({
-            version: 1,
+            version: 2,
             createdAt: Date.now(),
             deadlineMs: GRACEFUL_SNAPSHOT_TTL_MS,
             agent: agentRecoverables,

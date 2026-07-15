@@ -26,7 +26,7 @@ export default defineWorkflow({
   },
   capabilities: {
     agents: {
-      profiles: ["review", "explore", "review"],
+      profiles: ["self", "explore", "self"],
       models: ["inherit"],
       maxConcurrent: 2,
       maxTotal: 8,
@@ -47,7 +47,7 @@ describe("workflow definition validation", () => {
   it("normalizes static metadata and deterministically hashes canonical values", () => {
     const validated = validateWorkflowSource({ name: "audit-routes", source: source() });
     expect(validated.metadata).toEqual({ name: "audit-routes", description: "Audit routes" });
-    expect(validated.capabilities.agents.profiles).toEqual(["explore", "review"]);
+    expect(validated.capabilities.agents.profiles).toEqual(["explore", "self"]);
     expect(validated.capabilities.waits).toEqual(["reply", "sleep"]);
     expect(validated.inputSchema).toMatchObject({
       type: "object",
@@ -148,5 +148,23 @@ describe("workflow definition validation", () => {
         source: source("audit-routes", "limits: { maxSourceBytes: 10 },"),
       }),
     ).toThrow("declared maxSourceBytes");
+  });
+
+  it("rejects shadowed host APIs and backtracking-capable input regexes", () => {
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          "return agent(`Audit ${args.directory}`);",
+          "const agent = async () => 'forged'; return agent();",
+        ),
+      }),
+    ).toThrow("shadow reserved host API");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace("minLength: 1", 'pattern: "(a+)+$"'),
+      }),
+    ).toThrow("backtracking regex syntax");
   });
 });

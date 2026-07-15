@@ -21,6 +21,7 @@ import {
   createIssueComment,
   editIssueComment,
   getIssue,
+  getIssueComment,
   listIssueComments,
 } from "../../github/github-api";
 import { markGithubAgentComment } from "../../github/github-comment-marker";
@@ -92,18 +93,29 @@ export class GithubAdapter implements SurfaceAdapter {
       body: markGithubAgentComment(text),
     });
     if (content.actions && content.actions.length > 0) {
-      await editIssueComment({
-        owner: thread.owner,
-        repo: thread.repo,
-        commentId: res.id,
-        body: markGithubAgentComment(
-          renderGithubActionContent({
-            text,
+      try {
+        await editIssueComment({
+          owner: thread.owner,
+          repo: thread.repo,
+          commentId: res.id,
+          body: markGithubAgentComment(
+            renderGithubActionContent({
+              text,
+              messageId: String(res.id),
+              actions: content.actions,
+            }),
+          ),
+        });
+      } catch (error) {
+        throw new GithubMessageCreatedError(
+          {
+            platform: "github",
+            channelId: sessionRef.channelId,
             messageId: String(res.id),
-            actions: content.actions,
-          }),
-        ),
-      });
+          },
+          error,
+        );
+      }
     }
     return {
       platform: "github",
@@ -139,15 +151,13 @@ export class GithubAdapter implements SurfaceAdapter {
       };
     }
 
-    // Fetch comment via list (best-effort; keep adapter minimal).
-    const comments = await listIssueComments({
+    const id = Number(msgRef.messageId);
+    if (!Number.isSafeInteger(id) || id <= 0) return null;
+    const match = await getIssueComment({
       owner: thread.owner,
       repo: thread.repo,
-      number: thread.number,
-      limit: 100,
-    });
-    const id = Number(msgRef.messageId);
-    const match = comments.find((c) => c.id === id);
+      commentId: id,
+    }).catch(() => null);
     if (!match) return null;
     return {
       ref: msgRef,
@@ -253,5 +263,17 @@ export class GithubAdapter implements SurfaceAdapter {
 
   async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
     // no-op
+  }
+}
+
+export class GithubMessageCreatedError extends Error {
+  constructor(
+    readonly messageRef: MsgRef,
+    cause: unknown,
+  ) {
+    super(
+      `GitHub comment ${messageRef.messageId} was created but its action edit failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
   }
 }

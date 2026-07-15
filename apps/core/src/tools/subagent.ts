@@ -240,6 +240,7 @@ export function buildDelegatedTaskPrompt(task: string): ModelMessage {
 }
 
 export type SubagentDelegationRegistration = {
+  mode: SubagentMode;
   profile: SubagentProfile;
   sessionName: string;
   task: string;
@@ -382,6 +383,7 @@ export function subagentTools(params: {
         }
 
         const handle = await params.onDelegate({
+          mode,
           profile,
           sessionName,
           task: parsed.task,

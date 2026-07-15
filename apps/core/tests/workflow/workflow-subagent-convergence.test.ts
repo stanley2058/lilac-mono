@@ -101,6 +101,7 @@ async function setup() {
 
 function registration(parentRequestId = "parent:1"): SubagentDelegationRegistration {
   return {
+    mode: "deferred",
     profile: "explore",
     sessionName: "audit",
     task: "Audit the authentication flow",
@@ -177,8 +178,16 @@ describe("workflow subagent convergence", () => {
     store.close();
   });
 
-  it("uses the same durable terminal run for synchronous completion", async () => {
-    const { store, handle, run } = await createRun();
+  it("uses the same durable terminal run without deferred delivery for synchronous completion", async () => {
+    const setupResult = await setup();
+    const handle = await setupResult.dispatcher.delegate(
+      { ...registration(), mode: "sync" },
+      { editing: false, externalTools: true },
+    );
+    const run = setupResult.store.getRun(handle.runId);
+    if (!run) throw new Error("generated subagent run not found");
+    const { store } = setupResult;
+    expect(store.listActiveLiveParentRuns("parent:1")).toEqual([]);
     expect(store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 })).toBe(
       true,
     );
@@ -203,7 +212,7 @@ describe("workflow subagent convergence", () => {
     const { store, handle, run, dataDir } = await createRun();
     const bus = createLilacBus(createInMemoryRawBus());
     let childSessionId: string | undefined;
-    let allowsNestedSubagents = false;
+    let hasOpaqueAuthority = false;
     const progress: string[] = [];
     await bus.subscribeTopic(
       outReqTopic("parent:1"),
@@ -229,10 +238,11 @@ describe("workflow subagent convergence", () => {
         if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
           childSessionId = message.headers?.session_id;
           const workflow = Reflect.get(message.data.raw ?? {}, "workflow");
-          allowsNestedSubagents =
+          hasOpaqueAuthority =
             workflow !== null &&
             typeof workflow === "object" &&
-            Reflect.get(workflow, "subagents") === true;
+            typeof Reflect.get(workflow, "capability") === "string" &&
+            Reflect.get(workflow, "editing") === undefined;
           await bus.publish(
             lilacEventTypes.EvtAgentOutputResponseText,
             { finalText: "engine result" },
@@ -278,7 +288,7 @@ describe("workflow subagent convergence", () => {
     await engine.start();
     await waitFor(() => store.getRun(run.runId)?.state === "succeeded");
     expect(childSessionId).toBe("sub:channel:1:named:audit");
-    expect(allowsNestedSubagents).toBe(true);
+    expect(hasOpaqueAuthority).toBe(true);
     expect(progress.some((display) => display.includes("subagent (explore;"))).toBe(true);
     expect(parent.listPending().map((completion) => completion.runId)).toEqual([run.runId]);
     await expect(handle.completion).resolves.toEqual({

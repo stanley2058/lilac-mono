@@ -73,7 +73,7 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       },
       progressCards: {
         ensureInitialCard: async (runId) => {
-          ensuredCards.push(runId);
+          if (!ensuredCards.includes(runId)) ensuredCards.push(runId);
           return { platform: "discord", channelId: "channel-1", messageId: `card-${runId}` };
         },
         requestProjection: () => {},
@@ -107,6 +107,8 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
         cwd: workspaceRoot,
         safetyMode: "trusted" as const,
         serverOwnedRequest: true,
+        authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
+        toolCallId: "tool-call-1",
       };
       await tool.call(
         "workflow.definition.save",
@@ -131,6 +133,19 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       );
       expect(first.state).toBe("awaiting_review");
       expect(ensuredCards).toEqual([first.runId]);
+      const retried = invocationSchema.parse(
+        await tool.call(
+          "workflow.run.trigger",
+          {
+            scope: "auto",
+            name: "audit-routes",
+            args: { directory: "src" },
+            progress: { requestOrigin: true },
+          },
+          { context },
+        ),
+      );
+      expect(retried.runId).toBe(first.runId);
       expect(
         await tool.call(
           "workflow.run.get",
@@ -138,6 +153,18 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
           { context },
         ),
       ).toMatchObject({ source: source() });
+      const otherPrincipalContext = {
+        ...context,
+        requestId: "request-other",
+        authenticatedPrincipal: { platform: "discord" as const, userId: "user-other" },
+        toolCallId: "tool-call-other",
+      };
+      await expect(
+        tool.call("workflow.run.get", { runId: first.runId }, { context: otherPrincipalContext }),
+      ).rejects.toThrow("principal scope");
+      expect(
+        await tool.call("workflow.run.list", {}, { context: otherPrincipalContext }),
+      ).toMatchObject({ runs: [] });
       expect(
         new Set([
           first.sourceSha256,
@@ -167,6 +194,7 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
         inspector.close();
       }
 
+      context.toolCallId = "tool-call-2";
       const second = invocationSchema.parse(
         await tool.call(
           "workflow.run.trigger",
@@ -212,7 +240,11 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       expect(
         await tool.call(
           "workflow.run.get",
-          { runId: first.runId, includeResultArtifact: true },
+          {
+            runId: first.runId,
+            includeResultArtifact: true,
+            includeSensitiveResult: true,
+          },
           { context },
         ),
       ).toMatchObject({ resultArtifact: largeResult });
@@ -260,16 +292,17 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       ).toMatchObject({ changed: true, trigger: { state: "cancelled" } });
 
       reviewerAvailable = false;
+      context.toolCallId = "tool-call-3";
       const unauthenticated = await tool.call(
         "workflow.run.trigger",
         { scope: "auto", name: "audit-routes", args: { directory: "docs" } },
         { context },
       );
       expect(unauthenticated).toMatchObject({
-        state: "awaiting_review",
-        reviewerAvailable: false,
-        progressCard: null,
-        message: expect.stringContaining("no authenticated originating reviewer"),
+        state: "queued",
+        reviewerAvailable: true,
+        progressCard: expect.any(Object),
+        message: expect.stringContaining("already approved"),
       });
 
       const cancelled = await tool.call(
@@ -298,7 +331,9 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
         get: (requestId) =>
           requestId === "request-1" ? [{ role: "user", content: "workflow" }] : undefined,
         getOrigin: (requestId) =>
-          requestId === "request-1" ? { sessionId: "channel-1", platform: "discord" } : undefined,
+          requestId === "request-1"
+            ? { sessionId: "channel-1", platform: "discord", actorUserId: "user-1" }
+            : undefined,
       },
     });
     await server.init();

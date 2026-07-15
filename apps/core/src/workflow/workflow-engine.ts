@@ -11,7 +11,13 @@ import {
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import { DurableWorkflowStore } from "./durable-workflow-store";
-import { canonicalJson, canonicalJsonSha256, sha256 } from "./workflow-definition";
+import {
+  canonicalJson,
+  canonicalJsonSha256,
+  sha256,
+  validateWorkflowArgs,
+  WORKFLOW_RUNTIME_VERSION,
+} from "./workflow-definition";
 import {
   jsonValueSchema,
   type JsonValue,
@@ -33,6 +39,10 @@ import {
   WORKFLOW_INLINE_VALUE_BYTES,
   writeWorkflowValueArtifact,
 } from "./workflow-artifact-store";
+import type { WorkflowRequestPolicy } from "./workflow-request-authority";
+
+const WORKFLOW_LEASE_STALE_MS = 60_000;
+const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
 
 const agentOptionsSchema = z.strictObject({
   profile: z.enum(["explore", "general", "self"]).optional(),
@@ -108,7 +118,11 @@ function operationId(pathValue: string): string {
   return `wfop:${sha256(pathValue).slice(0, 40)}`;
 }
 
-function requestId(runId: string, operationIdValue: string, attempt: number): string {
+export function workflowAgentRequestId(
+  runId: string,
+  operationIdValue: string,
+  attempt: number,
+): string {
   return `wfr:${sha256(runId).slice(0, 20)}:${operationIdValue.slice(-20)}:${attempt}`;
 }
 
@@ -123,6 +137,7 @@ export class WorkflowEngine {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
   private wakeSubscription: { stop(): Promise<void> } | null = null;
+  private tickPromise: Promise<void> | null = null;
 
   constructor(
     private readonly input: {
@@ -164,14 +179,12 @@ export class WorkflowEngine {
         batch: { maxWaitMs: 500 },
       },
       async (_message, context) => {
-        void this.tick();
+        void this.requestTick();
         await context.commit();
       },
     );
-    this.timer = setInterval(() => void this.tick(), this.input.pollMs ?? 250);
-    this.timer.unref?.();
     for (const run of this.input.store.listRuns({ state: "running", limit: 1_000 })) {
-      await this.claimAndLaunch(run, 0);
+      await this.claimAndLaunch(run, WORKFLOW_LEASE_STALE_MS);
     }
     for (const run of this.input.store.listRuns({ state: "blocked", limit: 1_000 })) {
       this.input.store.transitionRun({
@@ -182,7 +195,9 @@ export class WorkflowEngine {
         detail: "Replaying durable workflow wait after restart",
       });
     }
-    await this.tick();
+    await this.requestTick();
+    this.timer = setInterval(() => void this.requestTick(), this.input.pollMs ?? 250);
+    this.timer.unref?.();
   }
 
   async stop(): Promise<void> {
@@ -191,6 +206,7 @@ export class WorkflowEngine {
     this.timer = null;
     await this.wakeSubscription?.stop();
     this.wakeSubscription = null;
+    await this.tickPromise;
     const active = [...this.active.values()];
     for (const run of active) {
       run.controller.abort("shutdown");
@@ -202,6 +218,13 @@ export class WorkflowEngine {
 
   private now(): number {
     return this.input.now?.() ?? Date.now();
+  }
+
+  private requestTick(): Promise<void> {
+    this.tickPromise ??= this.tick().finally(() => {
+      this.tickPromise = null;
+    });
+    return this.tickPromise;
   }
 
   private async tick(): Promise<void> {
@@ -232,7 +255,11 @@ export class WorkflowEngine {
           run?.state === "paused" || approval?.state !== "approved",
         );
       } else {
-        this.input.store.refreshRunClaim(runId, this.workerId, this.now());
+        if (!this.input.store.refreshRunClaim(runId, this.workerId, this.now())) {
+          active.controller.abort("workflow lease lost");
+          await active.sandbox.cancel();
+          await this.stopAgentRequests(runId, "workflow lease lost", true, false);
+        }
       }
     }
     for (const run of this.input.store.listRuns({ state: "queued", limit: 1_000 })) {
@@ -286,10 +313,12 @@ export class WorkflowEngine {
     const revision = this.input.store.getRevision(run.revisionId);
     if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
     this.assertApproval(run, revision);
-    if (revision.runtimeVersion !== "lilac-workflow-js-v1") {
+    this.assertPersistedIntegrity(run, revision);
+    if (revision.runtimeVersion !== WORKFLOW_RUNTIME_VERSION) {
       throw new Error(`Unsupported workflow runtime: ${revision.runtimeVersion}`);
     }
     const source = await this.loadSnapshot(revision);
+    this.assertPersistedIntegrity(run, revision);
     this.assertApproval(run, revision);
     const compiled = (this.input.compileSource ?? compileWorkflowSource)(
       source,
@@ -305,6 +334,53 @@ export class WorkflowEngine {
       signal,
       onCall: (call) => this.handleCall(run.runId, revision, call, semaphore, signal),
     });
+  }
+
+  private assertPersistedIntegrity(run: WorkflowRun, revision: WorkflowRevision): void {
+    if (revision.revisionId.startsWith("wfr:")) {
+      const expectedRevisionId = `wfr:${canonicalJsonSha256(
+        jsonValueSchema.parse({
+          canonicalProjectId: revision.canonicalProjectId,
+          canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
+          scope: revision.scope,
+          normalizedPath: revision.normalizedPath,
+          sourceSha256: revision.sourceSha256,
+          inputSchemaSha256: revision.inputSchemaSha256,
+          capabilitySha256: revision.capabilitySha256,
+          runtimeVersion: revision.runtimeVersion,
+        }),
+      )}`;
+      if (revision.revisionId !== expectedRevisionId) {
+        throw new Error("Persisted workflow revision identity hash mismatch");
+      }
+    }
+    if (canonicalJsonSha256(revision.inputSchema) !== revision.inputSchemaSha256) {
+      throw new Error("Persisted workflow input schema hash mismatch");
+    }
+    if (
+      canonicalJsonSha256(
+        jsonValueSchema.parse({ capabilities: revision.capabilities, limits: revision.limits }),
+      ) !== revision.capabilitySha256
+    ) {
+      throw new Error("Persisted workflow capability hash mismatch");
+    }
+    const args = validateWorkflowArgs({
+      inputSchema: revision.inputSchema,
+      args: run.args,
+      maxInputBytes: revision.limits.maxInputBytes,
+    });
+    if (
+      canonicalJsonSha256(args) !== run.argsSha256 ||
+      canonicalJsonSha256(run.inputSchemaSnapshot) !== revision.inputSchemaSha256
+    ) {
+      throw new Error("Persisted workflow invocation hash mismatch");
+    }
+    if (
+      run.origin.projectCwd !== revision.canonicalWorkspaceRoot ||
+      path.resolve(run.origin.projectCwd) !== revision.canonicalWorkspaceRoot
+    ) {
+      throw new Error("Persisted workflow project cwd does not match its approved revision");
+    }
   }
 
   private assertApproval(run: WorkflowRun, revision: WorkflowRevision): void {
@@ -351,7 +427,7 @@ export class WorkflowEngine {
     signal: AbortSignal,
   ): Promise<JsonValue> {
     const run = this.input.store.getRun(runId);
-    if (!run || run.state !== "running" || signal.aborted)
+    if (!run || run.state !== "running" || run.claimedBy !== this.workerId || signal.aborted)
       throw new Error("Workflow is not running");
     this.assertApproval(run, revision);
     if (call.depth > revision.capabilities.maxNestingDepth) {
@@ -364,6 +440,7 @@ export class WorkflowEngine {
     const persistedKind =
       call.kind === "waitForReply" || call.kind === "sleep" ? "wait" : call.kind;
     const existing = this.input.store.getOperation(runId, id);
+    this.validateOperationInput(call.kind, input);
     if (existing) {
       if (
         existing.callSiteId !== call.callSiteId ||
@@ -467,6 +544,15 @@ export class WorkflowEngine {
     return await this.completeStructuralOperation(run, revision, operation);
   }
 
+  private validateOperationInput(kind: WorkflowSandboxCall["kind"], input: JsonValue): void {
+    if (kind === "agent") agentInputSchema.parse(input);
+    else if (kind === "phase") phaseInputSchema.parse(input);
+    else if (kind === "parallel") parallelInputSchema.parse(input);
+    else if (kind === "pipeline") pipelineInputSchema.parse(input);
+    else if (kind === "waitForReply") waitForReplyInputSchema.parse(input);
+    else sleepInputSchema.parse(input);
+  }
+
   private async waitDurably(
     run: WorkflowRun,
     revision: WorkflowRevision,
@@ -480,6 +566,7 @@ export class WorkflowEngine {
       throw new Error(`Workflow wait capability is not approved: ${capability}`);
     }
     const now = this.now();
+    const operationCreatedAt = operation.createdAt;
     let wait = this.input.store.getWait(run.runId, operation.operationId);
     if (!wait) {
       if (kind === "waitForReply") {
@@ -489,6 +576,16 @@ export class WorkflowEngine {
         if (!platform || !channelId) {
           throw new Error(
             "waitForReply requires a platform and channelId or an originating session",
+          );
+        }
+        if (
+          platform !== "discord" ||
+          platform !== run.origin.client ||
+          channelId !== run.origin.sessionId ||
+          (options.fromUserId !== undefined && options.fromUserId !== run.origin.userId)
+        ) {
+          throw new Error(
+            "waitForReply is limited to the authenticated originating Discord session and user",
           );
         }
         wait = {
@@ -504,7 +601,8 @@ export class WorkflowEngine {
           },
           matchKey: `${platform}:${channelId}`,
           dueAt: null,
-          deadlineAt: options.timeoutMs === undefined ? null : now + options.timeoutMs,
+          deadlineAt:
+            options.timeoutMs === undefined ? null : operationCreatedAt + options.timeoutMs,
           resolverCursor: null,
           result: null,
           resolvedBy: null,
@@ -525,7 +623,7 @@ export class WorkflowEngine {
             ? (parsedTimestamp ?? now)
             : value >= 100_000_000_000
               ? Math.trunc(value)
-              : now + Math.trunc(value);
+              : operationCreatedAt + Math.trunc(value);
         wait = {
           runId: run.runId,
           operationId: operation.operationId,
@@ -545,7 +643,11 @@ export class WorkflowEngine {
         };
       }
       if (!this.input.store.createWait(wait)) {
-        throw new Error(`Failed to journal workflow wait ${operation.operationId}`);
+        const concurrentlyCreated = this.input.store.getWait(run.runId, operation.operationId);
+        if (!concurrentlyCreated) {
+          throw new Error(`Failed to journal workflow wait ${operation.operationId}`);
+        }
+        wait = concurrentlyCreated;
       }
     } else if (
       (kind === "waitForReply" && wait.match.kind !== "reply") ||
@@ -573,32 +675,10 @@ export class WorkflowEngine {
       await this.publishOperation(revision, operation, next, current.state);
       current = this.input.store.getOperation(run.runId, operation.operationId) ?? current;
     }
-    const currentRun = this.input.store.getRun(run.runId);
-    if (currentRun?.state === "running") {
-      this.input.store.transitionRun({
-        runId: run.runId,
-        from: "running",
-        to: "blocked",
-        now: this.now(),
-        detail: kind === "sleep" ? "Waiting for durable timer" : "Waiting for adapter reply",
-      });
-      await this.publishRun(run, "blocked", "running");
-    }
-
     while (!signal.aborted) {
       wait = this.input.store.getWait(run.runId, operation.operationId);
       if (!wait) throw new Error("Durable workflow wait disappeared");
       if (wait.state === "resolved" || wait.state === "expired" || wait.state === "cancelled") {
-        const blockedRun = this.input.store.getRun(run.runId);
-        if (blockedRun?.state === "blocked") {
-          this.input.store.transitionRun({
-            runId: run.runId,
-            from: "blocked",
-            to: "running",
-            now: this.now(),
-          });
-          await this.publishRun(run, "running", "blocked");
-        }
         const latest = this.input.store.getOperation(run.runId, operation.operationId);
         if (wait.state === "resolved") {
           if (latest?.state === "blocked") {
@@ -699,18 +779,69 @@ export class WorkflowEngine {
       revision.capabilities.agents.editing && revision.capabilities.agents.isolation === "worktree"
         ? await this.prepareWorktree(run, operation, revision)
         : revision.canonicalWorkspaceRoot;
-    const reqId =
-      operation.requestId ?? requestId(run.runId, operation.operationId, operation.attempt);
+    const expectedRequestId = workflowAgentRequestId(
+      run.runId,
+      operation.operationId,
+      operation.attempt,
+    );
+    if (operation.requestId && operation.requestId !== expectedRequestId) {
+      throw new Error("Persisted workflow operation request ID is not deterministic");
+    }
+    const reqId = expectedRequestId;
     let current = this.input.store.getOperation(run.runId, operation.operationId) ?? operation;
-    if (current.state === "queued") {
-      this.input.store.transitionOperation({
+    const sessionId =
+      run.completionTarget.kind === "live_parent"
+        ? run.completionTarget.childSessionId
+        : `workflow:${run.runId}:${operation.operationId}`;
+    const liveOwner =
+      reconcile &&
+      this.input.store.hasLiveWorkflowRequestOwner(
+        reqId,
+        this.now(),
+        WORKFLOW_REQUEST_LEASE_STALE_MS,
+      );
+    let capability: string | null = null;
+    if (!liveOwner) {
+      capability = crypto.randomUUID() + crypto.randomUUID();
+      const policy = {
         runId: run.runId,
         operationId: operation.operationId,
-        from: "queued",
-        to: "dispatched",
-        now: this.now(),
+        profile,
+        safetyMode: run.origin.safetyMode,
+        editing: revision.capabilities.agents.editing,
+        externalTools: revision.capabilities.externalTools,
+        surfaceSends: revision.capabilities.surfaceSends,
+        subagents: run.completionTarget.kind === "live_parent",
+        canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
+        canonicalCwd: agentCwd,
+        canonicalProjectId: revision.canonicalProjectId,
+        originSessionId: run.origin.sessionId,
+        originClient:
+          run.origin.client === "discord" || run.origin.client === "github"
+            ? run.origin.client
+            : null,
+        revisionId: revision.revisionId,
+        sourceSha256: revision.sourceSha256,
+        inputSchemaSha256: revision.inputSchemaSha256,
+        capabilitySha256: revision.capabilitySha256,
+        argsSha256: run.argsSha256,
+      } satisfies WorkflowRequestPolicy;
+      const dispatched = this.input.store.authorizeAgentDispatch({
         requestId: reqId,
+        runId: run.runId,
+        operationId: operation.operationId,
+        runOwnerId: this.workerId,
+        token: capability,
+        sessionId,
+        platform: "unknown",
+        policy,
+        now: this.now(),
+        expiresAt: (run.startedAt ?? run.createdAt) + revision.capabilities.maxWallTimeMs,
+        staleOwnerBefore: this.now() - WORKFLOW_REQUEST_LEASE_STALE_MS,
       });
+      if (!dispatched) throw new Error("Workflow dispatch authorization was rejected");
+    }
+    if (current.state === "queued") {
       await this.publishOperation(revision, operation, "dispatched", "queued");
       current = this.input.store.getOperation(run.runId, operation.operationId) ?? current;
     }
@@ -727,6 +858,9 @@ export class WorkflowEngine {
         agentCwd,
         signal,
         reconcile,
+        capability,
+        sessionId,
+        publishRequest: !liveOwner,
       };
       result = this.input.dispatchAgentRequest
         ? await this.input.dispatchAgentRequest(request)
@@ -746,6 +880,9 @@ export class WorkflowEngine {
     }
     if (signal.aborted && this.input.store.getRun(run.runId)?.state === "paused") {
       throw new Error("Workflow operation paused for durable replay");
+    }
+    if (this.input.store.getRun(run.runId)?.claimedBy !== this.workerId) {
+      throw new Error("Workflow operation lease was lost before completion");
     }
     if (!latest || isTerminalOperation(latest.state)) {
       if (latest?.state === "succeeded") return latest.output;
@@ -797,6 +934,7 @@ export class WorkflowEngine {
       error: result.state === "resolved" ? null : (result.detail ?? result.state),
       usage: result.usage,
     });
+    this.input.store.expireWorkflowRequest(reqId, this.now());
     await this.publishOperation(revision, operation, nextState, terminalFrom);
     if (result.usage) await this.publishUsage(run, revision, operation.operationId);
     if (nextState !== "succeeded") throw new Error(result.detail ?? `Agent request ${nextState}`);
@@ -816,6 +954,7 @@ export class WorkflowEngine {
     } catch (error) {
       if (this.stopping) throw error;
       const currentRun = this.input.store.getRun(run.runId);
+      if (currentRun?.claimedBy !== this.workerId) throw error;
       if (signal.aborted && currentRun?.state === "paused") throw error;
       const current = this.input.store.getOperation(run.runId, operation.operationId);
       if (current && !isTerminalOperation(current.state)) {
@@ -856,12 +995,14 @@ export class WorkflowEngine {
     agentCwd: string;
     signal: AbortSignal;
     reconcile: boolean;
+    capability: string | null;
+    sessionId: string;
+    publishRequest: boolean;
   }): Promise<AgentRequestResult> {
     let output = "";
     let usage: WorkflowUsage | null = null;
     let lifecycle: RequestLifecycleState | null = null;
     let detail: string | null = null;
-    let sawHistory = false;
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let settle: (value: AgentRequestResult) => void = () => {};
@@ -882,7 +1023,6 @@ export class WorkflowEngine {
       idleTimer.unref?.();
     };
     const resetIdle = (): void => {
-      sawHistory = true;
       armIdle();
     };
     const suffix = `${input.requestId}:${crypto.randomUUID()}`;
@@ -947,7 +1087,8 @@ export class WorkflowEngine {
     input.signal.addEventListener("abort", abort, { once: true });
     armIdle();
     if (input.reconcile) await Bun.sleep(250);
-    if (!input.reconcile || !sawHistory) {
+    if (input.publishRequest) {
+      if (!input.capability) throw new Error("Workflow dispatch capability is missing");
       const liveParent =
         input.run.completionTarget.kind === "live_parent" ? input.run.completionTarget : null;
       await this.input.bus.publish(
@@ -960,12 +1101,7 @@ export class WorkflowEngine {
             workflow: {
               runId: input.run.runId,
               operationId: input.operation.operationId,
-              profile: input.profile,
-              safetyMode: input.run.origin.safetyMode,
-              editing: input.revision.capabilities.agents.editing,
-              externalTools: input.revision.capabilities.externalTools,
-              cwd: input.agentCwd,
-              subagents: liveParent !== null,
+              capability: input.capability,
             },
             subagent: {
               profile: input.profile,
@@ -983,10 +1119,7 @@ export class WorkflowEngine {
         {
           headers: {
             request_id: input.requestId,
-            session_id:
-              input.run.completionTarget.kind === "live_parent"
-                ? input.run.completionTarget.childSessionId
-                : `workflow:${input.run.runId}:${input.operation.operationId}`,
+            session_id: input.sessionId,
             request_client: "unknown",
             workflow_run_id: input.run.runId,
             workflow_operation_id: input.operation.operationId,
@@ -1011,8 +1144,13 @@ export class WorkflowEngine {
       sha256(run.runId).slice(0, 20),
       sha256(operation.operationId).slice(0, 20),
     );
-    const existing = await fs.stat(worktree).catch(() => null);
-    if (existing?.isDirectory()) return worktree;
+    const existing = await fs.lstat(worktree).catch(() => null);
+    if (existing) {
+      if (existing.isSymbolicLink() || !existing.isDirectory()) {
+        throw new Error("Workflow worktree path is not an owned real directory");
+      }
+      return await this.verifyWorktreeIdentity(revision, worktree);
+    }
     await fs.mkdir(path.dirname(worktree), { recursive: true, mode: 0o700 });
     const check = Bun.spawn(
       ["git", "-C", revision.canonicalWorkspaceRoot, "rev-parse", "--show-toplevel"],
@@ -1041,7 +1179,38 @@ export class WorkflowEngine {
     const error = (await new Response(create.stderr).text()).trim();
     if ((await create.exited) !== 0)
       throw new Error(`Failed to create workflow worktree: ${error}`);
-    return worktree;
+    return await this.verifyWorktreeIdentity(revision, worktree);
+  }
+
+  private async verifyWorktreeIdentity(
+    revision: WorkflowRevision,
+    worktree: string,
+  ): Promise<string> {
+    const canonical = await fs.realpath(worktree);
+    const ownedRoot = await fs.realpath(path.join(this.input.dataDir, "workflow-worktrees"));
+    const relative = path.relative(ownedRoot, canonical);
+    if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+      throw new Error("Workflow worktree escaped its owned root");
+    }
+    const check = Bun.spawn(["git", "-C", canonical, "rev-parse", "--show-toplevel"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const actual = (await new Response(check.stdout).text()).trim();
+    if ((await check.exited) !== 0 || (await fs.realpath(actual)) !== canonical) {
+      throw new Error("Workflow worktree identity verification failed");
+    }
+    const common = Bun.spawn(["git", "-C", canonical, "rev-parse", "--git-common-dir"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const commonPath = (await new Response(common.stdout).text()).trim();
+    const approvedCommon = await fs.realpath(path.join(revision.canonicalWorkspaceRoot, ".git"));
+    const actualCommon = await fs.realpath(path.resolve(canonical, commonPath));
+    if ((await common.exited) !== 0 || actualCommon !== approvedCommon) {
+      throw new Error("Workflow worktree does not belong to the approved repository");
+    }
+    return canonical;
   }
 
   private async removeWorktree(revision: WorkflowRevision, worktree: string): Promise<void> {
@@ -1052,7 +1221,12 @@ export class WorkflowEngine {
     await remove.exited;
   }
 
-  private async stopAgentRequests(runId: string, reason: string, requeue: boolean): Promise<void> {
+  private async stopAgentRequests(
+    runId: string,
+    reason: string,
+    requeue: boolean,
+    mutate = true,
+  ): Promise<void> {
     const target = this.input.store.getRun(runId)?.completionTarget;
     const operations = this.input.store
       .listOperations(runId, { limit: 1_000 })
@@ -1079,9 +1253,11 @@ export class WorkflowEngine {
         );
       }
     }
+    if (!mutate) return;
     const changed = requeue
       ? this.input.store.requeueActiveOperations(runId, this.now(), reason)
       : this.input.store.cancelActiveOperations(runId, this.now(), reason);
+    this.input.store.expireWorkflowRequestsForRun(runId, this.now());
     if (!requeue) this.input.store.cancelActiveWaits(runId, this.now());
     const run = this.input.store.getRun(runId);
     const revision = run ? this.input.store.getRevision(run.revisionId) : null;
@@ -1099,35 +1275,51 @@ export class WorkflowEngine {
     detail: string,
   ): Promise<void> {
     const current = this.input.store.getRun(original.runId);
-    if (!current || current.state !== "running") return;
+    if (!current || current.state !== "running" || current.claimedBy !== this.workerId) return;
     const revision = this.input.store.getRevision(current.revisionId);
     if (!revision) throw new Error(`Workflow revision not found: ${current.revisionId}`);
-    const resultBytes = Buffer.byteLength(canonicalJson(result), "utf8");
+    let finalState = state;
+    let finalResult = result;
+    let finalDetail = detail;
+    const activeOperations = this.input.store
+      .listOperations(current.runId, { limit: 1_000 })
+      .filter((operation) => !isTerminalOperation(operation.state));
+    if (state === "succeeded" && activeOperations.length > 0) {
+      finalState = "failed";
+      finalResult = null;
+      finalDetail = "Workflow returned with outstanding unawaited host operations";
+    }
+    if (finalState === "failed") {
+      await this.stopAgentRequests(current.runId, finalDetail, false);
+    }
+    const resultBytes = Buffer.byteLength(canonicalJson(finalResult), "utf8");
     const resultArtifactId =
-      state === "succeeded" && resultBytes > WORKFLOW_INLINE_VALUE_BYTES
+      finalState === "succeeded" && resultBytes > WORKFLOW_INLINE_VALUE_BYTES
         ? await writeWorkflowValueArtifact({
             dataDir: this.input.dataDir,
-            value: result,
+            value: finalResult,
             maxBytes: revision.limits.maxResultBytes,
           })
         : null;
-    this.input.store.transitionRun({
+    const changed = this.input.store.terminalizeRun({
       runId: current.runId,
       from: "running",
-      to: state,
+      to: finalState,
+      ownerId: this.workerId,
       now: this.now(),
-      detail,
-      result: resultArtifactId ? null : result,
+      detail: finalDetail,
+      result: resultArtifactId ? null : finalResult,
       resultArtifactId,
     });
+    if (!changed) throw new Error("Workflow terminal transition lost its fenced lease");
     const updated = this.input.store.getRun(current.runId);
     if (!updated) return;
-    await this.publishRun(updated, state, "running");
+    await this.publishRun(updated, finalState, "running");
     await this.input.bus.publish(lilacEventTypes.EvtWorkflowResultReady, {
       runId: updated.runId,
       revisionId: updated.revisionId,
-      state,
-      summary: detail.slice(0, 1_000),
+      state: finalState,
+      summary: finalDetail.slice(0, 1_000),
       ts: this.now(),
     });
   }

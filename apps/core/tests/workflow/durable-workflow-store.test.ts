@@ -147,6 +147,112 @@ function operation(runId = "run-1", id = "operation-1"): WorkflowOperation {
 }
 
 describe("DurableWorkflowStore", () => {
+  it("authorizes dispatch atomically and rejects forged, revoked, or live-owned requests", () => {
+    const path = dbPath("dispatch-authority");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-authority"),
+        pendingApproval: approval("run-authority"),
+      });
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      expect(
+        store.tryClaimApprovedRun({
+          runId: invocation.run.runId,
+          claimerId: "engine-1",
+          now: 12,
+        }),
+      ).not.toBeNull();
+      expect(store.createOperation(operation(invocation.run.runId))).toBe(true);
+      const token = crypto.randomUUID() + crypto.randomUUID();
+      const policy = {
+        runId: invocation.run.runId,
+        operationId: "operation-1",
+        profile: "explore" as const,
+        safetyMode: "trusted" as const,
+        editing: false,
+        externalTools: false,
+        surfaceSends: false,
+        subagents: false,
+        canonicalWorkspaceRoot: "/workspace",
+        canonicalCwd: "/workspace",
+        canonicalProjectId: "project-1",
+        originSessionId: "session-1",
+        originClient: "discord" as const,
+        revisionId: "revision-1",
+        sourceSha256: HASH_A,
+        inputSchemaSha256: HASH_A,
+        capabilitySha256: HASH_B,
+        argsSha256: HASH_A,
+      };
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-1",
+          token,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          policy,
+          now: 13,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).toMatchObject({ state: "dispatched", requestId: "wfr:request-1" });
+      expect(
+        store.authorizeWorkflowRequest({
+          requestId: "wfr:request-1",
+          token: "forged-token-that-is-long-enough-to-parse",
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          now: 14,
+        }),
+      ).toBeNull();
+      expect(
+        store.claimWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          ownerId: "runner-1",
+          now: 14,
+        }),
+      ).toBe(true);
+      expect(
+        store.claimWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          ownerId: "runner-2",
+          now: 15,
+        }),
+      ).toBe(false);
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "approved",
+        to: "revoked",
+        now: 16,
+      });
+      expect(
+        store.authorizeWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          now: 17,
+        }),
+      ).toBeNull();
+      expect(store.getRun(invocation.run.runId)?.state).toBe("paused");
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
   it("tracks explicit migrations and reopens an existing schema", () => {
     const path = dbPath("migration");
     try {
@@ -163,12 +269,22 @@ describe("DurableWorkflowStore", () => {
           name: "durable live-parent completion delivery",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 4,
+          name: "workflow authority and incremental hardening",
+          appliedAt: expect.any(Number),
+        },
+        {
+          version: 5,
+          name: "scheduled run admission tracking",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(3);
+      expect(reopened.listMigrations()).toHaveLength(5);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -379,7 +495,7 @@ describe("DurableWorkflowStore", () => {
         definition: { kind: "timestamp", at: 200 },
         args: {},
         argsSha256: HASH_A,
-        schedulingPolicy: { skipMissed: true },
+        schedulingPolicy: { skipMissed: true, overlap: "coalesce" },
         origin: {
           requestId: "request-1",
           sessionId: "session-1",

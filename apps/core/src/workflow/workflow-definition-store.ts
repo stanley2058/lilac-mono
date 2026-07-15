@@ -9,6 +9,7 @@ import {
   type ValidatedWorkflowDefinition,
 } from "./workflow-definition";
 import {
+  compareCodeUnits,
   workflowScopeSchema,
   type WorkflowSafetyMode,
   type WorkflowScope,
@@ -312,7 +313,7 @@ export class WorkflowDefinitionStore {
         throw new Error(`Workflow scope root must be a real directory: ${rootCandidate}`);
       }
       const entries = await fs.readdir(rootCandidate, { withFileTypes: true });
-      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      for (const entry of entries.sort((left, right) => compareCodeUnits(left.name, right.name))) {
         if (!entry.name.endsWith(".js")) continue;
         const name = entry.name.slice(0, -3);
         if (!workflowDefinitionNameSchema.safeParse(name).success || seen.has(name)) continue;

@@ -138,6 +138,64 @@ describe("tool-bridge build id", () => {
 });
 
 describe("tool-bridge CLI runtime", () => {
+  it("forwards authenticated workflow context to list and help requests", async () => {
+    const requests: Request[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        requests.push(req.clone());
+        const url = new URL(req.url);
+        if (url.pathname === "/list") {
+          return Response.json({ tools: [] });
+        }
+        return Response.json({
+          callableId: "fetch",
+          name: "Fetch",
+          description: "Fetch URL",
+          shortInput: [],
+          input: [],
+        });
+      },
+    });
+    const env = {
+      LILAC_REQUEST_ID: "wfr:request",
+      LILAC_SESSION_ID: "workflow:run:operation",
+      LILAC_REQUEST_CLIENT: "unknown",
+      LILAC_CWD: "/approved",
+      LILAC_TOOL_CALL_ID: "tool-call-1",
+      LILAC_WORKFLOW_CAPABILITY: "server-capability",
+    };
+    try {
+      expect(
+        (
+          await runToolBridgeCli({
+            args: ["--list"],
+            backendUrl: `http://127.0.0.1:${server.port}`,
+            env,
+          })
+        ).exitCode,
+      ).toBe(0);
+      expect(
+        (
+          await runToolBridgeCli({
+            args: ["--help", "fetch"],
+            backendUrl: `http://127.0.0.1:${server.port}`,
+            env,
+          })
+        ).exitCode,
+      ).toBe(0);
+      expect(requests).toHaveLength(2);
+      for (const request of requests) {
+        expect(request.headers.get("x-lilac-request-id")).toBe("wfr:request");
+        expect(request.headers.get("x-lilac-tool-call-id")).toBe("tool-call-1");
+        expect(request.headers.get("x-lilac-workflow-capability")).toBe("server-capability");
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
   it("posts stdin JSON to the backend and forwards Lilac request headers", async () => {
     const requests: Array<{ pathname: string; headers: Headers; body: unknown }> = [];
     const server = Bun.serve({

@@ -38,7 +38,16 @@ export type WorkflowProgressView = {
   availableActions: WorkflowSurfaceActionKind[];
 };
 
-function redactValue(value: JsonValue, schema: JsonValue | undefined): JsonValue {
+function schemaContainsSensitive(value: JsonValue): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(schemaContainsSensitive);
+  return (
+    value["sensitive"] === true ||
+    Object.values(value).some((child) => schemaContainsSensitive(child))
+  );
+}
+
+export function redactWorkflowValue(value: JsonValue, schema: JsonValue | undefined): JsonValue {
   if (
     schema !== undefined &&
     schema !== null &&
@@ -56,7 +65,7 @@ function redactValue(value: JsonValue, schema: JsonValue | undefined): JsonValue
       !Array.isArray(schema)
         ? schema["items"]
         : undefined;
-    return value.map((item) => redactValue(item, itemSchema));
+    return value.map((item) => redactWorkflowValue(item, itemSchema));
   }
   if (value === null || typeof value !== "object") return value;
   const properties =
@@ -70,7 +79,10 @@ function redactValue(value: JsonValue, schema: JsonValue | undefined): JsonValue
       ? schema["properties"]
       : undefined;
   return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, redactValue(child, properties?.[key])]),
+    Object.entries(value).map(([key, child]) => [
+      key,
+      redactWorkflowValue(child, properties?.[key]),
+    ]),
   );
 }
 
@@ -141,7 +153,7 @@ export async function buildWorkflowProgressView(input: {
       source: input.loadSource ? await input.loadSource(revision) : null,
       sourceAccess: `tools workflow.run.get ${run.runId} --include-source=true (immutable artifact ${revision.snapshotArtifactId})`,
       firstArgs: jsonObjectSchema.parse(
-        redactValue(firstRun?.args ?? run.args, run.inputSchemaSnapshot),
+        redactWorkflowValue(firstRun?.args ?? run.args, run.inputSchemaSnapshot),
       ),
       inputSchema: run.inputSchemaSnapshot,
     },
@@ -274,13 +286,13 @@ export function renderWorkflowProgressView(input: {
       ? [`Next trigger: ${new Date(view.nextTriggerAt).toISOString()}`]
       : []),
     ...(view.run.terminalDetail ? ["", `Terminal detail: ${view.run.terminalDetail}`] : []),
-    ...(view.run.result !== null
+    ...(view.run.result !== null && !schemaContainsSensitive(view.run.inputSchemaSnapshot)
       ? [
           "",
-          `Result: \`${bounded(json(redactValue(view.run.result, view.run.inputSchemaSnapshot)), 1_000)}\``,
+          `Result: \`${bounded(json(redactWorkflowValue(view.run.result, view.run.inputSchemaSnapshot)), 1_000)}\``,
         ]
       : []),
-    ...(view.run.resultArtifactId
+    ...(view.run.resultArtifactId && !schemaContainsSensitive(view.run.inputSchemaSnapshot)
       ? ["", `Result artifact: \`${view.run.resultArtifactId}\` (inspect with workflow.run.get)`]
       : []),
   ].join("\n");

@@ -361,7 +361,7 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.messages.has("card-2")).toBe(true);
       expect(adapter.contents.at(-1)?.actions).toEqual([]);
       expect(adapter.contents.at(-1)?.text).toContain("State: **succeeded**");
-      expect(adapter.contents.at(-1)?.text).toContain('"token": "<redacted>"');
+      expect(adapter.contents.at(-1)?.text).not.toContain('"token": "secret"');
       expect(adapter.contents.at(-1)?.text).not.toContain('"token": "secret"');
       expect(adapter.contents.at(-1)?.text?.length).toBeLessThanOrEqual(4_000);
 

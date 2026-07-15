@@ -37,6 +37,9 @@ type RestrictedBashContext = {
   requestId?: string;
   sessionId?: string;
   requestClient?: string;
+  workflowCapability?: string;
+  toolCallId?: string;
+  workspaceWritable?: boolean;
 };
 
 type RestrictedBashFsCacheEntry = {
@@ -253,6 +256,10 @@ function buildToolServerHeaders(
   if (context.requestId) headers["x-lilac-request-id"] = context.requestId;
   if (context.sessionId) headers["x-lilac-session-id"] = context.sessionId;
   if (context.requestClient) headers["x-lilac-request-client"] = context.requestClient;
+  if (context.workflowCapability) {
+    headers["x-lilac-workflow-capability"] = context.workflowCapability;
+  }
+  if (context.toolCallId) headers["x-lilac-tool-call-id"] = context.toolCallId;
   headers["x-lilac-cwd"] = cwd;
   return headers;
 }
@@ -466,12 +473,18 @@ async function createRestrictedBash(params: {
   await fs.mkdir(params.sessionTmpDir, { recursive: true, mode: 0o700 });
 
   const workspaceFs = new RestrictedReadFs(
-    new OverlayFs({
-      root: params.workspaceRoot,
-      mountPoint: "/",
-      maxFileReadSize: MAX_RESTRICTED_FILE_READ_BYTES,
-      allowSymlinks: false,
-    }),
+    params.context.workspaceWritable
+      ? new ReadWriteFs({
+          root: params.workspaceRoot,
+          maxFileReadSize: MAX_RESTRICTED_FILE_READ_BYTES,
+          allowSymlinks: false,
+        })
+      : new OverlayFs({
+          root: params.workspaceRoot,
+          mountPoint: "/",
+          maxFileReadSize: MAX_RESTRICTED_FILE_READ_BYTES,
+          allowSymlinks: false,
+        }),
   );
 
   const tmpFs = new ReadWriteFs({
@@ -536,6 +549,8 @@ async function getRestrictedBash(params: {
     params.context.sessionId ?? "",
     params.requestId,
     params.workspaceRoot,
+    params.context.toolCallId ?? "",
+    params.context.workspaceWritable ? "write" : "read",
   ]);
 
   const cached = restrictedBashByRequest.get(cacheKey);
@@ -564,7 +579,7 @@ export async function executeRestrictedBash(
     // just-bash commands see empty stdin by default; keep accepting this compatibility flag.
   }
 
-  const context = options.context ?? {};
+  const context = { ...options.context, toolCallId: options.toolCallId };
   const workspaceRoot = path.resolve(expandTilde(options.workspaceRoot ?? process.cwd()));
   const sessionTmpDir = resolveRestrictedSessionTmpDir(context.sessionId);
 

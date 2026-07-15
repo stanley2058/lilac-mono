@@ -90,6 +90,7 @@ function trigger(input: {
   definition: WorkflowTrigger["definition"];
   nextFireAt: number;
   skipMissed?: boolean;
+  overlap?: "coalesce" | "parallel";
 }): WorkflowTrigger {
   return {
     triggerId: input.triggerId,
@@ -98,7 +99,10 @@ function trigger(input: {
     definition: input.definition,
     args: {},
     argsSha256: "d".repeat(64),
-    schedulingPolicy: { skipMissed: input.skipMissed ?? true },
+    schedulingPolicy: {
+      skipMissed: input.skipMissed ?? true,
+      overlap: input.overlap ?? "coalesce",
+    },
     origin: {
       requestId: "origin-1",
       sessionId: "channel-1",
@@ -201,6 +205,18 @@ describe("WorkflowTriggerScheduler", () => {
         to: "approved",
         now: 60_001,
       });
+      store.transitionRun({
+        runId: firstRun.runId,
+        from: "queued",
+        to: "running",
+        now: 60_002,
+      });
+      store.transitionRun({
+        runId: firstRun.runId,
+        from: "running",
+        to: "succeeded",
+        now: 60_003,
+      });
 
       store.close();
       store = new DurableWorkflowStore(dbPath);
@@ -221,6 +237,11 @@ describe("WorkflowTriggerScheduler", () => {
         now: now + 1,
         reason: "approval drift",
       });
+      store.cancelRunAndChildren({
+        runId: secondRun.runId,
+        now: now + 2,
+        detail: "cancel paused run after revocation",
+      });
       now = second.nextFireAt!;
       scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
       await scheduler.start();
@@ -230,6 +251,72 @@ describe("WorkflowTriggerScheduler", () => {
       expect(new Set([firstRun.runId, secondRun.runId, thirdRun.runId]).size).toBe(3);
       expect(thirdRun.state).toBe("awaiting_review");
       expect(thirdRun.approvalId).not.toBe(secondRun.approvalId);
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("tracks all runs created by a trigger instead of only its latest run", async () => {
+    const dbPath = join(tmpdir(), `workflow-trigger-runs-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    let now = 60_000;
+    try {
+      createRevision(store);
+      store.createTrigger(
+        trigger({
+          triggerId: "parallel-1",
+          definition: { kind: "cron", expression: "* * * * *", timezone: "UTC" },
+          nextFireAt: now,
+          overlap: "parallel",
+        }),
+      );
+      const scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
+      await scheduler.start();
+      now = store.getTrigger("parallel-1")!.nextFireAt!;
+      await scheduler.tick();
+      await scheduler.stop();
+
+      expect(store.countActiveScheduledRuns("parallel-1")).toBe(2);
+      expect(store.countActiveScheduledRuns()).toBe(2);
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("atomically caps process-wide active scheduled runs", async () => {
+    const dbPath = join(tmpdir(), `workflow-trigger-cap-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    const now = 60_000;
+    try {
+      createRevision(store);
+      for (let index = 0; index < 65; index += 1) {
+        store.createTrigger(
+          trigger({
+            triggerId: `capped-${index}`,
+            definition: { kind: "cron", expression: "* * * * *", timezone: "UTC" },
+            nextFireAt: now,
+            overlap: "parallel",
+          }),
+        );
+      }
+      const scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
+      await scheduler.start();
+      await scheduler.stop();
+
+      expect(store.countActiveScheduledRuns()).toBe(64);
+      const triggers = store.listTriggers({ state: "active", limit: 100 });
+      expect(triggers.filter((candidate) => candidate.lastRunId !== null)).toHaveLength(64);
+      expect(
+        triggers.filter(
+          (candidate) => candidate.lastRunId === null && candidate.lastFireAt === now,
+        ),
+      ).toHaveLength(1);
     } finally {
       await bus.close();
       store.close();

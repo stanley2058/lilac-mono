@@ -37,6 +37,13 @@ const platformSchema = z.enum([
   "unknown",
 ]);
 
+export const WORKFLOW_AGENT_PROFILES = ["explore", "general", "self"] as const;
+export const workflowAgentProfileSchema = z.enum(WORKFLOW_AGENT_PROFILES);
+
+export function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export const workflowScopeSchema = z.enum(["project", "personal"]);
 export type WorkflowScope = z.infer<typeof workflowScopeSchema>;
 
@@ -46,7 +53,7 @@ export type WorkflowSafetyMode = z.infer<typeof workflowSafetyModeSchema>;
 const workflowCapabilityProfileInputSchema = z
   .strictObject({
     agents: z.strictObject({
-      profiles: z.array(z.string().min(1).max(100)).max(64),
+      profiles: z.array(workflowAgentProfileSchema).max(WORKFLOW_AGENT_PROFILES.length),
       models: z.array(z.string().min(1).max(200)).max(64),
       editing: z.boolean(),
       isolation: z.enum(["shared", "worktree"]),
@@ -135,7 +142,7 @@ export const workflowCapabilityProfileSchema = workflowCapabilityProfileInputSch
 export type WorkflowCapabilityProfile = z.infer<typeof workflowCapabilityProfileSchema>;
 
 function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 
 export function normalizeWorkflowCapabilityProfile(input: unknown): WorkflowCapabilityProfile {
@@ -270,7 +277,7 @@ export const workflowCompletionTargetSchema = z.discriminatedUnion("kind", [
     parentToolCallId: idSchema,
     childRequestId: idSchema,
     childSessionId: idSchema,
-    profile: z.enum(["explore", "general", "self"]),
+    profile: workflowAgentProfileSchema,
     sessionName: idSchema,
     depth: z.number().int().positive().max(64),
     reasoning: z
@@ -278,6 +285,7 @@ export const workflowCompletionTargetSchema = z.discriminatedUnion("kind", [
       .nullable(),
     fallbackToSurface: z.boolean(),
     fallbackProgressTarget: workflowProgressTargetSchema.nullable(),
+    deferredDelivery: z.boolean().default(true),
   }),
   z.strictObject({
     kind: z.literal("new_session_request"),
@@ -432,7 +440,10 @@ export const workflowTriggerSchema = z.strictObject({
   definition: workflowTriggerDefinitionSchema,
   args: jsonObjectSchema,
   argsSha256: sha256Schema,
-  schedulingPolicy: z.strictObject({ skipMissed: z.boolean() }),
+  schedulingPolicy: z.strictObject({
+    skipMissed: z.boolean(),
+    overlap: z.enum(["coalesce", "parallel"]).default("coalesce"),
+  }),
   origin: workflowRunOriginSchema,
   completionTarget: workflowCompletionTargetSchema,
   progressTarget: workflowProgressTargetSchema.nullable(),

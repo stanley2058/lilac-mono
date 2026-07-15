@@ -1530,6 +1530,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private async emitAndWait(evt: AdapterEvent): Promise<void> {
+    await Promise.all([...this.handlers].map(async (handler) => await handler(evt)));
+  }
+
   private getParentChannelIdFromInteractionChannel(
     interaction: ChatInputCommandInteraction<CacheType> | AutocompleteInteraction<CacheType>,
   ): string | undefined {

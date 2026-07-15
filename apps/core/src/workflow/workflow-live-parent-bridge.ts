@@ -1,8 +1,10 @@
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
+import { env } from "@stanley2058/lilac-utils";
 
 import { DurableWorkflowStore } from "./durable-workflow-store";
 import type { WorkflowRun } from "./workflow-domain";
+import { readWorkflowValueArtifact } from "./workflow-artifact-store";
 
 export type WorkflowLiveParentCompletion = {
   runId: string;
@@ -22,7 +24,11 @@ type ParentSignal = {
   onActivity?: () => void;
 };
 
-function toCompletion(run: WorkflowRun, store: DurableWorkflowStore): WorkflowLiveParentCompletion {
+async function toCompletion(
+  run: WorkflowRun,
+  store: DurableWorkflowStore,
+  dataDir: string,
+): Promise<WorkflowLiveParentCompletion> {
   if (run.completionTarget.kind !== "live_parent") {
     throw new Error(`Workflow run ${run.runId} has no live-parent completion target`);
   }
@@ -37,6 +43,15 @@ function toCompletion(run: WorkflowRun, store: DurableWorkflowStore): WorkflowLi
         : timedOut
           ? "timeout"
           : "failed";
+  const revision = store.getRevision(run.revisionId);
+  const result =
+    run.state === "succeeded" && run.resultArtifactId && revision
+      ? await readWorkflowValueArtifact({
+          dataDir,
+          artifactId: run.resultArtifactId,
+          maxBytes: revision.limits.maxResultBytes,
+        })
+      : run.result;
   return {
     runId: run.runId,
     parentToolCallId: run.completionTarget.parentToolCallId,
@@ -47,9 +62,9 @@ function toCompletion(run: WorkflowRun, store: DurableWorkflowStore): WorkflowLi
     ok: status === "resolved",
     finalText:
       run.state === "succeeded"
-        ? typeof run.result === "string"
-          ? run.result
-          : JSON.stringify(run.result)
+        ? typeof result === "string"
+          ? result
+          : JSON.stringify(result)
         : "",
     ...(run.terminalDetail ? { detail: run.terminalDetail } : {}),
   };
@@ -67,6 +82,7 @@ export class WorkflowLiveParentBridge {
       bus: LilacBus;
       store: DurableWorkflowStore;
       subscriptionId: string;
+      dataDir?: string;
       now?: () => number;
     },
   ) {}
@@ -147,9 +163,45 @@ export class WorkflowLiveParentBridge {
           this.input.store.listActiveLiveParentRuns(input.parentRequestId, 1).length > 0,
       }),
       listPending: (): WorkflowLiveParentCompletion[] =>
-        this.input.store
-          .listPendingLiveParentCompletions(input.parentRequestId)
-          .map((run) => toCompletion(run, this.input.store)),
+        this.input.store.listPendingLiveParentCompletions(input.parentRequestId).map((run) => {
+          if (run.resultArtifactId) {
+            throw new Error("Artifact-backed completion requires listPendingAsync");
+          }
+          if (run.completionTarget.kind !== "live_parent") {
+            throw new Error(`Workflow run ${run.runId} has no live-parent completion target`);
+          }
+          const status =
+            run.state === "succeeded"
+              ? "resolved"
+              : run.state === "cancelled"
+                ? "cancelled"
+                : "failed";
+          return {
+            runId: run.runId,
+            parentToolCallId: run.completionTarget.parentToolCallId,
+            childRequestId: run.completionTarget.childRequestId,
+            profile: run.completionTarget.profile,
+            sessionName: run.completionTarget.sessionName,
+            status,
+            ok: status === "resolved",
+            finalText:
+              run.state === "succeeded"
+                ? typeof run.result === "string"
+                  ? run.result
+                  : JSON.stringify(run.result)
+                : "",
+            ...(run.terminalDetail ? { detail: run.terminalDetail } : {}),
+          };
+        }),
+      listPendingAsync: async (): Promise<WorkflowLiveParentCompletion[]> =>
+        await Promise.all(
+          this.input.store
+            .listPendingLiveParentCompletions(input.parentRequestId)
+            .map(
+              async (run) =>
+                await toCompletion(run, this.input.store, this.input.dataDir ?? env.dataDir),
+            ),
+        ),
       acknowledge: (runIds: readonly string[]) => {
         const now = this.now();
         for (const runId of runIds) this.input.store.markLiveParentCompletionDelivered(runId, now);
@@ -200,13 +252,17 @@ export class WorkflowLiveParentBridge {
     if (signal) {
       this.notify(signal);
       if (run.state === "running" || run.state === "blocked") {
+        const recent = this.input.store.listOperations(run.runId, { limit: 1_000 }).at(-1);
+        const detail = recent
+          ? `; ${recent.label ?? recent.kind}: ${recent.state}`.slice(0, 180)
+          : "";
         await this.input.bus
           .publish(
             lilacEventTypes.EvtAgentOutputToolCall,
             {
               toolCallId: run.completionTarget.parentToolCallId,
               status: "update",
-              display: `subagent (${run.completionTarget.profile}; ${run.state})`,
+              display: `subagent (${run.completionTarget.profile}; ${run.state}${detail})`,
             },
             {
               headers: {

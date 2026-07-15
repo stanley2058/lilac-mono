@@ -109,10 +109,18 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       isEnabled: ({ runProfile }) => runProfile !== "explore",
       createTool: ({ cwd, runtime, requestContext }) => {
         const onActivity = requestContext ? getAgentActivityHandler(requestContext) : undefined;
+        const workflowPolicy = requestContext?.metadata?.["workflowPolicy"];
+        const workflowCapability = requestContext?.metadata?.["workflowCapability"];
         return bashToolWithCwd(cwd, {
           artifacts: runtime.toolResultArtifacts,
           outputConfig: runtime.config?.tools.output,
           onActivity: onActivity ? () => onActivity("tool") : undefined,
+          workflowPolicy:
+            workflowPolicy && typeof workflowPolicy === "object"
+              ? (workflowPolicy as import("../../workflow/workflow-request-authority").WorkflowRequestPolicy)
+              : undefined,
+          workflowCapability:
+            typeof workflowCapability === "string" ? workflowCapability : undefined,
         }).bash;
       },
     }),

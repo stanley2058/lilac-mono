@@ -8,7 +8,7 @@ export function shouldSuppressRouterForWorkflowReply(input: {
   event: EvtAdapterMessageCreatedData;
   now?: number;
 }): { suppress: boolean; reason?: string } {
-  const consumed = input.store.consumeAdapterEventSuppression({
+  const consumed = input.store.getAdapterEventSuppression({
     platform: input.event.platform,
     channelId: input.event.channelId,
     messageId: input.event.messageId,

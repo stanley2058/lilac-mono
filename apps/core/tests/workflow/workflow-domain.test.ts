@@ -22,7 +22,7 @@ const HASH = "a".repeat(64);
 function capabilities() {
   return {
     agents: {
-      profiles: ["review", "explore", "review"],
+      profiles: ["self", "explore", "self"],
       models: ["inherit", "fast", "inherit"],
       editing: false,
       isolation: "shared" as const,
@@ -42,7 +42,7 @@ function capabilities() {
 describe("durable workflow domain", () => {
   it("normalizes capability sets and enforces safety invariants", () => {
     const normalized = normalizeWorkflowCapabilityProfile(capabilities());
-    expect(normalized.agents.profiles).toEqual(["explore", "review"]);
+    expect(normalized.agents.profiles).toEqual(["explore", "self"]);
     expect(normalized.agents.models).toEqual(["fast", "inherit"]);
     expect(normalized.waits).toEqual(["reply", "sleep"]);
     expect(() =>
@@ -205,7 +205,7 @@ describe("durable workflow domain", () => {
         definition: { kind: "timestamp", at: 100 },
         args: {},
         argsSha256: HASH,
-        schedulingPolicy: { skipMissed: true },
+        schedulingPolicy: { skipMissed: true, overlap: "coalesce" },
         origin: {
           requestId: "request-1",
           sessionId: "session-1",

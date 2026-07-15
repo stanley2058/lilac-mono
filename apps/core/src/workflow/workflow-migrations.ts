@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 3;
+export const WORKFLOW_SCHEMA_VERSION = 5;
 
 type WorkflowMigration = {
   version: number;
@@ -259,6 +259,109 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
             NEW.created_at
           );
         END`,
+    ],
+  },
+  {
+    version: 4,
+    name: "workflow authority and incremental hardening",
+    statements: [
+      `UPDATE workflow_triggers
+       SET origin_json = json_object(
+         'requestId', NULL,
+         'sessionId', NULL,
+         'client', NULL,
+         'userId', NULL,
+         'safetyMode', 'restricted',
+         'projectCwd', '/quarantined-workflow-trigger'
+       )
+       WHERE origin_json IS NULL`,
+      `UPDATE workflow_triggers
+       SET completion_target_json = json_object('kind', 'detached')
+       WHERE completion_target_json IS NULL`,
+      `DROP TRIGGER workflow_completion_delivery_after_run_insert`,
+      `CREATE TRIGGER workflow_completion_delivery_after_run_insert
+        AFTER INSERT ON workflow_runs
+        WHEN json_extract(NEW.completion_target_json, '$.kind') = 'live_parent'
+          AND COALESCE(json_extract(NEW.completion_target_json, '$.deferredDelivery'), 1) = 1
+        BEGIN
+          INSERT INTO workflow_completion_deliveries (
+            run_id, parent_request_id, state, delivered_at, created_at, updated_at
+          ) VALUES (
+            NEW.run_id,
+            json_extract(NEW.completion_target_json, '$.parentRequestId'),
+            'pending',
+            NULL,
+            NEW.created_at,
+            NEW.created_at
+          );
+        END`,
+      `INSERT OR IGNORE INTO workflow_completion_deliveries (
+         run_id, parent_request_id, state, delivered_at, created_at, updated_at
+       )
+       SELECT run_id, json_extract(completion_target_json, '$.parentRequestId'),
+         'pending', NULL, created_at, updated_at
+       FROM workflow_runs
+       WHERE json_extract(completion_target_json, '$.kind') = 'live_parent'
+         AND COALESCE(json_extract(completion_target_json, '$.deferredDelivery'), 1) = 1`,
+      `DROP INDEX idx_workflow_approvals_active_revision`,
+      `CREATE UNIQUE INDEX idx_workflow_approvals_active_revision_principal
+        ON workflow_approvals(
+          revision_id,
+          COALESCE(expected_reviewer_platform, ''),
+          COALESCE(expected_reviewer_user_id, '')
+        ) WHERE state IN ('pending', 'approved')`,
+      `CREATE TABLE workflow_request_dispatches (
+        request_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        canonical_cwd TEXT NOT NULL,
+        policy_json TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        owner_id TEXT,
+        owner_heartbeat_at INTEGER,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (run_id, operation_id),
+        FOREIGN KEY (run_id, operation_id)
+          REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX idx_workflow_request_dispatches_active
+        ON workflow_request_dispatches(active, owner_heartbeat_at, expires_at)`,
+      `CREATE TABLE workflow_invocation_receipts (
+        idempotency_key TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL UNIQUE REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        fingerprint_sha256 TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE TABLE workflow_quarantine (
+        record_kind TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        quarantined_at INTEGER NOT NULL,
+        PRIMARY KEY (record_kind, record_id)
+      )`,
+    ],
+  },
+  {
+    version: 5,
+    name: "scheduled run admission tracking",
+    statements: [
+      `CREATE TABLE workflow_trigger_runs (
+        trigger_id TEXT NOT NULL REFERENCES workflow_triggers(trigger_id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL UNIQUE REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (trigger_id, run_id)
+      )`,
+      `CREATE INDEX idx_workflow_trigger_runs_trigger_created
+        ON workflow_trigger_runs(trigger_id, created_at DESC)`,
+      `INSERT OR IGNORE INTO workflow_trigger_runs (trigger_id, run_id, created_at)
+       SELECT workflow_triggers.trigger_id, workflow_runs.run_id, workflow_runs.created_at
+       FROM workflow_triggers
+       JOIN workflow_runs ON workflow_runs.run_id = workflow_triggers.last_run_id`,
     ],
   },
 ];

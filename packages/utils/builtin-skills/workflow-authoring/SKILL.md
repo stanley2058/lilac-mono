@@ -58,7 +58,10 @@ export default defineWorkflow({
     maxInputBytes: 262144,
   },
   async run({ args, agent, parallel, pipeline, phase, waitForReply, sleep }) {
-    const files = await agent(`List route files under ${args.directory}.`);
+    const filesJson = await agent(
+      `List route files under ${args.directory}. Return only a JSON array of path strings.`,
+    );
+    const files = JSON.parse(filesJson);
     const findings = await pipeline(
       files,
       (file) => agent(`Audit ${file} for missing authorization.`, { label: file }),
@@ -173,7 +176,7 @@ tools workflow.definition.list --scope=auto
 tools workflow.run.trigger --scope=auto --name=audit-routes --args:json='{"directory":"src"}'
 tools workflow.run.get <run-id>
 tools workflow.run.get <run-id> --include-source=true
-tools workflow.run.get <run-id> --include-result-artifact=true
+tools workflow.run.get <run-id> --include-result-artifact=true --include-sensitive-result=true
 tools workflow.run.list --state=awaiting_review
 tools workflow.run.pause <run-id>
 tools workflow.run.resume <run-id>

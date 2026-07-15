@@ -4,7 +4,9 @@ import { z } from "zod";
 
 import {
   jsonObjectSchema,
+  compareCodeUnits,
   normalizeWorkflowCapabilityProfile,
+  workflowAgentProfileSchema,
   workflowLimitsSchema,
   workflowMetadataSchema,
   type JsonObject,
@@ -25,6 +27,7 @@ const MAX_SCHEMA_DEPTH = 16;
 const MAX_SCHEMA_PROPERTIES = 256;
 const MAX_SCHEMA_ENUM_VALUES = 256;
 const MAX_SCHEMA_STRING_LENGTH = 16_384;
+const MAX_SAFE_PATTERN_LENGTH = 256;
 const WORKFLOW_RUN_CONTEXT_NAMES = new Set([
   "args",
   "agent",
@@ -137,7 +140,7 @@ const workflowJsonSchema: z.ZodType<WorkflowJsonSchema> = z.lazy(() =>
 
 const sourceCapabilitySchema = z.strictObject({
   agents: z.strictObject({
-    profiles: z.array(z.string().min(1).max(100)).min(1).max(64),
+    profiles: z.array(workflowAgentProfileSchema).min(1).max(3),
     models: z.array(z.string().min(1).max(200)).min(1).max(64),
     maxConcurrent: z.number().int().min(1).max(64),
     maxTotal: z.number().int().min(1).max(10_000),
@@ -222,7 +225,7 @@ export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   return `{${Object.keys(value)
-    .sort((left, right) => left.localeCompare(right))
+    .sort(compareCodeUnits)
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`)
     .join(",")}}`;
 }
@@ -437,6 +440,7 @@ function extractStaticMetadata(definition: ts.ObjectLiteralExpression): JsonObje
           );
         }
       }
+      assertNoShadowedWorkflowBindings(property.body, parameter.name);
       hasRun = true;
       continue;
     }
@@ -447,6 +451,54 @@ function extractStaticMetadata(definition: ts.ObjectLiteralExpression): JsonObje
   }
   if (!hasRun) throw new Error("Workflow definition requires an async run method");
   return jsonObjectSchema.parse(output);
+}
+
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : bindingNames(element.name),
+  );
+}
+
+function assertNoShadowedWorkflowBindings(
+  body: ts.Block,
+  _runParameter: ts.ObjectBindingPattern,
+): void {
+  const reserved = WORKFLOW_RUN_CONTEXT_NAMES;
+  const visit = (node: ts.Node): void => {
+    const names =
+      ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)
+        ? bindingNames(node.name)
+        : ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)
+          ? node.name
+            ? [node.name.text]
+            : []
+          : [];
+    for (const name of names) {
+      if (reserved.has(name)) {
+        throw new Error(`Workflow run cannot shadow reserved host API binding: ${name}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+function assertSafeWorkflowPattern(pattern: string): void {
+  if (pattern.length > MAX_SAFE_PATTERN_LENGTH) {
+    throw new Error(`Input schema pattern exceeds ${MAX_SAFE_PATTERN_LENGTH} characters`);
+  }
+  // Workflow schemas intentionally support the linear-time subset needed for basic
+  // validation. Grouping, alternation, assertions, and backreferences are rejected.
+  if (/[()|]/u.test(pattern) || /\\[1-9k]/u.test(pattern) || /\(\?[<!=:]/u.test(pattern)) {
+    throw new Error("Input schema pattern uses unsupported backtracking regex syntax");
+  }
+  try {
+    new RegExp(pattern, "u");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid input schema pattern: ${message}`);
+  }
 }
 
 function assertSchemaBounds(schema: WorkflowJsonSchema, depth = 0): void {
@@ -508,12 +560,10 @@ function normalizeInputSchema(schema: WorkflowJsonSchema): WorkflowJsonSchema {
   if (schema.type === "object") {
     const properties = Object.fromEntries(
       Object.entries(schema.properties)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, value]) => [key, normalizeInputSchema(value)]),
     );
-    const required = [...new Set(schema.required ?? [])].sort((left, right) =>
-      left.localeCompare(right),
-    );
+    const required = [...new Set(schema.required ?? [])].sort(compareCodeUnits);
     for (const key of required) {
       if (!Object.hasOwn(properties, key))
         throw new Error(`Required input property is not defined: ${key}`);
@@ -527,12 +577,7 @@ function normalizeInputSchema(schema: WorkflowJsonSchema): WorkflowJsonSchema {
   }
   if (schema.type === "array") return { ...schema, items: normalizeInputSchema(schema.items) };
   if (schema.type === "string" && schema.pattern !== undefined) {
-    try {
-      new RegExp(schema.pattern, "u");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid input schema pattern: ${message}`);
-    }
+    assertSafeWorkflowPattern(schema.pattern);
   }
   return schema;
 }
@@ -546,7 +591,7 @@ function collectSensitiveFields(schema: WorkflowJsonSchema, path: string[] = [])
   } else if (schema.type === "array") {
     fields.push(...collectSensitiveFields(schema.items, [...path, "*"]));
   }
-  return fields.sort((left, right) => left.localeCompare(right));
+  return fields.sort(compareCodeUnits);
 }
 
 function hasForbiddenJsonKey(value: JsonValue): string | null {

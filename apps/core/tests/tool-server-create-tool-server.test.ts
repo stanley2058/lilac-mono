@@ -89,6 +89,89 @@ async function writePluginServerTool(params: {
 }
 
 describe("createToolServer", () => {
+  it("sources workflow child context from an opaque server capability on list, help, and call", async () => {
+    const calls: Array<{ callableId: string; sessionId?: string; cwd?: string }> = [];
+    const tool: ServerTool = {
+      id: "workflow-child-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          { callableId: "fetch", name: "Fetch", description: "read", shortInput: [] },
+          { callableId: "generate.image", name: "Generate", description: "write", shortInput: [] },
+        ];
+      },
+      async call(callableId, _input, options) {
+        calls.push({
+          callableId,
+          sessionId: options?.context?.sessionId,
+          cwd: options?.context?.cwd,
+        });
+        return { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      authorizeWorkflowRequest: ({ token }) =>
+        token === "server-issued-capability-token-123456"
+          ? {
+              requestId: "wfr:request",
+              sessionId: "workflow:run:operation",
+              platform: "unknown",
+              expiresAt: Date.now() + 60_000,
+              policy: {
+                runId: "run-1",
+                operationId: "operation-1",
+                profile: "explore",
+                safetyMode: "trusted",
+                editing: false,
+                externalTools: true,
+                surfaceSends: false,
+                subagents: false,
+                canonicalWorkspaceRoot: "/approved",
+                canonicalCwd: "/approved",
+                canonicalProjectId: "project-1",
+                originSessionId: "origin-channel",
+                originClient: "discord",
+                revisionId: "revision-1",
+                sourceSha256: "a".repeat(64),
+                inputSchemaSha256: "b".repeat(64),
+                capabilitySha256: "c".repeat(64),
+                argsSha256: "d".repeat(64),
+              },
+            }
+          : null,
+    });
+    await server.init();
+    const headers = {
+      "x-lilac-request-id": "wfr:request",
+      "x-lilac-session-id": "workflow:run:operation",
+      "x-lilac-request-client": "unknown",
+      "x-lilac-workflow-capability": "server-issued-capability-token-123456",
+    };
+    try {
+      const list = await server.app.handle(new Request("http://localhost/list", { headers }));
+      expect(await list.json()).toMatchObject({ tools: [{ callableId: "fetch" }] });
+      const help = await server.app.handle(
+        new Request("http://localhost/help/generate.image", { headers }),
+      );
+      expect(help.status).toBe(404);
+      const call = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ callableId: "fetch", input: { url: "https://example.com" } }),
+        }),
+      );
+      expect(await call.json()).toMatchObject({ isError: false, output: { ok: true } });
+      expect(calls).toEqual([
+        { callableId: "fetch", sessionId: "origin-channel", cwd: "/approved" },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   let tmpRoot: string | null = null;
 
   afterEach(async () => {
@@ -148,7 +231,9 @@ describe("createToolServer", () => {
           return requestId === "req:1" ? cachedMessages : undefined;
         },
         getOrigin: (requestId) =>
-          requestId === "req:1" ? { sessionId: "chan", platform: "discord" } : undefined,
+          requestId === "req:1"
+            ? { sessionId: "chan", platform: "discord", actorUserId: "user-1" }
+            : undefined,
       },
     });
 
@@ -567,7 +652,9 @@ describe("createToolServer", () => {
         get: (requestId) =>
           requestId === "request-1" ? [{ role: "user", content: "run workflow" }] : undefined,
         getOrigin: (requestId) =>
-          requestId === "request-1" ? { sessionId: "channel-1", platform: "discord" } : undefined,
+          requestId === "request-1"
+            ? { sessionId: "channel-1", platform: "discord", actorUserId: "user-1" }
+            : undefined,
       },
       getConfig: async () => {
         throw new Error("configuration unavailable");

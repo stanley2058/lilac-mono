@@ -498,6 +498,7 @@ function buildBashChildEnv(params: {
     requestClient: string;
   };
   resolvedCwd: string;
+  toolCallId?: string;
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -508,6 +509,7 @@ function buildBashChildEnv(params: {
     LILAC_SESSION_ID: params.context?.sessionId,
     LILAC_REQUEST_CLIENT: params.context?.requestClient,
     LILAC_CWD: params.resolvedCwd,
+    LILAC_TOOL_CALL_ID: params.toolCallId,
   };
 
   delete childEnv.FORCE_COLOR;
@@ -942,6 +944,7 @@ export async function executeBash(
         vcsEnv,
         context,
         resolvedCwd,
+        toolCallId,
       }),
     });
 

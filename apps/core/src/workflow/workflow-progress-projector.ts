@@ -2,6 +2,7 @@ import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import type { SurfaceAdapter } from "../surface/adapter";
+import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
 import { DurableWorkflowStore } from "./durable-workflow-store";
 import { sha256 } from "./workflow-definition";
@@ -21,6 +22,7 @@ type CachedActions = {
   key: string;
   ids: Map<WorkflowSurfaceActionKind, string>;
   recordIds: string[];
+  expiresAt: number;
 };
 
 function asSessionRef(platform: "discord" | "github", channelId: string): SessionRef {
@@ -56,6 +58,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly lastEditAt = new Map<string, number>();
   private readonly actions = new Map<string, CachedActions>();
+  private readonly actionRotationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private subscription: { stop(): Promise<void> } | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -110,7 +113,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     if (this.retryTimer) clearInterval(this.retryTimer);
     this.retryTimer = null;
     for (const timer of this.timers.values()) clearTimeout(timer);
+    for (const timer of this.actionRotationTimers.values()) clearTimeout(timer);
     this.timers.clear();
+    this.actionRotationTimers.clear();
     await this.subscription?.stop();
     this.subscription = null;
   }
@@ -144,9 +149,11 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   }
 
   async reconcile(): Promise<void> {
-    const active = this.input.store.listActiveRuns(1_000);
-    for (const run of active) {
-      const binding = this.input.store.getSurfaceBinding(run.runId);
+    const boundRunIds = new Set<string>();
+    for (const binding of this.input.store.listSurfaceBindings({ limit: 1_000 })) {
+      const run = this.input.store.getRun(binding.runId);
+      if (!run) continue;
+      boundRunIds.add(run.runId);
       if (binding?.messageRef) {
         const boundRef = asMsgRef(binding.messageRef);
         const adapter = boundRef ? this.input.adapters.get(boundRef.platform) : undefined;
@@ -164,6 +171,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       await this.project(run.runId).catch(() => undefined);
     }
     for (const run of this.input.store.listRunsMissingSurfaceBindings(1_000)) {
+      if (boundRunIds.has(run.runId)) continue;
       await this.project(run.runId).catch(() => undefined);
     }
   }
@@ -190,11 +198,12 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       : view.run.origin.client;
     const key = `${view.run.state}:${view.approval?.state ?? "none"}:${expectedPlatform}:${expectedUserId}:${view.availableActions.join(",")}`;
     const cached = this.actions.get(runId);
-    if (cached?.key === key) return cached;
+    if (cached?.key === key && cached.expiresAt > now + 60_000) return cached;
 
     this.input.store.expireActiveSurfaceActions(runId, now);
     const ids = new Map<WorkflowSurfaceActionKind, string>();
     const recordIds: string[] = [];
+    let expiresAt = now + 86_400_000;
     if (
       expectedUserId &&
       (expectedPlatform === "discord" || expectedPlatform === "github") &&
@@ -222,9 +231,13 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         if (!created) continue;
         ids.set(kind, token);
         recordIds.push(actionId);
+        expiresAt = Math.min(
+          expiresAt,
+          now + (kind === "approve" || kind === "reject" ? 7 * 86_400_000 : 86_400_000),
+        );
       }
     }
-    const next = { key, ids, recordIds };
+    const next = { key, ids, recordIds, expiresAt };
     this.actions.set(runId, next);
     return next;
   }
@@ -307,13 +320,28 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         updatedAt: now,
       });
       this.lastEditAt.set(runId, now);
+      const priorRotation = this.actionRotationTimers.get(runId);
+      if (priorRotation) clearTimeout(priorRotation);
+      if (issued.recordIds.length > 0) {
+        const timer = setTimeout(
+          () => {
+            this.actionRotationTimers.delete(runId);
+            this.requestProjection(runId);
+          },
+          Math.max(1_000, issued.expiresAt - now - 60_000),
+        );
+        timer.unref?.();
+        this.actionRotationTimers.set(runId, timer);
+      }
       return projectedRef;
     } catch (error) {
+      const createdRef = error instanceof GithubMessageCreatedError ? error.messageRef : null;
+      if (createdRef) this.input.store.bindSurfaceActions(issued.recordIds, createdRef);
       const retryCount = (existing?.retryCount ?? 0) + 1;
       this.input.store.upsertSurfaceBinding({
         runId,
         target,
-        messageRef,
+        messageRef: createdRef ?? messageRef,
         lastRenderedSha256: existing?.lastRenderedSha256 ?? null,
         lastError: error instanceof Error ? error.message : String(error),
         retryCount,
@@ -322,6 +350,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         updatedAt: now,
       });
       if (requireMessage) {
+        if (createdRef) return createdRef;
         throw new Error(
           `Workflow run ${runId} was persisted, but its initial progress card could not be created: ${error instanceof Error ? error.message : String(error)}`,
         );

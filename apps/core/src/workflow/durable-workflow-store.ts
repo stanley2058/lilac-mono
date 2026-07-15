@@ -38,6 +38,12 @@ import {
   type WorkflowWaitState,
 } from "./workflow-domain";
 import { applyWorkflowSchemaMigrations } from "./workflow-migrations";
+import {
+  workflowRequestPolicySchema,
+  type AuthorizedWorkflowRequest,
+  type WorkflowRequestPolicy,
+} from "./workflow-request-authority";
+import { sha256 } from "./workflow-definition";
 
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
@@ -199,6 +205,23 @@ const actionRowSchema = z.object({
   consumed_by_platform: nullableStringSchema,
   consumed_by_user_id: nullableStringSchema,
   created_at: z.number(),
+});
+
+const requestDispatchRowSchema = z.object({
+  request_id: z.string(),
+  run_id: z.string(),
+  operation_id: z.string(),
+  token_sha256: z.string(),
+  session_id: z.string(),
+  platform: z.string(),
+  canonical_cwd: z.string(),
+  policy_json: z.string(),
+  expires_at: z.number(),
+  owner_id: nullableStringSchema,
+  owner_heartbeat_at: nullableNumberSchema,
+  active: z.number(),
+  created_at: z.number(),
+  updated_at: z.number(),
 });
 
 function parseJson(raw: string, context: string): unknown {
@@ -601,13 +624,24 @@ export class DurableWorkflowStore {
   }
 
   getActiveApproval(revisionId: string): WorkflowApproval | null {
+    return this.getActiveApprovalForPrincipal(revisionId, null, null);
+  }
+
+  getActiveApprovalForPrincipal(
+    revisionId: string,
+    reviewerPlatform: WorkflowApproval["expectedReviewerPlatform"],
+    reviewerUserId: string | null,
+  ): WorkflowApproval | null {
     const row = this.db
       .query(
         `SELECT * FROM workflow_approvals
-         WHERE revision_id = ? AND state IN ('pending', 'approved')
+         WHERE revision_id = ?
+           AND expected_reviewer_platform IS ?
+           AND expected_reviewer_user_id IS ?
+           AND state IN ('pending', 'approved')
          ORDER BY updated_at DESC LIMIT 1`,
       )
-      .get(revisionId);
+      .get(revisionId, reviewerPlatform, reviewerUserId);
     return row === null ? null : parseApproval(row);
   }
 
@@ -739,6 +773,7 @@ export class DurableWorkflowStore {
     run: WorkflowRun;
     pendingApproval: WorkflowApproval;
     queueApproved?: boolean;
+    idempotency?: { key: string; fingerprintSha256: string };
   }): CreateWorkflowInvocationResult {
     const revision = workflowRevisionSchema.parse(input.revision);
     const requestedRun = workflowRunSchema.parse(input.run);
@@ -754,6 +789,33 @@ export class DurableWorkflowStore {
     }
 
     const create = this.db.transaction((): CreateWorkflowInvocationResult => {
+      if (input.idempotency) {
+        const receipt = this.db
+          .query<{ run_id: string; fingerprint_sha256: string }, [string]>(
+            "SELECT run_id, fingerprint_sha256 FROM workflow_invocation_receipts WHERE idempotency_key = ?",
+          )
+          .get(input.idempotency.key);
+        if (receipt) {
+          if (receipt.fingerprint_sha256 !== input.idempotency.fingerprintSha256) {
+            throw new Error("Workflow idempotency key was reused with different invocation input");
+          }
+          const existingRun = this.getRun(receipt.run_id);
+          const existingRevision = existingRun ? this.getRevision(existingRun.revisionId) : null;
+          const existingApproval = existingRun?.approvalId
+            ? this.getApproval(existingRun.approvalId)
+            : null;
+          if (!existingRun || !existingRevision || !existingApproval) {
+            throw new Error("Workflow invocation receipt references missing durable records");
+          }
+          return {
+            run: existingRun,
+            revision: existingRevision,
+            approval: existingApproval,
+            revisionCreated: false,
+            approvalCreated: false,
+          };
+        }
+      }
       const revisionCreated = this.createRevision(revision);
       const storedRevision = this.findRevisionByIdentity(revision);
       if (!storedRevision) throw new Error("Revision was not persisted");
@@ -763,7 +825,11 @@ export class DurableWorkflowStore {
         );
       }
 
-      let approval = this.getActiveApproval(revision.revisionId);
+      let approval = this.getActiveApprovalForPrincipal(
+        revision.revisionId,
+        pendingApproval.expectedReviewerPlatform,
+        pendingApproval.expectedReviewerUserId,
+      );
       let approvalCreated = false;
       if (!approval) {
         approvalCreated = this.createApproval(pendingApproval);
@@ -774,12 +840,17 @@ export class DurableWorkflowStore {
       const run = workflowRunSchema.parse({
         ...requestedRun,
         approvalId: approval.approvalId,
-        state:
-          approval.state === "approved" && input.queueApproved !== false
-            ? "queued"
-            : "awaiting_review",
+        state: approval.state === "approved" ? "queued" : "awaiting_review",
       });
       if (!this.createRun(run)) throw new Error(`Run ${run.runId} already exists`);
+      if (input.idempotency) {
+        this.db.run(
+          `INSERT INTO workflow_invocation_receipts (
+             idempotency_key, run_id, fingerprint_sha256, created_at
+           ) VALUES (?, ?, ?, ?)`,
+          [input.idempotency.key, run.runId, input.idempotency.fingerprintSha256, run.createdAt],
+        );
+      }
       return { revision: storedRevision, approval, run, revisionCreated, approvalCreated };
     });
     return create.immediate();
@@ -813,7 +884,11 @@ export class DurableWorkflowStore {
         );
       }
 
-      let approval = this.getActiveApproval(revision.revisionId);
+      let approval = this.getActiveApprovalForPrincipal(
+        revision.revisionId,
+        requestedApproval.expectedReviewerPlatform,
+        requestedApproval.expectedReviewerUserId,
+      );
       let approvalCreated = false;
       if (!approval) {
         approvalCreated = this.createApproval(requestedApproval);
@@ -967,7 +1042,7 @@ export class DurableWorkflowStore {
       } else if (input.to === "revoked") {
         this.db.run(
           `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, updated_at = ?
-           WHERE approval_id = ? AND state = 'queued'`,
+            WHERE approval_id = ? AND state IN ('queued', 'running', 'blocked')`,
           [input.reason ?? "Approval revoked before execution", input.now, input.approvalId],
         );
       }
@@ -1020,6 +1095,98 @@ export class DurableWorkflowStore {
         input.from,
       );
     return result.changes === 1;
+  }
+
+  terminalizeRun(input: {
+    runId: string;
+    from: "running";
+    to: "succeeded" | "failed";
+    ownerId: string;
+    now: number;
+    detail: string;
+    result: WorkflowRun["result"];
+    resultArtifactId: string | null;
+  }): boolean {
+    const terminalize = this.db.transaction(() => {
+      const run = this.getRun(input.runId);
+      if (!run || run.state !== input.from || run.claimedBy !== input.ownerId) return false;
+      const activeCount = this.db
+        .query<{ count: number }, [string]>(
+          `SELECT COUNT(*) AS count FROM workflow_operations
+           WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+        )
+        .get(input.runId)?.count;
+      if (input.to === "succeeded" && activeCount !== 0) return false;
+      if (input.to === "failed") {
+        this.db.run(
+          `UPDATE workflow_operations SET state = 'cancelled', error = ?, terminal_at = ?,
+           updated_at = ? WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+          [input.detail, input.now, input.now, input.runId],
+        );
+      }
+      this.db.run(
+        `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+         resolved_at = ?, updated_at = ?
+         WHERE run_id = ? AND state IN ('pending', 'claimed')`,
+        [input.now, input.now, input.runId],
+      );
+      this.db.run(
+        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+         updated_at = ? WHERE run_id = ? AND active = 1`,
+        [input.now, input.now, input.runId],
+      );
+      const result = this.db
+        .query(
+          `UPDATE workflow_runs SET state = ?, terminal_detail = ?, result_json = ?,
+           result_artifact_id = ?, terminal_at = ?, updated_at = ?
+           WHERE run_id = ? AND state = 'running' AND claimed_by = ?`,
+        )
+        .run(
+          input.to,
+          input.detail,
+          input.result === null ? null : JSON.stringify(jsonValueSchema.parse(input.result)),
+          input.resultArtifactId,
+          input.now,
+          input.now,
+          input.runId,
+          input.ownerId,
+        );
+      return result.changes === 1;
+    });
+    return terminalize.immediate();
+  }
+
+  cancelRunAndChildren(input: { runId: string; now: number; detail: string }): WorkflowRun | null {
+    const cancel = this.db.transaction(() => {
+      const run = this.getRun(input.runId);
+      if (!run || ["succeeded", "failed", "rejected", "cancelled"].includes(run.state)) {
+        return run;
+      }
+      this.db.run(
+        `UPDATE workflow_operations SET state = 'cancelled', error = ?, terminal_at = ?,
+         updated_at = ? WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+        [input.detail, input.now, input.now, input.runId],
+      );
+      this.db.run(
+        `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+         resolved_at = ?, updated_at = ?
+         WHERE run_id = ? AND state IN ('pending', 'claimed')`,
+        [input.now, input.now, input.runId],
+      );
+      this.db.run(
+        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+         updated_at = ? WHERE run_id = ? AND active = 1`,
+        [input.now, input.now, input.runId],
+      );
+      const changed = this.db
+        .query(
+          `UPDATE workflow_runs SET state = 'cancelled', terminal_detail = ?, terminal_at = ?,
+           updated_at = ? WHERE run_id = ? AND state = ?`,
+        )
+        .run(input.detail, input.now, input.now, input.runId, run.state);
+      return changed.changes === 1 ? this.getRun(input.runId) : null;
+    });
+    return cancel.immediate();
   }
 
   tryClaimRun(input: {
@@ -1131,6 +1298,226 @@ export class DurableWorkflowStore {
       .query("SELECT * FROM workflow_operations WHERE request_id = ?")
       .get(requestId);
     return row === null ? null : parseOperation(row);
+  }
+
+  authorizeAgentDispatch(input: {
+    requestId: string;
+    runId: string;
+    operationId: string;
+    runOwnerId: string;
+    token: string;
+    sessionId: string;
+    platform: string;
+    policy: WorkflowRequestPolicy;
+    now: number;
+    expiresAt: number;
+    staleOwnerBefore: number;
+  }): WorkflowOperation | null {
+    const policy = workflowRequestPolicySchema.parse(input.policy);
+    if (
+      policy.runId !== input.runId ||
+      policy.operationId !== input.operationId ||
+      policy.canonicalCwd === "" ||
+      input.expiresAt <= input.now
+    ) {
+      return null;
+    }
+    const authorize = this.db.transaction(() => {
+      const run = this.getRun(input.runId);
+      const revision = run ? this.getRevision(run.revisionId) : null;
+      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
+      const operation = this.getOperation(input.runId, input.operationId);
+      if (
+        !run ||
+        !revision ||
+        !operation ||
+        run.state !== "running" ||
+        run.claimedBy !== input.runOwnerId ||
+        approval?.state !== "approved" ||
+        approval.revisionId !== revision.revisionId ||
+        policy.revisionId !== revision.revisionId ||
+        policy.canonicalProjectId !== revision.canonicalProjectId ||
+        policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
+        policy.sourceSha256 !== revision.sourceSha256 ||
+        policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
+        policy.capabilitySha256 !== revision.capabilitySha256 ||
+        policy.argsSha256 !== run.argsSha256 ||
+        !["queued", "dispatched", "running"].includes(operation.state)
+      ) {
+        return null;
+      }
+      const existing = this.db
+        .query<z.infer<typeof requestDispatchRowSchema>, [string]>(
+          "SELECT * FROM workflow_request_dispatches WHERE request_id = ?",
+        )
+        .get(input.requestId);
+      if (
+        existing &&
+        existing.active === 1 &&
+        existing.owner_heartbeat_at !== null &&
+        existing.owner_heartbeat_at > input.staleOwnerBefore
+      ) {
+        return null;
+      }
+      if (operation.state === "queued") {
+        const changed = this.db
+          .query(
+            `UPDATE workflow_operations SET state = 'dispatched', request_id = ?, updated_at = ?
+             WHERE run_id = ? AND operation_id = ? AND state = 'queued'`,
+          )
+          .run(input.requestId, input.now, input.runId, input.operationId);
+        if (changed.changes !== 1) return null;
+      } else if (operation.requestId !== input.requestId) {
+        return null;
+      }
+      this.db.run("DELETE FROM workflow_request_dispatches WHERE run_id = ? AND operation_id = ?", [
+        input.runId,
+        input.operationId,
+      ]);
+      this.db.run(
+        `INSERT INTO workflow_request_dispatches (
+           request_id, run_id, operation_id, token_sha256, session_id, platform,
+           canonical_cwd, policy_json, expires_at, owner_id, owner_heartbeat_at,
+           active, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+        [
+          input.requestId,
+          input.runId,
+          input.operationId,
+          sha256(input.token),
+          input.sessionId,
+          input.platform,
+          policy.canonicalCwd,
+          JSON.stringify(policy),
+          input.expiresAt,
+          input.now,
+          input.now,
+        ],
+      );
+      return this.getOperation(input.runId, input.operationId);
+    });
+    return authorize.immediate();
+  }
+
+  authorizeWorkflowRequest(input: {
+    requestId: string;
+    token: string;
+    sessionId: string;
+    platform: string;
+    now: number;
+  }): AuthorizedWorkflowRequest | null {
+    const raw = this.db
+      .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, string, number]>(
+        `SELECT * FROM workflow_request_dispatches
+         WHERE request_id = ? AND token_sha256 = ? AND session_id = ? AND platform = ?
+           AND active = 1 AND expires_at > ?`,
+      )
+      .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
+    if (!raw) return null;
+    const row = requestDispatchRowSchema.parse(raw);
+    const policy = workflowRequestPolicySchema.parse(
+      parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
+    );
+    const run = this.getRun(row.run_id);
+    const operation = this.getOperation(row.run_id, row.operation_id);
+    const revision = run ? this.getRevision(run.revisionId) : null;
+    const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
+    if (
+      !run ||
+      !operation ||
+      !revision ||
+      run.state !== "running" ||
+      approval?.state !== "approved" ||
+      approval.revisionId !== revision.revisionId ||
+      operation.requestId !== input.requestId ||
+      !["dispatched", "running"].includes(operation.state) ||
+      row.canonical_cwd !== policy.canonicalCwd ||
+      policy.runId !== run.runId ||
+      policy.operationId !== operation.operationId ||
+      policy.revisionId !== revision.revisionId ||
+      policy.canonicalProjectId !== revision.canonicalProjectId ||
+      policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
+      policy.sourceSha256 !== revision.sourceSha256 ||
+      policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
+      policy.capabilitySha256 !== revision.capabilitySha256 ||
+      policy.argsSha256 !== run.argsSha256
+    ) {
+      return null;
+    }
+    return {
+      requestId: row.request_id,
+      sessionId: row.session_id,
+      platform: row.platform,
+      policy,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  claimWorkflowRequest(input: {
+    requestId: string;
+    token: string;
+    ownerId: string;
+    now: number;
+    staleAfterMs?: number;
+  }): boolean {
+    const staleBefore = input.now - (input.staleAfterMs ?? 60_000);
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_request_dispatches
+           SET owner_id = ?, owner_heartbeat_at = ?, updated_at = ?
+           WHERE request_id = ? AND token_sha256 = ? AND active = 1 AND expires_at > ?
+             AND (owner_id IS NULL OR owner_id = ? OR owner_heartbeat_at <= ?)`,
+        )
+        .run(
+          input.ownerId,
+          input.now,
+          input.now,
+          input.requestId,
+          sha256(input.token),
+          input.now,
+          input.ownerId,
+          staleBefore,
+        ).changes === 1
+    );
+  }
+
+  refreshWorkflowRequestClaim(requestId: string, ownerId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_request_dispatches SET owner_heartbeat_at = ?, updated_at = ?
+           WHERE request_id = ? AND owner_id = ? AND active = 1 AND expires_at > ?`,
+        )
+        .run(now, now, requestId, ownerId, now).changes === 1
+    );
+  }
+
+  hasLiveWorkflowRequestOwner(requestId: string, now: number, staleAfterMs = 60_000): boolean {
+    const row = this.db
+      .query<{ present: number }, [string, number, number]>(
+        `SELECT 1 AS present FROM workflow_request_dispatches
+         WHERE request_id = ? AND active = 1 AND expires_at > ?
+           AND owner_id IS NOT NULL AND owner_heartbeat_at > ?`,
+      )
+      .get(requestId, now, now - staleAfterMs);
+    return row?.present === 1;
+  }
+
+  expireWorkflowRequest(requestId: string, now: number): void {
+    this.db.run(
+      `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+       updated_at = ? WHERE request_id = ? AND active = 1`,
+      [now, now, requestId],
+    );
+  }
+
+  expireWorkflowRequestsForRun(runId: string, now: number): void {
+    this.db.run(
+      `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+       updated_at = ? WHERE run_id = ? AND active = 1`,
+      [now, now, runId],
+    );
   }
 
   listOperations(
@@ -1347,9 +1734,12 @@ export class DurableWorkflowStore {
   ): WorkflowWait[] {
     const rows = this.db
       .query(
-        `SELECT * FROM workflow_waits
-         WHERE match_kind = ? AND match_key = ? AND state IN ('pending', 'claimed')
-         ORDER BY created_at, run_id, operation_id LIMIT 1000`,
+        `SELECT workflow_waits.* FROM workflow_waits
+         JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
+         WHERE match_kind = ? AND match_key = ? AND workflow_waits.state IN ('pending', 'claimed')
+           AND workflow_runs.state = 'running'
+         ORDER BY workflow_waits.created_at, workflow_waits.run_id,
+           workflow_waits.operation_id LIMIT 1000`,
       )
       .all(matchKind, matchKey);
     return tolerantRows(rows, parseWait);
@@ -1358,11 +1748,14 @@ export class DurableWorkflowStore {
   listDueWaits(now: number): WorkflowWait[] {
     const rows = this.db
       .query(
-        `SELECT * FROM workflow_waits
-         WHERE state IN ('pending', 'claimed') AND (
+        `SELECT workflow_waits.* FROM workflow_waits
+         JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
+         WHERE workflow_waits.state IN ('pending', 'claimed')
+          AND workflow_runs.state = 'running' AND (
            (due_at IS NOT NULL AND due_at <= ?) OR
            (deadline_at IS NOT NULL AND deadline_at <= ?)
-         ) ORDER BY COALESCE(due_at, deadline_at), created_at LIMIT 1000`,
+          ) ORDER BY COALESCE(workflow_waits.due_at, workflow_waits.deadline_at),
+            workflow_waits.created_at LIMIT 1000`,
       )
       .all(now, now);
     return tolerantRows(rows, parseWait);
@@ -1411,6 +1804,63 @@ export class DurableWorkflowStore {
         input.from,
       );
     return result.changes === 1;
+  }
+
+  resolveReplyWaitAndSuppress(input: {
+    runId: string;
+    operationId: string;
+    platform: string;
+    channelId: string;
+    messageId: string;
+    eventTs: number;
+    cursor: string;
+    result: WorkflowWait["result"];
+    now: number;
+  }): WorkflowWait | null {
+    const resolve = this.db.transaction(() => {
+      const wait = this.getWait(input.runId, input.operationId);
+      const run = this.getRun(input.runId);
+      if (
+        !wait ||
+        wait.match.kind !== "reply" ||
+        !run ||
+        run.state !== "running" ||
+        !["pending", "claimed"].includes(wait.state) ||
+        input.eventTs < wait.createdAt ||
+        (wait.deadlineAt !== null && input.eventTs > wait.deadlineAt)
+      ) {
+        return null;
+      }
+      const changed = this.db
+        .query(
+          `UPDATE workflow_waits SET state = 'resolved', resolver_cursor = ?, result_json = ?,
+           resolved_by = ?, resolved_at = ?, updated_at = ?, claimed_by = NULL, claimed_at = NULL
+           WHERE run_id = ? AND operation_id = ? AND state IN ('pending', 'claimed')
+             AND created_at <= ? AND (deadline_at IS NULL OR deadline_at >= ?)`,
+        )
+        .run(
+          input.cursor,
+          input.result === null ? null : JSON.stringify(jsonValueSchema.parse(input.result)),
+          `${input.platform}:${input.channelId}:${input.messageId}`,
+          input.now,
+          input.now,
+          input.runId,
+          input.operationId,
+          input.eventTs,
+          input.eventTs,
+        );
+      if (changed.changes !== 1) return null;
+      this.recordAdapterEventSuppression({
+        platform: input.platform,
+        channelId: input.channelId,
+        messageId: input.messageId,
+        runId: input.runId,
+        operationId: input.operationId,
+        now: input.now,
+      });
+      return this.getWait(input.runId, input.operationId);
+    });
+    return resolve.immediate();
   }
 
   tryClaimWait(input: {
@@ -1469,13 +1919,13 @@ export class DurableWorkflowStore {
     );
   }
 
-  consumeAdapterEventSuppression(input: {
+  getAdapterEventSuppression(input: {
     platform: string;
     channelId: string;
     messageId: string;
     now: number;
   }): { runId: string; operationId: string } | null {
-    const consume = this.db.transaction(() => {
+    const lookup = this.db.transaction(() => {
       this.db.run("DELETE FROM workflow_adapter_event_suppressions WHERE expires_at <= ?", [
         input.now,
       ]);
@@ -1485,15 +1935,9 @@ export class DurableWorkflowStore {
            WHERE platform = ? AND channel_id = ? AND message_id = ? AND expires_at > ?`,
         )
         .get(input.platform, input.channelId, input.messageId, input.now);
-      if (!row) return null;
-      this.db.run(
-        `DELETE FROM workflow_adapter_event_suppressions
-         WHERE platform = ? AND channel_id = ? AND message_id = ?`,
-        [input.platform, input.channelId, input.messageId],
-      );
-      return { runId: row.run_id, operationId: row.operation_id };
+      return row ? { runId: row.run_id, operationId: row.operation_id } : null;
     });
-    return consume.immediate();
+    return lookup.immediate();
   }
 
   createTrigger(triggerInput: WorkflowTrigger): boolean {
@@ -1631,8 +2075,12 @@ export class DurableWorkflowStore {
     nextFireAt: number | null;
     run: WorkflowRun;
     pendingApproval: WorkflowApproval;
+    maxActiveScheduledRuns: number;
     now: number;
-  }): { trigger: WorkflowTrigger; run: WorkflowRun; approval: WorkflowApproval } | null {
+  }):
+    | { status: "fired"; trigger: WorkflowTrigger; run: WorkflowRun; approval: WorkflowApproval }
+    | { status: "skipped"; trigger: WorkflowTrigger }
+    | null {
     const requestedRun = workflowRunSchema.parse(input.run);
     const pendingApproval = workflowApprovalSchema.parse(input.pendingApproval);
     const fire = this.db.transaction(() => {
@@ -1648,7 +2096,38 @@ export class DurableWorkflowStore {
         return null;
       }
 
-      let approval = this.getActiveApproval(trigger.revisionId);
+      const activeTriggerRuns = this.countActiveScheduledRuns(trigger.triggerId);
+      const activeScheduledRuns = this.countActiveScheduledRuns();
+      if (
+        (trigger.schedulingPolicy.overlap === "coalesce" && activeTriggerRuns > 0) ||
+        activeScheduledRuns >= input.maxActiveScheduledRuns
+      ) {
+        const skipped = this.db
+          .query(
+            `UPDATE workflow_triggers SET next_fire_at = ?, last_fire_at = ?,
+             claimed_by = NULL, claimed_at = NULL, updated_at = ?
+             WHERE trigger_id = ? AND claimed_by = ? AND next_fire_at = ?`,
+          )
+          .run(
+            input.nextFireAt,
+            input.expectedFireAt,
+            input.now,
+            trigger.triggerId,
+            input.claimerId,
+            input.expectedFireAt,
+          );
+        if (skipped.changes !== 1)
+          throw new Error(`Lost workflow trigger claim: ${trigger.triggerId}`);
+        const storedTrigger = this.getTrigger(trigger.triggerId);
+        if (!storedTrigger) throw new Error(`Workflow trigger disappeared: ${trigger.triggerId}`);
+        return { status: "skipped" as const, trigger: storedTrigger };
+      }
+
+      let approval = this.getActiveApprovalForPrincipal(
+        trigger.revisionId,
+        pendingApproval.expectedReviewerPlatform,
+        pendingApproval.expectedReviewerUserId,
+      );
       if (!approval) {
         if (!this.createApproval(pendingApproval)) return null;
         approval = this.getApproval(pendingApproval.approvalId);
@@ -1662,6 +2141,11 @@ export class DurableWorkflowStore {
       if (!this.createRun(run)) {
         throw new Error(`Scheduled workflow run already exists: ${run.runId}`);
       }
+      this.db.run(
+        `INSERT INTO workflow_trigger_runs (trigger_id, run_id, created_at)
+         VALUES (?, ?, ?)`,
+        [trigger.triggerId, run.runId, run.createdAt],
+      );
       const updated = this.db
         .query(
           `UPDATE workflow_triggers SET next_fire_at = ?, last_fire_at = ?, last_run_id = ?,
@@ -1681,7 +2165,7 @@ export class DurableWorkflowStore {
         throw new Error(`Lost workflow trigger claim: ${trigger.triggerId}`);
       const storedTrigger = this.getTrigger(trigger.triggerId);
       if (!storedTrigger) throw new Error(`Workflow trigger disappeared: ${trigger.triggerId}`);
-      return { trigger: storedTrigger, run, approval };
+      return { status: "fired" as const, trigger: storedTrigger, run, approval };
     });
     return fire.immediate();
   }
@@ -1691,6 +2175,26 @@ export class DurableWorkflowStore {
       this.db.query("DELETE FROM workflow_triggers WHERE trigger_id = ?").run(triggerId).changes ===
       1
     );
+  }
+
+  countActiveScheduledRuns(triggerId?: string): number {
+    const row = triggerId
+      ? this.db
+          .query<{ count: number }, [string]>(
+            `SELECT COUNT(*) AS count FROM workflow_trigger_runs
+             JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
+             WHERE workflow_trigger_runs.trigger_id = ?
+               AND workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+          )
+          .get(triggerId)
+      : this.db
+          .query<{ count: number }, []>(
+            `SELECT COUNT(*) AS count FROM workflow_trigger_runs
+             JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
+             WHERE workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+          )
+          .get();
+    return row?.count ?? 0;
   }
 
   upsertSurfaceBinding(bindingInput: WorkflowSurfaceBinding): void {
@@ -1945,6 +2449,26 @@ export class DurableWorkflowStore {
             run.state,
           );
         if (result.changes !== 1) return { status: "stale" };
+        if (action.kind === "cancel") {
+          this.db.run(
+            `UPDATE workflow_operations SET state = 'cancelled', error = 'Cancelled from surface control',
+             terminal_at = ?, updated_at = ?
+             WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+            [input.now, input.now, run.runId],
+          );
+          this.db.run(
+            `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+             resolved_at = ?, updated_at = ?
+             WHERE run_id = ? AND state IN ('pending', 'claimed')`,
+            [input.now, input.now, run.runId],
+          );
+          this.db.run(
+            `UPDATE workflow_request_dispatches SET active = 0,
+             expires_at = MIN(expires_at, ?), updated_at = ?
+             WHERE run_id = ? AND active = 1`,
+            [input.now, input.now, run.runId],
+          );
+        }
         runIds = [run.runId];
       }
 

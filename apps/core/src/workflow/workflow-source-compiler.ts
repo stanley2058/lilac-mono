@@ -1,6 +1,7 @@
 import ts from "typescript-codegen";
 
 import { sha256 } from "./workflow-definition";
+import { compareCodeUnits } from "./workflow-domain";
 
 const HOST_CALLS = new Set(["agent", "parallel", "pipeline", "phase", "waitForReply", "sleep"]);
 const CONTEXT_NAMES = new Set(["args", ...HOST_CALLS]);
@@ -85,7 +86,9 @@ export function compileWorkflowSource(source: string, sourceSha256: string): str
   visit(run.body);
 
   let compiled = source;
-  for (const edit of edits.sort((left, right) => right.start - left.start)) {
+  for (const edit of edits.sort(
+    (left, right) => right.start - left.start || compareCodeUnits(right.text, left.text),
+  )) {
     compiled = `${compiled.slice(0, edit.start)}${edit.text}${compiled.slice(edit.end)}`;
   }
   return compiled;

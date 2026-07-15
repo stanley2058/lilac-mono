@@ -8,6 +8,7 @@ import type { WorkflowApproval, WorkflowRun, WorkflowTrigger } from "./workflow-
 import type { WorkflowProgressCardService } from "./workflow-progress-projector";
 
 const TERMINAL_RUN_STATES = new Set(["succeeded", "failed", "rejected", "cancelled"]);
+const MAX_ACTIVE_SCHEDULED_RUNS = 64;
 
 export class WorkflowTriggerScheduler {
   private readonly logger = createLogger({ module: "workflow-trigger-scheduler" });
@@ -140,9 +141,10 @@ export class WorkflowTriggerScheduler {
       nextFireAt,
       run,
       pendingApproval: approval,
+      maxActiveScheduledRuns: MAX_ACTIVE_SCHEDULED_RUNS,
       now,
     });
-    if (!fired) return;
+    if (!fired || fired.status === "skipped") return;
     if (fired.run.progressTarget && this.input.progressCards) {
       await this.input.progressCards.ensureInitialCard(fired.run.runId).catch((error: unknown) => {
         this.logger.warn("Scheduled workflow progress card creation failed", {

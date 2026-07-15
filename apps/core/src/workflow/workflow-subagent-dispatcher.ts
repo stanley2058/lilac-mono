@@ -19,6 +19,7 @@ import type {
   WorkflowRevision,
   WorkflowRun,
 } from "./workflow-domain";
+import { readWorkflowValueArtifact } from "./workflow-artifact-store";
 
 const GENERATED_WORKFLOW_NAME = "subagent-delegate";
 
@@ -92,12 +93,22 @@ export default defineWorkflow({
 `;
 }
 
-function completionStatus(
+async function completionStatus(
   run: WorkflowRun,
   store: DurableWorkflowStore,
-): SubagentDelegationOutcome {
+  dataDir: string,
+): Promise<SubagentDelegationOutcome> {
   if (run.state === "succeeded") {
-    const finalText = typeof run.result === "string" ? run.result : JSON.stringify(run.result);
+    const revision = store.getRevision(run.revisionId);
+    if (!revision) throw new Error(`Subagent workflow revision disappeared: ${run.revisionId}`);
+    const result = run.resultArtifactId
+      ? await readWorkflowValueArtifact({
+          dataDir,
+          artifactId: run.resultArtifactId,
+          maxBytes: revision.limits.maxResultBytes,
+        })
+      : run.result;
+    const finalText = typeof result === "string" ? result : JSON.stringify(result);
     return { status: "resolved", finalText };
   }
   if (run.state === "cancelled") {
@@ -122,6 +133,7 @@ export class WorkflowSubagentDispatcher {
     private readonly input: {
       store: DurableWorkflowStore;
       definitions: WorkflowDefinitionStore;
+      dataDir: string;
       now?: () => number;
       pollMs?: number;
       onRunCreated?: (run: WorkflowRun) => Promise<void>;
@@ -220,6 +232,7 @@ export class WorkflowSubagentDispatcher {
       reasoning: registration.reasoningOverride ?? null,
       fallbackToSurface: fallbackProgressTarget !== null,
       fallbackProgressTarget,
+      deferredDelivery: registration.mode === "deferred",
     };
     const approvalId = `wfapproval:internal:${sha256(revisionId).slice(0, 48)}`;
     const approval: WorkflowApproval = {
@@ -306,7 +319,7 @@ export class WorkflowSubagentDispatcher {
       const run = this.input.store.getRun(runId);
       if (!run) throw new Error(`Subagent workflow run disappeared: ${runId}`);
       if (["succeeded", "failed", "rejected", "cancelled"].includes(run.state)) {
-        return completionStatus(run, this.input.store);
+        return await completionStatus(run, this.input.store, this.input.dataDir);
       }
       await Bun.sleep(this.input.pollMs ?? 100);
     }
