@@ -2,6 +2,5 @@ export * from "./surface";
 export * from "./plugins";
 export * from "./runtime/process-handlers";
 export * from "./tool-server";
-export * from "./workflow/workflow-service";
-export * from "./workflow/workflow-store";
-export * from "./workflow/types";
+export * from "./workflow/durable-workflow-store";
+export * from "./workflow/workflow-domain";

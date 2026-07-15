@@ -8,6 +8,8 @@ export type RequestContext = {
   requestClient?: string;
   cwd?: string;
   safetyMode?: "trusted" | "restricted";
+  /** Set only after matching request headers to a server-owned authenticated surface origin. */
+  serverOwnedRequest?: boolean;
 };
 
 export type ServerToolPrimaryPositional = {

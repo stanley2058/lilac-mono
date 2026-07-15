@@ -238,7 +238,7 @@ describe("tool-bridge CLI runtime", () => {
         if (url.pathname === "/list") {
           return new Response(
             JSON.stringify({
-              tools: [{ callableId: "workflow.create" }, { callableId: "fs.read" }],
+              tools: [{ callableId: "workflow.run.trigger" }, { callableId: "fs.read" }],
             }),
             { headers: { "content-type": "application/json" } },
           );
@@ -246,10 +246,13 @@ describe("tool-bridge CLI runtime", () => {
 
         if (url.pathname === "/call") {
           await req.text();
-          return new Response(JSON.stringify({ message: "Unknown callable ID 'workflo.create'" }), {
-            status: 404,
-            headers: { "content-type": "application/json" },
-          });
+          return new Response(
+            JSON.stringify({ message: "Unknown callable ID 'workflo.run.trigger'" }),
+            {
+              status: 404,
+              headers: { "content-type": "application/json" },
+            },
+          );
         }
 
         return new Response("not found", { status: 404 });
@@ -258,14 +261,14 @@ describe("tool-bridge CLI runtime", () => {
 
     try {
       const result = await runToolBridgeCli({
-        args: ["workflo.create", "--input={}"],
+        args: ["workflo.run.trigger", "--input={}"],
         backendUrl: `http://127.0.0.1:${server.port}`,
       });
 
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain(
-        "Unknown callable ID 'workflo.create'. Did you mean 'workflow.create'?",
+        "Unknown callable ID 'workflo.run.trigger'. Did you mean 'workflow.run.trigger'?",
       );
     } finally {
       server.stop(true);
@@ -274,6 +277,25 @@ describe("tool-bridge CLI runtime", () => {
 });
 
 describe("tool-bridge positional input", () => {
+  it("builds workflow trigger input from JSON argument and progress flags", async () => {
+    const parsed = parseArgs([
+      "workflow.run.trigger",
+      "--scope=auto",
+      "--name=audit-routes",
+      '--args:json={"directory":"src"}',
+      '--progress:json={"requestOrigin":true}',
+    ]);
+    expect(parsed.type).toBe("call");
+    if (parsed.type !== "call") return;
+
+    await expect(buildToolInput(parsed)).resolves.toEqual({
+      scope: "auto",
+      name: "audit-routes",
+      args: { directory: "src" },
+      progress: { requestOrigin: true },
+    });
+  });
+
   it("parses a bare positional argument for tool calls", () => {
     const parsed = parseArgs(["fetch", "https://example.com", "--mode=browser"]);
 

@@ -107,6 +107,7 @@ describe("createToolServer", () => {
       requestClient?: string;
       cwd?: string;
       messages?: readonly unknown[];
+      serverOwnedRequest?: boolean;
     }> = [];
 
     const tool: ServerTool = {
@@ -133,6 +134,7 @@ describe("createToolServer", () => {
           requestClient: opts?.context?.requestClient,
           cwd: opts?.context?.cwd,
           messages: opts?.messages,
+          serverOwnedRequest: opts?.context?.serverOwnedRequest,
         });
         return { ok: true, echo: input };
       },
@@ -145,6 +147,8 @@ describe("createToolServer", () => {
         get(requestId: string) {
           return requestId === "req:1" ? cachedMessages : undefined;
         },
+        getOrigin: (requestId) =>
+          requestId === "req:1" ? { sessionId: "chan", platform: "discord" } : undefined,
       },
     });
 
@@ -179,6 +183,7 @@ describe("createToolServer", () => {
     expect(captured.requestClient).toBe("discord");
     expect(captured.cwd).toBe("/tmp/work");
     expect(captured.messages).toEqual(cachedMessages);
+    expect(captured.serverOwnedRequest).toBe(true);
   });
 
   it("includes primary positional metadata in list and help responses", async () => {
@@ -532,6 +537,64 @@ describe("createToolServer", () => {
     expect(calls).toEqual(["fetch", "discovery.search"]);
 
     await server.stop();
+  });
+
+  it("fails closed when server-side safety lookup fails for a privileged workflow call", async () => {
+    let called = false;
+    const tool: ServerTool = {
+      id: "workflow-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "workflow.test",
+            name: "Workflow Test",
+            description: "privileged",
+            shortInput: [],
+            input: [],
+          },
+        ];
+      },
+      async call() {
+        called = true;
+        return { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      requestMessageCache: {
+        get: (requestId) =>
+          requestId === "request-1" ? [{ role: "user", content: "run workflow" }] : undefined,
+        getOrigin: (requestId) =>
+          requestId === "request-1" ? { sessionId: "channel-1", platform: "discord" } : undefined,
+      },
+      getConfig: async () => {
+        throw new Error("configuration unavailable");
+      },
+    });
+    await server.init();
+    try {
+      const response = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-lilac-request-id": "request-1",
+            "x-lilac-session-id": "channel-1",
+            "x-lilac-request-client": "discord",
+          },
+          body: JSON.stringify({ callableId: "workflow.test", input: {} }),
+        }),
+      );
+      expect(await response.json()).toEqual({
+        isError: true,
+        output: "Tool 'workflow.test' is not allowed in restricted public-session mode",
+      });
+      expect(called).toBe(false);
+    } finally {
+      await server.stop();
+    }
   });
 
   it("supports plugin-backed list/call/reload flows", async () => {

@@ -153,6 +153,82 @@ describe("request-message-cache", () => {
     await cache.stop();
   });
 
+  it("retains authenticated surface origins from server-published request state", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const cache = await createRequestMessageCache({ bus, ttlMs: 60_000, maxEntries: 32 });
+    const requestId = "discord:channel-1:message-1";
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      { queue: "prompt", messages: [{ role: "user", content: "run" }] },
+      {
+        headers: {
+          request_id: requestId,
+          session_id: "channel-1",
+          request_client: "discord",
+        },
+      },
+    );
+    expect(cache.getOrigin(requestId)).toEqual({
+      requestId,
+      sessionId: "channel-1",
+      platform: "discord",
+      messageRef: { platform: "discord", channelId: "channel-1", messageId: "message-1" },
+      actorUserId: null,
+    });
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "prompt",
+        messages: [{ role: "user", content: "active channel" }],
+        raw: {
+          authenticatedOrigin: {
+            platform: "discord",
+            userId: "user-2",
+            messageRef: { platform: "discord", channelId: "channel-1", messageId: "message-2" },
+          },
+        },
+      },
+      {
+        headers: {
+          request_id: "req:random-server-id",
+          session_id: "channel-1",
+          request_client: "discord",
+        },
+      },
+    );
+    expect(cache.getOrigin("req:random-server-id")).toMatchObject({
+      actorUserId: "user-2",
+      messageRef: { messageId: "message-2" },
+    });
+
+    await bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        queue: "prompt",
+        messages: [{ role: "user", content: "review" }],
+        raw: {
+          authenticatedActor: { platform: "github", userId: "octocat" },
+          github: { trigger: { kind: "comment", commentId: 42 } },
+        },
+      },
+      {
+        headers: {
+          request_id: "github:owner/repo#7:42",
+          session_id: "owner/repo#7",
+          request_client: "github",
+        },
+      },
+    );
+    expect(cache.getOrigin("github:owner/repo#7:42")).toMatchObject({
+      platform: "github",
+      actorUserId: "octocat",
+      messageRef: { messageId: "42" },
+    });
+    expect(cache.getOrigin("forged-request")).toBeUndefined();
+    await cache.stop();
+  });
+
   it("clamps large per-request message history and evicts oldest request ids", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const cache = await createRequestMessageCache({ bus, ttlMs: 60_000, maxEntries: 2 });

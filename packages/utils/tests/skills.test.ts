@@ -47,10 +47,9 @@ describe("skills discovery", () => {
       homeDir: path.join(tmpRoot, "home"),
     });
 
-    expect(skills.length).toBe(1);
-    expect(skills[0]!.name).toBe("dup-skill");
-    expect(skills[0]!.description).toBe("from data");
-    expect(skills[0]!.source).toBe("lilac-data");
+    const skill = skills.find((candidate) => candidate.name === "dup-skill");
+    expect(skill?.description).toBe("from data");
+    expect(skill?.source).toBe("lilac-data");
   });
 
   it("skips invalid skill names", async () => {
@@ -73,7 +72,7 @@ describe("skills discovery", () => {
       homeDir: path.join(tmpRoot, "home"),
     });
 
-    expect(skills).toEqual([]);
+    expect(skills.some((skill) => skill.name === "Bad_Name")).toBe(false);
   });
 
   it("discovers skills from ~/.agents/skills", async () => {
@@ -97,10 +96,44 @@ describe("skills discovery", () => {
       homeDir,
     });
 
-    expect(skills.length).toBe(1);
-    expect(skills[0]!.name).toBe("agent-skill");
-    expect(skills[0]!.description).toBe("from agents");
-    expect(skills[0]!.source).toBe("agent-user");
+    const skill = skills.find((candidate) => candidate.name === "agent-skill");
+    expect(skill?.description).toBe("from agents");
+    expect(skill?.source).toBe("agent-user");
+  });
+
+  it("discovers the bundled workflow skill at lowest precedence", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const workspaceRoot = path.join(tmpRoot, "ws");
+    const dataDir = path.join(tmpRoot, "data");
+    await mkdirp(path.join(dataDir, "skills", "workflow-authoring"));
+    await fs.writeFile(
+      path.join(dataDir, "skills", "workflow-authoring", "SKILL.md"),
+      "---\nname: workflow-authoring\ndescription: local override\n---\n\n# Override\n",
+      "utf8",
+    );
+
+    const overridden = await discoverSkills({
+      workspaceRoot,
+      dataDir,
+      homeDir: path.join(tmpRoot, "home"),
+    });
+    expect(overridden.skills.find((skill) => skill.name === "workflow-authoring")).toMatchObject({
+      description: "local override",
+      source: "lilac-data",
+    });
+
+    await fs.rm(path.join(dataDir, "skills", "workflow-authoring"), {
+      recursive: true,
+      force: true,
+    });
+    const bundled = await discoverSkills({
+      workspaceRoot,
+      dataDir,
+      homeDir: path.join(tmpRoot, "home"),
+    });
+    expect(bundled.skills.find((skill) => skill.name === "workflow-authoring")).toMatchObject({
+      source: "lilac-builtin",
+    });
   });
 });
 

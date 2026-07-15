@@ -26,6 +26,7 @@ import {
 import { markGithubAgentComment } from "../../github/github-comment-marker";
 import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
 import { GithubOutputStream } from "./output/github-output-stream";
+import { renderGithubActionContent } from "./github-actions";
 
 function assertGithubSessionRef(sessionRef: SessionRef) {
   if (sessionRef.platform !== "github") {
@@ -90,6 +91,20 @@ export class GithubAdapter implements SurfaceAdapter {
       issueNumber: thread.number,
       body: markGithubAgentComment(text),
     });
+    if (content.actions && content.actions.length > 0) {
+      await editIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId: res.id,
+        body: markGithubAgentComment(
+          renderGithubActionContent({
+            text,
+            messageId: String(res.id),
+            actions: content.actions,
+          }),
+        ),
+      });
+    }
     return {
       platform: "github",
       channelId: sessionRef.channelId,
@@ -116,8 +131,8 @@ export class GithubAdapter implements SurfaceAdapter {
       return {
         ref: msgRef,
         session: { platform: "github", channelId: msgRef.channelId },
-        userId: "github",
-        userName: undefined,
+        userId: typeof issue.user?.login === "string" ? issue.user.login : "unknown",
+        userName: typeof issue.user?.login === "string" ? issue.user.login : undefined,
         text: issue.body ?? "",
         ts: Date.now(),
         raw: issue,
@@ -181,11 +196,18 @@ export class GithubAdapter implements SurfaceAdapter {
     if (!Number.isFinite(commentId) || commentId <= 0) {
       throw new Error(`github adapter: invalid comment id '${msgRef.messageId}'`);
     }
+    const rendered = content.actions
+      ? renderGithubActionContent({
+          text: body,
+          messageId: msgRef.messageId,
+          actions: content.actions,
+        })
+      : body;
     await editIssueComment({
       owner: thread.owner,
       repo: thread.repo,
       commentId,
-      body,
+      body: markGithubAgentComment(rendered),
     });
   }
 

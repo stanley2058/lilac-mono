@@ -33,7 +33,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   lilacEventTypes,
-  outReqTopic,
   type AdapterPlatform,
   type LilacBus,
   type RequestLifecycleState,
@@ -56,17 +55,17 @@ import path from "node:path";
 import type { CoreToolPluginManager } from "../../plugins";
 import type { ToolResultArtifactStore } from "../../artifacts/tool-result-artifact-store";
 import { createAgentOutputActivityPublisher } from "../../shared/agent-output-activity";
-import { createIdleTimer, type IdleTimer } from "../../shared/idle-timer";
+import { createIdleTimer } from "../../shared/idle-timer";
 import {
   createToolResultOutputNormalizer,
   normalizeSubagentFinalText,
-  normalizeSubagentFinalTextForSnapshot,
 } from "../../artifacts/tool-result-output-normalizer";
-import {
-  renderSubagentDisplay,
-  type ChildToolState,
-  type DeferredSubagentRegistration,
-} from "../../tools/subagent";
+import type { SubagentDelegationRegistration } from "../../tools/subagent";
+import type {
+  WorkflowLiveParentBridge,
+  WorkflowLiveParentCompletion,
+} from "../../workflow/workflow-live-parent-bridge";
+import type { WorkflowSubagentDispatcher } from "../../workflow/workflow-subagent-dispatcher";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 import { isHeartbeatAckText, isHeartbeatSessionId } from "../../heartbeat/common";
 
@@ -120,6 +119,7 @@ import {
   parseRouterSessionModeFromRaw,
   parseSessionConfigIdFromRaw,
   parseSubagentMetaFromRaw,
+  parseWorkflowPolicyFromRaw,
   requestRawReferencesMessage,
   type AgentRunProfile,
 } from "./bus-agent-runner/raw";
@@ -495,70 +495,6 @@ function getSubagentOkFromResult(result: unknown): boolean | null {
   return typeof v === "boolean" ? v : null;
 }
 
-type DeferredSubagentTerminalStatus = "resolved" | "failed" | "cancelled" | "timeout";
-
-type DeferredSubagentBufferedCompletion = {
-  parentToolCallId: string;
-  profile: DeferredSubagentRegistration["profile"];
-  sessionName: string;
-  childRequestId: string;
-  childSessionId: string;
-  status: DeferredSubagentTerminalStatus;
-  ok: boolean;
-  finalText: string;
-  detail?: string;
-  childTools: ChildToolState[];
-};
-
-type DeferredSubagentBufferedCompletionSnapshot = Omit<
-  DeferredSubagentBufferedCompletion,
-  "sessionName"
-> & {
-  sessionName?: string;
-};
-
-type DeferredSubagentHandleSnapshot = {
-  parentToolCallId: string;
-  profile: DeferredSubagentRegistration["profile"];
-  sessionName?: string;
-  childRequestId: string;
-  childSessionId: string;
-  idleTimeoutMs?: number;
-  /** Compatibility with snapshots written immediately before idle timeouts shipped. */
-  timeoutMs?: number;
-  finalText: string;
-  detail?: string;
-  childUpdateSeq: number;
-  childTools: ChildToolState[];
-  outCursor?: string;
-  evtCursor?: string;
-};
-
-type DeferredSubagentRecoveryState = {
-  outstanding: DeferredSubagentHandleSnapshot[];
-  bufferedCompletions: DeferredSubagentBufferedCompletionSnapshot[];
-};
-
-type DeferredSubagentHandle = {
-  parentToolCallId: string;
-  profile: DeferredSubagentRegistration["profile"];
-  sessionName: string;
-  childRequestId: string;
-  childSessionId: string;
-  idleTimeoutMs: number;
-  finalText: string;
-  detail?: string;
-  childUpdateSeq: number;
-  childTools: Map<string, ChildToolState>;
-  outCursor?: string;
-  evtCursor?: string;
-  outSub: { stop(): Promise<void> } | null;
-  evtSub: { stop(): Promise<void> } | null;
-  idleTimer: IdleTimer | null;
-  settled: boolean;
-  handlingEvtSubscriptionMessage: boolean;
-};
-
 function isDeferredSubagentAcceptedResult(result: unknown): result is {
   ok: true;
   mode: "deferred";
@@ -579,36 +515,6 @@ function buildSubagentResultToolCallId(childRequestId: string): string {
     prefix: "subagent_result",
     seed: childRequestId,
   });
-}
-
-function resolveRecoveredSubagentSessionName(
-  snapshot: Pick<
-    DeferredSubagentHandleSnapshot,
-    "sessionName" | "childSessionId" | "childRequestId" | "profile"
-  >,
-): string {
-  if (
-    typeof snapshot.sessionName === "string" &&
-    snapshot.sessionName.length <= 64 &&
-    /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(snapshot.sessionName)
-  ) {
-    return snapshot.sessionName;
-  }
-
-  const namedMarker = ":named:";
-  const namedIndex = snapshot.childSessionId.lastIndexOf(namedMarker);
-  if (namedIndex >= 0) {
-    const name = snapshot.childSessionId.slice(namedIndex + namedMarker.length);
-    if (name.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name)) {
-      return name;
-    }
-  }
-
-  const requestToken = snapshot.childRequestId
-    .toLowerCase()
-    .replace(/[^a-z0-9]/gu, "")
-    .slice(-8);
-  return `${snapshot.profile}-${requestToken || "recovered"}`;
 }
 
 function buildCustomCommandToolCallId(requestId: string, name: string): string {
@@ -1054,7 +960,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
 }
 
 function buildDeferredSubagentResultMessages(
-  completion: DeferredSubagentBufferedCompletion,
+  completion: WorkflowLiveParentCompletion,
 ): ModelMessage[] {
   const toolCallId = buildSubagentResultToolCallId(completion.childRequestId);
   const payload = {
@@ -1100,582 +1006,16 @@ function buildDeferredSubagentResultMessages(
   ];
 }
 
-function buildDeferredSubagentDisplay(completion: {
-  profile: DeferredSubagentRegistration["profile"];
-  childTools: readonly ChildToolState[];
-}): string {
-  return renderSubagentDisplay({
-    profile: completion.profile,
-    children: new Map(completion.childTools.map((child) => [child.toolCallId, child])),
-  });
+function buildDeferredSubagentDisplay(completion: WorkflowLiveParentCompletion): string {
+  return `subagent (${completion.profile}; ${completion.status})`;
 }
 
-function buildDeferredSubagentRecoveryState(params: {
-  handles: Iterable<DeferredSubagentHandle>;
-  bufferedCompletions: readonly DeferredSubagentBufferedCompletion[];
-  normalizeFinalText?: (finalText: string) => string;
-}): DeferredSubagentRecoveryState | undefined {
-  const outstanding = Array.from(params.handles, (handle) => ({
-    parentToolCallId: handle.parentToolCallId,
-    profile: handle.profile,
-    sessionName: handle.sessionName,
-    childRequestId: handle.childRequestId,
-    childSessionId: handle.childSessionId,
-    idleTimeoutMs: handle.idleTimeoutMs,
-    finalText: params.normalizeFinalText?.(handle.finalText) ?? handle.finalText,
-    ...(handle.detail ? { detail: handle.detail } : {}),
-    childUpdateSeq: handle.childUpdateSeq,
-    childTools: Array.from(handle.childTools.values()),
-    ...(handle.outCursor ? { outCursor: handle.outCursor } : {}),
-    ...(handle.evtCursor ? { evtCursor: handle.evtCursor } : {}),
-  }));
-
-  if (outstanding.length === 0 && params.bufferedCompletions.length === 0) {
-    return undefined;
-  }
-
-  return {
-    outstanding,
-    bufferedCompletions: params.bufferedCompletions.map((completion) => ({
-      ...completion,
-      finalText: params.normalizeFinalText?.(completion.finalText) ?? completion.finalText,
-    })),
-  };
-}
-
-export function createDeferredSubagentManager(params: {
-  bus: LilacBus;
-  logger: ReturnType<typeof createLogger>;
-  parentHeaders: {
-    request_id: string;
-    session_id: string;
-    request_client: AdapterPlatform;
-    router_session_mode?: "mention" | "active";
-  };
-  normalizeFinalText?: (params: { finalText: string; toolCallId: string }) => Promise<string>;
-  normalizeFinalTextForSnapshot?: (finalText: string) => string;
-  onActivity?: () => void;
-}) {
-  const { bus, logger, parentHeaders } = params;
-  const handles = new Map<string, DeferredSubagentHandle>();
-  const detachedStops = new Set<Promise<void>>();
-  const bufferedCompletions: DeferredSubagentBufferedCompletion[] = [];
-  let waiters: Array<() => void> = [];
-  let signalVersion = 0;
-  let closed = false;
-
-  const notifyWaiters = () => {
-    signalVersion += 1;
-    const current = waiters;
-    waiters = [];
-    for (const waiter of current) waiter();
-  };
-
-  const waitForSignalSince = async (version: number) => {
-    if (signalVersion !== version) return;
-
-    await new Promise<void>((resolve) => {
-      if (signalVersion !== version) {
-        resolve();
-        return;
-      }
-      waiters.push(resolve);
-    });
-  };
-
-  const snapshotWaitState = () => ({
-    signalVersion,
-    hasBufferedCompletions: bufferedCompletions.length > 0,
-    hasOutstandingChildren: handles.size > 0,
-  });
-
-  const publishStatus = async (update: {
-    toolCallId: string;
-    status: "update" | "end";
-    display: string;
-    ok?: boolean;
-    error?: string;
-  }) => {
-    await bus.publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
-      headers: parentHeaders,
-    });
-  };
-
-  const stopHandle = async (
-    handle: DeferredSubagentHandle,
-    options?: { deferEvtSubStop?: boolean },
-  ) => {
-    handle.idleTimer?.stop();
-    handle.idleTimer = null;
-
-    const outSub = handle.outSub;
-    const evtSub = handle.evtSub;
-    handle.outSub = null;
-    handle.evtSub = null;
-
-    const stopPromises: Promise<void>[] = [];
-
-    if (outSub) {
-      stopPromises.push(outSub.stop());
-    }
-
-    if (evtSub) {
-      if (options?.deferEvtSubStop) {
-        const detachedStop = evtSub.stop().catch((e: unknown) => {
-          logger.warn(
-            "deferred subagent lifecycle subscription stop failed",
-            {
-              requestId: parentHeaders.request_id,
-              sessionId: parentHeaders.session_id,
-              childRequestId: handle.childRequestId,
-            },
-            e,
-          );
-        });
-        detachedStops.add(detachedStop);
-        void detachedStop.finally(() => detachedStops.delete(detachedStop));
-      } else {
-        stopPromises.push(evtSub.stop());
-      }
-    }
-
-    await Promise.all(stopPromises);
-  };
-
-  const cancelChild = async (handle: DeferredSubagentHandle, detail: string) => {
-    logger.warn("deferred subagent cancel requested", {
-      requestId: parentHeaders.request_id,
-      sessionId: parentHeaders.session_id,
-      parentToolCallId: handle.parentToolCallId,
-      childRequestId: handle.childRequestId,
-      detail,
-    });
-
-    await bus.publish(
-      lilacEventTypes.CmdRequestMessage,
-      {
-        queue: "interrupt",
-        messages: [],
-        raw: {
-          cancel: true,
-          requiresActive: true,
-          cancelQueued: true,
-          subagent: {
-            profile: handle.profile,
-            parentRequestId: parentHeaders.request_id,
-            parentToolCallId: handle.parentToolCallId,
-          },
-        },
-      },
-      {
-        headers: {
-          request_id: handle.childRequestId,
-          session_id: handle.childSessionId,
-          request_client: "unknown",
-        },
-      },
-    );
-  };
-
-  const settleHandle = async (
-    handle: DeferredSubagentHandle,
-    status: DeferredSubagentTerminalStatus,
-    detail?: string,
-  ) => {
-    if (handle.settled) return;
-    handle.settled = true;
-    handle.idleTimer?.stop();
-    handle.detail = detail ?? handle.detail;
-
-    const finalText = params.normalizeFinalText
-      ? await params.normalizeFinalText({
-          finalText: handle.finalText,
-          toolCallId: buildSubagentResultToolCallId(handle.childRequestId),
-        })
-      : handle.finalText;
-    const completion: DeferredSubagentBufferedCompletion = {
-      parentToolCallId: handle.parentToolCallId,
-      profile: handle.profile,
-      sessionName: handle.sessionName,
-      childRequestId: handle.childRequestId,
-      childSessionId: handle.childSessionId,
-      status,
-      ok: status === "resolved",
-      finalText,
-      ...(handle.detail ? { detail: handle.detail } : {}),
-      childTools: Array.from(handle.childTools.values()),
-    };
-
-    bufferedCompletions.push(completion);
-    handles.delete(handle.childRequestId);
-    notifyWaiters();
-
-    if (handle.handlingEvtSubscriptionMessage) {
-      const detachedStop = stopHandle(handle, { deferEvtSubStop: true }).catch((e: unknown) => {
-        logger.warn(
-          "deferred subagent stop after settlement failed",
-          {
-            requestId: parentHeaders.request_id,
-            sessionId: parentHeaders.session_id,
-            childRequestId: handle.childRequestId,
-            status,
-          },
-          e,
-        );
-      });
-      detachedStops.add(detachedStop);
-      void detachedStop.finally(() => detachedStops.delete(detachedStop));
-      return;
-    }
-
-    await stopHandle(handle);
-  };
-
-  const restoreOutstandingHandle = async (
-    snapshot: DeferredSubagentHandleSnapshot,
-    options?: { replayExisting?: boolean },
-  ) => {
-    if (closed) return;
-
-    const idleTimeoutMs = snapshot.idleTimeoutMs ?? snapshot.timeoutMs;
-    if (!idleTimeoutMs || idleTimeoutMs <= 0) {
-      throw new Error("deferred subagent snapshot is missing a valid idle timeout");
-    }
-
-    const handle: DeferredSubagentHandle = {
-      parentToolCallId: snapshot.parentToolCallId,
-      profile: snapshot.profile,
-      sessionName: resolveRecoveredSubagentSessionName(snapshot),
-      childRequestId: snapshot.childRequestId,
-      childSessionId: snapshot.childSessionId,
-      idleTimeoutMs,
-      finalText: snapshot.finalText,
-      detail: snapshot.detail,
-      childUpdateSeq: snapshot.childUpdateSeq,
-      childTools: new Map(snapshot.childTools.map((child) => [child.toolCallId, child])),
-      outCursor: snapshot.outCursor,
-      evtCursor: snapshot.evtCursor,
-      outSub: null,
-      evtSub: null,
-      idleTimer: null,
-      settled: false,
-      handlingEvtSubscriptionMessage: false,
-    };
-
-    handles.set(handle.childRequestId, handle);
-
-    const subId = `${handle.childRequestId}:${Math.random().toString(16).slice(2)}`;
-    const outSub = await bus.subscribeTopic(
-      outReqTopic(handle.childRequestId),
-      options?.replayExisting
-        ? {
-            mode: "tail",
-            offset: handle.outCursor
-              ? { type: "cursor", cursor: handle.outCursor }
-              : { type: "begin" },
-            batch: { maxWaitMs: 250 },
-          }
-        : {
-            mode: "fanout",
-            subscriptionId: `deferred-subagent:out:${subId}`,
-            consumerId: `deferred-subagent:out:${subId}`,
-            ephemeral: true,
-            offset: { type: "now" },
-            batch: { maxWaitMs: 250 },
-          },
-      async (msg, subCtx) => {
-        if (msg.headers?.request_id !== handle.childRequestId) {
-          await subCtx.commit();
-          return;
-        }
-
-        params.onActivity?.();
-        handle.idleTimer?.reset();
-
-        if (msg.type === lilacEventTypes.EvtAgentOutputDeltaText) {
-          handle.finalText += msg.data.delta;
-        }
-
-        if (msg.type === lilacEventTypes.EvtAgentOutputToolCall) {
-          const existing = handle.childTools.get(msg.data.toolCallId);
-          const next: ChildToolState = {
-            toolCallId: msg.data.toolCallId,
-            status: msg.data.status === "end" ? "done" : "running",
-            ok: msg.data.status === "end" ? msg.data.ok === true : (existing?.ok ?? null),
-            display: msg.data.display,
-            updatedSeq: ++handle.childUpdateSeq,
-          };
-          handle.childTools.set(next.toolCallId, next);
-
-          await publishStatus({
-            toolCallId: handle.parentToolCallId,
-            status: "update",
-            display: renderSubagentDisplay({
-              profile: handle.profile,
-              children: handle.childTools,
-            }),
-          }).catch((e: unknown) => {
-            logger.warn(
-              "deferred subagent progress publish failed",
-              {
-                requestId: parentHeaders.request_id,
-                sessionId: parentHeaders.session_id,
-                parentToolCallId: handle.parentToolCallId,
-                childRequestId: handle.childRequestId,
-              },
-              e,
-            );
-          });
-        }
-
-        if (msg.type === lilacEventTypes.EvtAgentOutputResponseText) {
-          handle.finalText = msg.data.finalText;
-        }
-
-        handle.outCursor = subCtx.cursor;
-
-        await subCtx.commit();
-      },
-    );
-    if (closed) {
-      handles.delete(handle.childRequestId);
-      await outSub.stop();
-      return;
-    }
-    handle.outSub = outSub;
-
-    const evtSub = await bus.subscribeTopic(
-      "evt.request",
-      options?.replayExisting
-        ? {
-            mode: "tail",
-            offset: handle.evtCursor
-              ? { type: "cursor", cursor: handle.evtCursor }
-              : { type: "begin" },
-            batch: { maxWaitMs: 250 },
-          }
-        : {
-            mode: "fanout",
-            subscriptionId: `deferred-subagent:evt:${subId}`,
-            consumerId: `deferred-subagent:evt:${subId}`,
-            ephemeral: true,
-            offset: { type: "now" },
-            batch: { maxWaitMs: 250 },
-          },
-      async (msg, subCtx) => {
-        handle.handlingEvtSubscriptionMessage = true;
-
-        try {
-          if (msg.headers?.request_id !== handle.childRequestId) {
-            await subCtx.commit();
-            return;
-          }
-
-          params.onActivity?.();
-          handle.idleTimer?.reset();
-
-          if (msg.type === lilacEventTypes.EvtRequestLifecycleChanged) {
-            handle.detail = msg.data.detail ?? handle.detail;
-            if (msg.data.state === "failed") {
-              await settleHandle(handle, "failed", msg.data.detail);
-            }
-            if (msg.data.state === "cancelled") {
-              await settleHandle(handle, "cancelled", msg.data.detail);
-            }
-            if (msg.data.state === "resolved") {
-              await settleHandle(handle, "resolved", msg.data.detail);
-            }
-          }
-
-          handle.evtCursor = subCtx.cursor;
-
-          await subCtx.commit();
-        } finally {
-          handle.handlingEvtSubscriptionMessage = false;
-        }
-      },
-    );
-    if (closed) {
-      handles.delete(handle.childRequestId);
-      handle.evtSub = evtSub;
-      await stopHandle(handle);
-      return;
-    }
-    handle.evtSub = evtSub;
-
-    if (handle.settled) {
-      await stopHandle(handle);
-      return;
-    }
-
-    handle.idleTimer = createIdleTimer(handle.idleTimeoutMs, () => {
-      const detail = `idle timed out after ${handle.idleTimeoutMs}ms without child activity`;
-      void cancelChild(handle, detail).catch(() => undefined);
-      void settleHandle(handle, "timeout", detail);
-    });
-    handle.idleTimer.reset();
-  };
-
-  return {
-    async register(registration: DeferredSubagentRegistration) {
-      if (closed) throw new Error("deferred subagent manager is closed");
-
-      await restoreOutstandingHandle({
-        parentToolCallId: registration.parentToolCallId,
-        profile: registration.profile,
-        sessionName: registration.sessionName,
-        childRequestId: registration.childRequestId,
-        childSessionId: registration.childSessionId,
-        idleTimeoutMs: registration.idleTimeoutMs,
-        finalText: "",
-        childUpdateSeq: 0,
-        childTools: [],
-      });
-      if (closed || !handles.has(registration.childRequestId)) return;
-
-      try {
-        await bus.publish(
-          lilacEventTypes.CmdRequestMessage,
-          {
-            queue: "prompt",
-            messages: registration.initialMessages,
-            ...(registration.modelOverride ? { modelOverride: registration.modelOverride } : {}),
-            raw: {
-              subagent: {
-                profile: registration.profile,
-                depth: registration.depth,
-                parentRequestId: registration.parentRequestId,
-                parentToolCallId: registration.parentToolCallId,
-                ...(registration.reasoningOverride
-                  ? { reasoning: registration.reasoningOverride }
-                  : {}),
-              },
-            },
-          },
-          { headers: registration.childHeaders },
-        );
-      } catch (e) {
-        const handle = handles.get(registration.childRequestId);
-        if (handle) {
-          handles.delete(registration.childRequestId);
-          await stopHandle(handle);
-        }
-        throw e;
-      }
-    },
-
-    async restore(recovery: DeferredSubagentRecoveryState | undefined) {
-      if (!recovery || closed) return;
-      for (const completion of recovery.bufferedCompletions) {
-        bufferedCompletions.push({
-          ...completion,
-          sessionName: resolveRecoveredSubagentSessionName(completion),
-          finalText: params.normalizeFinalText
-            ? await params.normalizeFinalText({
-                finalText: completion.finalText,
-                toolCallId: buildSubagentResultToolCallId(completion.childRequestId),
-              })
-            : completion.finalText,
-        });
-      }
-      for (const outstanding of recovery.outstanding) {
-        await restoreOutstandingHandle(outstanding, { replayExisting: true });
-      }
-      if (recovery.bufferedCompletions.length > 0 || recovery.outstanding.length > 0) {
-        notifyWaiters();
-      }
-    },
-
-    hasOutstandingChildren() {
-      return handles.size > 0;
-    },
-
-    hasBufferedCompletions() {
-      return bufferedCompletions.length > 0;
-    },
-
-    waitForSignalSince,
-
-    snapshotWaitState,
-
-    notifyWaiters,
-
-    buildRecoveryState() {
-      return buildDeferredSubagentRecoveryState({
-        handles: handles.values(),
-        bufferedCompletions,
-        normalizeFinalText: params.normalizeFinalTextForSnapshot,
-      });
-    },
-
-    async injectBuffered(agent: AiSdkPiAgent<ToolSet>) {
-      if (bufferedCompletions.length === 0) return false;
-      const completions = bufferedCompletions.splice(0, bufferedCompletions.length);
-      const messages = completions.flatMap((completion) =>
-        buildDeferredSubagentResultMessages(completion),
-      );
-      agent.appendMessages(messages);
-
-      for (const completion of completions) {
-        await publishStatus({
-          toolCallId: completion.parentToolCallId,
-          status: "end",
-          display: buildDeferredSubagentDisplay(completion),
-          ok: completion.ok,
-          error: completion.ok ? undefined : (completion.detail ?? `subagent ${completion.status}`),
-        }).catch((e: unknown) => {
-          logger.warn(
-            "deferred subagent completion publish failed",
-            {
-              requestId: parentHeaders.request_id,
-              sessionId: parentHeaders.session_id,
-              parentToolCallId: completion.parentToolCallId,
-              childRequestId: completion.childRequestId,
-            },
-            e,
-          );
-        });
-      }
-
-      return true;
-    },
-
-    async cancelAll(detail: string) {
-      closed = true;
-      const active = [...handles.values()];
-      handles.clear();
-
-      await Promise.all(
-        active.map(async (handle) => {
-          await cancelChild(handle, detail).catch(() => undefined);
-          await publishStatus({
-            toolCallId: handle.parentToolCallId,
-            status: "end",
-            display: renderSubagentDisplay({
-              profile: handle.profile,
-              children: handle.childTools,
-            }),
-            ok: false,
-            error: detail,
-          }).catch(() => undefined);
-          await stopHandle(handle);
-        }),
-      );
-      await Promise.all(detachedStops);
-
-      bufferedCompletions.length = 0;
-      notifyWaiters();
-    },
-
-    async stop() {
-      closed = true;
-      const active = [...handles.values()];
-      handles.clear();
-      bufferedCompletions.length = 0;
-      await Promise.all([...active.map((handle) => stopHandle(handle)), ...detachedStops]);
-      notifyWaiters();
-    },
-  };
+function hasToolResult(messages: readonly ModelMessage[], toolCallId: string): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "tool" &&
+      message.content.some((part) => part.type === "tool-result" && part.toolCallId === toolCallId),
+  );
 }
 
 function buildHeartbeatHandoffRequestId(requestId: string, index: number): string {
@@ -1744,7 +1084,6 @@ type Enqueued = {
   recovery?: {
     checkpointMessages: ModelMessage[];
     partialText: string;
-    deferredSubagents?: DeferredSubagentRecoveryState;
   };
 };
 
@@ -1762,7 +1101,6 @@ export type AgentRunnerRecoveryEntry = {
   recovery?: {
     checkpointMessages: ModelMessage[];
     partialText: string;
-    deferredSubagents?: DeferredSubagentRecoveryState;
   };
 };
 
@@ -2042,7 +1380,8 @@ type SessionQueue = {
     modelOverride?: string;
     raw?: unknown;
     partialText: string;
-    deferred: ReturnType<typeof createDeferredSubagentManager>;
+    liveParent: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
+    notifyWaiters: () => void;
     cancel: () => void;
     started: boolean;
   } | null;
@@ -2061,6 +1400,8 @@ export async function startBusAgentRunner(params: {
   cwd?: string;
   transcriptStore?: TranscriptStore;
   toolResultArtifacts?: ToolResultArtifactStore;
+  workflowLiveParentBridge?: WorkflowLiveParentBridge;
+  workflowSubagentDispatcher?: WorkflowSubagentDispatcher;
 }) {
   const { bus, subscriptionId } = params;
 
@@ -2589,7 +1930,6 @@ export async function startBusAgentRunner(params: {
       recovery: {
         checkpointMessages,
         partialText: state.activeRun.partialText,
-        deferredSubagents: state.activeRun.deferred.buildRecoveryState(),
       },
     };
   }
@@ -2724,6 +2064,7 @@ export async function startBusAgentRunner(params: {
 
     const subagentMeta = parseSubagentMetaFromRaw(next.raw);
     const runProfile = subagentMeta.profile;
+    const workflowPolicy = parseWorkflowPolicyFromRaw(next.raw);
     const subagents = cfg.agent.subagents ?? DEFAULT_SUBAGENT_CONFIG;
 
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
@@ -2799,20 +2140,26 @@ export async function startBusAgentRunner(params: {
       },
     );
 
-    const deferredSubagents = createDeferredSubagentManager({
-      bus,
-      logger,
-      parentHeaders: headers,
-      normalizeFinalText: ({ finalText, toolCallId }) =>
-        normalizeSubagentFinalText({
-          normalize: normalizeToolResultOutput,
-          finalText,
-          toolCallId,
-        }),
-      normalizeFinalTextForSnapshot: (finalText) =>
-        normalizeSubagentFinalTextForSnapshot(finalText, cfg.tools.output.maxPreviewBytes),
+    const liveParentSession = params.workflowLiveParentBridge?.registerParent({
+      parentRequestId: next.requestId,
       onActivity: () => markRunActivity("subagent"),
     });
+    const workflowSubagentDispatcher = params.workflowSubagentDispatcher;
+    let continuationSignalVersion = 0;
+    let continuationWaiters: Array<() => void> = [];
+    const notifyContinuationWaiters = () => {
+      continuationSignalVersion += 1;
+      const current = continuationWaiters;
+      continuationWaiters = [];
+      for (const waiter of current) waiter();
+    };
+    const waitForContinuationSignalSince = async (version: number) => {
+      if (continuationSignalVersion !== version) return;
+      await new Promise<void>((resolve) => {
+        if (continuationSignalVersion !== version) resolve();
+        else continuationWaiters.push(resolve);
+      });
+    };
 
     state.activeRun = {
       requestId: next.requestId,
@@ -2825,7 +2172,8 @@ export async function startBusAgentRunner(params: {
       modelOverride: next.modelOverride,
       raw: next.raw,
       partialText: next.recovery?.partialText ?? "",
-      deferred: deferredSubagents,
+      liveParent: liveParentSession,
+      notifyWaiters: notifyContinuationWaiters,
       cancel: () => {
         cancelledByRequestId.add(headers.request_id);
         customCommandAbortController?.abort();
@@ -2862,6 +2210,9 @@ export async function startBusAgentRunner(params: {
 
     let resolvedModelLabel = "unknown";
     try {
+      if (workflowPolicy && workflowPolicy.profile !== runProfile) {
+        throw new Error("Workflow request profile envelope does not match the runner profile");
+      }
       const maxSubagentDepth = subagents.maxDepth;
       if (subagentMeta.depth > maxSubagentDepth) {
         const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
@@ -3166,11 +2517,8 @@ export async function startBusAgentRunner(params: {
 
       const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
       const parentChannelId = parseParentChannelIdFromRaw(next.raw) ?? undefined;
-      const safetyMode: SessionSafetyMode = resolveSessionSafetyMode(
-        cfg,
-        sessionId,
-        parentChannelId,
-      );
+      const safetyMode: SessionSafetyMode =
+        workflowPolicy?.safetyMode ?? resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
 
       const additionalSessionPrompts = await waitForPreAgent(
         resolveSessionAdditionalPrompts({
@@ -3298,9 +2646,14 @@ export async function startBusAgentRunner(params: {
         genericOutputNormalizerBypassTools,
       } = await waitForPreAgent(
         params.pluginManager.buildLevel1Toolset({
-          cwd,
+          cwd: workflowPolicy?.cwd ?? cwd,
           runProfile,
-          editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
+          editingToolMode:
+            workflowPolicy && !workflowPolicy.editing
+              ? "none"
+              : runProfile === "explore"
+                ? "none"
+                : editingToolMode,
           subagentDepth: subagentMeta.depth,
           subagentConfig: {
             enabled: subagents.enabled,
@@ -3318,11 +2671,29 @@ export async function startBusAgentRunner(params: {
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
               onActivity: (source: "tool" | "subagent") => markRunActivity(source),
-              onDeferredDelegate: async (registration: DeferredSubagentRegistration) => {
-                await deferredSubagents.register(registration);
-              },
+              onSubagentDelegate:
+                workflowSubagentDispatcher && liveParentSession
+                  ? async (registration: SubagentDelegationRegistration) =>
+                      await workflowSubagentDispatcher.delegate(registration, {
+                        editing:
+                          registration.profile !== "explore" && (workflowPolicy?.editing ?? true),
+                        externalTools: workflowPolicy?.externalTools ?? true,
+                      })
+                  : undefined,
             },
           },
+          allowedToolNames: workflowPolicy
+            ? new Set([
+                "read_file",
+                "glob",
+                "grep",
+                "fuzzy_search",
+                "batch",
+                ...(workflowPolicy.externalTools ? ["bash"] : []),
+                ...(workflowPolicy.editing ? ["edit_file", "apply_patch"] : []),
+                ...(workflowPolicy.subagents ? ["subagent_delegate"] : []),
+              ])
+            : undefined,
           reportToolStatus: (update) => {
             bus
               .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
@@ -3587,8 +2958,6 @@ export async function startBusAgentRunner(params: {
       );
 
       state.agent = agent;
-
-      await waitForPreAgent(deferredSubagents.restore(next.recovery?.deferredSubagents));
 
       let finalText = "";
       const assistantTextPartBoundaryState = createAssistantTextPartBoundaryState(
@@ -4123,20 +3492,71 @@ export async function startBusAgentRunner(params: {
           throw new RestartDrainingAbort();
         }
 
-        const deferredWaitState = deferredSubagents.snapshotWaitState();
+        const continuationWaitVersion = continuationSignalVersion;
+        const deferredWaitState = liveParentSession?.snapshot();
 
-        if (deferredWaitState.hasBufferedCompletions) {
-          await waitForRun(deferredSubagents.injectBuffered(agent));
+        if (liveParentSession && deferredWaitState?.hasPendingCompletions) {
+          const completions = liveParentSession.listPending();
+          const normalized = await Promise.all(
+            completions.map(async (completion) => ({
+              ...completion,
+              finalText: await normalizeSubagentFinalText({
+                normalize: normalizeToolResultOutput,
+                finalText: completion.finalText,
+                toolCallId: buildSubagentResultToolCallId(completion.childRequestId),
+              }),
+            })),
+          );
+          const unseen = normalized.filter(
+            (completion) =>
+              !hasToolResult(
+                agent.state.messages,
+                buildSubagentResultToolCallId(completion.childRequestId),
+              ),
+          );
+          if (unseen.length > 0) {
+            agent.appendMessages(unseen.flatMap(buildDeferredSubagentResultMessages));
+          }
+          for (const completion of normalized) {
+            await bus
+              .publish(
+                lilacEventTypes.EvtAgentOutputToolCall,
+                {
+                  toolCallId: completion.parentToolCallId,
+                  status: "end",
+                  display: buildDeferredSubagentDisplay(completion),
+                  ok: completion.ok,
+                  error: completion.ok
+                    ? undefined
+                    : (completion.detail ?? `subagent ${completion.status}`),
+                },
+                { headers },
+              )
+              .catch((error: unknown) => {
+                logger.warn(
+                  "workflow subagent completion publish failed",
+                  { runId: completion.runId },
+                  error,
+                );
+              });
+          }
           if (cancelledByRequestId.has(headers.request_id)) break;
-          await waitForRun(agent.continue());
+          if (unseen.length > 0) await waitForRun(agent.continue());
+          liveParentSession.acknowledge(normalized.map((completion) => completion.runId));
           continue;
         }
 
-        if (!deferredWaitState.hasOutstandingChildren) {
+        if (!deferredWaitState?.hasOutstandingRuns) {
           break;
         }
+        if (!liveParentSession) break;
 
-        await waitForRun(deferredSubagents.waitForSignalSince(deferredWaitState.signalVersion));
+        await waitForRun(
+          Promise.race([
+            liveParentSession.waitForSignalSince(deferredWaitState.signalVersion),
+            waitForContinuationSignalSince(continuationWaitVersion),
+          ]),
+        );
         if (agent.state.isStreaming) {
           continue;
         }
@@ -4298,7 +3718,18 @@ export async function startBusAgentRunner(params: {
 
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
-        { finalText, delivery, statsForNerdsLine },
+        {
+          finalText,
+          delivery,
+          statsForNerdsLine,
+          usage: runStats.totalUsage
+            ? {
+                inputTokens: runStats.totalUsage.inputTokens ?? 0,
+                outputTokens: runStats.totalUsage.outputTokens ?? 0,
+                totalTokens: runStats.totalUsage.totalTokens ?? 0,
+              }
+            : undefined,
+        },
         { headers },
       );
 
@@ -4388,7 +3819,7 @@ export async function startBusAgentRunner(params: {
       }
 
       if (e instanceof PreAgentRunCancelledError) {
-        await deferredSubagents.cancelAll("parent request cancelled").catch(() => undefined);
+        await liveParentSession?.cancelAll("parent request cancelled").catch(() => undefined);
         const finalText = "Cancelled.";
         await publishLifecycle({
           bus,
@@ -4436,7 +3867,7 @@ export async function startBusAgentRunner(params: {
         }
       }
 
-      await deferredSubagents.cancelAll(`parent run failed: ${msg}`).catch((err: unknown) => {
+      await liveParentSession?.cancelAll(`parent run failed: ${msg}`).catch((err: unknown) => {
         logger.warn(
           "failed to cancel deferred subagents after parent failure",
           { requestId: headers.request_id, sessionId: headers.session_id },
@@ -4490,7 +3921,7 @@ export async function startBusAgentRunner(params: {
       rejectPreAgentCancellation = null;
       unsubscribe();
       unsubscribeCompaction();
-      await deferredSubagents.stop();
+      liveParentSession?.close();
       state.agent = null;
       state.activeRequestId = null;
       state.activeRun = null;
@@ -4580,21 +4011,22 @@ async function applyToRunningAgent(
   activeRun: SessionQueue["activeRun"],
 ) {
   const merged = mergeToSingleUserMessage(entry.messages);
-  const deferred = activeRun?.deferred;
+  const liveParent = activeRun?.liveParent;
+  const notifyWaiters = activeRun?.notifyWaiters;
   const queueWhileIdle = (mode: "followUp" | "steer") => {
     if (mode === "steer") {
       agent.steer(merged);
     } else {
       agent.followUp(merged);
     }
-    deferred?.notifyWaiters();
+    notifyWaiters?.();
   };
 
   const promptWhileIdle = () => {
     void agent.prompt(merged).catch(() => {
-      deferred?.notifyWaiters();
+      notifyWaiters?.();
     });
-    deferred?.notifyWaiters();
+    notifyWaiters?.();
   };
 
   const cancel = (() => {
@@ -4604,7 +4036,7 @@ async function applyToRunningAgent(
     return v === true;
   })();
 
-  const hasBufferedCompletions = deferred?.hasBufferedCompletions() ?? false;
+  const hasBufferedCompletions = liveParent?.snapshot().hasPendingCompletions ?? false;
 
   if (!agent.state.isStreaming) {
     switch (entry.queue) {
@@ -4628,9 +4060,9 @@ async function applyToRunningAgent(
       case "interrupt": {
         if (cancel) {
           cancelledByRequestId.add(entry.requestId);
-          await deferred?.cancelAll("parent request aborted");
+          await liveParent?.cancelAll("parent request aborted");
           agent.abort();
-          deferred?.notifyWaiters();
+          notifyWaiters?.();
           return;
         }
         if (hasBufferedCompletions) {
@@ -4638,7 +4070,7 @@ async function applyToRunningAgent(
           return;
         }
         await agent.interrupt(merged);
-        deferred?.notifyWaiters();
+        notifyWaiters?.();
         return;
       }
       default: {
@@ -4651,30 +4083,30 @@ async function applyToRunningAgent(
   switch (entry.queue) {
     case "steer": {
       agent.steer(merged);
-      deferred?.notifyWaiters();
+      notifyWaiters?.();
       return;
     }
     case "followUp": {
       agent.followUp(merged);
-      deferred?.notifyWaiters();
+      notifyWaiters?.();
       return;
     }
     case "interrupt": {
       if (cancel) {
         cancelledByRequestId.add(entry.requestId);
-        await deferred?.cancelAll("parent request aborted");
+        await liveParent?.cancelAll("parent request aborted");
         agent.abort();
-        deferred?.notifyWaiters();
+        notifyWaiters?.();
         return;
       }
       await agent.interrupt(merged);
-      deferred?.notifyWaiters();
+      notifyWaiters?.();
       return;
     }
     case "prompt": {
       // Cannot prompt while streaming; treat as followUp.
       agent.followUp(merged);
-      deferred?.notifyWaiters();
+      notifyWaiters?.();
       return;
     }
     default: {

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { errorMessage } from "./runtime-utils";
 
 export type SkillSource =
+  | "lilac-builtin"
   | "lilac-data"
   | "claude-project"
   | "cursor-project"
@@ -261,6 +262,11 @@ export function defaultSkillScanRoots(params: {
       pattern: path.join(home, ".gemini", "skills", "**", "SKILL.md"),
       source: "gemini-user",
       precedence: 100,
+    },
+    {
+      pattern: path.join(import.meta.dir, "builtin-skills", "*", "SKILL.md"),
+      source: "lilac-builtin",
+      precedence: 0,
     },
   ];
 }

@@ -1,4 +1,4 @@
-import type { SurfaceMessage, SurfacePlatform } from "./types";
+import type { MsgRef, SurfaceMessage, SurfacePlatform } from "./types";
 
 export type AdapterEventBase = {
   platform: SurfacePlatform;
@@ -78,6 +78,14 @@ export type AdapterCommandInvokedEvent = AdapterEventBase & {
   modelOverride?: string;
 };
 
+export type AdapterActionInvokedEvent = AdapterEventBase & {
+  type: "adapter.action.invoked";
+  actionId: string;
+  userId: string;
+  messageRef: MsgRef;
+  sourceMessageId?: string;
+};
+
 export type AdapterEvent =
   | AdapterMessageCreatedEvent
   | AdapterMessageUpdatedEvent
@@ -85,4 +93,5 @@ export type AdapterEvent =
   | AdapterReactionAddedEvent
   | AdapterReactionRemovedEvent
   | AdapterRequestCancelEvent
-  | AdapterCommandInvokedEvent;
+  | AdapterCommandInvokedEvent
+  | AdapterActionInvokedEvent;

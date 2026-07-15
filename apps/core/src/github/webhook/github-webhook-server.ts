@@ -5,6 +5,7 @@ import { lilacEventTypes } from "@stanley2058/lilac-event-bus";
 import { createLogger, env } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import type { ModelMessage } from "ai";
+import { z } from "zod";
 
 import {
   addEyesReactionToIssue,
@@ -25,11 +26,25 @@ import {
   setGithubRequestMeta,
 } from "../github-state";
 import { isMarkedGithubAgentComment } from "../github-comment-marker";
+import { parseGithubWorkflowActionReply } from "../../surface/github/github-actions";
 
 type GithubWebhookOptions = {
   bus: LilacBus;
   subscriptionId: string;
 };
+
+const githubWorkflowActionPayloadSchema = z.object({
+  issue: z.object({ number: z.number().int().positive() }),
+  comment: z.object({
+    id: z.number().int().positive(),
+    body: z.string(),
+    created_at: z.string().optional(),
+    user: z.object({ login: z.string().min(1) }),
+  }),
+});
+const githubWebhookSenderSchema = z.object({
+  sender: z.object({ login: z.string().min(1) }),
+});
 
 function timingSafeEqualHex(a: string, b: string): boolean {
   try {
@@ -483,6 +498,30 @@ async function onIssueCommentCreated(input: {
   payload: Record<string, unknown>;
   botLogins: readonly string[];
 }): Promise<string | null> {
+  const actionPayload = githubWorkflowActionPayloadSchema.safeParse(input.payload);
+  if (actionPayload.success) {
+    const workflowAction = parseGithubWorkflowActionReply(actionPayload.data.comment.body);
+    if (workflowAction) {
+      const sessionId = `${input.repoFullName}#${actionPayload.data.issue.number}`;
+      const parsedTs = actionPayload.data.comment.created_at
+        ? Date.parse(actionPayload.data.comment.created_at)
+        : Number.NaN;
+      await input.bus.publish(lilacEventTypes.EvtAdapterActionInvoked, {
+        actionId: workflowAction.actionId,
+        platform: "github",
+        userId: actionPayload.data.comment.user.login,
+        messageRef: {
+          platform: "github",
+          channelId: sessionId,
+          messageId: workflowAction.messageId,
+        },
+        sourceMessageId: String(actionPayload.data.comment.id),
+        ts: Number.isFinite(parsedTs) ? parsedTs : Date.now(),
+      });
+      return `workflow-action:${actionPayload.data.comment.id}`;
+    }
+  }
+
   const issue = input.payload["issue"];
   const comment = input.payload["comment"];
   if (!issue || typeof issue !== "object") return null;
@@ -595,6 +634,10 @@ async function onIssueCommentCreated(input: {
       queue: "prompt",
       messages,
       raw: {
+        authenticatedActor: {
+          platform: "github",
+          userId: typeof author === "string" ? author : undefined,
+        },
         github: {
           repoFullName: input.repoFullName,
           issueNumber,
@@ -633,6 +676,8 @@ async function onReviewRequested(input: {
     // If this is a team review request, ignore for now.
     return null;
   }
+  const sender = githubWebhookSenderSchema.safeParse(input.payload);
+  const senderLogin = sender.success ? sender.data.sender.login : undefined;
 
   if (input.botLogins.length > 0 && !input.botLogins.includes(requestedLogin)) {
     // Review request is for someone else.
@@ -713,6 +758,10 @@ async function onReviewRequested(input: {
       queue: "prompt",
       messages,
       raw: {
+        authenticatedActor: {
+          platform: "github",
+          userId: typeof senderLogin === "string" ? senderLogin : undefined,
+        },
         github: {
           repoFullName: input.repoFullName,
           prNumber,

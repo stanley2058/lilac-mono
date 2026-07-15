@@ -8,7 +8,11 @@ import {
 } from "../../tools/batch";
 import { bashToolWithCwd } from "../../tools/bash";
 import { fsTool } from "../../tools/fs/fs";
-import { subagentTools, type DeferredSubagentRegistration } from "../../tools/subagent";
+import {
+  subagentTools,
+  type SubagentDelegationHandle,
+  type SubagentDelegationRegistration,
+} from "../../tools/subagent";
 import { BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS } from "../../surface/bridge/bus-agent-runner/tool-failure-logging";
 import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-display";
 import { markBoundedBuiltinOutput, type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
@@ -75,12 +79,16 @@ function withBoundedOutput(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
   return markBoundedBuiltinOutput(withBuiltinMetadata(spec));
 }
 
-function getDeferredDelegateHandler(requestContext: {
+function getDelegateHandler(requestContext: {
   metadata?: Readonly<Record<string, unknown>>;
-}): ((registration: DeferredSubagentRegistration) => Promise<void>) | undefined {
-  const candidate = requestContext.metadata?.["onDeferredDelegate"];
+}):
+  | ((registration: SubagentDelegationRegistration) => Promise<SubagentDelegationHandle>)
+  | undefined {
+  const candidate = requestContext.metadata?.["onSubagentDelegate"];
   return typeof candidate === "function"
-    ? (candidate as (registration: DeferredSubagentRegistration) => Promise<void>)
+    ? (candidate as (
+        registration: SubagentDelegationRegistration,
+      ) => Promise<SubagentDelegationHandle>)
     : undefined;
 }
 
@@ -185,9 +193,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
           maxDepth: subagentConfig.maxDepth,
           modelPresets: runtime.config?.models.def,
           delegatePromptOverlay: runtime.config?.agent.subagents.delegatePromptOverlay,
-          onDeferredDelegate: requestContext
-            ? getDeferredDelegateHandler(requestContext)
-            : undefined,
+          onDelegate: requestContext ? getDelegateHandler(requestContext) : undefined,
           onActivity: onActivity ? () => onActivity("subagent") : undefined,
         }).subagent_delegate;
       },

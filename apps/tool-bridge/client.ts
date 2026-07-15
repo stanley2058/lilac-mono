@@ -767,9 +767,9 @@ async function main() {
             section(
               "Examples",
               formatBullets([
-                "tools workflow.wait_for_reply.create --input=@workflow.json",
-                "cat workflow.json | tools workflow.wait_for_reply.create --stdin",
-                'cat tasks.json | tools workflow.wait_for_reply.create --summary="..." --tasks:json=@-',
+                "tools workflow.definition.validate --scope=auto --name=audit-routes",
+                "tools workflow.run.trigger --input=@workflow-run.json",
+                "cat workflow-trigger.json | tools workflow.trigger.create --stdin",
               ]),
             ),
             "",

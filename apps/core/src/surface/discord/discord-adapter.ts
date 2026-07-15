@@ -16,6 +16,7 @@ import {
   type Presence,
   type Interaction,
   type Message,
+  type MessageCreateOptions,
   type MessageReaction,
   type PartialMessage,
   type TextBasedChannel,
@@ -65,6 +66,7 @@ import { DiscordSurfaceStore } from "../store/discord-surface-store";
 import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
+import { buildDiscordActionComponents, parseDiscordActionCustomId } from "./discord-actions";
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
@@ -791,6 +793,32 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const useSmartSplitting = true;
 
+    if (content.actions && content.actions.length > 0) {
+      const channel = await client.channels.fetch(sessionRef.channelId).catch(() => null);
+      if (!channel || !("send" in channel)) {
+        throw new Error(`Discord channel not found: ${sessionRef.channelId}`);
+      }
+      const text = this.entityMapper?.rewriteOutgoingText(content.text ?? "") ?? content.text ?? "";
+      const message = await (
+        channel as TextBasedChannel & {
+          send(options: MessageCreateOptions): Promise<Message>;
+        }
+      ).send({
+        embeds: [new EmbedBuilder().setDescription(text || "*<empty_string>*")],
+        components: buildDiscordActionComponents(content.actions),
+        files: content.attachments?.map((attachment) => ({
+          attachment: Buffer.from(attachment.bytes),
+          name: attachment.filename,
+        })),
+        reply:
+          opts?.replyTo?.platform === "discord"
+            ? { messageReference: opts.replyTo.messageId }
+            : undefined,
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+      return asDiscordMsgRef(sessionRef.channelId, message.id);
+    }
+
     return await sendDiscordStyledMessage({
       client,
       sessionRef,
@@ -857,8 +885,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       content: msg.content,
     });
 
+    const components =
+      content.actions === undefined ? undefined : buildDiscordActionComponents(content.actions);
+
     if (editTarget === "content") {
-      await msg.edit({ content: rewritten });
+      await msg.edit({ content: rewritten, components });
       return;
     }
 
@@ -869,7 +900,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const embed = new EmbedBuilder(existingEmbed.toJSON());
     embed.setDescription(rewritten);
-    await msg.edit({ embeds: [embed] });
+    await msg.edit({ embeds: [embed], components });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {
@@ -1581,6 +1612,27 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
 
     if (!interaction.isButton()) return;
+
+    const actionId = parseDiscordActionCustomId(interaction.customId);
+    if (actionId) {
+      const channelId = interaction.channelId;
+      const messageId = interaction.message?.id;
+      const userId = interaction.user?.id;
+      if (!channelId || !messageId || !userId) {
+        await tryReplyEphemeral(interaction, "Unable to authenticate this workflow action.");
+        return;
+      }
+      this.emit({
+        type: "adapter.action.invoked",
+        platform: "discord",
+        ts: Date.now(),
+        actionId,
+        userId,
+        messageRef: { platform: "discord", channelId, messageId },
+      });
+      await tryReplyEphemeral(interaction, "Workflow action received.");
+      return;
+    }
 
     const parsed = parseCancelCustomId(interaction.customId);
     if (!parsed) return;

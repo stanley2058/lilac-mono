@@ -101,6 +101,32 @@ const customCommandRawSchema = z
   })
   .passthrough();
 
+const workflowPolicyRawSchema = z
+  .object({
+    workflow: z
+      .strictObject({
+        runId: z.string().min(1).max(200),
+        operationId: z.string().min(1).max(200),
+        profile: z.enum(SUBAGENT_PROFILES),
+        safetyMode: z.literal("trusted"),
+        editing: z.boolean(),
+        externalTools: z.boolean(),
+        cwd: z.string().min(1).max(4_096),
+        subagents: z.boolean().default(false),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+export type WorkflowRequestPolicy = NonNullable<
+  z.infer<typeof workflowPolicyRawSchema>["workflow"]
+>;
+
+export function parseWorkflowPolicyFromRaw(raw: unknown): WorkflowRequestPolicy | null {
+  const parsed = workflowPolicyRawSchema.safeParse(raw);
+  return parsed.success ? (parsed.data.workflow ?? null) : null;
+}
+
 function parseRouterRaw(raw: unknown): z.infer<typeof routerRawSchema> | null {
   const parsed = routerRawSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;

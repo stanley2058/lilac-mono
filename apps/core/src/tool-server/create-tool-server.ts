@@ -94,6 +94,21 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
   };
 }
 
+function authenticateRequestContext(
+  context: RequestContext,
+  cache: ToolServerOptions["requestMessageCache"],
+): readonly unknown[] | undefined {
+  if (!context.requestId) return undefined;
+  const messages = cache?.get(context.requestId);
+  const origin = cache?.getOrigin?.(context.requestId);
+  context.serverOwnedRequest =
+    messages !== undefined &&
+    origin !== undefined &&
+    origin.sessionId === context.sessionId &&
+    origin.platform === context.requestClient;
+  return messages;
+}
+
 type SafetyMode = "trusted" | "restricted";
 
 const RESTRICTED_LEVEL2_ALLOWED = new Set([
@@ -169,6 +184,7 @@ export type ToolServerOptions = {
   /** Optional cache to provide request-scoped messages to tools. */
   requestMessageCache?: {
     get(requestId: string): readonly unknown[] | undefined;
+    getOrigin?(requestId: string): { sessionId: string; platform: string } | undefined;
   };
 };
 
@@ -265,7 +281,7 @@ export function createToolServer(options: ToolServerOptions) {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return "trusted";
+      return "restricted";
     }
   }
 
@@ -285,8 +301,9 @@ export function createToolServer(options: ToolServerOptions) {
         s
           .filter(
             (entry) =>
-              safetyMode !== "restricted" ||
-              isRestrictedCallableAllowed({ callableId: entry.callableId, ctx }),
+              (!entry.callableId.startsWith("workflow.") || ctx.serverOwnedRequest === true) &&
+              (safetyMode !== "restricted" ||
+                isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })),
           )
           .map((entry: Awaited<ReturnType<ServerTool["list"]>>[number]) => ({
             callableId: entry.callableId,
@@ -358,7 +375,9 @@ export function createToolServer(options: ToolServerOptions) {
     "/list",
     async ({ headers }) => {
       await ensureFreshToolMapping();
-      return await listToolsForContext(parseRequestContext(headers));
+      const context = parseRequestContext(headers);
+      authenticateRequestContext(context, options.requestMessageCache);
+      return await listToolsForContext(context);
     },
     {
       response: BridgeListResponse,
@@ -379,10 +398,12 @@ export function createToolServer(options: ToolServerOptions) {
   app.get("/help/:callableId", async ({ params, headers }) => {
     await ensureFreshToolMapping();
     const ctx = parseRequestContext(headers);
+    authenticateRequestContext(ctx, options.requestMessageCache);
     const safetyMode = await resolveSafetyMode(ctx);
     if (
-      safetyMode === "restricted" &&
-      !isRestrictedCallableAllowed({ callableId: params.callableId, ctx })
+      (params.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) ||
+      (safetyMode === "restricted" &&
+        !isRestrictedCallableAllowed({ callableId: params.callableId, ctx }))
     ) {
       throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
     }
@@ -411,8 +432,15 @@ export function createToolServer(options: ToolServerOptions) {
       }
 
       const ctx = parseRequestContext(headers);
+      const messages = authenticateRequestContext(ctx, options.requestMessageCache);
       const safetyMode = await resolveSafetyMode(ctx);
       ctx.safetyMode = safetyMode;
+      if (body.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' requires a server-owned active request context`,
+        };
+      }
       if (
         safetyMode === "restricted" &&
         !isRestrictedCallableAllowed({ callableId: body.callableId, input: body.input, ctx })
@@ -446,14 +474,12 @@ export function createToolServer(options: ToolServerOptions) {
 
       logger.debug("tool call input", {
         callableId: body.callableId,
-        input: safeJsonPreview(body.input),
+        input: safeJsonPreview(
+          body.callableId.startsWith("workflow.") ? "<redacted workflow input>" : body.input,
+        ),
       });
 
       try {
-        const messages = ctx.requestId
-          ? options.requestMessageCache?.get(ctx.requestId)
-          : undefined;
-
         if (!ctx.requestId || !ctx.sessionId || !ctx.requestClient) {
           logger.warn("tool.call.context_missing", {
             callableId: body.callableId,

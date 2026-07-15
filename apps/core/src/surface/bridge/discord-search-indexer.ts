@@ -62,6 +62,9 @@ export async function startDiscordSearchIndexer(params: {
       case "adapter.command.invoked": {
         return;
       }
+      case "adapter.action.invoked": {
+        return;
+      }
       default: {
         const _exhaustive: never = evt;
         return _exhaustive;

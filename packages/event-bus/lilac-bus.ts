@@ -78,20 +78,19 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
       [lilacEventTypes.EvtAdapterMessageDeleted]: "evt.adapter",
       [lilacEventTypes.EvtAdapterReactionAdded]: "evt.adapter",
       [lilacEventTypes.EvtAdapterReactionRemoved]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterActionInvoked]: "evt.adapter",
 
       [lilacEventTypes.EvtRequestLifecycleChanged]: "evt.request",
       [lilacEventTypes.EvtRequestReply]: "evt.request",
 
       [lilacEventTypes.EvtSurfaceOutputMessageCreated]: "evt.surface",
 
-      [lilacEventTypes.CmdWorkflowTaskCreate]: "cmd.workflow",
-      [lilacEventTypes.CmdWorkflowCreate]: "cmd.workflow",
-      [lilacEventTypes.CmdWorkflowCancel]: "cmd.workflow",
-
-      [lilacEventTypes.EvtWorkflowTaskResolved]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowTaskLifecycleChanged]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowResolved]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowLifecycleChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowRunChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowOperationChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowApprovalChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowProgressRequested]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowUsageChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowResultReady]: "evt.workflow",
 
       [lilacEventTypes.CmdAgentCreate]: "cmd.agent",
     } as const satisfies Record<string, string>
@@ -156,14 +155,21 @@ function getKeyForType<TType extends LilacEventType>(
       return (data as { channelId: string; messageId: string }).messageId;
     }
 
-    case lilacEventTypes.CmdWorkflowTaskCreate:
-    case lilacEventTypes.EvtWorkflowTaskResolved:
-    case lilacEventTypes.EvtWorkflowTaskLifecycleChanged:
-    case lilacEventTypes.CmdWorkflowCreate:
-    case lilacEventTypes.EvtWorkflowResolved:
-    case lilacEventTypes.CmdWorkflowCancel:
-    case lilacEventTypes.EvtWorkflowLifecycleChanged: {
-      return (data as { workflowId: string }).workflowId;
+    case lilacEventTypes.EvtAdapterActionInvoked: {
+      return (data as { actionId: string }).actionId;
+    }
+
+    case lilacEventTypes.EvtWorkflowRunChanged:
+    case lilacEventTypes.EvtWorkflowOperationChanged:
+    case lilacEventTypes.EvtWorkflowProgressRequested:
+    case lilacEventTypes.EvtWorkflowUsageChanged:
+    case lilacEventTypes.EvtWorkflowResultReady: {
+      return (data as { runId: string }).runId;
+    }
+
+    case lilacEventTypes.EvtWorkflowApprovalChanged: {
+      const approval = data as { revisionId: string; runId?: string };
+      return approval.runId ?? approval.revisionId;
     }
 
     case lilacEventTypes.CmdAgentCreate: {

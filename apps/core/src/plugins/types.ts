@@ -11,20 +11,24 @@ import type { DiscoveryService } from "../discovery/discovery-service";
 import type { ConversationThreadToolService } from "../conversation/thread-service";
 import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { TranscriptStore } from "../transcript/transcript-store";
-import type { WorkflowStore } from "../workflow/workflow-store";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
+import type { DurableWorkflowStore } from "../workflow/durable-workflow-store";
+import type { WorkflowProgressCardService } from "../workflow/workflow-progress-projector";
+import type { WorkflowReviewerResolver } from "../workflow/workflow-reviewer";
 
 export type CoreToolPluginRuntime = {
   bus?: LilacBus;
   adapter?: SurfaceAdapter;
   config?: CoreConfig;
   getConfig?: () => Promise<CoreConfig>;
-  workflowStore?: WorkflowStore;
   discovery?: DiscoveryService;
   conversationThreads?: ConversationThreadToolService;
   discordSearch?: DiscordSearchService;
   transcriptStore?: TranscriptStore;
   toolResultArtifacts?: ToolResultArtifactStore;
+  durableWorkflowStore?: DurableWorkflowStore;
+  workflowProgressCards?: WorkflowProgressCardService;
+  workflowReviewerResolver?: WorkflowReviewerResolver;
 };
 
 const BOUNDED_BUILTIN_OUTPUT = Symbol("bounded-builtin-output");

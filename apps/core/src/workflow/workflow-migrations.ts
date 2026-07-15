@@ -1,0 +1,308 @@
+import type { Database } from "bun:sqlite";
+
+export const WORKFLOW_SCHEMA_VERSION = 3;
+
+type WorkflowMigration = {
+  version: number;
+  name: string;
+  statements: readonly string[];
+};
+
+const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
+  {
+    version: 1,
+    name: "initial durable workflow schema",
+    statements: [
+      `CREATE TABLE workflow_revisions (
+        revision_id TEXT PRIMARY KEY,
+        canonical_project_id TEXT NOT NULL,
+        canonical_workspace_root TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('project', 'personal')),
+        normalized_path TEXT NOT NULL,
+        name TEXT NOT NULL,
+        snapshot_artifact_id TEXT NOT NULL,
+        source_sha256 TEXT NOT NULL,
+        input_schema_sha256 TEXT NOT NULL,
+        capability_sha256 TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        input_schema_json TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        limits_json TEXT NOT NULL,
+        runtime_version TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE (
+          canonical_project_id, canonical_workspace_root, scope, normalized_path,
+          source_sha256, input_schema_sha256, capability_sha256, runtime_version
+        )
+      )`,
+      `CREATE TABLE workflow_approvals (
+        approval_id TEXT PRIMARY KEY,
+        revision_id TEXT NOT NULL REFERENCES workflow_revisions(revision_id),
+        state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'revoked', 'expired')),
+        expected_reviewer_platform TEXT,
+        expected_reviewer_user_id TEXT,
+        first_run_id TEXT NOT NULL,
+        decision_actor_platform TEXT,
+        decision_actor_user_id TEXT,
+        decision_source TEXT,
+        expires_at INTEGER,
+        decided_at INTEGER,
+        revoked_at INTEGER,
+        revocation_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX idx_workflow_approvals_active_revision
+        ON workflow_approvals(revision_id)
+        WHERE state IN ('pending', 'approved')`,
+      `CREATE INDEX idx_workflow_approvals_revision_state
+        ON workflow_approvals(revision_id, state, updated_at DESC)`,
+      `CREATE TABLE workflow_runs (
+        run_id TEXT PRIMARY KEY,
+        revision_id TEXT NOT NULL REFERENCES workflow_revisions(revision_id),
+        approval_id TEXT REFERENCES workflow_approvals(approval_id),
+        state TEXT NOT NULL CHECK (state IN (
+          'awaiting_review', 'queued', 'running', 'blocked', 'paused',
+          'succeeded', 'failed', 'rejected', 'cancelled'
+        )),
+        input_schema_json TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        args_sha256 TEXT NOT NULL,
+        origin_request_id TEXT,
+        origin_session_id TEXT,
+        origin_client TEXT,
+        origin_user_id TEXT,
+        origin_safety_mode TEXT NOT NULL,
+        origin_project_cwd TEXT NOT NULL,
+        completion_target_json TEXT NOT NULL,
+        progress_target_json TEXT,
+        terminal_detail TEXT,
+        result_json TEXT,
+        result_artifact_id TEXT,
+        claimed_by TEXT,
+        claimed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        terminal_at INTEGER
+      )`,
+      `CREATE INDEX idx_workflow_runs_state_updated
+        ON workflow_runs(state, updated_at, run_id)`,
+      `CREATE INDEX idx_workflow_runs_revision_created
+        ON workflow_runs(revision_id, created_at DESC)`,
+      `CREATE INDEX idx_workflow_runs_approval_state
+        ON workflow_runs(approval_id, state)`,
+      `CREATE INDEX idx_workflow_runs_origin_session
+        ON workflow_runs(origin_client, origin_session_id, created_at DESC)`,
+      `CREATE TABLE workflow_operations (
+        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL,
+        call_site_id TEXT NOT NULL,
+        parent_operation_id TEXT,
+        phase TEXT,
+        label TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('agent', 'parallel', 'pipeline', 'phase', 'wait')),
+        input_json TEXT NOT NULL,
+        input_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN (
+          'queued', 'dispatched', 'running', 'blocked', 'succeeded',
+          'failed', 'cancelled', 'timed_out'
+        )),
+        attempt INTEGER NOT NULL,
+        request_id TEXT,
+        output_json TEXT,
+        result_artifact_id TEXT,
+        error TEXT,
+        usage_json TEXT,
+        claimed_by TEXT,
+        claimed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        terminal_at INTEGER,
+        PRIMARY KEY (run_id, operation_id),
+        UNIQUE (run_id, call_site_id, operation_id)
+      )`,
+      `CREATE INDEX idx_workflow_operations_run_state
+        ON workflow_operations(run_id, state, created_at)`,
+      `CREATE INDEX idx_workflow_operations_claim
+        ON workflow_operations(state, claimed_at, updated_at)`,
+      `CREATE UNIQUE INDEX idx_workflow_operations_request
+        ON workflow_operations(request_id) WHERE request_id IS NOT NULL`,
+      `CREATE TABLE workflow_waits (
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'claimed', 'resolved', 'expired', 'cancelled')),
+        match_kind TEXT NOT NULL CHECK (match_kind IN ('reply', 'sleep')),
+        match_key TEXT NOT NULL,
+        match_json TEXT NOT NULL,
+        due_at INTEGER,
+        deadline_at INTEGER,
+        resolver_cursor TEXT,
+        result_json TEXT,
+        resolved_by TEXT,
+        claimed_by TEXT,
+        claimed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        PRIMARY KEY (run_id, operation_id),
+        FOREIGN KEY (run_id, operation_id)
+          REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX idx_workflow_waits_match
+        ON workflow_waits(match_kind, match_key, state)`,
+      `CREATE INDEX idx_workflow_waits_due
+        ON workflow_waits(state, due_at, deadline_at)`,
+      `CREATE TABLE workflow_triggers (
+        trigger_id TEXT PRIMARY KEY,
+        revision_id TEXT NOT NULL REFERENCES workflow_revisions(revision_id),
+        state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'completed', 'cancelled')),
+        kind TEXT NOT NULL CHECK (kind IN ('immediate', 'timestamp', 'cron', 'reply')),
+        definition_json TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        args_sha256 TEXT NOT NULL,
+        scheduling_policy_json TEXT NOT NULL,
+        progress_target_json TEXT,
+        next_fire_at INTEGER,
+        last_fire_at INTEGER,
+        last_run_id TEXT REFERENCES workflow_runs(run_id),
+        claimed_by TEXT,
+        claimed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_triggers_due
+        ON workflow_triggers(state, next_fire_at, claimed_at)`,
+      `CREATE INDEX idx_workflow_triggers_revision
+        ON workflow_triggers(revision_id, state)`,
+      `CREATE TABLE workflow_surface_bindings (
+        run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        target_json TEXT NOT NULL,
+        message_ref_json TEXT,
+        last_rendered_sha256 TEXT,
+        last_error TEXT,
+        retry_count INTEGER NOT NULL,
+        next_attempt_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_surface_bindings_retry
+        ON workflow_surface_bindings(next_attempt_at)
+        WHERE next_attempt_at IS NOT NULL`,
+      `CREATE TABLE workflow_surface_actions (
+        action_id TEXT PRIMARY KEY,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        approval_id TEXT REFERENCES workflow_approvals(approval_id),
+        kind TEXT NOT NULL CHECK (kind IN ('approve', 'reject', 'pause', 'resume', 'cancel')),
+        expected_platform TEXT NOT NULL,
+        expected_user_id TEXT NOT NULL,
+        expected_message_ref_json TEXT,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER,
+        consumed_by_platform TEXT,
+        consumed_by_user_id TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_surface_actions_run_active
+        ON workflow_surface_actions(run_id, expires_at)
+        WHERE consumed_at IS NULL`,
+    ],
+  },
+  {
+    version: 2,
+    name: "durable waits and trigger invocation context",
+    statements: [
+      `ALTER TABLE workflow_triggers ADD COLUMN origin_json TEXT`,
+      `ALTER TABLE workflow_triggers ADD COLUMN completion_target_json TEXT`,
+      `CREATE TABLE workflow_adapter_event_suppressions (
+        platform TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (platform, channel_id, message_id)
+      )`,
+      `CREATE INDEX idx_workflow_adapter_event_suppressions_expiry
+        ON workflow_adapter_event_suppressions(expires_at)`,
+    ],
+  },
+  {
+    version: 3,
+    name: "durable live-parent completion delivery",
+    statements: [
+      `CREATE TABLE workflow_completion_deliveries (
+        run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        parent_request_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'fallback')),
+        delivered_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_completion_deliveries_parent_state
+        ON workflow_completion_deliveries(parent_request_id, state, created_at, run_id)`,
+      `CREATE TRIGGER workflow_completion_delivery_after_run_insert
+        AFTER INSERT ON workflow_runs
+        WHEN json_extract(NEW.completion_target_json, '$.kind') = 'live_parent'
+        BEGIN
+          INSERT INTO workflow_completion_deliveries (
+            run_id, parent_request_id, state, delivered_at, created_at, updated_at
+          ) VALUES (
+            NEW.run_id,
+            json_extract(NEW.completion_target_json, '$.parentRequestId'),
+            'pending',
+            NULL,
+            NEW.created_at,
+            NEW.created_at
+          );
+        END`,
+    ],
+  },
+];
+
+export function applyWorkflowSchemaMigrations(db: Database, now: () => number = Date.now): void {
+  db.run(`CREATE TABLE IF NOT EXISTS workflow_schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at INTEGER NOT NULL
+  )`);
+
+  const applied = new Map(
+    db
+      .query<{ version: number; name: string }, []>(
+        "SELECT version, name FROM workflow_schema_migrations ORDER BY version",
+      )
+      .all()
+      .map((row) => [row.version, row.name]),
+  );
+  const knownVersions = new Set(WORKFLOW_MIGRATIONS.map((migration) => migration.version));
+  for (const version of applied.keys()) {
+    if (!knownVersions.has(version)) {
+      throw new Error(`Workflow database migration ${version} is newer than this runtime`);
+    }
+  }
+
+  for (const migration of WORKFLOW_MIGRATIONS) {
+    const appliedName = applied.get(migration.version);
+    if (appliedName !== undefined) {
+      if (appliedName !== migration.name) {
+        throw new Error(
+          `Workflow migration ${migration.version} name mismatch: expected ${migration.name}, found ${appliedName}`,
+        );
+      }
+      continue;
+    }
+
+    const migrate = db.transaction(() => {
+      for (const statement of migration.statements) db.run(statement);
+      db.run(
+        "INSERT INTO workflow_schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        [migration.version, migration.name, now()],
+      );
+    });
+    migrate.immediate();
+  }
+}

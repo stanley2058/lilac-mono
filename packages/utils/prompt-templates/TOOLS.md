@@ -85,21 +85,7 @@ cat payload.json | tools <tool> --stdin
 - `surface.reactions.listDetailed` — List reactions for a message with per-user details.
 - `surface.reactions.add` — Add a reaction to a message.
 - `surface.reactions.remove` — Remove a reaction from a message.
-- `workflow.wait_for_reply.create` — Create a wait_for_reply workflow that resumes later (tasks wait for strict replies to a messageId in sessionId).
-- `workflow.wait_for_reply.send_and_wait` — Send a message and create a wait_for_reply task waiting for a reply to that message.
-- `workflow.schedule` — Create a scheduled workflow trigger (wait_until / wait_for / cron).
-- `workflow.cancel` — Cancel a workflow and its pending tasks.
-- `workflow.list` — List workflows from the local workflow store (scheduled only).
-
-### Instructions on workflow
-
-Workflow tools are designed to be used in conjunction with the `surface` tool. Imagine this workflow:
-
-1. User A asked you to DM another user B
-2. You sent a message to B via `surface.messages.send` and gets back a messageId
-3. You create a workflow task that waits for a reply to that messageId via `workflow.wait_for_reply.create`
-4. The workflow service will resume you with the context you set when you created the task after a reply is received from B
-   (In the above example, 2 and 3 can be simplified with `workflow.wait_for_reply.send_and_wait`)
+- Programmatic workflows are Level-2 APIs documented by the progressively loaded `workflow-authoring` skill. Load that skill before authoring, scheduling, or inspecting workflows.
 
 ### Surface tool notes
 
