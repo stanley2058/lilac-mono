@@ -6,6 +6,8 @@ import { deriveApiBaseUrl, readGithubAppPrivateKeyPem, readGithubAppSecret } fro
 import {
   getGithubUserLoginOrNull as getGithubUserLoginFromAuth,
   getGithubViewerLoginOrNull as getGithubViewerLoginByTokenOrNull,
+  getGithubViewerLoginOrThrow,
+  getGithubUserAuthOrNull,
   getPreferredGithubAuthOrNull,
   getPreferredGithubAuthOrThrow,
 } from "./github-auth";
@@ -357,20 +359,21 @@ export type GithubAuthoritativeActor =
   | { source: "app"; appId: number }
   | { source: "user"; login: string };
 
-export async function getPreferredGithubAuthoritativeActorOrNull(): Promise<GithubAuthoritativeActor | null> {
-  const auth = await getPreferredGithubAuthOrNull({ dataDir: env.dataDir });
-  if (!auth) return null;
-  if (auth.source === "user") {
+export async function getPreferredGithubAuthoritativeActorOrNull(
+  params: { dataDir: string } = { dataDir: env.dataDir },
+): Promise<GithubAuthoritativeActor | null> {
+  const user = await getGithubUserAuthOrNull(params);
+  if (user) {
     const login =
-      auth.login ??
-      (await getGithubViewerLoginByTokenOrNull({
-        apiBaseUrl: auth.apiBaseUrl,
-        token: auth.token,
+      user.login ??
+      (await getGithubViewerLoginOrThrow({
+        apiBaseUrl: user.apiBaseUrl,
+        token: user.token,
       }));
-    return login ? { source: "user", login: login.toLowerCase() } : null;
+    return { source: "user", login: login.toLowerCase() };
   }
-  const appId = await getConfiguredGithubAppIdOrNull();
-  return appId === null ? null : { source: "app", appId };
+  const app = await readGithubAppSecret(params.dataDir);
+  return app ? { source: "app", appId: app.appId } : null;
 }
 
 export async function getPreferredGithubActorLoginOrNull(): Promise<string | null> {

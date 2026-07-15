@@ -47,6 +47,8 @@ import { sha256 } from "./workflow-definition";
 
 const PAUSED_CANCELLATION_AMBIGUITY_DETAIL =
   "Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run";
+const TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL =
+  "Manual reconciliation required: terminal request lifecycle could not be reconciled with its exact durable receipt; cancel this run and create a new run";
 
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
@@ -1656,6 +1658,47 @@ export class DurableWorkflowStore {
         [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, input.now, input.runId, input.runOwnerId],
       );
       return true;
+    });
+    return block.immediate();
+  }
+
+  blockAmbiguousTerminalLifecycleOperation(input: {
+    runId: string;
+    operationId: string;
+    requestId: string;
+    runOwnerId: string;
+    now: number;
+  }): boolean {
+    const block = this.db.transaction(() => {
+      const changed = this.db
+        .query(
+          `UPDATE workflow_operations SET state = 'blocked', error = ?,
+           claimed_by = NULL, claimed_at = NULL, updated_at = ?
+           WHERE run_id = ? AND operation_id = ? AND request_id = ?
+             AND state IN ('queued', 'dispatched', 'running', 'blocked')
+             AND EXISTS (
+               SELECT 1 FROM workflow_runs run
+               WHERE run.run_id = workflow_operations.run_id
+                 AND run.state = 'running' AND run.claimed_by = ?
+             )`,
+        )
+        .run(
+          TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL,
+          input.now,
+          input.runId,
+          input.operationId,
+          input.requestId,
+          input.runOwnerId,
+        );
+      if (changed.changes !== 1) return false;
+      const paused = this.db
+        .query(
+          `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
+           claimed_at = NULL, updated_at = ?
+           WHERE run_id = ? AND state = 'running' AND claimed_by = ?`,
+        )
+        .run(TERMINAL_LIFECYCLE_AMBIGUITY_DETAIL, input.now, input.runId, input.runOwnerId);
+      return paused.changes === 1;
     });
     return block.immediate();
   }

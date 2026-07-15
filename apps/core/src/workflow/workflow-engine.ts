@@ -87,8 +87,10 @@ type AgentRequestResult = {
   output: string;
   detail: string | null;
   usage: WorkflowUsage | null;
-  source?: "receipt";
+  source?: "receipt" | "terminal_receipt" | "terminal_without_receipt";
 };
+
+const TERMINAL_RECEIPT_WAIT_MS = 250;
 
 type ActiveRun = {
   controller: AbortController;
@@ -151,6 +153,7 @@ export class WorkflowEngine {
       subscriptionId: string;
       now?: () => number;
       pollMs?: number;
+      receiptPollMs?: number;
       assertSandbox?: () => Promise<void>;
       startSandbox?: typeof startWorkflowSandbox;
       loadSnapshot?: (revision: WorkflowRevision) => Promise<string>;
@@ -810,7 +813,7 @@ export class WorkflowEngine {
         ? run.completionTarget.childSessionId
         : `workflow:${run.runId}:${operation.operationId}`;
     let adoptedTerminalReceipt = false;
-    let ambiguousCancelledReceipt = false;
+    let ambiguousTerminalResult = false;
     const adoptReceipt = async (
       receipt: WorkflowRequestTerminalReceipt,
     ): Promise<AgentRequestResult> => {
@@ -922,8 +925,21 @@ export class WorkflowEngine {
             ? await this.input.dispatchAgentRequest(request)
             : await this.waitForAgentRequest(request);
         }
-        adoptedTerminalReceipt ||= result.source === "receipt";
+        adoptedTerminalReceipt ||=
+          result.source === "receipt" || result.source === "terminal_receipt";
         if (
+          result.source === "terminal_without_receipt" ||
+          (result.source === "terminal_receipt" && result.state === "cancelled")
+        ) {
+          ambiguousTerminalResult = true;
+          this.input.store.blockAmbiguousTerminalLifecycleOperation({
+            runId: run.runId,
+            operationId: operation.operationId,
+            requestId: reqId,
+            runOwnerId: this.workerId,
+            now: this.now(),
+          });
+        } else if (
           adoptedTerminalReceipt &&
           result.state === "cancelled" &&
           this.input.store.blockAmbiguousPausedCancelledOperation({
@@ -934,21 +950,21 @@ export class WorkflowEngine {
             now: this.now(),
           })
         ) {
-          ambiguousCancelledReceipt = true;
+          ambiguousTerminalResult = true;
         }
       } finally {
         if (
           revision.capabilities.agents.editing &&
           revision.capabilities.agents.isolation === "worktree" &&
           !signal.aborted &&
-          !ambiguousCancelledReceipt
+          !ambiguousTerminalResult
         ) {
           await (this.input.removeWorktree ?? this.removeWorktree.bind(this))(revision, agentCwd);
         }
       }
     }
     if (
-      ambiguousCancelledReceipt ||
+      ambiguousTerminalResult ||
       (adoptedTerminalReceipt &&
         result.state === "cancelled" &&
         this.input.store.blockAmbiguousPausedCancelledOperation({
@@ -960,7 +976,7 @@ export class WorkflowEngine {
         }))
     ) {
       throw new Error(
-        "Paused workflow request has an ambiguous cancelled receipt and requires manual reconciliation",
+        "Workflow terminal lifecycle is ambiguous and requires manual reconciliation",
       );
     }
     let latest = this.input.store.getOperation(run.runId, operation.operationId);
@@ -1128,15 +1144,41 @@ export class WorkflowEngine {
       if (state === "resolved" && lifecycle === "resolved" && !output) return;
       finishResult({ state, output, detail, usage });
     };
+    const readExactReceipt = (): WorkflowRequestTerminalReceipt | null => {
+      const receipt = this.input.store.getWorkflowRequestTerminalReceipt(input.requestId);
+      if (!receipt) return null;
+      if (
+        receipt.requestId !== input.requestId ||
+        receipt.runId !== input.run.runId ||
+        receipt.operationId !== input.operation.operationId ||
+        receipt.dispatchEpoch !== input.dispatchEpoch
+      ) {
+        throw new Error("Terminal lifecycle receipt does not match its exact workflow dispatch");
+      }
+      return receipt;
+    };
+    const adoptReceipt = async (
+      receipt: WorkflowRequestTerminalReceipt,
+      source: "receipt" | "terminal_receipt",
+    ): Promise<void> => {
+      const adopted = await this.adoptTerminalReceipt(receipt, input.revision);
+      finishResult({ ...adopted, source });
+    };
     const pollReceipt = async (): Promise<void> => {
       if (settled || readingReceipt || this.stopping) return;
-      const receipt = this.input.store.getWorkflowRequestTerminalReceipt(input.requestId);
-      if (!receipt || receipt.dispatchEpoch !== input.dispatchEpoch) return;
       readingReceipt = true;
       try {
-        finishResult(await this.adoptTerminalReceipt(receipt, input.revision));
+        const receipt = readExactReceipt();
+        if (!receipt) return;
+        await adoptReceipt(receipt, "receipt");
       } catch (error) {
-        finishResult({ state: "failed", output: "", detail: boundedError(error), usage: null });
+        finishResult({
+          state: "failed",
+          output: "",
+          detail: boundedError(error),
+          usage: null,
+          source: "terminal_without_receipt",
+        });
       } finally {
         readingReceipt = false;
       }
@@ -1146,7 +1188,7 @@ export class WorkflowEngine {
       receiptTimer = setTimeout(async () => {
         await pollReceipt();
         scheduleReceiptPoll();
-      }, 25);
+      }, this.input.receiptPollMs ?? 25);
       receiptTimer.unref?.();
     };
     const armIdle = (): void => {
@@ -1175,7 +1217,6 @@ export class WorkflowEngine {
       if (message.type === lilacEventTypes.EvtAgentOutputResponseText) {
         output = message.data.finalText;
         usage = message.data.usage ?? null;
-        if (lifecycle === "resolved") finish("resolved");
       }
     };
     const handleLifecycleMessage = async (
@@ -1203,9 +1244,50 @@ export class WorkflowEngine {
         });
         await this.publishOperation(input.revision, input.operation, "running", "dispatched");
       }
-      if (message.data.state === "resolved") finish("resolved");
-      if (message.data.state === "failed") finish("failed");
-      if (message.data.state === "cancelled") finish("cancelled");
+      const terminalState = message.data.state;
+      if (
+        terminalState !== "resolved" &&
+        terminalState !== "failed" &&
+        terminalState !== "cancelled"
+      ) {
+        return;
+      }
+
+      readingReceipt = true;
+      try {
+        const deadline = Date.now() + TERMINAL_RECEIPT_WAIT_MS;
+        while (!settled && !this.stopping) {
+          const receipt = readExactReceipt();
+          if (receipt) {
+            if (receipt.state !== terminalState) {
+              throw new Error(
+                `Terminal lifecycle state ${terminalState} does not match durable receipt state ${receipt.state}`,
+              );
+            }
+            await adoptReceipt(receipt, "terminal_receipt");
+            return;
+          }
+          if (Date.now() >= deadline) break;
+          await Bun.sleep(10);
+        }
+        finishResult({
+          state: terminalState,
+          output: "",
+          detail: detail ?? "Terminal lifecycle arrived without its exact durable receipt",
+          usage,
+          source: "terminal_without_receipt",
+        });
+      } catch (error) {
+        finishResult({
+          state: terminalState,
+          output: "",
+          detail: boundedError(error),
+          usage,
+          source: "terminal_without_receipt",
+        });
+      } finally {
+        readingReceipt = false;
+      }
     };
     const outSub = await this.input.bus.subscribeTopic(
       outReqTopic(input.requestId),

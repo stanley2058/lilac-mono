@@ -40,6 +40,20 @@ class HandoffInterceptStore extends DurableWorkflowStore {
   }
 }
 
+class TerminalReceiptReadStore extends DurableWorkflowStore {
+  onMissingTerminalReceipt: (() => void) | null = null;
+
+  override getWorkflowRequestTerminalReceipt(requestId: string) {
+    const receipt = super.getWorkflowRequestTerminalReceipt(requestId);
+    if (!receipt) {
+      const observer = this.onMissingTerminalReceipt;
+      this.onMissingTerminalReceipt = null;
+      observer?.();
+    }
+    return receipt;
+  }
+}
+
 class CapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
   readonly history: Message<unknown>[] = [];
@@ -66,6 +80,49 @@ class CapturingRawBus implements RawBus {
     return this.history.filter((message) => message.topic === topic).at(-1)?.id ?? null;
   }
   async close() {}
+}
+
+class LiveCapturingRawBus implements RawBus {
+  readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
+  private sequence = 0;
+  private readonly subscriptions = new Set<{
+    topic: string;
+    handler: (message: Message<unknown>, context: HandleContext) => Promise<void>;
+  }>();
+
+  async publish<TData>(message: Omit<Message<TData>, "id" | "ts">, options: PublishOptions) {
+    this.messages.push(message);
+    const id = `${++this.sequence}-0`;
+    const stored: Message<TData> = { ...message, id, ts: Date.now(), topic: options.topic };
+    for (const subscription of this.subscriptions) {
+      if (subscription.topic === options.topic) {
+        await subscription.handler(stored, { cursor: id, commit: async () => {} });
+      }
+    }
+    return { id, cursor: id };
+  }
+
+  async subscribe<TData>(
+    topic: string,
+    _options: SubscriptionOptions,
+    handler: (message: Message<TData>, context: HandleContext) => Promise<void>,
+  ) {
+    const subscription = {
+      topic,
+      handler: (message: Message<unknown>, context: HandleContext) =>
+        handler(message as Message<TData>, context),
+    };
+    this.subscriptions.add(subscription);
+    return { stop: async () => void this.subscriptions.delete(subscription) };
+  }
+
+  async fetch<TData>(_topic: string, _options: FetchOptions) {
+    return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
+  }
+
+  async close() {
+    this.subscriptions.clear();
+  }
 }
 
 function createApprovedRun(
@@ -190,7 +247,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowEngine", () => {
-  it("uses terminal request history as a barrier and never redispatches", async () => {
+  it("fails closed when terminal request history has no exact durable receipt", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-terminal-barrier-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const raw = new CapturingRawBus();
@@ -251,8 +308,13 @@ describe("WorkflowEngine", () => {
     });
     try {
       await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
-      expect(store.getRun("run-1")?.result).toBe("historical result");
+      await waitFor(() => store.getRun("run-1")?.state === "paused");
+      expect(store.getRun("run-1")?.terminalDetail).toContain("Manual reconciliation required");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "blocked",
+        requestId,
+        error: expect.stringContaining("Manual reconciliation required"),
+      });
       expect(
         raw.messages.some(
           (message) =>
@@ -983,8 +1045,8 @@ describe("WorkflowEngine", () => {
 
   it("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
     const dbPath = join(tmpdir(), `workflow-live-cancelled-handoff-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new CapturingRawBus();
+    const store = new TerminalReceiptReadStore(dbPath);
+    const raw = new LiveCapturingRawBus();
     const bus = createLilacBus(raw);
     createApprovedRun(
       store,
@@ -1009,6 +1071,10 @@ describe("WorkflowEngine", () => {
     let resolveLiveSelection: () => void = () => {};
     const liveSelection = new Promise<void>((resolve) => {
       resolveLiveSelection = resolve;
+    });
+    let resolveInitialReceiptMiss: () => void = () => {};
+    const initialReceiptMiss = new Promise<void>((resolve) => {
+      resolveInitialReceiptMiss = resolve;
     });
     const prepareWorktree = async () => {
       prepareCalls += 1;
@@ -1094,6 +1160,7 @@ describe("WorkflowEngine", () => {
       dataDir: "/unused",
       subscriptionId: "live-cancelled-replacement",
       pollMs: 5,
+      receiptPollMs: 10_000,
       now: () => 12,
       assertSandbox: async () => {},
       loadSnapshot: async () => "immutable",
@@ -1113,8 +1180,10 @@ describe("WorkflowEngine", () => {
         true,
       );
 
+      store.onMissingTerminalReceipt = resolveInitialReceiptMiss;
       await replacement.start();
       await liveSelection;
+      await initialReceiptMiss;
       if (!captured) throw new Error("Missing selected live dispatch");
       expect(
         store.recordWorkflowRequestTerminal({
@@ -1125,6 +1194,18 @@ describe("WorkflowEngine", () => {
           now: 13,
         }),
       ).toBe(true);
+      await bus.publish(
+        lilacEventTypes.EvtRequestLifecycleChanged,
+        { state: "cancelled", ts: 13, detail: "cancelled after side effect" },
+        {
+          headers: {
+            request_id: captured.requestId,
+            session_id: `workflow:${captured.runId}:${captured.operationId}`,
+            request_client: "unknown",
+            workflow_dispatch_epoch: captured.dispatchEpoch,
+          },
+        },
+      );
       await waitFor(() => store.getRun("run-1")?.state === "paused");
 
       expect(sideEffects).toBe(1);

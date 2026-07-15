@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { deriveApiBaseUrl, type GithubAppSecret, readGithubAppSecret } from "./github-app";
 import { getGithubInstallationTokenOrThrow } from "./github-app-token";
 import { readGithubUserTokenSecret } from "./github-user-token";
@@ -13,23 +15,18 @@ export type GithubResolvedAuth = {
 const VIEWER_LOGIN_TTL_MS = 5 * 60 * 1000;
 
 const viewerLoginCache = new Map<string, { login: string; expiresAtMs: number }>();
-const viewerLoginPending = new Map<string, Promise<string | null>>();
+const viewerLoginPending = new Map<string, Promise<string>>();
+const githubViewerSchema = z.object({ login: z.string().min(1) });
 
 function tokenCacheKey(input: { apiBaseUrl: string; token: string }): string {
   return `${input.apiBaseUrl}|${input.token}`;
 }
 
-function parseLoginFromUserResponse(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object") return null;
-  const login = (raw as Record<string, unknown>)["login"];
-  if (typeof login !== "string" || login.length === 0) return null;
-  return login;
-}
-
 async function fetchViewerLoginFromGithub(input: {
   apiBaseUrl: string;
   token: string;
-}): Promise<string | null> {
+}): Promise<string> {
+  const path = "/user";
   const res = await fetch(`${input.apiBaseUrl.replace(/\/$/u, "")}/user`, {
     headers: {
       "User-Agent": "lilac",
@@ -39,45 +36,54 @@ async function fetchViewerLoginFromGithub(input: {
     },
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `GitHub API error (${res.status} ${res.statusText}) at ${path}${body ? `: ${body}` : ""}`,
+    );
+  }
 
-  const body: unknown = await res.json().catch(() => null as unknown);
-  return parseLoginFromUserResponse(body);
+  const body: unknown = await res.json();
+  const parsed = githubViewerSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new Error("GitHub API returned an invalid authenticated user response at /user");
+  }
+  return parsed.data.login;
 }
 
-export async function getGithubViewerLoginOrNull(input: {
+export async function getGithubViewerLoginOrThrow(input: {
   apiBaseUrl: string;
   token: string;
-}): Promise<string | null> {
+}): Promise<string> {
   const key = tokenCacheKey(input);
   const now = Date.now();
   const cached = viewerLoginCache.get(key);
-  if (cached && cached.expiresAtMs > now) {
-    return cached.login;
-  }
+  if (cached && cached.expiresAtMs > now) return cached.login;
 
   const pending = viewerLoginPending.get(key);
-  if (pending) {
-    return await pending;
-  }
+  if (pending) return await pending;
 
   const request = (async () => {
-    const login = await fetchViewerLoginFromGithub(input).catch(() => null);
-    if (login) {
-      viewerLoginCache.set(key, {
-        login,
-        expiresAtMs: now + VIEWER_LOGIN_TTL_MS,
-      });
-    }
+    const login = await fetchViewerLoginFromGithub(input);
+    viewerLoginCache.set(key, {
+      login,
+      expiresAtMs: Date.now() + VIEWER_LOGIN_TTL_MS,
+    });
     return login;
   })();
-
   viewerLoginPending.set(key, request);
   try {
     return await request;
   } finally {
     viewerLoginPending.delete(key);
   }
+}
+
+export async function getGithubViewerLoginOrNull(input: {
+  apiBaseUrl: string;
+  token: string;
+}): Promise<string | null> {
+  return await getGithubViewerLoginOrThrow(input).catch(() => null);
 }
 
 function resolveApiBaseUrlFromSecret(input: { host?: string; apiBaseUrl?: string }): string {
@@ -123,12 +129,8 @@ export async function getGithubAppAuthOrNull(params: {
   const secret = await readGithubAppSecret(params.dataDir);
   if (!secret) return null;
 
-  try {
-    const token = await getGithubInstallationTokenOrThrow({ dataDir: params.dataDir });
-    return toAppAuth(secret, token.token);
-  } catch {
-    return null;
-  }
+  const token = await getGithubInstallationTokenOrThrow({ dataDir: params.dataDir });
+  return toAppAuth(secret, token.token);
 }
 
 export async function getPreferredGithubAuthOrNull(params: {

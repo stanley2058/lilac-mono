@@ -463,3 +463,30 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 14
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Terminal request lifecycle events no longer settle workflow operations directly from bus state. The engine synchronously loads and validates the exact request/run/operation/dispatch-epoch receipt, requires matching terminal state, and waits boundedly for cross-process visibility. Missing, mismatched, or cancelled lifecycle receipts enter an owner-fenced paused/blocked manual-reconciliation state before cleanup, preserving editing worktrees and preventing ambiguous terminalization or redispatch.
+2. GitHub authoritative actor resolution now has a strict credential tri-state. It returns `null` only when neither supported PAT nor App credentials are configured; configured PAT `/user` network, API, non-2xx, malformed-response, and secret-read failures propagate. Failed lookup promises are not cached, while configured Apps resolve directly from their persisted App ID and later PAT retries can recover the existing authenticated card without a duplicate send.
+
+### Regression Coverage
+
+- Added deterministic receipt-before-lifecycle coverage where the initial receipt poll misses, the receipt commits, and cancellation lifecycle publication wins before the next poll; the run pauses, the operation remains blocked with unchanged request/attempt, the editing worktree is preserved, and no prompt or second side effect is dispatched.
+- Added receiptless historical terminal-lifecycle coverage proving bounded fail-closed manual reconciliation instead of terminalization, and updated the integration runner fixture to commit its owner/epoch-fenced receipt before terminal lifecycle publication.
+- Added production PAT viewer tests for network, non-2xx, and invalid-response failures followed by successful uncached retry. Existing projector recovery coverage verifies that propagated transient authoritative-identity failure followed by success recovers the authenticated card with zero duplicate sends.
+- Full validation passed: core 1118 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

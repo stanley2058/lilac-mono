@@ -244,6 +244,25 @@ describe("unified workflow integration", () => {
         if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
           const requestId = message.headers?.request_id;
           if (!requestId) throw new Error("workflow request missing request_id");
+          const workflow = z
+            .object({
+              workflow: z.object({
+                runId: z.string(),
+                operationId: z.string(),
+                dispatchEpoch: z.string(),
+                capability: z.string(),
+              }),
+            })
+            .parse(message.data.raw).workflow;
+          expect(
+            store.claimWorkflowRequest({
+              requestId,
+              token: workflow.capability,
+              dispatchEpoch: workflow.dispatchEpoch,
+              ownerId: "integration-agent",
+              now: 100,
+            }),
+          ).toBe(true);
           requestIds.push(requestId);
           await bus.publish(
             lilacEventTypes.EvtRequestLifecycleChanged,
@@ -258,6 +277,19 @@ describe("unified workflow integration", () => {
             },
             { headers: message.headers },
           );
+          expect(
+            store.recordWorkflowRequestTerminal({
+              requestId,
+              runId: workflow.runId,
+              operationId: workflow.operationId,
+              dispatchEpoch: workflow.dispatchEpoch,
+              ownerId: "integration-agent",
+              state: "resolved",
+              output: "integration result",
+              usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11 },
+              now: 100,
+            }),
+          ).toBe(true);
           await bus.publish(
             lilacEventTypes.EvtRequestLifecycleChanged,
             { state: "resolved" },
