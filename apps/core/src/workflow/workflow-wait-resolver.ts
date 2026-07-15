@@ -15,6 +15,8 @@ export class WorkflowWaitResolver {
   private subscription: { stop(): Promise<void> } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
+  private readonly leaseStaleMs = 30_000;
+  private leaseOwned = false;
 
   constructor(
     private readonly input: {
@@ -27,28 +29,44 @@ export class WorkflowWaitResolver {
   ) {}
 
   async start(): Promise<void> {
-    this.subscription = await this.input.bus.subscribeTopic(
-      "evt.adapter",
-      {
-        mode: "fanout",
-        subscriptionId: this.input.subscriptionId,
-        consumerId: `${this.input.subscriptionId}:${process.pid}`,
-        offset: { type: "begin" },
-        batch: { maxWaitMs: 500 },
-      },
-      async (message, context) => {
-        if (message.type === lilacEventTypes.EvtAdapterMessageCreated) {
-          await this.resolveAdapterEvent(message.data, context.cursor);
-        }
-        this.input.store.advanceAdapterStreamWatermark({
-          topic: "evt.adapter",
-          cursor: context.cursor,
-          now: this.now(),
-        });
-        await context.commit();
-      },
-    );
-    await this.catchUpHistoricalReplies();
+    const now = this.now();
+    if (
+      !this.input.store.claimWorkflowWaitResolverLease({
+        ownerId: this.workerId,
+        now,
+        staleBefore: now - this.leaseStaleMs,
+      })
+    ) {
+      throw new Error("Another ordered workflow wait resolver owns the durable lease");
+    }
+    this.leaseOwned = true;
+    try {
+      this.subscription = await this.input.bus.subscribeTopic(
+        "evt.adapter",
+        {
+          mode: "tail",
+          offset: { type: "begin" },
+          batch: { maxWaitMs: 500 },
+        },
+        async (message, context) => {
+          if (!this.input.store.refreshWorkflowWaitResolverLease(this.workerId, this.now())) return;
+          if (message.type === lilacEventTypes.EvtAdapterMessageCreated) {
+            await this.resolveAdapterEvent(message.data, context.cursor);
+          } else if (message.type === lilacEventTypes.EvtWorkflowWaitResolverBarrier) {
+            this.input.store.markWaitExpiryBarrierProcessed(
+              message.data.barrierId,
+              context.cursor,
+              this.now(),
+            );
+          }
+          await context.commit();
+        },
+      );
+    } catch (error) {
+      this.input.store.releaseWorkflowWaitResolverLease(this.workerId);
+      this.leaseOwned = false;
+      throw error;
+    }
     this.timer = setInterval(() => void this.reconcileTimers(), this.input.pollMs ?? 250);
     this.timer.unref?.();
     await this.reconcileTimers();
@@ -59,33 +77,14 @@ export class WorkflowWaitResolver {
     this.timer = null;
     await this.subscription?.stop();
     this.subscription = null;
+    if (this.leaseOwned) {
+      this.input.store.releaseWorkflowWaitResolverLease(this.workerId);
+      this.leaseOwned = false;
+    }
   }
 
   private now(): number {
     return this.input.now?.() ?? Date.now();
-  }
-
-  private async catchUpHistoricalReplies(): Promise<void> {
-    let cursor: string | undefined;
-    while (true) {
-      const batch = await this.input.bus.fetchTopic("evt.adapter", {
-        offset: cursor ? { type: "cursor", cursor } : { type: "begin" },
-        limit: 1_000,
-      });
-      for (const entry of batch.messages) {
-        if (entry.msg.type === lilacEventTypes.EvtAdapterMessageCreated) {
-          await this.resolveAdapterEvent(entry.msg.data, entry.cursor);
-        }
-        this.input.store.advanceAdapterStreamWatermark({
-          topic: "evt.adapter",
-          cursor: entry.cursor,
-          now: this.now(),
-        });
-      }
-      const previous = cursor;
-      cursor = batch.next;
-      if (batch.messages.length < 1_000 || !cursor || cursor === previous) return;
-    }
   }
 
   async resolveAdapterEvent(event: EvtAdapterMessageCreatedData, cursor: string): Promise<void> {
@@ -114,17 +113,30 @@ export class WorkflowWaitResolver {
     this.polling = true;
     try {
       const now = this.now();
+      if (!this.input.store.refreshWorkflowWaitResolverLease(this.workerId, now)) return;
       const candidates = this.input.store.listDueWaits(now);
-      const currentAdapterCutoff = (await this.input.bus.getTopicWatermark("evt.adapter")) ?? "0-0";
       for (const candidate of candidates) {
         if (candidate.match.kind === "reply") {
-          const cutoff = this.input.store.captureWaitExpiryCutoff({
+          const barrier = this.input.store.prepareWaitExpiryBarrier({
             runId: candidate.runId,
             operationId: candidate.operationId,
-            cutoffCursor: currentAdapterCutoff,
+            barrierId: `wfbarrier:${crypto.randomUUID()}`,
             now,
+            retryBefore: now - 5_000,
           });
-          if (!cutoff || !this.input.store.hasAdapterStreamReached("evt.adapter", cutoff)) continue;
+          if (!barrier) continue;
+          if (barrier.shouldPublish) {
+            const published = await this.input.bus.publish(
+              lilacEventTypes.EvtWorkflowWaitResolverBarrier,
+              { barrierId: barrier.barrierId, ts: now },
+            );
+            this.input.store.recordWaitExpiryBarrierCursor(
+              barrier.barrierId,
+              published.cursor,
+              this.now(),
+            );
+          }
+          if (!barrier.processed) continue;
         }
         const runOwnerId = this.input.store.getRun(candidate.runId)?.claimedBy;
         if (!runOwnerId) continue;

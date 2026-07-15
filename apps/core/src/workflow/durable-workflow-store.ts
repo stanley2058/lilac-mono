@@ -52,20 +52,6 @@ function resolveWorkflowDbPath(): string {
 const nullableStringSchema = z.string().nullable();
 const nullableNumberSchema = z.number().nullable();
 
-function compareStreamCursors(left: string, right: string): number {
-  const cursorSchema = z.string().regex(/^\d+-\d+$/u);
-  const cursorPartsSchema = z.tuple([z.string(), z.string()]);
-  const leftParts = cursorPartsSchema.parse(cursorSchema.parse(left).split("-"));
-  const rightParts = cursorPartsSchema.parse(cursorSchema.parse(right).split("-"));
-  const leftMs = BigInt(leftParts[0]);
-  const leftSequence = BigInt(leftParts[1]);
-  const rightMs = BigInt(rightParts[0]);
-  const rightSequence = BigInt(rightParts[1]);
-  if (leftMs !== rightMs) return leftMs < rightMs ? -1 : 1;
-  if (leftSequence === rightSequence) return 0;
-  return leftSequence < rightSequence ? -1 : 1;
-}
-
 const revisionRowSchema = z.object({
   revision_id: z.string(),
   canonical_project_id: z.string(),
@@ -235,6 +221,34 @@ const requestDispatchRowSchema = z.object({
   owner_id: nullableStringSchema,
   owner_heartbeat_at: nullableNumberSchema,
   active: z.number(),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+
+const requestTerminalReceiptRowSchema = z.object({
+  request_id: z.string(),
+  run_id: z.string(),
+  operation_id: z.string(),
+  dispatch_epoch: z.string(),
+  state: z.enum(["resolved", "failed", "cancelled"]),
+  detail: nullableStringSchema,
+  output_json: nullableStringSchema,
+  result_artifact_id: nullableStringSchema,
+  usage_json: nullableStringSchema,
+  created_at: z.number(),
+});
+
+const actionOutboxRowSchema = z.object({
+  outbox_id: z.string(),
+  action_id: z.string(),
+  run_id: z.string(),
+  event_type: z.string(),
+  payload_json: z.string(),
+  published_at: nullableNumberSchema,
+  projected_at: nullableNumberSchema,
+  attempt_count: z.number(),
+  next_attempt_at: nullableNumberSchema,
+  last_error: nullableStringSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -451,6 +465,50 @@ function parseAction(value: unknown): WorkflowSurfaceAction {
   });
 }
 
+function parseRequestTerminalReceipt(value: unknown): WorkflowRequestTerminalReceipt {
+  const row = requestTerminalReceiptRowSchema.parse(value);
+  return {
+    requestId: row.request_id,
+    runId: row.run_id,
+    operationId: row.operation_id,
+    dispatchEpoch: row.dispatch_epoch,
+    state: row.state,
+    detail: row.detail,
+    output:
+      row.output_json === null
+        ? null
+        : jsonValueSchema.parse(
+            parseJson(row.output_json, "workflow_request_terminal_receipts.output_json"),
+          ),
+    resultArtifactId: row.result_artifact_id,
+    usage:
+      row.usage_json === null
+        ? null
+        : workflowUsageSchema.parse(
+            parseJson(row.usage_json, "workflow_request_terminal_receipts.usage_json"),
+          ),
+    createdAt: row.created_at,
+  };
+}
+
+function parseActionOutboxEntry(value: unknown): WorkflowActionOutboxEntry {
+  const row = actionOutboxRowSchema.parse(value);
+  return {
+    outboxId: row.outbox_id,
+    actionId: row.action_id,
+    runId: row.run_id,
+    eventType: row.event_type,
+    payload: parseJson(row.payload_json, "workflow_action_outbox.payload_json"),
+    publishedAt: row.published_at,
+    projectedAt: row.projected_at,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function tolerantRows<T>(rows: readonly unknown[], parse: (row: unknown) => T): T[] {
   return rows.flatMap((row) => {
     try {
@@ -494,6 +552,34 @@ export type ApplyWorkflowSurfaceActionResult =
       approvalId: string | null;
     }
   | { status: "not_found" | "unauthorized" | "expired" | "consumed" | "stale" };
+
+export type WorkflowRequestTerminalReceipt = {
+  requestId: string;
+  runId: string;
+  operationId: string;
+  dispatchEpoch: string;
+  state: "resolved" | "failed" | "cancelled";
+  detail: string | null;
+  output: WorkflowOperation["output"];
+  resultArtifactId: string | null;
+  usage: WorkflowOperation["usage"];
+  createdAt: number;
+};
+
+export type WorkflowActionOutboxEntry = {
+  outboxId: string;
+  actionId: string;
+  runId: string;
+  eventType: string;
+  payload: unknown;
+  publishedAt: number | null;
+  projectedAt: number | null;
+  attemptCount: number;
+  nextAttemptAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
 
 export class DurableWorkflowStore {
   private readonly db: Database;
@@ -1536,24 +1622,29 @@ export class DurableWorkflowStore {
     runId: string;
     operationId: string;
     dispatchEpoch: string;
+    ownerId: string;
     state: "resolved" | "failed" | "cancelled";
     detail?: string;
+    output?: WorkflowOperation["output"];
+    resultArtifactId?: string | null;
+    usage?: WorkflowOperation["usage"];
     now: number;
   }): boolean {
+    const output = input.output === undefined ? null : jsonValueSchema.parse(input.output);
+    const usage = input.usage === undefined ? null : workflowUsageSchema.parse(input.usage);
     const result = this.db
       .query(
         `INSERT INTO workflow_request_terminal_receipts (
-           request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at
+           request_id, run_id, operation_id, dispatch_epoch, state, detail, output_json,
+           result_artifact_id, usage_json, created_at
          )
-         SELECT ?, ?, ?, ?, ?, ?, ?
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (
-           SELECT 1 FROM workflow_operations
-           WHERE run_id = ? AND operation_id = ? AND request_id = ?
-         )
-           AND NOT EXISTS (
-             SELECT 1 FROM workflow_request_dispatches
-             WHERE request_id = ? AND prompt_published_at IS NOT NULL AND dispatch_epoch <> ?
-           )
+            SELECT 1 FROM workflow_request_dispatches
+            WHERE request_id = ? AND run_id = ? AND operation_id = ?
+              AND dispatch_epoch = ? AND owner_id = ? AND active = 1
+              AND prompt_published_at IS NOT NULL
+          )
          ON CONFLICT(request_id) DO NOTHING`,
       )
       .run(
@@ -1563,12 +1654,15 @@ export class DurableWorkflowStore {
         input.dispatchEpoch,
         input.state,
         input.detail ?? null,
+        output === null ? null : JSON.stringify(output),
+        input.resultArtifactId ?? null,
+        usage === null ? null : JSON.stringify(usage),
         input.now,
+        input.requestId,
         input.runId,
         input.operationId,
-        input.requestId,
-        input.requestId,
         input.dispatchEpoch,
+        input.ownerId,
       );
     if (result.changes === 1) {
       this.db.run(
@@ -1578,6 +1672,13 @@ export class DurableWorkflowStore {
       );
     }
     return result.changes === 1;
+  }
+
+  getWorkflowRequestTerminalReceipt(requestId: string): WorkflowRequestTerminalReceipt | null {
+    const row = this.db
+      .query("SELECT * FROM workflow_request_terminal_receipts WHERE request_id = ?")
+      .get(requestId);
+    return row === null ? null : parseRequestTerminalReceipt(row);
   }
 
   claimWorkflowRequestPromptPublication(input: {
@@ -1609,6 +1710,7 @@ export class DurableWorkflowStore {
   claimWorkflowRequest(input: {
     requestId: string;
     token: string;
+    dispatchEpoch: string;
     ownerId: string;
     now: number;
     staleAfterMs?: number;
@@ -1619,8 +1721,9 @@ export class DurableWorkflowStore {
         .query(
           `UPDATE workflow_request_dispatches
            SET owner_id = ?, owner_heartbeat_at = ?, updated_at = ?
-           WHERE request_id = ? AND token_sha256 = ? AND active = 1 AND expires_at > ?
-             AND (owner_id IS NULL OR owner_id = ? OR owner_heartbeat_at <= ?)`,
+           WHERE request_id = ? AND token_sha256 = ? AND dispatch_epoch = ?
+             AND active = 1 AND expires_at > ?
+              AND (owner_id IS NULL OR owner_id = ? OR owner_heartbeat_at <= ?)`,
         )
         .run(
           input.ownerId,
@@ -1628,6 +1731,7 @@ export class DurableWorkflowStore {
           input.now,
           input.requestId,
           sha256(input.token),
+          input.dispatchEpoch,
           input.now,
           input.ownerId,
           staleBefore,
@@ -1978,58 +2082,104 @@ export class DurableWorkflowStore {
     return tolerantRows(rows, parseWait);
   }
 
-  captureWaitExpiryCutoff(input: {
+  claimWorkflowWaitResolverLease(input: {
+    ownerId: string;
+    now: number;
+    staleBefore: number;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `INSERT INTO workflow_wait_resolver_lease (singleton, owner_id, heartbeat_at)
+           VALUES (1, ?, ?)
+           ON CONFLICT(singleton) DO UPDATE SET
+             owner_id = excluded.owner_id,
+             heartbeat_at = excluded.heartbeat_at
+           WHERE workflow_wait_resolver_lease.owner_id = excluded.owner_id
+             OR workflow_wait_resolver_lease.heartbeat_at <= ?`,
+        )
+        .run(input.ownerId, input.now, input.staleBefore).changes === 1
+    );
+  }
+
+  refreshWorkflowWaitResolverLease(ownerId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_wait_resolver_lease SET heartbeat_at = ?
+           WHERE singleton = 1 AND owner_id = ?`,
+        )
+        .run(now, ownerId).changes === 1
+    );
+  }
+
+  releaseWorkflowWaitResolverLease(ownerId: string): void {
+    this.db.run("DELETE FROM workflow_wait_resolver_lease WHERE singleton = 1 AND owner_id = ?", [
+      ownerId,
+    ]);
+  }
+
+  prepareWaitExpiryBarrier(input: {
     runId: string;
     operationId: string;
-    cutoffCursor: string;
+    barrierId: string;
     now: number;
-  }): string | null {
-    const capture = this.db.transaction(() => {
-      this.db.run(
-        `UPDATE workflow_waits SET expiry_cutoff_cursor = ?, updated_at = ?
-         WHERE run_id = ? AND operation_id = ? AND state IN ('pending', 'claimed')
-           AND expiry_cutoff_cursor IS NULL`,
-        [input.cutoffCursor, input.now, input.runId, input.operationId],
-      );
+    retryBefore: number;
+  }): { barrierId: string; processed: boolean; shouldPublish: boolean } | null {
+    const prepare = this.db.transaction(() => {
       const row = this.db
-        .query<{ expiry_cutoff_cursor: string | null }, [string, string]>(
-          `SELECT expiry_cutoff_cursor FROM workflow_waits
-           WHERE run_id = ? AND operation_id = ?`,
+        .query<
+          {
+            state: string;
+            expiry_barrier_id: string | null;
+            expiry_barrier_requested_at: number | null;
+            expiry_barrier_processed_at: number | null;
+          },
+          [string, string]
+        >(
+          `SELECT state, expiry_barrier_id, expiry_barrier_requested_at,
+             expiry_barrier_processed_at
+           FROM workflow_waits WHERE run_id = ? AND operation_id = ?`,
         )
         .get(input.runId, input.operationId);
-      return row?.expiry_cutoff_cursor ?? null;
+      if (!row || !["pending", "claimed"].includes(row.state)) return null;
+      if (row.expiry_barrier_processed_at !== null && row.expiry_barrier_id) {
+        return { barrierId: row.expiry_barrier_id, processed: true, shouldPublish: false };
+      }
+      const barrierId = row.expiry_barrier_id ?? input.barrierId;
+      const shouldPublish =
+        row.expiry_barrier_id === null ||
+        row.expiry_barrier_requested_at === null ||
+        row.expiry_barrier_requested_at <= input.retryBefore;
+      if (shouldPublish) {
+        this.db.run(
+          `UPDATE workflow_waits SET expiry_barrier_id = ?, expiry_barrier_requested_at = ?,
+             updated_at = ?
+           WHERE run_id = ? AND operation_id = ? AND state IN ('pending', 'claimed')`,
+          [barrierId, input.now, input.now, input.runId, input.operationId],
+        );
+      }
+      return { barrierId, processed: false, shouldPublish };
     });
-    return capture.immediate();
+    return prepare.immediate();
   }
 
-  advanceAdapterStreamWatermark(input: { topic: string; cursor: string; now: number }): void {
-    const advance = this.db.transaction(() => {
-      const current = this.db
-        .query<{ processed_cursor: string }, [string]>(
-          `SELECT processed_cursor FROM workflow_adapter_stream_watermarks WHERE topic = ?`,
-        )
-        .get(input.topic);
-      if (current && compareStreamCursors(current.processed_cursor, input.cursor) >= 0) return;
-      this.db.run(
-        `INSERT INTO workflow_adapter_stream_watermarks (topic, processed_cursor, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(topic) DO UPDATE SET
-           processed_cursor = excluded.processed_cursor,
-           updated_at = excluded.updated_at`,
-        [input.topic, input.cursor, input.now],
-      );
-    });
-    advance.immediate();
+  recordWaitExpiryBarrierCursor(barrierId: string, cursor: string, now: number): void {
+    this.db.run(
+      `UPDATE workflow_waits SET expiry_barrier_cursor = COALESCE(expiry_barrier_cursor, ?),
+         updated_at = ?
+       WHERE expiry_barrier_id = ? AND state IN ('pending', 'claimed')`,
+      [cursor, now, barrierId],
+    );
   }
 
-  hasAdapterStreamReached(topic: string, cutoffCursor: string): boolean {
-    if (cutoffCursor === "0-0") return true;
-    const row = this.db
-      .query<{ processed_cursor: string }, [string]>(
-        `SELECT processed_cursor FROM workflow_adapter_stream_watermarks WHERE topic = ?`,
-      )
-      .get(topic);
-    return row !== null && compareStreamCursors(row.processed_cursor, cutoffCursor) >= 0;
+  markWaitExpiryBarrierProcessed(barrierId: string, cursor: string, now: number): void {
+    this.db.run(
+      `UPDATE workflow_waits SET expiry_barrier_cursor = ?, expiry_barrier_processed_at = ?,
+         updated_at = ?
+       WHERE expiry_barrier_id = ? AND state IN ('pending', 'claimed')`,
+      [cursor, now, now, barrierId],
+    );
   }
 
   transitionWait(input: {
@@ -2699,6 +2849,7 @@ export class DurableWorkflowStore {
 
       const source = `${input.platform}:${input.messageRef.channelId}:${input.sourceMessageId ?? input.messageRef.messageId}`;
       let runIds: string[] = [];
+      const previousRunStates = new Map<string, WorkflowRunState>();
       if (action.kind === "approve" || action.kind === "reject") {
         if (!action.approvalId) return { status: "stale" };
         const approval = this.getApproval(action.approvalId);
@@ -2712,7 +2863,10 @@ export class DurableWorkflowStore {
         }
         runIds = this.listRuns({ approvalId: approval.approvalId, limit: 1_000 })
           .filter((run) => run.state === "awaiting_review")
-          .map((run) => run.runId);
+          .map((run) => {
+            previousRunStates.set(run.runId, run.state);
+            return run.runId;
+          });
         const nextApprovalState = action.kind === "approve" ? "approved" : "rejected";
         const approvalUpdate = this.db
           .query(
@@ -2747,6 +2901,7 @@ export class DurableWorkflowStore {
       } else {
         const run = this.getRun(action.runId);
         if (!run) return { status: "stale" };
+        previousRunStates.set(run.runId, run.state);
         const nextState =
           action.kind === "cancel" ? "cancelled" : action.kind === "pause" ? "paused" : "queued";
         const valid =
@@ -2817,9 +2972,140 @@ export class DurableWorkflowStore {
         )
         .run(input.now, input.platform, input.userId, action.actionId);
       if (consumed.changes !== 1) return { status: "consumed" };
+      if (action.approvalId) {
+        const approval = this.getApproval(action.approvalId);
+        if (approval) {
+          this.insertActionOutboxEntry({
+            outboxId: `${action.actionId}:approval`,
+            actionId: action.actionId,
+            runId: action.runId,
+            eventType: "evt.workflow.approval.changed",
+            payload: {
+              approvalId: approval.approvalId,
+              revisionId: approval.revisionId,
+              runId: action.runId,
+              state: approval.state,
+              previousState: "pending",
+              ts: input.now,
+            },
+            now: input.now,
+          });
+        }
+      }
+      for (const runId of runIds) {
+        const updatedRun = this.getRun(runId);
+        if (!updatedRun) continue;
+        this.insertActionOutboxEntry({
+          outboxId: `${action.actionId}:run:${runId}`,
+          actionId: action.actionId,
+          runId,
+          eventType: "evt.workflow.run.changed",
+          payload: {
+            runId,
+            revisionId: updatedRun.revisionId,
+            state: updatedRun.state,
+            previousState: previousRunStates.get(runId),
+            ts: input.now,
+          },
+          now: input.now,
+        });
+        this.insertActionOutboxEntry({
+          outboxId: `${action.actionId}:progress:${runId}`,
+          actionId: action.actionId,
+          runId,
+          eventType: "evt.workflow.progress.requested",
+          payload: {
+            runId,
+            revisionId: updatedRun.revisionId,
+            reason: "state_changed",
+            ts: input.now,
+          },
+          now: input.now,
+        });
+      }
       return { status: "applied", action, runIds, approvalId: action.approvalId };
     });
     return apply.immediate();
+  }
+
+  private insertActionOutboxEntry(input: {
+    outboxId: string;
+    actionId: string;
+    runId: string;
+    eventType: string;
+    payload: unknown;
+    now: number;
+  }): void {
+    this.db.run(
+      `INSERT INTO workflow_action_outbox (
+         outbox_id, action_id, run_id, event_type, payload_json, published_at,
+         projected_at, attempt_count, next_attempt_at, last_error, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 0, NULL, NULL, ?, ?)
+       ON CONFLICT(outbox_id) DO NOTHING`,
+      [
+        input.outboxId,
+        input.actionId,
+        input.runId,
+        input.eventType,
+        JSON.stringify(jsonValueSchema.parse(input.payload)),
+        input.now,
+        input.now,
+      ],
+    );
+  }
+
+  listPendingActionOutboxEvents(now: number, limit = 100): WorkflowActionOutboxEntry[] {
+    return this.db
+      .query(
+        `SELECT * FROM workflow_action_outbox
+         WHERE published_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+         ORDER BY created_at, outbox_id LIMIT ?`,
+      )
+      .all(now, boundedLimit(limit))
+      .map(parseActionOutboxEntry);
+  }
+
+  markActionOutboxPublished(outboxId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_action_outbox SET published_at = ?, next_attempt_at = NULL,
+             last_error = NULL, updated_at = ?
+           WHERE outbox_id = ? AND published_at IS NULL`,
+        )
+        .run(now, now, outboxId).changes === 1
+    );
+  }
+
+  recordActionOutboxFailure(input: { outboxId: string; error: string; now: number }): void {
+    this.db.run(
+      `UPDATE workflow_action_outbox SET attempt_count = attempt_count + 1,
+         next_attempt_at = ?, last_error = ?, updated_at = ?
+       WHERE outbox_id = ? AND published_at IS NULL`,
+      [input.now + 1_000, input.error.slice(0, 16_384), input.now, input.outboxId],
+    );
+  }
+
+  listPendingActionOutboxProjections(limit = 100): WorkflowActionOutboxEntry[] {
+    return this.db
+      .query(
+        `SELECT * FROM workflow_action_outbox
+         WHERE event_type = 'evt.workflow.progress.requested' AND projected_at IS NULL
+         ORDER BY created_at, outbox_id LIMIT ?`,
+      )
+      .all(boundedLimit(limit))
+      .map(parseActionOutboxEntry);
+  }
+
+  markActionOutboxProjected(outboxId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_action_outbox SET projected_at = ?, updated_at = ?
+           WHERE outbox_id = ? AND projected_at IS NULL`,
+        )
+        .run(now, now, outboxId).changes === 1
+    );
   }
 
   consumeSurfaceAction(input: {

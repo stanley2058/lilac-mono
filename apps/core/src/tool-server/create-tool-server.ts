@@ -366,7 +366,6 @@ export function createToolServer(options: ToolServerOptions) {
     "discovery.search",
     "skills.list",
     "skills.brief",
-    "skills.full",
   ]);
 
   function isCallableAllowedForWorkflowChild(

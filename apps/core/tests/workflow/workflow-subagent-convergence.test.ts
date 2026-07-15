@@ -287,6 +287,7 @@ describe("workflow subagent convergence", () => {
     const { store, handle, run, dataDir } = await createRun();
     const bus = createLilacBus(createInMemoryRawBus());
     let childSessionId: string | undefined;
+    let childRequestId: string | undefined;
     let hasOpaqueAuthority = false;
     const progress: string[] = [];
     await bus.subscribeTopic(
@@ -313,12 +314,58 @@ describe("workflow subagent convergence", () => {
       async (message, context) => {
         if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
           childSessionId = message.headers?.session_id;
+          childRequestId = message.headers?.request_id;
           const workflow = Reflect.get(message.data.raw ?? {}, "workflow");
+          const capability =
+            workflow !== null && typeof workflow === "object"
+              ? Reflect.get(workflow, "capability")
+              : undefined;
+          const dispatchEpoch =
+            workflow !== null && typeof workflow === "object"
+              ? Reflect.get(workflow, "dispatchEpoch")
+              : undefined;
           hasOpaqueAuthority =
             workflow !== null &&
             typeof workflow === "object" &&
-            typeof Reflect.get(workflow, "capability") === "string" &&
+            typeof capability === "string" &&
             Reflect.get(workflow, "editing") === undefined;
+          if (
+            !childRequestId ||
+            !childSessionId ||
+            typeof capability !== "string" ||
+            typeof dispatchEpoch !== "string"
+          ) {
+            throw new Error("generated workflow request authority is incomplete");
+          }
+          const authorized = store.authorizeWorkflowRequest({
+            requestId: childRequestId,
+            token: capability,
+            sessionId: childSessionId,
+            platform: "unknown",
+            now: Date.now(),
+          });
+          if (!authorized) throw new Error("generated workflow request was not authorized");
+          expect(
+            store.claimWorkflowRequest({
+              requestId: childRequestId,
+              token: capability,
+              dispatchEpoch,
+              ownerId: "generated-runner",
+              now: Date.now(),
+            }),
+          ).toBe(true);
+          expect(
+            store.recordWorkflowRequestTerminal({
+              requestId: childRequestId,
+              runId: authorized.policy.runId,
+              operationId: authorized.policy.operationId,
+              dispatchEpoch,
+              ownerId: "generated-runner",
+              state: "resolved",
+              output: "engine result",
+              now: Date.now(),
+            }),
+          ).toBe(true);
           await bus.publish(
             lilacEventTypes.EvtAgentOutputDeltaText,
             { delta: "checking authentication middleware" },
@@ -373,6 +420,9 @@ describe("workflow subagent convergence", () => {
     );
     expect(childSessionId).toBe("sub:channel:1:named:audit");
     expect(hasOpaqueAuthority).toBe(true);
+    expect(
+      childRequestId ? store.getWorkflowRequestTerminalReceipt(childRequestId) : null,
+    ).toMatchObject({ state: "resolved", output: "engine result" });
     expect(progress.some((display) => display.includes("subagent (explore;"))).toBe(true);
     expect(progress.some((display) => display.includes("checking authentication middleware"))).toBe(
       true,
@@ -384,7 +434,8 @@ describe("workflow subagent convergence", () => {
     });
 
     await engine.stop();
-    parent.acknowledge([run.runId]);
+    await parent.acknowledge([run.runId]);
+    expect(parent.listPending()).toEqual([]);
     await parent.close();
     await bridge.stop();
     await bus.close();

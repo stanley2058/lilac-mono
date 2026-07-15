@@ -67,6 +67,7 @@ import type {
 } from "../../workflow/workflow-live-parent-bridge";
 import type { WorkflowSubagentDispatcher } from "../../workflow/workflow-subagent-dispatcher";
 import type { DurableWorkflowStore } from "../../workflow/durable-workflow-store";
+import type { WorkflowUsage } from "../../workflow/workflow-domain";
 import type { WorkflowRequestPolicy } from "../../workflow/workflow-request-authority";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 import { isHeartbeatAckText, isHeartbeatSessionId } from "../../heartbeat/common";
@@ -2087,6 +2088,7 @@ export async function startBusAgentRunner(params: {
     const workflowHint = parseWorkflowRequestHintFromRaw(next.raw);
     let workflowDispatchEpoch = workflowHint?.dispatchEpoch;
     let workflowPolicy: WorkflowRequestPolicy | null = null;
+    let workflowRequestClaimed = false;
     let workflowClaimTimer: ReturnType<typeof setInterval> | null = null;
     let preserveWorkflowClaim = false;
     let controlCapability: string | null = null;
@@ -2122,19 +2124,25 @@ export async function startBusAgentRunner(params: {
     const publishCurrentLifecycle = async (input: {
       state: RequestLifecycleState;
       detail?: string;
+      output?: string;
+      usage?: WorkflowUsage;
     }): Promise<void> => {
       if (
-        workflowHint &&
+        workflowPolicy &&
+        workflowRequestClaimed &&
         workflowDispatchEpoch &&
         (input.state === "resolved" || input.state === "failed" || input.state === "cancelled")
       ) {
         params.durableWorkflowStore?.recordWorkflowRequestTerminal({
           requestId: next.requestId,
-          runId: workflowHint.runId,
-          operationId: workflowHint.operationId,
+          runId: workflowPolicy.runId,
+          operationId: workflowPolicy.operationId,
           dispatchEpoch: workflowDispatchEpoch,
+          ownerId: workflowRunnerOwnerId,
           state: input.state,
           detail: input.detail,
+          output: input.output,
+          usage: input.usage,
           now: Date.now(),
         });
       }
@@ -2293,12 +2301,15 @@ export async function startBusAgentRunner(params: {
           !params.durableWorkflowStore.claimWorkflowRequest({
             requestId: next.requestId,
             token: workflowHint.capability,
+            dispatchEpoch: authorized.policy.dispatchEpoch,
             ownerId: workflowRunnerOwnerId,
             now: Date.now(),
           })
         ) {
           throw new Error("Workflow request dispatch is owned by another live runner");
         }
+        workflowRequestClaimed = true;
+        workflowPolicy = authorized.policy;
         const cwdStats = await fs.lstat(authorized.policy.canonicalCwd);
         const canonicalCwd = await fs.realpath(authorized.policy.canonicalCwd);
         if (
@@ -2328,7 +2339,6 @@ export async function startBusAgentRunner(params: {
             throw new Error("Editing workflow request cwd is not an owned workflow worktree");
           }
         }
-        workflowPolicy = authorized.policy;
         workflowClaimTimer = setInterval(() => {
           const refreshed = params.durableWorkflowStore?.refreshWorkflowRequestClaim(
             next.requestId,
@@ -2351,6 +2361,7 @@ export async function startBusAgentRunner(params: {
         await publishCurrentLifecycle({
           state: "failed",
           detail,
+          output: `Error: ${detail}`,
         });
         await bus.publish(
           lilacEventTypes.EvtAgentOutputResponseText,
@@ -2454,6 +2465,7 @@ export async function startBusAgentRunner(params: {
           await publishCurrentLifecycle({
             state: "cancelled",
             detail: "cancelled by interrupt",
+            output: finalText,
           });
           await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
           return;
@@ -2524,7 +2536,11 @@ export async function startBusAgentRunner(params: {
             }
           }
 
-          await publishCurrentLifecycle({ state: "failed", detail: customError });
+          await publishCurrentLifecycle({
+            state: "failed",
+            detail: customError,
+            output: finalText,
+          });
           await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
 
           logger.warn("custom command failed", {
@@ -3633,6 +3649,7 @@ export async function startBusAgentRunner(params: {
         await publishCurrentLifecycle({
           state: "cancelled",
           detail: "cancelled by interrupt",
+          output: finalText,
         });
         await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
         return;
@@ -3923,6 +3940,14 @@ export async function startBusAgentRunner(params: {
       await publishCurrentLifecycle({
         state: isCancelled ? "cancelled" : "resolved",
         detail: isCancelled ? "cancelled by interrupt" : undefined,
+        output: finalText,
+        usage: runStats.totalUsage
+          ? {
+              inputTokens: runStats.totalUsage.inputTokens ?? 0,
+              outputTokens: runStats.totalUsage.outputTokens ?? 0,
+              totalTokens: runStats.totalUsage.totalTokens ?? 0,
+            }
+          : undefined,
       });
     } catch (e) {
       runIdleWatchdog?.stop();
@@ -3995,6 +4020,7 @@ export async function startBusAgentRunner(params: {
         await publishCurrentLifecycle({
           state: "cancelled",
           detail: "cancelled by interrupt",
+          output: finalText,
         });
         await bus.publish(lilacEventTypes.EvtAgentOutputResponseText, { finalText }, { headers });
         return;
@@ -4067,7 +4093,11 @@ export async function startBusAgentRunner(params: {
           );
         }
       }
-      await publishCurrentLifecycle({ state: "failed", detail: msg });
+      await publishCurrentLifecycle({
+        state: "failed",
+        detail: msg,
+        output: `Error: ${msg}`,
+      });
       await bus.publish(
         lilacEventTypes.EvtAgentOutputResponseText,
         { finalText: `Error: ${msg}` },

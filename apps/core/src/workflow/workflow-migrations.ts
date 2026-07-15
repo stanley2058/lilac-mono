@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 7;
+export const WORKFLOW_SCHEMA_VERSION = 8;
 
 type WorkflowMigration = {
   version: number;
@@ -437,6 +437,45 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       `UPDATE workflow_request_dispatches
        SET policy_json = json_set(policy_json, '$.dispatchEpoch', dispatch_epoch)
        WHERE json_type(policy_json, '$.dispatchEpoch') IS NULL`,
+    ],
+  },
+  {
+    version: 8,
+    name: "round 5 terminal adoption and durable workflow actions",
+    statements: [
+      `ALTER TABLE workflow_request_terminal_receipts ADD COLUMN output_json TEXT`,
+      `ALTER TABLE workflow_request_terminal_receipts ADD COLUMN result_artifact_id TEXT`,
+      `ALTER TABLE workflow_request_terminal_receipts ADD COLUMN usage_json TEXT`,
+      `ALTER TABLE workflow_waits ADD COLUMN expiry_barrier_id TEXT`,
+      `ALTER TABLE workflow_waits ADD COLUMN expiry_barrier_cursor TEXT`,
+      `ALTER TABLE workflow_waits ADD COLUMN expiry_barrier_requested_at INTEGER`,
+      `ALTER TABLE workflow_waits ADD COLUMN expiry_barrier_processed_at INTEGER`,
+      `CREATE INDEX idx_workflow_waits_expiry_barrier
+         ON workflow_waits(expiry_barrier_id)
+         WHERE expiry_barrier_id IS NOT NULL`,
+      `CREATE TABLE workflow_wait_resolver_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        owner_id TEXT NOT NULL,
+        heartbeat_at INTEGER NOT NULL
+      )`,
+      `CREATE TABLE workflow_action_outbox (
+        outbox_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        published_at INTEGER,
+        projected_at INTEGER,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_action_outbox_publish
+         ON workflow_action_outbox(published_at, next_attempt_at, created_at)`,
+      `CREATE INDEX idx_workflow_action_outbox_project
+         ON workflow_action_outbox(projected_at, event_type, created_at)`,
     ],
   },
 ];

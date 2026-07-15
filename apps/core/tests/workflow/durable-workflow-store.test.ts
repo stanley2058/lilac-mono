@@ -223,6 +223,7 @@ describe("DurableWorkflowStore", () => {
           runId: invocation.run.runId,
           operationId: "operation-1",
           dispatchEpoch: "stale-dispatch-epoch",
+          ownerId: "runner-1",
           state: "resolved",
           now: 14,
         }),
@@ -240,6 +241,7 @@ describe("DurableWorkflowStore", () => {
         store.claimWorkflowRequest({
           requestId: "wfr:request-1",
           token,
+          dispatchEpoch: policy.dispatchEpoch,
           ownerId: "runner-1",
           now: 14,
         }),
@@ -248,6 +250,7 @@ describe("DurableWorkflowStore", () => {
         store.claimWorkflowRequest({
           requestId: "wfr:request-1",
           token,
+          dispatchEpoch: policy.dispatchEpoch,
           ownerId: "runner-2",
           now: 15,
         }),
@@ -257,6 +260,7 @@ describe("DurableWorkflowStore", () => {
         store.claimWorkflowRequest({
           requestId: "wfr:request-1",
           token,
+          dispatchEpoch: policy.dispatchEpoch,
           ownerId: "runner-2",
           now: 16,
         }),
@@ -271,11 +275,41 @@ describe("DurableWorkflowStore", () => {
           now: 16,
         }),
       ).not.toBeNull();
+      const replacementToken = crypto.randomUUID() + crypto.randomUUID();
+      const replacementPolicy = { ...policy, dispatchEpoch: "dispatch-epoch-0002" };
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-1",
+          token: replacementToken,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          policy: replacementPolicy,
+          now: 100,
+          expiresAt: 1_000,
+          staleOwnerBefore: 99,
+        }),
+      ).not.toBeNull();
+      expect(
+        store.recordWorkflowRequestTerminal({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "runner-2",
+          state: "resolved",
+          output: "stale output",
+          now: 101,
+        }),
+      ).toBe(false);
+      expect(store.getWorkflowRequestTerminalReceipt("wfr:request-1")).toBeNull();
       store.transitionApproval({
         approvalId: invocation.approval.approvalId,
         from: "approved",
         to: "revoked",
-        now: 16,
+        now: 101,
       });
       expect(
         store.authorizeWorkflowRequest({
@@ -448,12 +482,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 4 request and adapter stream linearization",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 8,
+          name: "round 5 terminal adoption and durable workflow actions",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(7);
+      expect(reopened.listMigrations()).toHaveLength(8);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 

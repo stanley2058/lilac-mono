@@ -62,6 +62,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private readonly actionRotationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private subscription: { stop(): Promise<void> } | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
+  private drainingActionOutbox = false;
 
   constructor(
     private readonly input: {
@@ -105,8 +106,12 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       },
     );
 
+    await this.drainActionOutboxProjections();
     await this.reconcile();
-    this.retryTimer = setInterval(() => this.retryDue(), 1_000);
+    this.retryTimer = setInterval(() => {
+      this.retryDue();
+      void this.drainActionOutboxProjections();
+    }, 1_000);
     this.retryTimer.unref?.();
   }
 
@@ -194,6 +199,30 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     const now = this.input.now?.() ?? Date.now();
     for (const binding of this.input.store.listSurfaceBindings({ dueBefore: now, limit: 1_000 })) {
       this.requestProjection(binding.runId);
+    }
+  }
+
+  private async drainActionOutboxProjections(): Promise<void> {
+    if (this.drainingActionOutbox) return;
+    this.drainingActionOutbox = true;
+    try {
+      for (const entry of this.input.store.listPendingActionOutboxProjections()) {
+        try {
+          await this.project(entry.runId);
+          this.input.store.markActionOutboxProjected(
+            entry.outboxId,
+            this.input.now?.() ?? Date.now(),
+          );
+        } catch (error) {
+          this.logger.warn("Workflow action outbox projection failed", {
+            outboxId: entry.outboxId,
+            runId: entry.runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } finally {
+      this.drainingActionOutbox = false;
     }
   }
 

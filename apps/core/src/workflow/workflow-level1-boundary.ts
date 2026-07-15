@@ -20,8 +20,15 @@ function assertUnprotected(root: string, candidate: string): void {
   const parts = path.relative(root, candidate).split(path.sep).filter(Boolean);
   const leaf = parts.at(-1) ?? "";
   if (
-    parts.some((part) => part === ".ssh" || part === ".aws" || part === ".gnupg") ||
-    parts[0] === ".git" ||
+    parts.some(
+      (part) =>
+        part === ".ssh" ||
+        part === ".aws" ||
+        part === ".gnupg" ||
+        part === ".secrets" ||
+        part === "secrets",
+    ) ||
+    parts.some((part) => part === ".git") ||
     parts.some((part) => part === "core-config.yaml" || part === "core-config.yml") ||
     leaf === ".env" ||
     leaf.startsWith(".env.")

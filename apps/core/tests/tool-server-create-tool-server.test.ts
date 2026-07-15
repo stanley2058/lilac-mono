@@ -109,6 +109,12 @@ describe("createToolServer", () => {
             shortInput: [],
           },
           { callableId: "search", name: "Search", description: "read", shortInput: [] },
+          {
+            callableId: "skills.full",
+            name: "Full skill",
+            description: "global skill content",
+            shortInput: [],
+          },
           { callableId: "generate.image", name: "Generate", description: "write", shortInput: [] },
         ];
       },
@@ -167,6 +173,10 @@ describe("createToolServer", () => {
       expect(await list.json()).toMatchObject({ tools: [{ callableId: "search" }] });
       const help = await server.app.handle(new Request("http://localhost/help/fetch", { headers }));
       expect(help.status).toBe(404);
+      const skillHelp = await server.app.handle(
+        new Request("http://localhost/help/skills.full", { headers }),
+      );
+      expect(skillHelp.status).toBe(404);
       for (const url of ["file:///etc/passwd", "http://127.0.0.1:3000/private"]) {
         const denied = await server.app.handle(
           new Request("http://localhost/call", {

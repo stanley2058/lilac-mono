@@ -177,3 +177,40 @@ None. The `tool-result://` report reproduced as a cross-session ownership failur
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 5
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Schema-v8 workflow terminal receipts now persist the exact dispatch epoch, terminal state/detail, JSON output or workflow artifact reference, and usage. When prompt publication loses to a receipt, the engine reads that receipt immediately and applies the revision's output limit while converging the operation and final run/result instead of waiting for lifecycle traffic from an ignored epoch.
+2. Terminal receipt insertion is fenced by the active dispatch row's exact request/run/operation/epoch, successful runner ownership claim, active state, and completed prompt-publication claim. The runner only attempts insertion after server authorization and that exact epoch claim. Unauthorized or stale queued commands can still emit their rejected lifecycle for observability but cannot create a durable terminal receipt.
+3. Reply expiry no longer uses a maximum observed stream cursor. A due reply wait appends an opaque resolver barrier to `evt.adapter`, persists its identity/cursor, and expires only after that exact marker is processed. The resolver holds a durable single-owner lease and consumes the stream in broker order with a sequential tail consumer, so all earlier on-time events are resolved before the marker; exact-deadline events remain excluded by the shared half-open predicate.
+4. Surface action consumption, approval/run transitions, and approval/run/progress event records now commit with a durable workflow action outbox in one SQLite transaction. The action resolver retries Redis publication from that outbox on delivery, timer reconciliation, and restart. The progress projector independently projects pending progress rows and marks them only after a successful card update, preventing event loss or consumed-event redelivery from leaving a card stale.
+5. Restricted `just-bash` workspace writes now validate every write, append, mkdir, remove, copy destination, move source/destination, chmod, hard-link destination, and timestamp mutation. Workspace symlink creation is denied, protected reads/sources remain denied, the writable root must be canonical, and the base filesystem rejects `..` mount escapes. `.git`, `.env*`, `core-config.yaml`, credential directories, and secret directories cannot be read or changed. Level-1 shared edits use the same expanded secret-directory protection.
+6. Receipt convergence reaches the existing unique durable live-parent delivery record for generated subagents. Deferred completion remains pending exactly once until acknowledgement; synchronous completion is consumed without deferred redelivery. Action outbox recovery projects one idempotent progress card state rather than creating duplicate cards.
+
+### Adjacent Boundary Hardening
+
+- `skills.full` is no longer callable or discoverable by workflow children because full skill expansion may cross the reviewed project/global/symlink capability boundary. `skills.list` and bounded `skills.brief` remain available when external reads are approved.
+
+### Regression Coverage
+
+- Added a deterministic receipt-wins-publication test that asserts succeeded operation state, usage, final run state, and final run result.
+- Added stale-old-runner versus newer-unpublished-epoch receipt fencing and generated subagent receipt assertions.
+- Added ordered historical reply/barrier, exact-deadline, durable single-resolver lease, and restart timer coverage.
+- Added action publication failure, process restart, outbox replay, direct projector recovery, and no-duplicate-card assertions.
+- Added reproduced restricted-bash overwrite, append, remove, move, copy, mkdir, hard-link, symlink, and mount-escape attempts against protected workspace paths.
+- Full validation passed: core 1087 tests, event bus 21 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

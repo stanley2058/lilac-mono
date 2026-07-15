@@ -20,6 +20,7 @@ export const lilacEventTypes = {
   EvtAdapterReactionAdded: "evt.adapter.reaction.added",
   EvtAdapterReactionRemoved: "evt.adapter.reaction.removed",
   EvtAdapterActionInvoked: "evt.adapter.action.invoked",
+  EvtWorkflowWaitResolverBarrier: "evt.adapter.workflow-wait-resolver.barrier",
 
   EvtRequestLifecycleChanged: "evt.request.lifecycle.changed",
   EvtRequestReply: "evt.request.reply",
@@ -165,6 +166,11 @@ export type EvtAdapterActionInvokedData = {
   userId: string;
   messageRef: SurfaceMsgRef;
   sourceMessageId?: string;
+  ts: number;
+};
+
+export type EvtWorkflowWaitResolverBarrierData = {
+  barrierId: string;
   ts: number;
 };
 
@@ -374,6 +380,12 @@ export type LilacEventSpec = {
     topic: "evt.adapter";
     key: string;
     data: EvtAdapterActionInvokedData;
+  };
+
+  [lilacEventTypes.EvtWorkflowWaitResolverBarrier]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtWorkflowWaitResolverBarrierData;
   };
 
   [lilacEventTypes.EvtRequestLifecycleChanged]: {

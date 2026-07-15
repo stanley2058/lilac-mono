@@ -79,6 +79,7 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
       [lilacEventTypes.EvtAdapterReactionAdded]: "evt.adapter",
       [lilacEventTypes.EvtAdapterReactionRemoved]: "evt.adapter",
       [lilacEventTypes.EvtAdapterActionInvoked]: "evt.adapter",
+      [lilacEventTypes.EvtWorkflowWaitResolverBarrier]: "evt.adapter",
 
       [lilacEventTypes.EvtRequestLifecycleChanged]: "evt.request",
       [lilacEventTypes.EvtRequestReply]: "evt.request",
@@ -157,6 +158,10 @@ function getKeyForType<TType extends LilacEventType>(
 
     case lilacEventTypes.EvtAdapterActionInvoked: {
       return (data as { actionId: string }).actionId;
+    }
+
+    case lilacEventTypes.EvtWorkflowWaitResolverBarrier: {
+      return (data as { barrierId: string }).barrierId;
     }
 
     case lilacEventTypes.EvtWorkflowRunChanged:

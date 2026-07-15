@@ -133,5 +133,15 @@ describe("run-oriented workflow events", () => {
       type: "evt.adapter.action.invoked",
       key: "opaque-action-token-1234",
     });
+
+    await bus.publish(lilacEventTypes.EvtWorkflowWaitResolverBarrier, {
+      barrierId: "workflow-wait-barrier-1234",
+      ts: 101,
+    });
+    expect(raw.lastMessage).toMatchObject({
+      topic: "evt.adapter",
+      type: "evt.adapter.workflow-wait-resolver.barrier",
+      key: "workflow-wait-barrier-1234",
+    });
   });
 });

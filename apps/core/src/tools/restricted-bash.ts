@@ -74,11 +74,20 @@ function isDeniedWorkspacePath(p: string): boolean {
   const parts = rel.split("/").filter(Boolean);
   if (parts.length === 0) return false;
 
-  if (parts.some((part) => part === ".ssh" || part === ".aws" || part === ".gnupg")) {
+  if (
+    parts.some(
+      (part) =>
+        part === ".ssh" ||
+        part === ".aws" ||
+        part === ".gnupg" ||
+        part === ".secrets" ||
+        part === "secrets",
+    )
+  ) {
     return true;
   }
 
-  if (parts[0] === ".git" && parts[1] === "config") return true;
+  if (parts.some((part) => part === ".git")) return true;
   if (parts.some((part) => part === "core-config.yaml" || part === "core-config.yml")) {
     return true;
   }
@@ -95,10 +104,34 @@ function accessDenied(pathName: string): Error {
 }
 
 class RestrictedReadFs implements IFileSystem {
-  constructor(private readonly inner: IFileSystem) {}
+  constructor(
+    private readonly inner: IFileSystem,
+    private readonly denyOutsideMount = false,
+  ) {}
 
   private assertReadable(pathName: string): void {
+    if (this.denyOutsideMount && normalizeVirtualPath(pathName) !== "/") {
+      throw accessDenied(pathName);
+    }
     if (isDeniedWorkspacePath(pathName)) throw accessDenied(pathName);
+  }
+
+  private assertWritable(pathName: string): void {
+    if (this.denyOutsideMount || normalizeVirtualPath(pathName) === "/") {
+      throw accessDenied(pathName);
+    }
+    if (isDeniedWorkspacePath(pathName)) throw accessDenied(pathName);
+  }
+
+  private async assertNoProtectedDescendants(pathName: string): Promise<void> {
+    if (!(await this.inner.exists(pathName))) return;
+    const stat = await this.inner.lstat(pathName);
+    if (!stat.isDirectory) return;
+    for (const name of await this.inner.readdir(pathName)) {
+      const child = posixPath.join(pathName, name);
+      if (isDeniedWorkspacePath(child)) throw accessDenied(child);
+      await this.assertNoProtectedDescendants(child);
+    }
   }
 
   private filterChild(parent: string, name: string): boolean {
@@ -127,6 +160,7 @@ class RestrictedReadFs implements IFileSystem {
     content: Parameters<IFileSystem["writeFile"]>[1],
     options?: Parameters<IFileSystem["writeFile"]>[2],
   ) {
+    this.assertWritable(pathName);
     return await this.inner.writeFile(pathName, content, options);
   }
 
@@ -135,10 +169,12 @@ class RestrictedReadFs implements IFileSystem {
     content: Parameters<IFileSystem["appendFile"]>[1],
     options?: Parameters<IFileSystem["appendFile"]>[2],
   ) {
+    this.assertWritable(pathName);
     return await this.inner.appendFile(pathName, content, options);
   }
 
   async exists(pathName: string) {
+    if (this.denyOutsideMount && normalizeVirtualPath(pathName) !== "/") return false;
     if (isDeniedWorkspacePath(pathName)) return false;
     return await this.inner.exists(pathName);
   }
@@ -149,6 +185,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async mkdir(pathName: string, options?: Parameters<IFileSystem["mkdir"]>[1]) {
+    this.assertWritable(pathName);
     return await this.inner.mkdir(pathName, options);
   }
 
@@ -166,16 +203,22 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async rm(pathName: string, options?: Parameters<IFileSystem["rm"]>[1]) {
+    this.assertWritable(pathName);
+    await this.assertNoProtectedDescendants(pathName);
     return await this.inner.rm(pathName, options);
   }
 
   async cp(src: string, dest: string, options?: Parameters<IFileSystem["cp"]>[2]) {
     this.assertReadable(src);
+    await this.assertNoProtectedDescendants(src);
+    this.assertWritable(dest);
     return await this.inner.cp(src, dest, options);
   }
 
   async mv(src: string, dest: string) {
-    this.assertReadable(src);
+    this.assertWritable(src);
+    await this.assertNoProtectedDescendants(src);
+    this.assertWritable(dest);
     return await this.inner.mv(src, dest);
   }
 
@@ -184,19 +227,23 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   getAllPaths() {
+    if (this.denyOutsideMount) return [];
     return this.inner.getAllPaths().filter((p) => !isDeniedWorkspacePath(p));
   }
 
   async chmod(pathName: string, mode: number) {
+    this.assertWritable(pathName);
     return await this.inner.chmod(pathName, mode);
   }
 
   async symlink(target: string, linkPath: string) {
-    return await this.inner.symlink(target, linkPath);
+    this.assertWritable(linkPath);
+    throw accessDenied(`${linkPath} -> ${target}`);
   }
 
   async link(existingPath: string, newPath: string) {
     this.assertReadable(existingPath);
+    this.assertWritable(newPath);
     return await this.inner.link(existingPath, newPath);
   }
 
@@ -216,6 +263,7 @@ class RestrictedReadFs implements IFileSystem {
   }
 
   async utimes(pathName: string, atime: Date, mtime: Date) {
+    this.assertWritable(pathName);
     return await this.inner.utimes(pathName, atime, mtime);
   }
 }
@@ -475,6 +523,16 @@ async function createRestrictedBash(params: {
   context: RestrictedBashContext;
 }): Promise<Bash> {
   await fs.mkdir(params.sessionTmpDir, { recursive: true, mode: 0o700 });
+  if (params.context.workspaceWritable) {
+    const workspaceStats = await fs.lstat(params.workspaceRoot);
+    if (
+      workspaceStats.isSymbolicLink() ||
+      !workspaceStats.isDirectory() ||
+      (await fs.realpath(params.workspaceRoot)) !== params.workspaceRoot
+    ) {
+      throw new Error("Restricted writable workspace must be a canonical real directory");
+    }
+  }
 
   const workspaceFs = new RestrictedReadFs(
     params.context.workspaceWritable
@@ -498,7 +556,7 @@ async function createRestrictedBash(params: {
   });
 
   const mountable = new MountableFs({
-    base: new InMemoryFs(),
+    base: new RestrictedReadFs(new InMemoryFs(), true),
     mounts: [
       { mountPoint: WORKSPACE_MOUNT, filesystem: workspaceFs },
       { mountPoint: TMP_MOUNT, filesystem: tmpFs },

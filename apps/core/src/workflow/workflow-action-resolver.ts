@@ -1,9 +1,5 @@
 import { z } from "zod";
-import {
-  lilacEventTypes,
-  type LilacBus,
-  type WorkflowRunEventState,
-} from "@stanley2058/lilac-event-bus";
+import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import { DurableWorkflowStore } from "./durable-workflow-store";
@@ -22,13 +18,49 @@ const surfaceActionEventSchema = z.strictObject({
   ts: z.number().int().nonnegative(),
 });
 
-function previousRunState(
-  kind: "approve" | "reject" | "pause" | "resume" | "cancel",
-): WorkflowRunEventState | undefined {
-  if (kind === "approve" || kind === "reject") return "awaiting_review";
-  if (kind === "resume") return "paused";
-  return undefined;
-}
+const approvalChangedSchema = z.strictObject({
+  approvalId: z.string(),
+  revisionId: z.string(),
+  runId: z.string().optional(),
+  state: z.enum(["pending", "approved", "rejected", "revoked", "expired"]),
+  previousState: z.enum(["pending", "approved", "rejected", "revoked", "expired"]).optional(),
+  ts: z.number(),
+});
+const runChangedSchema = z.strictObject({
+  runId: z.string(),
+  revisionId: z.string(),
+  state: z.enum([
+    "awaiting_review",
+    "queued",
+    "running",
+    "blocked",
+    "paused",
+    "succeeded",
+    "failed",
+    "rejected",
+    "cancelled",
+  ]),
+  previousState: z
+    .enum([
+      "awaiting_review",
+      "queued",
+      "running",
+      "blocked",
+      "paused",
+      "succeeded",
+      "failed",
+      "rejected",
+      "cancelled",
+    ])
+    .optional(),
+  ts: z.number(),
+});
+const progressRequestedSchema = z.strictObject({
+  runId: z.string(),
+  revisionId: z.string(),
+  reason: z.enum(["created", "state_changed", "operation_changed", "usage_changed", "reconcile"]),
+  ts: z.number(),
+});
 
 export async function startWorkflowActionResolver(input: {
   bus: LilacBus;
@@ -37,6 +69,50 @@ export async function startWorkflowActionResolver(input: {
   now?: () => number;
 }): Promise<{ stop(): Promise<void> }> {
   const logger = createLogger({ module: "workflow-action-resolver" });
+  let draining = false;
+  const drainOutbox = async (): Promise<void> => {
+    if (draining) return;
+    draining = true;
+    try {
+      const now = input.now?.() ?? Date.now();
+      for (const entry of input.store.listPendingActionOutboxEvents(now)) {
+        try {
+          if (entry.eventType === lilacEventTypes.EvtWorkflowApprovalChanged) {
+            await input.bus.publish(
+              lilacEventTypes.EvtWorkflowApprovalChanged,
+              approvalChangedSchema.parse(entry.payload),
+            );
+          } else if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
+            await input.bus.publish(
+              lilacEventTypes.EvtWorkflowRunChanged,
+              runChangedSchema.parse(entry.payload),
+            );
+          } else if (entry.eventType === lilacEventTypes.EvtWorkflowProgressRequested) {
+            await input.bus.publish(
+              lilacEventTypes.EvtWorkflowProgressRequested,
+              progressRequestedSchema.parse(entry.payload),
+            );
+          } else {
+            throw new Error(`Unsupported workflow action outbox event: ${entry.eventType}`);
+          }
+          input.store.markActionOutboxPublished(entry.outboxId, input.now?.() ?? Date.now());
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          input.store.recordActionOutboxFailure({
+            outboxId: entry.outboxId,
+            error: message,
+            now: input.now?.() ?? Date.now(),
+          });
+          logger.warn("Workflow action outbox publication failed", {
+            outboxId: entry.outboxId,
+            error: message,
+          });
+        }
+      }
+    } finally {
+      draining = false;
+    }
+  };
   const subscription = await input.bus.subscribeTopic(
     "evt.adapter",
     {
@@ -48,6 +124,7 @@ export async function startWorkflowActionResolver(input: {
     },
     async (message, context) => {
       if (message.type !== lilacEventTypes.EvtAdapterActionInvoked) {
+        await drainOutbox();
         await context.commit();
         return;
       }
@@ -74,44 +151,20 @@ export async function startWorkflowActionResolver(input: {
           platform: event.data.platform,
           messageId: event.data.messageRef.messageId,
         });
-        await context.commit();
-        return;
       }
-
-      const now = input.now?.() ?? Date.now();
-      if (result.approvalId) {
-        const approval = input.store.getApproval(result.approvalId);
-        if (approval) {
-          await input.bus.publish(lilacEventTypes.EvtWorkflowApprovalChanged, {
-            approvalId: approval.approvalId,
-            revisionId: approval.revisionId,
-            runId: result.action.runId,
-            state: approval.state,
-            previousState: "pending",
-            ts: now,
-          });
-        }
-      }
-      for (const runId of result.runIds) {
-        const run = input.store.getRun(runId);
-        if (!run) continue;
-        await input.bus.publish(lilacEventTypes.EvtWorkflowRunChanged, {
-          runId,
-          revisionId: run.revisionId,
-          state: run.state,
-          previousState: previousRunState(result.action.kind),
-          ts: now,
-        });
-        await input.bus.publish(lilacEventTypes.EvtWorkflowProgressRequested, {
-          runId,
-          revisionId: run.revisionId,
-          reason: "state_changed",
-          ts: now,
-        });
-      }
+      await drainOutbox();
       await context.commit();
     },
   );
 
-  return { stop: () => subscription.stop() };
+  await drainOutbox();
+  const timer = setInterval(() => void drainOutbox(), 1_000);
+  timer.unref?.();
+
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await subscription.stop();
+    },
+  };
 }

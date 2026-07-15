@@ -268,13 +268,41 @@ describe("WorkflowEngine", () => {
       assertSandbox: async () => {},
       loadSnapshot: async () => "immutable",
       compileSource: (source) => source,
-      beforePromptPublication: async ({ requestId, runId, operationId }) => {
+      beforePromptPublication: async ({
+        requestId,
+        runId,
+        operationId,
+        dispatchEpoch,
+        capability,
+        runOwnerId,
+      }) => {
+        expect(
+          store.claimWorkflowRequestPromptPublication({
+            requestId,
+            runId,
+            operationId,
+            runOwnerId,
+            now: 19,
+          }),
+        ).toBe(true);
+        expect(
+          store.claimWorkflowRequest({
+            requestId,
+            token: capability,
+            dispatchEpoch,
+            ownerId: "runner-race",
+            now: 19,
+          }),
+        ).toBe(true);
         receiptRecorded = store.recordWorkflowRequestTerminal({
           requestId,
           runId,
           operationId,
-          dispatchEpoch: "stale-dispatch-epoch",
+          dispatchEpoch,
+          ownerId: "runner-race",
           state: "resolved",
+          output: "receipt result",
+          usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
           now: 20,
         });
       },
@@ -296,8 +324,13 @@ describe("WorkflowEngine", () => {
     });
     try {
       await engine.start();
-      await waitFor(() => receiptRecorded);
-      await Bun.sleep(20);
+      await waitFor(() => receiptRecorded && store.getRun("run-1")?.state === "succeeded");
+      expect(store.getRun("run-1")?.result).toBe("receipt result");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "succeeded",
+        output: "receipt result",
+        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      });
       expect(
         raw.messages.some(
           (message) =>
@@ -875,6 +908,18 @@ describe("WorkflowEngine", () => {
       await waitFor(() => store.listOperations("run-sleep")[0]?.state === "blocked");
       await waitFor(() => store.listOperations("run-timeout")[0]?.state === "blocked");
       now = 110;
+      await resolver.reconcileTimers();
+      const timeoutOperation = store.listOperations("run-timeout")[0];
+      if (!timeoutOperation) throw new Error("Missing timeout operation");
+      const barrier = store.prepareWaitExpiryBarrier({
+        runId: "run-timeout",
+        operationId: timeoutOperation.operationId,
+        barrierId: "unused-existing-barrier",
+        now,
+        retryBefore: 0,
+      });
+      if (!barrier) throw new Error("Missing timeout barrier");
+      store.markWaitExpiryBarrierProcessed(barrier.barrierId, "1-0", now);
       await resolver.reconcileTimers();
       await waitFor(() => store.getRun("run-sleep")?.state === "succeeded");
       await waitFor(() => store.getRun("run-timeout")?.state === "failed");

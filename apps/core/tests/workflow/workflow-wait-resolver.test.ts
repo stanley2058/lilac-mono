@@ -25,23 +25,59 @@ import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver"
 class IdleRawBus implements RawBus {
   private sequence = 0;
   private readonly watermarks = new Map<string, string>();
+  private readonly history: Message<unknown>[];
+  private readonly subscriptions: Array<{
+    topic: string;
+    handler: (message: Message<unknown>, context: HandleContext) => Promise<void>;
+  }> = [];
+
+  constructor(history: readonly Message<unknown>[] = []) {
+    this.history = [...history];
+  }
 
   async publish<TData>(message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
     const id = `${++this.sequence}-0`;
     this.watermarks.set(message.topic, id);
+    const stored = { ...message, id, ts: Date.now() } as Message<unknown>;
+    this.history.push(stored);
+    for (const subscription of this.subscriptions) {
+      if (subscription.topic !== message.topic) continue;
+      await subscription.handler(stored, { cursor: id, commit: async () => {} });
+    }
     return { id, cursor: id };
   }
 
   async subscribe<TData>(
-    _topic: string,
-    _options: SubscriptionOptions,
-    _handler: (message: Message<TData>, context: HandleContext) => Promise<void>,
+    topic: string,
+    options: SubscriptionOptions,
+    handler: (message: Message<TData>, context: HandleContext) => Promise<void>,
   ) {
-    return { stop: async () => {} };
+    const subscription = {
+      topic,
+      handler: (message: Message<unknown>, context: HandleContext) =>
+        handler(message as Message<TData>, context),
+    };
+    this.subscriptions.push(subscription);
+    if (options.offset?.type === "begin") {
+      for (const message of this.history) {
+        if (message.topic !== topic) continue;
+        await subscription.handler(message, { cursor: message.id, commit: async () => {} });
+      }
+    }
+    return {
+      stop: async () => {
+        const index = this.subscriptions.indexOf(subscription);
+        if (index >= 0) this.subscriptions.splice(index, 1);
+      },
+    };
   }
 
-  async fetch<TData>(_topic: string, _options: FetchOptions) {
-    return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
+  async fetch<TData>(topic: string, _options: FetchOptions) {
+    return {
+      messages: this.history
+        .filter((message) => message.topic === topic)
+        .map((message) => ({ msg: message as Message<TData>, cursor: message.id })),
+    };
   }
   async watermark(topic: string) {
     return this.watermarks.get(topic) ?? null;
@@ -53,20 +89,8 @@ class IdleRawBus implements RawBus {
 }
 
 class HistoricalReplyRawBus extends IdleRawBus {
-  constructor(private readonly historical: Message<unknown>) {
-    super();
-  }
-
-  override async fetch<TData>(topic: string, _options: FetchOptions) {
-    return {
-      messages:
-        topic === this.historical.topic
-          ? [{ msg: this.historical as Message<TData>, cursor: this.historical.id }]
-          : [],
-    };
-  }
-  override async watermark(topic: string) {
-    return topic === this.historical.topic ? this.historical.id : await super.watermark(topic);
+  constructor(historical: Message<unknown>) {
+    super([historical]);
   }
 }
 
@@ -204,6 +228,37 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("WorkflowWaitResolver", () => {
+  it("enforces one ordered resolver consumer and releases its durable lease", async () => {
+    const dbPath = join(tmpdir(), `workflow-wait-lease-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new IdleRawBus());
+    const first = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "ordered-resolver-first",
+      now: () => 100,
+    });
+    const second = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "ordered-resolver-second",
+      now: () => 100,
+    });
+    try {
+      await first.start();
+      await expect(second.start()).rejects.toThrow("ordered workflow wait resolver");
+      await first.stop();
+      await second.start();
+      await second.stop();
+    } finally {
+      await first.stop();
+      await second.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("resolves an offline on-time reply before expiring its deadline on restart", async () => {
     const dbPath = join(tmpdir(), `workflow-reply-catchup-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -395,6 +450,7 @@ describe("WorkflowWaitResolver", () => {
           resolvedAt: null,
         },
       });
+      await resolver.start();
       await resolver.resolveAdapterEvent(event, "1-0");
       expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("pending");
       await resolver.reconcileTimers();
@@ -402,17 +458,17 @@ describe("WorkflowWaitResolver", () => {
       await resolver.resolveAdapterEvent(event, "1-1");
       expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("expired");
     } finally {
+      await resolver.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });
     }
   });
 
-  it("waits for the durable adapter watermark before expiring a reply", async () => {
+  it("waits until its ordered adapter barrier is processed before expiring a reply", async () => {
     const dbPath = join(tmpdir(), `workflow-wait-watermark-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const raw = new IdleRawBus();
-    raw.setWatermark("evt.adapter", "5-0");
     const bus = createLilacBus(raw);
     const resolver = new WorkflowWaitResolver({
       bus,
@@ -446,13 +502,12 @@ describe("WorkflowWaitResolver", () => {
           resolvedAt: null,
         },
       });
-      await resolver.reconcileTimers();
+      await resolver.start();
       expect(store.getWait("watermark-wait", "wait-1")?.state).toBe("pending");
-
-      store.advanceAdapterStreamWatermark({ topic: "evt.adapter", cursor: "5-0", now: 101 });
       await resolver.reconcileTimers();
       expect(store.getWait("watermark-wait", "wait-1")?.state).toBe("expired");
     } finally {
+      await resolver.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });

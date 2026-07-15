@@ -10,7 +10,10 @@ import {
 } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
-import { DurableWorkflowStore } from "./durable-workflow-store";
+import {
+  DurableWorkflowStore,
+  type WorkflowRequestTerminalReceipt,
+} from "./durable-workflow-store";
 import {
   canonicalJson,
   canonicalJsonSha256,
@@ -156,6 +159,8 @@ export class WorkflowEngine {
         runId: string;
         operationId: string;
         dispatchEpoch: string;
+        capability: string;
+        runOwnerId: string;
       }) => Promise<void>;
       createDispatchEpoch?: () => string;
       dispatchAgentRequest?: (input: {
@@ -1163,6 +1168,8 @@ export class WorkflowEngine {
         runId: input.run.runId,
         operationId: input.operation.operationId,
         dispatchEpoch: input.dispatchEpoch,
+        capability: input.capability,
+        runOwnerId: this.workerId,
       });
       const publicationClaimed = this.input.store.claimWorkflowRequestPromptPublication({
         requestId: input.requestId,
@@ -1172,10 +1179,16 @@ export class WorkflowEngine {
         now: this.now(),
       });
       if (!publicationClaimed) {
-        const terminal = await result;
-        input.signal.removeEventListener("abort", abort);
-        await Promise.all([outSub.stop(), evtSub.stop()]);
-        return terminal;
+        try {
+          const receipt = this.input.store.getWorkflowRequestTerminalReceipt(input.requestId);
+          if (!receipt) {
+            throw new Error("Workflow prompt publication was rejected without a terminal receipt");
+          }
+          return await this.adoptTerminalReceipt(receipt, input.revision);
+        } finally {
+          input.signal.removeEventListener("abort", abort);
+          await Promise.all([outSub.stop(), evtSub.stop()]);
+        }
       }
       const liveParent =
         input.run.completionTarget.kind === "live_parent" ? input.run.completionTarget : null;
@@ -1221,6 +1234,28 @@ export class WorkflowEngine {
     input.signal.removeEventListener("abort", abort);
     await Promise.all([outSub.stop(), evtSub.stop()]);
     return terminal;
+  }
+
+  private async adoptTerminalReceipt(
+    receipt: WorkflowRequestTerminalReceipt,
+    revision: WorkflowRevision,
+  ): Promise<AgentRequestResult> {
+    const storedOutput = receipt.resultArtifactId
+      ? await readWorkflowValueArtifact({
+          dataDir: this.input.dataDir,
+          artifactId: receipt.resultArtifactId,
+          maxBytes: revision.limits.maxOperationOutputBytes,
+        })
+      : receipt.output;
+    if (receipt.state === "resolved" && typeof storedOutput !== "string") {
+      throw new Error("Resolved workflow terminal receipt has no adoptable text output");
+    }
+    return {
+      state: receipt.state,
+      output: typeof storedOutput === "string" ? storedOutput : "",
+      detail: receipt.detail,
+      usage: receipt.usage,
+    };
   }
 
   private async prepareWorktree(

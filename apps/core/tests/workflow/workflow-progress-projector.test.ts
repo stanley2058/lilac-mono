@@ -27,6 +27,8 @@ import type {
   SurfaceMessage,
 } from "../../src/surface/types";
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
+import { startWorkflowActionResolver } from "../../src/workflow/workflow-action-resolver";
+import { sha256 } from "../../src/workflow/workflow-definition";
 import { normalizeWorkflowCapabilityProfile } from "../../src/workflow/workflow-domain";
 import { WorkflowProgressProjector } from "../../src/workflow/workflow-progress-projector";
 import {
@@ -56,6 +58,15 @@ class IdleRawBus implements RawBus {
     return { messages: [] as Array<{ msg: Message<TData>; cursor: string }> };
   }
   async close() {}
+}
+
+class FailingPublishRawBus extends IdleRawBus {
+  override async publish<TData>(
+    _message: Omit<Message<TData>, "id" | "ts">,
+    _options: PublishOptions,
+  ): Promise<never> {
+    throw new Error("simulated Redis publication failure");
+  }
 }
 
 class ProjectionAdapter implements SurfaceAdapter {
@@ -263,6 +274,87 @@ function createInvocation(store: DurableWorkflowStore) {
 }
 
 describe("WorkflowProgressProjector", () => {
+  it("recovers action publication and card projection from the durable outbox after restart", async () => {
+    const dbPath = join(tmpdir(), `workflow-action-outbox-${crypto.randomUUID()}.sqlite`);
+    const adapter = new ProjectionAdapter();
+    let store = new DurableWorkflowStore(dbPath);
+    const failedBus = createLilacBus(new FailingPublishRawBus());
+    let failedResolver: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+    try {
+      createInvocation(store);
+      const initialProjector = new WorkflowProgressProjector({
+        bus: failedBus,
+        store,
+        adapters: new Map([["discord", adapter]]),
+        subscriptionId: "action-outbox-initial",
+        now: () => 20,
+        loadSource: async () => "export default 'immutable';",
+      });
+      const messageRef = await initialProjector.ensureInitialCard("run-1");
+      const approveToken = adapter.contents
+        .at(-1)
+        ?.actions?.find((action) => action.label === "Approve")?.actionId;
+      if (!approveToken) throw new Error("Missing approval token");
+      expect(
+        store.applySurfaceAction({
+          tokenSha256: sha256(approveToken),
+          platform: "discord",
+          userId: "user-1",
+          messageRef,
+          now: 21,
+        }).status,
+      ).toBe("applied");
+      expect(store.getRun("run-1")?.state).toBe("queued");
+      expect(store.listPendingActionOutboxEvents(21)).toHaveLength(3);
+      expect(store.listPendingActionOutboxProjections()).toHaveLength(1);
+
+      failedResolver = await startWorkflowActionResolver({
+        bus: failedBus,
+        store,
+        subscriptionId: "action-outbox-failing-resolver",
+        now: () => 21,
+      });
+      expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(3);
+      await failedResolver.stop();
+      failedResolver = null;
+      store.close();
+
+      store = new DurableWorkflowStore(dbPath);
+      const recoveredBus = createLilacBus(new IdleRawBus());
+      const recoveredResolver = await startWorkflowActionResolver({
+        bus: recoveredBus,
+        store,
+        subscriptionId: "action-outbox-recovered-resolver",
+        now: () => 2_000,
+      });
+      const recoveredProjector = new WorkflowProgressProjector({
+        bus: recoveredBus,
+        store,
+        adapters: new Map([["discord", adapter]]),
+        subscriptionId: "action-outbox-recovered-projector",
+        now: () => 2_000,
+        loadSource: async () => "export default 'immutable';",
+      });
+      await recoveredProjector.start();
+      expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(0);
+      expect(store.listPendingActionOutboxProjections()).toHaveLength(0);
+      expect(adapter.contents.at(-1)?.actions?.map((action) => action.label)).toEqual([
+        "Pause",
+        "Cancel",
+      ]);
+      expect(adapter.sends).toBe(1);
+      expect(adapter.edits).toBe(1);
+      await recoveredProjector.stop();
+      await recoveredResolver.stop();
+      await recoveredBus.close();
+    } finally {
+      await failedResolver?.stop();
+      await failedBus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("redacts review data, persists bindings, survives restart, and retains terminal cards", async () => {
     const dbPath = join(tmpdir(), `workflow-projector-${crypto.randomUUID()}.sqlite`);
     const adapter = new ProjectionAdapter();
