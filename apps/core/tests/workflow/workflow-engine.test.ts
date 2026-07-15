@@ -482,6 +482,166 @@ describe("WorkflowEngine", () => {
     }
   });
 
+  it("lets a replacement engine adopt a tombstoned receipt before redispatch", async () => {
+    const dbPath = join(
+      tmpdir(),
+      `workflow-engine-replacement-receipt-${crypto.randomUUID()}.sqlite`,
+    );
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      {
+        kind: "live_parent",
+        parentRequestId: "parent-replacement",
+        parentSessionId: "parent-session",
+        parentRequestClient: "discord",
+        parentToolCallId: "parent-tool",
+        childRequestId: "child-replacement",
+        childSessionId: "child-session",
+        profile: "explore",
+        sessionName: "replacement-test",
+        depth: 1,
+        reasoning: null,
+        fallbackToSurface: false,
+        fallbackProgressTarget: null,
+        deferredDelivery: true,
+      },
+    );
+    let firstNow = 10;
+    let receiptCommitted = false;
+    const first = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "replacement-receipt-first",
+      pollMs: 5,
+      now: () => firstNow,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+      dispatchAgentRequest: async (request) => {
+        const capability = request.capability;
+        if (!capability) throw new Error("Missing initial dispatch capability");
+        const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
+        if (!runOwnerId) throw new Error("Missing initial run owner");
+        expect(
+          store.claimWorkflowRequestPromptPublication({
+            requestId: request.requestId,
+            runId: request.run.runId,
+            operationId: request.operation.operationId,
+            runOwnerId,
+            now: firstNow,
+          }),
+        ).toBe(true);
+        expect(
+          store.claimWorkflowRequest({
+            requestId: request.requestId,
+            token: capability,
+            dispatchEpoch: request.dispatchEpoch,
+            ownerId: "runner-before-crash",
+            now: firstNow,
+          }),
+        ).toBe(true);
+        firstNow += 1;
+        receiptCommitted = store.recordWorkflowRequestTerminal({
+          requestId: request.requestId,
+          runId: request.run.runId,
+          operationId: request.operation.operationId,
+          dispatchEpoch: request.dispatchEpoch,
+          ownerId: "runner-before-crash",
+          state: "resolved",
+          output: "replacement receipt result",
+          usage: { inputTokens: 7, outputTokens: 5, totalTokens: 12 },
+          now: firstNow,
+        });
+        return await new Promise((resolve) => {
+          request.signal.addEventListener(
+            "abort",
+            () =>
+              resolve({ state: "cancelled", output: "", detail: "engine crashed", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    let replacementDispatches = 0;
+    const replacement = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "replacement-receipt-second",
+      pollMs: 5,
+      now: () => 100_000,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+      dispatchAgentRequest: async () => {
+        replacementDispatches += 1;
+        throw new Error("Replacement engine must adopt the receipt before dispatch");
+      },
+    });
+    try {
+      await first.start();
+      await waitFor(() => receiptCommitted);
+      await first.stop();
+      expect(store.getRun("run-1")?.state).toBe("running");
+      expect(store.listOperations("run-1")[0]?.state).toBe("dispatched");
+
+      await replacement.start();
+      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
+      expect(replacementDispatches).toBe(0);
+      expect(store.getRun("run-1")?.result).toBe("replacement receipt result");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "succeeded",
+        output: "replacement receipt result",
+        usage: { inputTokens: 7, outputTokens: 5, totalTokens: 12 },
+      });
+      expect(store.listPendingLiveParentCompletions("parent-replacement", 100, true)).toMatchObject(
+        [{ runId: "run-1", result: "replacement receipt result" }],
+      );
+    } finally {
+      await first.stop();
+      await replacement.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("stops only the local sandbox after lease loss without interrupting successor requests", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-lease-loss-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);

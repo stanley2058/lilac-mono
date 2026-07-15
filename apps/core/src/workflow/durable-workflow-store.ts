@@ -188,6 +188,20 @@ const bindingRowSchema = z.object({
   retry_count: z.number(),
   next_attempt_at: nullableNumberSchema,
   repair_required: z.number().int().min(0).max(1),
+  repair_generation: z.number().int().nonnegative(),
+  rendered_repair_generation: z.number().int().nonnegative(),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+
+const projectionOrphanRowSchema = z.object({
+  run_id: z.string(),
+  platform: z.enum(["discord", "github"]),
+  channel_id: z.string(),
+  message_id: z.string(),
+  attempt_count: z.number().int().nonnegative(),
+  next_attempt_at: nullableNumberSchema,
+  last_error: nullableStringSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -445,10 +459,28 @@ function parseBinding(value: unknown): WorkflowSurfaceBinding {
     lastError: row.last_error,
     retryCount: row.retry_count,
     nextAttemptAt: row.next_attempt_at,
-    repairRequired: row.repair_required === 1,
+    repairGeneration: row.repair_generation,
+    renderedRepairGeneration: row.rendered_repair_generation,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
+}
+
+function parseProjectionOrphan(value: unknown): WorkflowSurfaceProjectionOrphan {
+  const row = projectionOrphanRowSchema.parse(value);
+  return {
+    runId: row.run_id,
+    messageRef: {
+      platform: row.platform,
+      channelId: row.channel_id,
+      messageId: row.message_id,
+    },
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function parseAction(value: unknown): WorkflowSurfaceAction {
@@ -597,6 +629,22 @@ export type WorkflowActionOutboxEntry = {
   projectClaimOwner: string | null;
   projectClaimToken: string | null;
   projectClaimedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type WorkflowProjectionMsgRef = {
+  platform: "discord" | "github";
+  channelId: string;
+  messageId: string;
+};
+
+export type WorkflowSurfaceProjectionOrphan = {
+  runId: string;
+  messageRef: WorkflowProjectionMsgRef;
+  attemptCount: number;
+  nextAttemptAt: number | null;
+  lastError: string | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -2926,13 +2974,67 @@ export class DurableWorkflowStore {
     return update.immediate();
   }
 
+  commitSurfaceProjectionFenced(input: {
+    binding: WorkflowSurfaceBinding;
+    actionIds: readonly string[];
+    ownerId: string;
+    claimToken: string;
+    expectedRepairGeneration: number;
+  }): boolean {
+    const binding = workflowSurfaceBindingSchema.parse(input.binding);
+    const commit = this.db.transaction(() => {
+      if (
+        !this.ownsSurfaceProjectionClaim({
+          runId: binding.runId,
+          ownerId: input.ownerId,
+          claimToken: input.claimToken,
+        })
+      ) {
+        return false;
+      }
+      const updated = this.db
+        .query(
+          `UPDATE workflow_surface_bindings
+           SET target_json = ?, message_ref_json = ?, last_rendered_sha256 = ?,
+             last_error = ?, retry_count = ?, next_attempt_at = ?, repair_required = 0,
+             rendered_repair_generation = ?, updated_at = ?
+           WHERE run_id = ? AND repair_generation = ?`,
+        )
+        .run(
+          JSON.stringify(binding.target),
+          binding.messageRef === null ? null : JSON.stringify(binding.messageRef),
+          binding.lastRenderedSha256,
+          binding.lastError,
+          binding.retryCount,
+          binding.nextAttemptAt,
+          input.expectedRepairGeneration,
+          binding.updatedAt,
+          binding.runId,
+          input.expectedRepairGeneration,
+        );
+      if (updated.changes !== 1) return false;
+      if (binding.messageRef) {
+        for (const actionId of input.actionIds) {
+          this.db.run(
+            `UPDATE workflow_surface_actions SET expected_message_ref_json = ?
+             WHERE action_id = ? AND run_id = ? AND consumed_at IS NULL`,
+            [JSON.stringify(binding.messageRef), actionId, binding.runId],
+          );
+        }
+      }
+      return true;
+    });
+    return commit.immediate();
+  }
+
   upsertSurfaceBinding(bindingInput: WorkflowSurfaceBinding): void {
     const binding = workflowSurfaceBindingSchema.parse(bindingInput);
     this.db.run(
       `INSERT INTO workflow_surface_bindings (
         run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
-        retry_count, next_attempt_at, repair_required, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        retry_count, next_attempt_at, repair_required, repair_generation,
+        rendered_repair_generation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         target_json = excluded.target_json,
         message_ref_json = excluded.message_ref_json,
@@ -2940,7 +3042,6 @@ export class DurableWorkflowStore {
         last_error = excluded.last_error,
         retry_count = excluded.retry_count,
         next_attempt_at = excluded.next_attempt_at,
-        repair_required = excluded.repair_required,
         updated_at = excluded.updated_at`,
       [
         binding.runId,
@@ -2950,19 +3051,22 @@ export class DurableWorkflowStore {
         binding.lastError,
         binding.retryCount,
         binding.nextAttemptAt,
-        binding.repairRequired ? 1 : 0,
+        binding.repairGeneration > binding.renderedRepairGeneration ? 1 : 0,
+        binding.repairGeneration,
+        binding.renderedRepairGeneration,
         binding.createdAt,
         binding.updatedAt,
       ],
     );
   }
 
-  markSurfaceBindingRepairRequired(runId: string, now: number): boolean {
+  requestSurfaceBindingRepair(runId: string, now: number): number | null {
     const mark = this.db.transaction(() => {
       const binding = this.db
         .query(
           `UPDATE workflow_surface_bindings
-           SET repair_required = 1, last_rendered_sha256 = NULL,
+           SET repair_required = 1, repair_generation = repair_generation + 1,
+             last_rendered_sha256 = NULL,
              last_error = 'Projection ownership changed during external I/O',
              next_attempt_at = CASE
                WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
@@ -2972,13 +3076,19 @@ export class DurableWorkflowStore {
            WHERE run_id = ?`,
         )
         .run(now, now, now, runId);
-      if (binding.changes !== 1) return false;
+      if (binding.changes !== 1) return null;
       this.db.run(
         `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
          WHERE run_id = ? AND consumed_at IS NULL`,
         [now, runId],
       );
-      return true;
+      return (
+        this.db
+          .query<{ repair_generation: number }, [string]>(
+            `SELECT repair_generation FROM workflow_surface_bindings WHERE run_id = ?`,
+          )
+          .get(runId)?.repair_generation ?? null
+      );
     });
     return mark.immediate();
   }
@@ -3013,6 +3123,93 @@ export class DurableWorkflowStore {
     return (
       this.db.query("DELETE FROM workflow_surface_bindings WHERE run_id = ?").run(runId).changes ===
       1
+    );
+  }
+
+  recordSurfaceProjectionOrphan(input: {
+    runId: string;
+    messageRef: WorkflowProjectionMsgRef;
+    now: number;
+  }): void {
+    this.db.run(
+      `INSERT INTO workflow_surface_projection_orphans (
+         run_id, platform, channel_id, message_id, attempt_count, next_attempt_at,
+         last_error, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?)
+       ON CONFLICT(platform, channel_id, message_id) DO UPDATE SET
+         run_id = excluded.run_id,
+         next_attempt_at = CASE
+           WHEN workflow_surface_projection_orphans.next_attempt_at IS NULL
+             OR workflow_surface_projection_orphans.next_attempt_at > excluded.next_attempt_at
+           THEN excluded.next_attempt_at
+           ELSE workflow_surface_projection_orphans.next_attempt_at
+         END,
+         updated_at = MAX(workflow_surface_projection_orphans.updated_at, excluded.updated_at)`,
+      [
+        input.runId,
+        input.messageRef.platform,
+        input.messageRef.channelId,
+        input.messageRef.messageId,
+        input.now,
+        input.now,
+        input.now,
+      ],
+    );
+  }
+
+  listPendingSurfaceProjectionOrphans(options?: {
+    runId?: string;
+    dueBefore?: number;
+    limit?: number;
+  }): WorkflowSurfaceProjectionOrphan[] {
+    const clauses: string[] = [];
+    const bindings: Array<string | number> = [];
+    if (options?.runId) {
+      clauses.push("run_id = ?");
+      bindings.push(options.runId);
+    }
+    if (options?.dueBefore !== undefined) {
+      clauses.push("(next_attempt_at IS NULL OR next_attempt_at <= ?)");
+      bindings.push(options.dueBefore);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db
+      .query(
+        `SELECT * FROM workflow_surface_projection_orphans ${where}
+         ORDER BY updated_at, message_id LIMIT ?`,
+      )
+      .all(...bindings, boundedLimit(options?.limit))
+      .map(parseProjectionOrphan);
+  }
+
+  completeSurfaceProjectionOrphan(messageRef: WorkflowProjectionMsgRef): boolean {
+    return (
+      this.db
+        .query(
+          `DELETE FROM workflow_surface_projection_orphans
+           WHERE platform = ? AND channel_id = ? AND message_id = ?`,
+        )
+        .run(messageRef.platform, messageRef.channelId, messageRef.messageId).changes === 1
+    );
+  }
+
+  recordSurfaceProjectionOrphanFailure(input: {
+    messageRef: WorkflowProjectionMsgRef;
+    error: string;
+    now: number;
+  }): void {
+    this.db.run(
+      `UPDATE workflow_surface_projection_orphans
+       SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
+       WHERE platform = ? AND channel_id = ? AND message_id = ?`,
+      [
+        input.now + 1_000,
+        input.error.slice(0, 16_384),
+        input.now,
+        input.messageRef.platform,
+        input.messageRef.channelId,
+        input.messageRef.messageId,
+      ],
     );
   }
 

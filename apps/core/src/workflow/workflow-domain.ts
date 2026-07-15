@@ -474,7 +474,8 @@ export const workflowSurfaceBindingSchema = z.strictObject({
   lastError: boundedTextSchema.nullable(),
   retryCount: z.number().int().nonnegative(),
   nextAttemptAt: nullableTimestampSchema,
-  repairRequired: z.boolean(),
+  repairGeneration: z.number().int().nonnegative(),
+  renderedRepairGeneration: z.number().int().nonnegative(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });

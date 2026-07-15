@@ -5,9 +5,16 @@ import { GithubApiError } from "../github/github-api";
 import { SurfaceMessageNotFoundError, type SurfaceAdapter } from "../surface/adapter";
 import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
-import { DurableWorkflowStore } from "./durable-workflow-store";
+import {
+  DurableWorkflowStore,
+  type WorkflowSurfaceProjectionOrphan,
+} from "./durable-workflow-store";
 import { sha256 } from "./workflow-definition";
-import type { WorkflowRevision, WorkflowSurfaceActionKind } from "./workflow-domain";
+import type {
+  WorkflowRevision,
+  WorkflowSurfaceActionKind,
+  WorkflowSurfaceBinding,
+} from "./workflow-domain";
 import {
   buildWorkflowProgressView,
   renderWorkflowProgressView,
@@ -24,9 +31,45 @@ type CachedActions = {
   ids: Map<WorkflowSurfaceActionKind, string>;
   recordIds: string[];
   expiresAt: number;
+  repairGeneration: number;
 };
 
 class ProjectionClaimUnavailableError extends Error {}
+class ProjectionRepairChangedError extends ProjectionClaimUnavailableError {}
+
+const WORKFLOW_CARD_TEXT_LIMIT = 4_000;
+
+function workflowCardMarker(runId: string, platform: "discord" | "github"): string {
+  const id = sha256(`workflow-progress-card:${runId}`);
+  return platform === "github"
+    ? `<!-- lilac-workflow-card:${id} -->`
+    : `[\u200B](https://lilac.invalid/.well-known/workflow-card/${id})`;
+}
+
+function workflowSupersededMarker(runId: string, platform: "discord" | "github"): string {
+  const id = sha256(`workflow-progress-card:${runId}`);
+  return platform === "github"
+    ? `<!-- lilac-workflow-card-superseded:${id} -->`
+    : `[\u200B](https://lilac.invalid/.well-known/workflow-card-superseded/${id})`;
+}
+
+function withWorkflowCardMarker(
+  content: ContentOpts,
+  runId: string,
+  platform: "discord" | "github",
+): ContentOpts {
+  const marker = workflowCardMarker(runId, platform);
+  const suffix = `${content.text ? "\n" : ""}${marker}`;
+  const text = (content.text ?? "").slice(0, WORKFLOW_CARD_TEXT_LIMIT - suffix.length);
+  return { ...content, text: `${text}${suffix}` };
+}
+
+function isProjectionMessageMissing(error: unknown): boolean {
+  return (
+    error instanceof SurfaceMessageNotFoundError ||
+    (error instanceof GithubApiError && error.status === 404)
+  );
+}
 
 function asSessionRef(platform: "discord" | "github", channelId: string): SessionRef {
   return { platform, channelId };
@@ -83,6 +126,11 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       minEditIntervalMs?: number;
       claimStaleMs?: number;
       claimHeartbeatMs?: number;
+      afterExternalIo?: (input: {
+        runId: string;
+        kind: "send" | "edit";
+        messageRef: MsgRef;
+      }) => Promise<void>;
     },
   ) {}
 
@@ -208,6 +256,12 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     const now = this.input.now?.() ?? Date.now();
     for (const binding of this.input.store.listSurfaceBindings({ dueBefore: now, limit: 1_000 })) {
       this.requestProjection(binding.runId);
+    }
+    for (const orphan of this.input.store.listPendingSurfaceProjectionOrphans({
+      dueBefore: now,
+      limit: 1_000,
+    })) {
+      this.requestProjection(orphan.runId);
     }
   }
 
@@ -377,6 +431,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     messageRef: MsgRef | null,
     now: number,
     claimToken: string,
+    repairGeneration: number,
   ): CachedActions {
     const isReview = view.availableActions.some((kind) => kind === "approve" || kind === "reject");
     const expectedUserId = isReview
@@ -387,7 +442,13 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       : view.run.origin.client;
     const key = `${view.run.state}:${view.approval?.state ?? "none"}:${expectedPlatform}:${expectedUserId}:${view.availableActions.join(",")}`;
     const cached = this.actions.get(runId);
-    if (cached?.key === key && cached.expiresAt > now + 60_000) return cached;
+    if (
+      cached?.key === key &&
+      cached.repairGeneration === repairGeneration &&
+      cached.expiresAt > now + 60_000
+    ) {
+      return cached;
+    }
 
     this.assertFencedWrite(
       runId,
@@ -439,7 +500,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         );
       }
     }
-    const next = { key, ids, recordIds, expiresAt };
+    const next = { key, ids, recordIds, expiresAt, repairGeneration };
     this.actions.set(runId, next);
     return next;
   }
@@ -477,26 +538,79 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     );
   }
 
-  private async repairAfterIoClaimLoss(
-    runId: string,
+  private sameMessageRef(left: WorkflowSurfaceBinding["messageRef"], right: MsgRef): boolean {
+    return (
+      left?.platform === right.platform &&
+      left.channelId === right.channelId &&
+      left.messageId === right.messageId
+    );
+  }
+
+  private async cleanupProjectionOrphan(
     adapter: SurfaceAdapter,
-    orphanRef: MsgRef | null,
+    orphan: WorkflowSurfaceProjectionOrphan,
   ): Promise<void> {
-    this.actions.delete(runId);
-    this.input.store.markSurfaceBindingRepairRequired(runId, this.input.now?.() ?? Date.now());
-    if (!orphanRef) return;
-    const currentRef = this.input.store.getSurfaceBinding(runId)?.messageRef;
-    if (
-      currentRef?.platform === orphanRef.platform &&
-      currentRef.channelId === orphanRef.channelId &&
-      currentRef.messageId === orphanRef.messageId
-    ) {
+    const currentRef = this.input.store.getSurfaceBinding(orphan.runId)?.messageRef ?? null;
+    if (this.sameMessageRef(currentRef, orphan.messageRef)) {
+      this.input.store.completeSurfaceProjectionOrphan(orphan.messageRef);
       return;
     }
+    const superseded: ContentOpts = {
+      text: `This workflow progress card was superseded.\n${workflowSupersededMarker(
+        orphan.runId,
+        orphan.messageRef.platform,
+      )}`,
+      actions: [],
+    };
     try {
-      await adapter.deleteMsg(orphanRef);
+      if (orphan.messageRef.platform === "discord") {
+        try {
+          await adapter.deleteMsg(orphan.messageRef);
+        } catch (error) {
+          if (isProjectionMessageMissing(error)) {
+            this.input.store.completeSurfaceProjectionOrphan(orphan.messageRef);
+            return;
+          }
+          await adapter.editMsg(orphan.messageRef, superseded);
+        }
+      } else {
+        await adapter.editMsg(orphan.messageRef, superseded);
+      }
+      this.input.store.completeSurfaceProjectionOrphan(orphan.messageRef);
     } catch (error) {
-      this.logger.warn("Failed to delete stale workflow projection orphan", {
+      if (isProjectionMessageMissing(error)) {
+        this.input.store.completeSurfaceProjectionOrphan(orphan.messageRef);
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.input.store.recordSurfaceProjectionOrphanFailure({
+        messageRef: orphan.messageRef,
+        error: message,
+        now: this.input.now?.() ?? Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  private async persistAndCleanupOrphan(
+    runId: string,
+    adapter: SurfaceAdapter,
+    orphanRef: MsgRef,
+  ): Promise<void> {
+    const now = this.input.now?.() ?? Date.now();
+    this.input.store.recordSurfaceProjectionOrphan({ runId, messageRef: orphanRef, now });
+    try {
+      await this.cleanupProjectionOrphan(adapter, {
+        runId,
+        messageRef: orphanRef,
+        attemptCount: 0,
+        nextAttemptAt: now,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      this.logger.warn("Failed to clean stale workflow projection orphan", {
         runId,
         platform: orphanRef.platform,
         channelId: orphanRef.channelId,
@@ -504,6 +618,52 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private async repairAfterIoClaimLoss(runId: string, orphanRef: MsgRef | null): Promise<void> {
+    this.actions.delete(runId);
+    if (orphanRef) {
+      const now = this.input.now?.() ?? Date.now();
+      this.input.store.recordSurfaceProjectionOrphan({ runId, messageRef: orphanRef, now });
+    }
+    this.input.store.requestSurfaceBindingRepair(runId, this.input.now?.() ?? Date.now());
+  }
+
+  private async processPendingOrphans(
+    runId: string,
+    adapter: SurfaceAdapter,
+    claimToken: string,
+  ): Promise<void> {
+    for (const orphan of this.input.store.listPendingSurfaceProjectionOrphans({
+      runId,
+      dueBefore: this.input.now?.() ?? Date.now(),
+      limit: 1_000,
+    })) {
+      this.refreshClaim(runId, claimToken);
+      await this.cleanupProjectionOrphan(adapter, orphan);
+      this.refreshClaim(runId, claimToken);
+    }
+  }
+
+  private async discoverWorkflowCard(
+    runId: string,
+    target: { platform: "discord" | "github"; channelId: string },
+    adapter: SurfaceAdapter,
+    claimToken: string,
+  ): Promise<MsgRef | null> {
+    this.refreshClaim(runId, claimToken);
+    const [self, messages] = await Promise.all([
+      adapter.getSelf(),
+      adapter.listMsg(asSessionRef(target.platform, target.channelId), { limit: 100 }),
+    ]);
+    this.refreshClaim(runId, claimToken);
+    const marker = workflowCardMarker(runId, target.platform);
+    return (
+      messages
+        .filter((message) => message.userId === self.userId && message.text.includes(marker))
+        .sort((left, right) => right.ts - left.ts)
+        .at(0)?.ref ?? null
+    );
   }
 
   private async projectOwned(
@@ -527,8 +687,35 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     if (!adapter) throw new Error(`Workflow progress adapter is unavailable: ${target.platform}`);
 
     let existing = this.input.store.getSurfaceBinding(runId);
+    if (!existing) {
+      this.writeBinding(
+        {
+          runId,
+          target,
+          messageRef: null,
+          lastRenderedSha256: null,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          repairGeneration: 0,
+          renderedRepairGeneration: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+        claimToken,
+      );
+      existing = this.input.store.getSurfaceBinding(runId);
+      if (!existing) throw new Error(`Workflow progress binding disappeared: ${runId}`);
+    }
+    await this.processPendingOrphans(runId, adapter, claimToken);
+    existing = this.input.store.getSurfaceBinding(runId) ?? existing;
     let messageRef = existing?.messageRef ? asMsgRef(existing.messageRef) : null;
-    if (existing?.repairRequired) this.actions.delete(runId);
+    if (
+      this.actions.get(runId)?.repairGeneration !== existing.repairGeneration ||
+      existing.repairGeneration !== existing.renderedRepairGeneration
+    ) {
+      this.actions.delete(runId);
+    }
     const retryBinding = existing;
     if (
       messageRef &&
@@ -568,49 +755,56 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       this.writeBinding(existing, claimToken);
       if (!found) messageRef = null;
     }
-    const issued = this.issueActions(runId, view, messageRef, now, claimToken);
+    if (!messageRef) {
+      const discovered = await this.discoverWorkflowCard(
+        runId,
+        { platform: target.platform, channelId: target.channelId },
+        adapter,
+        claimToken,
+      );
+      if (discovered) {
+        messageRef = discovered;
+        existing = {
+          ...existing,
+          messageRef: discovered,
+          lastRenderedSha256: null,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          updatedAt: now,
+        };
+        this.writeBinding(existing, claimToken);
+      }
+    }
+    existing = this.input.store.getSurfaceBinding(runId) ?? existing;
+    const repairGeneration = existing.repairGeneration;
+    const issued = this.issueActions(runId, view, messageRef, now, claimToken, repairGeneration);
     const surfaceActions = toSurfaceActions({ view, actionIds: issued.ids });
     const rendered = renderWorkflowProgressView({
       view,
       platform: target.platform,
       actions: surfaceActions,
     });
-    const content: ContentOpts = rendered;
+    const content = withWorkflowCardMarker(rendered, runId, target.platform);
     const renderedSha256 = sha256(
       JSON.stringify({
-        text: rendered.text,
-        actions: rendered.actions,
+        text: content.text,
+        actions: content.actions,
         revision: view.revision.sourceSha256,
       }),
     );
 
-    if (!existing) {
-      this.writeBinding(
-        {
-          runId,
-          target,
-          messageRef: null,
-          lastRenderedSha256: null,
-          lastError: null,
-          retryCount: 0,
-          nextAttemptAt: null,
-          repairRequired: false,
-          createdAt: now,
-          updatedAt: now,
-        },
-        claimToken,
-      );
-    }
     if (
       messageRef &&
-      !existing?.repairRequired &&
-      existing?.lastRenderedSha256 === renderedSha256
+      existing.repairGeneration === existing.renderedRepairGeneration &&
+      existing.lastRenderedSha256 === renderedSha256
     ) {
       return messageRef;
     }
 
     try {
       this.refreshClaim(runId, claimToken);
+      const sentNewMessage = messageRef === null;
       const projectedRef = messageRef
         ? (await adapter.editMsg(messageRef, content), messageRef)
         : await adapter.sendMsg(
@@ -627,25 +821,21 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
                 }
               : { silent: true },
           );
+      await this.input.afterExternalIo?.({
+        runId,
+        kind: sentNewMessage ? "send" : "edit",
+        messageRef: projectedRef,
+      });
       try {
         this.refreshClaim(runId, claimToken);
       } catch (error) {
         if (error instanceof ProjectionClaimUnavailableError) {
-          await this.repairAfterIoClaimLoss(runId, adapter, messageRef ? null : projectedRef);
+          await this.repairAfterIoClaimLoss(runId, sentNewMessage ? projectedRef : null);
         }
         throw error;
       }
-      if (!messageRef) {
-        this.assertFencedWrite(
-          runId,
-          this.input.store.bindSurfaceActionsFenced(runId, issued.recordIds, projectedRef, {
-            ownerId: this.ownerId,
-            claimToken,
-          }),
-        );
-      }
-      this.writeBinding(
-        {
+      const committed = this.input.store.commitSurfaceProjectionFenced({
+        binding: {
           runId,
           target,
           messageRef: projectedRef,
@@ -653,12 +843,31 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           lastError: null,
           retryCount: 0,
           nextAttemptAt: null,
-          repairRequired: false,
-          createdAt: existing?.createdAt ?? now,
+          repairGeneration,
+          renderedRepairGeneration: repairGeneration,
+          createdAt: existing.createdAt,
           updatedAt: now,
         },
+        actionIds: issued.recordIds,
+        ownerId: this.ownerId,
         claimToken,
-      );
+        expectedRepairGeneration: repairGeneration,
+      });
+      if (!committed) {
+        try {
+          this.refreshClaim(runId, claimToken);
+        } catch (error) {
+          if (error instanceof ProjectionClaimUnavailableError) {
+            await this.repairAfterIoClaimLoss(runId, sentNewMessage ? projectedRef : null);
+          }
+          throw error;
+        }
+        this.actions.delete(runId);
+        if (sentNewMessage) await this.persistAndCleanupOrphan(runId, adapter, projectedRef);
+        throw new ProjectionRepairChangedError(
+          `Workflow projection repair generation changed during external I/O: ${runId}`,
+        );
+      }
       this.lastEditAt.set(runId, now);
       const priorRotation = this.actionRotationTimers.get(runId);
       if (priorRotation) clearTimeout(priorRotation);
@@ -681,7 +890,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         this.refreshClaim(runId, claimToken);
       } catch (claimError) {
         if (claimError instanceof ProjectionClaimUnavailableError) {
-          await this.repairAfterIoClaimLoss(runId, adapter, createdRef);
+          await this.repairAfterIoClaimLoss(runId, createdRef);
         }
         throw claimError;
       }
@@ -689,27 +898,20 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         messageRef !== null &&
         ((error instanceof GithubApiError && error.status === 404) ||
           error instanceof SurfaceMessageNotFoundError);
-      if (createdRef) {
-        this.assertFencedWrite(
-          runId,
-          this.input.store.bindSurfaceActionsFenced(runId, issued.recordIds, createdRef, {
-            ownerId: this.ownerId,
-            claimToken,
-          }),
-        );
-      }
-      const retryCount = (existing?.retryCount ?? 0) + 1;
+      const latestBinding = this.input.store.getSurfaceBinding(runId) ?? existing;
+      const retryCount = latestBinding.retryCount + 1;
       this.writeBinding(
         {
           runId,
           target,
           messageRef: editTargetMissing ? null : (createdRef ?? messageRef),
-          lastRenderedSha256: editTargetMissing ? null : (existing?.lastRenderedSha256 ?? null),
+          lastRenderedSha256: editTargetMissing ? null : latestBinding.lastRenderedSha256,
           lastError: error instanceof Error ? error.message : String(error),
           retryCount,
           nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
-          repairRequired: existing?.repairRequired ?? false,
-          createdAt: existing?.createdAt ?? now,
+          repairGeneration: latestBinding.repairGeneration,
+          renderedRepairGeneration: latestBinding.renderedRepairGeneration,
+          createdAt: latestBinding.createdAt,
           updatedAt: now,
         },
         claimToken,

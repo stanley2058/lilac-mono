@@ -174,6 +174,10 @@ export class WorkflowEngine {
         agentCwd: string;
         signal: AbortSignal;
         reconcile: boolean;
+        capability: string | null;
+        dispatchEpoch: string;
+        sessionId: string;
+        publishRequest: boolean;
       }) => Promise<AgentRequestResult>;
     },
   ) {}
@@ -784,10 +788,6 @@ export class WorkflowEngine {
     ) {
       throw new Error("Parallel edit-capable workflow agents require worktree isolation");
     }
-    const agentCwd =
-      revision.capabilities.agents.editing && revision.capabilities.agents.isolation === "worktree"
-        ? await this.prepareWorktree(run, operation, revision)
-        : revision.canonicalWorkspaceRoot;
     const expectedRequestId = workflowAgentRequestId(
       run.runId,
       operation.operationId,
@@ -802,92 +802,110 @@ export class WorkflowEngine {
       run.completionTarget.kind === "live_parent"
         ? run.completionTarget.childSessionId
         : `workflow:${run.runId}:${operation.operationId}`;
-    const liveOwner =
-      reconcile &&
-      this.input.store.hasLiveWorkflowRequestOwner(
-        reqId,
-        this.now(),
-        WORKFLOW_REQUEST_LEASE_STALE_MS,
-      );
-    let capability: string | null = null;
-    const dispatchEpoch = liveOwner
-      ? this.input.store.getActiveWorkflowRequestDispatchEpoch(reqId, this.now())
-      : (this.input.createDispatchEpoch?.() ?? crypto.randomUUID());
-    if (!dispatchEpoch) throw new Error("Workflow dispatch epoch is missing");
-    if (!liveOwner) {
-      capability = crypto.randomUUID() + crypto.randomUUID();
-      const policy = {
-        runId: run.runId,
-        operationId: operation.operationId,
-        dispatchEpoch,
-        profile,
-        safetyMode: run.origin.safetyMode,
-        editing: revision.capabilities.agents.editing,
-        isolation: revision.capabilities.agents.isolation,
-        externalTools: revision.capabilities.externalTools,
-        surfaceSends: revision.capabilities.surfaceSends,
-        subagents: run.completionTarget.kind === "live_parent",
-        canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
-        canonicalCwd: agentCwd,
-        canonicalProjectId: revision.canonicalProjectId,
-        originSessionId: run.origin.sessionId,
-        originClient:
-          run.origin.client === "discord" || run.origin.client === "github"
-            ? run.origin.client
-            : null,
-        revisionId: revision.revisionId,
-        sourceSha256: revision.sourceSha256,
-        inputSchemaSha256: revision.inputSchemaSha256,
-        capabilitySha256: revision.capabilitySha256,
-        argsSha256: run.argsSha256,
-      } satisfies WorkflowRequestPolicy;
-      const dispatched = this.input.store.authorizeAgentDispatch({
-        requestId: reqId,
-        runId: run.runId,
-        operationId: operation.operationId,
-        runOwnerId: this.workerId,
-        token: capability,
-        sessionId,
-        platform: "unknown",
-        policy,
-        now: this.now(),
-        expiresAt: (run.startedAt ?? run.createdAt) + revision.capabilities.maxWallTimeMs,
-        staleOwnerBefore: this.now() - WORKFLOW_REQUEST_LEASE_STALE_MS,
-      });
-      if (!dispatched) throw new Error("Workflow dispatch authorization was rejected");
-    }
-    if (current.state === "queued") {
-      await this.publishOperation(revision, operation, "dispatched", "queued");
-      current = this.input.store.getOperation(run.runId, operation.operationId) ?? current;
-    }
     let result: AgentRequestResult;
-    try {
-      const request = {
-        run,
-        revision,
-        operation: current,
-        prompt: input.prompt,
-        profile,
-        model,
-        requestId: reqId,
-        agentCwd,
-        signal,
-        reconcile,
-        capability,
-        dispatchEpoch,
-        sessionId,
-        publishRequest: !liveOwner,
-      };
-      result = this.input.dispatchAgentRequest
-        ? await this.input.dispatchAgentRequest(request)
-        : await this.waitForAgentRequest(request);
-    } finally {
+    const terminalReceipt = this.input.store.getWorkflowRequestTerminalReceipt(reqId);
+    if (terminalReceipt) {
       if (
-        revision.capabilities.agents.editing &&
-        revision.capabilities.agents.isolation === "worktree" &&
-        !signal.aborted
+        terminalReceipt.requestId !== reqId ||
+        terminalReceipt.runId !== run.runId ||
+        terminalReceipt.operationId !== operation.operationId ||
+        current.requestId !== reqId
       ) {
-        await this.removeWorktree(revision, agentCwd);
+        throw new Error("Workflow terminal receipt does not match its deterministic operation");
+      }
+      result = await this.adoptTerminalReceipt(terminalReceipt, revision);
+    } else {
+      const agentCwd =
+        revision.capabilities.agents.editing &&
+        revision.capabilities.agents.isolation === "worktree"
+          ? await this.prepareWorktree(run, operation, revision)
+          : revision.canonicalWorkspaceRoot;
+      const liveOwner =
+        reconcile &&
+        this.input.store.hasLiveWorkflowRequestOwner(
+          reqId,
+          this.now(),
+          WORKFLOW_REQUEST_LEASE_STALE_MS,
+        );
+      let capability: string | null = null;
+      const dispatchEpoch = liveOwner
+        ? this.input.store.getActiveWorkflowRequestDispatchEpoch(reqId, this.now())
+        : (this.input.createDispatchEpoch?.() ?? crypto.randomUUID());
+      if (!dispatchEpoch) throw new Error("Workflow dispatch epoch is missing");
+      if (!liveOwner) {
+        capability = crypto.randomUUID() + crypto.randomUUID();
+        const policy = {
+          runId: run.runId,
+          operationId: operation.operationId,
+          dispatchEpoch,
+          profile,
+          safetyMode: run.origin.safetyMode,
+          editing: revision.capabilities.agents.editing,
+          isolation: revision.capabilities.agents.isolation,
+          externalTools: revision.capabilities.externalTools,
+          surfaceSends: revision.capabilities.surfaceSends,
+          subagents: run.completionTarget.kind === "live_parent",
+          canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
+          canonicalCwd: agentCwd,
+          canonicalProjectId: revision.canonicalProjectId,
+          originSessionId: run.origin.sessionId,
+          originClient:
+            run.origin.client === "discord" || run.origin.client === "github"
+              ? run.origin.client
+              : null,
+          revisionId: revision.revisionId,
+          sourceSha256: revision.sourceSha256,
+          inputSchemaSha256: revision.inputSchemaSha256,
+          capabilitySha256: revision.capabilitySha256,
+          argsSha256: run.argsSha256,
+        } satisfies WorkflowRequestPolicy;
+        const dispatched = this.input.store.authorizeAgentDispatch({
+          requestId: reqId,
+          runId: run.runId,
+          operationId: operation.operationId,
+          runOwnerId: this.workerId,
+          token: capability,
+          sessionId,
+          platform: "unknown",
+          policy,
+          now: this.now(),
+          expiresAt: (run.startedAt ?? run.createdAt) + revision.capabilities.maxWallTimeMs,
+          staleOwnerBefore: this.now() - WORKFLOW_REQUEST_LEASE_STALE_MS,
+        });
+        if (!dispatched) throw new Error("Workflow dispatch authorization was rejected");
+      }
+      if (current.state === "queued") {
+        await this.publishOperation(revision, operation, "dispatched", "queued");
+        current = this.input.store.getOperation(run.runId, operation.operationId) ?? current;
+      }
+      try {
+        const request = {
+          run,
+          revision,
+          operation: current,
+          prompt: input.prompt,
+          profile,
+          model,
+          requestId: reqId,
+          agentCwd,
+          signal,
+          reconcile,
+          capability,
+          dispatchEpoch,
+          sessionId,
+          publishRequest: !liveOwner,
+        };
+        result = this.input.dispatchAgentRequest
+          ? await this.input.dispatchAgentRequest(request)
+          : await this.waitForAgentRequest(request);
+      } finally {
+        if (
+          revision.capabilities.agents.editing &&
+          revision.capabilities.agents.isolation === "worktree" &&
+          !signal.aborted
+        ) {
+          await this.removeWorktree(revision, agentCwd);
+        }
       }
     }
     const latest = this.input.store.getOperation(run.runId, operation.operationId);

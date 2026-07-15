@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 11;
+export const WORKFLOW_SCHEMA_VERSION = 12;
 
 type WorkflowMigration = {
   version: number;
@@ -582,6 +582,34 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
     statements: [
       `ALTER TABLE workflow_surface_bindings
        ADD COLUMN repair_required INTEGER NOT NULL DEFAULT 0 CHECK (repair_required IN (0, 1))`,
+    ],
+  },
+  {
+    version: 12,
+    name: "round 9 generational projection repair",
+    statements: [
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN repair_generation INTEGER NOT NULL DEFAULT 0 CHECK (repair_generation >= 0)`,
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN rendered_repair_generation INTEGER NOT NULL DEFAULT 0
+       CHECK (rendered_repair_generation >= 0)`,
+      `UPDATE workflow_surface_bindings
+       SET repair_generation = CASE WHEN repair_required = 1 THEN 1 ELSE 0 END,
+         rendered_repair_generation = 0`,
+      `CREATE TABLE workflow_surface_projection_orphans (
+        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+        platform TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (platform, channel_id, message_id)
+      )`,
+      `CREATE INDEX idx_workflow_surface_projection_orphans_retry
+       ON workflow_surface_projection_orphans(next_attempt_at, updated_at)`,
     ],
   },
 ];

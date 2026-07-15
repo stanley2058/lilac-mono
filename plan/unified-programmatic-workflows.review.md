@@ -317,3 +317,33 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 9
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Deterministic terminal receipts are adopted before worktree creation, live-runner lookup, dispatch-epoch creation, or agent authorization. A replacement engine therefore converges an already-tombstoned operation without creating fresh dispatch authority or invoking the child dispatcher.
+2. Schema-v12 projection repair is generational. Round 8 dirty bindings migrate to an unrendered generation, every ownership-loss repair increments the generation and expires active controls, and ordinary binding writes cannot overwrite newer repair generations.
+3. Final projection binding and action-message persistence use one claim-fenced generation compare-and-swap. If a stale edit increments the generation during the current owner's adapter I/O, the current write is rejected, its action cache is discarded, and retry renders fresh content and controls for the new generation.
+4. Discord and GitHub workflow cards carry deterministic hidden run markers. A replacement projector with a missing binding verifies bot identity, discovers the marked card through session history, binds it, and edits it instead of sending a duplicate after a send-before-persistence crash.
+5. Stale sent cards are recorded in a durable orphan journal before cleanup. Retry state survives projector failure/restart, cleanup runs under the current projection claim, and an orphan that has become the current binding is preserved rather than raced by a stale owner.
+6. Discord orphan cleanup deletes first and falls back to a control-free superseded edit; GitHub always neutralizes the comment with superseded text and no actions. Already-missing messages complete cleanup, while transient failures remain journaled for retry and stale controls remain unusable.
+
+### Regression Coverage
+
+- Added a true replacement-engine terminal-receipt adoption test that asserts the replacement dispatcher is never called while operation output/usage, final run result, and live-parent delivery converge.
+- Added schema-11 dirty-binding upgrade coverage, a send-before-binding crash/replacement discovery test, a deterministic two-edit generation-CAS overlap, current-control usability assertions, and durable GitHub neutralization retry coverage.
+- Full validation passed: core 1104 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

@@ -614,12 +614,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 8 projection repair marker",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 12,
+          name: "round 9 generational projection repair",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(11);
+      expect(reopened.listMigrations()).toHaveLength(12);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -645,6 +650,50 @@ describe("DurableWorkflowStore", () => {
       expect(indexes).toContain("idx_workflow_triggers_due");
       db.close();
     } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("migrates the Round 8 repair marker to an unrendered repair generation", () => {
+    const path = dbPath("round-8-repair-upgrade");
+    const initial = new DurableWorkflowStore(path);
+    try {
+      expect(initial.createRevision(revision())).toBe(true);
+      expect(initial.createRun(run("run-repair"))).toBe(true);
+      initial.upsertSurfaceBinding({
+        runId: "run-repair",
+        target: { platform: "discord", channelId: "channel-1", replyToMessageId: null },
+        messageRef: { platform: "discord", channelId: "channel-1", messageId: "card-1" },
+        lastRenderedSha256: HASH_A,
+        lastError: null,
+        retryCount: 0,
+        nextAttemptAt: null,
+        repairGeneration: 0,
+        renderedRepairGeneration: 0,
+        createdAt: 10,
+        updatedAt: 10,
+      });
+    } finally {
+      initial.close();
+    }
+
+    const legacy = new Database(path);
+    legacy.run("UPDATE workflow_surface_bindings SET repair_required = 1");
+    legacy.run("DROP TABLE workflow_surface_projection_orphans");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN rendered_repair_generation");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN repair_generation");
+    legacy.run("DELETE FROM workflow_schema_migrations WHERE version = 12");
+    legacy.close();
+
+    const upgraded = new DurableWorkflowStore(path);
+    try {
+      expect(upgraded.getSurfaceBinding("run-repair")).toMatchObject({
+        repairGeneration: 1,
+        renderedRepairGeneration: 0,
+      });
+      expect(upgraded.listMigrations()).toHaveLength(12);
+    } finally {
+      upgraded.close();
       rmSync(path, { force: true });
     }
   });
@@ -938,7 +987,8 @@ describe("DurableWorkflowStore", () => {
         lastError: null,
         retryCount: 0,
         nextAttemptAt: 210,
-        repairRequired: false,
+        repairGeneration: 0,
+        renderedRepairGeneration: 0,
         createdAt: 150,
         updatedAt: 150,
       };
