@@ -15,6 +15,7 @@ import {
 } from "../../tools/subagent";
 import { BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS } from "../../surface/bridge/bus-agent-runner/tool-failure-logging";
 import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-display";
+import { enforceWorkflowLevel1Boundary } from "../../workflow/workflow-level1-boundary";
 import { markBoundedBuiltinOutput, type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
 
 type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
@@ -42,7 +43,7 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
     experimentalHashlineEdit:
       context.editingToolMode === "edit_file" &&
       context.runtime.config?.tools.editFile.hashline === true,
-    fsBackend: context.runtime.config?.tools.fsBackend,
+    fsBackend: workflowPolicy(context) ? "node-rg" : context.runtime.config?.tools.fsBackend,
     readFileDirectAttachmentSupported: getReadFileDirectAttachmentSupported(context),
     maxOutputBytes: context.runtime.config?.tools.output.maxPreviewBytes,
     maxInlineMediaBytesPerPart: context.runtime.config?.tools.media.maxInlineBytesPerPart,
@@ -65,11 +66,27 @@ function getFsReadOnlyTool(
   context: CoreToolBuildContext,
 ): unknown {
   const tools = getFsTools(context);
-  return tools[name];
+  return enforceWorkflowLevel1Boundary({
+    tool: tools[name],
+    toolName: name,
+    policy: workflowPolicy(context),
+    ownedWorktreeRoot:
+      typeof context.requestContext?.metadata?.["workflowOwnedWorktreeRoot"] === "string"
+        ? context.requestContext.metadata["workflowOwnedWorktreeRoot"]
+        : undefined,
+  });
 }
 
 function getEditFileTool(context: CoreToolBuildContext): unknown {
-  return (getFsTools(context) as Record<string, unknown>)["edit_file"];
+  return enforceWorkflowLevel1Boundary({
+    tool: (getFsTools(context) as Record<string, unknown>)["edit_file"],
+    toolName: "edit_file",
+    policy: workflowPolicy(context),
+    ownedWorktreeRoot:
+      typeof context.requestContext?.metadata?.["workflowOwnedWorktreeRoot"] === "string"
+        ? context.requestContext.metadata["workflowOwnedWorktreeRoot"]
+        : undefined,
+  });
 }
 
 function withBuiltinMetadata(spec: CoreLevel1ToolSpec): CoreLevel1ToolSpec {
@@ -161,6 +178,7 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       name: "fuzzy_search",
       supportsBatch: true,
       isEnabled: (context) =>
+        workflowPolicy(context) === undefined &&
         context.runtime.config?.tools.fsBackend === "fff" &&
         (context.requestContext?.safetyMode !== "restricted" ||
           workflowPolicy(context) !== undefined),
@@ -191,7 +209,16 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         context.editingToolMode === "apply_patch" &&
         (context.requestContext?.safetyMode !== "restricted" ||
           workflowPolicy(context)?.editing === true),
-      createTool: ({ cwd }) => applyPatchTool({ cwd }).apply_patch,
+      createTool: (context) =>
+        enforceWorkflowLevel1Boundary({
+          tool: applyPatchTool({ cwd: context.cwd }).apply_patch,
+          toolName: "apply_patch",
+          policy: workflowPolicy(context),
+          ownedWorktreeRoot:
+            typeof context.requestContext?.metadata?.["workflowOwnedWorktreeRoot"] === "string"
+              ? context.requestContext.metadata["workflowOwnedWorktreeRoot"]
+              : undefined,
+        }),
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;
         if (typeof record.patchText !== "string") {

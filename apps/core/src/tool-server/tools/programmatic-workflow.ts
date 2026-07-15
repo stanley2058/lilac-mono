@@ -207,10 +207,12 @@ function hasSensitiveSchema(schema: WorkflowRun["inputSchemaSnapshot"]): boolean
   return visit(schema);
 }
 
-function redactRun(run: WorkflowRun): WorkflowRun {
+function redactRun(run: WorkflowRun) {
   const sensitive = hasSensitiveSchema(run.inputSchemaSnapshot);
+  const { argsSha256, ...safeRun } = run;
   return {
-    ...run,
+    ...safeRun,
+    ...(sensitive ? {} : { argsSha256 }),
     args: jsonObjectSchema.parse(redactWorkflowValue(run.args, run.inputSchemaSnapshot)),
     result:
       run.result === null
@@ -970,7 +972,7 @@ export class ProgrammaticWorkflow implements ServerTool {
       const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
       assertPrincipalScope({ context: controlContext, definitions, revision, run, approval });
       const terminal = ["succeeded", "failed", "rejected", "cancelled"].includes(run.state);
-      if (terminal) return { ok: true as const, run, changed: false };
+      if (terminal) return { ok: true as const, run: redactRun(run), changed: false };
       const now = this.params.now?.() ?? Date.now();
       const activeRequests = this.store()
         .listOperations(run.runId, { limit: 1_000 })
@@ -1005,7 +1007,11 @@ export class ProgrammaticWorkflow implements ServerTool {
         });
         this.params.progressCards?.requestProjection(cancelled.runId);
       }
-      return { ok: true as const, run: cancelled, changed };
+      return {
+        ok: true as const,
+        run: cancelled ? redactRun(cancelled) : null,
+        changed,
+      };
     }
     if (callableId === "workflow.run.pause" || callableId === "workflow.run.resume") {
       const schema =
@@ -1025,7 +1031,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         to === "paused"
           ? ["queued", "running", "blocked"].includes(run.state)
           : run.state === "paused";
-      if (!allowed) return { ok: true as const, run, changed: false };
+      if (!allowed) return { ok: true as const, run: redactRun(run), changed: false };
       const now = this.params.now?.() ?? Date.now();
       const paused =
         to === "paused"
@@ -1055,7 +1061,11 @@ export class ProgrammaticWorkflow implements ServerTool {
         });
         this.params.progressCards?.requestProjection(updated.runId);
       }
-      return { ok: true as const, run: updated, changed };
+      return {
+        ok: true as const,
+        run: updated ? redactRun(updated) : null,
+        changed,
+      };
     }
     if (callableId === "workflow.approval.revoke") {
       const input = parseToolInput({

@@ -65,7 +65,10 @@ import { WorkflowLiveParentBridge } from "../workflow/workflow-live-parent-bridg
 import { WorkflowSubagentDispatcher } from "../workflow/workflow-subagent-dispatcher";
 
 import { createToolServer } from "../tool-server/create-tool-server";
-import { RequestControlAuthority } from "../tool-server/request-control-authority";
+import {
+  HEARTBEAT_LEVEL2_CALLABLES,
+  RequestControlAuthority,
+} from "../tool-server/request-control-authority";
 import type {
   ToolServerHealthCheck,
   ToolServerHealthProviderResult,
@@ -849,15 +852,29 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
             throw new Error("Cannot issue Level-2 authority for an unauthenticated request origin");
           }
           return requestControlAuthority.issue({
+            kind: "primary",
             requestId: input.requestId,
             sessionId: input.sessionId,
             platform: origin.platform,
             principal: { platform: origin.platform, userId: origin.actorUserId },
+            allowedCallables: null,
             canonicalCwd: input.canonicalCwd,
             safetyMode: input.safetyMode,
             expiresAt: input.expiresAt,
           });
         },
+        issueHeartbeatCapability: (input) =>
+          requestControlAuthority.issue({
+            kind: "heartbeat",
+            requestId: input.requestId,
+            sessionId: input.sessionId,
+            platform: input.requestClient,
+            principal: null,
+            allowedCallables: HEARTBEAT_LEVEL2_CALLABLES,
+            canonicalCwd: input.canonicalCwd,
+            safetyMode: "trusted",
+            expiresAt: input.expiresAt,
+          }),
         expireControlCapability: (requestId) => requestControlAuthority.expire(requestId),
         resolveParentChannelId: (sessionId) => {
           const session = discordSurfaceStore?.getSession(sessionId);

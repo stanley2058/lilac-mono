@@ -332,6 +332,64 @@ describe("WorkflowWaitResolver", () => {
     }
   });
 
+  it("expires an exact-deadline reply deterministically regardless of resolver order", async () => {
+    const dbPath = join(tmpdir(), `workflow-wait-deadline-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new IdleRawBus());
+    const resolver = new WorkflowWaitResolver({
+      bus,
+      store,
+      subscriptionId: "test-wait-exact-deadline",
+      now: () => 100,
+    });
+    const event = {
+      platform: "discord" as const,
+      channelId: "channel-1",
+      messageId: "reply-at-deadline",
+      userId: "user-1",
+      text: "continue",
+      ts: 100,
+      raw: { discord: { replyToMessageId: "anchor-1" } },
+    };
+    try {
+      createRunAndWait(store, {
+        runId: "exact-deadline",
+        operationId: "wait-1",
+        wait: {
+          state: "pending",
+          match: {
+            kind: "reply",
+            platform: "discord",
+            channelId: "channel-1",
+            messageId: "anchor-1",
+            fromUserId: "user-1",
+          },
+          matchKey: "discord:channel-1",
+          dueAt: null,
+          deadlineAt: 100,
+          resolverCursor: null,
+          result: null,
+          resolvedBy: null,
+          claimedBy: null,
+          claimedAt: null,
+          createdAt: 3,
+          updatedAt: 3,
+          resolvedAt: null,
+        },
+      });
+      await resolver.resolveAdapterEvent(event, "1-0");
+      expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("pending");
+      await resolver.reconcileTimers();
+      expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("expired");
+      await resolver.resolveAdapterEvent(event, "1-1");
+      expect(store.getWait("exact-deadline", "wait-1")?.state).toBe("expired");
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("resolves sleeps once, expires reply deadlines, and recovers both after restart", async () => {
     const dbPath = join(tmpdir(), `workflow-timer-wait-${crypto.randomUUID()}.sqlite`);
     let store = new DurableWorkflowStore(dbPath);

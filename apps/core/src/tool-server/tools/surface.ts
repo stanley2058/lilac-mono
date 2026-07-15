@@ -1210,7 +1210,7 @@ const messagesSearchInputSchema = baseInputSchema.extend({
 });
 
 const optionalNonEmptyStringListInputSchema = z
-  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)])
   .optional()
   .transform((value) => {
     if (value === undefined) return undefined;

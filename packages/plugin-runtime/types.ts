@@ -13,6 +13,10 @@ export type RequestContext = {
   authenticatedPrincipal?: { platform: "discord" | "github"; userId: string };
   toolCallId?: string;
   controlCapability?: string;
+  controlPolicy?: {
+    kind: "primary" | "heartbeat";
+    allowedCallables: readonly string[] | null;
+  };
   workflowCapability?: string;
   workflowPolicy?: {
     runId: string;

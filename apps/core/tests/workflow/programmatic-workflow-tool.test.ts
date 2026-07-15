@@ -357,6 +357,10 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
         { context },
       );
       expect(cancelled).toMatchObject({ ok: true, changed: true, run: { state: "cancelled" } });
+      const cancelledRun = z
+        .object({ run: z.record(z.string(), z.unknown()) })
+        .parse(cancelled).run;
+      expect(cancelledRun["argsSha256"]).toBeUndefined();
     } finally {
       await tool.destroy();
     }

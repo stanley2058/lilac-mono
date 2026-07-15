@@ -213,11 +213,13 @@ export type ToolServerOptions = {
     token: string;
     sessionId: string;
     platform: string;
-    canonicalCwd: string;
-    safetyMode: SafetyMode;
     now: number;
   }) => {
-    principal: { platform: "discord" | "github"; userId: string };
+    kind: "primary" | "heartbeat";
+    principal: { platform: "discord" | "github"; userId: string } | null;
+    allowedCallables: readonly string[] | null;
+    canonicalCwd: string;
+    safetyMode: SafetyMode;
   } | null;
   resolveServerSafetyMode?: (context: RequestContext) => Promise<SafetyMode>;
 };
@@ -306,6 +308,7 @@ export function createToolServer(options: ToolServerOptions) {
   async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
     if (ctx.workflowPolicy)
       return ctx.workflowPolicy.externalTools ? (ctx.safetyMode ?? "trusted") : "trusted";
+    if (ctx.controlPolicy) return ctx.safetyMode ?? "restricted";
     if (ctx.safetyMode === "restricted") return "restricted";
     if (options.resolveServerSafetyMode) return await options.resolveServerSafetyMode(ctx);
     const sessionId = ctx.sessionId;
@@ -338,6 +341,7 @@ export function createToolServer(options: ToolServerOptions) {
         s
           .filter(
             (entry) =>
+              isCallableAllowedForControlCapability(entry.callableId, ctx) &&
               isCallableAllowedForWorkflowChild(entry.callableId, undefined, ctx) &&
               (!entry.callableId.startsWith("workflow.") || ctx.serverOwnedRequest === true) &&
               (safetyMode !== "restricted" ||
@@ -385,6 +389,11 @@ export function createToolServer(options: ToolServerOptions) {
     return policy.externalTools && WORKFLOW_EXTERNAL_READ_CALLABLES.has(callableId);
   }
 
+  function isCallableAllowedForControlCapability(callableId: string, ctx: RequestContext): boolean {
+    if (ctx.controlPolicy?.kind !== "heartbeat") return true;
+    return ctx.controlPolicy.allowedCallables?.includes(callableId) === true;
+  }
+
   function authenticateContext(headers: Record<string, unknown>): {
     context: RequestContext;
     messages: readonly unknown[] | undefined;
@@ -429,13 +438,17 @@ export function createToolServer(options: ToolServerOptions) {
         token: context.controlCapability,
         sessionId: context.sessionId,
         platform: context.requestClient,
-        canonicalCwd: context.cwd,
-        safetyMode: context.safetyMode ?? "trusted",
         now: Date.now(),
       });
       if (!authorized) throw new Error("Request control capability is invalid or expired");
       context.serverOwnedRequest = true;
-      context.authenticatedPrincipal = authorized.principal;
+      context.cwd = authorized.canonicalCwd;
+      context.safetyMode = authorized.safetyMode;
+      context.controlPolicy = {
+        kind: authorized.kind,
+        allowedCallables: authorized.allowedCallables,
+      };
+      if (authorized.principal) context.authenticatedPrincipal = authorized.principal;
     }
     return { context, messages };
   }
@@ -522,6 +535,7 @@ export function createToolServer(options: ToolServerOptions) {
     const { context: ctx } = authenticateContext(headers);
     const safetyMode = await resolveSafetyMode(ctx);
     if (
+      !isCallableAllowedForControlCapability(params.callableId, ctx) ||
       (params.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) ||
       !isCallableAllowedForWorkflowChild(params.callableId, undefined, ctx) ||
       (safetyMode === "restricted" &&
@@ -556,6 +570,12 @@ export function createToolServer(options: ToolServerOptions) {
       const { context: ctx, messages } = authenticateContext(headers);
       const safetyMode = await resolveSafetyMode(ctx);
       ctx.safetyMode = safetyMode;
+      if (!isCallableAllowedForControlCapability(body.callableId, ctx)) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' is outside the internal request capability`,
+        };
+      }
       if (body.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) {
         return {
           isError: true,

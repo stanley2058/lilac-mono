@@ -1799,6 +1799,14 @@ describe("tool-server surface", () => {
     expect(sent.content.text).toBe("hi");
     expect(sent.content.attachments?.length).toBe(1);
     expect(sent.content.attachments?.[0]?.filename).toBe("renamed.txt");
+    await expect(
+      tool.call("surface.messages.send", {
+        sessionId: "#ops",
+        text: "too many",
+        paths: Array.from({ length: 11 }, () => p),
+        client: "discord",
+      }),
+    ).rejects.toThrow("paths");
   });
 
   it("forwards silent=true for send", async () => {

@@ -1,6 +1,7 @@
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
+import { GithubApiError } from "../github/github-api";
 import type { SurfaceAdapter } from "../surface/adapter";
 import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
@@ -349,13 +350,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       return projectedRef;
     } catch (error) {
       const createdRef = error instanceof GithubMessageCreatedError ? error.messageRef : null;
+      const editTargetMissing =
+        messageRef !== null && error instanceof GithubApiError && error.status === 404;
       if (createdRef) this.input.store.bindSurfaceActions(issued.recordIds, createdRef);
       const retryCount = (existing?.retryCount ?? 0) + 1;
       this.input.store.upsertSurfaceBinding({
         runId,
         target,
-        messageRef: createdRef ?? messageRef,
-        lastRenderedSha256: existing?.lastRenderedSha256 ?? null,
+        messageRef: editTargetMissing ? null : (createdRef ?? messageRef),
+        lastRenderedSha256: editTargetMissing ? null : (existing?.lastRenderedSha256 ?? null),
         lastError: error instanceof Error ? error.message : String(error),
         retryCount,
         nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),

@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { ToolPluginManager, type Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
+import {
+  ToolPluginManager,
+  type Level1ToolSpec,
+  type RequestContext,
+} from "@stanley2058/lilac-plugin-runtime";
 
 import {
   createToolServer,
@@ -173,6 +177,7 @@ describe("createToolServer", () => {
   });
 
   it("requires a request-bound control capability on list, help, and call", async () => {
+    const contexts: RequestContext[] = [];
     const tool: ServerTool = {
       id: "control-test",
       async init() {},
@@ -180,7 +185,8 @@ describe("createToolServer", () => {
       async list() {
         return [{ callableId: "control.read", name: "read", description: "read", shortInput: [] }];
       },
-      async call() {
+      async call(_callableId, _input, options) {
+        if (options?.context) contexts.push(options.context);
         return { ok: true };
       },
     };
@@ -191,10 +197,14 @@ describe("createToolServer", () => {
         input.token === "unguessable-primary-token" &&
         input.requestId === "request-1" &&
         input.sessionId === "channel-1" &&
-        input.platform === "discord" &&
-        input.canonicalCwd === "/workspace" &&
-        input.safetyMode === "trusted"
-          ? { principal: { platform: "discord", userId: "user-1" } }
+        input.platform === "discord"
+          ? {
+              kind: "primary" as const,
+              principal: { platform: "discord" as const, userId: "user-1" },
+              allowedCallables: null,
+              canonicalCwd: "/workspace",
+              safetyMode: "trusted" as const,
+            }
           : null,
     });
     await server.init();
@@ -202,7 +212,7 @@ describe("createToolServer", () => {
       "x-lilac-request-id": "request-1",
       "x-lilac-session-id": "channel-1",
       "x-lilac-request-client": "discord",
-      "x-lilac-cwd": "/workspace",
+      "x-lilac-cwd": "/attacker-controlled",
       "x-lilac-control-capability": "unguessable-primary-token",
     };
     try {
@@ -225,6 +235,8 @@ describe("createToolServer", () => {
           )
         ).json(),
       ).toMatchObject({ isError: false, output: { ok: true } });
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]?.cwd).toBe("/workspace");
       expect(
         (
           await server.app.handle(
@@ -234,6 +246,94 @@ describe("createToolServer", () => {
           )
         ).status,
       ).toBe(500);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("limits heartbeat authority to its internal callable allowlist", async () => {
+    const called: string[] = [];
+    const tool: ServerTool = {
+      id: "heartbeat-capability-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "surface.messages.send",
+            name: "send",
+            description: "send",
+            shortInput: [],
+          },
+          { callableId: "workflow.start", name: "start", description: "start", shortInput: [] },
+          { callableId: "read_file", name: "read", description: "read", shortInput: [] },
+        ];
+      },
+      async call(callableId, _input, options) {
+        called.push(callableId);
+        expect(options?.context?.cwd).toBe("/canonical-workspace");
+        expect(options?.context?.authenticatedPrincipal).toBeUndefined();
+        return { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      requestMessageCache: {
+        get: () => undefined,
+        getOrigin: () => undefined,
+      },
+      authorizeControlRequest: ({ token }) =>
+        token === "heartbeat-capability-token"
+          ? {
+              kind: "heartbeat" as const,
+              principal: null,
+              allowedCallables: ["surface.messages.send"],
+              canonicalCwd: "/canonical-workspace",
+              safetyMode: "trusted" as const,
+            }
+          : null,
+    });
+    await server.init();
+    const headers = {
+      "x-lilac-request-id": "heartbeat:request-1",
+      "x-lilac-session-id": "heartbeat:discord:channel-1",
+      "x-lilac-request-client": "discord",
+      "x-lilac-cwd": "/stale-cache-workspace",
+      "x-lilac-safety-mode": "restricted",
+      "x-lilac-control-capability": "heartbeat-capability-token",
+    };
+    try {
+      const list = await server.app.handle(new Request("http://localhost/list", { headers }));
+      expect(await list.json()).toMatchObject({
+        tools: [{ callableId: "surface.messages.send" }],
+      });
+
+      const deniedHelp = await server.app.handle(
+        new Request("http://localhost/help/workflow.start", { headers }),
+      );
+      expect(deniedHelp.status).toBe(404);
+
+      const deniedCall = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ callableId: "read_file", input: { path: "README.md" } }),
+        }),
+      );
+      expect(await deniedCall.json()).toMatchObject({
+        isError: true,
+        output: expect.stringContaining("outside the internal request capability"),
+      });
+
+      const allowedCall = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ callableId: "surface.messages.send", input: { content: "due" } }),
+        }),
+      );
+      expect(await allowedCall.json()).toMatchObject({ isError: false, output: { ok: true } });
+      expect(called).toEqual(["surface.messages.send"]);
     } finally {
       await server.stop();
     }

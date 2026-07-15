@@ -1413,6 +1413,13 @@ export async function startBusAgentRunner(params: {
     safetyMode: SessionSafetyMode;
     expiresAt: number;
   }) => string | Promise<string>;
+  issueHeartbeatCapability?: (input: {
+    requestId: string;
+    sessionId: string;
+    requestClient: AdapterPlatform;
+    canonicalCwd: string;
+    expiresAt: number;
+  }) => string | Promise<string>;
   expireControlCapability?: (requestId: string) => void;
 }) {
   const { bus, subscriptionId } = params;
@@ -2609,7 +2616,19 @@ export async function startBusAgentRunner(params: {
         : next.requestClient === "discord" && parentChannelResolution === undefined
           ? "restricted"
           : resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
-      if (
+      if (runProfile === "primary" && !workflowPolicy && isHeartbeatSessionId(next.sessionId)) {
+        controlCapability =
+          (await params.issueHeartbeatCapability?.({
+            requestId: next.requestId,
+            sessionId: next.sessionId,
+            requestClient: next.requestClient,
+            canonicalCwd: cwd,
+            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+          })) ?? null;
+        if (!controlCapability) {
+          throw new Error("Heartbeat request is missing server-issued Level-2 authority");
+        }
+      } else if (
         runProfile === "primary" &&
         !workflowPolicy &&
         (next.requestClient === "discord" || next.requestClient === "github")
@@ -2778,6 +2797,9 @@ export async function startBusAgentRunner(params: {
             metadata: {
               workflowPolicy: workflowPolicy ?? undefined,
               workflowCapability: workflowHint?.capability,
+              workflowOwnedWorktreeRoot: workflowPolicy?.editing
+                ? path.resolve(env.dataDir, "workflow-worktrees")
+                : undefined,
               controlCapability: controlCapability ?? undefined,
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
@@ -4038,7 +4060,11 @@ export async function startBusAgentRunner(params: {
       if (workflowClaimTimer) clearInterval(workflowClaimTimer);
       if (controlCapability) params.expireControlCapability?.(next.requestId);
       if (workflowHint && !preserveWorkflowClaim) {
-        params.durableWorkflowStore?.expireWorkflowRequest(next.requestId, Date.now());
+        params.durableWorkflowStore?.expireWorkflowRequest(
+          next.requestId,
+          Date.now(),
+          workflowRunnerOwnerId,
+        );
       }
       runIdleWatchdog?.stop();
       rejectPreAgentCancellation = null;

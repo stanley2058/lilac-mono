@@ -1464,51 +1464,54 @@ export class DurableWorkflowStore {
     platform: string;
     now: number;
   }): AuthorizedWorkflowRequest | null {
-    const raw = this.db
-      .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, string, number]>(
-        `SELECT * FROM workflow_request_dispatches
+    const authorize = this.db.transaction((): AuthorizedWorkflowRequest | null => {
+      const raw = this.db
+        .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, string, number]>(
+          `SELECT * FROM workflow_request_dispatches
          WHERE request_id = ? AND token_sha256 = ? AND session_id = ? AND platform = ?
            AND active = 1 AND expires_at > ?`,
-      )
-      .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
-    if (!raw) return null;
-    const row = requestDispatchRowSchema.parse(raw);
-    const policy = workflowRequestPolicySchema.parse(
-      parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
-    );
-    const run = this.getRun(row.run_id);
-    const operation = this.getOperation(row.run_id, row.operation_id);
-    const revision = run ? this.getRevision(run.revisionId) : null;
-    const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
-    if (
-      !run ||
-      !operation ||
-      !revision ||
-      run.state !== "running" ||
-      approval?.state !== "approved" ||
-      approval.revisionId !== revision.revisionId ||
-      operation.requestId !== input.requestId ||
-      !["dispatched", "running"].includes(operation.state) ||
-      row.canonical_cwd !== policy.canonicalCwd ||
-      policy.runId !== run.runId ||
-      policy.operationId !== operation.operationId ||
-      policy.revisionId !== revision.revisionId ||
-      policy.canonicalProjectId !== revision.canonicalProjectId ||
-      policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
-      policy.sourceSha256 !== revision.sourceSha256 ||
-      policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
-      policy.capabilitySha256 !== revision.capabilitySha256 ||
-      policy.argsSha256 !== run.argsSha256
-    ) {
-      return null;
-    }
-    return {
-      requestId: row.request_id,
-      sessionId: row.session_id,
-      platform: row.platform,
-      policy,
-      expiresAt: row.expires_at,
-    };
+        )
+        .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
+      if (!raw) return null;
+      const row = requestDispatchRowSchema.parse(raw);
+      const policy = workflowRequestPolicySchema.parse(
+        parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
+      );
+      const run = this.getRun(row.run_id);
+      const operation = this.getOperation(row.run_id, row.operation_id);
+      const revision = run ? this.getRevision(run.revisionId) : null;
+      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
+      if (
+        !run ||
+        !operation ||
+        !revision ||
+        run.state !== "running" ||
+        approval?.state !== "approved" ||
+        approval.revisionId !== revision.revisionId ||
+        operation.requestId !== input.requestId ||
+        !["dispatched", "running"].includes(operation.state) ||
+        row.canonical_cwd !== policy.canonicalCwd ||
+        policy.runId !== run.runId ||
+        policy.operationId !== operation.operationId ||
+        policy.revisionId !== revision.revisionId ||
+        policy.canonicalProjectId !== revision.canonicalProjectId ||
+        policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
+        policy.sourceSha256 !== revision.sourceSha256 ||
+        policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
+        policy.capabilitySha256 !== revision.capabilitySha256 ||
+        policy.argsSha256 !== run.argsSha256
+      ) {
+        return null;
+      }
+      return {
+        requestId: row.request_id,
+        sessionId: row.session_id,
+        platform: row.platform,
+        policy,
+        expiresAt: row.expires_at,
+      };
+    });
+    return authorize.immediate();
   }
 
   claimWorkflowRequest(input: {
@@ -1574,12 +1577,19 @@ export class DurableWorkflowStore {
     return row?.present === 1;
   }
 
-  expireWorkflowRequest(requestId: string, now: number): void {
-    this.db.run(
-      `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-       updated_at = ? WHERE request_id = ? AND active = 1`,
-      [now, now, requestId],
-    );
+  expireWorkflowRequest(requestId: string, now: number, ownerId?: string): boolean {
+    const result = ownerId
+      ? this.db.run(
+          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+           updated_at = ? WHERE request_id = ? AND owner_id = ? AND active = 1`,
+          [now, now, requestId, ownerId],
+        )
+      : this.db.run(
+          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+           updated_at = ? WHERE request_id = ? AND active = 1`,
+          [now, now, requestId],
+        );
+    return result.changes === 1;
   }
 
   expireWorkflowRequestsForRun(runId: string, now: number): void {
@@ -1685,6 +1695,35 @@ export class DurableWorkflowStore {
         input.runOwnerId,
       );
     return result.changes === 1;
+  }
+
+  terminalizeOperationAndExpireRequest(input: {
+    runId: string;
+    operationId: string;
+    requestId: string;
+    from: WorkflowOperationState;
+    to: "succeeded" | "failed" | "cancelled" | "timed_out";
+    now: number;
+    output?: WorkflowOperation["output"];
+    resultArtifactId?: string | null;
+    error?: string | null;
+    usage?: WorkflowOperation["usage"];
+    runOwnerId: string;
+  }): boolean {
+    const terminalize = this.db.transaction(() => {
+      const current = this.getOperation(input.runId, input.operationId);
+      if (!current || current.state !== input.from) return false;
+      const changed = this.transitionOperation(input);
+      if (!changed) return false;
+      this.db
+        .query(
+          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
+           updated_at = ? WHERE request_id = ? AND run_id = ? AND operation_id = ? AND active = 1`,
+        )
+        .run(input.now, input.now, input.requestId, input.runId, input.operationId);
+      return true;
+    });
+    return terminalize.immediate();
   }
 
   tryClaimOperation(input: {
@@ -1910,7 +1949,7 @@ export class DurableWorkflowStore {
         run.state !== "running" ||
         !["pending", "claimed"].includes(wait.state) ||
         input.eventTs < wait.createdAt ||
-        (wait.deadlineAt !== null && input.eventTs > wait.deadlineAt)
+        (wait.deadlineAt !== null && input.eventTs >= wait.deadlineAt)
       ) {
         return null;
       }
@@ -1919,7 +1958,7 @@ export class DurableWorkflowStore {
           `UPDATE workflow_waits SET state = 'resolved', resolver_cursor = ?, result_json = ?,
            resolved_by = ?, resolved_at = ?, updated_at = ?, claimed_by = NULL, claimed_at = NULL
            WHERE run_id = ? AND operation_id = ? AND state IN ('pending', 'claimed')
-             AND created_at <= ? AND (deadline_at IS NULL OR deadline_at >= ?)`,
+              AND created_at <= ? AND (deadline_at IS NULL OR deadline_at > ?)`,
         )
         .run(
           input.cursor,
@@ -2578,7 +2617,21 @@ export class DurableWorkflowStore {
             run.state,
           );
         if (result.changes !== 1) return { status: "stale" };
-        if (action.kind === "cancel") {
+        if (action.kind === "pause") {
+          this.db.run(
+            `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
+             request_id = NULL, error = 'Paused from surface control', claimed_by = NULL,
+             claimed_at = NULL, started_at = NULL, terminal_at = NULL, updated_at = ?
+             WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+            [input.now, run.runId],
+          );
+          this.db.run(
+            `UPDATE workflow_request_dispatches SET active = 0,
+             expires_at = MIN(expires_at, ?), updated_at = ?
+             WHERE run_id = ? AND active = 1`,
+            [input.now, input.now, run.runId],
+          );
+        } else if (action.kind === "cancel") {
           this.db.run(
             `UPDATE workflow_operations SET state = 'cancelled', error = 'Cancelled from surface control',
              terminal_at = ?, updated_at = ?

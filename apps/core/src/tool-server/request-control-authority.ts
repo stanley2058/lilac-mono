@@ -2,15 +2,43 @@ import { createHash, randomBytes } from "node:crypto";
 
 type SafetyMode = "trusted" | "restricted";
 
-export type RequestControlPolicy = {
+type RequestControlPolicyBase = {
   requestId: string;
   sessionId: string;
-  platform: "discord" | "github";
-  principal: { platform: "discord" | "github"; userId: string };
+  platform: string;
   canonicalCwd: string;
   safetyMode: SafetyMode;
   expiresAt: number;
 };
+
+export const HEARTBEAT_LEVEL2_CALLABLES = [
+  "fetch",
+  "search",
+  "discovery.search",
+  "conversation.thread.search",
+  "conversation.thread.metadata",
+  "conversation.thread.read",
+  "surface.sessions.list",
+  "surface.sessions.listParticipants",
+  "surface.messages.list",
+  "surface.messages.read",
+  "surface.messages.search",
+  "surface.messages.send",
+] as const;
+
+export type RequestControlPolicy = RequestControlPolicyBase &
+  (
+    | {
+        kind: "primary";
+        principal: { platform: "discord" | "github"; userId: string };
+        allowedCallables: null;
+      }
+    | {
+        kind: "heartbeat";
+        principal: null;
+        allowedCallables: readonly string[];
+      }
+  );
 
 function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -34,8 +62,6 @@ export class RequestControlAuthority {
     requestId: string;
     sessionId: string;
     platform: string;
-    canonicalCwd: string;
-    safetyMode: SafetyMode;
     now: number;
   }): RequestControlPolicy | null {
     const hash = tokenHash(input.token);
@@ -46,9 +72,7 @@ export class RequestControlAuthority {
       policy.expiresAt <= input.now ||
       policy.requestId !== input.requestId ||
       policy.sessionId !== input.sessionId ||
-      policy.platform !== input.platform ||
-      policy.canonicalCwd !== input.canonicalCwd ||
-      policy.safetyMode !== input.safetyMode
+      policy.platform !== input.platform
     ) {
       return null;
     }

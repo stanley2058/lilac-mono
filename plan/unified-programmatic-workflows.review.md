@@ -98,3 +98,40 @@ None. Each report identified a reproducible regression or an equivalent unsafe r
 - Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter and projector tests cover failure classification and retry behavior.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Broader command execution requires a separately reviewed OS-sandbox executable allow-policy; current implementation/verification uses contained read/search/edit and the restricted interpreter.
+
+## Round 3
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Workflow Level-1 filesystem tools now enforce the authoritative canonical workflow root themselves. Reads, globs, greps, edits, and patches reject alternate/SSH cwd values, dangerous overrides, absolute and parent escapes, protected paths, symlink traversal, and non-owned write roots; workflow search uses the local `node-rg` backend and excludes fuzzy search.
+2. Internal heartbeat runs receive a dedicated principal-free Level-2 capability limited to the required read/search/session/message-send callables. List, help, and call all enforce the same callable allowlist, while workflow/control APIs and filesystem tools remain unavailable.
+3. Primary and heartbeat control authorization restores canonical cwd and safety mode from server-held capability policy. Level-2 authorization no longer depends on request-message cache retention or trusts the caller's cwd header.
+4. Cancel, pause, resume, and no-op run-control responses now use the same schema-aware redaction as run inspection/listing instead of returning raw sensitive arguments, results, or terminal detail.
+5. Sensitive workflows omit the argument hash from default run responses and Discord/GitHub progress review data, preventing equality correlation through a value that could not otherwise be inspected.
+6. Agent terminal operation writes and request-dispatch expiry are owner-fenced and transactional. A stale engine cannot publish a terminal transition or deactivate successor authority, and stale runner cleanup can expire only the request claim it still owns.
+7. Workflow request authorization validates dispatch, run, operation, revision, and approval state in one SQLite transaction. Agent terminalization and dispatch deactivation are also one transaction, removing authorization/terminal interleavings.
+8. Reply deadlines now use an explicit half-open interval: an event timestamp equal to the deadline is expired. This makes exact-deadline arbitration deterministic regardless of whether the event or timer callback executes first.
+9. GitHub REST failures now use a typed `GithubApiError` carrying the HTTP status and path. Adapter reads classify only an authentic typed 404 as authoritative absence; forged status-shaped and transient failures propagate.
+10. Projector reconciliation preserves bindings on transient lookup/edit failures, while an authoritative edit-time GitHub 404 clears the stale message reference, schedules retry, and recreates the card without reusing the missing target.
+11. Surface pause now requeues active operations, clears request IDs/claims, and deactivates dispatch authority in the same transaction that pauses and consumes the action. A paused run cannot leave a child request authorized.
+
+### Additional Hardening
+
+- Surface message attachment path, filename, and MIME-type arrays are schema-capped at the existing ten-attachment surface limit before file processing.
+
+### Regression Coverage
+
+- Added exploit coverage for `/etc`, `/proc`, SSH/alternate cwd, dangerous overrides, symlinks, glob traversal, protected files, edit escapes, patch escapes, and missing owned-worktree authority.
+- Added heartbeat callable-allowlist and request-cache-eviction/canonical-cwd tests across list, help, and call.
+- Added sensitive run-control and argument-hash redaction assertions for tool responses, GitHub text, Discord text, and review attachments.
+- Added stale runner/engine fencing, atomic surface pause, exact-deadline arbitration, typed edit-time 404 recovery, and attachment-count regressions.
+- Full validation passed: core 1075 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness, repository typecheck, remote runner/tool bridge/ACP builds, lint, format, and post-format checks.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, capability, and projector tests cover the reviewed failure classifications in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

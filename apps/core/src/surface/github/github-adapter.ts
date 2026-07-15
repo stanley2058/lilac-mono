@@ -16,21 +16,18 @@ import type {
   SurfaceAdapter,
   SurfaceOutputStream,
 } from "../adapter";
-import { z } from "zod";
-
 import {
   createIssueComment,
   editIssueComment,
   getIssue,
   getIssueComment,
+  GithubApiError,
   listIssueComments,
 } from "../../github/github-api";
 import { markGithubAgentComment } from "../../github/github-comment-marker";
 import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
 import { GithubOutputStream } from "./output/github-output-stream";
 import { renderGithubActionContent } from "./github-actions";
-
-const githubNotFoundErrorSchema = z.object({ status: z.literal(404) }).passthrough();
 
 function assertGithubSessionRef(sessionRef: SessionRef) {
   if (sessionRef.platform !== "github") {
@@ -143,7 +140,7 @@ export class GithubAdapter implements SurfaceAdapter {
         repo: thread.repo,
         number: thread.number,
       }).catch((error: unknown) => {
-        if (githubNotFoundErrorSchema.safeParse(error).success) return null;
+        if (error instanceof GithubApiError && error.status === 404) return null;
         throw error;
       });
       if (!issue) return null;
@@ -165,7 +162,7 @@ export class GithubAdapter implements SurfaceAdapter {
       repo: thread.repo,
       commentId: id,
     }).catch((error: unknown) => {
-      if (githubNotFoundErrorSchema.safeParse(error).success) return null;
+      if (error instanceof GithubApiError && error.status === 404) return null;
       throw error;
     });
     if (!match) return null;

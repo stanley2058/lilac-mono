@@ -15,6 +15,30 @@ type GithubApiCtx = {
   token: string;
 };
 
+export class GithubApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GithubApiError";
+  }
+}
+
+function githubApiError(input: {
+  status: number;
+  statusText: string;
+  path: string;
+  body: string;
+}): GithubApiError {
+  return new GithubApiError(
+    input.status,
+    input.path,
+    `GitHub API error (${input.status} ${input.statusText}) at ${input.path}${input.body ? `: ${input.body}` : ""}`,
+  );
+}
+
 function headers(token: string, extra?: Record<string, string>): HeadersInit {
   return {
     "User-Agent": "lilac",
@@ -45,9 +69,12 @@ async function githubFetchJson<T>(input: {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GitHub API error (${res.status} ${res.statusText}) at ${input.path}${text ? `: ${text}` : ""}`,
-    );
+    throw githubApiError({
+      status: res.status,
+      statusText: res.statusText,
+      path: input.path,
+      body: text,
+    });
   }
   return (await res.json()) as T;
 }
@@ -65,9 +92,12 @@ async function githubFetchNoBody(input: {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GitHub API error (${res.status} ${res.statusText}) at ${input.path}${text ? `: ${text}` : ""}`,
-    );
+    throw githubApiError({
+      status: res.status,
+      statusText: res.statusText,
+      path: input.path,
+      body: text,
+    });
   }
 }
 

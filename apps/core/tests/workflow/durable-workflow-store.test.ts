@@ -240,6 +240,16 @@ describe("DurableWorkflowStore", () => {
           now: 16,
         }),
       ).toBe(true);
+      expect(store.expireWorkflowRequest("wfr:request-1", 16, "runner-1")).toBe(false);
+      expect(
+        store.authorizeWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          now: 16,
+        }),
+      ).not.toBeNull();
       store.transitionApproval({
         approvalId: invocation.approval.approvalId,
         from: "approved",
@@ -305,6 +315,19 @@ describe("DurableWorkflowStore", () => {
           now: 102,
         }),
       ).toBe(true);
+      expect(
+        store.terminalizeOperationAndExpireRequest({
+          runOwnerId: "owner-old",
+          runId: "run-fenced",
+          operationId: "operation-1",
+          requestId: "wfr:stale",
+          from: "dispatched",
+          to: "failed",
+          now: 102,
+          error: "stale worker",
+        }),
+      ).toBe(false);
+      expect(store.getOperation("run-fenced", "operation-1")?.state).toBe("dispatched");
       expect(
         store.createWait(
           {
@@ -862,6 +885,46 @@ describe("DurableWorkflowStore", () => {
         }).status,
       ).toBe("stale");
 
+      expect(
+        store.tryClaimApprovedRun({ runId: "run-1", claimerId: "surface-engine", now: 24 }),
+      ).not.toBeNull();
+      expect(store.createOperation(operation("run-1"), "surface-engine")).toBe(true);
+      const dispatchToken = "surface-pause-dispatch-token-123456";
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:surface-pause",
+          runId: "run-1",
+          operationId: "operation-1",
+          runOwnerId: "surface-engine",
+          token: dispatchToken,
+          sessionId: "workflow:run-1:operation-1",
+          platform: "unknown",
+          policy: {
+            runId: "run-1",
+            operationId: "operation-1",
+            profile: "explore",
+            safetyMode: "trusted",
+            editing: false,
+            externalTools: false,
+            surfaceSends: false,
+            subagents: false,
+            canonicalWorkspaceRoot: "/workspace",
+            canonicalCwd: "/workspace",
+            canonicalProjectId: "project-1",
+            originSessionId: "session-1",
+            originClient: "discord",
+            revisionId: "revision-1",
+            sourceSha256: HASH_A,
+            inputSchemaSha256: HASH_A,
+            capabilitySha256: HASH_B,
+            argsSha256: HASH_A,
+          },
+          now: 24,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).not.toBeNull();
+
       for (const [kind, expectedState] of [
         ["pause", "paused"],
         ["resume", "queued"],
@@ -892,6 +955,22 @@ describe("DurableWorkflowStore", () => {
           }).status,
         ).toBe("applied");
         expect(store.getRun("run-1")?.state).toBe(expectedState);
+        if (kind === "pause") {
+          expect(store.getOperation("run-1", "operation-1")).toMatchObject({
+            state: "queued",
+            attempt: 1,
+            requestId: null,
+          });
+          expect(
+            store.authorizeWorkflowRequest({
+              requestId: "wfr:surface-pause",
+              token: dispatchToken,
+              sessionId: "workflow:run-1:operation-1",
+              platform: "unknown",
+              now: 25,
+            }),
+          ).toBeNull();
+        }
       }
 
       expect(

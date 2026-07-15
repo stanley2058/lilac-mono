@@ -36,6 +36,7 @@ import {
   isMarkedGithubAgentComment,
   markGithubAgentComment,
 } from "../../src/github/github-comment-marker";
+import { GithubApiError } from "../../src/github/github-api";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -64,6 +65,7 @@ class ProjectionAdapter implements SurfaceAdapter {
   edits = 0;
   failNextSend = false;
   failNextRead = false;
+  failNextEditNotFound = false;
 
   async connect() {}
   async disconnect() {}
@@ -120,6 +122,10 @@ class ProjectionAdapter implements SurfaceAdapter {
     return [...this.messages.values()];
   }
   async editMsg(ref: MsgRef, content: ContentOpts) {
+    if (this.failNextEditNotFound) {
+      this.failNextEditNotFound = false;
+      throw new GithubApiError(404, "/issues/comments/missing", "missing");
+    }
     this.edits += 1;
     this.contents.push(content);
     const current = this.messages.get(ref.messageId);
@@ -279,6 +285,7 @@ describe("WorkflowProgressProjector", () => {
       expect(githubReview.text).toContain("project:audit.js");
       expect(githubReview.text).toContain(HASH_A);
       expect(githubReview.text).not.toContain("secret");
+      expect(githubReview.text).not.toContain("d".repeat(64));
 
       let projector = new WorkflowProgressProjector({
         bus,
@@ -295,6 +302,14 @@ describe("WorkflowProgressProjector", () => {
         "Reject",
       ]);
       expect(adapter.contents[0]?.text).not.toContain("secret");
+      expect(adapter.contents[0]?.text).not.toContain("d".repeat(64));
+      expect(
+        adapter.contents[0]?.attachments?.every(
+          (attachment) =>
+            attachment.kind !== "file" ||
+            !new TextDecoder().decode(attachment.bytes).includes("d".repeat(64)),
+        ),
+      ).toBe(true);
       expect(adapter.contents[0]?.attachments?.map((item) => item.filename)).toEqual([
         "audit-review.json",
         `audit-${HASH_A.slice(0, 12)}.js`,
@@ -429,6 +444,44 @@ describe("WorkflowProgressProjector", () => {
     } finally {
       store.close();
       await bus.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("clears an authoritative edit-time 404 and recreates the card on retry", async () => {
+    const dbPath = join(tmpdir(), `workflow-projector-edit-404-${crypto.randomUUID()}.sqlite`);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const store = new DurableWorkflowStore(dbPath);
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "test-projector-edit-404",
+      now: () => 20,
+    });
+    try {
+      createInvocation(store);
+      const first = await projector.ensureInitialCard("run-1");
+      expect(
+        store.transitionApproval({
+          approvalId: "approval-1",
+          from: "pending",
+          to: "approved",
+          now: 21,
+          actorPlatform: "discord",
+          actorUserId: "user-1",
+        }),
+      ).toBe(true);
+      adapter.failNextEditNotFound = true;
+      await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("could not be created");
+      expect(store.getSurfaceBinding("run-1")?.messageRef).toBeNull();
+      const recreated = await projector.ensureInitialCard("run-1");
+      expect(recreated.messageId).not.toBe(first.messageId);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
       rmSync(dbPath, { force: true });
     }
   });

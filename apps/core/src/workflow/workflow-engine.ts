@@ -921,10 +921,11 @@ export class WorkflowEngine {
     }
     const terminalFrom =
       this.input.store.getOperation(run.runId, operation.operationId)?.state ?? latest.state;
-    this.input.store.transitionOperation({
+    const terminalized = this.input.store.terminalizeOperationAndExpireRequest({
       runOwnerId: this.workerId,
       runId: run.runId,
       operationId: operation.operationId,
+      requestId: reqId,
       from: terminalFrom,
       to: nextState,
       now: this.now(),
@@ -933,7 +934,7 @@ export class WorkflowEngine {
       error: result.state === "resolved" ? null : (result.detail ?? result.state),
       usage: result.usage,
     });
-    this.input.store.expireWorkflowRequest(reqId, this.now());
+    if (!terminalized) throw new Error("Agent operation terminal transition lost its fenced lease");
     await this.publishOperation(revision, operation, nextState, terminalFrom);
     if (result.usage) await this.publishUsage(run, revision, operation.operationId);
     if (nextState !== "succeeded") throw new Error(result.detail ?? `Agent request ${nextState}`);
