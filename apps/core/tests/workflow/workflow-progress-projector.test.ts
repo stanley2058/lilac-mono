@@ -43,6 +43,14 @@ import {
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("Timed out waiting for projection state");
+    await Bun.sleep(5);
+  }
+}
+
 class IdleRawBus implements RawBus {
   async publish<TData>(_message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
     return { id: "1-0", cursor: "1-0" };
@@ -151,8 +159,11 @@ class ProjectionAdapter implements SurfaceAdapter {
         this.platform === "discord"
           ? { platform: "discord", channelId: session.channelId }
           : { platform: "github", channelId: session.channelId },
-      userId: "bot",
-      text: content.text ?? "",
+      userId: this.platform === "github" ? "lilac-workflow[bot]" : "bot",
+      text:
+        this.platform === "github"
+          ? markGithubAgentComment(content.text ?? "")
+          : (content.text ?? ""),
       ts: Date.now(),
     });
     this.messageContents.set(ref.messageId, content);
@@ -166,8 +177,18 @@ class ProjectionAdapter implements SurfaceAdapter {
     }
     return this.messages.get(ref.messageId) ?? null;
   }
-  async listMsg(_session: SessionRef, _opts?: LimitOpts) {
-    return [...this.messages.values()];
+  async listMsg(_session: SessionRef, opts?: LimitOpts) {
+    const limit = opts?.limit ?? 50;
+    const messages = [...this.messages.values()];
+    if (this.platform === "github") {
+      const start = ((opts?.page ?? 1) - 1) * limit;
+      return messages.slice(start, start + limit);
+    }
+    const newestFirst = messages.reverse();
+    const start = opts?.beforeMessageId
+      ? newestFirst.findIndex((message) => message.ref.messageId === opts.beforeMessageId) + 1
+      : 0;
+    return newestFirst.slice(Math.max(0, start), Math.max(0, start) + limit);
   }
   async editMsg(ref: MsgRef, content: ContentOpts) {
     this.editStarts += 1;
@@ -186,7 +207,13 @@ class ProjectionAdapter implements SurfaceAdapter {
     this.contents.push(content);
     const current = this.messages.get(ref.messageId);
     if (!current) throw new Error("message missing");
-    this.messages.set(ref.messageId, { ...current, text: content.text ?? "" });
+    this.messages.set(ref.messageId, {
+      ...current,
+      text:
+        this.platform === "github"
+          ? markGithubAgentComment(content.text ?? "")
+          : (content.text ?? ""),
+    });
     this.messageContents.set(ref.messageId, content);
   }
   async deleteMsg(ref: MsgRef) {
@@ -236,6 +263,30 @@ class FirstSendBlockingProjectionAdapter extends ProjectionAdapter {
       });
     }
     return await super.sendMsg(session, content, options);
+  }
+}
+
+class FirstEditBlockingProjectionAdapter extends ProjectionAdapter {
+  private first = true;
+  private releaseFirst: (() => void) | null = null;
+  private resolveFirstStarted: () => void = () => {};
+  readonly firstStarted = new Promise<void>((resolve) => {
+    this.resolveFirstStarted = resolve;
+  });
+
+  release(): void {
+    this.releaseFirst?.();
+  }
+
+  override async editMsg(ref: MsgRef, content: ContentOpts): Promise<void> {
+    if (this.first) {
+      this.first = false;
+      this.resolveFirstStarted();
+      await new Promise<void>((resolve) => {
+        this.releaseFirst = resolve;
+      });
+    }
+    await super.editMsg(ref, content);
   }
 }
 
@@ -593,6 +644,67 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
+  it("paginates real-shape GitHub agent comments and neutralizes duplicate workflow cards", async () => {
+    const dbPath = join(tmpdir(), `workflow-github-deep-discovery-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter("github");
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["github", adapter]]),
+      subscriptionId: "github-deep-discovery",
+      now: () => 20,
+    });
+    const session = { platform: "github" as const, channelId: "channel-1" };
+    const workflowMarker = `<!-- lilac-workflow-card:${sha256(
+      "workflow-progress-card:run-1",
+    )}:generation:0 -->`;
+    try {
+      createInvocation(store, "github");
+      for (let index = 0; index < 120; index += 1) {
+        const messageId = `noise-${index}`;
+        adapter.messages.set(messageId, {
+          ref: { ...session, messageId },
+          session,
+          userId: "lilac-workflow[bot]",
+          text: markGithubAgentComment(`unrelated comment ${index}`),
+          ts: index,
+        });
+      }
+      for (const [messageId, ts] of [
+        ["deep-card-1", 120],
+        ["deep-card-2", 121],
+      ] as const) {
+        adapter.messages.set(messageId, {
+          ref: { ...session, messageId },
+          session,
+          userId: "lilac-workflow[bot]",
+          text: markGithubAgentComment(`Workflow card\n${workflowMarker}`),
+          ts,
+        });
+        adapter.messageContents.set(messageId, {
+          text: `Workflow card\n${workflowMarker}`,
+          actions: [{ label: "Stale", actionId: `stale-${messageId}`, style: "danger" }],
+        });
+      }
+
+      const recovered = await projector.ensureInitialCard("run-1");
+      expect(recovered.messageId).toBe("deep-card-2");
+      expect(adapter.sends).toBe(0);
+      expect(store.getSurfaceBinding("run-1")?.messageRef).toEqual(recovered);
+      expect(adapter.messageContents.get("deep-card-1")?.text).toContain("superseded");
+      expect(adapter.messageContents.get("deep-card-1")?.actions).toEqual([]);
+      expect(adapter.messageContents.get("deep-card-2")?.actions?.length).toBe(2);
+      expect(store.listPendingSurfaceProjectionOrphans({ runId: "run-1" })).toEqual([]);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("repairs a stale send and deletes its visible orphan card", async () => {
     const dbPath = join(tmpdir(), `workflow-stale-projector-${crypto.randomUUID()}.sqlite`);
     const storeA = new DurableWorkflowStore(dbPath);
@@ -622,8 +734,8 @@ describe("WorkflowProgressProjector", () => {
       adapter.release();
       await expect(staleProjection).rejects.toThrow("claim was lost");
       expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
-        repairGeneration: 1,
-        renderedRepairGeneration: 0,
+        repairGeneration: 2,
+        renderedRepairGeneration: 1,
       });
       const repairedRef = await projectorB.ensureInitialCard("run-1");
       expect(repairedRef).toEqual(currentRef);
@@ -632,8 +744,8 @@ describe("WorkflowProgressProjector", () => {
       expect([...adapter.messages.keys()]).toEqual([currentRef.messageId]);
       expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
         messageRef: currentRef,
-        repairGeneration: 1,
-        renderedRepairGeneration: 1,
+        repairGeneration: 2,
+        renderedRepairGeneration: 2,
       });
       expect(
         storeA
@@ -782,7 +894,7 @@ describe("WorkflowProgressProjector", () => {
       adapter.releaseFirst();
       await expect(staleEdit).rejects.toThrow("claim was lost");
       expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
-        repairGeneration: 1,
+        repairGeneration: 2,
         renderedRepairGeneration: 0,
       });
       adapter.releaseSecond();
@@ -798,8 +910,8 @@ describe("WorkflowProgressProjector", () => {
       ).toEqual(["Pause", "Cancel"]);
       expect(storeA.getSurfaceBinding("run-1")).toMatchObject({
         messageRef: cardRef,
-        repairGeneration: 1,
-        renderedRepairGeneration: 1,
+        repairGeneration: 2,
+        renderedRepairGeneration: 2,
       });
       const cancelToken = adapter.messageContents
         .get(cardRef.messageId)
@@ -823,6 +935,98 @@ describe("WorkflowProgressProjector", () => {
       await bus.close();
       storeA.close();
       storeB.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("repairs a stale remote generation after the stale editor process dies", async () => {
+    const dbPath = join(tmpdir(), `workflow-stale-edit-crash-${crypto.randomUUID()}.sqlite`);
+    const storeA = new DurableWorkflowStore(dbPath);
+    const storeB = new DurableWorkflowStore(dbPath);
+    const storeC = new DurableWorkflowStore(dbPath);
+    const adapter = new FirstEditBlockingProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const initial = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-crash-initial",
+      now: () => 10,
+    });
+    const stale = new WorkflowProgressProjector({
+      bus,
+      store: storeA,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-crash-stale",
+      now: () => 20,
+      afterExternalIo: async () => await new Promise<void>(() => {}),
+    });
+    const current = new WorkflowProgressProjector({
+      bus,
+      store: storeB,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-crash-current",
+      now: () => 40_000,
+    });
+    const replacement = new WorkflowProgressProjector({
+      bus,
+      store: storeC,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "stale-edit-crash-replacement",
+      now: () => 50_000,
+    });
+    try {
+      createInvocation(storeA);
+      const cardRef = await initial.ensureInitialCard("run-1");
+      await initial.stop();
+      storeA.transitionApproval({
+        approvalId: "approval-1",
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+
+      void stale.ensureInitialCard("run-1");
+      await adapter.firstStarted;
+      expect(
+        storeB.tryClaimApprovedRun({
+          runId: "run-1",
+          claimerId: "engine",
+          now: 40_000,
+        })?.state,
+      ).toBe("running");
+      await current.ensureInitialCard("run-1");
+      expect(storeB.getSurfaceBinding("run-1")).toMatchObject({
+        repairGeneration: 1,
+        renderedRepairGeneration: 1,
+      });
+
+      adapter.release();
+      await waitFor(() => adapter.edits === 2);
+      expect(adapter.messages.get(cardRef.messageId)?.text).toContain("State: **queued**");
+      await current.stop();
+
+      await replacement.start();
+      await waitFor(
+        () => adapter.messages.get(cardRef.messageId)?.text.includes("State: **running**") ?? false,
+      );
+      expect(storeC.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: cardRef,
+        repairGeneration: 2,
+        renderedRepairGeneration: 2,
+      });
+      expect(
+        adapter.messageContents.get(cardRef.messageId)?.actions?.map((action) => action.label),
+      ).toEqual(["Pause", "Cancel"]);
+    } finally {
+      adapter.release();
+      await initial.stop();
+      await current.stop();
+      await replacement.stop();
+      await bus.close();
+      storeA.close();
+      storeB.close();
+      storeC.close();
       rmSync(dbPath, { force: true });
     }
   });

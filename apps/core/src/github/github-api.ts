@@ -242,6 +242,7 @@ export async function listIssueComments(input: {
   repo: string;
   number: number;
   limit: number;
+  page?: number;
 }): Promise<
   Array<{
     id: number;
@@ -256,7 +257,7 @@ export async function listIssueComments(input: {
   const perPage = Math.min(Math.max(input.limit, 1), 100);
   return await githubFetchJson({
     ...c,
-    path: `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments?per_page=${perPage}`,
+    path: `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments?per_page=${perPage}&page=${Math.max(1, input.page ?? 1)}`,
   });
 }
 

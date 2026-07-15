@@ -2,9 +2,10 @@ import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import { GithubApiError } from "../github/github-api";
+import { isMarkedGithubAgentComment } from "../github/github-comment-marker";
 import { SurfaceMessageNotFoundError, type SurfaceAdapter } from "../surface/adapter";
 import { GithubMessageCreatedError } from "../surface/github/github-adapter";
-import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
+import type { ContentOpts, MsgRef, SessionRef, SurfaceMessage } from "../surface/types";
 import {
   DurableWorkflowStore,
   type WorkflowSurfaceProjectionOrphan,
@@ -38,12 +39,45 @@ class ProjectionClaimUnavailableError extends Error {}
 class ProjectionRepairChangedError extends ProjectionClaimUnavailableError {}
 
 const WORKFLOW_CARD_TEXT_LIMIT = 4_000;
+const DISCOVERY_PAGE_SIZE = 100;
+const DISCOVERY_MAX_PAGES = 5;
+const DISCOVERY_TIMEOUT_MS = 5_000;
 
-function workflowCardMarker(runId: string, platform: "discord" | "github"): string {
-  const id = sha256(`workflow-progress-card:${runId}`);
+function workflowCardId(runId: string): string {
+  return sha256(`workflow-progress-card:${runId}`);
+}
+
+function workflowCardMarker(
+  runId: string,
+  platform: "discord" | "github",
+  repairGeneration: number,
+): string {
+  const id = workflowCardId(runId);
   return platform === "github"
-    ? `<!-- lilac-workflow-card:${id} -->`
-    : `[\u200B](https://lilac.invalid/.well-known/workflow-card/${id})`;
+    ? `<!-- lilac-workflow-card:${id}:generation:${repairGeneration} -->`
+    : `[\u200B](https://lilac.invalid/.well-known/workflow-card/${id}?generation=${repairGeneration})`;
+}
+
+function workflowCardGeneration(
+  text: string,
+  runId: string,
+  platform: "discord" | "github",
+): number | null {
+  const id = workflowCardId(runId);
+  const prefix =
+    platform === "github"
+      ? `<!-- lilac-workflow-card:${id}:generation:`
+      : `https://lilac.invalid/.well-known/workflow-card/${id}?generation=`;
+  const suffix = platform === "github" ? " -->" : ")";
+  const start = text.indexOf(prefix);
+  if (start < 0) return null;
+  const valueStart = start + prefix.length;
+  const valueEnd = text.indexOf(suffix, valueStart);
+  if (valueEnd < valueStart) return null;
+  const value = text.slice(valueStart, valueEnd);
+  if (!/^\d+$/u.test(value)) return null;
+  const generation = Number(value);
+  return Number.isSafeInteger(generation) ? generation : null;
 }
 
 function workflowSupersededMarker(runId: string, platform: "discord" | "github"): string {
@@ -57,8 +91,9 @@ function withWorkflowCardMarker(
   content: ContentOpts,
   runId: string,
   platform: "discord" | "github",
+  repairGeneration: number,
 ): ContentOpts {
-  const marker = workflowCardMarker(runId, platform);
+  const marker = workflowCardMarker(runId, platform, repairGeneration);
   const suffix = `${content.text ? "\n" : ""}${marker}`;
   const text = (content.text ?? "").slice(0, WORKFLOW_CARD_TEXT_LIMIT - suffix.length);
   return { ...content, text: `${text}${suffix}` };
@@ -645,25 +680,74 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     }
   }
 
-  private async discoverWorkflowCard(
+  private async listWorkflowCardCandidates(
+    target: { platform: "discord" | "github"; channelId: string },
+    adapter: SurfaceAdapter,
+    runId: string,
+    claimToken: string,
+  ): Promise<Array<{ message: SurfaceMessage; generation: number }>> {
+    const startedAt = Date.now();
+    const messages = new Map<string, SurfaceMessage>();
+    let beforeMessageId: string | undefined;
+    for (let page = 1; page <= DISCOVERY_MAX_PAGES; page += 1) {
+      this.refreshClaim(runId, claimToken);
+      const batch = await adapter.listMsg(asSessionRef(target.platform, target.channelId), {
+        limit: DISCOVERY_PAGE_SIZE,
+        ...(target.platform === "github" ? { page } : { beforeMessageId }),
+      });
+      this.refreshClaim(runId, claimToken);
+      let added = 0;
+      for (const message of batch) {
+        const key = `${message.ref.platform}:${message.ref.channelId}:${message.ref.messageId}`;
+        if (!messages.has(key)) added += 1;
+        messages.set(key, message);
+      }
+      if (batch.length < DISCOVERY_PAGE_SIZE || added === 0) break;
+      if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) break;
+      if (target.platform === "discord") {
+        const nextBefore = batch.at(-1)?.ref.messageId;
+        if (!nextBefore || nextBefore === beforeMessageId) break;
+        beforeMessageId = nextBefore;
+      }
+    }
+
+    const self = target.platform === "discord" ? await adapter.getSelf() : null;
+    return [...messages.values()].flatMap((message) => {
+      if (
+        message.ref.platform !== target.platform ||
+        message.ref.channelId !== target.channelId ||
+        (target.platform === "github"
+          ? !isMarkedGithubAgentComment(message.text)
+          : message.userId !== self?.userId)
+      ) {
+        return [];
+      }
+      const generation = workflowCardGeneration(message.text, runId, target.platform);
+      return generation === null ? [] : [{ message, generation }];
+    });
+  }
+
+  private async discoverWorkflowCards(
     runId: string,
     target: { platform: "discord" | "github"; channelId: string },
     adapter: SurfaceAdapter,
     claimToken: string,
-  ): Promise<MsgRef | null> {
-    this.refreshClaim(runId, claimToken);
-    const [self, messages] = await Promise.all([
-      adapter.getSelf(),
-      adapter.listMsg(asSessionRef(target.platform, target.channelId), { limit: 100 }),
-    ]);
-    this.refreshClaim(runId, claimToken);
-    const marker = workflowCardMarker(runId, target.platform);
-    return (
-      messages
-        .filter((message) => message.userId === self.userId && message.text.includes(marker))
-        .sort((left, right) => right.ts - left.ts)
-        .at(0)?.ref ?? null
-    );
+    expectedGeneration: number,
+  ): Promise<{ canonical: MsgRef | null; duplicates: MsgRef[] }> {
+    const candidates = await this.listWorkflowCardCandidates(target, adapter, runId, claimToken);
+    candidates.sort((left, right) => {
+      const leftCurrent = left.generation === expectedGeneration ? 1 : 0;
+      const rightCurrent = right.generation === expectedGeneration ? 1 : 0;
+      return (
+        rightCurrent - leftCurrent ||
+        right.generation - left.generation ||
+        right.message.ts - left.message.ts
+      );
+    });
+    return {
+      canonical: candidates.at(0)?.message.ref ?? null,
+      duplicates: candidates.slice(1).map((candidate) => candidate.message.ref),
+    };
   }
 
   private async projectOwned(
@@ -743,10 +827,19 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         );
         throw error;
       }
+      let verifiedBinding = retryBinding;
+      if (
+        found &&
+        workflowCardGeneration(found.text, runId, target.platform) !== retryBinding.repairGeneration
+      ) {
+        this.input.store.ensureSurfaceBindingRepair(runId, now);
+        this.actions.delete(runId);
+        verifiedBinding = this.input.store.getSurfaceBinding(runId) ?? retryBinding;
+      }
       existing = {
-        ...retryBinding,
-        messageRef: found ? retryBinding.messageRef : null,
-        lastRenderedSha256: found ? retryBinding.lastRenderedSha256 : null,
+        ...verifiedBinding,
+        messageRef: found ? verifiedBinding.messageRef : null,
+        lastRenderedSha256: found ? verifiedBinding.lastRenderedSha256 : null,
         lastError: null,
         retryCount: 0,
         nextAttemptAt: null,
@@ -756,17 +849,18 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       if (!found) messageRef = null;
     }
     if (!messageRef) {
-      const discovered = await this.discoverWorkflowCard(
+      const discovered = await this.discoverWorkflowCards(
         runId,
         { platform: target.platform, channelId: target.channelId },
         adapter,
         claimToken,
+        existing.repairGeneration,
       );
-      if (discovered) {
-        messageRef = discovered;
+      if (discovered.canonical) {
+        messageRef = discovered.canonical;
         existing = {
           ...existing,
-          messageRef: discovered,
+          messageRef: discovered.canonical,
           lastRenderedSha256: null,
           lastError: null,
           retryCount: 0,
@@ -774,6 +868,14 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           updatedAt: now,
         };
         this.writeBinding(existing, claimToken);
+        for (const duplicate of discovered.duplicates) {
+          this.input.store.recordSurfaceProjectionOrphan({
+            runId,
+            messageRef: duplicate,
+            now,
+          });
+        }
+        await this.processPendingOrphans(runId, adapter, claimToken);
       }
     }
     existing = this.input.store.getSurfaceBinding(runId) ?? existing;
@@ -785,7 +887,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       platform: target.platform,
       actions: surfaceActions,
     });
-    const content = withWorkflowCardMarker(rendered, runId, target.platform);
+    const content = withWorkflowCardMarker(rendered, runId, target.platform, repairGeneration);
     const renderedSha256 = sha256(
       JSON.stringify({
         text: content.text,

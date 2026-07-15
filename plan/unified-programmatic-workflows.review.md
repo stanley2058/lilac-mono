@@ -347,3 +347,34 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 10
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. Approval revocation, engine pause, and surface pause now preserve the attempt and deterministic request ID of any active operation whose terminal receipt already exists. Resume adopts that receipt through the existing journal before child dispatch, including the valid queued-to-dispatched journal transition required for receipt terminalization.
+2. Receipt/live-owner/dispatch-epoch handoff is one immediate SQLite transaction returning a bounded `receipt`, `live`, or `fresh` state. A concurrent receipt can no longer deactivate a live dispatch between separate owner and epoch reads and surface as a missing epoch.
+3. Fresh authorization rejection performs one bounded exact-receipt reread before failing. A receipt committed after handoff inspection but before authorization therefore converges the operation and run without a second child dispatch; unrelated authorization failures still fail closed.
+4. GitHub workflow-card discovery verifies the server-owned Lilac agent-comment marker plus the deterministic workflow run marker and exact platform/channel identity. It no longer compares production comment authors with the adapter's placeholder self identity.
+5. Workflow discovery is bounded to five 100-message pages and five seconds. GitHub uses explicit issue-comment page numbers; Discord walks newest history with message cursors. Discovery selects the durable generation when present, journals every other marked card, and neutralizes duplicate controls under the current projection claim.
+6. Hidden workflow-card markers now carry the projection repair generation. Stale projection-claim takeover increments repair before rendering, and startup reconciliation compares the remote marker generation with durable state, retains or creates repair, expires stale actions, and re-renders after a stale editor dies immediately after external I/O.
+
+### Regression Coverage
+
+- Added deterministic receipt commits at both dispatch-handoff windows, plus receipt-immediately-before-pause/resume coverage asserting one child dispatch, stable request identity/attempt, preserved usage, and final result.
+- Added a real-shape GitHub App author test with more than 100 preceding comments, canonical duplicate selection, durable GitHub neutralization, and no placeholder identity dependency.
+- Added process-death-after-stale-edit coverage proving startup detects the stale remote generation and restores current content and usable controls.
+- Full validation passed: core 1109 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

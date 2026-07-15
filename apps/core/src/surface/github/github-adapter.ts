@@ -186,6 +186,7 @@ export class GithubAdapter implements SurfaceAdapter {
       repo: thread.repo,
       number: thread.number,
       limit,
+      page: opts?.page,
     });
     return comments.map((c) => ({
       ref: {

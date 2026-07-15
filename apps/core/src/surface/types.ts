@@ -101,6 +101,8 @@ export type SurfaceReactionSummary = {
 
 export type LimitOpts = {
   limit?: number;
+  /** Optional one-based page for adapters backed by page-number APIs. */
+  page?: number;
   /**
    * Optional paging cursor.
    *

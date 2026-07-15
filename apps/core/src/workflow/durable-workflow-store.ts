@@ -612,6 +612,11 @@ export type WorkflowRequestTerminalReceipt = {
   createdAt: number;
 };
 
+export type WorkflowRequestDispatchHandoff =
+  | { status: "receipt"; receipt: WorkflowRequestTerminalReceipt }
+  | { status: "live"; dispatchEpoch: string }
+  | { status: "fresh" };
+
 export type WorkflowActionOutboxEntry = {
   outboxId: string;
   actionId: string;
@@ -1273,8 +1278,16 @@ export class DurableWorkflowStore {
         );
       } else if (input.to === "revoked") {
         this.db.run(
-          `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-           request_id = NULL, error = ?, claimed_by = NULL, claimed_at = NULL,
+          `UPDATE workflow_operations SET state = 'queued',
+           attempt = attempt + CASE WHEN EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipts receipt
+             WHERE receipt.request_id = workflow_operations.request_id
+           ) THEN 0 ELSE 1 END,
+           request_id = CASE WHEN EXISTS (
+             SELECT 1 FROM workflow_request_terminal_receipts receipt
+             WHERE receipt.request_id = workflow_operations.request_id
+           ) THEN request_id ELSE NULL END,
+           error = ?, claimed_by = NULL, claimed_at = NULL,
            started_at = NULL, terminal_at = NULL, updated_at = ?
            WHERE run_id IN (
              SELECT run_id FROM workflow_runs WHERE approval_id = ?
@@ -1444,8 +1457,16 @@ export class DurableWorkflowStore {
       const run = this.getRun(input.runId);
       if (!run || !["queued", "running", "blocked"].includes(run.state)) return run;
       this.db.run(
-        `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-         request_id = NULL, error = ?, claimed_by = NULL, claimed_at = NULL,
+        `UPDATE workflow_operations SET state = 'queued',
+         attempt = attempt + CASE WHEN EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) THEN 0 ELSE 1 END,
+         request_id = CASE WHEN EXISTS (
+           SELECT 1 FROM workflow_request_terminal_receipts receipt
+           WHERE receipt.request_id = workflow_operations.request_id
+         ) THEN request_id ELSE NULL END,
+         error = ?, claimed_by = NULL, claimed_at = NULL,
          started_at = NULL, terminal_at = NULL, updated_at = ?
          WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
         [input.detail, input.now, input.runId],
@@ -1845,6 +1866,33 @@ export class DurableWorkflowStore {
       .query("SELECT * FROM workflow_request_terminal_receipts WHERE request_id = ?")
       .get(requestId);
     return row === null ? null : parseRequestTerminalReceipt(row);
+  }
+
+  getWorkflowRequestDispatchHandoff(input: {
+    requestId: string;
+    now: number;
+    staleAfterMs?: number;
+  }): WorkflowRequestDispatchHandoff {
+    const inspect = this.db.transaction(() => {
+      const receipt = this.db
+        .query("SELECT * FROM workflow_request_terminal_receipts WHERE request_id = ?")
+        .get(input.requestId);
+      if (receipt !== null) {
+        return { status: "receipt" as const, receipt: parseRequestTerminalReceipt(receipt) };
+      }
+      const staleBefore = input.now - (input.staleAfterMs ?? 60_000);
+      const dispatch = this.db
+        .query<{ dispatch_epoch: string }, [string, number, number]>(
+          `SELECT dispatch_epoch FROM workflow_request_dispatches
+           WHERE request_id = ? AND active = 1 AND expires_at > ?
+             AND owner_id IS NOT NULL AND owner_heartbeat_at > ?`,
+        )
+        .get(input.requestId, input.now, staleBefore);
+      return dispatch
+        ? { status: "live" as const, dispatchEpoch: dispatch.dispatch_epoch }
+        : { status: "fresh" as const };
+    });
+    return inspect.immediate();
   }
 
   claimWorkflowRequestPromptPublication(input: {
@@ -2893,8 +2941,14 @@ export class DurableWorkflowStore {
     now: number;
     staleBefore: number;
   }): boolean {
-    return (
-      this.db
+    const claim = this.db.transaction(() => {
+      const previous = this.db
+        .query<{ owner_id: string; claim_token: string }, [string]>(
+          `SELECT owner_id, claim_token FROM workflow_surface_projection_claims
+           WHERE run_id = ?`,
+        )
+        .get(input.runId);
+      const changed = this.db
         .query(
           `INSERT INTO workflow_surface_projection_claims (
              run_id, owner_id, claim_token, claimed_at
@@ -2914,8 +2968,34 @@ export class DurableWorkflowStore {
           input.now,
           input.runId,
           input.staleBefore,
-        ).changes === 1
-    );
+        ).changes;
+      if (changed !== 1) return false;
+      if (
+        previous &&
+        (previous.owner_id !== input.ownerId || previous.claim_token !== input.claimToken)
+      ) {
+        this.db.run(
+          `UPDATE workflow_surface_bindings
+           SET repair_required = 1, repair_generation = repair_generation + 1,
+             last_rendered_sha256 = NULL,
+             last_error = 'Projection ownership changed after a stale claim',
+             next_attempt_at = CASE
+               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
+               ELSE next_attempt_at
+             END,
+             updated_at = MAX(updated_at, ?)
+           WHERE run_id = ?`,
+          [input.now, input.now, input.now, input.runId],
+        );
+        this.db.run(
+          `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
+           WHERE run_id = ? AND consumed_at IS NULL`,
+          [input.now, input.runId],
+        );
+      }
+      return true;
+    });
+    return claim.immediate();
   }
 
   refreshSurfaceProjectionClaim(input: {
@@ -3068,6 +3148,43 @@ export class DurableWorkflowStore {
            SET repair_required = 1, repair_generation = repair_generation + 1,
              last_rendered_sha256 = NULL,
              last_error = 'Projection ownership changed during external I/O',
+             next_attempt_at = CASE
+               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
+               ELSE next_attempt_at
+             END,
+             updated_at = MAX(updated_at, ?)
+           WHERE run_id = ?`,
+        )
+        .run(now, now, now, runId);
+      if (binding.changes !== 1) return null;
+      this.db.run(
+        `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
+         WHERE run_id = ? AND consumed_at IS NULL`,
+        [now, runId],
+      );
+      return (
+        this.db
+          .query<{ repair_generation: number }, [string]>(
+            `SELECT repair_generation FROM workflow_surface_bindings WHERE run_id = ?`,
+          )
+          .get(runId)?.repair_generation ?? null
+      );
+    });
+    return mark.immediate();
+  }
+
+  ensureSurfaceBindingRepair(runId: string, now: number): number | null {
+    const mark = this.db.transaction(() => {
+      const binding = this.db
+        .query(
+          `UPDATE workflow_surface_bindings
+           SET repair_required = 1,
+             repair_generation = CASE
+               WHEN repair_generation = rendered_repair_generation THEN repair_generation + 1
+               ELSE repair_generation
+             END,
+             last_rendered_sha256 = NULL,
+             last_error = 'Remote projection generation does not match durable state',
              next_attempt_at = CASE
                WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
                ELSE next_attempt_at
@@ -3449,8 +3566,16 @@ export class DurableWorkflowStore {
         if (result.changes !== 1) return { status: "stale" };
         if (action.kind === "pause") {
           this.db.run(
-            `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-             request_id = NULL, error = 'Paused from surface control', claimed_by = NULL,
+            `UPDATE workflow_operations SET state = 'queued',
+             attempt = attempt + CASE WHEN EXISTS (
+               SELECT 1 FROM workflow_request_terminal_receipts receipt
+               WHERE receipt.request_id = workflow_operations.request_id
+             ) THEN 0 ELSE 1 END,
+             request_id = CASE WHEN EXISTS (
+               SELECT 1 FROM workflow_request_terminal_receipts receipt
+               WHERE receipt.request_id = workflow_operations.request_id
+             ) THEN request_id ELSE NULL END,
+             error = 'Paused from surface control', claimed_by = NULL,
              claimed_at = NULL, started_at = NULL, terminal_at = NULL, updated_at = ?
              WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
             [input.now, run.runId],

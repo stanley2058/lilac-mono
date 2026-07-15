@@ -27,6 +27,19 @@ import { readWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-
 
 const HASH_A = "a".repeat(64);
 
+class HandoffInterceptStore extends DurableWorkflowStore {
+  beforeHandoff: (() => void) | null = null;
+
+  override getWorkflowRequestDispatchHandoff(
+    input: Parameters<DurableWorkflowStore["getWorkflowRequestDispatchHandoff"]>[0],
+  ) {
+    const intercept = this.beforeHandoff;
+    this.beforeHandoff = null;
+    intercept?.();
+    return super.getWorkflowRequestDispatchHandoff(input);
+  }
+}
+
 class CapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
   readonly history: Message<unknown>[] = [];
@@ -61,6 +74,7 @@ function createApprovedRun(
   args: Record<string, boolean> = {},
   outputLimits: { operation: number; result: number } = { operation: 10_000, result: 10_000 },
   completionTarget: WorkflowCompletionTarget = { kind: "detached" },
+  maxWallTimeMs = 10_000,
 ) {
   const inputSchema = {
     type: "object",
@@ -77,7 +91,7 @@ function createApprovedRun(
       maxTotal: 4,
     },
     maxNestingDepth: 4,
-    maxWallTimeMs: 10_000,
+    maxWallTimeMs,
     operationIdleTimeoutMs: 2_000,
     waits: ["reply", "sleep"],
     surfaceSends: false,
@@ -636,6 +650,272 @@ describe("WorkflowEngine", () => {
     } finally {
       await first.stop();
       await replacement.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  for (const raceWindow of ["handoff", "authorization"] as const) {
+    it(`adopts a receipt committed during the ${raceWindow} dispatch window`, async () => {
+      const dbPath = join(
+        tmpdir(),
+        `workflow-engine-${raceWindow}-receipt-${crypto.randomUUID()}.sqlite`,
+      );
+      const store = new HandoffInterceptStore(dbPath);
+      const bus = createLilacBus(new CapturingRawBus());
+      createApprovedRun(
+        store,
+        "run-1",
+        {},
+        { operation: 10_000, result: 10_000 },
+        { kind: "detached" },
+        120_000,
+      );
+      let captured:
+        | {
+            requestId: string;
+            runId: string;
+            operationId: string;
+            dispatchEpoch: string;
+          }
+        | undefined;
+      const first = new WorkflowEngine({
+        bus,
+        store,
+        dataDir: "/unused",
+        subscriptionId: `${raceWindow}-receipt-first`,
+        pollMs: 5,
+        now: () => 10,
+        assertSandbox: async () => {},
+        loadSnapshot: async () => "immutable",
+        compileSource: (source) => source,
+        startSandbox: (input) => ({
+          cancel: async () => {},
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        }),
+        dispatchAgentRequest: async (request) => {
+          if (!request.capability) throw new Error("Missing initial capability");
+          const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
+          if (!runOwnerId) throw new Error("Missing initial run owner");
+          expect(
+            store.claimWorkflowRequestPromptPublication({
+              requestId: request.requestId,
+              runId: request.run.runId,
+              operationId: request.operation.operationId,
+              runOwnerId,
+              now: 10,
+            }),
+          ).toBe(true);
+          expect(
+            store.claimWorkflowRequest({
+              requestId: request.requestId,
+              token: request.capability,
+              dispatchEpoch: request.dispatchEpoch,
+              ownerId: "handoff-runner",
+              now: 10,
+            }),
+          ).toBe(true);
+          captured = {
+            requestId: request.requestId,
+            runId: request.run.runId,
+            operationId: request.operation.operationId,
+            dispatchEpoch: request.dispatchEpoch,
+          };
+          return await new Promise((resolve) => {
+            request.signal.addEventListener(
+              "abort",
+              () => resolve({ state: "cancelled", output: "", detail: "stopped", usage: null }),
+              { once: true },
+            );
+          });
+        },
+      });
+      let replacementDispatches = 0;
+      const commitReceipt = () => {
+        if (!captured) throw new Error("Missing captured dispatch");
+        expect(
+          store.recordWorkflowRequestTerminal({
+            ...captured,
+            ownerId: "handoff-runner",
+            state: "resolved",
+            output: `${raceWindow} receipt result`,
+            now: 70_000,
+          }),
+        ).toBe(true);
+      };
+      const replacement = new WorkflowEngine({
+        bus,
+        store,
+        dataDir: "/unused",
+        subscriptionId: `${raceWindow}-receipt-second`,
+        pollMs: 5,
+        now: () => 70_000,
+        assertSandbox: async () => {},
+        loadSnapshot: async () => "immutable",
+        compileSource: (source) => source,
+        createDispatchEpoch:
+          raceWindow === "authorization"
+            ? () => {
+                commitReceipt();
+                return "replacement-dispatch-epoch";
+              }
+            : undefined,
+        startSandbox: (input) => ({
+          cancel: async () => {},
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        }),
+        dispatchAgentRequest: async () => {
+          replacementDispatches += 1;
+          throw new Error("Replacement must adopt the raced receipt");
+        },
+      });
+      try {
+        await first.start();
+        await waitFor(() => captured !== undefined);
+        await first.stop();
+        if (raceWindow === "handoff") store.beforeHandoff = commitReceipt;
+        await replacement.start();
+        await waitFor(() => ["succeeded", "failed"].includes(store.getRun("run-1")?.state ?? ""));
+        expect(store.getRun("run-1")?.state).toBe("succeeded");
+        expect(replacementDispatches).toBe(0);
+        expect(store.getRun("run-1")?.result).toBe(`${raceWindow} receipt result`);
+      } finally {
+        await first.stop();
+        await replacement.stop();
+        await bus.close();
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    });
+  }
+
+  it("preserves and adopts a receipt committed immediately before pause and resume", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-pause-receipt-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(store);
+    let now = 10;
+    let dispatches = 0;
+    let requestId: string | null = null;
+    let receiptCommitted = false;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "pause-receipt",
+      pollMs: 5,
+      now: () => now,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "inspect", options: {} },
+        }),
+      }),
+      dispatchAgentRequest: async (request) => {
+        dispatches += 1;
+        requestId = request.requestId;
+        if (!request.capability) throw new Error("Missing dispatch capability");
+        const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
+        if (!runOwnerId) throw new Error("Missing run owner");
+        expect(
+          store.claimWorkflowRequestPromptPublication({
+            requestId: request.requestId,
+            runId: request.run.runId,
+            operationId: request.operation.operationId,
+            runOwnerId,
+            now,
+          }),
+        ).toBe(true);
+        expect(
+          store.claimWorkflowRequest({
+            requestId: request.requestId,
+            token: request.capability,
+            dispatchEpoch: request.dispatchEpoch,
+            ownerId: "pause-runner",
+            now,
+          }),
+        ).toBe(true);
+        now += 1;
+        receiptCommitted = store.recordWorkflowRequestTerminal({
+          requestId: request.requestId,
+          runId: request.run.runId,
+          operationId: request.operation.operationId,
+          dispatchEpoch: request.dispatchEpoch,
+          ownerId: "pause-runner",
+          state: "resolved",
+          output: "receipt survived pause",
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          now,
+        });
+        return await new Promise((resolve) => {
+          request.signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "paused", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => receiptCommitted);
+      now += 1;
+      expect(store.pauseRunAndChildren({ runId: "run-1", now, detail: "pause race" })?.state).toBe(
+        "paused",
+      );
+      await waitFor(() => store.listOperations("run-1")[0]?.state === "queued");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        attempt: 0,
+        requestId,
+      });
+      now += 1;
+      expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now })).toBe(true);
+      await waitFor(() => ["succeeded", "failed"].includes(store.getRun("run-1")?.state ?? ""));
+      expect(store.getRun("run-1")?.state).toBe("succeeded");
+      expect(dispatches).toBe(1);
+      expect(store.getRun("run-1")?.result).toBe("receipt survived pause");
+      expect(store.listOperations("run-1")[0]).toMatchObject({
+        state: "succeeded",
+        output: "receipt survived pause",
+        usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+      });
+    } finally {
+      await engine.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });
