@@ -1,14 +1,13 @@
 # AGENTS.md
 
-This file helps AI coding agents to work on this repo without making repeating mistakes.
-
 ## Quick Repo Facts
 
 - Use `bun`
 - Monorepo: **Bun workspaces** (`apps/*`, `packages/*`).
+- Markdown plans/todos in `plan/*`.
 - Project mental model / terminology: search `PROJECT.md`.
 - `ref/` contains vendored/reference projects. Treat as read-only references.
-- Treat project as greenfield, breaking changes are ok.
+- Treat project as greenfield, breaking changes are usually ok. Consult with user whether to include backwards compatibility when introducing breaking changes.
 
 ## Finding Type Definitions (Bun + symlinks)
 
@@ -65,6 +64,7 @@ Before wrapping up any task that changes code/config/docs, run lint + format che
 
 ### Types (important)
 
+- ALWAYS prefer `zod` over manual type assertions/narrowing.
 - **No `any`** and **no `as any`**.
   - If you must bridge unknown data, use `unknown` + narrowing.
   - Prefer using `zod` schemas to parse/validate `unknown` at boundaries (tool inputs, JSON/YAML, external APIs) when possible.
@@ -72,7 +72,8 @@ Before wrapping up any task that changes code/config/docs, run lint + format che
     - `function isFoo(x: unknown): x is Foo { ... }`
 - Prefer type narrowing over casting (`as Foo`) when possible.
 - Prefer unions and discriminated unions for error/results.
-- Avoid erasing discriminated unions by narrowing to generic shapes (e.g. `isRecord(x): x is Record<string, unknown>`) on values that are already strongly typed; prefer checking the discriminant (`part.type === "tool-result"`) or use a type guard that returns the precise union member.
+- Avoid erasing discriminated unions by narrowing to generic shapes on values that are already strongly typed; prefer checking the discriminant (`part.type === "tool-result"`) or use a type guard that returns the precise union member.
+- Never introduce new `isRecord` helpers, use centralized utils instead.
 - Avoid `as unknown as SomeType` casts that effectively act like `as any` (they hide concrete types and break narrowing). Prefer proper narrowing, precise type guards, or compiler-assisted inspection (e.g. typehint) to find the real type.
 - Prefer `Record<string, T>` to `{ [k: string]: T }`.
 - Prefer `readonly T[]` when you don’t mutate.
@@ -95,23 +96,13 @@ Before wrapping up any task that changes code/config/docs, run lint + format che
 ### Error handling
 
 - Convert unknown caught values safely:
-  - `const msg = e instanceof Error ? e.message : String(e)`
+  - e.g., `const msg = e instanceof Error ? e.message : String(e)`
+  - For known error shapes, ensure logged error message is informative and traceable.
 - Avoid swallowing errors silently.
 - For library-like code:
   - Throw for programmer/configuration errors.
   - For runtime/IO failures, either throw with context or return a typed error object.
 - Avoid leaking secrets in logs; redact tokens/keys when printing command/env data.
-
-### JSON / parsing
-
-- Use `zod` to create reusable schemas.
-- Never assume JSON is valid.
-
-### Testing conventions
-
-- Use `bun:test`
-- Keep tests deterministic and fast.
-- Prefer narrow unit tests over integration tests.
 
 ## Core Config
 
@@ -127,10 +118,3 @@ Before wrapping up any task that changes code/config/docs, run lint + format che
   - Don’t copy rules from `ref/*` blindly; this repo’s active workspace is `apps/*` + `packages/*`.
 - When reading external/library code:
   - Prefer `ref/` first (it often contains the upstream repo).
-
-## When Unsure
-
-- Prefer minimal, surgical changes.
-- Ask for clarification before:
-  - Renaming exported symbols
-  - Introducing new dependencies
