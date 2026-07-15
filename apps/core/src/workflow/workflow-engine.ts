@@ -923,7 +923,7 @@ export class WorkflowEngine {
     if (
       adoptedTerminalReceipt &&
       result.state === "cancelled" &&
-      this.input.store.requeuePausedCancelledOperation({
+      this.input.store.blockAmbiguousPausedCancelledOperation({
         runId: run.runId,
         operationId: operation.operationId,
         requestId: reqId,
@@ -931,9 +931,9 @@ export class WorkflowEngine {
         now: this.now(),
       })
     ) {
-      const replay = this.input.store.getOperation(run.runId, operation.operationId);
-      if (!replay) throw new Error("Paused workflow operation disappeared before durable replay");
-      return await this.dispatchAgent(run, revision, replay, input, signal, false);
+      throw new Error(
+        "Paused workflow request has an ambiguous cancelled receipt and requires manual reconciliation",
+      );
     }
     let latest = this.input.store.getOperation(run.runId, operation.operationId);
     if (this.stopping) {

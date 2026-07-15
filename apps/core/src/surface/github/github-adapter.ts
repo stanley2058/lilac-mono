@@ -23,9 +23,10 @@ import {
   editIssueComment,
   getIssue,
   getIssueComment,
-  getConfiguredGithubAppIdOrNull,
+  getPreferredGithubAuthoritativeActorOrNull,
   GithubApiError,
   listIssueComments,
+  type GithubAuthoritativeActor,
 } from "../../github/github-api";
 import { markGithubAgentComment } from "../../github/github-comment-marker";
 import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
@@ -44,8 +45,25 @@ function assertGithubMsgRef(msgRef: MsgRef) {
   }
 }
 
+export function isGithubCommentAuthoredByActor(
+  raw: unknown,
+  actor: GithubAuthoritativeActor,
+): boolean {
+  const parsed = z
+    .object({
+      user: z.object({ login: z.string().min(1), id: z.number().int().positive() }).optional(),
+      performed_via_github_app: z.object({ id: z.number().int().positive() }).nullable().optional(),
+    })
+    .safeParse(raw);
+  if (!parsed.success) return false;
+  return actor.source === "app"
+    ? parsed.data.performed_via_github_app?.id === actor.appId
+    : parsed.data.user?.login.toLowerCase() === actor.login;
+}
+
 export class GithubAdapter implements SurfaceAdapter {
-  private configuredAppId: Promise<number | null> | null = null;
+  private authoritativeActor: ReturnType<typeof getPreferredGithubAuthoritativeActorOrNull> | null =
+    null;
 
   async connect(): Promise<void> {
     // No persistent connection.
@@ -63,18 +81,10 @@ export class GithubAdapter implements SurfaceAdapter {
 
   async isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean> {
     if (message.ref.platform !== "github") return false;
-    this.configuredAppId ??= getConfiguredGithubAppIdOrNull();
-    const appId = await this.configuredAppId;
-    if (appId === null) return false;
-    const parsed = z
-      .object({
-        performed_via_github_app: z
-          .object({ id: z.number().int().positive() })
-          .nullable()
-          .optional(),
-      })
-      .safeParse(message.raw);
-    return parsed.success && parsed.data.performed_via_github_app?.id === appId;
+    this.authoritativeActor ??= getPreferredGithubAuthoritativeActorOrNull();
+    const actor = await this.authoritativeActor;
+    if (!actor) return false;
+    return isGithubCommentAuthoredByActor(message.raw, actor);
   }
 
   async getCapabilities(): Promise<AdapterCapabilities> {

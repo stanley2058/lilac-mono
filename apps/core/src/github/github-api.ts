@@ -353,6 +353,26 @@ export async function getConfiguredGithubAppIdOrNull(): Promise<number | null> {
   return (await readGithubAppSecret(env.dataDir))?.appId ?? null;
 }
 
+export type GithubAuthoritativeActor =
+  | { source: "app"; appId: number }
+  | { source: "user"; login: string };
+
+export async function getPreferredGithubAuthoritativeActorOrNull(): Promise<GithubAuthoritativeActor | null> {
+  const auth = await getPreferredGithubAuthOrNull({ dataDir: env.dataDir });
+  if (!auth) return null;
+  if (auth.source === "user") {
+    const login =
+      auth.login ??
+      (await getGithubViewerLoginByTokenOrNull({
+        apiBaseUrl: auth.apiBaseUrl,
+        token: auth.token,
+      }));
+    return login ? { source: "user", login: login.toLowerCase() } : null;
+  }
+  const appId = await getConfiguredGithubAppIdOrNull();
+  return appId === null ? null : { source: "app", appId };
+}
+
 export async function getPreferredGithubActorLoginOrNull(): Promise<string | null> {
   const auth = await getPreferredGithubAuthOrNull({ dataDir: env.dataDir });
   if (!auth) return null;

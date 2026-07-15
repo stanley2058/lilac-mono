@@ -619,12 +619,17 @@ describe("DurableWorkflowStore", () => {
           name: "round 9 generational projection repair",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 13,
+          name: "round 12 incremental projection discovery",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(12);
+      expect(reopened.listMigrations()).toHaveLength(13);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -670,6 +675,8 @@ describe("DurableWorkflowStore", () => {
         nextAttemptAt: null,
         repairGeneration: 0,
         renderedRepairGeneration: 0,
+        sendMayHaveSucceeded: false,
+        discoveryCursor: null,
         createdAt: 10,
         updatedAt: 10,
       });
@@ -679,6 +686,11 @@ describe("DurableWorkflowStore", () => {
 
     const legacy = new Database(path);
     legacy.run("UPDATE workflow_surface_bindings SET repair_required = 1");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN discovery_scanned_entries");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN discovery_before_message_id");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN discovery_page");
+    legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN send_may_have_succeeded");
+    legacy.run("DELETE FROM workflow_schema_migrations WHERE version = 13");
     legacy.run("DROP TABLE workflow_surface_projection_orphans");
     legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN rendered_repair_generation");
     legacy.run("ALTER TABLE workflow_surface_bindings DROP COLUMN repair_generation");
@@ -691,7 +703,7 @@ describe("DurableWorkflowStore", () => {
         repairGeneration: 1,
         renderedRepairGeneration: 0,
       });
-      expect(upgraded.listMigrations()).toHaveLength(12);
+      expect(upgraded.listMigrations()).toHaveLength(13);
     } finally {
       upgraded.close();
       rmSync(path, { force: true });
@@ -989,6 +1001,8 @@ describe("DurableWorkflowStore", () => {
         nextAttemptAt: 210,
         repairGeneration: 0,
         renderedRepairGeneration: 0,
+        sendMayHaveSucceeded: false,
+        discoveryCursor: null,
         createdAt: 150,
         updatedAt: 150,
       };

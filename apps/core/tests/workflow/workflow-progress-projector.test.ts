@@ -18,6 +18,8 @@ import type {
   SurfaceOutputStream,
 } from "../../src/surface/adapter";
 import { SurfaceMessageNotFoundError } from "../../src/surface/adapter";
+import { isGithubCommentAuthoredByActor } from "../../src/surface/github/github-adapter";
+import type { GithubAuthoritativeActor } from "../../src/github/github-api";
 import type {
   ContentOpts,
   LimitOpts,
@@ -43,6 +45,7 @@ import {
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const GITHUB_APP_RAW = { performed_via_github_app: { id: 42 } };
+const GITHUB_PAT_RAW = { user: { login: "lilac-owner", id: 84 } };
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3_000;
@@ -105,10 +108,13 @@ class ProjectionAdapter implements SurfaceAdapter {
   editStarts = 0;
   editDelayMs = 0;
   reads = 0;
+  listCalls = 0;
   failNextSend = false;
   failNextRead = false;
   failNextEditNotFound = false;
   failNextEdit = false;
+  authoritativeRaw: unknown = GITHUB_APP_RAW;
+  authoritativeActor: GithubAuthoritativeActor = { source: "app", appId: 42 };
 
   constructor(readonly platform: "discord" | "github" = "discord") {}
 
@@ -118,7 +124,7 @@ class ProjectionAdapter implements SurfaceAdapter {
     return { platform: this.platform, userId: "bot", userName: "bot" };
   }
   async isAuthoritativelySelfAuthored(message: SurfaceMessage) {
-    return message.raw === GITHUB_APP_RAW;
+    return isGithubCommentAuthoredByActor(message.raw, this.authoritativeActor);
   }
   async getCapabilities() {
     return {
@@ -169,7 +175,7 @@ class ProjectionAdapter implements SurfaceAdapter {
           ? markGithubAgentComment(content.text ?? "")
           : (content.text ?? ""),
       ts: Date.now(),
-      raw: this.platform === "github" ? GITHUB_APP_RAW : undefined,
+      raw: this.platform === "github" ? this.authoritativeRaw : undefined,
     });
     this.messageContents.set(ref.messageId, content);
     return ref;
@@ -183,6 +189,7 @@ class ProjectionAdapter implements SurfaceAdapter {
     return this.messages.get(ref.messageId) ?? null;
   }
   async listMsg(_session: SessionRef, opts?: LimitOpts) {
+    this.listCalls += 1;
     const limit = opts?.limit ?? 50;
     const messages = [...this.messages.values()];
     if (this.platform === "github") {
@@ -441,6 +448,24 @@ function createInvocation(store: DurableWorkflowStore, platform: "discord" | "gi
   });
 }
 
+function createUncertainBinding(store: DurableWorkflowStore, platform: "discord" | "github"): void {
+  store.upsertSurfaceBinding({
+    runId: "run-1",
+    target: { platform, channelId: "channel-1", replyToMessageId: "origin-1" },
+    messageRef: null,
+    lastRenderedSha256: null,
+    lastError: "send completion was not persisted",
+    retryCount: 0,
+    nextAttemptAt: null,
+    repairGeneration: 0,
+    renderedRepairGeneration: 0,
+    sendMayHaveSucceeded: true,
+    discoveryCursor: { page: 1, beforeMessageId: null, scannedEntries: 0 },
+    createdAt: 10,
+    updatedAt: 10,
+  });
+}
+
 describe("WorkflowProgressProjector", () => {
   it("heartbeats delayed outbox publication claims to prevent takeover", async () => {
     const dbPath = join(tmpdir(), `workflow-outbox-heartbeat-${crypto.randomUUID()}.sqlite`);
@@ -599,6 +624,32 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
+  it("sends a fresh run card immediately without scanning history", async () => {
+    const dbPath = join(tmpdir(), `workflow-fresh-card-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "fresh-card",
+      now: () => 10,
+    });
+    try {
+      createInvocation(store);
+      const ref = await projector.ensureInitialCard("run-1");
+      expect(ref.messageId).toBe("card-1");
+      expect(adapter.sends).toBe(1);
+      expect(adapter.listCalls).toBe(0);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("discovers a marked card after send succeeds before binding persistence", async () => {
     const dbPath = join(tmpdir(), `workflow-send-crash-discovery-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -649,7 +700,65 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("finds an authenticated GitHub card beyond 500 comments without trusting copied markers", async () => {
+  it("recovers a PAT-authored crash card while rejecting a user-spoofed marker", async () => {
+    const dbPath = join(tmpdir(), `workflow-pat-send-crash-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter("github");
+    adapter.authoritativeRaw = GITHUB_PAT_RAW;
+    adapter.authoritativeActor = { source: "user", login: "lilac-owner" };
+    const bus = createLilacBus(new IdleRawBus());
+    const crashed = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["github", adapter]]),
+      subscriptionId: "pat-send-crash",
+      now: () => 10,
+      afterExternalIo: async ({ kind }) => {
+        if (kind === "send") throw new Error("simulated PAT card process crash");
+      },
+    });
+    const replacement = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["github", adapter]]),
+      subscriptionId: "pat-send-crash-replacement",
+      now: () => 20,
+    });
+    try {
+      createInvocation(store, "github");
+      await expect(crashed.ensureInitialCard("run-1")).rejects.toThrow(
+        "simulated PAT card process crash",
+      );
+      const genuine = adapter.messages.get("card-1");
+      if (!genuine) throw new Error("Missing genuine PAT-authored card");
+      adapter.messages.set("spoofed-card", {
+        ...genuine,
+        ref: { platform: "github", channelId: "channel-1", messageId: "spoofed-card" },
+        userId: "attacker",
+        ts: genuine.ts + 1,
+        raw: { user: { login: "attacker", id: 999 } },
+      });
+      adapter.messageContents.set("spoofed-card", {
+        text: genuine.text,
+        actions: [{ label: "Spoofed", actionId: "spoofed", style: "danger" }],
+      });
+      await crashed.stop();
+
+      const recovered = await replacement.ensureInitialCard("run-1");
+      expect(recovered.messageId).toBe("card-1");
+      expect(adapter.sends).toBe(1);
+      expect(adapter.messageContents.get("spoofed-card")?.actions?.[0]?.label).toBe("Spoofed");
+      expect(adapter.messageContents.get("spoofed-card")?.text).not.toContain("superseded");
+    } finally {
+      await crashed.stop();
+      await replacement.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("resumes GitHub discovery beyond 1000 comments without trusting copied markers", async () => {
     const dbPath = join(tmpdir(), `workflow-github-deep-discovery-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const adapter = new ProjectionAdapter("github");
@@ -667,7 +776,8 @@ describe("WorkflowProgressProjector", () => {
     )}:generation:0 -->`;
     try {
       createInvocation(store, "github");
-      for (let index = 0; index < 520; index += 1) {
+      createUncertainBinding(store, "github");
+      for (let index = 0; index < 1_120; index += 1) {
         const messageId = `noise-${index}`;
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
@@ -678,8 +788,8 @@ describe("WorkflowProgressProjector", () => {
         });
       }
       for (const [messageId, ts] of [
-        ["deep-card-1", 520],
-        ["deep-card-2", 521],
+        ["deep-card-1", 1_120],
+        ["deep-card-2", 1_121],
       ] as const) {
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
@@ -704,6 +814,13 @@ describe("WorkflowProgressProjector", () => {
       adapter.messageContents.set("copied-card", {
         text: `Workflow card\n${workflowMarker}`,
         actions: [{ label: "Copied", actionId: "copied", style: "danger" }],
+      });
+
+      await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("discovery is incomplete");
+      expect(adapter.sends).toBe(0);
+      expect(store.getSurfaceBinding("run-1")?.discoveryCursor).toMatchObject({
+        page: 11,
+        scannedEntries: 1_000,
       });
 
       const recovered = await projector.ensureInitialCard("run-1");
@@ -742,6 +859,7 @@ describe("WorkflowProgressProjector", () => {
     const session = { platform: "github" as const, channelId: "channel-1" };
     try {
       createInvocation(store, "github");
+      createUncertainBinding(store, "github");
       for (let index = 0; index < 1_000; index += 1) {
         const messageId = `noise-${index}`;
         adapter.messages.set(messageId, {
@@ -768,7 +886,7 @@ describe("WorkflowProgressProjector", () => {
     }
   });
 
-  it("does not treat a full bounded Discord history scan as authoritative absence", async () => {
+  it("resumes Discord discovery beyond 1000 messages without sending a duplicate", async () => {
     const dbPath = join(
       tmpdir(),
       `workflow-discord-incomplete-discovery-${crypto.randomUUID()}.sqlite`,
@@ -786,7 +904,18 @@ describe("WorkflowProgressProjector", () => {
     const session = { platform: "discord" as const, channelId: "channel-1" };
     try {
       createInvocation(store);
-      for (let index = 0; index < 1_000; index += 1) {
+      createUncertainBinding(store, "discord");
+      const existingMessageId = "deep-discord-card";
+      adapter.messages.set(existingMessageId, {
+        ref: { ...session, messageId: existingMessageId },
+        session,
+        userId: "bot",
+        text: `Workflow card\n[\u200B](https://lilac.invalid/.well-known/workflow-card/${sha256(
+          "workflow-progress-card:run-1",
+        )}?generation=0)`,
+        ts: 0,
+      });
+      for (let index = 0; index < 1_120; index += 1) {
         const messageId = `noise-${index}`;
         adapter.messages.set(messageId, {
           ref: { ...session, messageId },
@@ -802,8 +931,11 @@ describe("WorkflowProgressProjector", () => {
       expect(store.getSurfaceBinding("run-1")).toMatchObject({
         messageRef: null,
         retryCount: 1,
-        nextAttemptAt: 1_020,
+        discoveryCursor: { beforeMessageId: "noise-120", scannedEntries: 1_000 },
       });
+      const recovered = await projector.ensureInitialCard("run-1");
+      expect(recovered.messageId).toBe(existingMessageId);
+      expect(adapter.sends).toBe(0);
     } finally {
       await projector.stop();
       await bus.close();

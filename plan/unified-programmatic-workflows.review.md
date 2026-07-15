@@ -408,3 +408,32 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 12
+
+Status: implementation and repository validation complete. Production readiness is not claimed; independent review is required.
+
+### Critical/High Regressions Fixed
+
+1. A cancelled terminal receipt produced by the pause/interrupt handoff is no longer interpreted as permission to retry. The operation retains its exact request ID and attempt, moves to `blocked`, and the run remains or returns `paused` with explicit manual-reconciliation detail. Store, surface action, and `workflow.run.resume` paths fail closed; v1 requires cancelling the ambiguous run and creating a new run.
+2. GitHub authoritative self-authorship follows the configured preferred outbound identity. App-authored comments still require exact raw `performed_via_github_app.id`; PAT/user-token comments require the cached authenticated viewer login and exact raw comment-user login. Body markers, displayed author text, and spoofed user metadata cannot substitute for the configured identity.
+3. Schema-v13 surface bindings durably record uncertain-send intent and incremental discovery position: GitHub page, Discord before-message cursor, and scanned-entry count. A fresh run with no external send attempt sends immediately without history scanning; a send that may have crossed the external-I/O boundary persists intent before I/O and resumes discovery from its last cursor after failure or restart.
+4. Each discovery pass remains bounded to ten 100-entry batches and five seconds, but the durable cursor advances across passes until an authenticated marker is found or a short final page proves exhaustive absence. Histories beyond 1,000 GitHub comments or Discord messages therefore converge without restarting at page one or sending a duplicate.
+
+### Regression Coverage
+
+- Added side-effect-before-cancel coverage proving an ambiguous cancelled receipt preserves request/attempt, blocks resume with manual-reconciliation detail, and never invokes a second child dispatch.
+- Added PAT-authored send-crash recovery using the production raw-identity predicate plus a user-spoofed marker that is neither adopted nor neutralized.
+- Added fresh-run immediate-send/no-history-read coverage and multi-pass GitHub/Discord discovery beyond 1,000 entries with persisted cursor assertions and no duplicate sends.
+- Full validation passed: core 1114 tests, event bus 26 tests, tool bridge 22 tests, plugin runtime 8 tests, utils 215 tests, root harness 3 tests, repository typecheck, remote runner/tool bridge/ACP builds, Redis cleanup migration bundle, lint, format, and diff checks.
+
+### Proven False Positives
+
+None.
+
+### Remaining Medium/Deployment Residuals
+
+- Live Discord/GitHub credential smoke tests remain deployment validation; deterministic adapter, projector, capability, outbox, recovery, and concurrency tests cover the reviewed paths in CI.
+- Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
+- Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
+- Independent security/concurrency review is required before any production-readiness claim.

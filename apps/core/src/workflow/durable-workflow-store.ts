@@ -45,6 +45,9 @@ import {
 } from "./workflow-request-authority";
 import { sha256 } from "./workflow-definition";
 
+const PAUSED_CANCELLATION_AMBIGUITY_DETAIL =
+  "Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run";
+
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
 }
@@ -190,6 +193,10 @@ const bindingRowSchema = z.object({
   repair_required: z.number().int().min(0).max(1),
   repair_generation: z.number().int().nonnegative(),
   rendered_repair_generation: z.number().int().nonnegative(),
+  send_may_have_succeeded: z.number().int().min(0).max(1),
+  discovery_page: z.number().int().positive(),
+  discovery_before_message_id: nullableStringSchema,
+  discovery_scanned_entries: z.number().int().nonnegative(),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -461,6 +468,15 @@ function parseBinding(value: unknown): WorkflowSurfaceBinding {
     nextAttemptAt: row.next_attempt_at,
     repairGeneration: row.repair_generation,
     renderedRepairGeneration: row.rendered_repair_generation,
+    sendMayHaveSucceeded: row.send_may_have_succeeded === 1,
+    discoveryCursor:
+      row.send_may_have_succeeded === 1
+        ? {
+            page: row.discovery_page,
+            beforeMessageId: row.discovery_before_message_id,
+            scannedEntries: row.discovery_scanned_entries,
+          }
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -1334,7 +1350,7 @@ export class DurableWorkflowStore {
       const resume = this.db.transaction(() => {
         const paused = this.getRun(input.runId);
         if (!paused || paused.state !== "paused") return false;
-        this.preparePausedOperationsForResume(input.runId, input.now);
+        if (!this.preparePausedOperationsForResume(input.runId, input.now)) return false;
         return (
           this.db
             .query(
@@ -1554,12 +1570,10 @@ export class DurableWorkflowStore {
     );
   }
 
-  private preparePausedOperationsForResume(runId: string, now: number): void {
-    this.db.run(
-      `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-       request_id = NULL, error = 'Paused request reached durable cancellation',
-       claimed_by = NULL, claimed_at = NULL, started_at = NULL, terminal_at = NULL,
-       updated_at = ?
+  private preparePausedOperationsForResume(runId: string, now: number): boolean {
+    const ambiguous = this.db.run(
+      `UPDATE workflow_operations SET state = 'blocked', error = ?,
+       claimed_by = NULL, claimed_at = NULL, updated_at = ?
        WHERE run_id = ? AND request_id IS NOT NULL
          AND state IN ('queued', 'dispatched', 'running', 'blocked')
          AND EXISTS (
@@ -1567,8 +1581,16 @@ export class DurableWorkflowStore {
            WHERE receipt.request_id = workflow_operations.request_id
              AND receipt.state = 'cancelled'
          )`,
-      [now, runId],
+      [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, now, runId],
     );
+    if (ambiguous.changes > 0) {
+      this.db.run(
+        `UPDATE workflow_runs SET terminal_detail = ?, claimed_by = NULL, claimed_at = NULL,
+         updated_at = ? WHERE run_id = ? AND state = 'paused'`,
+        [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, now, runId],
+      );
+      return false;
+    }
     this.db.run(
       `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
        request_id = NULL, error = 'Paused request has no active durable dispatch',
@@ -1589,21 +1611,21 @@ export class DurableWorkflowStore {
          )`,
       [now, runId, now],
     );
+    return true;
   }
 
-  requeuePausedCancelledOperation(input: {
+  blockAmbiguousPausedCancelledOperation(input: {
     runId: string;
     operationId: string;
     requestId: string;
     runOwnerId: string;
     now: number;
   }): boolean {
-    const changed = this.db
-      .query(
-        `UPDATE workflow_operations SET state = 'queued', attempt = attempt + 1,
-         request_id = NULL, error = 'Paused request reached durable cancellation',
-         claimed_by = NULL, claimed_at = NULL, started_at = NULL, terminal_at = NULL,
-         updated_at = ?
+    const block = this.db.transaction(() => {
+      const changed = this.db
+        .query(
+          `UPDATE workflow_operations SET state = 'blocked', error = ?,
+         claimed_by = NULL, claimed_at = NULL, updated_at = ?
          WHERE run_id = ? AND operation_id = ? AND request_id = ?
            AND state IN ('queued', 'dispatched', 'running', 'blocked')
            AND error = 'Paused request awaiting durable terminal handoff'
@@ -1617,9 +1639,36 @@ export class DurableWorkflowStore {
              WHERE run.run_id = workflow_operations.run_id
                AND run.state = 'running' AND run.claimed_by = ?
            )`,
+        )
+        .run(
+          PAUSED_CANCELLATION_AMBIGUITY_DETAIL,
+          input.now,
+          input.runId,
+          input.operationId,
+          input.requestId,
+          input.runOwnerId,
+        );
+      if (changed.changes !== 1) return false;
+      this.db.run(
+        `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
+         claimed_at = NULL, updated_at = ?
+         WHERE run_id = ? AND state = 'running' AND claimed_by = ?`,
+        [PAUSED_CANCELLATION_AMBIGUITY_DETAIL, input.now, input.runId, input.runOwnerId],
+      );
+      return true;
+    });
+    return block.immediate();
+  }
+
+  getPausedCancellationAmbiguityDetail(runId: string): string | null {
+    const row = this.db
+      .query<{ error: string }, [string, string]>(
+        `SELECT error FROM workflow_operations
+         WHERE run_id = ? AND state = 'blocked' AND request_id IS NOT NULL AND error = ?
+         LIMIT 1`,
       )
-      .run(input.now, input.runId, input.operationId, input.requestId, input.runOwnerId);
-    return changed.changes === 1;
+      .get(runId, PAUSED_CANCELLATION_AMBIGUITY_DETAIL);
+    return row?.error ?? null;
   }
 
   tryClaimRun(input: {
@@ -3212,7 +3261,9 @@ export class DurableWorkflowStore {
           `UPDATE workflow_surface_bindings
            SET target_json = ?, message_ref_json = ?, last_rendered_sha256 = ?,
              last_error = ?, retry_count = ?, next_attempt_at = ?, repair_required = 0,
-             rendered_repair_generation = ?, updated_at = ?
+              rendered_repair_generation = ?, send_may_have_succeeded = ?,
+              discovery_page = ?, discovery_before_message_id = ?,
+              discovery_scanned_entries = ?, updated_at = ?
            WHERE run_id = ? AND repair_generation = ?`,
         )
         .run(
@@ -3223,6 +3274,10 @@ export class DurableWorkflowStore {
           binding.retryCount,
           binding.nextAttemptAt,
           input.expectedRepairGeneration,
+          binding.sendMayHaveSucceeded ? 1 : 0,
+          binding.discoveryCursor?.page ?? 1,
+          binding.discoveryCursor?.beforeMessageId ?? null,
+          binding.discoveryCursor?.scannedEntries ?? 0,
           binding.updatedAt,
           binding.runId,
           input.expectedRepairGeneration,
@@ -3248,8 +3303,9 @@ export class DurableWorkflowStore {
       `INSERT INTO workflow_surface_bindings (
         run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
         retry_count, next_attempt_at, repair_required, repair_generation,
-        rendered_repair_generation, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        rendered_repair_generation, send_may_have_succeeded, discovery_page,
+        discovery_before_message_id, discovery_scanned_entries, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         target_json = excluded.target_json,
         message_ref_json = excluded.message_ref_json,
@@ -3257,6 +3313,10 @@ export class DurableWorkflowStore {
         last_error = excluded.last_error,
         retry_count = excluded.retry_count,
         next_attempt_at = excluded.next_attempt_at,
+        send_may_have_succeeded = excluded.send_may_have_succeeded,
+        discovery_page = excluded.discovery_page,
+        discovery_before_message_id = excluded.discovery_before_message_id,
+        discovery_scanned_entries = excluded.discovery_scanned_entries,
         updated_at = excluded.updated_at`,
       [
         binding.runId,
@@ -3269,6 +3329,10 @@ export class DurableWorkflowStore {
         binding.repairGeneration > binding.renderedRepairGeneration ? 1 : 0,
         binding.repairGeneration,
         binding.renderedRepairGeneration,
+        binding.sendMayHaveSucceeded ? 1 : 0,
+        binding.discoveryCursor?.page ?? 1,
+        binding.discoveryCursor?.beforeMessageId ?? null,
+        binding.discoveryCursor?.scannedEntries ?? 0,
         binding.createdAt,
         binding.updatedAt,
       ],
@@ -3683,6 +3747,12 @@ export class DurableWorkflowStore {
               : run.state === "paused";
         if (!valid) return { status: "stale" };
         const terminal = nextState === "cancelled";
+        if (
+          action.kind === "resume" &&
+          !this.preparePausedOperationsForResume(run.runId, input.now)
+        ) {
+          return { status: "stale" };
+        }
         const result = this.db
           .query(
             `UPDATE workflow_runs SET state = ?, terminal_detail = ?,
@@ -3721,7 +3791,6 @@ export class DurableWorkflowStore {
             [input.now, input.now, run.runId],
           );
         }
-        if (action.kind === "resume") this.preparePausedOperationsForResume(run.runId, input.now);
         runIds = [run.runId];
       }
 

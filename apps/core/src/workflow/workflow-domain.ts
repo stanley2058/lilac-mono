@@ -476,6 +476,14 @@ export const workflowSurfaceBindingSchema = z.strictObject({
   nextAttemptAt: nullableTimestampSchema,
   repairGeneration: z.number().int().nonnegative(),
   renderedRepairGeneration: z.number().int().nonnegative(),
+  sendMayHaveSucceeded: z.boolean(),
+  discoveryCursor: z
+    .strictObject({
+      page: z.number().int().positive(),
+      beforeMessageId: idSchema.nullable(),
+      scannedEntries: z.number().int().nonnegative(),
+    })
+    .nullable(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });

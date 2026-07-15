@@ -703,15 +703,19 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     adapter: SurfaceAdapter,
     runId: string,
     claimToken: string,
+    cursor: WorkflowSurfaceBinding["discoveryCursor"],
   ): Promise<{
     candidates: Array<{ message: SurfaceMessage; generation: number }>;
     exhaustive: boolean;
+    nextCursor: WorkflowSurfaceBinding["discoveryCursor"];
   }> {
     const startedAt = Date.now();
     const messages = new Map<string, SurfaceMessage>();
-    let beforeMessageId: string | undefined;
+    let page = cursor?.page ?? 1;
+    let beforeMessageId = cursor?.beforeMessageId ?? undefined;
+    let scannedEntries = cursor?.scannedEntries ?? 0;
     let exhaustive = false;
-    for (let page = 1; page <= DISCOVERY_MAX_PAGES; page += 1) {
+    for (let passPage = 0; passPage < DISCOVERY_MAX_PAGES; passPage += 1) {
       const remainingMs = DISCOVERY_TIMEOUT_MS - (Date.now() - startedAt);
       if (remainingMs <= 0) break;
       this.refreshClaim(runId, claimToken);
@@ -724,6 +728,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       ]);
       if (batch === null) break;
       this.refreshClaim(runId, claimToken);
+      scannedEntries += batch.length;
       let added = 0;
       for (const message of batch) {
         const key = `${message.ref.platform}:${message.ref.channelId}:${message.ref.messageId}`;
@@ -735,18 +740,24 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         break;
       }
       if (added === 0) break;
-      if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) break;
       if (target.platform === "discord") {
         const nextBefore = batch.at(-1)?.ref.messageId;
         if (!nextBefore || nextBefore === beforeMessageId) break;
         beforeMessageId = nextBefore;
+      } else {
+        page += 1;
       }
+      if (Date.now() - startedAt >= DISCOVERY_TIMEOUT_MS) break;
     }
 
     const self = target.platform === "discord" ? await adapter.getSelf() : null;
     const authoritativeProvider = hasAuthoritativeSelfMessageProvider(adapter) ? adapter : null;
     if (target.platform === "github" && !authoritativeProvider) {
-      return { candidates: [], exhaustive: false };
+      return {
+        candidates: [],
+        exhaustive: false,
+        nextCursor: { page, beforeMessageId: beforeMessageId ?? null, scannedEntries },
+      };
     }
     const candidates: Array<{ message: SurfaceMessage; generation: number }> = [];
     for (const message of messages.values()) {
@@ -763,7 +774,13 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       const generation = workflowCardGeneration(message.text, runId, target.platform);
       if (generation !== null) candidates.push({ message, generation });
     }
-    return { candidates, exhaustive };
+    return {
+      candidates,
+      exhaustive,
+      nextCursor: exhaustive
+        ? null
+        : { page, beforeMessageId: beforeMessageId ?? null, scannedEntries },
+    };
   }
 
   private async discoverWorkflowCards(
@@ -772,8 +789,20 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     adapter: SurfaceAdapter,
     claimToken: string,
     expectedGeneration: number,
-  ): Promise<{ canonical: MsgRef | null; duplicates: MsgRef[]; exhaustive: boolean }> {
-    const discovery = await this.listWorkflowCardCandidates(target, adapter, runId, claimToken);
+    cursor: WorkflowSurfaceBinding["discoveryCursor"],
+  ): Promise<{
+    canonical: MsgRef | null;
+    duplicates: MsgRef[];
+    exhaustive: boolean;
+    nextCursor: WorkflowSurfaceBinding["discoveryCursor"];
+  }> {
+    const discovery = await this.listWorkflowCardCandidates(
+      target,
+      adapter,
+      runId,
+      claimToken,
+      cursor,
+    );
     const candidates = discovery.candidates;
     candidates.sort((left, right) => {
       const leftCurrent = left.generation === expectedGeneration ? 1 : 0;
@@ -788,6 +817,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       canonical: candidates.at(0)?.message.ref ?? null,
       duplicates: candidates.slice(1).map((candidate) => candidate.message.ref),
       exhaustive: discovery.exhaustive,
+      nextCursor: discovery.nextCursor,
     };
   }
 
@@ -824,6 +854,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           nextAttemptAt: null,
           repairGeneration: 0,
           renderedRepairGeneration: 0,
+          sendMayHaveSucceeded: false,
+          discoveryCursor: null,
           createdAt: now,
           updatedAt: now,
         },
@@ -890,13 +922,14 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       this.writeBinding(existing, claimToken);
       if (!found) messageRef = null;
     }
-    if (!messageRef) {
+    if (!messageRef && existing.sendMayHaveSucceeded) {
       const discovered = await this.discoverWorkflowCards(
         runId,
         { platform: target.platform, channelId: target.channelId },
         adapter,
         claimToken,
         existing.repairGeneration,
+        existing.discoveryCursor,
       );
       if (discovered.canonical) {
         messageRef = discovered.canonical;
@@ -907,6 +940,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           lastError: null,
           retryCount: 0,
           nextAttemptAt: null,
+          sendMayHaveSucceeded: false,
+          discoveryCursor: null,
           updatedAt: now,
         };
         this.writeBinding(existing, claimToken);
@@ -926,6 +961,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
             lastError: "Workflow card discovery did not exhaust bounded surface history",
             retryCount,
             nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
+            discoveryCursor: discovered.nextCursor,
             updatedAt: now,
           },
           claimToken,
@@ -933,6 +969,17 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         throw new ProjectionDiscoveryIncompleteError(
           `Workflow card discovery is incomplete: ${runId}`,
         );
+      } else {
+        existing = {
+          ...existing,
+          sendMayHaveSucceeded: false,
+          discoveryCursor: null,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          updatedAt: now,
+        };
+        this.writeBinding(existing, claimToken);
       }
     }
     existing = this.input.store.getSurfaceBinding(runId) ?? existing;
@@ -964,6 +1011,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     try {
       this.refreshClaim(runId, claimToken);
       const sentNewMessage = messageRef === null;
+      if (sentNewMessage) {
+        existing = {
+          ...existing,
+          sendMayHaveSucceeded: true,
+          discoveryCursor: { page: 1, beforeMessageId: null, scannedEntries: 0 },
+          updatedAt: now,
+        };
+        this.writeBinding(existing, claimToken);
+      }
       const projectedRef = messageRef
         ? (await adapter.editMsg(messageRef, content), messageRef)
         : await adapter.sendMsg(
@@ -1004,6 +1060,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           nextAttemptAt: null,
           repairGeneration,
           renderedRepairGeneration: repairGeneration,
+          sendMayHaveSucceeded: false,
+          discoveryCursor: null,
           createdAt: existing.createdAt,
           updatedAt: now,
         },
@@ -1070,6 +1128,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           nextAttemptAt: now + Math.min(300_000, 1_000 * 2 ** Math.min(retryCount - 1, 8)),
           repairGeneration: latestBinding.repairGeneration,
           renderedRepairGeneration: latestBinding.renderedRepairGeneration,
+          sendMayHaveSucceeded: latestBinding.sendMayHaveSucceeded,
+          discoveryCursor: latestBinding.discoveryCursor,
           createdAt: latestBinding.createdAt,
           updatedAt: now,
         },

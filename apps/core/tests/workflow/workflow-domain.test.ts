@@ -236,6 +236,8 @@ describe("durable workflow domain", () => {
         nextAttemptAt: null,
         repairGeneration: 0,
         renderedRepairGeneration: 0,
+        sendMayHaveSucceeded: false,
+        discoveryCursor: null,
         createdAt: 1,
         updatedAt: 1,
       }).runId,

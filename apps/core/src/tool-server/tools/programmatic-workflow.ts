@@ -1054,6 +1054,10 @@ export class ProgrammaticWorkflow implements ServerTool {
               now,
             });
       const updated = paused ?? this.store().getRun(run.runId);
+      if (to === "queued" && !changed) {
+        const ambiguity = this.store().getPausedCancellationAmbiguityDetail(run.runId);
+        if (ambiguity) throw new Error(ambiguity);
+      }
       if (changed && updated) {
         await this.params.bus?.publish(lilacEventTypes.EvtWorkflowRunChanged, {
           runId: updated.runId,

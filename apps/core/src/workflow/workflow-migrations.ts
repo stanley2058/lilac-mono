@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const WORKFLOW_SCHEMA_VERSION = 12;
+export const WORKFLOW_SCHEMA_VERSION = 13;
 
 type WorkflowMigration = {
   version: number;
@@ -610,6 +610,23 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       )`,
       `CREATE INDEX idx_workflow_surface_projection_orphans_retry
        ON workflow_surface_projection_orphans(next_attempt_at, updated_at)`,
+    ],
+  },
+  {
+    version: 13,
+    name: "round 12 incremental projection discovery",
+    statements: [
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN send_may_have_succeeded INTEGER NOT NULL DEFAULT 0
+       CHECK (send_may_have_succeeded IN (0, 1))`,
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN discovery_page INTEGER NOT NULL DEFAULT 1 CHECK (discovery_page >= 1)`,
+      `ALTER TABLE workflow_surface_bindings ADD COLUMN discovery_before_message_id TEXT`,
+      `ALTER TABLE workflow_surface_bindings
+       ADD COLUMN discovery_scanned_entries INTEGER NOT NULL DEFAULT 0
+       CHECK (discovery_scanned_entries >= 0)`,
+      `UPDATE workflow_surface_bindings SET send_may_have_succeeded = 1
+       WHERE message_ref_json IS NULL`,
     ],
   },
 ];

@@ -827,6 +827,10 @@ describe("WorkflowEngine", () => {
           dispatchEpoch: string;
         }
       | undefined;
+    const capturedByRun = new Map<
+      string,
+      { requestId: string; runId: string; operationId: string; dispatchEpoch: string }
+    >();
     const engine = new WorkflowEngine({
       bus,
       store,
@@ -881,6 +885,7 @@ describe("WorkflowEngine", () => {
           operationId: request.operation.operationId,
           dispatchEpoch: request.dispatchEpoch,
         };
+        capturedByRun.set(request.run.runId, captured);
         return await new Promise((resolve) => {
           request.signal.addEventListener(
             "abort",
@@ -924,6 +929,49 @@ describe("WorkflowEngine", () => {
         output: "receipt survived pause",
         usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
       });
+
+      createApprovedRun(store, "run-cancelled-receipt");
+      await waitFor(() => capturedByRun.has("run-cancelled-receipt"));
+      now += 1;
+      expect(
+        store.pauseRunAndChildren({
+          runId: "run-cancelled-receipt",
+          now,
+          detail: "pause after side effect",
+        })?.state,
+      ).toBe("paused");
+      const cancelledCapture = capturedByRun.get("run-cancelled-receipt");
+      if (!cancelledCapture) throw new Error("Missing cancelled pause dispatch");
+      expect(
+        store.recordWorkflowRequestTerminal({
+          ...cancelledCapture,
+          ownerId: "pause-runner",
+          state: "cancelled",
+          detail: "interrupt raced completed side effect",
+          now,
+        }),
+      ).toBe(true);
+      now += 1;
+      expect(
+        store.transitionRun({
+          runId: "run-cancelled-receipt",
+          from: "paused",
+          to: "queued",
+          now,
+        }),
+      ).toBe(false);
+      expect(store.getRun("run-cancelled-receipt")).toMatchObject({
+        state: "paused",
+        terminalDetail: expect.stringContaining("Manual reconciliation required"),
+      });
+      expect(store.listOperations("run-cancelled-receipt")[0]).toMatchObject({
+        state: "blocked",
+        attempt: 0,
+        requestId: cancelledCapture.requestId,
+        error: expect.stringContaining("Manual reconciliation required"),
+      });
+      await Bun.sleep(25);
+      expect(dispatches).toBe(2);
     } finally {
       await engine.stop();
       await bus.close();
