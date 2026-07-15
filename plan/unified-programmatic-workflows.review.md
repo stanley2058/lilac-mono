@@ -542,3 +542,19 @@ None.
 - Production still requires Bubblewrap, a user systemd manager, delegated cgroup v2 memory/PID controls, and user namespaces. Workflow execution has no unsandboxed fallback.
 - Workflow profiles intentionally cannot launch arbitrary host package-manager/compiler processes. Any broader executable policy remains a separate security design and review.
 - Independent security/concurrency review is required before any production-readiness claim.
+
+## Round 17
+
+Status: final post-implementation review complete at `f9568f4`, the effective current `HEAD`. Six independent subsystem reviews returned **GO**, with no critical/high implementation blocker. The review-fix loop is stopped at the production blocker threshold; the implementation readiness verdict is **GO**.
+
+### Deferred Residuals
+
+- Deployment prerequisites and live credential smoke: production still requires Bubblewrap, user namespaces, a user systemd manager, delegated cgroup v2 memory/PID controls, and live Discord/GitHub credential smoke testing. There is no unsandboxed fallback.
+- Single-version legacy wait-group confirmation: operators must confirm the single-version workflow wait-resolver rollout before retiring the legacy Redis consumer group.
+- Manual reconciliation and operator worktree cleanup: intentionally blocked ambiguous runs require cancellation/replacement and operator-directed reconciliation, including cleanup of preserved editing worktrees where applicable.
+- Bounded scale and reconciliation limits: concurrency, history discovery, retries, retention, and reconciliation are intentionally bounded; large backlogs or deep histories may converge over multiple passes and require operational monitoring.
+- Lower-severity filesystem, Redis, and action-outbox operational risks: residual edge cases around filesystem state, Redis availability/retention, and outbox retry/backlog handling remain operational concerns below the production-blocker threshold.
+- Intentionally unavailable executables and search limitations: workflow profiles cannot launch arbitrary host package-manager/compiler executables, native Level-1 grep remains unavailable, and contained search is deliberately narrower than unrestricted host search.
+- GitHub PAT and discovery caveats: PAT identity verification depends on live GitHub API availability and current credentials; bounded incremental card discovery can delay reconciliation, but fails closed without adopting spoofed cards or creating duplicates.
+
+These residuals are deferred and do not block the implementation readiness verdict.
