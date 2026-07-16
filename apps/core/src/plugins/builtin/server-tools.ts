@@ -16,7 +16,10 @@ import {
 } from "../../tool-server/tools";
 import type { CoreToolPlugin } from "../types";
 
-function singletonLevel2(pluginId: string, createTool: () => ServerTool): CoreToolPlugin {
+function singletonLevel2(
+  pluginId: string,
+  createTool: () => ServerTool,
+): CoreToolPlugin {
   return {
     meta: {
       id: pluginId,
@@ -131,7 +134,6 @@ export function createBuiltinWorkflowPlugin(): CoreToolPlugin {
             dataDir,
             store: runtime.durableWorkflowStore,
             bus: runtime.bus,
-            reviewerResolver: runtime.workflowReviewerResolver,
             progressCards: runtime.workflowProgressCards,
           }),
         ],

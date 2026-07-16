@@ -1,365 +1,250 @@
-# Workflow Agent Autonomy Plan
+# Workflow Agent Autonomy
 
-## Handoff Status
+## Status
 
-This plan follows the review of merged PR #18, `feat: unify programmatic workflow runtime`, at head commit `f2e5afe2e1c197133577b9c382760b3c70ddffdb`.
+This document replaces the earlier capability-envelope direction as of the clean baseline after commit `78c065c` and incorporates the 2026-07-17 direction change below.
 
-The review focused on restrictions that reduce main-agent or workflow-child performance rather than on the security, durability, and concurrency hardening already recorded in:
+The product priority is agent usability. The workflow subsystem provides runtime and durability; it is not a guardrail system and must not own behavioral restrictions. Every behavioral choice is either removed or expressed once in optional server-owned subagent profile configuration shared by workflow and non-workflow launches.
 
-- `plan/unified-programmatic-workflows.md`
-- `plan/unified-programmatic-workflows.review.md`
-- `plan/unified-programmatic-workflows.todo.md`
+## 2026-07-17 Direction Change
 
-At handoff time the worktree contains substantial uncommitted workflow fixes from another agent. Do not revert, overwrite, or fold those changes into this work without first inspecting them. The current changes materially improve per-invocation project-root selection, generated-subagent ownership, and fallback delivery, but they do not resolve the other autonomy findings below.
+Earlier implementation and review added workflow-specific restrictions for network destinations, callable exposure, prompts, tools, project content, write paths, and delegation. That direction is rejected even where the restriction was implemented and tested successfully.
 
-## Desired Operating Model
+The stronger invariant is:
 
-An authenticated trusted main agent should decide what work happens where in most user-accessible locations inside the container. The container already runs agents as UID 1000, so normal OS permissions should remain the primary boundary for ordinary files.
+- A native profile behaves identically whether launched directly or through a workflow.
+- A workflow carries profile identity and durable request context only. It does not reconstruct, narrow, expand, or inspect profile behavior.
+- The server-owned profile registry may optionally configure tools, network, writes, execution, and delegation. The same registry and assembly path serve workflow and non-workflow subagents.
+- Workflow runtime code owns orchestration and Level-2 durable correctness, not behavioral policy.
+- Preserve direct Level-1 boundaries only for actual secret access, root or Core authority, exact deployment control roots, and unsafe credential injection.
+- Do not add a restriction for a speculative multi-step or paired attack. Require a demonstrated direct crossing of a retained boundary.
 
-Explicit exceptions remain appropriate for:
+Consequences of this change:
 
-- Secrets and credential directories.
-- Core configuration and environment files.
-- Root-owned or otherwise OS-inaccessible files.
-- Capabilities that cross an external trust boundary, such as network access, surface identity, or privileged host operations.
+- Delete `apps/core/src/workflow/workflow-network-policy.ts` and `apps/core/tests/workflow/workflow-network-policy.test.ts`.
+- Remove workflow-specific `workflowExposure`, callable deny lists, URL/SSRF policy, workflow-only tool effect metadata, special prompt/tool narrowing, project-content blacklists, and temporary tool or worktree gates.
+- Workflow runtime does not inspect URLs, destinations, private ranges, protocols, ports, DNS results, or redirects. Network behavior comes from the selected native profile.
+- Restore useful direct network and native tools according to profile configuration during the full implementation. Do not defer them merely because the launch came through workflow runtime.
+- Implement `isolation: "worktree"` as an optional usable mode. Do not leave it schema-visible but runtime-gated.
 
-Keep workflow JavaScript deterministic, replayable, and isolated from direct side effects. Relaxation should apply primarily to approved agent operations invoked by the workflow, not by exposing filesystem, process, or network primitives directly inside the replayed JavaScript sandbox.
+## Ownership Model
 
-## Current Partial Fix
+### Workflow Runtime And Durability
 
-The uncommitted changes remove the process-wide `LILAC_WORKSPACE_DIR` as the only workflow project root:
+Workflow code owns:
 
-- `ProgrammaticWorkflow` resolves a canonical `projectRoot` for each authenticated Level-2 invocation.
-- A trusted main agent selects that root by running the workflow command from the intended Level-1 shell cwd.
-- Direct generated subagents inherit the parent execution cwd.
-- Nested generated subagents retain the approved workflow root rather than an operation worktree path.
+- Agent dispatch order, parallelism, pipelines, waits, triggers, cancellation, and result assembly.
+- Immutable workflow source and input snapshots.
+- Durable operation journals, ownership, retries, dispatch epochs, publication fencing, and terminal receipts.
+- Durable request correlation, result delivery, scratch lifecycle, artifact retention, and recovery.
+- Cgroups, cancellation, process cleanup, output/time bounds, and operation ownership.
+- Optional worktree lifecycle and durable patch/reconciliation correctness.
 
-This is useful but incomplete. Once a workflow starts, each child operation still receives only the selected root or an engine-created worktree. There is no per-agent cwd selection, and every workflow-policy shell still uses restricted `just-bash`.
+These are runtime and durability responsibilities. They must not be used as a second permission language.
 
-## Findings
+### Server-Owned Native Profiles
 
-### P0: Worktree Editing Has No Durable Output
+The deployed profile registry owns optional behavioral configuration, including:
 
-`WorkflowEngine` creates a detached worktree for isolated editing and force-removes it after a successful operation. It does not retain a branch or commit, export a patch, or merge changes into the canonical project.
+- Tools and executable behavior.
+- Network availability and behavior.
+- Workspace read/write behavior.
+- Delegation behavior and ordinary profile bounds.
+- Model and reasoning availability.
 
-Impact:
+The initial useful profiles remain `explore`, `general`, and `self`. Their exact behavior is defined by the native registry, not by workflow code. If a deployment changes a profile, that change applies equally to direct and workflow-launched subagents.
 
-- Editing workflows with `maxConcurrent > 1` must use worktree isolation.
-- Successful parallel editors can lose all filesystem changes.
-- A single editor configured with worktree isolation has the same loss mode.
-- Workflow children cannot use host Git through restricted `just-bash` to establish their own durable handoff.
+A workflow selects a profile but cannot provide workflow-only tool lists, executable lists, callable lists, URL rules, write rules, prompt variants, or delegation policy. The resolved operation journal records profile identity, model request, reasoning, cwd, isolation, and other durable request context needed for dispatch and recovery; it does not create a workflow-specific behavioral envelope.
 
-Relevant code:
+### Direct Boundaries That Remain
 
-- `apps/core/src/workflow/workflow-engine.ts`, worktree preparation and cleanup.
-- `apps/core/src/workflow/workflow-domain.ts`, parallel editing constraint.
+Retain only direct Level-1 boundaries:
 
-Required outcome:
+- Never run a child as root or grant Core process authority.
+- Do not expose exact deployment-owned Core state, runtime control, service configuration, or credential roots.
+- Do not inject Core tokens, operator credentials, cloud credentials, credential-helper settings, or reusable service credentials into child environments or command lines.
+- Keep internal workflow-control requests authenticated, request-bound, and owned; a child must not obtain a reusable bearer credential.
 
-- A successful isolated editing operation must produce an explicit durable result before cleanup.
-- Choose one reviewed protocol: retained commit/ref, captured patch artifact, or a host-mediated apply/merge operation.
-- Never report successful editing while silently deleting the only copy of the changes.
-- Preserve ambiguous or failed worktrees for reconciliation under the existing fenced recovery rules.
+Denied roots must be exact deployment authority or credential roots. Do not blacklist ordinary project content, environment-like filenames, Git metadata, broad home/project trees, or an ancestor merely because a protected descendant exists. Access to the exact protected root remains blocked or masked while the rest of an otherwise valid cwd remains useful.
 
-### P0: Trusted Workflow Agents Cannot Use Container Executables
+Level-2 protections are limited to durable correctness: immutable journals, ownership, epochs, request/receipt correlation, cgroups, cancellation, terminal publication, and artifact lifecycle. A concern that requires combining behavior A with hypothetical behavior B or C is not a blocker unless the combination demonstrates a direct secret, root/Core authority, credential-injection, or durable-corruption crossing.
 
-`bashToolWithCwd` selects `executeRestrictedBash` whenever a workflow policy exists, even when the approved run is trusted. Restricted bash is an in-memory `just-bash` interpreter with mounted workspace and session-temp filesystems.
+## Invocation And Operation Model
 
-Impact:
+### Trusted Invocation Auto-Runs
 
-- No normal `bun`, Git, package manager, compiler, test runner, browser, language runtime, project script, or installed CLI execution.
-- A workflow agent cannot perform the same verification loop as the main agent.
-- The limitation applies after explicit workflow review and approval, not only in public/restricted sessions.
+An invocation authenticated as the trusted main agent runs without human approval. This includes direct runs and durable triggers created or enabled by that principal. Restricted, public, unauthenticated, synthetic, stale, or forged origins remain denied because origin authentication is a direct authority boundary, not workflow behavioral policy.
 
-Relevant code:
+Workflow children do not become trusted main-agent callers merely because they run inside a trusted workflow. Workflow-control access remains server-issued, request-bound, and tied to durable ownership. Explicit waits and human replies remain orchestration behavior, not approval gates.
 
-- `apps/core/src/tools/bash.ts`
-- `apps/core/src/tools/restricted-bash.ts`
-- `apps/core/src/surface/bridge/bus-agent-runner.ts`
+### Profile-Native `agent()`
 
-Required outcome:
-
-- Approved trusted workflow agents can use the normal UID-1000 local execution path.
-- Secret and protected-path exclusions remain enforced independently of shell selection.
-- Restricted-origin workflows continue to use restricted execution.
-- If executable authority must be reviewed separately, represent it explicitly in the capability profile rather than making all workflows permanently restricted.
-
-### P1: Location Authority Is Workflow-Wide, Not Per Operation
-
-The current uncommitted project-root work lets the main agent choose a root per workflow invocation, but an `agent()` call cannot select a cwd within the approved authority envelope. The engine always chooses the canonical project root or a generated worktree.
-
-Impact:
-
-- A child cannot dynamically move to another user-accessible directory or sibling project.
-- Multi-repository workflows require separate invocations or an excessively broad root.
-- Restricted bash silently maps out-of-root cwd values back to `/workspace`, which can run a command in the wrong location without a clear failure.
-
-Required outcome:
-
-- Add a reviewed per-agent `cwd` option.
-- Authorize it against an explicit set of allowed roots or a declared root envelope.
-- Reject unauthorized cwd values; never silently substitute another directory.
-- Preserve canonicalization and symlink protections where they enforce authority rather than merely restrict convenience.
-
-### P1: Capabilities Cannot Express Mixed Agent Roles
-
-`editing` and `isolation` are workflow-wide. Edit-capable workflows cannot include the `explore` profile, and `agent()` cannot narrow or select editing authority per operation.
-
-Impact:
-
-- The common pattern of parallel read-only exploration followed by one editor cannot be represented in one workflow.
-- Authors must use more expensive profiles for exploration or split orchestration across workflows.
-- Every enabled non-explore agent receives the same editing authority even when only one operation needs it.
-
-Required outcome:
-
-- Treat revision capabilities as the maximum approved envelope.
-- Let each `agent()` operation select a narrower profile containing fields such as `editing`, `isolation`, tools, cwd, and reasoning.
-- Permit read-only explore operations alongside editing general/self operations.
-- Keep concurrency safety checks based on the actual editing operations, not a single workflow-wide boolean.
-
-### P1: External and Surface Capabilities Are Misleading Booleans
-
-`externalTools: true` currently exposes only `search`, `discovery.search`, `skills.list`, and `skills.brief`. `surfaceSends: true` exposes only same-session `surface.messages.send`.
-
-Impact:
-
-- No fetch/content inspection, browser, generation, SSH, attachment, conversation, or plugin callables.
-- No surface read, edit, delete, reactions, or reviewed cross-session coordination.
-- The names imply broad capability while runtime behavior is a small hard-coded subset.
-
-Required outcome:
-
-- Replace or supplement booleans with explicit reviewed callable allowlists.
-- Support capability groups only as authoring shorthand that normalize to concrete callable IDs.
-- Bind surface permissions to explicit allowed destinations and operations.
-- Keep path authorization for callables that accept local files.
-- Include plugin callable IDs in review identity so dynamically loaded tools cannot expand an existing grant.
-
-### P1: User-Authored Workflow Agents Cannot Dynamically Delegate
-
-Workflow request policy enables `subagent_delegate` only for runs with a `live_parent` completion target. Normal user-authored workflow runs use durable-surface or detached completion targets, so their child agents cannot decide to delegate discovered work.
-
-The current uncommitted changes improve nested delegation ownership and fallback for generated subagent runs, but do not change this gate.
-
-Required outcome:
-
-- Add an explicit subagent capability to user-authored workflow revisions.
-- Bound child depth, total agents, models, profiles, tools, editing authority, and completion delivery under the parent revision envelope.
-- Journal dynamically delegated children as descendants of the invoking operation.
-- Preserve durable completion and cancellation semantics already used by generated delegation workflows.
-
-### P2: Wait API Advertises Unsupported Platforms
-
-`waitForReply` accepts multiple platform values in its schema, but runtime permits only the exact authenticated originating Discord session and user.
-
-Impact:
-
-- GitHub and other platform definitions validate and receive approval before failing when the wait executes.
-
-Required outcome:
-
-- Either implement each advertised platform or reject unsupported platforms during definition/argument validation.
-- Prefer capability discovery from active adapters so the authoring skill can describe the actual deployment.
-- Keep reviewer and destination authorization deterministic and server-owned.
-
-### P2: Progress Selection Is Ignored
-
-`progress.requestOrigin` is parsed and included in invocation fingerprints but is not used to choose behavior. With a reviewer, progress is always projected to the origin, even when `progress` is omitted. Explicit targets must equal the origin.
-
-Required outcome:
-
-- Define clear modes such as `origin`, `detached`, and reviewed explicit target.
-- Make omitted progress behavior explicit and documented.
-- Remove fields that are not implemented rather than hashing no-op inputs.
-- Ensure idempotency fingerprints contain only behaviorally meaningful values.
-
-### P2: Model Declarations Can Fail Only After Dispatch
-
-Definition validation accepts arbitrary model strings. The agent runner later permits only `inherit` or configured `models.def` aliases with `agentCanSelect: true`.
-
-Required outcome:
-
-- Validate model aliases against current server configuration before review/trigger.
-- Return a deterministic validation error listing acceptable aliases.
-- Include relevant model-routing configuration identity in the revision or revalidate it before every dispatch.
-- Add per-agent reasoning selection bounded by the approved model profile.
-
-### P2: `parallel` Accepts an Ineffective Concurrency Option
-
-`parallel(promises, { concurrency })` receives already-started promises and then calls `Promise.all`. Its concurrency option has no per-block effect; only the workflow-wide semaphore limits agent dispatch.
-
-Required outcome:
-
-- Remove the option, or redesign `parallel` to receive lazy callbacks/items so it can enforce concurrency.
-- Keep `pipeline` for bounded mapped fan-out.
-- Add a test demonstrating that a block-level concurrency limit changes maximum simultaneous operations.
-
-### P3: Workflow Source Is Needlessly Non-Composable
-
-Definitions permit exactly one import followed by one default export. They cannot contain top-level helper functions/constants or import reviewed local helper modules. Runtime also removes time, ID, and logging APIs without deterministic replacements.
-
-Impact:
-
-- Large generated workflows become one nested `run` method.
-- Shared orchestration logic cannot be factored or reused.
-- Scheduled workflows cannot read a deterministic run timestamp or generate stable operation-local IDs.
-
-Required outcome:
-
-- First allow top-level pure declarations in the same source file.
-- Consider reviewed local-module bundling only after snapshot identity covers the full dependency graph.
-- Provide deterministic host values such as run start time, scheduled fire time, run ID, and stable ID derivation.
-- Keep dynamic imports, ambient dependencies, and direct side effects forbidden in replayed code.
-
-## Proposed Capability Shape
-
-The exact schema should be designed with existing review identity and migrations, but the direction should resemble a maximum envelope rather than one global execution mode:
+The public operation shape remains small:
 
 ```js
-capabilities: {
-  agents: {
-    profiles: ["explore", "general", "self"],
-    models: ["inherit", "fast", "deep"],
-    reasoning: ["low", "high"],
-    maxConcurrent: 8,
-    maxTotal: 40,
-    maxDepth: 3,
-    allowedRoots: ["project", "/home/lilac/shared"],
-    tools: ["bash", "read_file", "glob", "grep", "apply_patch", "subagent_delegate"],
-    executables: "trusted-container",
-    editing: ["shared", "worktree"],
-  },
-  level2: {
-    callables: ["fetch", "search", "content.inspect", "surface.messages.send"],
-  },
-  surfaces: {
-    destinations: ["origin"],
-  },
-}
-```
-
-Each operation should select a subset:
-
-```js
-await agent("Implement and verify the fix", {
+await agent("Implement and verify the change", {
   profile: "general",
+  cwd: args.project,
   model: "deep",
   reasoning: "high",
-  cwd: args.projectPath,
-  editing: "shared",
-  tools: ["bash", "read_file", "apply_patch"],
+  label: "implementation",
+  isolation: "shared",
 });
 ```
 
-Do not preserve this example verbatim if a smaller schema fits the existing domain model. The important property is that review grants a bounded maximum while the workflow and child agent can make narrower runtime choices.
+`profile` is required. `cwd` defaults to the invocation cwd. `model`, `reasoning`, `label`, and `isolation` are optional. `isolation` accepts `shared` or `worktree` and defaults to `shared`.
 
-## Implementation Sequence
+Remove these operation and revision concepts without recreating them elsewhere in workflow policy:
 
-### Phase 1: Prevent Lost Work
+- `editing`
+- `tools`
+- `executables`
+- `level2Callables`
+- `surfaceOriginOperations`
+- `delegation`
+- `workflowExposure`
+- Workflow callable deny lists or plugin opt-in lists
+- Workflow-only effect metadata and prompt/tool filtering
+- Capability envelopes and Level-1, Level-2, executable, surface, root, or delegation allowlists
 
-1. Specify the isolated-edit result contract.
-2. Capture and persist a patch artifact or retained Git ref before worktree cleanup.
-3. Add an explicit apply/merge operation with conflict reporting.
-4. Verify cancellation, pause, restart, ambiguous receipt, and cleanup behavior.
-5. Block worktree editing configurations until a durable output path exists if a safe implementation cannot land immediately.
+Model and reasoning choices obey the selected native profile and deployment model configuration. Invalid aliases fail deterministically before dispatch. Top-level generated `subagent_delegate` workflows preserve the selected profile, and `self` delegation uses the same native behavior and ordinary bounds as a direct `self` launch.
 
-### Phase 2: Restore Trusted Container Execution
+## Filesystem And Execution
 
-1. Separate workflow trust mode from workflow request authentication.
-2. Route approved trusted agent operations through normal local bash under UID 1000.
-3. Apply protected-path and secret policy independently of shell implementation.
-4. Add explicit executable/tool authority to capability review.
-5. Verify builds, tests, package-manager commands, browser commands, cancellation, and output artifacts from a workflow child.
+### Broad Canonical Cwd
 
-### Phase 3: Per-Agent Authority
+The trusted main agent and its subagents may select any canonical absolute cwd accessible to the service UID except an exact deployment authority or credential root. Authority is not confined to the invocation project, a workspace allowlist, revision-approved roots, project-content patterns, or speculative ancestor checks.
 
-1. Extend `agent()` options and schemas with cwd, reasoning, editing/isolation, tools, and delegation policy.
-2. Convert revision capabilities into a maximum envelope.
-3. Authorize each operation as a subset of that envelope.
-4. Permit mixed explore and editing operations.
-5. Carry the narrowed operation policy through durable dispatch receipts and recovery.
+The runtime canonicalizes cwd, rejects missing or inaccessible directories, applies exact protected-root masking/denial, and returns explicit errors rather than silently substituting another cwd. Ordinary service-UID filesystem permissions govern everything else.
 
-### Phase 4: Explicit Level-2 and Surface Grants
+### Shared Run Scratch
 
-1. Replace hard-coded workflow-child sets with reviewed callable IDs.
-2. Add destination-scoped surface grants.
-3. Include plugin/tool identity in approval hashing or runtime revalidation.
-4. Preserve descriptor-backed local-path authorization.
-5. Update tool listing/help so children see exactly the approved surface.
+Each workflow family receives one secret-free, server-created scratch directory shared by its operations and generated descendants. Its identity and lifecycle are journaled, recovery reuses it while the family is live, and cleanup does not race active or recoverable work. Cross-run scratch access remains denied because it violates durable ownership.
 
-### Phase 5: Correct Interface Mismatches
+Scratch implementation may use descriptor-relative access to preserve the selected path and ownership under races. It must not become a reason to narrow the native profile's normal tools or ordinary project access.
 
-1. Align wait schemas with implemented adapters.
-2. Implement meaningful progress modes.
-3. Validate configured model aliases before review.
-4. Fix or remove `parallel` concurrency.
-5. Add deterministic workflow context values.
+### Useful Native Tools And Network
 
-### Phase 6: Improve Authoring Composition
+When a selected profile exposes Bash, filesystem tools, Level-2 callables, plugins, or network access, a workflow launch exposes the same behavior as a direct launch. Workflow runtime adds no URL inspection, destination classification, protocol/port rules, redirect checks, callable filtering, workflow-only plugin opt-in, prompt narrowing, `apply_patch` omission, or directory-output omission.
 
-1. Permit safe top-level pure declarations.
-2. Update static validation and call-site instrumentation.
-3. Decide whether local helper-module snapshotting is necessary.
-4. Update the bundled workflow-authoring skill with capability and worktree examples.
+Trusted Bash executes installed Git, Bun, compilers, tests, package scripts, configured plugin CLIs, and other native-profile tools as the service UID. Its environment remains secret-free and its processes remain cgrouped, cancellable, bounded, and durably owned.
 
-## Acceptance Criteria
+Direct network must be restored according to profile configuration as part of full implementation. A deployment may choose a restricted or offline profile, but workflow runtime cannot impose that choice or maintain a separate SSRF policy.
 
-1. A trusted approved workflow child can run the same project build and test commands as the trusted main agent, subject to UID-1000 permissions and protected-secret policy.
-2. A main agent can select an unrelated user-accessible project root without changing global runtime configuration.
-3. An individual `agent()` operation can choose an authorized cwd and receives a clear denial for an unauthorized cwd.
-4. One workflow can use parallel read-only explore agents followed by a shared or isolated editing agent.
-5. Successful worktree editing produces a durable patch/ref and cannot be silently deleted.
-6. Workflow revisions explicitly identify allowed Level-1 tools, Level-2 callables, surface operations, destinations, and delegation bounds.
-7. User-authored workflow children can dynamically delegate when the revision permits it.
-8. Unsupported wait platforms and model aliases fail validation before review or execution.
-9. Progress options alter actual projection behavior and no accepted field is a no-op.
-10. `parallel` concurrency is either enforced or absent from the public API.
-11. Existing approval, immutable snapshot, receipt, replay, cancellation, redaction, and recovery guarantees continue to pass.
+### Shared Concurrency And Optional Worktrees
 
-## Test Plan
+`shared` operations work in the selected cwd. Readers and writers may overlap; there is no mandatory writer lease, serialization rule, repository lock, or automatic worktree conversion. Filesystem side effects may race, and workflow authors can serialize dependent work when needed.
 
-- Unit tests for capability subset validation and per-operation policy serialization.
-- Integration test running `bun test` or an equivalent installed executable from a trusted workflow child.
-- Integration test proving protected secret paths remain unavailable to that child.
-- Multi-root tests covering sibling projects and explicit cwd denial.
-- Mixed-profile workflow test with explore fan-out and one persistent editor.
-- Worktree patch/ref persistence, apply, conflict, cancellation, pause, restart, and cleanup tests.
-- User-authored nested delegation tests covering total/depth bounds and fallback delivery.
-- Level-2 callable-list tests driven by explicit grants, including plugins.
-- Discord and GitHub wait validation/execution parity tests.
-- Progress-mode tests for origin, detached, and explicit destination.
-- Model alias and reasoning validation tests against runtime configuration.
-- Replay tests for deterministic context values and refactored top-level helpers.
+`isolation: "worktree"` must be implemented as an optional usable mode, not left behind a temporary-unavailable gate. A successful worktree operation publishes a durable patch artifact before cleanup, including base identity, tracked changes, and newly created files. Failed or ambiguous worktrees remain fenced and recoverable until reconciliation. Cancellation, restart, receipt adoption, artifact retrieval, and cleanup must not lose successful work.
 
-Final validation should follow repository guidance:
+Worktree host operations use the same secret-free environment and direct authority boundaries as other native operations. Do not add workflow-specific Git, content, network, or helper restrictions unless a concrete operation directly exposes a retained secret/root/Core boundary.
 
-```bash
-bun test
-bunx tsc -p apps/core/tsconfig.json --noEmit
-bunx tsc -p packages/plugin-runtime/tsconfig.json --noEmit
-bun run lint:fix
-bun run fmt
-```
+## Durable Guarantees To Keep
+
+Preserve:
+
+- Immutable content-addressed workflow source and input snapshots.
+- Deterministic workflow evaluation and journaled host operations.
+- Source, input, request, idempotency, receipt, and artifact hashes where behaviorally meaningful.
+- Dispatch epochs, publication fencing, durable terminal receipts, and stale-run rejection.
+- Durable run/operation ownership with takeover and recovery rules.
+- Redis request/result correlation and epoch-filtered lifecycle delivery.
+- Cgroups, bounded output/time, cancellation, pause/resume, process-tree cleanup, and terminal cleanup.
+- Durable sleeps, waits, triggers, scheduler ownership, and authenticated trigger creation.
+- Result/progress delivery and fallback when a live parent is absent.
+- Worktree patch publication and reconciliation before destructive cleanup.
+
+Do not hash behavioral restriction lists into workflow identity. Journal the profile identity and durable operation request context. Already-dispatched operations retain their exact durable request for retry or receipt adoption; new operations use the current native server profile path exactly as direct launches do.
+
+## Schema And Migration
+
+This remains a deliberate breaking schema change with no compatibility layer for the old capability envelope.
+
+1. Keep the profile-native `agent()` schema and resource bounds.
+2. Remove approval execution paths and old capability/per-operation authority state.
+3. Preserve immutable historical snapshots, journals, receipts, and terminal audit records where practical.
+4. Do not resume active old-schema runs under new semantics; drain or terminalize them explicitly.
+5. Revalidate and re-snapshot definitions before their first new-schema run.
+6. Recreate trusted triggers against authenticated ownership and new snapshots.
+7. Preserve selected profiles in generated delegation without downgrade.
+8. Remove all newly introduced workflow-only guardrail schema/config, including `workflowExposure` and workflow external-plugin lists; profile configuration is the only behavioral configuration.
+
+## Implementation Order
+
+1. Centralize native subagent profile configuration and assembly so direct and workflow launches use the same profile identity, tools, prompt, writes, network, plugins, and delegation behavior.
+2. Delete workflow-specific network policy and remove URL/destination/redirect inspection from workflow paths.
+3. Remove workflow-specific callable exposure, deny lists, effect metadata, prompt/tool narrowing, project-content blacklists, and temporary tool gates.
+4. Simplify protected paths and child environments to the direct Level-1 boundaries: exact deployment authority/credential roots and no unsafe credential injection.
+5. Restore unrestricted native tools and direct network according to profile configuration, with parity tests comparing direct and workflow launches.
+6. Implement optional worktrees fully with durable patch publication, retrieval, cancellation, recovery, reconciliation, and cleanup.
+7. Reconcile schemas, migrations, docs, examples, and tests with the final contract; run focused and full validation.
+8. Only after the entire plan is implemented, perform one usability-first review, fix qualifying findings, validate again, and document or defer non-blocking residuals.
+
+## Test Strategy
+
+### Native Profile Parity
+
+- The same profile resolves to the same tools, prompt, plugins, network, write behavior, and delegation whether launched directly or through workflow.
+- Workflow code carries profile identity and durable request context but cannot add or subtract behavioral authority.
+- Profile configuration can intentionally choose tool/network/write/delegation behavior without workflow-specific schema.
+- Generated and nested delegation preserve native profile behavior.
+
+### Direct Boundaries And Durability
+
+- Child environments contain no Core/operator/cloud/service credentials or credential-helper configuration.
+- Exact deployment authority and credential roots remain inaccessible without denying ordinary project content or broad ancestor cwd values.
+- Trusted-origin authentication and request-bound workflow control reject forged, stale, public, and unauthenticated access.
+- Journals, ownership takeover, epochs, receipts, cancellation, cgroups, waits, triggers, Redis correlation, scratch ownership, and terminal cleanup retain their behavior.
+
+### Network, Tools, And Worktrees
+
+- Workflow-launched network behavior exactly matches selected profile configuration, including useful direct network where enabled.
+- Tests prove workflow runtime does not classify URLs, destinations, private ranges, protocols, ports, DNS answers, or redirects.
+- Native tools such as `apply_patch`, directory-output callables, plugins, and Bash are not removed solely because the launch is a workflow.
+- Concurrent shared writers remain allowed.
+- Optional worktree runs publish retrievable durable patches and cover untracked files, conflicts, cancellation, restart, ambiguous receipts, reconciliation, and cleanup.
+
+## Review Process
+
+Finish the entire implementation plan before beginning final review. Do not alternate implementation with speculative guardrail review waves.
+
+The final review is usability-first. Fix findings that demonstrate:
+
+- Direct secret leakage or unsafe credential injection.
+- Direct root or Core authority exposure.
+- Concrete durable corruption, lost successful work, ownership failure, epoch/receipt violation, or cancellation/process cleanup failure.
+
+Ignore or record as non-blocking findings that depend on speculative chains such as “A may cross a boundary when paired with B/C,” and reject recommendations that rebuild a complex workflow guardrail system. Residual improvements may be documented or deferred after the final implement -> review/fix -> validate loop.
+
+## Documentation Deliverables
+
+Update product, migration, authoring, deployment, and test documentation to use one mental model:
+
+- Workflows orchestrate and make execution durable.
+- Native server-owned profiles configure behavior for every launch path.
+- Exact deployment authority/credential roots and secret-free child environments are direct boundaries.
+- Network and tools follow profile configuration.
+- Shared execution is usable and optional worktrees are implemented.
+- Workflow-specific exposure, URL, content, prompt, tool, and delegation restrictions do not exist.
+
+## Accepted Tradeoffs
+
+- Native profile authority is intentionally the same through workflows as through direct launches.
+- Broad service-UID cwd and profile-configured network increase capability relative to the previous workflow-only sandbox; exact authority roots, secret-free environments, and OS permissions remain the direct boundaries.
+- Shared writers can race and lose edits. Explicit orchestration or optional worktrees handle cases that need isolation.
+- Profile changes affect new operations. Already-dispatched operations retain durable request context for correct recovery.
+- Agent side effects are not deterministic even though workflow orchestration and durable recovery are deterministic.
+- Aggregate run-level cgroups and exactly-once receipts for arbitrary external side effects may remain documented residuals if operation-level durability is correct.
 
 ## Non-Goals
 
-- Do not give replayed workflow JavaScript direct ambient filesystem, process, network, or secret access.
-- Do not run workflow agents as root or add privileged container execution.
-- Do not weaken approval identity, immutable snapshots, durable receipts, or recovery fencing.
-- Do not add compatibility layers for unshipped capability schemas unless persisted production data requires a migration.
-- Do not make every external tool available implicitly; authority should be visible in review.
+- Do not run agents as root or inject reusable service credentials.
+- Do not expose Core runtime authority to children.
+- Do not make restricted/public origins trusted through workflow schema.
+- Do not recreate workflow capability envelopes, URL policy, callable policy, content policy, or special workflow prompts under new names.
+- Do not promise serializable shared edits or exactly-once behavior for arbitrary external side effects.
+- Do not block useful native behavior based only on speculative composition with another allowed behavior.
 
-## Suggested Skills
+## Completion Gate
 
-- `typehint`: use when extending workflow policy, plugin runtime context, and agent option types.
-- `writing-great-skills`: use when revising `packages/utils/builtin-skills/workflow-authoring/SKILL.md` after the runtime contract stabilizes.
-
-## First Decision Needed
-
-Choose the trusted execution boundary before implementation:
-
-1. Preferred: normal UID-1000 local tools for trusted approved operations, with independent protected-path/secret controls and explicit reviewed capabilities.
-2. Alternative: an OS-sandboxed executable runner that exposes a reviewed command/tool set while mounting approved roots.
-
-The first option best matches the stated operating model and avoids creating a second, permanently weaker agent runtime.
+Completion requires the full implementation, migration, documentation, and tests to agree; direct and workflow profile behavior to be identical; profile-configured direct network and native tools to work; optional worktrees to be usable without losing successful changes; retained Level-1 boundaries and Level-2 durability to pass; and one final usability-first review/fix/validation loop to close. Non-blocking residuals may be explicitly deferred or documented.

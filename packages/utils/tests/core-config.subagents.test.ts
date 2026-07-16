@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema } from "../core-config";
+import { coreConfigSchema, parseCoreConfigV2ToUniversal } from "../core-config";
 
 describe("coreConfigSchema agent.subagents", () => {
   it("defaults all built-in subagent profiles to modelSlot=main", () => {
-    const parsed = coreConfigSchema.parse({});
+    const parsed = parseCoreConfigV2ToUniversal({ configVersion: 2 });
     expect(parsed.agent.subagents.maxDepth).toBe(2);
     expect(parsed.agent.subagents.profiles.explore.modelSlot).toBe("main");
     expect(parsed.agent.subagents.profiles.general.modelSlot).toBe("main");
@@ -12,6 +12,53 @@ describe("coreConfigSchema agent.subagents", () => {
     expect(parsed.agent.subagents.profiles.explore.model).toBeUndefined();
     expect(parsed.agent.subagents.profiles.general.model).toBeUndefined();
     expect(parsed.agent.subagents.profiles.self.model).toBeUndefined();
+    expect(parsed.agent.subagents.profiles.explore).toMatchObject({
+      network: true,
+      workspaceWrites: false,
+      execution: false,
+      delegation: false,
+    });
+    expect(parsed.agent.subagents.profiles.general).toMatchObject({
+      network: true,
+      workspaceWrites: true,
+      execution: true,
+      delegation: false,
+    });
+    expect(parsed.agent.subagents.profiles.self).toMatchObject({
+      network: true,
+      workspaceWrites: true,
+      execution: true,
+      delegation: true,
+    });
+  });
+
+  it("accepts native tool, plugin, network, write, execution, and delegation overrides", () => {
+    const profile = parseCoreConfigV2ToUniversal({
+      configVersion: 2,
+      agent: {
+        subagents: {
+          profiles: {
+            general: {
+              level1: { tools: ["read_file"], plugins: ["local"] },
+              level2: { callables: ["fetch"], plugins: ["web"] },
+              network: false,
+              workspaceWrites: false,
+              execution: false,
+              delegation: true,
+            },
+          },
+        },
+      },
+    }).agent.subagents.profiles.general;
+
+    expect(profile).toMatchObject({
+      level1: { tools: ["read_file"], plugins: ["local"] },
+      level2: { callables: ["fetch"], plugins: ["web"] },
+      network: false,
+      workspaceWrites: false,
+      execution: false,
+      delegation: true,
+    });
   });
 
   it("accepts profile model alias/spec with options", () => {

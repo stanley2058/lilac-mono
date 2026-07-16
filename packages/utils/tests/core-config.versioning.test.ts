@@ -267,14 +267,14 @@ describe("core config versioning", () => {
       fallbackMode: "passthrough",
     });
     expect(parsed.agent.idleTimeoutMs).toBe(1_200_000);
-    expect(parsed.agent.subagents).toEqual({
+    expect(parsed.agent.subagents).toMatchObject({
       enabled: true,
       maxDepth: 2,
       idleTimeoutMs: 240_000,
       profiles: {
-        explore: { modelSlot: "main" },
-        general: { modelSlot: "main" },
-        self: { modelSlot: "main" },
+        explore: { modelSlot: "main", execution: false, workspaceWrites: false },
+        general: { modelSlot: "main", execution: true, workspaceWrites: true },
+        self: { modelSlot: "main", execution: true, workspaceWrites: true, delegation: true },
       },
     });
   });

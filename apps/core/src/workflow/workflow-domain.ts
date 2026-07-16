@@ -43,27 +43,7 @@ const platformSchema = z.enum([
 
 export const WORKFLOW_AGENT_PROFILES = ["explore", "general", "self"] as const;
 export const workflowAgentProfileSchema = z.enum(WORKFLOW_AGENT_PROFILES);
-export const WORKFLOW_LEVEL1_TOOLS = [
-  "apply_patch",
-  "bash",
-  "batch",
-  "edit_file",
-  "glob",
-  "grep",
-  "read_file",
-  "subagent_delegate",
-] as const;
-export const workflowLevel1ToolSchema = z.enum(WORKFLOW_LEVEL1_TOOLS);
 export const workflowReasoningSchema = z.enum(MODEL_REASONING_EFFORTS);
-export const workflowEditingModeSchema = z.enum(["shared", "worktree"]);
-export const workflowExecutableAuthoritySchema = z.enum(["none", "trusted-container"]);
-
-const workflowCallableIdSchema = z
-  .string()
-  .min(1)
-  .max(200)
-  .regex(/^[a-z0-9]+(?:[._-][A-Za-z0-9]+)*$/u, "invalid callable ID");
-const workflowAllowedRootSchema = z.string().min(1).max(4_096);
 
 export function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -75,25 +55,11 @@ export type WorkflowScope = z.infer<typeof workflowScopeSchema>;
 export const workflowSafetyModeSchema = z.enum(["trusted", "restricted"]);
 export type WorkflowSafetyMode = z.infer<typeof workflowSafetyModeSchema>;
 
-const workflowCapabilityProfileInputSchema = z
+const workflowResourcePolicyInputSchema = z
   .strictObject({
     agents: z.strictObject({
-      profiles: z.array(workflowAgentProfileSchema).min(1).max(WORKFLOW_AGENT_PROFILES.length),
-      models: z.array(z.string().min(1).max(200)).min(1).max(64),
-      reasoning: z.array(workflowReasoningSchema).min(1).max(MODEL_REASONING_EFFORTS.length),
-      allowedRoots: z.array(workflowAllowedRootSchema).min(1).max(64),
-      tools: z.array(workflowLevel1ToolSchema).max(WORKFLOW_LEVEL1_TOOLS.length),
-      executables: workflowExecutableAuthoritySchema,
-      editing: z.array(workflowEditingModeSchema).max(2),
-      delegation: z.boolean(),
       maxConcurrent: z.number().int().min(1).max(64),
       maxTotal: z.number().int().min(1).max(10_000),
-    }),
-    level2: z.strictObject({
-      callables: z.array(workflowCallableIdSchema).max(512),
-    }),
-    surfaces: z.strictObject({
-      origin: z.array(workflowCallableIdSchema).max(64),
     }),
     maxNestingDepth: z.number().int().min(1).max(64),
     maxWallTimeMs: z
@@ -109,7 +75,7 @@ const workflowCapabilityProfileInputSchema = z
     waits: z.array(z.enum(["reply", "sleep"])).max(16),
     safety: z.strictObject({
       originatingMode: workflowSafetyModeSchema,
-      escalation: z.enum(["none", "trusted_with_review"]),
+      escalation: z.literal("none"),
     }),
   })
   .superRefine((profile, ctx) => {
@@ -120,122 +86,14 @@ const workflowCapabilityProfileInputSchema = z
         message: "maxConcurrent cannot exceed maxTotal",
       });
     }
-    if (profile.agents.delegation && !profile.agents.tools.includes("subagent_delegate")) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "tools"],
-        message: "delegation authority requires the subagent_delegate tool",
-      });
-    }
-    if (!profile.agents.delegation && profile.agents.tools.includes("subagent_delegate")) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "tools"],
-        message: "subagent_delegate requires delegation authority",
-      });
-    }
-    for (const operation of profile.surfaces.origin) {
-      if (!operation.startsWith("surface.") || !profile.level2.callables.includes(operation)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["surfaces", "origin"],
-          message: `origin surface operation must be an approved surface callable: ${operation}`,
-        });
-      }
-    }
-    for (const callableId of profile.level2.callables) {
-      if (callableId.startsWith("workflow.")) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["level2", "callables"],
-          message: "workflow control callables cannot be delegated to workflow children",
-        });
-      }
-    }
-    if (
-      profile.safety.originatingMode === "restricted" &&
-      profile.safety.escalation === "trusted_with_review"
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["safety", "escalation"],
-        message: "restricted workflows cannot escalate to trusted mode",
-      });
-    }
-    if (
-      profile.safety.originatingMode === "restricted" &&
-      profile.agents.executables === "trusted-container"
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "executables"],
-        message: "restricted workflows cannot request trusted container executables",
-      });
-    }
   });
 
 function isSortedUnique(values: readonly string[]): boolean {
   return values.every((value, index) => index === 0 || values[index - 1]! < value);
 }
 
-export const workflowCapabilityProfileSchema = workflowCapabilityProfileInputSchema.superRefine(
+export const workflowResourcePolicySchema = workflowResourcePolicyInputSchema.superRefine(
   (profile, ctx) => {
-    if (!isSortedUnique(profile.agents.profiles)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "profiles"],
-        message: "profiles must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.agents.models)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "models"],
-        message: "models must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.agents.reasoning)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "reasoning"],
-        message: "reasoning values must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.agents.allowedRoots)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "allowedRoots"],
-        message: "allowed roots must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.agents.tools)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "tools"],
-        message: "tools must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.agents.editing)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["agents", "editing"],
-        message: "editing modes must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.level2.callables)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["level2", "callables"],
-        message: "Level-2 callables must be sorted and unique",
-      });
-    }
-    if (!isSortedUnique(profile.surfaces.origin)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["surfaces", "origin"],
-        message: "origin surface operations must be sorted and unique",
-      });
-    }
     if (!isSortedUnique(profile.waits)) {
       ctx.addIssue({
         code: "custom",
@@ -245,27 +103,16 @@ export const workflowCapabilityProfileSchema = workflowCapabilityProfileInputSch
     }
   },
 );
-export type WorkflowCapabilityProfile = z.infer<typeof workflowCapabilityProfileSchema>;
+export type WorkflowResourcePolicy = z.infer<typeof workflowResourcePolicySchema>;
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareCodeUnits);
 }
 
-export function normalizeWorkflowCapabilityProfile(input: unknown): WorkflowCapabilityProfile {
-  const parsed = workflowCapabilityProfileInputSchema.parse(input);
-  return workflowCapabilityProfileSchema.parse({
+export function normalizeWorkflowResourcePolicy(input: unknown): WorkflowResourcePolicy {
+  const parsed = workflowResourcePolicyInputSchema.parse(input);
+  return workflowResourcePolicySchema.parse({
     ...parsed,
-    agents: {
-      ...parsed.agents,
-      profiles: sortedUnique(parsed.agents.profiles),
-      models: sortedUnique(parsed.agents.models),
-      reasoning: sortedUnique(parsed.agents.reasoning),
-      allowedRoots: sortedUnique(parsed.agents.allowedRoots),
-      tools: sortedUnique(parsed.agents.tools),
-      editing: sortedUnique(parsed.agents.editing),
-    },
-    level2: { callables: sortedUnique(parsed.level2.callables) },
-    surfaces: { origin: sortedUnique(parsed.surfaces.origin) },
     waits: sortedUnique(parsed.waits),
   });
 }
@@ -300,7 +147,7 @@ export const workflowRevisionIdentitySchema = z.strictObject({
   normalizedPath: z.string().min(1).max(1_024),
   sourceSha256: sha256Schema,
   inputSchemaSha256: sha256Schema,
-  capabilitySha256: sha256Schema,
+  resourcePolicySha256: sha256Schema,
   runtimeVersion: z.string().min(1).max(100),
 });
 export type WorkflowRevisionIdentity = z.infer<typeof workflowRevisionIdentitySchema>;
@@ -314,49 +161,19 @@ export const workflowRevisionSchema = workflowRevisionIdentitySchema.extend({
   snapshotArtifactId: idSchema,
   metadata: workflowMetadataSchema,
   inputSchema: jsonObjectSchema,
-  capabilities: workflowCapabilityProfileSchema,
+  resources: workflowResourcePolicySchema,
   limits: workflowLimitsSchema,
   createdAt: timestampSchema,
 });
 export type WorkflowRevision = z.infer<typeof workflowRevisionSchema>;
 
-export const workflowApprovalStateSchema = z.enum([
-  "pending",
-  "approved",
-  "rejected",
-  "revoked",
-  "expired",
-]);
-export type WorkflowApprovalState = z.infer<typeof workflowApprovalStateSchema>;
-
-export const workflowApprovalSchema = z.strictObject({
-  approvalId: idSchema,
-  revisionId: idSchema,
-  state: workflowApprovalStateSchema,
-  expectedReviewerPlatform: platformSchema.nullable(),
-  expectedReviewerUserId: idSchema.nullable(),
-  firstRunId: idSchema,
-  decisionActorPlatform: platformSchema.nullable(),
-  decisionActorUserId: idSchema.nullable(),
-  decisionSource: boundedTextSchema.nullable(),
-  expiresAt: nullableTimestampSchema,
-  decidedAt: nullableTimestampSchema,
-  revokedAt: nullableTimestampSchema,
-  revocationReason: boundedTextSchema.nullable(),
-  createdAt: timestampSchema,
-  updatedAt: timestampSchema,
-});
-export type WorkflowApproval = z.infer<typeof workflowApprovalSchema>;
-
 export const workflowRunStateSchema = z.enum([
-  "awaiting_review",
   "queued",
   "running",
   "blocked",
   "paused",
   "succeeded",
   "failed",
-  "rejected",
   "cancelled",
 ]);
 export type WorkflowRunState = z.infer<typeof workflowRunStateSchema>;
@@ -398,6 +215,7 @@ export const workflowCompletionTargetSchema = z.discriminatedUnion("kind", [
     fallbackToSurface: z.boolean(),
     fallbackProgressTarget: workflowProgressTargetSchema.nullable(),
     deferredDelivery: z.boolean().default(true),
+    familyScratchRoot: z.string().min(1).max(4_096).optional(),
   }),
   z.strictObject({
     kind: z.literal("new_session_request"),
@@ -410,7 +228,6 @@ export type WorkflowCompletionTarget = z.infer<typeof workflowCompletionTargetSc
 export const workflowRunSchema = z.strictObject({
   runId: idSchema,
   revisionId: idSchema,
-  approvalId: idSchema.nullable(),
   state: workflowRunStateSchema,
   inputSchemaSnapshot: jsonObjectSchema,
   args: jsonObjectSchema,
@@ -594,20 +411,13 @@ export const workflowSurfaceBindingSchema = z.strictObject({
 });
 export type WorkflowSurfaceBinding = z.infer<typeof workflowSurfaceBindingSchema>;
 
-export const workflowSurfaceActionKindSchema = z.enum([
-  "approve",
-  "reject",
-  "pause",
-  "resume",
-  "cancel",
-]);
+export const workflowSurfaceActionKindSchema = z.enum(["pause", "resume", "cancel"]);
 export type WorkflowSurfaceActionKind = z.infer<typeof workflowSurfaceActionKindSchema>;
 
 export const workflowSurfaceActionSchema = z.strictObject({
   actionId: idSchema,
   tokenSha256: sha256Schema,
   runId: idSchema,
-  approvalId: idSchema.nullable(),
   kind: workflowSurfaceActionKindSchema,
   expectedPlatform: platformSchema,
   expectedUserId: idSchema,
@@ -630,24 +440,14 @@ export const workflowSchemaMigrationSchema = z.strictObject({
 export type WorkflowSchemaMigration = z.infer<typeof workflowSchemaMigrationSchema>;
 
 const RUN_TRANSITIONS = {
-  awaiting_review: ["queued", "rejected", "cancelled"],
   queued: ["running", "paused", "cancelled"],
   running: ["blocked", "paused", "succeeded", "failed", "cancelled"],
   blocked: ["queued", "running", "paused", "failed", "cancelled"],
   paused: ["queued", "running", "cancelled"],
   succeeded: [],
   failed: [],
-  rejected: [],
   cancelled: [],
 } as const satisfies Record<WorkflowRunState, readonly WorkflowRunState[]>;
-
-const APPROVAL_TRANSITIONS = {
-  pending: ["approved", "rejected", "expired"],
-  approved: ["revoked", "expired"],
-  rejected: [],
-  revoked: [],
-  expired: [],
-} as const satisfies Record<WorkflowApprovalState, readonly WorkflowApprovalState[]>;
 
 const OPERATION_TRANSITIONS = {
   queued: ["dispatched", "cancelled"],
@@ -683,13 +483,6 @@ export function canTransitionWorkflowRun(from: WorkflowRunState, to: WorkflowRun
   return from === to || includesState(RUN_TRANSITIONS[from], to);
 }
 
-export function canTransitionWorkflowApproval(
-  from: WorkflowApprovalState,
-  to: WorkflowApprovalState,
-): boolean {
-  return from === to || includesState(APPROVAL_TRANSITIONS[from], to);
-}
-
 export function canTransitionWorkflowOperation(
   from: WorkflowOperationState,
   to: WorkflowOperationState,
@@ -711,7 +504,6 @@ export function canTransitionWorkflowTrigger(
 export const WORKFLOW_TERMINAL_RUN_STATES = [
   "succeeded",
   "failed",
-  "rejected",
   "cancelled",
 ] as const satisfies readonly WorkflowRunState[];
 

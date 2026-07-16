@@ -1042,6 +1042,9 @@ export function fsTool(
       requestId: string;
       sessionId: string;
     };
+    loadInstructions?: boolean;
+    denyPaths?: readonly string[];
+    enforceDenylist?: boolean;
   },
 ) {
   const logger = createLogger({
@@ -1068,6 +1071,7 @@ export function fsTool(
       "~/.ssh",
       "~/.aws",
       "~/.gnupg",
+      ...(opts?.denyPaths ?? []),
     ],
     fsBackend,
     fffCacheDir: FFF_CACHE_DIR,
@@ -1251,6 +1255,7 @@ export function fsTool(
       inputSchema: readFileSchema,
       outputSchema: readFileOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: ReadFileInput, options) => {
+        if (opts?.enforceDenylist) dangerouslyAllow = false;
         if (input.path.startsWith(TOOL_RESULT_URI_PREFIX)) {
           const sessionId = opts?.requestContext?.sessionId;
           const artifact =
@@ -1506,6 +1511,7 @@ export function fsTool(
             // Skip instruction auto-loading for remote reads for now.
             return resQualified;
           }
+          if (opts?.loadInstructions === false) return resQualified;
           const instructions = await loadInstructionsForPath({
             resolvedPath: resQualified.resolvedPath,
             opCwd,
@@ -1649,6 +1655,7 @@ export function fsTool(
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: GlobInput) => {
+        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -1722,6 +1729,7 @@ export function fsTool(
             inputSchema: fuzzySearchInputZod,
             outputSchema: fuzzySearchOutputZod,
             execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: FuzzySearchInput) => {
+              if (opts?.enforceDenylist) dangerouslyAllow = false;
               const cwdTarget = parseSshCwdTarget(opCwd);
 
               logger.info("fs.fuzzySearch", {
@@ -1783,6 +1791,7 @@ export function fsTool(
       inputSchema: grepInputSchema,
       outputSchema: grepOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: GrepInput) => {
+        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -1875,6 +1884,7 @@ export function fsTool(
       inputSchema: editFileSchema,
       outputSchema: editFileOutputZod,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: EditFileInput) => {
+        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
         const isLegacy = isLegacyEditFileInput(input);

@@ -163,18 +163,7 @@ export class WorkflowDefinitionStore {
     source: string;
     safetyMode?: WorkflowSafetyMode;
   }): Promise<ValidatedWorkflowDefinition> {
-    const validation = validateWorkflowSource(input);
-    for (const configuredRoot of validation.capabilities.agents.allowedRoots) {
-      const root = configuredRoot === "project" ? this.canonicalWorkspaceRoot : configuredRoot;
-      const stats = await fs.lstat(root).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Workflow allowed root does not exist: ${root} (${message})`);
-      });
-      if (stats.isSymbolicLink() || !stats.isDirectory() || (await fs.realpath(root)) !== root) {
-        throw new Error(`Workflow allowed root must be a canonical real directory: ${root}`);
-      }
-    }
-    return validation;
+    return validateWorkflowSource(input);
   }
 
   async get(params: {

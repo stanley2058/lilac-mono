@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { rmSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,9 +18,11 @@ import {
 
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { WorkflowEngine, workflowAgentRequestId } from "../../src/workflow/workflow-engine";
+import { ensureWorkflowRunScratch } from "../../src/workflow/workflow-scratch";
+import type { WorkflowRequestPolicy } from "../../src/workflow/workflow-request-authority";
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
 import {
-  normalizeWorkflowCapabilityProfile,
+  normalizeWorkflowResourcePolicy,
   WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
   type WorkflowCompletionTarget,
 } from "../../src/workflow/workflow-domain";
@@ -152,7 +154,7 @@ class LiveCapturingRawBus implements RawBus {
   }
 }
 
-function createApprovedRun(
+function createTrustedRun(
   store: DurableWorkflowStore,
   runId = "run-1",
   args: Record<string, boolean> = {},
@@ -162,32 +164,21 @@ function createApprovedRun(
   editing = false,
   canonicalWorkspaceRoot = process.cwd(),
   mixedEditing = false,
+  operationIdleTimeoutMs = 2_000,
 ) {
   const inputSchema = {
     type: "object",
     additionalProperties: false,
     properties: { timeout: { type: "boolean" } },
   };
-  const capabilities = normalizeWorkflowCapabilityProfile({
+  const resources = normalizeWorkflowResourcePolicy({
     agents: {
-      profiles: mixedEditing ? ["explore", "general"] : editing ? ["general"] : ["explore"],
-      models: ["inherit"],
-      reasoning: ["provider-default"],
-      allowedRoots: ["project"],
-      tools: editing
-        ? ["apply_patch", "bash", "batch", "glob", "grep", "read_file"]
-        : ["batch", "glob", "grep", "read_file"],
-      executables: editing ? "trusted-container" : "none",
-      editing: mixedEditing ? ["shared", "worktree"] : editing ? ["worktree"] : [],
-      delegation: false,
       maxConcurrent: mixedEditing ? 3 : editing ? 1 : 2,
       maxTotal: 4,
     },
-    level2: { callables: [] },
-    surfaces: { origin: [] },
     maxNestingDepth: 4,
     maxWallTimeMs,
-    operationIdleTimeoutMs: 2_000,
+    operationIdleTimeoutMs,
     waits: ["reply", "sleep"],
     safety: { originatingMode: "trusted", escalation: "none" },
   });
@@ -208,12 +199,12 @@ function createApprovedRun(
     snapshotArtifactId: `workflow-source:${HASH_A}`,
     sourceSha256: HASH_A,
     inputSchemaSha256: canonicalJsonSha256(inputSchema),
-    capabilitySha256: canonicalJsonSha256({ capabilities, limits }),
+    resourcePolicySha256: canonicalJsonSha256({ resources, limits }),
     metadata: { name: "audit", description: "Audit" },
     inputSchema,
-    capabilities,
+    resources,
     limits,
-    runtimeVersion: "lilac-workflow-js-v2",
+    runtimeVersion: "lilac-workflow-js-v3",
     createdAt: 1,
   };
   const invocation = store.createInvocation({
@@ -221,8 +212,7 @@ function createApprovedRun(
     run: {
       runId,
       revisionId: revision.revisionId,
-      approvalId: null,
-      state: "awaiting_review",
+      state: "queued",
       inputSchemaSnapshot: revision.inputSchema,
       args,
       argsSha256: canonicalJsonSha256(args),
@@ -246,32 +236,11 @@ function createApprovedRun(
       updatedAt: 1,
       terminalAt: null,
     },
-    pendingApproval: {
-      approvalId: "approval-1",
-      revisionId: revision.revisionId,
-      state: "pending",
-      expectedReviewerPlatform: "discord",
-      expectedReviewerUserId: "user-1",
-      firstRunId: runId,
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: null,
-      expiresAt: null,
-      decidedAt: null,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: 1,
-      updatedAt: 1,
-    },
-  });
-  store.transitionApproval({
-    approvalId: invocation.approval.approvalId,
-    from: "pending",
-    to: "approved",
-    now: 2,
   });
   return invocation;
 }
+
+const createApprovedRun = createTrustedRun;
 
 async function runGit(cwd: string, args: readonly string[]): Promise<string> {
   const process = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -293,29 +262,106 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 function persistedAgentInput(prompt: string, editing = false, cwd = process.cwd()) {
+  const stats = statSync(cwd, { bigint: true });
+  const identity = { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
   return {
     prompt,
     options: {
       profile: editing ? "general" : "explore",
-      model: "inherit",
-      reasoning: "provider-default",
       cwd,
+      cwdIdentity: identity,
       authorityRoot: cwd,
-      editing,
+      authorityRootIdentity: identity,
       isolation: editing ? "worktree" : "shared",
-      tools: editing
-        ? ["apply_patch", "bash", "batch", "glob", "grep", "read_file"]
-        : ["batch", "glob", "grep", "read_file"],
-      executables: "none" as const,
-      level2Callables: [],
-      surfaceOriginOperations: [],
-      delegation: false,
     },
   };
 }
 
 describe("WorkflowEngine", () => {
-  it("runs read-only exploration beside one shared editor while serializing shared edits", async () => {
+  it("cleans only retained terminal run scratch after the bounded retention window", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-scratch-cleanup-"));
+    const dbPath = join(root, "workflow.sqlite");
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(store, "run-cleanup");
+    expect(
+      store.cancelRunAndChildren({ runId: "run-cleanup", now: 10, detail: "complete" })?.state,
+    ).toBe("cancelled");
+    const scratch = await ensureWorkflowRunScratch({ dataDir: root, runId: "run-cleanup" });
+    await fs.utimes(scratch, new Date(0), new Date(0));
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: root,
+      subscriptionId: "scratch-cleanup",
+      now: () => 8 * 24 * 60 * 60 * 1_000,
+      assertSandbox: async () => {},
+    });
+    try {
+      await engine.start();
+      await expect(fs.lstat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retains old family scratch while a generated family run is active", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-family-scratch-cleanup-"));
+    const dbPath = join(root, "workflow.sqlite");
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(store, "run-parent");
+    expect(
+      store.cancelRunAndChildren({ runId: "run-parent", now: 10, detail: "complete" })?.state,
+    ).toBe("cancelled");
+    const scratch = await ensureWorkflowRunScratch({ dataDir: root, runId: "run-parent" });
+    createApprovedRun(
+      store,
+      "run-child",
+      {},
+      { operation: 10_000, result: 10_000 },
+      {
+        kind: "live_parent",
+        parentRequestId: "wfr:parent",
+        parentSessionId: "workflow:parent",
+        parentRequestClient: "discord",
+        parentToolCallId: "tool:delegate",
+        childRequestId: "sub:child",
+        childSessionId: "sub:session",
+        profile: "explore",
+        sessionName: "child",
+        depth: 1,
+        reasoning: null,
+        fallbackToSurface: false,
+        fallbackProgressTarget: null,
+        deferredDelivery: true,
+        familyScratchRoot: scratch,
+      },
+    );
+    await fs.utimes(scratch, new Date(0), new Date(0));
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: root,
+      subscriptionId: "family-scratch-cleanup",
+      now: () => 8 * 24 * 60 * 60 * 1_000,
+      assertSandbox: async () => {},
+    });
+    try {
+      await engine.start();
+      expect((await fs.lstat(scratch)).isDirectory()).toBe(true);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows concurrent shared profile-native writers", async () => {
     const dbPath = join(tmpdir(), `workflow-mixed-authority-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
@@ -334,11 +380,14 @@ describe("WorkflowEngine", () => {
     let activeEditors = 0;
     let maxActive = 0;
     let maxEditors = 0;
-    let sawMixedReadAndEdit = false;
+    let releaseEditors: () => void = () => {};
+    const editorsOverlapped = new Promise<void>((resolve) => {
+      releaseEditors = resolve;
+    });
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "mixed-operation-authority",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -346,10 +395,10 @@ describe("WorkflowEngine", () => {
       compileSource: (source) => source,
       startSandbox: (input) => {
         const calls = [
-          { path: "root:read-a:0", callSiteId: "read-a", profile: "explore", editing: false },
           { path: "root:edit-a:0", callSiteId: "edit-a", profile: "general", editing: true },
-          { path: "root:read-b:0", callSiteId: "read-b", profile: "explore", editing: false },
           { path: "root:edit-b:0", callSiteId: "edit-b", profile: "general", editing: true },
+          { path: "root:read-a:0", callSiteId: "read-a", profile: "explore", editing: false },
+          { path: "root:read-b:0", callSiteId: "read-b", profile: "explore", editing: false },
         ] as const;
         return {
           cancel: async () => {},
@@ -368,7 +417,7 @@ describe("WorkflowEngine", () => {
                 input: {
                   prompt: call.callSiteId,
                   options: call.editing
-                    ? { profile: call.profile, editing: true, isolation: "shared" }
+                    ? { profile: call.profile, isolation: "shared" }
                     : { profile: call.profile },
                 },
               }),
@@ -378,12 +427,21 @@ describe("WorkflowEngine", () => {
       },
       dispatchAgentRequest: async ({ policy }) => {
         active += 1;
-        if (policy.editing) activeEditors += 1;
+        if (policy.profile !== "explore") activeEditors += 1;
         maxActive = Math.max(maxActive, active);
         maxEditors = Math.max(maxEditors, activeEditors);
-        sawMixedReadAndEdit ||= activeEditors > 0 && active > activeEditors;
-        await Bun.sleep(30);
-        if (policy.editing) activeEditors -= 1;
+        if (activeEditors === 2) releaseEditors();
+        if (policy.profile !== "explore") {
+          await Promise.race([
+            editorsOverlapped,
+            Bun.sleep(1_000).then(() => {
+              throw new Error("shared writers did not overlap");
+            }),
+          ]);
+        } else {
+          await Bun.sleep(30);
+        }
+        if (policy.profile !== "explore") activeEditors -= 1;
         active -= 1;
         return { state: "resolved", output: policy.operationId, detail: null, usage: null };
       },
@@ -395,8 +453,7 @@ describe("WorkflowEngine", () => {
         store.listOperations("run-1").filter((operation) => operation.kind === "agent"),
       ).toHaveLength(4);
       expect(maxActive).toBeGreaterThan(1);
-      expect(maxEditors).toBe(1);
-      expect(sawMixedReadAndEdit).toBe(true);
+      expect(maxEditors).toBe(2);
     } finally {
       await engine.stop();
       await bus.close();
@@ -405,7 +462,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("permits parallel worktree editors without the shared-editor lock", async () => {
+  it("rejects worktree isolation before preparation or dispatch", async () => {
     const dbPath = join(tmpdir(), `workflow-parallel-worktrees-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
@@ -420,21 +477,21 @@ describe("WorkflowEngine", () => {
       process.cwd(),
       true,
     );
-    let activeEditors = 0;
-    let maxEditors = 0;
+    let prepareCalls = 0;
+    let dispatchCalls = 0;
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "parallel-worktree-authority",
       pollMs: 5,
       assertSandbox: async () => {},
       loadSnapshot: async () => "immutable",
       compileSource: (source) => source,
-      prepareWorktree: async (_run, operation) => ({
-        path: `/isolated/${operation.operationId}`,
-        baseCommit: "a".repeat(40),
-      }),
+      prepareWorktree: async () => {
+        prepareCalls += 1;
+        return { path: "/must-not-exist", baseCommit: "a".repeat(40) };
+      },
       startSandbox: (input) => ({
         cancel: async () => {},
         result: Promise.all(
@@ -451,26 +508,226 @@ describe("WorkflowEngine", () => {
               depth: 0,
               input: {
                 prompt: callSiteId,
-                options: { profile: "general", editing: true, isolation: "worktree" },
+                options: { profile: "general", isolation: "worktree" },
               },
             }),
           ),
         ),
       }),
       dispatchAgentRequest: async () => {
-        activeEditors += 1;
-        maxEditors = Math.max(maxEditors, activeEditors);
-        await Bun.sleep(30);
-        activeEditors -= 1;
+        dispatchCalls += 1;
         return { state: "failed", output: "", detail: "test stop", usage: null };
       },
     });
     try {
       await engine.start();
       await waitFor(() => store.getRun("run-1")?.state === "failed");
-      expect(maxEditors).toBe(2);
+      expect(prepareCalls).toBe(0);
+      expect(dispatchCalls).toBe(0);
+      expect(store.getRun("run-1")?.terminalDetail).toContain(
+        "worktree isolation is temporarily unavailable",
+      );
     } finally {
       await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("uses the engine data directory while resolving cwd before dispatch", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-engine-data-dir-"));
+    const workspace = join(root, "workspace");
+    const requestedCwd = join(workspace, ".lilac-data", "work");
+    const dataDir = join(root, "runtime-data");
+    const dbPath = join(dataDir, "workflow.sqlite");
+    await fs.mkdir(requestedCwd, { recursive: true });
+    await fs.mkdir(dataDir);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      workspace,
+    );
+    const dispatchedCwds: string[] = [];
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "actual-data-dir-cwd",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call" as const,
+          id: 1,
+          kind: "agent" as const,
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: {
+            prompt: "work in nested cwd",
+            options: { profile: "general", cwd: requestedCwd },
+          },
+        }),
+      }),
+      dispatchAgentRequest: async (request) => {
+        dispatchedCwds.push(request.agentCwd);
+        return { state: "failed", output: "", detail: "test complete", usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "failed");
+      expect(dispatchedCwds).toEqual([requestedCwd]);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the complete durable model request for stale redispatch", async () => {
+    const dbPath = join(tmpdir(), `workflow-stale-policy-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+    );
+    let now = 10;
+    let firstDispatched = false;
+    let replacementResolutions = 0;
+    const recoveredPolicies: WorkflowRequestPolicy[] = [];
+    const startSandbox = (
+      input: Parameters<
+        NonNullable<ConstructorParameters<typeof WorkflowEngine>[0]["startSandbox"]>
+      >[0],
+    ) => ({
+      cancel: async () => {},
+      result: input.onCall({
+        type: "call" as const,
+        id: 1,
+        kind: "agent" as const,
+        callSiteId: "site-agent",
+        occurrence: 0,
+        path: "root:site-agent:0",
+        parentPath: null,
+        phase: null,
+        depth: 0,
+        input: { prompt: "durable request", options: { profile: "general" } },
+      }),
+    });
+    const first = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: dirname(dbPath),
+      subscriptionId: "stale-policy-first",
+      pollMs: 5,
+      now: () => now,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox,
+      validateAgentSelection: () => ({
+        model: "provider/model-a",
+        reasoning: "high",
+        request: {
+          alias: "durable-alias",
+          spec: "provider/model-a",
+          provider: "provider",
+          modelId: "model-a",
+          reasoningDisplay: "detailed",
+          providerOptions: { provider: { route: "pinned" } },
+          reasoning: "high",
+          responseCommentary: true,
+          anthropicPromptCache: true,
+        },
+      }),
+      dispatchAgentRequest: async (request) => {
+        firstDispatched = true;
+        return await new Promise((resolve) => {
+          request.signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "paused", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    const replacement = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: dirname(dbPath),
+      subscriptionId: "stale-policy-replacement",
+      pollMs: 5,
+      now: () => now,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox,
+      validateAgentSelection: () => {
+        replacementResolutions += 1;
+        return {
+          model: "provider/model-b",
+          reasoning: "low",
+          request: {
+            spec: "provider/model-b",
+            provider: "provider",
+            modelId: "model-b",
+            reasoningDisplay: "none",
+          },
+        };
+      },
+      dispatchAgentRequest: async (request) => {
+        recoveredPolicies.push(request.policy);
+        return { state: "failed", output: "", detail: "test complete", usage: null };
+      },
+    });
+    try {
+      await first.start();
+      await waitFor(() => firstDispatched);
+      expect(store.pauseRunAndChildren({ runId: "run-1", now: 11, detail: "pause" })?.state).toBe(
+        "paused",
+      );
+      await first.stop();
+      now = 40_100;
+      expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now })).toBe(true);
+      await replacement.start();
+      await waitFor(() => recoveredPolicies.length > 0);
+      expect(replacementResolutions).toBe(0);
+      expect(recoveredPolicies[0]?.resolvedModelRequest).toEqual({
+        alias: "durable-alias",
+        spec: "provider/model-a",
+        provider: "provider",
+        modelId: "model-a",
+        providerOptions: { provider: { route: "pinned" } },
+        reasoning: "high",
+        responseCommentary: true,
+        anthropicPromptCache: true,
+        reasoningDisplay: "detailed",
+      });
+    } finally {
+      await replacement.stop();
+      await first.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });
@@ -517,7 +774,7 @@ describe("WorkflowEngine", () => {
       const engine = new WorkflowEngine({
         bus,
         store,
-        dataDir: "/unused",
+        dataDir: dirname(dbPath),
         subscriptionId: `terminal-${terminalState}`,
         pollMs: 5,
         assertSandbox: async () => {},
@@ -536,7 +793,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         }),
       });
@@ -604,14 +861,14 @@ describe("WorkflowEngine", () => {
                   runId: z.string(),
                   operationId: z.string(),
                   dispatchEpoch: z.string(),
-                  capability: z.string(),
+                  controlToken: z.string(),
                 }),
               })
               .parse(message.data.raw).workflow;
             expect(
               store.claimWorkflowRequest({
                 requestId,
-                token: workflow.capability,
+                token: workflow.controlToken,
                 dispatchEpoch: workflow.dispatchEpoch,
                 ownerId: "mismatch-runner",
                 now: 10,
@@ -642,7 +899,7 @@ describe("WorkflowEngine", () => {
       const engine = new WorkflowEngine({
         bus,
         store,
-        dataDir: "/unused",
+        dataDir: dirname(dbPath),
         subscriptionId: `mismatched-${lifecycleState}`,
         pollMs: 5,
         receiptPollMs: 10_000,
@@ -662,7 +919,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         }),
       });
@@ -709,7 +966,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "manual-block",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -739,7 +996,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "terminal-race",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -750,7 +1007,7 @@ describe("WorkflowEngine", () => {
         runId,
         operationId,
         dispatchEpoch,
-        capability,
+        controlToken,
         runOwnerId,
       }) => {
         expect(
@@ -765,7 +1022,7 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId,
-            token: capability,
+            token: controlToken,
             dispatchEpoch,
             ownerId: "runner-race",
             now: 19,
@@ -795,7 +1052,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
     });
@@ -856,7 +1113,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "live-terminal-receipt",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -874,7 +1131,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
     });
@@ -897,7 +1154,7 @@ describe("WorkflowEngine", () => {
       const commandData = z
         .object({
           raw: z.object({
-            workflow: z.object({ capability: z.string(), dispatchEpoch: z.string() }),
+            workflow: z.object({ controlToken: z.string(), dispatchEpoch: z.string() }),
           }),
         })
         .parse(command.data);
@@ -906,7 +1163,7 @@ describe("WorkflowEngine", () => {
       if (!requestId || !sessionId) throw new Error("Missing workflow command identity");
       const authorized = store.authorizeWorkflowRequest({
         requestId,
-        token: commandData.raw.workflow.capability,
+        token: commandData.raw.workflow.controlToken,
         sessionId,
         platform: "unknown",
         now: Date.now(),
@@ -915,7 +1172,7 @@ describe("WorkflowEngine", () => {
       expect(
         store.claimWorkflowRequest({
           requestId,
-          token: commandData.raw.workflow.capability,
+          token: commandData.raw.workflow.controlToken,
           dispatchEpoch: commandData.raw.workflow.dispatchEpoch,
           ownerId: "crashing-runner",
           now: Date.now(),
@@ -988,7 +1245,7 @@ describe("WorkflowEngine", () => {
     const first = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "replacement-receipt-first",
       pollMs: 5,
       now: () => firstNow,
@@ -1007,12 +1264,12 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async (request) => {
-        const capability = request.capability;
-        if (!capability) throw new Error("Missing initial dispatch capability");
+        const controlToken = request.controlToken;
+        if (!controlToken) throw new Error("Missing initial dispatch control token");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing initial run owner");
         expect(
@@ -1027,7 +1284,7 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId: request.requestId,
-            token: capability,
+            token: controlToken,
             dispatchEpoch: request.dispatchEpoch,
             ownerId: "runner-before-crash",
             now: firstNow,
@@ -1059,7 +1316,7 @@ describe("WorkflowEngine", () => {
     const replacement = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "replacement-receipt-second",
       pollMs: 5,
       now: () => 100_000,
@@ -1078,7 +1335,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async () => {
@@ -1141,7 +1398,7 @@ describe("WorkflowEngine", () => {
       const first = new WorkflowEngine({
         bus,
         store,
-        dataDir: "/unused",
+        dataDir: dirname(dbPath),
         subscriptionId: `${raceWindow}-receipt-first`,
         pollMs: 5,
         now: () => 10,
@@ -1160,11 +1417,11 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         }),
         dispatchAgentRequest: async (request) => {
-          if (!request.capability) throw new Error("Missing initial capability");
+          if (!request.controlToken) throw new Error("Missing initial control token");
           const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
           if (!runOwnerId) throw new Error("Missing initial run owner");
           expect(
@@ -1179,7 +1436,7 @@ describe("WorkflowEngine", () => {
           expect(
             store.claimWorkflowRequest({
               requestId: request.requestId,
-              token: request.capability,
+              token: request.controlToken,
               dispatchEpoch: request.dispatchEpoch,
               ownerId: "handoff-runner",
               now: 10,
@@ -1216,7 +1473,7 @@ describe("WorkflowEngine", () => {
       const replacement = new WorkflowEngine({
         bus,
         store,
-        dataDir: "/unused",
+        dataDir: dirname(dbPath),
         subscriptionId: `${raceWindow}-receipt-second`,
         pollMs: 5,
         now: () => 70_000,
@@ -1242,7 +1499,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         }),
         dispatchAgentRequest: async () => {
@@ -1292,7 +1549,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "pause-receipt",
       pollMs: 5,
       now: () => now,
@@ -1311,12 +1568,12 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async (request) => {
         dispatches += 1;
-        if (!request.capability) throw new Error("Missing dispatch capability");
+        if (!request.controlToken) throw new Error("Missing dispatch control token");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing run owner");
         expect(
@@ -1331,7 +1588,7 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId: request.requestId,
-            token: request.capability,
+            token: request.controlToken,
             dispatchEpoch: request.dispatchEpoch,
             ownerId: "pause-runner",
             now,
@@ -1438,7 +1695,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("recovers a pre-dispatch worktree and captures committed and untracked edits before cleanup", async () => {
+  it.skip("recovers a pre-dispatch worktree and captures committed and untracked edits before cleanup", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "workflow-durable-worktree-"));
     const repo = join(root, "repo");
     const dataDir = join(root, "data");
@@ -1505,7 +1762,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "edit files", options: { editing: true, isolation: "worktree" } },
+          input: { prompt: "edit files", options: { profile: "general", isolation: "worktree" } },
         }),
       }),
       dispatchAgentRequest: async (request) => {
@@ -1589,7 +1846,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("preserves an ordinary failed editing worktree as a fenced prepared output", async () => {
+  it.skip("preserves an ordinary failed editing worktree as a fenced prepared output", async () => {
     const dbPath = join(tmpdir(), `workflow-failed-worktree-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const raw = new CapturingRawBus();
@@ -1607,7 +1864,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "failed-worktree-preservation",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -1634,7 +1891,7 @@ describe("WorkflowEngine", () => {
           depth: 0,
           input: {
             prompt: "edit then fail",
-            options: { editing: true, isolation: "worktree" },
+            options: { profile: "general", isolation: "worktree" },
           },
         }),
       }),
@@ -1664,7 +1921,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("fails and preserves a successful edit when ignored bytes are not patch-captured", async () => {
+  it.skip("fails and preserves a successful edit when ignored bytes are not patch-captured", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "workflow-ignored-worktree-"));
     const repo = join(root, "repo");
     const dataDir = join(root, "data");
@@ -1712,7 +1969,7 @@ describe("WorkflowEngine", () => {
           depth: 0,
           input: {
             prompt: "edit ignored output",
-            options: { editing: true, isolation: "worktree" },
+            options: { profile: "general", isolation: "worktree" },
           },
         }),
       }),
@@ -1749,7 +2006,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("quarantines a committed replay worktree when its pre-dispatch base was never persisted", async () => {
+  it.skip("quarantines a committed replay worktree when its pre-dispatch base was never persisted", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "workflow-legacy-worktree-"));
     const repo = join(root, "repo");
     const dataDir = join(root, "data");
@@ -1774,7 +2031,7 @@ describe("WorkflowEngine", () => {
       repo,
     );
     expect(
-      store.tryClaimApprovedRun({ runId: "run-1", claimerId: "legacy-engine", now: 10 }),
+      store.tryClaimTrustedRun({ runId: "run-1", claimerId: "legacy-engine", now: 10 }),
     ).not.toBeNull();
     const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
     const requestId = workflowAgentRequestId("run-1", operationId, 0);
@@ -1852,7 +2109,10 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "legacy edit", options: { editing: true, isolation: "worktree" } },
+          input: {
+            prompt: "legacy edit",
+            options: { profile: "general", isolation: "worktree" },
+          },
         }),
       }),
     });
@@ -1876,7 +2136,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("aborts a hung patch capture on cancellation and preserves reconciliation metadata", async () => {
+  it.skip("aborts a hung patch capture on cancellation and preserves reconciliation metadata", async () => {
     const dbPath = join(tmpdir(), `workflow-cancel-capture-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
@@ -1894,7 +2154,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "cancel-hung-capture",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -1929,7 +2189,7 @@ describe("WorkflowEngine", () => {
           depth: 0,
           input: {
             prompt: "edit then capture",
-            options: { editing: true, isolation: "worktree" },
+            options: { profile: "general", isolation: "worktree" },
           },
         }),
       }),
@@ -1968,7 +2228,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
+  it.skip("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
     const dbPath = join(tmpdir(), `workflow-live-cancelled-handoff-${crypto.randomUUID()}.sqlite`);
     const store = new TerminalReceiptReadStore(dbPath);
     const raw = new LiveCapturingRawBus();
@@ -1988,11 +2248,13 @@ describe("WorkflowEngine", () => {
           runId: string;
           operationId: string;
           dispatchEpoch: string;
+          resolvedModel: string;
         }
       | undefined;
     let sideEffects = 0;
     let prepareCalls = 0;
     let removeCalls = 0;
+    let replacementModelResolutions = 0;
     let resolveLiveSelection: () => void = () => {};
     const liveSelection = new Promise<void>((resolve) => {
       resolveLiveSelection = resolve;
@@ -2027,14 +2289,14 @@ describe("WorkflowEngine", () => {
         depth: 0,
         input: {
           prompt: "apply side effect",
-          options: { editing: true, isolation: "worktree" },
+          options: { profile: "general", isolation: "worktree" },
         },
       }),
     });
     const first = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "live-cancelled-first",
       pollMs: 5,
       now: () => 10,
@@ -2044,9 +2306,20 @@ describe("WorkflowEngine", () => {
       prepareWorktree,
       removeWorktree,
       startSandbox,
+      validateAgentSelection: () => ({
+        model: "provider/model-a",
+        reasoning: "high",
+        request: {
+          spec: "provider/model-a",
+          provider: "provider",
+          modelId: "model-a",
+          reasoning: "high",
+          reasoningDisplay: "simple",
+        },
+      }),
       dispatchAgentRequest: async (request) => {
         sideEffects += 1;
-        if (!request.capability) throw new Error("Missing live handoff capability");
+        if (!request.controlToken) throw new Error("Missing live handoff control token");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing live handoff run owner");
         expect(
@@ -2061,7 +2334,7 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId: request.requestId,
-            token: request.capability,
+            token: request.controlToken,
             dispatchEpoch: request.dispatchEpoch,
             ownerId: "live-runner",
             now: 10,
@@ -2072,6 +2345,7 @@ describe("WorkflowEngine", () => {
           runId: request.run.runId,
           operationId: request.operation.operationId,
           dispatchEpoch: request.dispatchEpoch,
+          resolvedModel: request.policy.resolvedModel,
         };
         return await new Promise((resolve) => {
           request.signal.addEventListener(
@@ -2085,7 +2359,7 @@ describe("WorkflowEngine", () => {
     const replacement = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "live-cancelled-replacement",
       pollMs: 5,
       receiptPollMs: 10_000,
@@ -2096,6 +2370,20 @@ describe("WorkflowEngine", () => {
       prepareWorktree,
       removeWorktree,
       startSandbox,
+      validateAgentSelection: () => {
+        replacementModelResolutions += 1;
+        return {
+          model: "provider/model-b",
+          reasoning: "low",
+          request: {
+            spec: "provider/model-b",
+            provider: "provider",
+            modelId: "model-b",
+            reasoning: "low",
+            reasoningDisplay: "simple",
+          },
+        };
+      },
     });
     try {
       await first.start();
@@ -2113,6 +2401,8 @@ describe("WorkflowEngine", () => {
       await liveSelection;
       await initialReceiptMiss;
       if (!captured) throw new Error("Missing selected live dispatch");
+      expect(captured.resolvedModel).toBe("provider/model-a");
+      expect(replacementModelResolutions).toBe(0);
       expect(
         store.recordWorkflowRequestTerminal({
           ...captured,
@@ -2174,7 +2464,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "lease-loss-local-only",
       pollMs: 5,
       now: () => now,
@@ -2193,7 +2483,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async ({ signal }) =>
@@ -2209,7 +2499,7 @@ describe("WorkflowEngine", () => {
       await engine.start();
       await waitFor(() => store.listOperations("run-1", { state: "dispatched" }).length === 1);
       expect(
-        store.tryClaimApprovedRun({
+        store.tryClaimTrustedRun({
           runId: "run-1",
           claimerId: "successor",
           now: 100,
@@ -2249,7 +2539,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "tick-cancellation-fanout",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2272,7 +2562,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         };
       },
@@ -2321,7 +2611,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "stop-cancellation-fanout",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2344,7 +2634,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         };
       },
@@ -2391,7 +2681,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-engine",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2422,7 +2712,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: "audit",
             depth: 1,
-            input: { prompt: "inspect", options: { label: "Inspect" } },
+            input: { prompt: "inspect", options: { profile: "explore", label: "Inspect" } },
           };
           const first = await input.onCall(call);
           const cached = await input.onCall(call);
@@ -2476,32 +2766,12 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("fails closed when approval is revoked immediately before claim", () => {
-    const dbPath = join(tmpdir(), `workflow-engine-approval-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    try {
-      createApprovedRun(store);
-      store.transitionApproval({
-        approvalId: "approval-1",
-        from: "approved",
-        to: "revoked",
-        now: 3,
-        reason: "race",
-      });
-      expect(store.tryClaimApprovedRun({ runId: "run-1", claimerId: "worker", now: 4 })).toBeNull();
-      expect(store.getRun("run-1")?.state).toBe("paused");
-    } finally {
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
   it("reclaims a crashed running run and replays completed operations without dispatch", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-restart-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
     createApprovedRun(store);
-    const claimed = store.tryClaimApprovedRun({ runId: "run-1", claimerId: "dead", now: 3 });
+    const claimed = store.tryClaimTrustedRun({ runId: "run-1", claimerId: "dead", now: 3 });
     expect(claimed?.state).toBe("running");
     store.createOperation(
       {
@@ -2534,7 +2804,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-restart",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2552,7 +2822,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async () => {
@@ -2582,7 +2852,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-limits",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2600,7 +2870,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 1,
-          input: { prompt: "inspect", options: {} },
+          input: { prompt: "inspect", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async ({ run }) =>
@@ -2643,6 +2913,7 @@ describe("WorkflowEngine", () => {
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
     const largeOutput = "x".repeat(70_000);
+    await fs.mkdir(root);
     createApprovedRun(store, "run-artifact", {}, { operation: 100_000, result: 100_000 });
     const engine = new WorkflowEngine({
       bus,
@@ -2665,7 +2936,7 @@ describe("WorkflowEngine", () => {
           parentPath: null,
           phase: null,
           depth: 0,
-          input: { prompt: "large", options: {} },
+          input: { prompt: "large", options: { profile: "explore" } },
         }),
       }),
       dispatchAgentRequest: async () => ({
@@ -2721,7 +2992,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-controls",
       pollMs: 5,
       assertSandbox: async () => {},
@@ -2741,7 +3012,7 @@ describe("WorkflowEngine", () => {
             parentPath: null,
             phase: null,
             depth: 0,
-            input: { prompt: "inspect", options: {} },
+            input: { prompt: "inspect", options: { profile: "explore" } },
           }),
         };
       },
@@ -2820,6 +3091,157 @@ describe("WorkflowEngine", () => {
     }
   });
 
+  it("cancels the exact idle request and waits for its fenced terminal receipt", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-idle-receipt-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    class IdleReceiptBus extends LiveCapturingRawBus {
+      cancelledRequestId: string | null = null;
+      stateBeforeReceipt: string | null = null;
+      interruptAttempts = 0;
+
+      override async publish<TData>(
+        message: Omit<Message<TData>, "id" | "ts">,
+        options: PublishOptions,
+      ) {
+        if (message.type === lilacEventTypes.CmdRequestMessage) {
+          const data = message.data as {
+            queue?: string;
+            raw?: {
+              cancel?: boolean;
+              workflow?: { controlToken?: string; dispatchEpoch?: string };
+            };
+          };
+          const requestId = message.headers?.request_id;
+          if (data.queue === "prompt" && requestId && data.raw?.workflow?.controlToken) {
+            store.claimWorkflowRequest({
+              requestId,
+              token: data.raw.workflow.controlToken,
+              dispatchEpoch: data.raw.workflow.dispatchEpoch ?? "",
+              ownerId: "idle-test-runner",
+              now: Date.now(),
+            });
+            await super.publish(
+              {
+                topic: "evt.request",
+                type: lilacEventTypes.EvtRequestLifecycleChanged,
+                data: { state: "running" },
+                headers: {
+                  request_id: requestId,
+                  session_id: message.headers?.session_id ?? "",
+                  request_client: "unknown",
+                  workflow_dispatch_epoch: data.raw.workflow.dispatchEpoch ?? "",
+                },
+              },
+              { topic: "evt.request", type: lilacEventTypes.EvtRequestLifecycleChanged },
+            );
+          }
+          if (data.queue === "interrupt" && data.raw?.cancel === true && requestId) {
+            this.interruptAttempts += 1;
+            if (this.interruptAttempts === 1) throw new Error("transient cancel publish failure");
+            this.cancelledRequestId = requestId;
+            this.stateBeforeReceipt = store.getOperationByRequestId(requestId)?.state ?? null;
+            await Bun.sleep(50);
+            const operation = store.getOperationByRequestId(requestId);
+            if (!operation) throw new Error("Missing idle operation");
+            const dispatch = store.getWorkflowRequestDispatchHandoff({
+              requestId,
+              now: Date.now(),
+              staleAfterMs: 60_000,
+            });
+            if (dispatch.status !== "live") throw new Error("Missing live idle dispatch");
+            const recorded = store.recordWorkflowRequestTerminal({
+              requestId,
+              runId: operation.runId,
+              operationId: operation.operationId,
+              dispatchEpoch: dispatch.dispatchEpoch,
+              ownerId: "idle-test-runner",
+              state: "cancelled",
+              detail: "idle process tree quiesced",
+              now: Date.now(),
+            });
+            if (!recorded) throw new Error("Failed to record idle receipt");
+            await super.publish(
+              {
+                topic: "evt.request",
+                type: lilacEventTypes.EvtRequestLifecycleChanged,
+                data: { state: "cancelled", detail: "idle process tree quiesced" },
+                headers: {
+                  request_id: requestId,
+                  session_id: message.headers?.session_id ?? "",
+                  request_client: "unknown",
+                  workflow_dispatch_epoch: dispatch.dispatchEpoch,
+                },
+              },
+              { topic: "evt.request", type: lilacEventTypes.EvtRequestLifecycleChanged },
+            );
+          }
+        }
+        return await super.publish(message, options);
+      }
+    }
+    const raw = new IdleReceiptBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(
+      store,
+      "run-idle-receipt",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      10_000,
+      false,
+      process.cwd(),
+      false,
+      1_000,
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: dirname(dbPath),
+      subscriptionId: "idle-receipt",
+      pollMs: 5,
+      receiptPollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "idle-agent",
+          occurrence: 0,
+          path: "root:idle-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "wait forever", options: { profile: "explore" } },
+        }),
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-idle-receipt")?.state === "failed");
+      const operation = store.listOperations("run-idle-receipt")[0];
+      expect(raw.cancelledRequestId).toBe(operation?.requestId ?? null);
+      expect(raw.interruptAttempts).toBe(2);
+      expect(raw.stateBeforeReceipt).toBe("running");
+      expect(operation).toMatchObject({
+        state: "timed_out",
+        error: "Agent operation idle timeout",
+      });
+      expect(store.getWorkflowRequestTerminalReceipt(raw.cancelledRequestId!)).toMatchObject({
+        state: "cancelled",
+        detail: "idle process tree quiesced",
+      });
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("resolves sleep and reply-timeout host operations through the durable wait journal", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-waits-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -2837,7 +3259,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({
       bus,
       store,
-      dataDir: "/unused",
+      dataDir: dirname(dbPath),
       subscriptionId: "test-engine-waits",
       now: () => now,
       pollMs: 5,
@@ -2908,7 +3330,7 @@ describe("WorkflowEngine", () => {
       new WorkflowEngine({
         bus,
         store,
-        dataDir: "/unused",
+        dataDir: dirname(dbPath),
         subscriptionId: `test-reply-restart-${crypto.randomUUID()}`,
         pollMs: 5,
         now: () => now,

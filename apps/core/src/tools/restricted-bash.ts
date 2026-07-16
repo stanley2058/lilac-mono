@@ -1,7 +1,9 @@
 import { expandTilde } from "@stanley2058/lilac-fs";
 import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
 import { createReadStream } from "node:fs";
-import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import fs, { type FileHandle } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
 import { posix as posixPath } from "node:path";
@@ -25,7 +27,20 @@ import {
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
-import { isWorkflowProtectedPath } from "../workflow/workflow-protected-path";
+import {
+  assertWorkflowPathAllowed,
+  assertWorkflowWritableRootAllowed,
+  workflowPathDenialReason,
+  workflowDeniedRootPolicyForScratch,
+} from "../workflow/workflow-denied-root-policy";
+import { WORKFLOW_SCRATCH_MOUNT } from "../workflow/workflow-scratch";
+import {
+  assertWorkflowPathIdentity,
+  openPinnedWorkflowRoot,
+  openWorkflowPathFromRoot,
+  readWorkflowPathIdentity,
+  workflowDescriptorPath,
+} from "../workflow/workflow-descriptor-path";
 import { withLimitedBashOutput, type BashToolInput, type BashToolOutput } from "./bash-impl";
 import {
   createBashOutputSanitizerTransform,
@@ -46,20 +61,24 @@ const TIMEOUT_PATH = "/usr/bin/timeout";
 const GETCONF_PATH = "/usr/bin/getconf";
 const TRUSTED_WORKFLOW_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const TRUSTED_WORKFLOW_TASKS_MAX = 256;
-const TRUSTED_WORKFLOW_MAX_ENTRIES = 500_000;
-const TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES = 1_000_000;
+const TRUSTED_WORKFLOW_MAX_ENTRIES = 2_000_000;
+const TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES = 2_000_000;
 const TRUSTED_WORKFLOW_MAX_HARDLINK_INODES = 100_000;
 const TRUSTED_WORKFLOW_MAX_SINGLE_ARG_BYTES = 120 * 1024;
+const TRUSTED_WORKFLOW_MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024;
+const TRUSTED_WORKFLOW_PROXY_MAX_RESPONSE_BYTES = 1024 * 1024;
 const logger = createLogger({ module: "restricted-bash" });
 
 type RestrictedBashContext = {
   requestId?: string;
   sessionId?: string;
   requestClient?: string;
-  workflowCapability?: string;
+  workflowControlToken?: string;
   controlCapability?: string;
   toolCallId?: string;
   workspaceWritable?: boolean;
+  networkEnabled?: boolean;
+  subagentProfile?: "explore" | "general" | "self";
 };
 
 type TrustedWorkflowBashProcess = {
@@ -168,13 +187,8 @@ function normalizeVirtualPath(p: string): string {
 }
 
 function isDeniedWorkspacePath(p: string): boolean {
-  const normalized = normalizeVirtualPath(p);
-  if (normalized === "/" || normalized === WORKSPACE_MOUNT) return false;
-
-  const rel = normalized.startsWith(`${WORKSPACE_MOUNT}/`)
-    ? normalized.slice(WORKSPACE_MOUNT.length + 1)
-    : normalized.slice(1);
-  return isWorkflowProtectedPath("/", path.resolve("/", rel));
+  void p;
+  return false;
 }
 
 function accessDenied(pathName: string): Error {
@@ -189,10 +203,29 @@ type TrustedWorkflowMask = {
 
 type TrustedWorkflowAuthorizedRoot = {
   root: string;
+  rootSource: string;
+  rootHandle: FileHandle;
   cwd: string;
   masks: readonly TrustedWorkflowMask[];
-  readOnlyDependencyRoots: readonly string[];
+  readOnlyDependencyRoots: readonly TrustedWorkflowDependencyRoot[];
 };
+
+type TrustedWorkflowDependencyRoot = {
+  root: string;
+  source: string;
+  handle: FileHandle;
+};
+
+async function closeTrustedWorkflowAuthorizedRoot(
+  authorized: TrustedWorkflowAuthorizedRoot,
+): Promise<void> {
+  await Promise.all([
+    authorized.rootHandle.close(),
+    ...authorized.readOnlyDependencyRoots.map(
+      async (dependency) => await dependency.handle.close(),
+    ),
+  ]);
+}
 
 type HardlinkRecord = {
   key: string;
@@ -258,11 +291,15 @@ async function authorizeBunCacheHardlinkSources(input: {
   if (unresolved.size === 0) return;
   assertTrustedWorkflowAuthorizationActive(input.control);
   const cacheRoot = await resolveTrustedBunCacheRoot(input.cacheRootOverride);
+  const cacheRootHandle = await openPinnedWorkflowRoot(
+    cacheRoot,
+    "Trusted workflow Bun cache root",
+  );
   let entries = 0;
 
-  const visit = async (directory: string): Promise<void> => {
+  const visit = async (directorySource: string): Promise<void> => {
     assertTrustedWorkflowAuthorizationActive(input.control);
-    const directoryHandle = await fs.opendir(directory);
+    const directoryHandle = await fs.opendir(directorySource);
     for await (const entry of directoryHandle) {
       entries += 1;
       if (entries > TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES) {
@@ -271,18 +308,42 @@ async function authorizeBunCacheHardlinkSources(input: {
         );
       }
       if (entries % 128 === 0) assertTrustedWorkflowAuthorizationActive(input.control);
-      const candidate = path.join(directory, entry.name);
-      const stats = await fs.lstat(candidate);
-      if (stats.isFile() && stats.nlink > 1) {
-        unresolved.delete(`${stats.dev}:${stats.ino}`);
-        if (unresolved.size === 0) return;
+      if (entry.isSymbolicLink()) continue;
+      const candidate = `${directorySource}/${entry.name}`;
+      if (entry.isFile()) {
+        const handle = await fs.open(candidate, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        try {
+          const stats = await handle.stat();
+          if (stats.isFile() && stats.nlink > 1) {
+            unresolved.delete(`${stats.dev}:${stats.ino}`);
+            if (unresolved.size === 0) return;
+          }
+        } finally {
+          await handle.close();
+        }
+      } else if (entry.isDirectory()) {
+        const handle = await fs.open(
+          candidate,
+          fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+        );
+        try {
+          if (!(await handle.stat()).isDirectory()) {
+            throw new Error("Trusted workflow Bun cache changed during authorization");
+          }
+          await visit(workflowDescriptorPath(handle));
+        } finally {
+          await handle.close();
+        }
       }
-      if (stats.isDirectory() && !stats.isSymbolicLink()) await visit(candidate);
       if (unresolved.size === 0) return;
     }
   };
 
-  await visit(cacheRoot);
+  try {
+    await visit(workflowDescriptorPath(cacheRootHandle));
+  } finally {
+    await cacheRootHandle.close();
+  }
   assertTrustedWorkflowAuthorizationActive(input.control);
   const escaped = unresolved.values().next().value;
   if (escaped) {
@@ -293,16 +354,21 @@ async function authorizeBunCacheHardlinkSources(input: {
 }
 
 async function inspectTrustedWorkflowRoot(input: {
-  root: string;
+  scanRoot: string;
+  logicalRoot: string;
+  rootHandle: FileHandle;
+  scratchRoot: string;
   bunCacheRoot?: string;
   control: TrustedWorkflowAuthorizationControl;
 }): Promise<{
   masks: readonly TrustedWorkflowMask[];
-  readOnlyDependencyRoots: readonly string[];
+  readOnlyDependencyRoots: readonly TrustedWorkflowDependencyRoot[];
 }> {
-  const root = input.root;
   const masks: TrustedWorkflowMask[] = [];
-  const readOnlyDependencyRoots: string[] = [];
+  const dependencyCandidates: Array<{
+    root: string;
+    expected: { dev: number; ino: number };
+  }> = [];
   const hardlinks = new Map<string, HardlinkRecord>();
   let entries = 0;
 
@@ -310,9 +376,13 @@ async function inspectTrustedWorkflowRoot(input: {
     masks.push({ target, directory });
   };
 
-  const visit = async (directory: string, insideReadOnlyDependency: boolean): Promise<void> => {
+  const visit = async (
+    directorySource: string,
+    relativeDirectory: string,
+    insideReadOnlyDependency: boolean,
+  ): Promise<void> => {
     assertTrustedWorkflowAuthorizationActive(input.control);
-    const directoryHandle = await fs.opendir(directory);
+    const directoryHandle = await fs.opendir(directorySource);
     for await (const entry of directoryHandle) {
       entries += 1;
       if (entries > TRUSTED_WORKFLOW_MAX_ENTRIES) {
@@ -321,62 +391,105 @@ async function inspectTrustedWorkflowRoot(input: {
         );
       }
       if (entries % 128 === 0) assertTrustedWorkflowAuthorizationActive(input.control);
-      const candidate = path.join(directory, entry.name);
-      const stats = await fs.lstat(candidate);
-      const protectedPath = isWorkflowProtectedPath(root, candidate);
-      const readOnlyDependency =
-        insideReadOnlyDependency || (stats.isDirectory() && entry.name === "node_modules");
-      if (readOnlyDependency && !insideReadOnlyDependency && stats.isDirectory()) {
-        readOnlyDependencyRoots.push(candidate);
-      }
-
-      if (stats.isFile() && stats.nlink > 1) {
-        const key = `${stats.dev}:${stats.ino}`;
-        const record = hardlinks.get(key);
-        if (record) {
-          record.observedLinks += 1;
-          record.protected ||= protectedPath;
-          record.unprotected ||= !protectedPath;
-          record.allObservedLinksReadOnly &&= readOnlyDependency;
-          if (record.expectedLinks !== stats.nlink) {
+      const candidate = `${directorySource}/${entry.name}`;
+      const relativeCandidate = relativeDirectory
+        ? path.join(relativeDirectory, entry.name)
+        : entry.name;
+      const logicalCandidate = path.join(input.logicalRoot, relativeCandidate);
+      const before = await fs.lstat(candidate);
+      let stats = before;
+      let opened: FileHandle | null = null;
+      try {
+        if (
+          !before.isSymbolicLink() &&
+          (before.isDirectory() || (before.isFile() && before.nlink > 1))
+        ) {
+          opened = await fs.open(
+            candidate,
+            fsConstants.O_RDONLY |
+              (before.isDirectory() ? fsConstants.O_DIRECTORY : 0) |
+              fsConstants.O_NOFOLLOW,
+          );
+          stats = await opened.stat();
+          if (
+            stats.dev !== before.dev ||
+            stats.ino !== before.ino ||
+            stats.isDirectory() !== before.isDirectory() ||
+            stats.isFile() !== before.isFile()
+          ) {
             throw new Error(
-              `Trusted workflow hardlink count changed during authorization: ${candidate}`,
+              `Trusted workflow path changed during authorization: ${logicalCandidate}`,
             );
           }
-        } else {
-          if (hardlinks.size >= TRUSTED_WORKFLOW_MAX_HARDLINK_INODES) {
-            throw new Error(
-              `Trusted workflow root exceeds hardlink authorization limit (${TRUSTED_WORKFLOW_MAX_HARDLINK_INODES})`,
-            );
-          }
-          hardlinks.set(key, {
-            key,
-            expectedLinks: stats.nlink,
-            observedLinks: 1,
-            protected: protectedPath,
-            unprotected: !protectedPath,
-            allObservedLinksReadOnly: readOnlyDependency,
-            examplePath: candidate,
+        }
+        const protectedPath =
+          workflowPathDenialReason({
+            policy: workflowDeniedRootPolicyForScratch(input.scratchRoot),
+            candidate: logicalCandidate,
+            scratchRoot: input.scratchRoot,
+          }) !== null;
+        const readOnlyDependency =
+          insideReadOnlyDependency || (stats.isDirectory() && entry.name === "node_modules");
+        if (readOnlyDependency && !insideReadOnlyDependency && stats.isDirectory()) {
+          dependencyCandidates.push({
+            root: logicalCandidate,
+            expected: { dev: stats.dev, ino: stats.ino },
           });
         }
-      }
 
-      if (protectedPath) {
-        addMask(candidate, stats.isDirectory() && !stats.isSymbolicLink());
-        continue;
-      }
+        if (stats.isFile() && stats.nlink > 1) {
+          const key = `${stats.dev}:${stats.ino}`;
+          const record = hardlinks.get(key);
+          if (record) {
+            record.observedLinks += 1;
+            record.protected ||= protectedPath;
+            record.unprotected ||= !protectedPath;
+            record.allObservedLinksReadOnly &&= readOnlyDependency;
+            if (record.expectedLinks !== stats.nlink) {
+              throw new Error(
+                `Trusted workflow hardlink count changed during authorization: ${logicalCandidate}`,
+              );
+            }
+          } else {
+            if (hardlinks.size >= TRUSTED_WORKFLOW_MAX_HARDLINK_INODES) {
+              throw new Error(
+                `Trusted workflow root exceeds hardlink authorization limit (${TRUSTED_WORKFLOW_MAX_HARDLINK_INODES})`,
+              );
+            }
+            hardlinks.set(key, {
+              key,
+              expectedLinks: stats.nlink,
+              observedLinks: 1,
+              protected: protectedPath,
+              unprotected: !protectedPath,
+              allObservedLinksReadOnly: readOnlyDependency,
+              examplePath: logicalCandidate,
+            });
+          }
+        }
 
-      if (!stats.isDirectory() && !stats.isFile() && !stats.isSymbolicLink()) {
-        throw new Error(`Trusted workflow root contains unsupported special node: ${candidate}`);
+        if (protectedPath) {
+          addMask(logicalCandidate, stats.isDirectory() && !stats.isSymbolicLink());
+          continue;
+        }
+
+        if (!stats.isDirectory() && !stats.isFile() && !stats.isSymbolicLink()) {
+          throw new Error(
+            `Trusted workflow root contains unsupported special node: ${logicalCandidate}`,
+          );
+        }
+        if (stats.isSymbolicLink()) continue;
+        if (stats.isDirectory()) {
+          if (!opened) throw new Error("Trusted workflow directory was not pinned");
+          await visit(workflowDescriptorPath(opened), relativeCandidate, readOnlyDependency);
+        }
+      } finally {
+        await opened?.close();
       }
-      if (stats.isSymbolicLink()) {
-        continue;
-      }
-      if (stats.isDirectory()) await visit(candidate, readOnlyDependency);
     }
   };
 
-  await visit(root, false);
+  await visit(input.scanRoot, "", false);
   assertTrustedWorkflowAuthorizationActive(input.control);
   const externalDependencyRecords: HardlinkRecord[] = [];
   for (const record of hardlinks.values()) {
@@ -397,56 +510,130 @@ async function inspectTrustedWorkflowRoot(input: {
     cacheRootOverride: input.bunCacheRoot,
     control: input.control,
   });
-  return { masks, readOnlyDependencyRoots };
+  const readOnlyDependencyRoots: TrustedWorkflowDependencyRoot[] = [];
+  try {
+    for (const dependency of dependencyCandidates) {
+      const { handle } = await openWorkflowPathFromRoot({
+        root: input.logicalRoot,
+        rootHandle: input.rootHandle,
+        candidate: dependency.root,
+        kind: "directory",
+        expected: dependency.expected,
+        label: "Trusted workflow dependency overlay",
+      });
+      readOnlyDependencyRoots.push({
+        root: dependency.root,
+        source: workflowDescriptorPath(handle),
+        handle,
+      });
+    }
+    return { masks, readOnlyDependencyRoots };
+  } catch (error) {
+    await Promise.all(
+      readOnlyDependencyRoots.map(async (dependency) => await dependency.handle.close()),
+    );
+    throw error;
+  }
 }
 
 async function authorizeTrustedWorkflowRoot(input: {
   workspaceRoot: string;
+  workspaceIdentity: import("../workflow/workflow-descriptor-path").WorkflowPathIdentity;
   cwd?: string;
+  cwdIdentity?: import("../workflow/workflow-descriptor-path").WorkflowPathIdentity;
+  scratchRoot: string;
   bunCacheRoot?: string;
+  writable: boolean;
   control: TrustedWorkflowAuthorizationControl;
 }): Promise<TrustedWorkflowAuthorizedRoot> {
   assertTrustedWorkflowAuthorizationActive(input.control);
   const root = path.resolve(expandTilde(input.workspaceRoot));
+  await assertWorkflowPathIdentity({
+    candidate: root,
+    expected: input.workspaceIdentity,
+    label: "Trusted workflow bash root",
+  });
   if (root === path.parse(root).root || isContained("/usr", root)) {
     throw new Error("Trusted workflow bash requires a dedicated non-system workspace root");
+  }
+  const deniedPolicy = workflowDeniedRootPolicyForScratch(input.scratchRoot);
+  assertWorkflowPathAllowed({
+    policy: deniedPolicy,
+    candidate: root,
+    scratchRoot: input.scratchRoot,
+    label: "Trusted workflow bash root",
+  });
+  if (input.writable) {
+    assertWorkflowWritableRootAllowed({
+      policy: deniedPolicy,
+      candidate: root,
+      scratchRoot: input.scratchRoot,
+      label: "Trusted workflow bash writable root",
+    });
   }
   const stats = await fs.lstat(root);
   if (stats.isSymbolicLink() || !stats.isDirectory() || (await fs.realpath(root)) !== root) {
     throw new Error("Trusted workflow bash root must be a canonical real directory");
   }
-  let cwd = root;
-  if (input.cwd !== undefined) {
-    const parsed = parseSshCwdTarget(input.cwd);
-    if (parsed.kind === "ssh") {
-      throw new Error("Trusted workflow bash does not allow SSH cwd targets");
-    }
-    const requestedValue = parsed.cwd ?? input.cwd;
-    const requested = path.isAbsolute(requestedValue)
-      ? path.resolve(expandTilde(requestedValue))
-      : path.resolve(root, requestedValue);
-    if (!isContained(root, requested)) {
-      throw new Error("Trusted workflow bash cwd is outside the approved root");
-    }
-    if (isWorkflowProtectedPath(root, requested)) {
-      throw new Error("Trusted workflow bash cwd is a protected path");
-    }
-    const requestedStats = await fs.lstat(requested);
-    if (
-      requestedStats.isSymbolicLink() ||
-      !requestedStats.isDirectory() ||
-      (await fs.realpath(requested)) !== requested
-    ) {
-      throw new Error("Trusted workflow bash cwd must be a canonical real directory");
-    }
-    cwd = requested;
-  }
-  const inspection = await inspectTrustedWorkflowRoot({
+  const rootHandle = await openPinnedWorkflowRoot(
     root,
-    bunCacheRoot: input.bunCacheRoot,
-    control: input.control,
-  });
-  return { root, cwd, ...inspection };
+    "Trusted workflow bash root",
+    input.workspaceIdentity,
+  );
+  const rootSource = workflowDescriptorPath(rootHandle);
+  let cwd = root;
+  try {
+    if (input.cwd !== undefined) {
+      const parsed = parseSshCwdTarget(input.cwd);
+      if (parsed.kind === "ssh") {
+        throw new Error("Trusted workflow bash does not allow SSH cwd targets");
+      }
+      const requestedValue = parsed.cwd ?? input.cwd;
+      const requestedAlias = path.isAbsolute(requestedValue)
+        ? path.resolve(expandTilde(requestedValue))
+        : path.resolve(root, requestedValue);
+      if (input.cwdIdentity) {
+        await assertWorkflowPathIdentity({
+          candidate: requestedAlias,
+          expected: input.cwdIdentity,
+          label: "Trusted workflow bash cwd",
+        });
+      }
+      const requested = await fs.realpath(requestedAlias);
+      if (!isContained(root, requested)) {
+        throw new Error("Trusted workflow bash cwd is outside the approved root");
+      }
+      assertWorkflowPathAllowed({
+        policy: deniedPolicy,
+        candidate: requested,
+        scratchRoot: input.scratchRoot,
+        label: "Trusted workflow bash cwd",
+      });
+      const requestedHandle = (
+        await openWorkflowPathFromRoot({
+          root,
+          rootHandle,
+          candidate: requested,
+          kind: "directory",
+          label: "Trusted workflow bash cwd",
+        })
+      ).handle;
+      await requestedHandle.close();
+      cwd = requested;
+    }
+    const inspection = await inspectTrustedWorkflowRoot({
+      scanRoot: rootSource,
+      logicalRoot: root,
+      rootHandle,
+      scratchRoot: input.scratchRoot,
+      bunCacheRoot: input.bunCacheRoot,
+      control: input.control,
+    });
+    return { root, rootSource, rootHandle, cwd, ...inspection };
+  } catch (error) {
+    await rootHandle.close();
+    throw error;
+  }
 }
 
 function trustedWorkflowRootDirectories(root: string): string[] {
@@ -492,17 +679,24 @@ async function resolveTrustedWorkflowArgvLimit(): Promise<number> {
 function buildTrustedWorkflowCommand(input: {
   command: string;
   root: string;
+  rootSource: string;
   cwd: string;
   writable: boolean;
+  networkEnabled: boolean;
   masks: readonly TrustedWorkflowMask[];
-  readOnlyDependencyRoots: readonly string[];
-  emptyFile: string;
-  emptyDirectory: string;
+  readOnlyDependencyRoots: readonly TrustedWorkflowDependencyRoot[];
+  emptyFileSource: string;
+  emptyDirectorySource: string;
   timeoutMs: number;
   stdinMode: "error" | "eof";
   unit: string;
   maxArgvBytes: number;
   context?: RestrictedBashContext;
+  scratchRoot: string;
+  scratchSource: string;
+  supportSource: string;
+  systemSource: string;
+  bunSource: string;
 }): string[] {
   const command = [
     SYSTEMD_RUN_PATH,
@@ -522,13 +716,14 @@ function buildTrustedWorkflowCommand(input: {
     `RuntimeMaxSec=${Math.max(1, Math.ceil(input.timeoutMs / 1_000))}s`,
     BWRAP_PATH,
     "--unshare-all",
+    ...(input.networkEnabled ? ["--share-net"] : []),
     "--die-with-parent",
     "--new-session",
     "--clearenv",
     "--cap-drop",
     "ALL",
     "--ro-bind",
-    "/usr",
+    input.systemSource,
     "/usr",
     "--symlink",
     "usr/bin",
@@ -554,27 +749,58 @@ function buildTrustedWorkflowCommand(input: {
     "/sandbox",
     "--dir",
     "/sandbox/bin",
+    "--dir",
+    "/run",
+    "--dir",
+    "/run/lilac",
     "--ro-bind",
-    process.execPath,
+    input.bunSource,
     "/sandbox/bin/bun",
   ];
+
+  if (input.networkEnabled) {
+    command.push(
+      "--dir",
+      "/etc",
+      "--dir",
+      "/etc/ssl",
+      "--ro-bind-try",
+      "/etc/resolv.conf",
+      "/etc/resolv.conf",
+      "--ro-bind-try",
+      "/etc/hosts",
+      "/etc/hosts",
+      "--ro-bind-try",
+      "/etc/nsswitch.conf",
+      "/etc/nsswitch.conf",
+      "--ro-bind-try",
+      "/etc/ssl/certs",
+      "/etc/ssl/certs",
+    );
+  }
 
   for (const directory of trustedWorkflowRootDirectories(input.root)) {
     if (directory !== "/usr" && !directory.startsWith("/usr/")) command.push("--dir", directory);
   }
-  command.push(input.writable ? "--bind" : "--ro-bind", input.root, input.root);
+  command.push(input.writable ? "--bind" : "--ro-bind", input.rootSource, input.root);
+  command.push("--bind", input.scratchSource, WORKFLOW_SCRATCH_MOUNT);
+  command.push("--ro-bind", input.supportSource, "/run/lilac/support");
 
-  for (const dependencyRoot of input.readOnlyDependencyRoots) {
-    command.push("--ro-bind", dependencyRoot, dependencyRoot);
+  for (const dependency of input.readOnlyDependencyRoots) {
+    command.push("--ro-bind", dependency.source, dependency.root);
   }
 
   for (const mask of input.masks) {
-    command.push("--ro-bind", mask.directory ? input.emptyDirectory : input.emptyFile, mask.target);
+    command.push(
+      "--ro-bind",
+      mask.directory ? input.emptyDirectorySource : input.emptyFileSource,
+      mask.target,
+    );
   }
 
   const environment: Record<string, string | undefined> = {
     HOME: "/tmp/home",
-    PATH: "/sandbox/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PATH: "/run/lilac/support:/sandbox/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     TMPDIR: "/tmp",
     XDG_CACHE_HOME: "/tmp/cache",
     BUN_INSTALL_CACHE_DIR: "/tmp/bun-cache",
@@ -585,6 +811,8 @@ function buildTrustedWorkflowCommand(input: {
     LILAC_SESSION_ID: input.context?.sessionId,
     LILAC_REQUEST_CLIENT: input.context?.requestClient,
     LILAC_CWD: input.root,
+    LILAC_SCRATCH_DIR: WORKFLOW_SCRATCH_MOUNT,
+    LILAC_SUBAGENT_PROFILE: input.context?.subagentProfile,
   };
   for (const [name, value] of Object.entries(environment)) {
     if (value !== undefined) command.push("--setenv", name, value);
@@ -611,17 +839,218 @@ function buildTrustedWorkflowCommand(input: {
 
 async function createTrustedWorkflowSupportDirectory(): Promise<{
   root: string;
-  emptyFile: string;
-  emptyDirectory: string;
+  source: string;
+  rootHandle: FileHandle;
+  emptyFileSource: string;
+  emptyFileHandle: FileHandle;
+  emptyDirectorySource: string;
+  emptyDirectoryHandle: FileHandle;
 }> {
   const root = await fs.mkdtemp(
     path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-bash-"),
   );
-  const emptyFile = path.join(root, "empty-file");
-  const emptyDirectory = path.join(root, "empty-directory");
-  await fs.writeFile(emptyFile, "", { mode: 0o600 });
-  await fs.mkdir(emptyDirectory, { mode: 0o700 });
-  return { root, emptyFile, emptyDirectory };
+  const rootHandle = await openPinnedWorkflowRoot(root, "Trusted workflow support root");
+  const source = workflowDescriptorPath(rootHandle);
+  try {
+    const emptyFile = path.join(source, "empty-file");
+    const emptyDirectory = path.join(source, "empty-directory");
+    await fs.writeFile(emptyFile, "", { mode: 0o600, flag: "wx" });
+    await fs.mkdir(emptyDirectory, { mode: 0o700 });
+    await fs.writeFile(
+      path.join(source, "tools"),
+      `#!/sandbox/bin/bun
+const args = process.argv.slice(2);
+const call = async (pathname, init = {}) => {
+  const response = await fetch("http://localhost" + pathname, { ...init, unix: "/run/lilac/support/tools.sock" });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || response.status + " " + response.statusText);
+  return text;
+};
+const jsonSource = async (value) => value === "@-" ? JSON.parse(await Bun.stdin.text()) : value.startsWith("@") ? JSON.parse(await Bun.file(value.slice(1)).text()) : JSON.parse(value);
+try {
+  const first = args.shift();
+  if (!first || first === "--list") process.stdout.write(await call("/list"));
+  else if (first === "--help") {
+    const id = args.shift();
+    if (!id) process.stdout.write("Usage: tools [--list] [--help <callableId>] <callableId> [--input=<json>|--stdin|--field=value]\\n");
+    else process.stdout.write(await call("/help/" + encodeURIComponent(id)));
+  } else {
+    let input = {};
+    const positionals = [];
+    for (const arg of args) {
+      if (arg === "--stdin") input = JSON.parse(await Bun.stdin.text());
+      else if (arg.startsWith("--input=")) input = await jsonSource(arg.slice(8));
+      else if (arg.startsWith("--")) {
+        const separator = arg.indexOf("=");
+        const rawKey = arg.slice(2, separator < 0 ? undefined : separator);
+        const isJson = rawKey.endsWith(":json");
+        const key = (isJson ? rawKey.slice(0, -5) : rawKey).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        if (separator < 0) input[key] = true;
+        else {
+          const value = arg.slice(separator + 1);
+          input[key] = isJson ? await jsonSource(value) : value === "true" ? true : value === "false" ? false : value;
+        }
+      } else positionals.push(arg);
+    }
+    if (positionals.length) {
+      const help = JSON.parse(await call("/help/" + encodeURIComponent(first)));
+      if (!help.primaryPositional) throw new Error("Tool '" + first + "' does not support positional input");
+      input[help.primaryPositional.field] = help.primaryPositional.variadic ? positionals : positionals[0];
+    }
+    const result = JSON.parse(await call("/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callableId: first, input }) }));
+    const output = typeof result.output === "string" ? result.output + (result.output.endsWith("\\n") ? "" : "\\n") : JSON.stringify(result.output, null, 2) + "\\n";
+    if (result.isError) { process.stderr.write(output); process.exitCode = 1; } else process.stdout.write(output);
+  }
+} catch (error) { process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n"); process.exitCode = 1; }
+`,
+      { mode: 0o700 },
+    );
+    const emptyFileHandle = (
+      await openWorkflowPathFromRoot({
+        root,
+        rootHandle,
+        candidate: path.join(root, "empty-file"),
+        kind: "file",
+        label: "Trusted workflow empty mask file",
+      })
+    ).handle;
+    try {
+      const emptyDirectoryHandle = (
+        await openWorkflowPathFromRoot({
+          root,
+          rootHandle,
+          candidate: path.join(root, "empty-directory"),
+          kind: "directory",
+          label: "Trusted workflow empty mask directory",
+        })
+      ).handle;
+      return {
+        root,
+        source,
+        rootHandle,
+        emptyFileSource: workflowDescriptorPath(emptyFileHandle),
+        emptyFileHandle,
+        emptyDirectorySource: workflowDescriptorPath(emptyDirectoryHandle),
+        emptyDirectoryHandle,
+      };
+    } catch (error) {
+      await emptyFileHandle.close();
+      throw error;
+    }
+  } catch (error) {
+    await rootHandle.close();
+    throw error;
+  }
+}
+
+type TrustedWorkflowToolsProxy = {
+  server: Server;
+  upstreamControllers: Set<AbortController>;
+};
+
+async function readBoundedProxyResponse(
+  upstream: Response,
+  controller: AbortController,
+): Promise<Buffer> {
+  const declaredLength = Number(upstream.headers.get("content-length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > TRUSTED_WORKFLOW_PROXY_MAX_RESPONSE_BYTES
+  ) {
+    controller.abort();
+    throw new Error("Workflow tools proxy response exceeds 1 MiB");
+  }
+  if (!upstream.body) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of upstream.body) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > TRUSTED_WORKFLOW_PROXY_MAX_RESPONSE_BYTES) {
+      controller.abort();
+      throw new Error("Workflow tools proxy response exceeds 1 MiB");
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, bytes);
+}
+
+async function startTrustedWorkflowToolsProxy(input: {
+  supportSource: string;
+  context?: RestrictedBashContext;
+  cwd: string;
+  signal?: AbortSignal;
+}): Promise<TrustedWorkflowToolsProxy | null> {
+  if (!input.context?.workflowControlToken) return null;
+  const socketPath = path.join(input.supportSource, "tools.sock");
+  const headers = buildToolServerHeaders(input.context, input.cwd);
+  const upstreamControllers = new Set<AbortController>();
+  const server = createServer((request, response) => {
+    void (async () => {
+      const upstreamController = new AbortController();
+      upstreamControllers.add(upstreamController);
+      const abortUpstream = () => upstreamController.abort();
+      input.signal?.addEventListener("abort", abortUpstream, { once: true });
+      request.once("aborted", abortUpstream);
+      response.once("close", abortUpstream);
+      try {
+        const requestUrl = new URL(request.url ?? "/", "http://localhost");
+        const permitted =
+          (request.method === "GET" &&
+            (requestUrl.pathname === "/list" || requestUrl.pathname.startsWith("/help/"))) ||
+          (request.method === "POST" && requestUrl.pathname === "/call");
+        if (!permitted) {
+          response.writeHead(403).end("Workflow tools proxy endpoint denied");
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        for await (const chunk of request) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          bytes += buffer.length;
+          if (bytes > 1024 * 1024) throw new Error("Workflow tools proxy request exceeds 1 MiB");
+          chunks.push(buffer);
+        }
+        const upstream = await fetch(`${TOOL_SERVER_BACKEND_URL}${requestUrl.pathname}`, {
+          method: request.method,
+          headers,
+          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+          signal: upstreamController.signal,
+        });
+        response.writeHead(upstream.status, {
+          "content-type": upstream.headers.get("content-type") ?? "application/json",
+        });
+        response.end(await readBoundedProxyResponse(upstream, upstreamController));
+      } finally {
+        input.signal?.removeEventListener("abort", abortUpstream);
+        request.off("aborted", abortUpstream);
+        response.off("close", abortUpstream);
+        upstreamControllers.delete(upstreamController);
+      }
+    })().catch((error: unknown) => {
+      if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
+      response.end(error instanceof Error ? error.message : String(error));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  await fs.chmod(socketPath, 0o600);
+  return { server, upstreamControllers };
+}
+
+async function closeTrustedWorkflowToolsProxy(
+  proxy: TrustedWorkflowToolsProxy | null,
+): Promise<void> {
+  if (!proxy) return;
+  for (const controller of proxy.upstreamControllers) controller.abort();
+  await new Promise<void>((resolve, reject) => {
+    proxy.server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
 
 function trustedWorkflowOverflowPaths(): { stdout: string; stderr: string } {
@@ -923,13 +1352,14 @@ function buildToolServerHeaders(
   if (context.requestId) headers["x-lilac-request-id"] = context.requestId;
   if (context.sessionId) headers["x-lilac-session-id"] = context.sessionId;
   if (context.requestClient) headers["x-lilac-request-client"] = context.requestClient;
-  if (context.workflowCapability) {
-    headers["x-lilac-workflow-capability"] = context.workflowCapability;
+  if (context.workflowControlToken) {
+    headers["x-lilac-workflow-control-token"] = context.workflowControlToken;
   }
   if (context.controlCapability) {
     headers["x-lilac-control-capability"] = context.controlCapability;
   }
   if (context.toolCallId) headers["x-lilac-tool-call-id"] = context.toolCallId;
+  if (context.subagentProfile) headers["x-lilac-subagent-profile"] = context.subagentProfile;
   headers["x-lilac-cwd"] = cwd;
   return headers;
 }
@@ -1400,6 +1830,10 @@ export async function executeTrustedWorkflowBash(
   options: {
     workspaceRoot: string;
     workspaceWritable: boolean;
+    networkEnabled?: boolean;
+    workspaceIdentity?: import("../workflow/workflow-descriptor-path").WorkflowPathIdentity;
+    cwdIdentity?: import("../workflow/workflow-descriptor-path").WorkflowPathIdentity;
+    scratchRoot?: string;
     context?: RestrictedBashContext;
     abortSignal?: AbortSignal;
     toolCallId?: string;
@@ -1410,6 +1844,7 @@ export async function executeTrustedWorkflowBash(
     bunCacheRoot?: string;
   },
 ): Promise<BashToolOutput> {
+  const scratchRoot = options.scratchRoot ?? options.workspaceRoot;
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_TRUSTED_WORKFLOW_TIMEOUT_MS;
   const authorizationControl: TrustedWorkflowAuthorizationControl = {
     signal: options.abortSignal,
@@ -1427,8 +1862,13 @@ export async function executeTrustedWorkflowBash(
   try {
     authorized = await authorizeTrustedWorkflowRoot({
       workspaceRoot: options.workspaceRoot,
+      workspaceIdentity:
+        options.workspaceIdentity ?? (await readWorkflowPathIdentity(options.workspaceRoot)),
       cwd,
+      cwdIdentity: options.cwdIdentity,
+      scratchRoot,
       bunCacheRoot: options.bunCacheRoot,
+      writable: options.workspaceWritable,
       control: authorizationControl,
     });
   } catch (error) {
@@ -1463,6 +1903,7 @@ export async function executeTrustedWorkflowBash(
     maxArgvBytes = await resolveTrustedWorkflowArgvLimit();
     assertTrustedWorkflowAuthorizationActive(authorizationControl);
   } catch (error) {
+    await closeTrustedWorkflowAuthorizedRoot(authorized);
     if (error instanceof TrustedWorkflowAuthorizationInterruptedError) {
       return {
         stdout: "",
@@ -1489,8 +1930,13 @@ export async function executeTrustedWorkflowBash(
   let child: TrustedWorkflowBashProcess | null = null;
   let timedOut = false;
   let aborted = false;
+  let outputBudgetExceeded = false;
   let stopping: Promise<void> | null = null;
-  let supportRoot: string | null = null;
+  let support: Awaited<ReturnType<typeof createTrustedWorkflowSupportDirectory>> | null = null;
+  let toolsProxy: TrustedWorkflowToolsProxy | null = null;
+  let scratchHandle: FileHandle | null = null;
+  let systemHandle: FileHandle | null = null;
+  let bunHandle: FileHandle | null = null;
   const overflowPaths = trustedWorkflowOverflowPaths();
   const retainOverflow = Boolean(
     options.artifacts &&
@@ -1506,6 +1952,19 @@ export async function executeTrustedWorkflowBash(
       child.kill("SIGTERM");
     } catch {}
     stopping ??= runtime.stopUnit(unit);
+  };
+  const outputBudget = {
+    maxBytes: TRUSTED_WORKFLOW_MAX_OUTPUT_ARTIFACT_BYTES,
+    consumedBytes: 0,
+    exceeded: false,
+    onExceeded: () => {
+      outputBudgetExceeded = true;
+      if (!child) return;
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+      stopping ??= runtime.stopUnit(unit);
+    },
   };
   const abortListener = () => stop("abort");
   if (options.abortSignal?.aborted) abortListener();
@@ -1524,8 +1983,19 @@ export async function executeTrustedWorkflowBash(
           : { type: "aborted", signal: "SIGTERM" },
       };
     }
-    const support = await createTrustedWorkflowSupportDirectory();
-    supportRoot = support.root;
+    support = await createTrustedWorkflowSupportDirectory();
+    toolsProxy = await startTrustedWorkflowToolsProxy({
+      supportSource: support.source,
+      context: options.context,
+      cwd: authorized.cwd,
+      signal: options.abortSignal,
+    });
+    scratchHandle = await openPinnedWorkflowRoot(scratchRoot, "Trusted workflow scratch root");
+    systemHandle = await openPinnedWorkflowRoot("/usr", "Trusted workflow system executable root");
+    bunHandle = await fs.open(process.execPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    if (!(await bunHandle.stat()).isFile()) {
+      throw new Error("Trusted workflow Bun executable is not a regular file");
+    }
     if (timedOut || aborted) {
       return {
         stdout: "",
@@ -1540,27 +2010,36 @@ export async function executeTrustedWorkflowBash(
       buildTrustedWorkflowCommand({
         command,
         root: authorized.root,
+        rootSource: authorized.rootSource,
         cwd: authorized.cwd,
         writable: options.workspaceWritable,
+        networkEnabled: options.networkEnabled === true,
         masks: authorized.masks,
         readOnlyDependencyRoots: authorized.readOnlyDependencyRoots,
-        emptyFile: support.emptyFile,
-        emptyDirectory: support.emptyDirectory,
+        emptyFileSource: support.emptyFileSource,
+        emptyDirectorySource: support.emptyDirectorySource,
         timeoutMs: remainingTimeoutMs,
         stdinMode: stdinMode ?? "error",
         unit,
         maxArgvBytes,
         context: options.context,
+        scratchRoot,
+        scratchSource: workflowDescriptorPath(scratchHandle),
+        supportSource: support.source,
+        systemSource: workflowDescriptorPath(systemHandle),
+        bunSource: workflowDescriptorPath(bunHandle),
       }),
     );
     const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
       readSanitizedStreamTextCapped(child.stdout, outputConfig.maxPreviewBytes, {
         overflowFilePath: retainOverflow ? overflowPaths.stdout : undefined,
         onActivity: options.onActivity,
+        outputBudget,
       }),
       readSanitizedStreamTextCapped(child.stderr, outputConfig.maxPreviewBytes, {
         overflowFilePath: retainOverflow ? overflowPaths.stderr : undefined,
         onActivity: options.onActivity,
+        outputBudget,
       }),
       child.exited,
     ]);
@@ -1605,42 +2084,48 @@ export async function executeTrustedWorkflowBash(
           phase: "unknown" as const,
           message: `Trusted workflow bash cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
         }
-      : timedOut
+      : outputBudgetExceeded
         ? {
-            type: "timeout" as const,
-            timeoutMs: effectiveTimeoutMs,
-            signal: "SIGTERM",
+            type: "exception" as const,
+            phase: "unknown" as const,
+            message: `Trusted workflow Bash exceeded the ${TRUSTED_WORKFLOW_MAX_OUTPUT_ARTIFACT_BYTES}-byte cumulative output budget`,
           }
-        : aborted
-          ? { type: "aborted" as const, signal: "SIGTERM" }
-          : stdoutResult.status === "rejected"
-            ? {
-                type: "exception" as const,
-                phase: "stdout" as const,
-                message:
-                  stdoutResult.reason instanceof Error
-                    ? stdoutResult.reason.message
-                    : String(stdoutResult.reason),
-              }
-            : stderrResult.status === "rejected"
+        : timedOut
+          ? {
+              type: "timeout" as const,
+              timeoutMs: effectiveTimeoutMs,
+              signal: "SIGTERM",
+            }
+          : aborted
+            ? { type: "aborted" as const, signal: "SIGTERM" }
+            : stdoutResult.status === "rejected"
               ? {
                   type: "exception" as const,
-                  phase: "stderr" as const,
+                  phase: "stdout" as const,
                   message:
-                    stderrResult.reason instanceof Error
-                      ? stderrResult.reason.message
-                      : String(stderrResult.reason),
+                    stdoutResult.reason instanceof Error
+                      ? stdoutResult.reason.message
+                      : String(stdoutResult.reason),
                 }
-              : exitResult.status === "rejected"
+              : stderrResult.status === "rejected"
                 ? {
                     type: "exception" as const,
-                    phase: "unknown" as const,
+                    phase: "stderr" as const,
                     message:
-                      exitResult.reason instanceof Error
-                        ? exitResult.reason.message
-                        : String(exitResult.reason),
+                      stderrResult.reason instanceof Error
+                        ? stderrResult.reason.message
+                        : String(stderrResult.reason),
                   }
-                : undefined;
+                : exitResult.status === "rejected"
+                  ? {
+                      type: "exception" as const,
+                      phase: "unknown" as const,
+                      message:
+                        exitResult.reason instanceof Error
+                          ? exitResult.reason.message
+                          : String(exitResult.reason),
+                    }
+                  : undefined;
     return withLimitedBashOutput(
       {
         stdout,
@@ -1684,10 +2169,32 @@ export async function executeTrustedWorkflowBash(
   } finally {
     clearTimeout(timeout);
     options.abortSignal?.removeEventListener("abort", abortListener);
-    await Promise.all([
-      supportRoot ? fs.rm(supportRoot, { recursive: true, force: true }) : undefined,
+    const cleanupFailures: unknown[] = [];
+    const proxyCleanup = await Promise.allSettled([closeTrustedWorkflowToolsProxy(toolsProxy)]);
+    if (proxyCleanup[0]?.status === "rejected") cleanupFailures.push(proxyCleanup[0].reason);
+    const resourceCleanup = await Promise.allSettled([
+      closeTrustedWorkflowAuthorizedRoot(authorized),
+      scratchHandle?.close(),
+      systemHandle?.close(),
+      bunHandle?.close(),
+      support?.emptyFileHandle.close(),
+      support?.emptyDirectoryHandle.close(),
+      support?.rootHandle.close(),
+      support ? fs.rm(support.root, { recursive: true, force: true }) : undefined,
       fs.rm(overflowPaths.stdout, { force: true }),
       fs.rm(overflowPaths.stderr, { force: true }),
     ]);
+    for (const result of resourceCleanup) {
+      if (result.status === "rejected") cleanupFailures.push(result.reason);
+    }
+    if (cleanupFailures.length > 0) {
+      logger.error(
+        "Trusted workflow Bash resource cleanup failed",
+        new AggregateError(
+          cleanupFailures,
+          "One or more trusted workflow resources were not closed",
+        ),
+      );
+    }
   }
 }

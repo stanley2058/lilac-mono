@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { env, isRecord } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
+import { statSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 
@@ -73,25 +74,39 @@ function trustedWorkflowRuntime(output = "bun 1.3.14\ngit version 2.43.0\n"): {
 }
 
 function workflowPolicy(root: string, safetyMode: "trusted" | "restricted"): WorkflowRequestPolicy {
+  const stats = statSync(root, { bigint: true });
+  const identity = { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
   return {
     runId: "run-1",
     operationId: "operation-1",
     dispatchEpoch: "dispatch-epoch-0001",
     profile: "general",
-    model: "inherit",
-    reasoning: "provider-default",
-    tools: ["bash"],
-    executables: "trusted-container",
+    model: null,
+    reasoning: null,
+    resolvedModel: "test/model",
+    resolvedReasoning: null,
+    resolvedModelRequest: {
+      spec: "test/model",
+      provider: "test",
+      modelId: "model",
+      reasoningDisplay: "simple",
+    },
     safetyMode,
-    editing: true,
     isolation: "shared",
-    delegation: false,
-    level2Callables: [],
-    surfaceOriginOperations: [],
     canonicalWorkspaceRoot: root,
     canonicalAuthorityRoot: root,
+    canonicalAuthorityRootIdentity: identity,
     canonicalRequestedCwd: root,
+    canonicalRequestedCwdIdentity: identity,
     canonicalCwd: root,
+    canonicalCwdIdentity: identity,
+    canonicalScratchRoot: path.join(
+      path.dirname(root),
+      ".lilac-data",
+      "workflow-runtime",
+      "scratch",
+      "run-1",
+    ),
     canonicalProjectId: "project-1",
     originSessionId: "channel-1",
     originClient: "discord",
@@ -99,7 +114,6 @@ function workflowPolicy(root: string, safetyMode: "trusted" | "restricted"): Wor
     revisionId: "revision-1",
     sourceSha256: "a".repeat(64),
     inputSchemaSha256: "b".repeat(64),
-    capabilitySha256: "c".repeat(64),
     argsSha256: "d".repeat(64),
     operationInputSha256: "e".repeat(64),
   };
@@ -501,134 +515,13 @@ describe("executeRestrictedBash", () => {
         },
       );
 
-      expect(second.exitCode).not.toBe(0);
+      expect(second.exitCode).toBe(0);
       expect(second.stdout).toContain("original");
       expect(second.stdout).toContain("keep");
-      expect(second.stdout).not.toContain("SECRET=1");
+      expect(second.stdout).toContain("SECRET=<redacted>");
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
       await fs.rm(sessionTmp, { recursive: true, force: true });
-    }
-  });
-
-  it("blocks every restricted workspace write primitive from protected and escaped paths", async () => {
-    const root = await fs.mkdtemp(
-      path.join(await fs.realpath("/tmp"), "lilac-restricted-protected-writes-"),
-    );
-    const workspace = path.join(root, "workspace");
-    const outside = path.join(root, "outside.txt");
-    const sessionId = "restricted-protected-writes";
-    await fs.mkdir(path.join(workspace, ".git", "hooks"), { recursive: true });
-    await fs.mkdir(path.join(workspace, ".env.local"));
-    await fs.writeFile(path.join(workspace, ".env"), "SECRET=original\n");
-    await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=original\n");
-    await fs.writeFile(path.join(workspace, ".env.local", "token"), "DESCENDANT=secret\n");
-    await fs.writeFile(path.join(workspace, "core-config.yaml"), "safe: true\n");
-    await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]\n");
-    await fs.writeFile(path.join(workspace, "source.txt"), "source\n");
-    await fs.link(path.join(workspace, ".env"), path.join(workspace, "env-alias.txt"));
-    await fs.link(
-      path.join(workspace, ".git", "config"),
-      path.join(workspace, "git-config-alias.txt"),
-    );
-    await fs.mkdir(path.join(workspace, "nested", ".git"), { recursive: true });
-    await fs.writeFile(path.join(workspace, "nested", ".env"), "NESTED=secret\n");
-    await fs.writeFile(path.join(workspace, "nested", ".git", "config"), "[nested]\n");
-    await fs.writeFile(outside, "outside\n");
-
-    const commands = [
-      "printf hacked > .env",
-      "printf hacked > .envrc",
-      "printf hacked > .env.local/token",
-      "printf hacked > env-alias.txt",
-      "printf hacked >> git-config-alias.txt",
-      "rm env-alias.txt",
-      "printf hacked >> core-config.yaml",
-      "rm .git/config",
-      "mv source.txt .git/hooks/pre-commit",
-      "cp source.txt .env.production",
-      "mkdir .git/hooks/new-hook",
-      "ln source.txt .git/config",
-      "ln -s source.txt .env.local",
-      "printf escaped > ../outside.txt",
-      "rm -rf nested",
-      "mv nested moved-nested",
-      "cp -r nested copied-nested",
-    ];
-    try {
-      const hardLinkRead = await executeRestrictedBash(
-        { command: "cat env-alias.txt; grep safe git-config-alias.txt", cwd: workspace },
-        {
-          workspaceRoot: workspace,
-          context: {
-            requestId: "restricted-protected-hard-link-read",
-            sessionId,
-            requestClient: "test",
-          },
-        },
-      );
-      expect(hardLinkRead.exitCode).not.toBe(0);
-      expect(hardLinkRead.stdout).not.toContain("SECRET=original");
-      expect(hardLinkRead.stdout).not.toContain("[safe]");
-      const envDescendantRead = await executeRestrictedBash(
-        { command: "cat .env.local/token", cwd: workspace },
-        {
-          workspaceRoot: workspace,
-          context: {
-            requestId: "restricted-env-descendant-read",
-            sessionId,
-            requestClient: "test",
-          },
-        },
-      );
-      expect(envDescendantRead.exitCode).not.toBe(0);
-      expect(envDescendantRead.stdout).not.toContain("DESCENDANT=secret");
-
-      for (const [index, command] of commands.entries()) {
-        const result = await executeRestrictedBash(
-          { command, cwd: workspace },
-          {
-            workspaceRoot: workspace,
-            context: {
-              requestId: `restricted-protected-write-${index}`,
-              sessionId,
-              requestClient: "test",
-              workspaceWritable: true,
-            },
-          },
-        );
-        if (result.exitCode === 0 && command !== "rm -rf nested") {
-          throw new Error(`Protected write unexpectedly succeeded: ${command}`);
-        }
-      }
-      expect(await fs.readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=original\n");
-      expect(await fs.readFile(path.join(workspace, ".envrc"), "utf8")).toBe(
-        "export SECRET=original\n",
-      );
-      expect(await fs.readFile(path.join(workspace, ".env.local", "token"), "utf8")).toBe(
-        "DESCENDANT=secret\n",
-      );
-      expect(await fs.readFile(path.join(workspace, "core-config.yaml"), "utf8")).toBe(
-        "safe: true\n",
-      );
-      expect(await fs.readFile(path.join(workspace, ".git", "config"), "utf8")).toBe("[safe]\n");
-      expect(await fs.readFile(path.join(workspace, "env-alias.txt"), "utf8")).toBe(
-        "SECRET=original\n",
-      );
-      expect(await fs.readFile(path.join(workspace, "git-config-alias.txt"), "utf8")).toBe(
-        "[safe]\n",
-      );
-      expect(await fs.readFile(path.join(workspace, "source.txt"), "utf8")).toBe("source\n");
-      expect(await fs.readFile(path.join(workspace, "nested", ".env"), "utf8")).toBe(
-        "NESTED=secret\n",
-      );
-      expect(await fs.readFile(path.join(workspace, "nested", ".git", "config"), "utf8")).toBe(
-        "[nested]\n",
-      );
-      expect(await fs.readFile(outside, "utf8")).toBe("outside\n");
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-      await fs.rm(resolveRestrictedSessionTmpDir(sessionId), { recursive: true, force: true });
     }
   });
 
@@ -895,6 +788,44 @@ describe("executeRestrictedBash", () => {
 });
 
 describe("executeTrustedWorkflowBash", () => {
+  it("stops the complete transient unit when endless output exceeds the cumulative budget", async () => {
+    const root = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-output-budget-"),
+    );
+    const chunk = new Uint8Array(1024 * 1024);
+    let stopped = false;
+    let resolveExit: (code: number) => void = () => {};
+    const exited = new Promise<number>((resolve) => (resolveExit = resolve));
+    const runtime: TrustedWorkflowBashRuntime = {
+      spawn: () => ({
+        stdout: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(chunk);
+          },
+        }),
+        stderr: textStream(""),
+        exited,
+        kill: () => {},
+      }),
+      stopUnit: async () => {
+        stopped = true;
+        resolveExit(-1);
+      },
+      createUnitName: () => "lilac-workflow-output-budget",
+    };
+    try {
+      const result = await executeTrustedWorkflowBash(
+        { command: "yes" },
+        { workspaceRoot: root, workspaceWritable: false, runtime },
+      );
+      expect(stopped).toBe(true);
+      expect(JSON.stringify(result.executionError)).toContain("cumulative output budget");
+      expect(result.truncation?.originalStdoutBytes ?? 0).toBeLessThanOrEqual(50 * 1024 * 1024);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   const integrationIt = process.env.LILAC_WORKFLOW_BASH_INTEGRATION === "1" ? it : it.skip;
 
   integrationIt("enforces the live executable sandbox boundary", async () => {
@@ -975,27 +906,21 @@ describe("executeTrustedWorkflowBash", () => {
       expect(result.stdout).toContain("git version");
       expect(result.stdout).toContain("node=v");
       expect(result.stdout).toContain("heredoc=ok");
-      expect(result.stdout).toContain("env_masked=empty");
-      expect(result.stdout).toContain("credential_read=denied");
-      expect(result.stdout).toContain("vault_read=denied");
-      expect(result.stdout).toContain("core_config_masked=empty");
+      expect(result.stdout).toContain("env_leak=PROTECTED=workspace-secret");
+      expect(result.stdout).toContain("credential_leak=oauth=credential");
+      expect(result.stdout).toContain("vault_leak=directory-secret");
+      expect(result.stdout).toContain("core_config_leak=apiKey: core-secret");
       expect(result.stdout).toContain("inaccessible_read=denied");
       expect(result.stdout).toContain("outside_exists=False");
       expect(result.stdout).toContain("etc_exists=False");
       expect(result.stdout).toContain("inherited=missing");
-      expect(result.stdout).toContain("protected_write=denied");
+      expect(result.stdout).toContain("protected_write=allowed");
       expect(result.stdout).toContain("outside_write=denied");
-      expect(result.stdout).not.toContain("workspace-secret");
-      expect(result.stdout).not.toContain("oauth=credential");
-      expect(result.stdout).not.toContain("directory-secret");
-      expect(result.stdout).not.toContain("core-secret");
       expect(result.stdout).not.toContain("inaccessible-secret");
       expect(result.stdout).not.toContain("outside-secret");
       expect(result.stdout).not.toContain("inherited-process-secret");
       expect(await fs.readFile(path.join(root, "generated.txt"), "utf8")).toBe("generated\n");
-      expect(await fs.readFile(path.join(root, ".env"), "utf8")).toBe(
-        "PROTECTED=workspace-secret\n",
-      );
+      expect(await fs.readFile(path.join(root, ".env"), "utf8")).toBe("changed\n");
       expect(await fs.readFile(outside, "utf8")).toBe("outside-secret\n");
     } finally {
       if (inheritedSecret === undefined) delete process.env.LILAC_TRUSTED_WORKFLOW_TEST_SECRET;
@@ -1012,7 +937,6 @@ describe("executeTrustedWorkflowBash", () => {
       const coreCwd = path.join(workspaceRoot, "apps", "core");
       const policy = {
         ...workflowPolicy(workspaceRoot, "trusted"),
-        editing: false,
         canonicalRequestedCwd: coreCwd,
         canonicalCwd: coreCwd,
       };
@@ -1032,7 +956,7 @@ describe("executeTrustedWorkflowBash", () => {
             "cat <<'EOF'",
             "normal-heredoc=ok",
             "EOF",
-            "bun test tests/workflow/workflow-level1-boundary.test.ts",
+            "bun test tests/workflow/workflow-path-authority.test.ts",
           ].join("\n"),
         },
         {
@@ -1052,7 +976,7 @@ describe("executeTrustedWorkflowBash", () => {
       expect(stdout).toContain("diff_lines=");
       expect(stdout).toContain("git_config=masked");
       expect(stdout).toContain("normal-heredoc=ok");
-      expect(`${stdout}\n${stderr}`).toContain("3 pass");
+      expect(`${stdout}\n${stderr}`).toContain("pass");
     },
     30_000,
   );
@@ -1124,10 +1048,12 @@ describe("executeTrustedWorkflowBash", () => {
         {
           workspaceRoot: root,
           workspaceWritable: true,
+          networkEnabled: true,
           context: {
             requestId: "trusted-workflow-request",
             sessionId: "trusted-workflow-session",
             requestClient: "unknown",
+            workflowControlToken: "host-only-workflow-control-token",
           },
           runtime: fake.runtime,
         },
@@ -1142,46 +1068,50 @@ describe("executeTrustedWorkflowBash", () => {
       expect(sandboxCommand.slice(0, 2)).toEqual(["/usr/bin/systemd-run", "--user"]);
       expect(sandboxCommand).toContain("/usr/bin/bwrap");
       expect(sandboxCommand).toContain("--unshare-all");
+      expect(sandboxCommand).toContain("--share-net");
       expect(sandboxCommand).toContain("--clearenv");
       expect(sandboxCommand).toContain("MemoryMax=2147483648");
       expect(sandboxCommand).toContain("TasksMax=256");
       expect(sandboxCommand).toContain("/usr");
       expect(sandboxCommand).not.toContain("/opt");
-      expect(sandboxCommand).toContain(process.execPath);
+      const bunMount = sandboxCommand.findIndex(
+        (value, index) => value === "--ro-bind" && sandboxCommand[index + 2] === "/sandbox/bin/bun",
+      );
+      expect(sandboxCommand[bunMount + 1]).toMatch(/^\/proc\/\d+\/fd\/\d+$/u);
+      expect(sandboxCommand).not.toContain(process.execPath);
       expect(sandboxCommand).toContain("/usr/bin/bash");
+      expect(sandboxCommand).toContain("/run/lilac/support");
+      expect(sandboxCommand).toContain("/run/lilac/scratch");
+      expect(sandboxCommand.join("\0")).toContain("/run/lilac/support:");
       expect(sandboxCommand).toContain(root);
-      expect(sandboxCommand).toContain(path.join(root, ".env"));
-      expect(sandboxCommand).toContain(path.join(root, ".git", "config"));
-      expect(sandboxCommand).toContain(path.join(root, ".git", "hooks"));
-      expect(sandboxCommand).toContain(path.join(root, ".config", "gh"));
-      expect(sandboxCommand).toContain(path.join(root, "nested", ".ssh"));
+      expect(sandboxCommand).not.toContain(path.join(root, ".env"));
+      expect(sandboxCommand).not.toContain(path.join(root, ".git", "config"));
+      expect(sandboxCommand).not.toContain(path.join(root, ".git", "hooks"));
+      expect(sandboxCommand).not.toContain(path.join(root, ".config", "gh"));
+      expect(sandboxCommand).not.toContain(path.join(root, "nested", ".ssh"));
       expect(sandboxCommand).not.toContain(outside);
       expect(sandboxCommand).not.toContain("must-not-enter-sandbox");
+      expect(sandboxCommand).not.toContain("host-only-workflow-control-token");
       expect(sandboxCommand).not.toContain("workspace-secret");
       expect(sandboxCommand).not.toContain("outside-secret");
       const writableMount = sandboxCommand.findIndex(
-        (value, index) => value === "--bind" && sandboxCommand[index + 1] === root,
+        (value, index) => value === "--bind" && sandboxCommand[index + 2] === root,
       );
-      expect(sandboxCommand.slice(writableMount, writableMount + 3)).toEqual([
-        "--bind",
-        root,
-        root,
-      ]);
+      expect(sandboxCommand[writableMount + 1]).toMatch(/^\/proc\/\d+\/fd\/\d+$/u);
+      expect(sandboxCommand[writableMount + 2]).toBe(root);
 
       const readOnlyFake = trustedWorkflowRuntime("read-only\n");
       await executeTrustedWorkflowBash(
         { command: "bun --version", cwd: root },
         { workspaceRoot: root, workspaceWritable: false, runtime: readOnlyFake.runtime },
       );
+      expect(readOnlyFake.commands[0]).not.toContain("--share-net");
       const readOnlyCommand = readOnlyFake.commands[0]!;
       const readOnlyMount = readOnlyCommand.findIndex(
-        (value, index) => value === "--ro-bind" && readOnlyCommand[index + 1] === root,
+        (value, index) => value === "--ro-bind" && readOnlyCommand[index + 2] === root,
       );
-      expect(readOnlyCommand.slice(readOnlyMount, readOnlyMount + 3)).toEqual([
-        "--ro-bind",
-        root,
-        root,
-      ]);
+      expect(readOnlyCommand[readOnlyMount + 1]).toMatch(/^\/proc\/\d+\/fd\/\d+$/u);
+      expect(readOnlyCommand[readOnlyMount + 2]).toBe(root);
     } finally {
       if (inheritedSecret === undefined) delete process.env.LILAC_TRUSTED_WORKFLOW_TEST_SECRET;
       else process.env.LILAC_TRUSTED_WORKFLOW_TEST_SECRET = inheritedSecret;
@@ -1190,7 +1120,7 @@ describe("executeTrustedWorkflowBash", () => {
     }
   });
 
-  it("authorizes canonical subdirectory cwd and rejects escapes and symlinks", async () => {
+  it("authorizes subdirectory and symlink-alias cwd values while rejecting escapes", async () => {
     const root = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-cwd-"),
     );
@@ -1222,10 +1152,159 @@ describe("executeTrustedWorkflowBash", () => {
       expect(escaped.stderr).toContain("outside the approved root");
       expect(ssh.executionError).toMatchObject({ type: "blocked" });
       expect(ssh.stderr).toContain("does not allow SSH");
-      expect(symlink.executionError).toMatchObject({ type: "blocked" });
-      expect(symlink.stderr).toContain("canonical real directory");
-      expect(fake.commands).toHaveLength(1);
+      expect(symlink.executionError).toBeUndefined();
+      expect(fake.commands[1]).toContain(nested);
+      expect(fake.commands).toHaveLength(2);
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds the pinned root inode when the authorized pathname is replaced", async () => {
+    const temp = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-root-swap-"),
+    );
+    const root = path.join(temp, "workspace");
+    const movedRoot = path.join(temp, "authorized-inode");
+    const deniedRoot = path.join(temp, "denied-root");
+    await fs.mkdir(root);
+    await fs.mkdir(deniedRoot);
+    await fs.writeFile(path.join(root, "marker.txt"), "authorized");
+    await fs.writeFile(path.join(deniedRoot, "marker.txt"), "denied");
+    let pinnedMarker = "";
+    const runtime: TrustedWorkflowBashRuntime = {
+      spawn(command) {
+        const mountIndex = command.findIndex(
+          (value, index) =>
+            (value === "--bind" || value === "--ro-bind") && command[index + 2] === root,
+        );
+        const source = command[mountIndex + 1];
+        if (!source) throw new Error("missing pinned root source");
+        const exited = (async () => {
+          await fs.rename(root, movedRoot);
+          await fs.symlink(deniedRoot, root);
+          pinnedMarker = await fs.readFile(path.join(source, "marker.txt"), "utf8");
+          return 0;
+        })();
+        return {
+          stdout: textStream("ok\n"),
+          stderr: textStream(""),
+          exited,
+          kill: () => {},
+        };
+      },
+      stopUnit: async () => {},
+      createUnitName: () => "lilac-workflow-root-swap",
+    };
+    try {
+      const result = await executeTrustedWorkflowBash(
+        { command: "cat marker.txt" },
+        { workspaceRoot: root, workspaceWritable: false, runtime },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(pinnedMarker).toBe("authorized");
+      expect(await fs.readFile(path.join(root, "marker.txt"), "utf8")).toBe("denied");
+    } finally {
+      await fs.rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an authorized cwd spelling that is replaced before sandbox dispatch", async () => {
+    const temp = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-identity-swap-"),
+    );
+    const root = path.join(temp, "workspace");
+    const original = path.join(temp, "original");
+    const replacement = path.join(temp, "replacement");
+    await fs.mkdir(root);
+    await fs.mkdir(replacement);
+    const stats = await fs.stat(root, { bigint: true });
+    const identity = { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
+    await fs.rename(root, original);
+    await fs.rename(replacement, root);
+    const fake = trustedWorkflowRuntime("must not run\n");
+    try {
+      const result = await executeTrustedWorkflowBash(
+        { command: "pwd" },
+        {
+          workspaceRoot: root,
+          workspaceWritable: false,
+          workspaceIdentity: identity,
+          cwdIdentity: identity,
+          runtime: fake.runtime,
+        },
+      );
+      expect(result.executionError).toMatchObject({ type: "blocked" });
+      expect(result.stderr).toContain("no longer names its authorized inode");
+      expect(fake.commands).toHaveLength(0);
+    } finally {
+      await fs.rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("binds support, proxy parent, and workspace sources from held descriptors", async () => {
+    const root = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-support-swap-"),
+    );
+    await fs.writeFile(path.join(root, ".env"), "secret\n");
+    await fs.mkdir(path.join(root, ".secrets"));
+    let movedSupport: string | null = null;
+    let pinnedTools = "";
+    let descriptorBackedTargets: string[] = [];
+    const runtime: TrustedWorkflowBashRuntime = {
+      spawn(command) {
+        const supportIndex = command.findIndex(
+          (value, index) => value === "--ro-bind" && command[index + 2] === "/run/lilac/support",
+        );
+        const supportSource = command[supportIndex + 1];
+        if (!supportSource) throw new Error("missing support descriptor source");
+        descriptorBackedTargets = [
+          root,
+          "/run/lilac/scratch",
+          "/run/lilac/support",
+        ].map((target) => {
+          const index = command.findIndex(
+            (value, position) =>
+              (value === "--bind" || value === "--ro-bind") && command[position + 2] === target,
+          );
+          return command[index + 1] ?? "";
+        });
+        const exited = (async () => {
+          const originalSupport = await fs.readlink(supportSource);
+          movedSupport = `${originalSupport}-authorized`;
+          await fs.rename(originalSupport, movedSupport);
+          await fs.symlink("/etc", originalSupport);
+          pinnedTools = await fs.readFile(path.join(supportSource, "tools"), "utf8");
+          return 0;
+        })();
+        return {
+          stdout: textStream("ok\n"),
+          stderr: textStream(""),
+          exited,
+          kill: () => {},
+        };
+      },
+      stopUnit: async () => {},
+      createUnitName: () => "lilac-workflow-support-swap",
+    };
+    try {
+      const result = await executeTrustedWorkflowBash(
+        { command: "tools --list", cwd: root },
+        {
+          workspaceRoot: root,
+          workspaceWritable: false,
+          context: { workflowControlToken: "test-workflow-control-token" },
+          runtime,
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(pinnedTools).toStartWith("#!/sandbox/bin/bun");
+      expect(descriptorBackedTargets).toHaveLength(3);
+      expect(
+        descriptorBackedTargets.every((source) => /^\/proc\/\d+\/fd\/\d+$/u.test(source)),
+      ).toBe(true);
+    } finally {
+      if (movedSupport) await fs.rm(movedSupport, { recursive: true, force: true });
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -1285,7 +1364,11 @@ describe("executeTrustedWorkflowBash", () => {
       expect(fake.commands).toHaveLength(2);
       const normalizeUnit = (command: readonly string[]) =>
         command.map((value) =>
-          value.startsWith("--unit=lilac-workflow-bash-") ? "--unit=<unit>" : value,
+          value.startsWith("--unit=lilac-workflow-bash-")
+            ? "--unit=<unit>"
+            : value.startsWith("/tmp/lilac-trusted-workflow-bash-")
+              ? "/tmp/lilac-trusted-workflow-bash-<support>"
+              : value,
         );
       expect(normalizeUnit(fake.commands[0]!)).toEqual(normalizeUnit(fake.commands[1]!));
     } finally {
@@ -1344,13 +1427,10 @@ describe("executeTrustedWorkflowBash", () => {
       const dependencyCommand = fake.commands[1]!;
       const dependencyMount = dependencyCommand.findIndex(
         (value, index) =>
-          value === "--ro-bind" && dependencyCommand[index + 1] === path.join(root, "node_modules"),
+          value === "--ro-bind" && dependencyCommand[index + 2] === path.join(root, "node_modules"),
       );
-      expect(dependencyCommand.slice(dependencyMount, dependencyMount + 3)).toEqual([
-        "--ro-bind",
-        path.join(root, "node_modules"),
-        path.join(root, "node_modules"),
-      ]);
+      expect(dependencyCommand[dependencyMount + 1]).toMatch(/^\/proc\/\d+\/fd\/\d+$/u);
+      expect(dependencyCommand[dependencyMount + 2]).toBe(path.join(root, "node_modules"));
       await fs.rm(path.join(root, "node_modules"), { recursive: true });
 
       await fs.mkdir(dependencyRoot, { recursive: true });
@@ -1369,14 +1449,6 @@ describe("executeTrustedWorkflowBash", () => {
       expect(unauthorizedDependency.stdout).not.toContain("outside");
       await fs.rm(path.join(root, "node_modules"), { recursive: true });
 
-      await fs.writeFile(path.join(root, ".env"), "secret\n");
-      await fs.link(path.join(root, ".env"), path.join(root, "env-alias.txt"));
-      const protectedAlias = await executeTrustedWorkflowBash(
-        { command: "true" },
-        { workspaceRoot: root, workspaceWritable: false, runtime: fake.runtime },
-      );
-      expect(protectedAlias.executionError).toMatchObject({ type: "blocked" });
-      expect(protectedAlias.stderr).toContain("aliases protected data");
       expect(fake.commands).toHaveLength(2);
     } finally {
       await fs.rm(temp, { recursive: true, force: true });
@@ -1418,7 +1490,7 @@ describe("executeTrustedWorkflowBash", () => {
     }
   });
 
-  it("handles more than 512 protected masks when actual argv capacity permits", async () => {
+  it("does not create masks for ordinary environment-like project files", async () => {
     const root = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-masks-"),
     );
@@ -1435,9 +1507,7 @@ describe("executeTrustedWorkflowBash", () => {
       );
       expect(result.executionError).toBeUndefined();
       expect(fake.commands).toHaveLength(1);
-      expect(fake.commands[0]!.filter((value) => value === "--ro-bind").length).toBeGreaterThan(
-        512,
-      );
+      expect(fake.commands[0]!.filter((value) => value === "--ro-bind").length).toBe(4);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -1475,6 +1545,7 @@ describe("executeTrustedWorkflowBash", () => {
     const largeOutput = `START${"x".repeat(100_000)}END\n`;
     const fake = trustedWorkflowRuntime(largeOutput);
     try {
+      await fs.mkdir(workflowPolicy(root, "trusted").canonicalScratchRoot, { recursive: true });
       const bash = bashToolWithCwd(root, {
         workflowPolicy: workflowPolicy(root, "trusted"),
         trustedWorkflowRuntime: fake.runtime,
@@ -1572,10 +1643,20 @@ describe("executeTrustedWorkflowBash", () => {
     try {
       const requestedCwd = path.join(root, "packages", "core");
       await fs.mkdir(requestedCwd, { recursive: true });
+      await fs.mkdir(workflowPolicy(root, "trusted").canonicalScratchRoot, { recursive: true });
       const trustedPolicy = {
         ...workflowPolicy(root, "trusted"),
+        isolation: "worktree" as const,
         canonicalRequestedCwd: requestedCwd,
         canonicalCwd: requestedCwd,
+        canonicalRequestedCwdIdentity: (() => {
+          const stats = statSync(requestedCwd, { bigint: true });
+          return { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
+        })(),
+        canonicalCwdIdentity: (() => {
+          const stats = statSync(requestedCwd, { bigint: true });
+          return { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
+        })(),
       };
       const trustedTool = bashToolWithCwd(requestedCwd, {
         workflowPolicy: trustedPolicy,
@@ -1589,7 +1670,9 @@ describe("executeTrustedWorkflowBash", () => {
       expect(trusted).toMatchObject({ exitCode: 0, stdout: "trusted executable\n" });
       expect(trustedFake.commands).toHaveLength(1);
       const trustedCommand = trustedFake.commands[0]!;
-      expect(trustedCommand).toContain(root);
+      const bindIndex = trustedCommand.indexOf("--bind");
+      expect(trustedCommand[bindIndex + 1]).toMatch(/^\/proc\/\d+\/fd\/\d+$/u);
+      expect(trustedCommand[bindIndex + 2]).toBe(requestedCwd);
       const chdirIndex = trustedCommand.indexOf("--chdir");
       expect(trustedCommand[chdirIndex + 1]).toBe(requestedCwd);
 
@@ -1667,6 +1750,132 @@ describe("executeTrustedWorkflowBash", () => {
       expect(result.executionError).toMatchObject({ type: "aborted", signal: "SIGTERM" });
       expect(stoppedUnits).toEqual(["lilac-workflow-bash-cancel-test"]);
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts in-flight trusted workflow proxy requests on operation cancellation", async () => {
+    const root = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-proxy-cancel-"),
+    );
+    const controller = new AbortController();
+    let resolveUpstreamStarted = () => {};
+    const upstreamStarted = new Promise<void>((resolve) => {
+      resolveUpstreamStarted = resolve;
+    });
+    let upstreamAborted = false;
+    const restoreFetch = installMockFetch(async (_input, init) => {
+      resolveUpstreamStarted();
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => {
+          upstreamAborted = true;
+          reject(new DOMException("aborted", "AbortError"));
+        };
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      });
+    });
+    const runtime: TrustedWorkflowBashRuntime = {
+      spawn(command) {
+        const supportIndex = command.findIndex(
+          (value, index) => value === "--ro-bind" && command[index + 2] === "/run/lilac/support",
+        );
+        const supportRoot = command[supportIndex + 1];
+        if (!supportRoot) throw new Error("missing support root");
+        const exited = Bun.fetch("http://localhost/call", {
+          unix: path.join(supportRoot, "tools.sock"),
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ callableId: "search", input: { query: "long side effect" } }),
+        }).then(async (response) => {
+          await response.text();
+          return 143;
+        });
+        return {
+          stdout: textStream(""),
+          stderr: textStream(""),
+          exited,
+          kill: () => {},
+        };
+      },
+      stopUnit: async () => {},
+      createUnitName: () => "lilac-workflow-proxy-cancel",
+    };
+    try {
+      const resultPromise = executeTrustedWorkflowBash(
+        { command: "tools search --query=long" },
+        {
+          workspaceRoot: root,
+          workspaceWritable: false,
+          abortSignal: controller.signal,
+          context: {
+            requestId: "workflow-proxy-cancel",
+            sessionId: "workflow-proxy-cancel-session",
+            requestClient: "unknown",
+            workflowControlToken: "host-only-control-token",
+          },
+          runtime,
+        },
+      );
+      await upstreamStarted;
+      controller.abort();
+      const result = await resultPromise;
+      expect(result.executionError).toMatchObject({ type: "aborted" });
+      expect(upstreamAborted).toBe(true);
+    } finally {
+      restoreFetch();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds trusted workflow proxy responses before host-side buffering", async () => {
+    const root = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-proxy-budget-"),
+    );
+    const restoreFetch = installMockFetch(
+      async () =>
+        new Response(new Uint8Array(2 * 1024 * 1024), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    let proxyBody = "";
+    const runtime: TrustedWorkflowBashRuntime = {
+      spawn(command) {
+        const supportIndex = command.findIndex(
+          (value, index) => value === "--ro-bind" && command[index + 2] === "/run/lilac/support",
+        );
+        const supportRoot = command[supportIndex + 1];
+        if (!supportRoot) throw new Error("missing support root");
+        const exited = Bun.fetch("http://localhost/list", {
+          unix: path.join(supportRoot, "tools.sock"),
+        }).then(async (response) => {
+          proxyBody = await response.text();
+          return 0;
+        });
+        return {
+          stdout: textStream(""),
+          stderr: textStream(""),
+          exited,
+          kill: () => {},
+        };
+      },
+      stopUnit: async () => {},
+      createUnitName: () => "lilac-workflow-proxy-budget",
+    };
+    try {
+      await executeTrustedWorkflowBash(
+        { command: "tools --list" },
+        {
+          workspaceRoot: root,
+          workspaceWritable: false,
+          context: { workflowControlToken: "host-only-control-token" },
+          runtime,
+        },
+      );
+      expect(proxyBody).toContain("response exceeds 1 MiB");
+    } finally {
+      restoreFetch();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

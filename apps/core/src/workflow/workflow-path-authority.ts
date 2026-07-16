@@ -1,13 +1,22 @@
-import { constants } from "node:fs";
-import fs, { type FileHandle } from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { ServerToolWorkflowPathAuthority } from "@stanley2058/lilac-plugin-runtime";
 import { z } from "zod";
 
-import { isWorkflowProtectedPath } from "./workflow-protected-path";
+import {
+  assertWorkflowPathAllowed,
+  type WorkflowDeniedRootPolicy,
+  workflowDeniedRootPolicyForScratch,
+} from "./workflow-denied-root-policy";
+import { assertWorkflowPathIdentity } from "./workflow-descriptor-path";
+import { WORKFLOW_SCRATCH_MOUNT } from "./workflow-scratch";
 
-type WorkflowPathPolicy = { canonicalCwd: string };
+type WorkflowPathPolicy = {
+  canonicalCwd: string;
+  canonicalCwdIdentity: { dev: string; ino: string };
+  canonicalScratchRoot: string;
+};
 
 const workflowPathInputSchema = z.strictObject({
   field: z.string().min(1).max(200),
@@ -26,197 +35,69 @@ function isContained(root: string, candidate: string): boolean {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
-function assertUnprotected(root: string, candidate: string): void {
-  if (isWorkflowProtectedPath(root, candidate)) {
-    throw new Error("Workflow Level-2 tools cannot access protected workspace paths");
+function translateScratchPath(policy: WorkflowPathPolicy, requestedPath: string): string {
+  if (requestedPath === WORKFLOW_SCRATCH_MOUNT) return policy.canonicalScratchRoot;
+  if (!requestedPath.startsWith(`${WORKFLOW_SCRATCH_MOUNT}/`)) return requestedPath;
+  const normalized = path.normalize(requestedPath);
+  if (!isContained(WORKFLOW_SCRATCH_MOUNT, normalized)) {
+    throw new Error("Workflow tool path escaped the stable run scratch mount");
   }
+  return path.join(policy.canonicalScratchRoot, path.relative(WORKFLOW_SCRATCH_MOUNT, normalized));
 }
 
-async function canonicalContainedPath(input: {
+function authorityRoot(policy: WorkflowPathPolicy, requestedPath: string): string {
+  if (!path.isAbsolute(requestedPath)) return policy.canonicalCwd;
+  const candidate = path.resolve(requestedPath);
+  if (isContained(policy.canonicalCwd, candidate)) return policy.canonicalCwd;
+  if (isContained(policy.canonicalScratchRoot, candidate)) return policy.canonicalScratchRoot;
+  throw new Error("Workflow tool path escaped the operation cwd and run scratch roots");
+}
+
+async function canonicalizePath(input: {
   requestedPath: string;
+  target: "read-file" | "write-directory" | "write-file";
   policy: WorkflowPathPolicy;
-  kind: "file" | "directory";
-}): Promise<{ lexical: string; stats: Awaited<ReturnType<typeof fs.lstat>> }> {
-  const root = input.policy.canonicalCwd;
-  const lexical = path.resolve(root, input.requestedPath);
-  if (!isContained(root, lexical)) throw new Error("Workflow tool path escaped the approved cwd");
-  assertUnprotected(root, lexical);
-
-  const canonical = await fs.realpath(lexical);
-  const stats = await fs.lstat(lexical);
-  if (
-    canonical !== lexical ||
-    stats.isSymbolicLink() ||
-    (input.kind === "file" ? !stats.isFile() : !stats.isDirectory())
-  ) {
-    throw new Error(`Workflow tool path must identify a canonical ${input.kind}`);
-  }
-  if (input.kind === "file" && stats.nlink > 1) {
-    throw new Error("Workflow tool path must not identify a hard-linked file");
-  }
-  return { lexical, stats };
-}
-
-async function openReadFile(
-  requestedPath: string,
-  policy: WorkflowPathPolicy,
-): Promise<{ handle: FileHandle; descriptorPath: string; logicalPath: string }> {
-  const authorized = await canonicalContainedPath({ requestedPath, policy, kind: "file" });
-  const handle = await fs.open(authorized.lexical, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const opened = await handle.stat();
-    if (
-      opened.dev !== authorized.stats.dev ||
-      opened.ino !== authorized.stats.ino ||
-      opened.nlink > 1 ||
-      !opened.isFile()
-    ) {
-      throw new Error("Workflow tool path changed during authorization");
-    }
-    return {
-      handle,
-      descriptorPath: `/proc/self/fd/${handle.fd}`,
-      logicalPath: authorized.lexical,
-    };
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-async function openWriteDirectory(
-  requestedPath: string,
-  policy: WorkflowPathPolicy,
-): Promise<{ handle: FileHandle; descriptorPath: string; logicalPath: string }> {
-  const authorized = await canonicalContainedPath({ requestedPath, policy, kind: "directory" });
-  const handle = await fs.open(
-    authorized.lexical,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    const opened = await handle.stat();
-    if (
-      opened.dev !== authorized.stats.dev ||
-      opened.ino !== authorized.stats.ino ||
-      !opened.isDirectory()
-    ) {
-      throw new Error("Workflow output directory changed during authorization");
-    }
-    return {
-      handle,
-      descriptorPath: `/proc/self/fd/${handle.fd}`,
-      logicalPath: authorized.lexical,
-    };
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-async function openWriteFile(
-  requestedPath: string,
-  policy: WorkflowPathPolicy,
-): Promise<{ handle: FileHandle; descriptorPath: string; logicalPath: string }> {
-  const root = policy.canonicalCwd;
-  const lexical = path.resolve(root, requestedPath);
-  if (!isContained(root, lexical) || lexical === root) {
-    throw new Error("Workflow output file escaped the approved cwd");
-  }
-  assertUnprotected(root, lexical);
-  await canonicalContainedPath({
-    requestedPath: path.dirname(lexical),
-    policy,
-    kind: "directory",
+  deniedRootPolicy?: WorkflowDeniedRootPolicy;
+}): Promise<{ path: string; requestedPath: string }> {
+  const requestedPath = translateScratchPath(input.policy, input.requestedPath);
+  const root = authorityRoot(input.policy, requestedPath);
+  await assertWorkflowPathIdentity({
+    candidate: input.policy.canonicalCwd,
+    expected: input.policy.canonicalCwdIdentity,
+    label: "Workflow Level-2 cwd",
   });
-  const existing = await fs.lstat(lexical).catch((error: unknown) => {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-    throw error;
+
+  let canonical: string;
+  if (input.target === "write-file") {
+    const lexical = path.resolve(root, requestedPath);
+    if (lexical === root) throw new Error("Workflow output file must not replace its root");
+    const parent = await fs.realpath(path.dirname(lexical));
+    canonical = path.join(parent, path.basename(lexical));
+  } else {
+    canonical = await fs.realpath(path.resolve(root, requestedPath));
+  }
+  if (!isContained(root, canonical)) {
+    throw new Error("Workflow tool path escaped the approved cwd or scratch root");
+  }
+  assertWorkflowPathAllowed({
+    policy:
+      input.deniedRootPolicy ??
+      workflowDeniedRootPolicyForScratch(input.policy.canonicalScratchRoot),
+    candidate: canonical,
+    scratchRoot: input.policy.canonicalScratchRoot,
+    label: "Workflow Level-2 path",
   });
-  if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1)) {
-    throw new Error("Workflow output path must be absent or a regular non-linked file");
-  }
-  const handle = await fs.open(
-    lexical,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      opened.nlink > 1 ||
-      (existing && (opened.dev !== existing.dev || opened.ino !== existing.ino))
-    ) {
-      throw new Error("Workflow output path changed during authorization");
+
+  if (input.target !== "write-file") {
+    const stats = await fs.stat(canonical);
+    if (input.target === "read-file" && (!stats.isFile() || stats.nlink > 1)) {
+      throw new Error("Workflow read path must be a regular non-linked file");
     }
-    return { handle, descriptorPath: `/proc/self/fd/${handle.fd}`, logicalPath: lexical };
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-function pathLikeKey(key: string): boolean {
-  const normalized = key.replaceAll(/[^A-Za-z0-9]/gu, "").toLowerCase();
-  if (["filename", "filenames", "filehash"].includes(normalized)) return false;
-  return (
-    ["cwd", "dir", "directory", "file", "files", "path", "paths"].includes(normalized) ||
-    normalized.endsWith("dir") ||
-    normalized.endsWith("directory") ||
-    normalized.endsWith("file") ||
-    normalized.endsWith("files") ||
-    normalized.endsWith("path") ||
-    normalized.endsWith("paths") ||
-    normalized.endsWith("image") ||
-    normalized.endsWith("images")
-  );
-}
-
-function looksLikeExplicitLocalPath(value: string): boolean {
-  return (
-    value.startsWith("/") ||
-    value.startsWith("./") ||
-    value.startsWith("../") ||
-    value.startsWith("~/") ||
-    value.startsWith("file:")
-  );
-}
-
-function permitsPathLikeText(key: string | undefined): boolean {
-  if (!key) return false;
-  const normalized = key.replaceAll(/[^A-Za-z0-9]/gu, "").toLowerCase();
-  return ["base64", "content", "prompt", "query", "text"].includes(normalized);
-}
-
-function findUndeclaredPathInput(
-  value: unknown,
-  declaredTopLevelFields: ReadonlySet<string>,
-  pathParts: readonly string[] = [],
-): string | null {
-  if (typeof value === "string") {
-    return looksLikeExplicitLocalPath(value) && !permitsPathLikeText(pathParts.at(-1))
-      ? pathParts.join(".") || "<value>"
-      : null;
-  }
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      const found = findUndeclaredPathInput(value[index], declaredTopLevelFields, [
-        ...pathParts,
-        String(index),
-      ]);
-      if (found) return found;
+    if (input.target === "write-directory" && !stats.isDirectory()) {
+      throw new Error("Workflow output directory must be a directory");
     }
-    return null;
   }
-  if (value === null || typeof value !== "object") return null;
-  for (const [key, child] of Object.entries(value)) {
-    const topLevelDeclared = pathParts.length === 0 && declaredTopLevelFields.has(key);
-    if (topLevelDeclared) continue;
-    if (pathLikeKey(key)) return [...pathParts, key].join(".");
-    const found = findUndeclaredPathInput(child, declaredTopLevelFields, [...pathParts, key]);
-    if (found) return found;
-  }
-  return null;
+  return { path: canonical, requestedPath: input.requestedPath };
 }
 
 function pathValues(value: unknown, cardinality: "one" | "many"): string[] {
@@ -232,6 +113,7 @@ export async function authorizeWorkflowPathInput(input: {
   value: Record<string, unknown>;
   policy: WorkflowPathPolicy;
   authority: ServerToolWorkflowPathAuthority | undefined;
+  deniedRootPolicy?: WorkflowDeniedRootPolicy;
 }): Promise<{
   value: Record<string, unknown>;
   restoreOutput(value: unknown): unknown;
@@ -241,88 +123,61 @@ export async function authorizeWorkflowPathInput(input: {
     ? workflowPathAuthoritySchema.parse(input.authority)
     : { inputs: [] };
   const declaredFields = new Set<string>();
+  const replacements: Array<{ canonical: string; requested: string }> = [];
+  const value = { ...input.value };
+
   for (const descriptor of authority.inputs) {
-    for (const field of [descriptor.field, ...(descriptor.aliases ?? [])]) {
+    const fields = [descriptor.field, ...(descriptor.aliases ?? [])];
+    for (const field of fields) {
       if (declaredFields.has(field)) {
         throw new Error(`Workflow path authority declares duplicate field: ${field}`);
       }
       declaredFields.add(field);
     }
-  }
-  const undeclared = findUndeclaredPathInput(input.value, declaredFields);
-  if (undeclared) {
-    throw new Error(
-      `Workflow callable '${input.callableId}' has undeclared local path input: ${undeclared}`,
+    const supplied = fields.filter((field) => input.value[field] !== undefined);
+    if (supplied.length > 1) {
+      throw new Error(`Workflow path input has conflicting aliases: ${supplied.join(", ")}`);
+    }
+    const field = supplied[0] ?? descriptor.field;
+    const raw = supplied[0]
+      ? input.value[supplied[0]]
+      : descriptor.default === "cwd"
+        ? input.policy.canonicalCwd
+        : undefined;
+    if (raw === undefined) continue;
+    const authorized = await Promise.all(
+      pathValues(raw, descriptor.cardinality).map(async (requestedPath) =>
+        await canonicalizePath({
+          requestedPath,
+          target: descriptor.target,
+          policy: input.policy,
+          deniedRootPolicy: input.deniedRootPolicy,
+        }),
+      ),
     );
+    replacements.push(
+      ...authorized.map((entry) => ({ canonical: entry.path, requested: entry.requestedPath })),
+    );
+    value[field] =
+      descriptor.cardinality === "one"
+        ? authorized[0]!.path
+        : authorized.map((entry) => entry.path);
   }
 
-  const opened: FileHandle[] = [];
-  const outputPathReplacements: Array<{ descriptorPath: string; logicalPath: string }> = [];
-  const authorizedValue = { ...input.value };
-  try {
-    for (const descriptor of authority.inputs) {
-      const suppliedFields = [descriptor.field, ...(descriptor.aliases ?? [])].filter(
-        (field) => input.value[field] !== undefined,
+  const restore = (candidate: unknown): unknown => {
+    if (typeof candidate === "string") {
+      const replacement = replacements.find(
+        (entry) =>
+          candidate === entry.canonical || candidate.startsWith(`${entry.canonical}${path.sep}`),
       );
-      if (suppliedFields.length > 1) {
-        throw new Error(
-          `Workflow path input has conflicting aliases: ${suppliedFields.join(", ")}`,
-        );
-      }
-      const suppliedField = suppliedFields[0];
-      const field = suppliedField ?? descriptor.field;
-      const rawValue = suppliedField
-        ? input.value[suppliedField]
-        : descriptor.default === "cwd"
-          ? input.policy.canonicalCwd
-          : undefined;
-      if (rawValue === undefined) continue;
-      const values = pathValues(rawValue, descriptor.cardinality);
-      const rewritten: string[] = [];
-      for (const requestedPath of values) {
-        const authorized =
-          descriptor.target === "read-file"
-            ? await openReadFile(requestedPath, input.policy)
-            : descriptor.target === "write-directory"
-              ? await openWriteDirectory(requestedPath, input.policy)
-              : await openWriteFile(requestedPath, input.policy);
-        opened.push(authorized.handle);
-        outputPathReplacements.push({
-          descriptorPath: authorized.descriptorPath,
-          logicalPath: authorized.logicalPath,
-        });
-        rewritten.push(authorized.descriptorPath);
-      }
-      authorizedValue[field] = descriptor.cardinality === "one" ? rewritten[0] : rewritten;
+      return replacement
+        ? `${replacement.requested}${candidate.slice(replacement.canonical.length)}`
+        : candidate;
     }
-    return {
-      value: authorizedValue,
-      restoreOutput: (value) => {
-        if (outputPathReplacements.length === 0) return value;
-        const restore = (candidate: unknown): unknown => {
-          if (typeof candidate === "string") {
-            for (const replacement of outputPathReplacements) {
-              if (candidate === replacement.descriptorPath) return replacement.logicalPath;
-              if (candidate.startsWith(`${replacement.descriptorPath}${path.sep}`)) {
-                return `${replacement.logicalPath}${candidate.slice(replacement.descriptorPath.length)}`;
-              }
-            }
-            return candidate;
-          }
-          if (Array.isArray(candidate)) return candidate.map(restore);
-          if (candidate === null || typeof candidate !== "object") return candidate;
-          return Object.fromEntries(
-            Object.entries(candidate).map(([key, child]) => [key, restore(child)]),
-          );
-        };
-        return restore(value);
-      },
-      close: async () => {
-        await Promise.all(opened.map(async (handle) => await handle.close()));
-      },
-    };
-  } catch (error) {
-    await Promise.all(opened.map(async (handle) => await handle.close().catch(() => undefined)));
-    throw error;
-  }
+    if (Array.isArray(candidate)) return candidate.map(restore);
+    if (!candidate || typeof candidate !== "object") return candidate;
+    return Object.fromEntries(Object.entries(candidate).map(([key, child]) => [key, restore(child)]));
+  };
+
+  return { value, restoreOutput: restore, close: async () => {} };
 }

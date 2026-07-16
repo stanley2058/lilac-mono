@@ -1,15 +1,16 @@
 import type { AgentRunProfile, SubagentProfile } from "./raw";
+import type { SubagentProfileConfig } from "@stanley2058/lilac-utils";
 
-function buildExploreOverlay(extra?: string): string {
+function buildExploreOverlay(config: SubagentProfileConfig, extra?: string): string {
   const lines = [
     "You are running in explore subagent mode.",
     "Focus on repository exploration and evidence-backed findings.",
     "Treat the delegated user message as the full task input.",
     "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
-    "Do not use bash.",
-    "Do not edit files.",
-    "Do not delegate to another subagent.",
   ];
+  if (!config.execution) lines.push("Do not use bash.");
+  if (!config.workspaceWrites) lines.push("Do not edit files.");
+  if (!config.delegation) lines.push("Do not delegate to another subagent.");
 
   if (extra && extra.trim().length > 0) {
     lines.push(extra.trim());
@@ -18,15 +19,15 @@ function buildExploreOverlay(extra?: string): string {
   return lines.join("\n");
 }
 
-function buildGeneralOverlay(extra?: string): string {
+function buildGeneralOverlay(config: SubagentProfileConfig, extra?: string): string {
   const lines = [
     "You are running in general subagent mode.",
     "Focus on completing the delegated task end-to-end.",
     "Treat the delegated user message as the full task input.",
-    "Use available tools directly, including edits and bash when needed.",
+    "Use the configured profile tools directly when needed.",
     "Prefer parallel tool usage when calls are independent.",
-    "Do not delegate to another subagent.",
   ];
+  if (!config.delegation) lines.push("Do not delegate to another subagent.");
 
   if (extra && extra.trim().length > 0) {
     lines.push(extra.trim());
@@ -35,7 +36,7 @@ function buildGeneralOverlay(extra?: string): string {
   return lines.join("\n");
 }
 
-function buildSelfOverlay(extra?: string): string {
+function buildSelfOverlay(_config: SubagentProfileConfig, extra?: string): string {
   const lines = [
     "You are running in self subagent mode.",
     "Focus on completing the delegated task in a fresh context window.",
@@ -53,17 +54,18 @@ function buildSelfOverlay(extra?: string): string {
 
 function buildOverlayForProfile(params: {
   profile: SubagentProfile;
+  config: SubagentProfileConfig;
   exploreOverlay?: string;
   generalOverlay?: string;
   selfOverlay?: string;
 }): string {
   if (params.profile === "general") {
-    return buildGeneralOverlay(params.generalOverlay);
+    return buildGeneralOverlay(params.config, params.generalOverlay);
   }
   if (params.profile === "self") {
-    return buildSelfOverlay(params.selfOverlay);
+    return buildSelfOverlay(params.config, params.selfOverlay);
   }
-  return buildExploreOverlay(params.exploreOverlay);
+  return buildExploreOverlay(params.config, params.exploreOverlay);
 }
 
 function subagentModeTitle(profile: SubagentProfile): string {
@@ -80,6 +82,7 @@ export function buildSystemPromptForProfile(params: {
   selfOverlay?: string;
   skillsSection?: string | null;
   activeEditingTool?: "apply_patch" | "edit_file" | null;
+  profileConfig?: SubagentProfileConfig;
 }): string {
   if (params.profile === "primary") {
     const parts = [params.baseSystemPrompt];
@@ -94,8 +97,12 @@ export function buildSystemPromptForProfile(params: {
     baseParts.push(params.skillsSection.trim());
   }
 
+  if (!params.profileConfig) {
+    throw new Error(`Missing native profile configuration for ${params.profile}`);
+  }
   const overlay = buildOverlayForProfile({
     profile: params.profile,
+    config: params.profileConfig,
     exploreOverlay: params.exploreOverlay,
     generalOverlay: params.generalOverlay,
     selfOverlay: params.selfOverlay,

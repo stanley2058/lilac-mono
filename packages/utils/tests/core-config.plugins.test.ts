@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema } from "../core-config";
+import {
+  coreConfigSchema,
+  parseCoreConfigV1ToUniversal,
+  parseCoreConfigV2ToUniversal,
+} from "../core-config";
 
 describe("coreConfigSchema plugins", () => {
   it("defaults plugins.disabled and plugins.config", () => {

@@ -12,6 +12,7 @@ import {
   resolveDiscoveryDbPath,
   resolveDiscordSearchDbPath,
   resolveTranscriptDbPath,
+  toDurableResolvedModelRequest,
 } from "@stanley2058/lilac-utils";
 import path from "node:path";
 import { watch, type FSWatcher } from "node:fs";
@@ -29,7 +30,7 @@ import type { SurfaceAdapter } from "../surface/adapter";
 import { bridgeAdapterToBus } from "../surface/bridge/publish-to-bus";
 import { bridgeBusToAdapter } from "../surface/bridge/subscribe-from-bus";
 import { startBusRequestRouter } from "../surface/bridge/bus-request-router";
-import { startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
+import { resolveAgentRunModel, startBusAgentRunner } from "../surface/bridge/bus-agent-runner";
 import { startDiscordSearchIndexer } from "../surface/bridge/discord-search-indexer";
 import { DiscordSearchService, DiscordSearchStore } from "../surface/store/discord-search-store";
 import { DiscordSurfaceStore } from "../surface/store/discord-surface-store";
@@ -56,7 +57,6 @@ import { startHeartbeatService } from "../heartbeat/heartbeat-service";
 import { DurableWorkflowStore } from "../workflow/durable-workflow-store";
 import { startWorkflowActionResolver } from "../workflow/workflow-action-resolver";
 import { WorkflowProgressProjector } from "../workflow/workflow-progress-projector";
-import { createWorkflowReviewerResolver } from "../workflow/workflow-reviewer";
 import { sha256 } from "../workflow/workflow-definition";
 import { WorkflowEngine } from "../workflow/workflow-engine";
 import { WorkflowWaitResolver } from "../workflow/workflow-wait-resolver";
@@ -745,10 +745,6 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           toolResultArtifacts,
           durableWorkflowStore,
           workflowProgressCards: workflowProgressProjector,
-          workflowReviewerResolver: createWorkflowReviewerResolver({
-            requestOrigins: requestMessageCache,
-            adapters: workflowAdapters,
-          }),
         },
         dataDir: env.dataDir,
       });
@@ -766,6 +762,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           getOrigin: requestMessageCache.getOrigin,
         },
         canonicalWorkspaceRoot,
+        workflowDataDir: env.dataDir,
         operatorTokenSha256: process.env.LILAC_OPERATOR_TOKEN_SHA256,
         authorizeWorkflowRequest: (input) => durableWorkflowStore.authorizeWorkflowRequest(input),
         authorizeControlRequest: (input) => requestControlAuthority.authorize(input),
@@ -930,6 +927,20 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: durableWorkflowStore,
         dataDir: env.dataDir,
         subscriptionId: subId(subscriptionPrefix, "workflow-engine"),
+        validateAgentSelection: async ({ profile, model, reasoning }) => {
+          const cfg = await getCoreConfig();
+          const resolved = resolveAgentRunModel({
+            cfg,
+            runProfile: profile,
+            ...(model ? { requestModelOverride: model } : {}),
+            ...(reasoning ? { reasoningOverride: reasoning } : {}),
+          });
+          return {
+            model: resolved.spec,
+            reasoning: resolved.reasoning ?? null,
+            request: toDurableResolvedModelRequest(resolved, cfg.agent.reasoningDisplay),
+          };
+        },
       });
       await workflowEngine.start();
       await workflowLiveParentBridge.enableFallbacks({

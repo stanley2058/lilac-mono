@@ -1,5 +1,7 @@
 # Unified Programmatic Workflows
 
+> Historical design only. `plan/workflow-agent-autonomy.md` supersedes the approval and capability-envelope model with profile-native trusted auto-run; see the live tracker for current behavior.
+
 ## Status
 
 - Decision: clean break from persisted workflow V2/V3 records and semantics.

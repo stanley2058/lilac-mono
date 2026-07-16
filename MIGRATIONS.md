@@ -78,7 +78,7 @@ Default changes from v1:
 - `agent.reasoningDisplay: detailed`
 - `agent.subagents.idleTimeoutMs: 360000`; explicit v1 `defaultTimeoutMs` values are preserved, while omitted values use the new universal default.
 
-## Workflow Schema 18
+## Historical Workflow Schema 18
 
 Workflow capability review now stores a normalized maximum envelope with per-operation narrowing, exact Level-1 tools, concrete Level-2 callable IDs, destination-scoped origin surface operations, allowed roots, bounded reasoning, and explicit trusted executable authority.
 
@@ -93,3 +93,22 @@ Deferred subagents now persist as generated unified workflow runs. Graceful-rest
 Workflow JavaScript has no unsandboxed fallback. The Docker image is workflow-ready when run with the repository's systemd-PID1 Compose contract: Linux, Docker 28+, cgroup v2, a private writable cgroup namespace, and the documented unconfined seccomp/AppArmor/system-path options. It does not require privileged mode or a host cgroup bind. The image provisions Bubblewrap and a reachable `lilac` user systemd manager with delegated memory/PID controls; `bun run docker:verify-image` verifies the built image without credentials, and missing dependencies still fail workflow-engine startup closed with an actionable error. See `docs/docker-deployment.md`.
 
 The Level-2 HTTP server remains an internal trusted-network service rather than a generally authenticated public API. Unified `workflow.*` callables additionally require an active request ID found in the server-owned request cache and a trusted safety resolution; caller-provided headers alone cannot authorize workflow control.
+
+## Workflow Schema 20
+
+Schema 20 and runtime `lilac-workflow-js-v3` are the profile-native trusted-auto-run clean break. Workflow definitions use `resources` for orchestration bounds, and the public durable hash is `resourcePolicySha256`. The former maximum capability envelope, exact grant identity, approval API/state/actions, `awaiting_review`, and shared-editor lease runtime are removed.
+
+Migration from schema 19 does not translate old authority:
+
+- Every v19 revision receives a bounded `workflow_legacy_audit_records` summary before its executable rows are removed.
+- Terminal v19 runs are retained only as audit summaries because their maximum-envelope revision shape is not readable as a v3 resource policy.
+- Nonterminal v19 runs and operations, plus active/paused triggers, receive explicit `workflow_quarantine` reasons before deletion.
+- All old request dispatches are deactivated before dependent rows are deleted, so no old dispatch can be adopted or redispatched under current defaults.
+- Standalone v19 terminal receipts are archived as bounded `terminal_receipt` audit records and deleted with their old runs; no receipt can outlive the executable identity it referred to.
+- Old triggers and generated subagent revisions are deleted and must be recreated from current source by an authenticated trusted principal.
+- The historical approval tables/columns remain inert to avoid a disproportionate SQLite table-rebuild migration. No current store API, engine, scheduler, tool API, event, or progress action reads or writes approval records.
+- `workflow_shared_editor_leases` is dropped. Shared writers are intentionally concurrent.
+
+After migration, source files remain on disk and are statically revalidated into a new v3 snapshot on their first trusted invocation. Removed `capabilities` metadata fails validation with migration guidance; rename resource bounds to `resources` and use only profile-native `agent()` options.
+
+The unshipped workflow-only `plugins.workflowExternal`, plugin `workflowExposure`, and Level-1 effect metadata were removed rather than migrated. Config v2 now owns Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation under each `agent.subagents.profiles.*` entry. Config v1 remains frozen and receives the useful built-in profile defaults during universal parsing. These native profiles apply identically to direct and workflow-launched subagents and are not serialized into workflow revisions or operation guardrail envelopes.

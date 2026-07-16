@@ -88,7 +88,6 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
 
       [lilacEventTypes.EvtWorkflowRunChanged]: "evt.workflow",
       [lilacEventTypes.EvtWorkflowOperationChanged]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowApprovalChanged]: "evt.workflow",
       [lilacEventTypes.EvtWorkflowProgressRequested]: "evt.workflow",
       [lilacEventTypes.EvtWorkflowUsageChanged]: "evt.workflow",
       [lilacEventTypes.EvtWorkflowResultReady]: "evt.workflow",
@@ -170,11 +169,6 @@ function getKeyForType<TType extends LilacEventType>(
     case lilacEventTypes.EvtWorkflowUsageChanged:
     case lilacEventTypes.EvtWorkflowResultReady: {
       return (data as { runId: string }).runId;
-    }
-
-    case lilacEventTypes.EvtWorkflowApprovalChanged: {
-      const approval = data as { revisionId: string; runId?: string };
-      return approval.runId ?? approval.revisionId;
     }
 
     case lilacEventTypes.CmdAgentCreate: {

@@ -1,13 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
 import {
-  canTransitionWorkflowApproval,
   canTransitionWorkflowOperation,
   canTransitionWorkflowRun,
   canTransitionWorkflowTrigger,
   canTransitionWorkflowWait,
-  normalizeWorkflowCapabilityProfile,
-  workflowApprovalSchema,
+  normalizeWorkflowResourcePolicy,
   workflowOperationSchema,
   workflowRevisionSchema,
   workflowRunSchema,
@@ -19,22 +17,12 @@ import {
 
 const HASH = "a".repeat(64);
 
-function capabilities() {
+function resources() {
   return {
     agents: {
-      profiles: ["self", "explore", "self"],
-      models: ["inherit", "fast", "inherit"],
-      reasoning: ["high", "provider-default", "high"] as const,
-      allowedRoots: ["project", "/srv/project", "project"],
-      tools: ["read_file", "glob", "read_file"] as const,
-      executables: "none" as const,
-      editing: [] as const,
-      delegation: false,
       maxConcurrent: 2,
       maxTotal: 8,
     },
-    level2: { callables: ["search", "content.inspect", "search"] },
-    surfaces: { origin: [] },
     maxNestingDepth: 4,
     maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
@@ -44,13 +32,9 @@ function capabilities() {
 }
 
 describe("durable workflow domain", () => {
-  it("normalizes capability sets and enforces safety invariants", () => {
-    const normalized = normalizeWorkflowCapabilityProfile(capabilities());
-    expect(normalized.agents.profiles).toEqual(["explore", "self"]);
-    expect(normalized.agents.models).toEqual(["fast", "inherit"]);
-    expect(normalized.agents.reasoning).toEqual(["high", "provider-default"]);
-    expect(normalized.agents.allowedRoots).toEqual(["/srv/project", "project"]);
-    expect(normalized.level2.callables).toEqual(["content.inspect", "search"]);
+  it("normalizes durability controls and enforces resource invariants", () => {
+    const normalized = normalizeWorkflowResourcePolicy(resources());
+    expect(normalized.agents).toEqual({ maxConcurrent: 2, maxTotal: 8 });
     expect(normalized.waits).toEqual(["reply", "sleep"]);
     expect(() =>
       workflowRevisionSchema.parse({
@@ -63,10 +47,10 @@ describe("durable workflow domain", () => {
         snapshotArtifactId: "artifact-1",
         sourceSha256: HASH,
         inputSchemaSha256: HASH,
-        capabilitySha256: HASH,
+        resourcePolicySha256: HASH,
         metadata: { name: "audit", description: "Audit" },
         inputSchema: {},
-        capabilities: capabilities(),
+        resources: resources(),
         limits: {
           maxSourceBytes: 1,
           maxInputBytes: 1,
@@ -79,18 +63,15 @@ describe("durable workflow domain", () => {
     ).toThrow("sorted and unique");
 
     expect(() =>
-      normalizeWorkflowCapabilityProfile({
-        ...capabilities(),
-        agents: {
-          ...capabilities().agents,
-          delegation: true,
-        },
+      normalizeWorkflowResourcePolicy({
+        ...resources(),
+        agents: { ...resources().agents, tools: ["read_file"] },
       }),
-    ).toThrow("subagent_delegate");
+    ).toThrow("Unrecognized key");
     expect(() =>
-      normalizeWorkflowCapabilityProfile({
-        ...capabilities(),
-        agents: { ...capabilities().agents, maxConcurrent: 9 },
+      normalizeWorkflowResourcePolicy({
+        ...resources(),
+        agents: { ...resources().agents, maxConcurrent: 9 },
       }),
     ).toThrow("maxConcurrent");
   });
@@ -106,10 +87,10 @@ describe("durable workflow domain", () => {
       snapshotArtifactId: "artifact-1",
       sourceSha256: HASH,
       inputSchemaSha256: HASH,
-      capabilitySha256: HASH,
+      resourcePolicySha256: HASH,
       metadata: { name: "audit", description: "Audit the project" },
       inputSchema: { type: "object", additionalProperties: false },
-      capabilities: normalizeWorkflowCapabilityProfile(capabilities()),
+      resources: normalizeWorkflowResourcePolicy(resources()),
       limits: {
         maxSourceBytes: 10_000,
         maxInputBytes: 10_000,
@@ -119,28 +100,10 @@ describe("durable workflow domain", () => {
       runtimeVersion: "quickjs-v1",
       createdAt: 1,
     });
-    const approval = workflowApprovalSchema.parse({
-      approvalId: "approval-1",
-      revisionId: revision.revisionId,
-      state: "pending",
-      expectedReviewerPlatform: "discord",
-      expectedReviewerUserId: "user-1",
-      firstRunId: "run-1",
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: null,
-      expiresAt: null,
-      decidedAt: null,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: 1,
-      updatedAt: 1,
-    });
     const run = workflowRunSchema.parse({
       runId: "run-1",
       revisionId: revision.revisionId,
-      approvalId: approval.approvalId,
-      state: "awaiting_review",
+      state: "queued",
       inputSchemaSnapshot: revision.inputSchema,
       args: { directory: "src" },
       argsSha256: HASH,
@@ -257,8 +220,7 @@ describe("durable workflow domain", () => {
         actionId: "action-1",
         tokenSha256: HASH,
         runId: run.runId,
-        approvalId: approval.approvalId,
-        kind: "approve",
+        kind: "pause",
         expectedPlatform: "discord",
         expectedUserId: "user-1",
         expectedMessageRef: null,
@@ -268,18 +230,16 @@ describe("durable workflow domain", () => {
         consumedByUserId: null,
         createdAt: 1,
       }).kind,
-    ).toBe("approve");
+    ).toBe("pause");
 
     expect(() => workflowRunSchema.parse({ ...run, unexpected: true })).toThrow();
   });
 
   it("defines legal, terminal, and idempotent state transitions", () => {
-    expect(canTransitionWorkflowRun("awaiting_review", "queued")).toBe(true);
+    expect(canTransitionWorkflowRun("queued", "running")).toBe(true);
     expect(canTransitionWorkflowRun("queued", "succeeded")).toBe(false);
     expect(canTransitionWorkflowRun("succeeded", "running")).toBe(false);
     expect(canTransitionWorkflowRun("running", "running")).toBe(true);
-    expect(canTransitionWorkflowApproval("pending", "approved")).toBe(true);
-    expect(canTransitionWorkflowApproval("revoked", "approved")).toBe(false);
     expect(canTransitionWorkflowOperation("failed", "queued")).toBe(true);
     expect(canTransitionWorkflowOperation("succeeded", "queued")).toBe(false);
     expect(canTransitionWorkflowWait("claimed", "pending")).toBe(true);

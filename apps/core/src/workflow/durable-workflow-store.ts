@@ -5,13 +5,11 @@ import { env } from "@stanley2058/lilac-utils";
 
 import { configureSqliteConnection } from "../shared/sqlite";
 import {
-  canTransitionWorkflowApproval,
   canTransitionWorkflowOperation,
   canTransitionWorkflowRun,
   canTransitionWorkflowTrigger,
   canTransitionWorkflowWait,
   jsonValueSchema,
-  workflowApprovalSchema,
   workflowOperationSchema,
   workflowRevisionSchema,
   workflowRunSchema,
@@ -22,8 +20,6 @@ import {
   workflowUsageSchema,
   workflowWaitSchema,
   WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
-  type WorkflowApproval,
-  type WorkflowApprovalState,
   type WorkflowOperation,
   type WorkflowOperationState,
   type WorkflowRevision,
@@ -75,24 +71,6 @@ const revisionRowSchema = z.object({
   limits_json: z.string(),
   runtime_version: z.string(),
   created_at: z.number(),
-});
-
-const approvalRowSchema = z.object({
-  approval_id: z.string(),
-  revision_id: z.string(),
-  state: z.string(),
-  expected_reviewer_platform: nullableStringSchema,
-  expected_reviewer_user_id: nullableStringSchema,
-  first_run_id: z.string(),
-  decision_actor_platform: nullableStringSchema,
-  decision_actor_user_id: nullableStringSchema,
-  decision_source: nullableStringSchema,
-  expires_at: nullableNumberSchema,
-  decided_at: nullableNumberSchema,
-  revoked_at: nullableNumberSchema,
-  revocation_reason: nullableStringSchema,
-  created_at: z.number(),
-  updated_at: z.number(),
 });
 
 const runRowSchema = z.object({
@@ -334,34 +312,13 @@ function parseRevision(value: unknown): WorkflowRevision {
     snapshotArtifactId: row.snapshot_artifact_id,
     sourceSha256: row.source_sha256,
     inputSchemaSha256: row.input_schema_sha256,
-    capabilitySha256: row.capability_sha256,
+    resourcePolicySha256: row.capability_sha256,
     metadata: parseJson(row.metadata_json, "workflow_revisions.metadata_json"),
     inputSchema: parseJson(row.input_schema_json, "workflow_revisions.input_schema_json"),
-    capabilities: parseJson(row.capabilities_json, "workflow_revisions.capabilities_json"),
+    resources: parseJson(row.capabilities_json, "workflow_revisions.capabilities_json"),
     limits: parseJson(row.limits_json, "workflow_revisions.limits_json"),
     runtimeVersion: row.runtime_version,
     createdAt: row.created_at,
-  });
-}
-
-function parseApproval(value: unknown): WorkflowApproval {
-  const row = approvalRowSchema.parse(value);
-  return workflowApprovalSchema.parse({
-    approvalId: row.approval_id,
-    revisionId: row.revision_id,
-    state: row.state,
-    expectedReviewerPlatform: row.expected_reviewer_platform,
-    expectedReviewerUserId: row.expected_reviewer_user_id,
-    firstRunId: row.first_run_id,
-    decisionActorPlatform: row.decision_actor_platform,
-    decisionActorUserId: row.decision_actor_user_id,
-    decisionSource: row.decision_source,
-    expiresAt: row.expires_at,
-    decidedAt: row.decided_at,
-    revokedAt: row.revoked_at,
-    revocationReason: row.revocation_reason,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
   });
 }
 
@@ -370,7 +327,6 @@ function parseRun(value: unknown): WorkflowRun {
   return workflowRunSchema.parse({
     runId: row.run_id,
     revisionId: row.revision_id,
-    approvalId: row.approval_id,
     state: row.state,
     inputSchemaSnapshot: parseJson(row.input_schema_json, "workflow_runs.input_schema_json"),
     args: parseJson(row.args_json, "workflow_runs.args_json"),
@@ -551,7 +507,6 @@ function parseAction(value: unknown): WorkflowSurfaceAction {
     actionId: row.action_id,
     tokenSha256: row.token_sha256,
     runId: row.run_id,
-    approvalId: row.approval_id,
     kind: row.kind,
     expectedPlatform: row.expected_platform,
     expectedUserId: row.expected_user_id,
@@ -639,17 +594,15 @@ function revisionIdentityValues(identity: WorkflowRevisionIdentity): readonly st
     identity.normalizedPath,
     identity.sourceSha256,
     identity.inputSchemaSha256,
-    identity.capabilitySha256,
+    identity.resourcePolicySha256,
     identity.runtimeVersion,
   ];
 }
 
 export type CreateWorkflowInvocationResult = {
   revision: WorkflowRevision;
-  approval: WorkflowApproval;
   run: WorkflowRun;
   revisionCreated: boolean;
-  approvalCreated: boolean;
 };
 
 export type ApplyWorkflowSurfaceActionResult =
@@ -657,7 +610,6 @@ export type ApplyWorkflowSurfaceActionResult =
       status: "applied";
       action: WorkflowSurfaceAction;
       runIds: string[];
-      approvalId: string | null;
     }
   | { status: "not_found" | "unauthorized" | "expired" | "consumed" | "stale" };
 
@@ -677,6 +629,7 @@ export type WorkflowRequestTerminalReceipt = {
 export type WorkflowRequestDispatchHandoff =
   | { status: "receipt"; receipt: WorkflowRequestTerminalReceipt }
   | { status: "live"; dispatchEpoch: string; policy: WorkflowRequestPolicy }
+  | { status: "stale"; dispatchEpoch: string; policy: WorkflowRequestPolicy }
   | { status: "fresh" };
 
 export type WorkflowActionOutboxEntry = {
@@ -824,10 +777,10 @@ export class DurableWorkflowStore {
         revision.snapshotArtifactId,
         revision.sourceSha256,
         revision.inputSchemaSha256,
-        revision.capabilitySha256,
+        revision.resourcePolicySha256,
         JSON.stringify(revision.metadata),
         JSON.stringify(revision.inputSchema),
-        JSON.stringify(revision.capabilities),
+        JSON.stringify(revision.resources),
         JSON.stringify(revision.limits),
         revision.runtimeVersion,
         revision.createdAt,
@@ -876,89 +829,6 @@ export class DurableWorkflowStore {
     return tolerantRows(rows, parseRevision);
   }
 
-  createApproval(approvalInput: WorkflowApproval): boolean {
-    const approval = workflowApprovalSchema.parse(approvalInput);
-    const result = this.db
-      .query(
-        `INSERT INTO workflow_approvals (
-          approval_id, revision_id, state, expected_reviewer_platform,
-          expected_reviewer_user_id, first_run_id, decision_actor_platform,
-          decision_actor_user_id, decision_source, expires_at, decided_at,
-          revoked_at, revocation_reason, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(approval_id) DO NOTHING`,
-      )
-      .run(
-        approval.approvalId,
-        approval.revisionId,
-        approval.state,
-        approval.expectedReviewerPlatform,
-        approval.expectedReviewerUserId,
-        approval.firstRunId,
-        approval.decisionActorPlatform,
-        approval.decisionActorUserId,
-        approval.decisionSource,
-        approval.expiresAt,
-        approval.decidedAt,
-        approval.revokedAt,
-        approval.revocationReason,
-        approval.createdAt,
-        approval.updatedAt,
-      );
-    return result.changes === 1;
-  }
-
-  getApproval(approvalId: string): WorkflowApproval | null {
-    const row = this.db
-      .query("SELECT * FROM workflow_approvals WHERE approval_id = ?")
-      .get(approvalId);
-    return row === null ? null : parseApproval(row);
-  }
-
-  getActiveApproval(revisionId: string): WorkflowApproval | null {
-    return this.getActiveApprovalForPrincipal(revisionId, null, null);
-  }
-
-  getActiveApprovalForPrincipal(
-    revisionId: string,
-    reviewerPlatform: WorkflowApproval["expectedReviewerPlatform"],
-    reviewerUserId: string | null,
-  ): WorkflowApproval | null {
-    const row = this.db
-      .query(
-        `SELECT * FROM workflow_approvals
-         WHERE revision_id = ?
-           AND expected_reviewer_platform IS ?
-           AND expected_reviewer_user_id IS ?
-           AND state IN ('pending', 'approved')
-         ORDER BY updated_at DESC LIMIT 1`,
-      )
-      .get(revisionId, reviewerPlatform, reviewerUserId);
-    return row === null ? null : parseApproval(row);
-  }
-
-  listApprovals(options?: {
-    revisionId?: string;
-    state?: WorkflowApprovalState;
-    limit?: number;
-  }): WorkflowApproval[] {
-    const clauses: string[] = [];
-    const bindings: string[] = [];
-    if (options?.revisionId) {
-      clauses.push("revision_id = ?");
-      bindings.push(options.revisionId);
-    }
-    if (options?.state) {
-      clauses.push("state = ?");
-      bindings.push(options.state);
-    }
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    const rows = this.db
-      .query(`SELECT * FROM workflow_approvals ${where} ORDER BY updated_at DESC LIMIT ?`)
-      .all(...bindings, boundedLimit(options?.limit));
-    return tolerantRows(rows, parseApproval);
-  }
-
   createRun(runInput: WorkflowRun): boolean {
     const run = workflowRunSchema.parse(runInput);
     const result = this.db
@@ -976,7 +846,7 @@ export class DurableWorkflowStore {
       .run(
         run.runId,
         run.revisionId,
-        run.approvalId,
+        null,
         run.state,
         JSON.stringify(run.inputSchemaSnapshot),
         JSON.stringify(run.args),
@@ -1010,7 +880,6 @@ export class DurableWorkflowStore {
 
   listRuns(options?: {
     revisionId?: string;
-    approvalId?: string;
     state?: WorkflowRunState;
     canonicalProjectId?: string;
     originClient?: string;
@@ -1022,10 +891,6 @@ export class DurableWorkflowStore {
     if (options?.revisionId) {
       clauses.push("workflow_runs.revision_id = ?");
       bindings.push(options.revisionId);
-    }
-    if (options?.approvalId) {
-      clauses.push("workflow_runs.approval_id = ?");
-      bindings.push(options.approvalId);
     }
     if (options?.state) {
       clauses.push("workflow_runs.state = ?");
@@ -1134,21 +999,15 @@ export class DurableWorkflowStore {
   createInvocation(input: {
     revision: WorkflowRevision;
     run: WorkflowRun;
-    pendingApproval: WorkflowApproval;
-    queueApproved?: boolean;
     idempotency?: { key: string; fingerprintSha256: string };
   }): CreateWorkflowInvocationResult {
     const revision = workflowRevisionSchema.parse(input.revision);
     const requestedRun = workflowRunSchema.parse(input.run);
-    const pendingApproval = workflowApprovalSchema.parse(input.pendingApproval);
     if (requestedRun.revisionId !== revision.revisionId) {
       throw new Error("Run revisionId must match the requested revision");
     }
-    if (pendingApproval.revisionId !== revision.revisionId) {
-      throw new Error("Approval revisionId must match the requested revision");
-    }
-    if (pendingApproval.state !== "pending" || pendingApproval.firstRunId !== requestedRun.runId) {
-      throw new Error("New invocation approval must be pending and reference the first run");
+    if (requestedRun.origin.safetyMode !== "trusted" || requestedRun.state !== "queued") {
+      throw new Error("Workflow invocations must be trusted and queued");
     }
 
     const create = this.db.transaction((): CreateWorkflowInvocationResult => {
@@ -1164,18 +1023,13 @@ export class DurableWorkflowStore {
           }
           const existingRun = this.getRun(receipt.run_id);
           const existingRevision = existingRun ? this.getRevision(existingRun.revisionId) : null;
-          const existingApproval = existingRun?.approvalId
-            ? this.getApproval(existingRun.approvalId)
-            : null;
-          if (!existingRun || !existingRevision || !existingApproval) {
+          if (!existingRun || !existingRevision) {
             throw new Error("Workflow invocation receipt references missing durable records");
           }
           return {
             run: existingRun,
             revision: existingRevision,
-            approval: existingApproval,
             revisionCreated: false,
-            approvalCreated: false,
           };
         }
       }
@@ -1188,23 +1042,7 @@ export class DurableWorkflowStore {
         );
       }
 
-      let approval = this.getActiveApprovalForPrincipal(
-        revision.revisionId,
-        pendingApproval.expectedReviewerPlatform,
-        pendingApproval.expectedReviewerUserId,
-      );
-      let approvalCreated = false;
-      if (!approval) {
-        approvalCreated = this.createApproval(pendingApproval);
-        approval = this.getApproval(pendingApproval.approvalId);
-      }
-      if (!approval) throw new Error("Approval was not persisted");
-
-      const run = workflowRunSchema.parse({
-        ...requestedRun,
-        approvalId: approval.approvalId,
-        state: approval.state === "approved" ? "queued" : "awaiting_review",
-      });
+      const run = requestedRun;
       if (!this.createRun(run)) throw new Error(`Run ${run.runId} already exists`);
       if (input.idempotency) {
         this.db.run(
@@ -1214,60 +1052,7 @@ export class DurableWorkflowStore {
           [input.idempotency.key, run.runId, input.idempotency.fingerprintSha256, run.createdAt],
         );
       }
-      return { revision: storedRevision, approval, run, revisionCreated, approvalCreated };
-    });
-    return create.immediate();
-  }
-
-  createApprovedInvocation(input: {
-    revision: WorkflowRevision;
-    run: WorkflowRun;
-    approval: WorkflowApproval;
-  }): CreateWorkflowInvocationResult {
-    const revision = workflowRevisionSchema.parse(input.revision);
-    const requestedRun = workflowRunSchema.parse(input.run);
-    const requestedApproval = workflowApprovalSchema.parse(input.approval);
-    if (requestedRun.revisionId !== revision.revisionId) {
-      throw new Error("Run revisionId must match the requested revision");
-    }
-    if (requestedApproval.revisionId !== revision.revisionId) {
-      throw new Error("Approval revisionId must match the requested revision");
-    }
-    if (requestedApproval.state !== "approved") {
-      throw new Error("Approved invocation requires an approved grant");
-    }
-
-    const create = this.db.transaction((): CreateWorkflowInvocationResult => {
-      const revisionCreated = this.createRevision(revision);
-      const storedRevision = this.findRevisionByIdentity(revision);
-      if (!storedRevision) throw new Error("Revision was not persisted");
-      if (storedRevision.revisionId !== revision.revisionId) {
-        throw new Error(
-          `Revision identity already belongs to ${storedRevision.revisionId}, not ${revision.revisionId}`,
-        );
-      }
-
-      let approval = this.getActiveApprovalForPrincipal(
-        revision.revisionId,
-        requestedApproval.expectedReviewerPlatform,
-        requestedApproval.expectedReviewerUserId,
-      );
-      let approvalCreated = false;
-      if (!approval) {
-        approvalCreated = this.createApproval(requestedApproval);
-        approval = this.getApproval(requestedApproval.approvalId);
-      }
-      if (!approval || approval.state !== "approved") {
-        throw new Error("Approved workflow grant was not persisted");
-      }
-
-      const run = workflowRunSchema.parse({
-        ...requestedRun,
-        approvalId: approval.approvalId,
-        state: "queued",
-      });
-      if (!this.createRun(run)) throw new Error(`Run ${run.runId} already exists`);
-      return { revision: storedRevision, approval, run, revisionCreated, approvalCreated };
+      return { revision: storedRevision, run, revisionCreated };
     });
     return create.immediate();
   }
@@ -1280,7 +1065,7 @@ export class DurableWorkflowStore {
            ON workflow_completion_deliveries.run_id = workflow_runs.run_id
          WHERE workflow_completion_deliveries.parent_request_id = ?
            AND workflow_completion_deliveries.state = 'pending'
-           AND workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')
+            AND workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')
          ORDER BY workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(parentRequestId, boundedLimit(limit));
@@ -1302,7 +1087,7 @@ export class DurableWorkflowStore {
             AND (? = 1 OR COALESCE(
               json_extract(workflow_runs.completion_target_json, '$.deferredDelivery'), 1
             ) = 1)
-            AND workflow_runs.state IN ('succeeded', 'failed', 'rejected', 'cancelled')
+             AND workflow_runs.state IN ('succeeded', 'failed', 'cancelled')
          ORDER BY workflow_runs.terminal_at, workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(parentRequestId, includeSynchronous ? 1 : 0, boundedLimit(limit));
@@ -1316,7 +1101,7 @@ export class DurableWorkflowStore {
          JOIN workflow_completion_deliveries
            ON workflow_completion_deliveries.run_id = workflow_runs.run_id
          WHERE workflow_completion_deliveries.state = 'pending'
-           AND workflow_runs.state IN ('succeeded', 'failed', 'rejected', 'cancelled')
+            AND workflow_runs.state IN ('succeeded', 'failed', 'cancelled')
          ORDER BY workflow_runs.terminal_at, workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(boundedLimit(limit));
@@ -1357,94 +1142,6 @@ export class DurableWorkflowStore {
       return this.getRun(runId);
     });
     return activate.immediate();
-  }
-
-  transitionApproval(input: {
-    approvalId: string;
-    from: WorkflowApprovalState;
-    to: WorkflowApprovalState;
-    now: number;
-    actorPlatform?: WorkflowApproval["decisionActorPlatform"];
-    actorUserId?: string | null;
-    source?: string | null;
-    reason?: string | null;
-  }): boolean {
-    if (!canTransitionWorkflowApproval(input.from, input.to)) {
-      throw new Error(`Illegal workflow approval transition: ${input.from} -> ${input.to}`);
-    }
-    const transition = this.db.transaction(() => {
-      const current = this.getApproval(input.approvalId);
-      if (!current) return false;
-      if (current.state === input.to) return true;
-      if (current.state !== input.from) return false;
-      const result = this.db
-        .query(
-          `UPDATE workflow_approvals SET
-            state = ?, decision_actor_platform = ?, decision_actor_user_id = ?,
-            decision_source = ?, decided_at = ?, revoked_at = ?, revocation_reason = ?, updated_at = ?
-           WHERE approval_id = ? AND state = ?`,
-        )
-        .run(
-          input.to,
-          input.actorPlatform ?? null,
-          input.actorUserId ?? null,
-          input.source ?? null,
-          input.to === "approved" || input.to === "rejected" ? input.now : current.decidedAt,
-          input.to === "revoked" ? input.now : current.revokedAt,
-          input.to === "revoked" ? (input.reason ?? null) : current.revocationReason,
-          input.now,
-          input.approvalId,
-          input.from,
-        );
-      if (result.changes !== 1) return false;
-      if (input.to === "approved") {
-        this.db.run(
-          `UPDATE workflow_runs SET state = 'queued', updated_at = ?
-           WHERE approval_id = ? AND state = 'awaiting_review'`,
-          [input.now, input.approvalId],
-        );
-      } else if (input.to === "rejected" || input.to === "expired") {
-        this.db.run(
-          `UPDATE workflow_runs SET state = 'rejected', terminal_detail = ?, terminal_at = ?, updated_at = ?
-           WHERE approval_id = ? AND state = 'awaiting_review'`,
-          [input.reason ?? input.to, input.now, input.now, input.approvalId],
-        );
-      } else if (input.to === "revoked") {
-        this.db.run(
-          `UPDATE workflow_operations SET state = 'queued',
-           attempt = attempt + CASE WHEN EXISTS (
-             SELECT 1 FROM workflow_request_terminal_receipts receipt
-             WHERE receipt.request_id = workflow_operations.request_id
-           ) THEN 0 ELSE 1 END,
-           request_id = CASE WHEN EXISTS (
-             SELECT 1 FROM workflow_request_terminal_receipts receipt
-             WHERE receipt.request_id = workflow_operations.request_id
-           ) THEN request_id ELSE NULL END,
-           error = ?, claimed_by = NULL, claimed_at = NULL,
-           started_at = NULL, terminal_at = NULL, updated_at = ?
-           WHERE run_id IN (
-             SELECT run_id FROM workflow_runs WHERE approval_id = ?
-               AND state IN ('running', 'blocked')
-           ) AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-          [input.reason ?? "Approval revoked before execution", input.now, input.approvalId],
-        );
-        this.db.run(
-          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-           updated_at = ? WHERE run_id IN (
-             SELECT run_id FROM workflow_runs WHERE approval_id = ?
-           ) AND active = 1`,
-          [input.now, input.now, input.approvalId],
-        );
-        this.db.run(
-          `UPDATE workflow_runs SET state = 'paused', terminal_detail = ?, claimed_by = NULL,
-             claimed_at = NULL, updated_at = ?
-             WHERE approval_id = ? AND state IN ('queued', 'running', 'blocked')`,
-          [input.reason ?? "Approval revoked before execution", input.now, input.approvalId],
-        );
-      }
-      return true;
-    });
-    return transition.immediate();
   }
 
   transitionRun(input: {
@@ -1856,7 +1553,7 @@ export class DurableWorkflowStore {
     return result.changes === 1 ? this.getRun(input.runId) : null;
   }
 
-  tryClaimApprovedRun(input: {
+  tryClaimTrustedRun(input: {
     runId: string;
     claimerId: string;
     now: number;
@@ -1869,14 +1566,7 @@ export class DurableWorkflowStore {
           `UPDATE workflow_runs SET state = 'running', claimed_by = ?, claimed_at = ?,
             started_at = COALESCE(started_at, ?), updated_at = ?
            WHERE run_id = ? AND origin_safety_mode = 'trusted'
-             AND (state = 'queued' OR (state = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ?))
-             AND approval_id IS NOT NULL
-             AND EXISTS (
-               SELECT 1 FROM workflow_approvals
-               WHERE workflow_approvals.approval_id = workflow_runs.approval_id
-                 AND workflow_approvals.revision_id = workflow_runs.revision_id
-                 AND workflow_approvals.state = 'approved'
-             )`,
+              AND (state = 'queued' OR (state = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ?))`,
         )
         .run(input.claimerId, input.now, input.now, input.now, input.runId, staleBefore);
       return result.changes === 1 ? this.getRun(input.runId) : null;
@@ -1954,110 +1644,13 @@ export class DurableWorkflowStore {
     return row === null ? null : parseOperation(row);
   }
 
-  acquireSharedEditorLease(input: {
-    authorityRoot: string;
-    runId: string;
-    operationId: string;
-    ownerId: string;
-    now: number;
-    staleBefore: number;
-  }): boolean {
-    const result = this.db
-      .query(
-        `INSERT INTO workflow_shared_editor_leases (
-           authority_root, run_id, operation_id, owner_id, heartbeat_at, acquired_at
-         )
-         SELECT ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (
-           SELECT 1 FROM workflow_runs
-           JOIN workflow_operations
-             ON workflow_operations.run_id = workflow_runs.run_id
-           WHERE workflow_runs.run_id = ?
-             AND workflow_runs.state = 'running'
-             AND workflow_runs.claimed_by = ?
-             AND workflow_operations.operation_id = ?
-             AND workflow_operations.state IN ('queued', 'dispatched', 'running')
-         )
-         ON CONFLICT(authority_root) DO UPDATE SET
-           run_id = excluded.run_id,
-           operation_id = excluded.operation_id,
-           owner_id = excluded.owner_id,
-           heartbeat_at = excluded.heartbeat_at,
-           acquired_at = excluded.acquired_at
-         WHERE workflow_shared_editor_leases.heartbeat_at <= ?
-            OR (
-              workflow_shared_editor_leases.run_id = excluded.run_id
-              AND workflow_shared_editor_leases.operation_id = excluded.operation_id
-              AND workflow_shared_editor_leases.owner_id = excluded.owner_id
-            )`,
-      )
-      .run(
-        input.authorityRoot,
-        input.runId,
-        input.operationId,
-        input.ownerId,
-        input.now,
-        input.now,
-        input.runId,
-        input.ownerId,
-        input.operationId,
-        input.staleBefore,
-      );
-    return result.changes === 1;
-  }
-
-  refreshSharedEditorLease(input: {
-    authorityRoot: string;
-    runId: string;
-    operationId: string;
-    ownerId: string;
-    now: number;
-  }): boolean {
-    return (
-      this.db
-        .query(
-          `UPDATE workflow_shared_editor_leases SET heartbeat_at = ?
-           WHERE authority_root = ? AND run_id = ? AND operation_id = ? AND owner_id = ?
-             AND EXISTS (
-               SELECT 1 FROM workflow_runs
-               JOIN workflow_operations
-                 ON workflow_operations.run_id = workflow_runs.run_id
-               WHERE workflow_runs.run_id = workflow_shared_editor_leases.run_id
-                 AND workflow_runs.state = 'running'
-                 AND workflow_runs.claimed_by = workflow_shared_editor_leases.owner_id
-                 AND workflow_operations.operation_id = workflow_shared_editor_leases.operation_id
-                 AND workflow_operations.state IN ('queued', 'dispatched', 'running')
-             )`,
-        )
-        .run(input.now, input.authorityRoot, input.runId, input.operationId, input.ownerId)
-        .changes === 1
-    );
-  }
-
-  releaseSharedEditorLease(input: {
-    authorityRoot: string;
-    runId: string;
-    operationId: string;
-    ownerId: string;
-  }): boolean {
-    return (
-      this.db
-        .query(
-          `DELETE FROM workflow_shared_editor_leases
-           WHERE authority_root = ? AND run_id = ? AND operation_id = ? AND owner_id = ?`,
-        )
-        .run(input.authorityRoot, input.runId, input.operationId, input.ownerId).changes === 1
-    );
-  }
-
   private matchesWorkflowRequestPolicyIdentity(input: {
     policy: WorkflowRequestPolicy;
     run: WorkflowRun | null;
     revision: WorkflowRevision | null;
-    approval: WorkflowApproval | null;
     operation: WorkflowOperation | null;
   }): boolean {
-    const { policy, run, revision, approval, operation } = input;
+    const { policy, run, revision, operation } = input;
     if (!run || !revision || !operation) return false;
     const operationInput = resolvedWorkflowAgentInputSchema.safeParse(operation.input);
     if (!operationInput.success) return false;
@@ -2065,15 +1658,13 @@ export class DurableWorkflowStore {
     const expectedOriginClient =
       run.origin.client === "discord" || run.origin.client === "github" ? run.origin.client : null;
     const worktree =
-      options.editing && options.isolation === "worktree"
+      options.isolation === "worktree"
         ? this.getWorktreeOutput(run.runId, operation.operationId)
         : null;
     const expectedCwd = worktree
       ? path.join(worktree.worktreePath, path.relative(options.authorityRoot, options.cwd))
       : options.cwd;
     return (
-      approval?.state === "approved" &&
-      approval.revisionId === revision.revisionId &&
       policy.runId === run.runId &&
       policy.operationId === operation.operationId &&
       policy.revisionId === revision.revisionId &&
@@ -2081,7 +1672,6 @@ export class DurableWorkflowStore {
       policy.canonicalWorkspaceRoot === revision.canonicalWorkspaceRoot &&
       policy.sourceSha256 === revision.sourceSha256 &&
       policy.inputSchemaSha256 === revision.inputSchemaSha256 &&
-      policy.capabilitySha256 === revision.capabilitySha256 &&
       policy.argsSha256 === run.argsSha256 &&
       policy.safetyMode === run.origin.safetyMode &&
       policy.originSessionId === run.origin.sessionId &&
@@ -2089,19 +1679,23 @@ export class DurableWorkflowStore {
       policy.originUserId === run.origin.userId &&
       policy.operationInputSha256 === operation.inputSha256 &&
       policy.profile === options.profile &&
-      policy.model === options.model &&
-      policy.reasoning === options.reasoning &&
-      JSON.stringify(policy.tools) === JSON.stringify(options.tools) &&
-      policy.executables === options.executables &&
-      policy.editing === options.editing &&
+      policy.model === (options.model ?? null) &&
+      policy.reasoning === (options.reasoning ?? null) &&
+      policy.resolvedModel.length > 0 &&
+      policy.resolvedModel === policy.resolvedModelRequest.spec &&
+      policy.resolvedReasoning === (policy.resolvedModelRequest.reasoning ?? null) &&
       policy.isolation === options.isolation &&
-      policy.delegation === options.delegation &&
-      JSON.stringify(policy.level2Callables) === JSON.stringify(options.level2Callables) &&
-      JSON.stringify(policy.surfaceOriginOperations) ===
-        JSON.stringify(options.surfaceOriginOperations) &&
       policy.canonicalAuthorityRoot === options.authorityRoot &&
+      policy.canonicalAuthorityRootIdentity.dev === options.authorityRootIdentity.dev &&
+      policy.canonicalAuthorityRootIdentity.ino === options.authorityRootIdentity.ino &&
       policy.canonicalRequestedCwd === options.cwd &&
-      policy.canonicalCwd === expectedCwd
+      policy.canonicalRequestedCwdIdentity.dev === options.cwdIdentity.dev &&
+      policy.canonicalRequestedCwdIdentity.ino === options.cwdIdentity.ino &&
+      policy.canonicalScratchRoot.length > 0 &&
+      policy.canonicalCwd === expectedCwd &&
+      (options.isolation === "worktree" ||
+        (policy.canonicalCwdIdentity.dev === options.cwdIdentity.dev &&
+          policy.canonicalCwdIdentity.ino === options.cwdIdentity.ino))
     );
   }
 
@@ -2146,7 +1740,6 @@ export class DurableWorkflowStore {
       if (terminalReceipt) return null;
       const run = this.getRun(input.runId);
       const revision = run ? this.getRevision(run.revisionId) : null;
-      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
       const operation = this.getOperation(input.runId, input.operationId);
       if (
         !run ||
@@ -2158,7 +1751,6 @@ export class DurableWorkflowStore {
           policy,
           run,
           revision,
-          approval,
           operation,
         }) ||
         !["queued", "dispatched", "running"].includes(operation.state)
@@ -2250,7 +1842,6 @@ export class DurableWorkflowStore {
       const policy = workflowRequestPolicySchema.parse(rawPolicy);
       const operation = this.getOperation(row.run_id, row.operation_id);
       const revision = run ? this.getRevision(run.revisionId) : null;
-      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
       if (
         !operation ||
         !revision ||
@@ -2263,7 +1854,6 @@ export class DurableWorkflowStore {
           policy,
           run,
           revision,
-          approval,
           operation,
         })
       ) {
@@ -2362,6 +1952,19 @@ export class DurableWorkflowStore {
     return row === null ? null : parseRequestTerminalReceipt(row);
   }
 
+  getWorkflowRequestDispatchPolicy(requestId: string): WorkflowRequestPolicy | null {
+    const row = this.db
+      .query<{ policy_json: string }, [string]>(
+        "SELECT policy_json FROM workflow_request_dispatches WHERE request_id = ?",
+      )
+      .get(requestId);
+    return row
+      ? workflowRequestPolicySchema.parse(
+          parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
+        )
+      : null;
+  }
+
   getWorkflowRequestDispatchHandoff(input: {
     requestId: string;
     now: number;
@@ -2377,21 +1980,27 @@ export class DurableWorkflowStore {
       const staleBefore = input.now - (input.staleAfterMs ?? 60_000);
       const dispatch = this.db
         .query<
-          { dispatch_epoch: string; policy_json: string; run_id: string; operation_id: string },
-          [string, number, number]
+          {
+            dispatch_epoch: string;
+            policy_json: string;
+            run_id: string;
+            operation_id: string;
+            owner_id: string | null;
+            owner_heartbeat_at: number | null;
+          },
+          [string, number]
         >(
-          `SELECT dispatch_epoch, policy_json, run_id, operation_id FROM workflow_request_dispatches
-           WHERE request_id = ? AND active = 1 AND expires_at > ?
-             AND owner_id IS NOT NULL AND owner_heartbeat_at > ?`,
+          `SELECT dispatch_epoch, policy_json, run_id, operation_id, owner_id,
+             owner_heartbeat_at FROM workflow_request_dispatches
+           WHERE request_id = ? AND active = 1 AND expires_at > ?`,
         )
-        .get(input.requestId, input.now, staleBefore);
+        .get(input.requestId, input.now);
       if (!dispatch) return { status: "fresh" as const };
       const policy = workflowRequestPolicySchema.parse(
         parseJson(dispatch.policy_json, "workflow_request_dispatches.policy_json"),
       );
       const run = this.getRun(dispatch.run_id);
       const revision = run ? this.getRevision(run.revisionId) : null;
-      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
       const operation = this.getOperation(dispatch.run_id, dispatch.operation_id);
       if (
         dispatch.dispatch_epoch !== policy.dispatchEpoch ||
@@ -2402,14 +2011,18 @@ export class DurableWorkflowStore {
           policy,
           run,
           revision,
-          approval,
           operation,
         })
       ) {
         throw new Error("Live workflow dispatch has an invalid durable policy identity");
       }
       return {
-        status: "live" as const,
+        status:
+          dispatch.owner_id !== null &&
+          dispatch.owner_heartbeat_at !== null &&
+          dispatch.owner_heartbeat_at > staleBefore
+            ? ("live" as const)
+            : ("stale" as const),
         dispatchEpoch: dispatch.dispatch_epoch,
         policy,
       };
@@ -3653,15 +3266,13 @@ export class DurableWorkflowStore {
     expectedFireAt: number;
     nextFireAt: number | null;
     run: WorkflowRun;
-    pendingApproval: WorkflowApproval;
     maxActiveScheduledRuns: number;
     now: number;
   }):
-    | { status: "fired"; trigger: WorkflowTrigger; run: WorkflowRun; approval: WorkflowApproval }
+    | { status: "fired"; trigger: WorkflowTrigger; run: WorkflowRun }
     | { status: "skipped"; trigger: WorkflowTrigger }
     | null {
     const requestedRun = workflowRunSchema.parse(input.run);
-    const pendingApproval = workflowApprovalSchema.parse(input.pendingApproval);
     const fire = this.db.transaction(() => {
       const trigger = this.getTrigger(input.triggerId);
       if (
@@ -3670,7 +3281,8 @@ export class DurableWorkflowStore {
         trigger.claimedBy !== input.claimerId ||
         trigger.nextFireAt !== input.expectedFireAt ||
         requestedRun.revisionId !== trigger.revisionId ||
-        pendingApproval.revisionId !== trigger.revisionId
+        requestedRun.origin.safetyMode !== "trusted" ||
+        requestedRun.state !== "queued"
       ) {
         return null;
       }
@@ -3706,21 +3318,7 @@ export class DurableWorkflowStore {
         return { status: "skipped" as const, trigger: storedTrigger };
       }
 
-      let approval = this.getActiveApprovalForPrincipal(
-        trigger.revisionId,
-        pendingApproval.expectedReviewerPlatform,
-        pendingApproval.expectedReviewerUserId,
-      );
-      if (!approval) {
-        if (!this.createApproval(pendingApproval)) return null;
-        approval = this.getApproval(pendingApproval.approvalId);
-      }
-      if (!approval) return null;
-      const run = workflowRunSchema.parse({
-        ...requestedRun,
-        approvalId: approval.approvalId,
-        state: approval.state === "approved" ? "queued" : "awaiting_review",
-      });
+      const run = requestedRun;
       if (!this.createRun(run)) {
         throw new Error(`Scheduled workflow run already exists: ${run.runId}`);
       }
@@ -3748,7 +3346,7 @@ export class DurableWorkflowStore {
         throw new Error(`Lost workflow trigger claim: ${trigger.triggerId}`);
       const storedTrigger = this.getTrigger(trigger.triggerId);
       if (!storedTrigger) throw new Error(`Workflow trigger disappeared: ${trigger.triggerId}`);
-      return { status: "fired" as const, trigger: storedTrigger, run, approval };
+      return { status: "fired" as const, trigger: storedTrigger, run };
     });
     return fire.immediate();
   }
@@ -3767,14 +3365,14 @@ export class DurableWorkflowStore {
             `SELECT COUNT(*) AS count FROM workflow_trigger_runs
              JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
              WHERE workflow_trigger_runs.trigger_id = ?
-               AND workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+                AND workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')`,
           )
           .get(triggerId)
       : this.db
           .query<{ count: number }, []>(
             `SELECT COUNT(*) AS count FROM workflow_trigger_runs
              JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
-             WHERE workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+              WHERE workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')`,
           )
           .get();
     return row?.count ?? 0;
@@ -4206,7 +3804,7 @@ export class DurableWorkflowStore {
         action.actionId,
         action.tokenSha256,
         action.runId,
-        action.approvalId,
+        null,
         action.kind,
         action.expectedPlatform,
         action.expectedUserId,
@@ -4344,117 +3942,66 @@ export class DurableWorkflowStore {
         return { status: "unauthorized" };
       }
 
-      const source = `${input.platform}:${input.messageRef.channelId}:${input.sourceMessageId ?? input.messageRef.messageId}`;
       let runIds: string[] = [];
       const previousRunStates = new Map<string, WorkflowRunState>();
-      if (action.kind === "approve" || action.kind === "reject") {
-        if (!action.approvalId) return { status: "stale" };
-        const approval = this.getApproval(action.approvalId);
-        if (
-          !approval ||
-          approval.state !== "pending" ||
-          approval.expectedReviewerPlatform !== input.platform ||
-          approval.expectedReviewerUserId !== input.userId
-        ) {
-          return { status: "stale" };
-        }
-        runIds = this.listRuns({ approvalId: approval.approvalId, limit: 1_000 })
-          .filter((run) => run.state === "awaiting_review")
-          .map((run) => {
-            previousRunStates.set(run.runId, run.state);
-            return run.runId;
-          });
-        const nextApprovalState = action.kind === "approve" ? "approved" : "rejected";
-        const approvalUpdate = this.db
-          .query(
-            `UPDATE workflow_approvals SET state = ?, decision_actor_platform = ?,
-             decision_actor_user_id = ?, decision_source = ?, decided_at = ?, updated_at = ?
-             WHERE approval_id = ? AND state = 'pending'`,
-          )
-          .run(
-            nextApprovalState,
-            input.platform,
-            input.userId,
-            source,
-            input.now,
-            input.now,
-            approval.approvalId,
-          );
-        if (approvalUpdate.changes !== 1) return { status: "stale" };
-        if (action.kind === "approve") {
-          this.db.run(
-            `UPDATE workflow_runs SET state = 'queued', updated_at = ?
-             WHERE approval_id = ? AND state = 'awaiting_review'`,
-            [input.now, approval.approvalId],
-          );
-        } else {
-          this.db.run(
-            `UPDATE workflow_runs SET state = 'rejected', terminal_detail = 'Rejected by reviewer',
-             terminal_at = ?, updated_at = ?
-             WHERE approval_id = ? AND state = 'awaiting_review'`,
-            [input.now, input.now, approval.approvalId],
-          );
-        }
-      } else {
-        const run = this.getRun(action.runId);
-        if (!run) return { status: "stale" };
-        previousRunStates.set(run.runId, run.state);
-        const nextState =
-          action.kind === "cancel" ? "cancelled" : action.kind === "pause" ? "paused" : "queued";
-        const valid =
-          action.kind === "cancel"
-            ? !["succeeded", "failed", "rejected", "cancelled"].includes(run.state)
-            : action.kind === "pause"
-              ? ["queued", "running", "blocked"].includes(run.state)
-              : run.state === "paused";
-        if (!valid) return { status: "stale" };
-        const terminal = nextState === "cancelled";
-        if (
-          action.kind === "resume" &&
-          !this.preparePausedOperationsForResume(run.runId, input.now)
-        ) {
-          return { status: "stale" };
-        }
-        const result = this.db
-          .query(
-            `UPDATE workflow_runs SET state = ?, terminal_detail = ?,
-             terminal_at = CASE WHEN ? THEN ? ELSE terminal_at END, updated_at = ?
-             WHERE run_id = ? AND state = ?`,
-          )
-          .run(
-            nextState,
-            action.kind === "cancel" ? "Cancelled from surface control" : run.terminalDetail,
-            terminal,
-            input.now,
-            input.now,
-            run.runId,
-            run.state,
-          );
-        if (result.changes !== 1) return { status: "stale" };
-        if (action.kind === "pause") {
-          this.prepareOperationsForPause(run.runId, input.now, "Paused from surface control");
-        } else if (action.kind === "cancel") {
-          this.db.run(
-            `UPDATE workflow_operations SET state = 'cancelled', error = 'Cancelled from surface control',
-             terminal_at = ?, updated_at = ?
-             WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
-            [input.now, input.now, run.runId],
-          );
-          this.db.run(
-            `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
-             resolved_at = ?, updated_at = ?
-             WHERE run_id = ? AND state IN ('pending', 'claimed')`,
-            [input.now, input.now, run.runId],
-          );
-          this.db.run(
-            `UPDATE workflow_request_dispatches SET active = 0,
-             expires_at = MIN(expires_at, ?), updated_at = ?
-             WHERE run_id = ? AND active = 1`,
-            [input.now, input.now, run.runId],
-          );
-        }
-        runIds = [run.runId];
+      const run = this.getRun(action.runId);
+      if (!run) return { status: "stale" };
+      previousRunStates.set(run.runId, run.state);
+      const nextState =
+        action.kind === "cancel" ? "cancelled" : action.kind === "pause" ? "paused" : "queued";
+      const valid =
+        action.kind === "cancel"
+          ? !["succeeded", "failed", "cancelled"].includes(run.state)
+          : action.kind === "pause"
+            ? ["queued", "running", "blocked"].includes(run.state)
+            : run.state === "paused";
+      if (!valid) return { status: "stale" };
+      const terminal = nextState === "cancelled";
+      if (
+        action.kind === "resume" &&
+        !this.preparePausedOperationsForResume(run.runId, input.now)
+      ) {
+        return { status: "stale" };
       }
+      const result = this.db
+        .query(
+          `UPDATE workflow_runs SET state = ?, terminal_detail = ?,
+           terminal_at = CASE WHEN ? THEN ? ELSE terminal_at END, updated_at = ?
+           WHERE run_id = ? AND state = ?`,
+        )
+        .run(
+          nextState,
+          action.kind === "cancel" ? "Cancelled from surface control" : run.terminalDetail,
+          terminal,
+          input.now,
+          input.now,
+          run.runId,
+          run.state,
+        );
+      if (result.changes !== 1) return { status: "stale" };
+      if (action.kind === "pause") {
+        this.prepareOperationsForPause(run.runId, input.now, "Paused from surface control");
+      } else if (action.kind === "cancel") {
+        this.db.run(
+          `UPDATE workflow_operations SET state = 'cancelled', error = 'Cancelled from surface control',
+           terminal_at = ?, updated_at = ?
+           WHERE run_id = ? AND state IN ('queued', 'dispatched', 'running', 'blocked')`,
+          [input.now, input.now, run.runId],
+        );
+        this.db.run(
+          `UPDATE workflow_waits SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+           resolved_at = ?, updated_at = ?
+           WHERE run_id = ? AND state IN ('pending', 'claimed')`,
+          [input.now, input.now, run.runId],
+        );
+        this.db.run(
+          `UPDATE workflow_request_dispatches SET active = 0,
+           expires_at = MIN(expires_at, ?), updated_at = ?
+           WHERE run_id = ? AND active = 1`,
+          [input.now, input.now, run.runId],
+        );
+      }
+      runIds = [run.runId];
 
       const consumed = this.db
         .query(
@@ -4463,26 +4010,6 @@ export class DurableWorkflowStore {
         )
         .run(input.now, input.platform, input.userId, action.actionId);
       if (consumed.changes !== 1) return { status: "consumed" };
-      if (action.approvalId) {
-        const approval = this.getApproval(action.approvalId);
-        if (approval) {
-          this.insertActionOutboxEntry({
-            outboxId: `${action.actionId}:approval`,
-            actionId: action.actionId,
-            runId: action.runId,
-            eventType: "evt.workflow.approval.changed",
-            payload: {
-              approvalId: approval.approvalId,
-              revisionId: approval.revisionId,
-              runId: action.runId,
-              state: approval.state,
-              previousState: "pending",
-              ts: input.now,
-            },
-            now: input.now,
-          });
-        }
-      }
       for (const runId of runIds) {
         const updatedRun = this.getRun(runId);
         if (!updatedRun) continue;
@@ -4514,7 +4041,7 @@ export class DurableWorkflowStore {
           now: input.now,
         });
       }
-      return { status: "applied", action, runIds, approvalId: action.approvalId };
+      return { status: "applied", action, runIds };
     });
     return apply.immediate();
   }

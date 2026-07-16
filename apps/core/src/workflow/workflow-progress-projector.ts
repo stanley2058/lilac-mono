@@ -201,11 +201,6 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
           message.type === lilacEventTypes.EvtWorkflowResultReady
         ) {
           this.requestProjection(message.data.runId);
-        } else if (
-          message.type === lilacEventTypes.EvtWorkflowApprovalChanged &&
-          message.data.runId
-        ) {
-          this.requestProjection(message.data.runId);
         }
         await context.commit();
       },
@@ -533,14 +528,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     claimToken: string,
     repairGeneration: number,
   ): CachedActions {
-    const isReview = view.availableActions.some((kind) => kind === "approve" || kind === "reject");
-    const expectedUserId = isReview
-      ? (view.approval?.expectedReviewerUserId ?? null)
-      : view.run.origin.userId;
-    const expectedPlatform = isReview
-      ? (view.approval?.expectedReviewerPlatform ?? null)
-      : view.run.origin.client;
-    const key = `${view.run.state}:${view.approval?.state ?? "none"}:${expectedPlatform}:${expectedUserId}:${view.availableActions.join(",")}`;
+    const expectedUserId = view.run.origin.userId;
+    const expectedPlatform = view.run.origin.client;
+    const key = `${view.run.state}:${expectedPlatform}:${expectedUserId}:${view.availableActions.join(",")}`;
     const cached = this.actions.get(runId);
     if (
       cached?.key === key &&
@@ -573,14 +563,11 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
             actionId,
             tokenSha256: sha256(token),
             runId,
-            approvalId:
-              kind === "approve" || kind === "reject" ? (view.approval?.approvalId ?? null) : null,
             kind,
             expectedPlatform,
             expectedUserId,
             expectedMessageRef: messageRef,
-            expiresAt:
-              now + (kind === "approve" || kind === "reject" ? 7 * 86_400_000 : 86_400_000),
+            expiresAt: now + 86_400_000,
             consumedAt: null,
             consumedByPlatform: null,
             consumedByUserId: null,
@@ -594,10 +581,7 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         }
         ids.set(kind, token);
         recordIds.push(actionId);
-        expiresAt = Math.min(
-          expiresAt,
-          now + (kind === "approve" || kind === "reject" ? 7 * 86_400_000 : 86_400_000),
-        );
+        expiresAt = Math.min(expiresAt, now + 86_400_000);
       }
     }
     const next = { key, ids, recordIds, expiresAt, repairGeneration };

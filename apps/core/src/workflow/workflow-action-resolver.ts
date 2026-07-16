@@ -18,40 +18,12 @@ const surfaceActionEventSchema = z.strictObject({
   ts: z.number().int().nonnegative(),
 });
 
-const approvalChangedSchema = z.strictObject({
-  approvalId: z.string(),
-  revisionId: z.string(),
-  runId: z.string().optional(),
-  state: z.enum(["pending", "approved", "rejected", "revoked", "expired"]),
-  previousState: z.enum(["pending", "approved", "rejected", "revoked", "expired"]).optional(),
-  ts: z.number(),
-});
 const runChangedSchema = z.strictObject({
   runId: z.string(),
   revisionId: z.string(),
-  state: z.enum([
-    "awaiting_review",
-    "queued",
-    "running",
-    "blocked",
-    "paused",
-    "succeeded",
-    "failed",
-    "rejected",
-    "cancelled",
-  ]),
+  state: z.enum(["queued", "running", "blocked", "paused", "succeeded", "failed", "cancelled"]),
   previousState: z
-    .enum([
-      "awaiting_review",
-      "queued",
-      "running",
-      "blocked",
-      "paused",
-      "succeeded",
-      "failed",
-      "rejected",
-      "cancelled",
-    ])
+    .enum(["queued", "running", "blocked", "paused", "succeeded", "failed", "cancelled"])
     .optional(),
   ts: z.number(),
 });
@@ -96,13 +68,7 @@ export async function startWorkflowActionResolver(input: {
       try {
         for (const entry of entries) {
           try {
-            if (entry.eventType === lilacEventTypes.EvtWorkflowApprovalChanged) {
-              await input.bus.publish(
-                lilacEventTypes.EvtWorkflowApprovalChanged,
-                approvalChangedSchema.parse(entry.payload),
-                { headers: { workflow_outbox_id: entry.outboxId } },
-              );
-            } else if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
+            if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
               await input.bus.publish(
                 lilacEventTypes.EvtWorkflowRunChanged,
                 runChangedSchema.parse(entry.payload),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import { buildSyntheticToolCallId } from "@stanley2058/lilac-agent";
 
 import {
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
+  assertAuthorizedWorkflowScratchRoot,
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   buildAutoInjectedThreadSearchOverlay,
@@ -82,13 +84,74 @@ describe("subagent workflow project roots", () => {
     ).toBe("/tmp/direct-project");
   });
 
-  it("uses the approved workflow root instead of a nested operation worktree cwd", () => {
+  it("uses the selected operation root instead of a nested operation worktree cwd", () => {
     expect(
       resolveSubagentProjectRoot({
         parentExecutionCwd: "/data/workflow-worktrees/operation-1",
-        workflowPolicy: { canonicalWorkspaceRoot: "/app/nested-workflow-project" },
+        workflowPolicy: { canonicalRequestedCwd: "/app/selected-operation-root" },
       }),
-    ).toBe("/app/nested-workflow-project");
+    ).toBe("/app/selected-operation-root");
+  });
+});
+
+describe("workflow runner scratch authorization", () => {
+  it("accepts a generated descendant's durable family root and rejects another family", () => {
+    const dataDir = "/tmp/lilac-runner-data";
+    const familyScratchRoot = "/tmp/lilac-runner-data/workflow-runtime/scratch/parent-run";
+    const completionTarget = {
+      kind: "live_parent" as const,
+      parentRequestId: "parent-request",
+      parentSessionId: "parent-session",
+      parentRequestClient: "discord" as const,
+      parentToolCallId: "parent-tool",
+      childRequestId: "child-request",
+      childSessionId: "child-session",
+      profile: "self" as const,
+      sessionName: "nested",
+      depth: 2,
+      reasoning: null,
+      fallbackToSurface: false,
+      fallbackProgressTarget: null,
+      deferredDelivery: true,
+      familyScratchRoot,
+    };
+    const store = { getRun: () => ({ completionTarget }) };
+
+    expect(
+      assertAuthorizedWorkflowScratchRoot({
+        dataDir,
+        store,
+        policy: { runId: "generated-run", canonicalScratchRoot: familyScratchRoot },
+      }),
+    ).toBe(familyScratchRoot);
+    expect(() =>
+      assertAuthorizedWorkflowScratchRoot({
+        dataDir,
+        store,
+        policy: {
+          runId: "generated-run",
+          canonicalScratchRoot: "/tmp/lilac-runner-data/workflow-runtime/scratch/other-family",
+        },
+      }),
+    ).toThrow("durable run family");
+  });
+
+  it("uses the run-derived scratch root for a normal durable run", () => {
+    const dataDir = "/tmp/lilac-runner-data";
+    const runId = "ordinary-run";
+    const expected = path.join(
+      dataDir,
+      "workflow-runtime",
+      "scratch",
+      createHash("sha256").update(runId).digest("hex").slice(0, 48),
+    );
+    expect(
+      assertAuthorizedWorkflowScratchRoot({
+        dataDir,
+        store: { getRun: () => ({ completionTarget: { kind: "detached" as const } }) },
+        policy: { runId, canonicalScratchRoot: expected },
+      }),
+    ).toBe(expected);
   });
 });
 
@@ -255,6 +318,7 @@ describe("subagent model selection", () => {
       },
     };
     cfg.agent.subagents.profiles.general = {
+      ...cfg.agent.subagents.profiles.general,
       modelSlot: "main",
       model: "manual",
     };
@@ -270,6 +334,7 @@ describe("subagent model selection", () => {
   it("applies reasoning overrides to the configured profile fallback", () => {
     const cfg = parseCoreConfigV1ToUniversal({});
     cfg.agent.subagents.profiles.explore = {
+      ...cfg.agent.subagents.profiles.explore,
       modelSlot: "fast",
       reasoning: "low",
     };
@@ -282,6 +347,43 @@ describe("subagent model selection", () => {
 
     expect(resolved).toMatchObject({ slot: "fast" });
     expect(resolved.reasoning).toBe("medium");
+  });
+
+  it("rehydrates a durable workflow model request without current preset resolution", () => {
+    const cfg = parseCoreConfigV1ToUniversal({});
+    cfg.models.def = {
+      changed: {
+        model: "openai/current-model",
+        options: { openai: { route: "current" } },
+      },
+    };
+    const resolved = resolveAgentRunModel({
+      cfg,
+      runProfile: "general",
+      workflowResolvedModel: "codex/durable-model",
+      workflowResolvedRequest: {
+        alias: "removed-preset",
+        spec: "codex/durable-model",
+        provider: "codex",
+        modelId: "durable-model",
+        providerOptions: { openai: { route: "durable", store: false } },
+        reasoning: "high",
+        responseCommentary: true,
+        anthropicPromptCache: true,
+        reasoningDisplay: "none",
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      alias: "removed-preset",
+      spec: "codex/durable-model",
+      provider: "codex",
+      modelId: "durable-model",
+      providerOptions: { openai: { route: "durable", store: false } },
+      reasoning: "high",
+      responseCommentary: true,
+      anthropicPromptCache: true,
+    });
   });
 });
 

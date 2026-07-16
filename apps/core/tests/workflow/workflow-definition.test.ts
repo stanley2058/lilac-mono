@@ -24,13 +24,10 @@ export default defineWorkflow({
       },
     },
   },
-  capabilities: {
+  resources: {
     agents: {
-      profiles: ["self", "explore", "self"],
-      models: ["inherit"],
       maxConcurrent: 2,
       maxTotal: 8,
-      editing: [],
     },
     waits: ["sleep", "reply", "sleep"],
   },
@@ -46,8 +43,8 @@ describe("workflow definition validation", () => {
   it("normalizes static metadata and deterministically hashes canonical values", () => {
     const validated = validateWorkflowSource({ name: "audit-routes", source: source() });
     expect(validated.metadata).toEqual({ name: "audit-routes", description: "Audit routes" });
-    expect(validated.capabilities.agents.profiles).toEqual(["explore", "self"]);
-    expect(validated.capabilities.waits).toEqual(["reply", "sleep"]);
+    expect(validated.resources.agents).toEqual({ maxConcurrent: 2, maxTotal: 8 });
+    expect(validated.resources.waits).toEqual(["reply", "sleep"]);
     expect(validated.inputSchema).toMatchObject({
       type: "object",
       additionalProperties: false,
@@ -56,7 +53,7 @@ describe("workflow definition validation", () => {
     expect(validated.sensitiveFields).toEqual(["token"]);
     expect(validated.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(validated.inputSchemaSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(validated.capabilitySha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(validated.resourcePolicySha256).toMatch(/^[a-f0-9]{64}$/);
     expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe('{"a":{"x":3,"y":2},"z":1}');
   });
 
@@ -85,27 +82,32 @@ describe("workflow definition validation", () => {
     ).toThrow("expected string");
   });
 
-  it("hashes exact Level-2 and origin-surface callable IDs", () => {
-    const withCallable = (callableId: string) =>
-      source().replace(
-        'waits: ["sleep", "reply", "sleep"],',
-        `level2: { callables: ["${callableId}", "surface.messages.send"] },\n    surfaces: { origin: ["surface.messages.send"] },\n    waits: ["sleep", "reply", "sleep"],`,
-      );
-    const first = validateWorkflowSource({
-      name: "audit-routes",
-      source: withCallable("plugin.alpha.read"),
-    });
-    const second = validateWorkflowSource({
-      name: "audit-routes",
-      source: withCallable("plugin.beta.read"),
-    });
-
-    expect(first.capabilities.level2.callables).toEqual([
-      "plugin.alpha.read",
-      "surface.messages.send",
-    ]);
-    expect(first.capabilities.surfaces.origin).toEqual(["surface.messages.send"]);
-    expect(first.capabilitySha256).not.toBe(second.capabilitySha256);
+  it("rejects removed revision authority allowlists", () => {
+    for (const removed of [
+      'profiles: ["explore"],',
+      'models: ["deep"],',
+      'allowedRoots: ["project"],',
+      'tools: ["read_file"],',
+      'executables: "none",',
+      'editing: ["shared"],',
+      "delegation: false,",
+    ]) {
+      expect(() =>
+        validateWorkflowSource({
+          name: "audit-routes",
+          source: source().replace("maxConcurrent: 2,", `maxConcurrent: 2,\n      ${removed}`),
+        }),
+      ).toThrow("migrate to profile-native agent() options");
+    }
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          'waits: ["sleep", "reply", "sleep"],',
+          'level2: { callables: ["search"] },\n    waits: ["sleep", "reply", "sleep"],',
+        ),
+      }),
+    ).toThrow("profiles now own agent tool access");
   });
 
   it("rejects syntax and AST shapes outside the exact static contract", () => {
@@ -321,9 +323,7 @@ export default defineWorkflow({`,
     ).toThrow("numeric literals must be finite");
   });
 
-  it("treats editing as a maximum envelope and enforces source-declared limits", () => {
-    const editing = source().replace("editing: []", 'editing: ["shared", "worktree"]');
-    expect(() => validateWorkflowSource({ name: "audit-routes", source: editing })).not.toThrow();
+  it("enforces source-declared resource limits", () => {
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -368,10 +368,13 @@ export default defineWorkflow({`,
     ).toThrow("only be called directly or forwarded unchanged");
   });
 
-  it("permits read-only explore operations in an edit-capable workflow", () => {
-    const editingExplore = source().replace("editing: []", 'editing: ["shared"]');
+  it("permits profile-native agent options without revision authority declarations", () => {
+    const profileNative = source().replace(
+      "return agent(`Audit ${args.directory}`);",
+      'return agent(`Audit ${args.directory}`, { profile: "general", isolation: "shared" });',
+    );
     expect(() =>
-      validateWorkflowSource({ name: "audit-routes", source: editingExplore }),
+      validateWorkflowSource({ name: "audit-routes", source: profileNative }),
     ).not.toThrow();
   });
 });

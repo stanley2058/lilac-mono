@@ -1026,8 +1026,7 @@ export class Generate implements ServerTool {
 
     const video = res.video;
     const pinnedWorkflowOutput =
-      opts?.context?.workflowPolicy !== undefined &&
-      /^\/proc\/self\/fd\/\d+$/u.test(resolvedTarget);
+      opts?.context?.workflowPolicy !== undefined && isWorkflowPinnedDescriptorPath(resolvedTarget);
     let outPath: string;
     if (pinnedWorkflowOutput) {
       await fs.writeFile(resolvedTarget, video.uint8Array);
@@ -1051,4 +1050,8 @@ export class Generate implements ServerTool {
       providerMetadata: res.providerMetadata,
     };
   }
+}
+
+export function isWorkflowPinnedDescriptorPath(candidate: string): boolean {
+  return new RegExp(`^/proc/(?:self|${process.pid})/fd/\\d+$`, "u").test(candidate);
 }

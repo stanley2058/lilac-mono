@@ -112,12 +112,33 @@ describe("createToolServer", () => {
           },
           { callableId: "search", name: "Search", description: "read", shortInput: [] },
           {
+            callableId: "custom.directory-output",
+            name: "Directory output",
+            description: "temporarily unsafe output",
+            shortInput: [],
+            workflowPathAuthority: {
+              inputs: [{ field: "outputDir", cardinality: "one", target: "write-directory" }],
+            } as const,
+          },
+          {
             callableId: "skills.full",
             name: "Full skill",
             description: "global skill content",
             shortInput: [],
           },
           { callableId: "generate.image", name: "Generate", description: "write", shortInput: [] },
+          {
+            callableId: "onboarding.restart",
+            name: "Restart",
+            description: "admin",
+            shortInput: [],
+          },
+          {
+            callableId: "conversation.thread.read",
+            name: "Global conversation read",
+            description: "cross-session",
+            shortInput: [],
+          },
         ].filter((entry) => searchPresent || entry.callableId !== "search");
       },
       async call(callableId, _input, options) {
@@ -132,7 +153,7 @@ describe("createToolServer", () => {
     const server = createToolServer({
       tools: [tool],
       authorizeWorkflowRequest: ({ token }) =>
-        token === "server-issued-capability-token-123456"
+        token === "server-issued-control-token-123456"
           ? {
               requestId: "wfr:request",
               sessionId: "workflow:run:operation",
@@ -143,20 +164,26 @@ describe("createToolServer", () => {
                 operationId: "operation-1",
                 dispatchEpoch: "dispatch-epoch-0001",
                 profile: "explore",
-                model: "inherit",
-                reasoning: "provider-default",
-                tools: ["read_file"],
-                executables: "none",
+                model: null,
+                reasoning: null,
+                resolvedModel: "test/model",
+                resolvedReasoning: null,
+                resolvedModelRequest: {
+                  spec: "test/model",
+                  provider: "test",
+                  modelId: "model",
+                  reasoningDisplay: "simple",
+                },
                 safetyMode: "trusted",
-                editing: false,
                 isolation: "shared",
-                delegation: false,
-                level2Callables: ["search"],
-                surfaceOriginOperations: [],
                 canonicalWorkspaceRoot: "/approved",
                 canonicalAuthorityRoot: "/approved",
+                canonicalAuthorityRootIdentity: { dev: "1", ino: "1" },
                 canonicalRequestedCwd: "/approved",
+                canonicalRequestedCwdIdentity: { dev: "1", ino: "1" },
                 canonicalCwd: "/approved",
+                canonicalCwdIdentity: { dev: "1", ino: "1" },
+                canonicalScratchRoot: "/scratch/run-1",
                 canonicalProjectId: "project-1",
                 originSessionId: "origin-channel",
                 originClient: "discord",
@@ -164,7 +191,6 @@ describe("createToolServer", () => {
                 revisionId: "revision-1",
                 sourceSha256: "a".repeat(64),
                 inputSchemaSha256: "b".repeat(64),
-                capabilitySha256: "c".repeat(64),
                 argsSha256: "d".repeat(64),
                 operationInputSha256: "e".repeat(64),
               },
@@ -176,46 +202,23 @@ describe("createToolServer", () => {
       "x-lilac-request-id": "wfr:request",
       "x-lilac-session-id": "workflow:run:operation",
       "x-lilac-request-client": "unknown",
-      "x-lilac-workflow-capability": "server-issued-capability-token-123456",
+      "x-lilac-workflow-control-token": "server-issued-control-token-123456",
     };
     try {
       const list = await server.app.handle(new Request("http://localhost/list", { headers }));
-      expect(await list.json()).toMatchObject({ tools: [{ callableId: "search" }] });
+      const listed = (await list.json()) as { tools: Array<{ callableId: string }> };
+      expect(listed.tools.map((entry) => entry.callableId)).toContain("custom.directory-output");
+      expect(listed.tools.map((entry) => entry.callableId)).toContain("onboarding.restart");
       const help = await server.app.handle(new Request("http://localhost/help/fetch", { headers }));
-      expect(help.status).toBe(404);
+      expect(help.status).toBe(200);
+      const directoryHelp = await server.app.handle(
+        new Request("http://localhost/help/custom.directory-output", { headers }),
+      );
+      expect(directoryHelp.status).toBe(200);
       const skillHelp = await server.app.handle(
         new Request("http://localhost/help/skills.full", { headers }),
       );
-      expect(skillHelp.status).toBe(404);
-      for (const url of ["file:///etc/passwd", "http://127.0.0.1:3000/private"]) {
-        const denied = await server.app.handle(
-          new Request("http://localhost/call", {
-            method: "POST",
-            headers: { ...headers, "content-type": "application/json" },
-            body: JSON.stringify({ callableId: "fetch", input: { url } }),
-          }),
-        );
-        expect(await denied.json()).toMatchObject({
-          isError: true,
-          output: expect.stringContaining("outside the approved workflow capability"),
-        });
-      }
-      for (const input of [
-        { url: "http://169.254.169.254/latest/meta-data" },
-        { path: "/etc/passwd" },
-      ]) {
-        const denied = await server.app.handle(
-          new Request("http://localhost/call", {
-            method: "POST",
-            headers: { ...headers, "content-type": "application/json" },
-            body: JSON.stringify({ callableId: "content.inspect", input }),
-          }),
-        );
-        expect(await denied.json()).toMatchObject({
-          isError: true,
-          output: expect.stringContaining("outside the approved workflow capability"),
-        });
-      }
+      expect(skillHelp.status).toBe(200);
       const call = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
@@ -232,7 +235,10 @@ describe("createToolServer", () => {
       const afterPluginRemoval = await server.app.handle(
         new Request("http://localhost/list", { headers }),
       );
-      expect(await afterPluginRemoval.json()).toEqual({ tools: [] });
+      const refreshed = (await afterPluginRemoval.json()) as {
+        tools: Array<{ callableId: string }>;
+      };
+      expect(refreshed.tools.map((entry) => entry.callableId)).not.toContain("search");
       expect(
         (await server.app.handle(new Request("http://localhost/help/search", { headers }))).status,
       ).toBe(404);
@@ -541,12 +547,16 @@ describe("createToolServer", () => {
     }
   });
 
-  it("allows workflow surface creation only and pins path inputs to contained file descriptors", async () => {
+  it("keeps native callables available and pins declared local paths to descriptors", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-path-authority-"));
     const workspace = path.join(tmpRoot, "workspace");
     const outside = path.join(tmpRoot, "outside.txt");
+    const scratchRoot = path.join(workspace, ".lilac-data", "workflow-runtime", "scratch", "run-1");
     await fs.mkdir(workspace);
+    await fs.mkdir(scratchRoot, { recursive: true });
     await fs.writeFile(path.join(workspace, "inside.txt"), "contained", "utf8");
+    await fs.writeFile(path.join(workspace, "race.txt"), "authorized race", "utf8");
+    await fs.writeFile(path.join(scratchRoot, "handoff.txt"), "scratch handoff", "utf8");
     await fs.writeFile(path.join(workspace, "hardlinked.txt"), "linked secret", "utf8");
     await fs.link(
       path.join(workspace, "hardlinked.txt"),
@@ -561,6 +571,11 @@ describe("createToolServer", () => {
     await fs.writeFile(path.join(workspace, ".env.local", "token"), "nested secret", "utf8");
     await fs.writeFile(outside, "secret", "utf8");
     await fs.symlink(outside, path.join(workspace, "linked.txt"));
+    const workspaceStats = await fs.stat(workspace, { bigint: true });
+    const workspaceIdentity = {
+      dev: workspaceStats.dev.toString(10),
+      ino: workspaceStats.ino.toString(10),
+    };
     const seen: Record<string, unknown>[] = [];
     const tool: ServerTool = {
       id: "workflow-path-test",
@@ -579,6 +594,15 @@ describe("createToolServer", () => {
             name: "pathless",
             description: "pathless plugin callable",
             shortInput: [],
+          },
+          {
+            callableId: "custom.pinned-read",
+            name: "pinned read",
+            description: "descriptor pin test",
+            shortInput: [],
+            workflowPathAuthority: {
+              inputs: [{ field: "path", cardinality: "one", target: "read-file" }],
+            },
           },
           {
             callableId: "surface.messages.send",
@@ -609,7 +633,7 @@ describe("createToolServer", () => {
           },
         ];
       },
-      async call(_callableId, input) {
+      async call(callableId, input) {
         seen.push(input);
         const descriptorPath =
           typeof input.path === "string"
@@ -617,6 +641,13 @@ describe("createToolServer", () => {
             : Array.isArray(input.paths) && typeof input.paths[0] === "string"
               ? input.paths[0]
               : undefined;
+        if (callableId === "custom.pinned-read") {
+          await fs.rename(
+            path.join(workspace, "race.txt"),
+            path.join(workspace, "race-original.txt"),
+          );
+          await fs.symlink(outside, path.join(workspace, "race.txt"));
+        }
         return descriptorPath ? await fs.readFile(descriptorPath, "utf8") : { ok: true };
       },
     };
@@ -633,21 +664,27 @@ describe("createToolServer", () => {
                 runId: "run-path",
                 operationId: "operation-path",
                 dispatchEpoch: "dispatch-epoch-path",
-                profile: "explore",
-                model: "inherit",
-                reasoning: "provider-default",
-                tools: ["read_file"],
-                executables: "none",
+                profile: "general",
+                model: null,
+                reasoning: null,
+                resolvedModel: "test/model",
+                resolvedReasoning: null,
+                resolvedModelRequest: {
+                  spec: "test/model",
+                  provider: "test",
+                  modelId: "model",
+                  reasoningDisplay: "simple",
+                },
                 safetyMode: "trusted",
-                editing: false,
                 isolation: "shared",
-                delegation: false,
-                level2Callables: ["custom.pathless", "surface.messages.send"],
-                surfaceOriginOperations: ["surface.messages.send"],
                 canonicalWorkspaceRoot: workspace,
                 canonicalAuthorityRoot: workspace,
+                canonicalAuthorityRootIdentity: workspaceIdentity,
                 canonicalRequestedCwd: workspace,
+                canonicalRequestedCwdIdentity: workspaceIdentity,
                 canonicalCwd: workspace,
+                canonicalCwdIdentity: workspaceIdentity,
+                canonicalScratchRoot: scratchRoot,
                 canonicalProjectId: "project-path",
                 originSessionId: "origin-channel",
                 originClient: "discord",
@@ -655,7 +692,6 @@ describe("createToolServer", () => {
                 revisionId: "revision-path",
                 sourceSha256: "a".repeat(64),
                 inputSchemaSha256: "b".repeat(64),
-                capabilitySha256: "c".repeat(64),
                 argsSha256: "d".repeat(64),
                 operationInputSha256: "e".repeat(64),
               },
@@ -667,7 +703,7 @@ describe("createToolServer", () => {
       "x-lilac-request-id": "wfr:path",
       "x-lilac-session-id": "workflow:path",
       "x-lilac-request-client": "unknown",
-      "x-lilac-workflow-capability": "workflow-path-token-unguessable",
+      "x-lilac-workflow-control-token": "workflow-path-token-unguessable",
       "content-type": "application/json",
     };
     try {
@@ -676,7 +712,15 @@ describe("createToolServer", () => {
         ((await list.json()) as { tools: Array<{ callableId: string }> }).tools.map(
           (item) => item.callableId,
         ),
-      ).toEqual(["custom.pathless", "surface.messages.send"]);
+      ).toEqual([
+        "content.inspect",
+        "custom.pathless",
+        "custom.pinned-read",
+        "surface.messages.send",
+        "surface.messages.edit",
+        "surface.messages.delete",
+        "surface.reactions.add",
+      ]);
       const pathless = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
@@ -695,7 +739,7 @@ describe("createToolServer", () => {
           }),
         }),
       );
-      expect(undeclaredPluginPath.status).toBe(500);
+      expect(await undeclaredPluginPath.json()).toMatchObject({ isError: false });
       const inspect = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
@@ -707,15 +751,69 @@ describe("createToolServer", () => {
         }),
       );
       expect(await inspect.json()).toMatchObject({ isError: false, output: "contained" });
-      expect(seen[1]?.paths).toEqual([expect.stringMatching(/^\/proc\/self\/fd\/\d+$/)]);
-      for (const forbidden of [
-        outside,
-        "linked.txt",
-        "hardlink-alias.txt",
-        ".secrets/token",
-        ".envrc",
-        ".env.local/token",
-      ]) {
+      expect(seen[2]?.paths).toEqual([expect.stringMatching(/^\/proc\/\d+\/fd\/\d+$/)]);
+      const pinnedRead = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ callableId: "custom.pinned-read", input: { path: "race.txt" } }),
+        }),
+      );
+      expect(await pinnedRead.json()).toMatchObject({
+        isError: false,
+        output: "authorized race",
+      });
+      expect(await fs.readFile(outside, "utf8")).toBe("secret");
+      const scratchRead = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { text: "scratch", paths: ["/run/lilac/scratch/handoff.txt"] },
+          }),
+        }),
+      );
+      expect(await scratchRead.json()).toMatchObject({
+        isError: false,
+        output: "scratch handoff",
+      });
+      const crossSession = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { sessionId: "another-session", text: "escape" },
+          }),
+        }),
+      );
+      expect(await crossSession.json()).toMatchObject({ isError: false });
+      const fixtureSecrets = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            callableId: "surface.messages.send",
+            input: { text: "fixture", paths: [".secrets/token"] },
+          }),
+        }),
+      );
+      expect(await fixtureSecrets.json()).toMatchObject({ isError: false, output: "token secret" });
+      for (const allowed of [".envrc", ".env.local/token", ".git/index"]) {
+        const response = await server.app.handle(
+          new Request("http://localhost/call", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              callableId: "surface.messages.send",
+              input: { text: "attached", paths: [allowed] },
+            }),
+          }),
+        );
+        expect(await response.json()).toMatchObject({ isError: false });
+      }
+      for (const forbidden of [outside, "linked.txt", "hardlink-alias.txt"]) {
         const response = await server.app.handle(
           new Request("http://localhost/call", {
             method: "POST",

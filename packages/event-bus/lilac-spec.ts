@@ -29,7 +29,6 @@ export const lilacEventTypes = {
 
   EvtWorkflowRunChanged: "evt.workflow.run.changed",
   EvtWorkflowOperationChanged: "evt.workflow.operation.changed",
-  EvtWorkflowApprovalChanged: "evt.workflow.approval.changed",
   EvtWorkflowProgressRequested: "evt.workflow.progress.requested",
   EvtWorkflowUsageChanged: "evt.workflow.usage.changed",
   EvtWorkflowResultReady: "evt.workflow.result.ready",
@@ -188,14 +187,12 @@ export type EvtSurfaceOutputMessageCreatedData = {
 };
 
 export type WorkflowRunEventState =
-  | "awaiting_review"
   | "queued"
   | "running"
   | "blocked"
   | "paused"
   | "succeeded"
   | "failed"
-  | "rejected"
   | "cancelled";
 
 export type WorkflowOperationEventState =
@@ -207,13 +204,6 @@ export type WorkflowOperationEventState =
   | "failed"
   | "cancelled"
   | "timed_out";
-
-export type WorkflowApprovalEventState =
-  | "pending"
-  | "approved"
-  | "rejected"
-  | "revoked"
-  | "expired";
 
 export type EvtWorkflowRunChangedData = {
   runId: string;
@@ -233,15 +223,6 @@ export type EvtWorkflowOperationChangedData = {
   previousState?: WorkflowOperationEventState;
   phase?: string;
   label?: string;
-  ts: number;
-};
-
-export type EvtWorkflowApprovalChangedData = {
-  approvalId: string;
-  revisionId: string;
-  runId?: string;
-  state: WorkflowApprovalEventState;
-  previousState?: WorkflowApprovalEventState;
   ts: number;
 };
 
@@ -416,12 +397,6 @@ export type LilacEventSpec = {
     topic: "evt.workflow";
     key: string;
     data: EvtWorkflowOperationChangedData;
-  };
-
-  [lilacEventTypes.EvtWorkflowApprovalChanged]: {
-    topic: "evt.workflow";
-    key: string;
-    data: EvtWorkflowApprovalChangedData;
   };
 
   [lilacEventTypes.EvtWorkflowProgressRequested]: {

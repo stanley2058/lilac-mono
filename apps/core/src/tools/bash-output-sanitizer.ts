@@ -289,6 +289,13 @@ export type SanitizedStreamTextResult = {
   overflowFilePath?: string;
 };
 
+export type StreamOutputBudget = {
+  maxBytes: number;
+  consumedBytes: number;
+  exceeded: boolean;
+  onExceeded(): void;
+};
+
 async function appendOverflowChunk(params: {
   overflowFilePath: string;
   chunk: Uint8Array;
@@ -327,6 +334,7 @@ export async function readSanitizedStreamTextCapped(
     overflowFilePath?: string;
     literalSecrets?: readonly string[];
     onActivity?: () => void;
+    outputBudget?: StreamOutputBudget;
   },
 ): Promise<SanitizedStreamTextResult> {
   if (!stream || typeof stream === "number") {
@@ -417,6 +425,18 @@ export async function readSanitizedStreamTextCapped(
         if (done) break;
         if (value) {
           options?.onActivity?.();
+          if (options?.outputBudget) {
+            options.outputBudget.consumedBytes += value.byteLength;
+            if (options.outputBudget.consumedBytes > options.outputBudget.maxBytes) {
+              if (!options.outputBudget.exceeded) {
+                options.outputBudget.exceeded = true;
+                options.outputBudget.onExceeded();
+              }
+              throw new Error(
+                `Bash output exceeded the ${options.outputBudget.maxBytes}-byte cumulative budget`,
+              );
+            }
+          }
           await retainRawChunk(value);
           await consumeSanitizedText(sanitizer.write(value));
           if (capped && !overflowInitialized) await flushBufferedRaw();

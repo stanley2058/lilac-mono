@@ -47,6 +47,90 @@ export type ResolvedModelSlot = {
 
 export type ResolvedModelRef = Omit<ResolvedModelSlot, "slot">;
 
+export type DurableJsonValue =
+  | null
+  | string
+  | number
+  | boolean
+  | DurableJsonObject
+  | DurableJsonArray;
+export interface DurableJsonObject {
+  [key: string]: DurableJsonValue;
+}
+export interface DurableJsonArray extends Array<DurableJsonValue> {}
+
+export type DurableResolvedModelRequest = {
+  alias?: string;
+  spec: string;
+  provider: string;
+  modelId: string;
+  providerOptions?: Record<string, DurableJsonObject>;
+  reasoning?: ModelReasoningEffort;
+  responseCommentary?: boolean;
+  anthropicPromptCache?: boolean;
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
+};
+
+export function toDurableResolvedModelRequest(
+  resolved: ResolvedModelRef,
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"],
+): DurableResolvedModelRequest {
+  const compactJsonObject = (value: JSONObject): DurableJsonObject =>
+    Object.fromEntries(
+      Object.entries(value).flatMap(([key, child]) =>
+        child === undefined ? [] : [[key, compactJsonValue(child)]],
+      ),
+    );
+  const compactJsonValue = (value: JSONValue): DurableJsonValue => {
+    if (Array.isArray(value)) return value.map(compactJsonValue);
+    if (value !== null && typeof value === "object") return compactJsonObject(value);
+    return value;
+  };
+  const providerOptions = resolved.providerOptions
+    ? Object.fromEntries(
+        Object.entries(resolved.providerOptions).map(([key, value]) => [
+          key,
+          compactJsonObject(value),
+        ]),
+      )
+    : undefined;
+  return {
+    ...(resolved.alias ? { alias: resolved.alias } : {}),
+    spec: resolved.spec,
+    provider: resolved.provider,
+    modelId: resolved.modelId,
+    ...(providerOptions ? { providerOptions } : {}),
+    ...(resolved.reasoning ? { reasoning: resolved.reasoning } : {}),
+    ...(resolved.responseCommentary ? { responseCommentary: true } : {}),
+    ...(resolved.anthropicPromptCache ? { anthropicPromptCache: true } : {}),
+    reasoningDisplay,
+  };
+}
+
+export function fromDurableResolvedModelRequest(
+  request: DurableResolvedModelRequest,
+): ResolvedModelRef {
+  const parsed = parseModelSpecifier(request.spec);
+  if (parsed.provider !== request.provider || parsed.model !== request.modelId) {
+    throw new Error("Durable model request does not match its canonical model spec");
+  }
+  const provider = providers[request.provider as Providers];
+  if (typeof provider !== "function") {
+    throw new Error(`Provider '${request.provider}' is not configured for durable dispatch`);
+  }
+  return {
+    ...(request.alias ? { alias: request.alias } : {}),
+    spec: request.spec,
+    provider: request.provider,
+    modelId: request.modelId,
+    model: provider(request.modelId),
+    ...(request.providerOptions ? { providerOptions: request.providerOptions } : {}),
+    ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+    ...(request.responseCommentary ? { responseCommentary: true } : {}),
+    ...(request.anthropicPromptCache ? { anthropicPromptCache: true } : {}),
+  };
+}
+
 function cloneJson(value: JSONValue): JSONValue {
   if (Array.isArray(value)) return value.map(cloneJson);
   if (value !== null && typeof value === "object") {

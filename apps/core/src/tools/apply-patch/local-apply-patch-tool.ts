@@ -57,7 +57,10 @@ type ToolContext = {
 
 export { parsePatch };
 
-export function localApplyPatchTool(defaultCwd: string) {
+export function localApplyPatchTool(
+  defaultCwd: string,
+  options?: { denyPaths?: readonly string[] },
+) {
   const logger = createLogger({
     module: "tool:apply_patch",
   });
@@ -136,7 +139,7 @@ export function localApplyPatchTool(defaultCwd: string) {
             return { status: "completed" as const, output: remoteRes.output };
           }
 
-          const output = await applyHunks(cwd, hunks);
+          const output = await applyHunks(cwd, hunks, { denyPaths: options?.denyPaths });
 
           const outputLines = output.split("\n");
           const changedLines = outputLines

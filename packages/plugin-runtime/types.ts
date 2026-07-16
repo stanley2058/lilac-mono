@@ -21,19 +21,21 @@ export type RequestContext = {
     kind: "primary" | "heartbeat";
     allowedCallables: readonly string[] | null;
   };
-  workflowCapability?: string;
+  workflowControlToken?: string;
   workflowPolicy?: {
     runId: string;
     operationId: string;
-    level2Callables: readonly string[];
-    surfaceOriginOperations: readonly string[];
+    profile: "explore" | "general" | "self";
     canonicalProjectId: string;
     canonicalWorkspaceRoot: string;
     canonicalCwd: string;
+    canonicalCwdIdentity: { dev: string; ino: string };
+    canonicalScratchRoot: string;
     originSessionId: string | null;
     originClient: "discord" | "github" | null;
     originUserId: string | null;
   };
+  subagentProfile?: "explore" | "general" | "self";
 };
 
 export type ServerToolPrimaryPositional = {
@@ -153,6 +155,13 @@ export type ToolPluginMeta = {
   name?: string;
   version?: string;
 };
+
+export type Level1ContributionInfo = {
+  pluginId: string;
+  source: PluginSource;
+};
+
+export type Level2ContributionInfo = Level1ContributionInfo;
 
 export type ToolPluginCreateContext<TRuntimeContext> = {
   runtime: TRuntimeContext;

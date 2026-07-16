@@ -37,6 +37,18 @@ export type SubagentProfileConfig = {
   reasoning?: ModelReasoningEffort;
   options?: JSONObject;
   promptOverlay?: string;
+  level1: {
+    tools: string[];
+    plugins: string[];
+  };
+  level2: {
+    callables: string[];
+    plugins: string[];
+  };
+  network: boolean;
+  workspaceWrites: boolean;
+  execution: boolean;
+  delegation: boolean;
 };
 
 export const MODEL_REASONING_EFFORTS = [

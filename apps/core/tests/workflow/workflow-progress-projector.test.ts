@@ -38,7 +38,7 @@ import type {
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { startWorkflowActionResolver } from "../../src/workflow/workflow-action-resolver";
 import { sha256 } from "../../src/workflow/workflow-definition";
-import { normalizeWorkflowCapabilityProfile } from "../../src/workflow/workflow-domain";
+import { normalizeWorkflowResourcePolicy } from "../../src/workflow/workflow-domain";
 import { WorkflowProgressProjector } from "../../src/workflow/workflow-progress-projector";
 import {
   buildWorkflowProgressView,
@@ -386,7 +386,7 @@ function createInvocation(
       snapshotArtifactId: `workflow-source:${HASH_A}`,
       sourceSha256: HASH_A,
       inputSchemaSha256: HASH_B,
-      capabilitySha256: "c".repeat(64),
+      resourcePolicySha256: "c".repeat(64),
       metadata: { name: "audit", description: "Audit routes" },
       inputSchema: {
         type: "object",
@@ -396,21 +396,11 @@ function createInvocation(
           token: { type: "string", sensitive: true },
         },
       },
-      capabilities: normalizeWorkflowCapabilityProfile({
+      resources: normalizeWorkflowResourcePolicy({
         agents: {
-          profiles: ["explore"],
-          models: ["inherit"],
-          reasoning: ["provider-default"],
-          allowedRoots: ["project"],
-          tools: ["read_file"],
-          executables: "none",
-          editing: [],
-          delegation: false,
           maxConcurrent: 2,
           maxTotal: 8,
         },
-        level2: { callables: [] },
-        surfaces: { origin: [] },
         maxNestingDepth: 4,
         maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
@@ -424,14 +414,13 @@ function createInvocation(
         maxResultBytes: 10_000,
         maxRuntimeMemoryBytes: 256 * 1024 * 1024,
       },
-      runtimeVersion: "runtime-v1",
+      runtimeVersion: "lilac-workflow-js-v3",
       createdAt: 10,
     },
     run: {
       runId: "run-1",
       revisionId: "revision-1",
-      approvalId: null,
-      state: "awaiting_review",
+      state: "queued",
       inputSchemaSnapshot: {
         type: "object",
         additionalProperties: false,
@@ -467,23 +456,6 @@ function createInvocation(
       startedAt: null,
       updatedAt: 10,
       terminalAt: null,
-    },
-    pendingApproval: {
-      approvalId: "approval-1",
-      revisionId: "revision-1",
-      state: "pending",
-      expectedReviewerPlatform: platform,
-      expectedReviewerUserId: "user-1",
-      firstRunId: "run-1",
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: null,
-      expiresAt: null,
-      decidedAt: null,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: 10,
-      updatedAt: 10,
     },
   });
 }
@@ -649,13 +621,13 @@ describe("WorkflowProgressProjector", () => {
     try {
       createInvocation(storeA);
       const messageRef = await initial.ensureInitialCard("run-1");
-      const approveToken = adapter.contents
+      const pauseToken = adapter.contents
         .at(-1)
-        ?.actions?.find((action) => action.label === "Approve")?.actionId;
-      if (!approveToken) throw new Error("Missing approval token");
+        ?.actions?.find((action) => action.label === "Pause")?.actionId;
+      if (!pauseToken) throw new Error("Missing pause token");
       expect(
         storeA.applySurfaceAction({
-          tokenSha256: sha256(approveToken),
+          tokenSha256: sha256(pauseToken),
           platform: "discord",
           userId: "user-1",
           messageRef,
@@ -679,8 +651,8 @@ describe("WorkflowProgressProjector", () => {
         claimHeartbeatMs: 10,
       });
       resolverA = await startingA;
-      expect(raw.outboxIds).toHaveLength(3);
-      expect(new Set(raw.outboxIds).size).toBe(3);
+      expect(raw.outboxIds).toHaveLength(2);
+      expect(new Set(raw.outboxIds).size).toBe(2);
     } finally {
       await initial.stop();
       await resolverA?.stop();
@@ -724,12 +696,7 @@ describe("WorkflowProgressProjector", () => {
       createInvocation(storeA);
       await initial.ensureInitialCard("run-1");
       await initial.stop();
-      storeA.transitionApproval({
-        approvalId: "approval-1",
-        from: "pending",
-        to: "approved",
-        now: Date.now(),
-      });
+      storeA.tryClaimTrustedRun({ runId: "run-1", claimerId: "engine", now: Date.now() });
       adapter.editDelayMs = 80;
       const editing = projectorA.ensureInitialCard("run-1");
       while (adapter.editStarts === 0) await Bun.sleep(1);
@@ -1367,13 +1334,13 @@ describe("WorkflowProgressProjector", () => {
           .listSurfaceActions("run-1", { activeAt: 40_000 })
           .every((action) => action.expectedMessageRef?.messageId === currentRef.messageId),
       ).toBe(true);
-      const approveToken = adapter.contents
+      const pauseToken = adapter.contents
         .at(-1)
-        ?.actions?.find((action) => action.label === "Approve")?.actionId;
-      if (!approveToken) throw new Error("Missing repaired approval action");
+        ?.actions?.find((action) => action.label === "Pause")?.actionId;
+      if (!pauseToken) throw new Error("Missing repaired pause action");
       expect(
         storeB.applySurfaceAction({
-          tokenSha256: sha256(approveToken),
+          tokenSha256: sha256(pauseToken),
           platform: "discord",
           userId: "user-1",
           messageRef: currentRef,
@@ -1433,13 +1400,13 @@ describe("WorkflowProgressProjector", () => {
       expect(adapter.messageContents.get("card-2")?.actions).toEqual([]);
       expect(adapter.messageContents.get(currentRef.messageId)?.actions?.length).toBe(2);
       expect(storeA.listPendingSurfaceProjectionOrphans({ runId: "run-1" })).toEqual([]);
-      const approveToken = adapter.messageContents
+      const pauseToken = adapter.messageContents
         .get(currentRef.messageId)
-        ?.actions?.find((action) => action.label === "Approve")?.actionId;
-      if (!approveToken) throw new Error("Missing current GitHub approval action");
+        ?.actions?.find((action) => action.label === "Pause")?.actionId;
+      if (!pauseToken) throw new Error("Missing current GitHub pause action");
       expect(
         storeB.applySurfaceAction({
-          tokenSha256: sha256(approveToken),
+          tokenSha256: sha256(pauseToken),
           platform: "github",
           userId: "user-1",
           messageRef: currentRef,
@@ -1488,17 +1455,10 @@ describe("WorkflowProgressProjector", () => {
       createInvocation(storeA);
       const cardRef = await initial.ensureInitialCard("run-1");
       await initial.stop();
-      storeA.transitionApproval({
-        approvalId: "approval-1",
-        from: "pending",
-        to: "approved",
-        now: 11,
-      });
-
       const staleEdit = projectorA.ensureInitialCard("run-1");
       await adapter.firstStarted;
       expect(
-        storeB.tryClaimApprovedRun({
+        storeB.tryClaimTrustedRun({
           runId: "run-1",
           claimerId: "engine",
           now: 40_000,
@@ -1589,17 +1549,10 @@ describe("WorkflowProgressProjector", () => {
       createInvocation(storeA);
       const cardRef = await initial.ensureInitialCard("run-1");
       await initial.stop();
-      storeA.transitionApproval({
-        approvalId: "approval-1",
-        from: "pending",
-        to: "approved",
-        now: 11,
-      });
-
       void stale.ensureInitialCard("run-1");
       await adapter.firstStarted;
       expect(
-        storeB.tryClaimApprovedRun({
+        storeB.tryClaimTrustedRun({
           runId: "run-1",
           claimerId: "engine",
           now: Date.now(),
@@ -1762,14 +1715,14 @@ describe("WorkflowProgressProjector", () => {
         loadSource: async () => "export default 'immutable';",
       });
       const messageRef = await initial.ensureInitialCard("run-1");
-      const approveToken = adapter.contents
+      const pauseToken = adapter.contents
         .at(-1)
-        ?.actions?.find((action) => action.label === "Approve")?.actionId;
-      if (!approveToken) throw new Error("Missing approval token");
+        ?.actions?.find((action) => action.label === "Pause")?.actionId;
+      if (!pauseToken) throw new Error("Missing pause token");
       await initial.stop();
       expect(
         store.applySurfaceAction({
-          tokenSha256: sha256(approveToken),
+          tokenSha256: sha256(pauseToken),
           platform: "discord",
           userId: "user-1",
           messageRef,
@@ -1781,8 +1734,8 @@ describe("WorkflowProgressProjector", () => {
         startWorkflowActionResolver({ bus, store, subscriptionId: "action-race", now: () => 100 }),
         startWorkflowActionResolver({ bus, store, subscriptionId: "action-race", now: () => 100 }),
       ]);
-      expect(raw.outboxIds).toHaveLength(3);
-      expect(new Set(raw.outboxIds).size).toBe(3);
+      expect(raw.outboxIds).toHaveLength(2);
+      expect(new Set(raw.outboxIds).size).toBe(2);
 
       await Promise.all([projectorA.start(), projectorB.start()]);
       expect(adapter.sends).toBe(1);
@@ -1816,21 +1769,21 @@ describe("WorkflowProgressProjector", () => {
         loadSource: async () => "export default 'immutable';",
       });
       const messageRef = await initialProjector.ensureInitialCard("run-1");
-      const approveToken = adapter.contents
+      const pauseToken = adapter.contents
         .at(-1)
-        ?.actions?.find((action) => action.label === "Approve")?.actionId;
-      if (!approveToken) throw new Error("Missing approval token");
+        ?.actions?.find((action) => action.label === "Pause")?.actionId;
+      if (!pauseToken) throw new Error("Missing pause token");
       expect(
         store.applySurfaceAction({
-          tokenSha256: sha256(approveToken),
+          tokenSha256: sha256(pauseToken),
           platform: "discord",
           userId: "user-1",
           messageRef,
           now: 21,
         }).status,
       ).toBe("applied");
-      expect(store.getRun("run-1")?.state).toBe("queued");
-      expect(store.listPendingActionOutboxEvents(21)).toHaveLength(3);
+      expect(store.getRun("run-1")?.state).toBe("paused");
+      expect(store.listPendingActionOutboxEvents(21)).toHaveLength(2);
       expect(store.listPendingActionOutboxProjections()).toHaveLength(1);
 
       failedResolver = await startWorkflowActionResolver({
@@ -1839,7 +1792,7 @@ describe("WorkflowProgressProjector", () => {
         subscriptionId: "action-outbox-failing-resolver",
         now: () => 21,
       });
-      expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(3);
+      expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(2);
       await failedResolver.stop();
       failedResolver = null;
       await initialProjector.stop();
@@ -1865,7 +1818,7 @@ describe("WorkflowProgressProjector", () => {
       expect(store.listPendingActionOutboxEvents(2_000)).toHaveLength(0);
       expect(store.listPendingActionOutboxProjections()).toHaveLength(0);
       expect(adapter.contents.at(-1)?.actions?.map((action) => action.label)).toEqual([
-        "Pause",
+        "Resume",
         "Cancel",
       ]);
       expect(adapter.sends).toBe(1);
@@ -1918,8 +1871,8 @@ describe("WorkflowProgressProjector", () => {
       const firstRef = await projector.ensureInitialCard("run-1");
       expect(firstRef.messageId).toBe("card-1");
       expect(adapter.contents[0]?.actions?.map((action) => action.label)).toEqual([
-        "Approve",
-        "Reject",
+        "Pause",
+        "Cancel",
       ]);
       expect(adapter.contents[0]?.text).not.toContain("secret");
       expect(adapter.contents[0]?.text).not.toContain("d".repeat(64));
@@ -1936,15 +1889,8 @@ describe("WorkflowProgressProjector", () => {
       ]);
       expect(store.getSurfaceBinding("run-1")?.messageRef).toEqual(firstRef);
       expect(
-        store.transitionApproval({
-          approvalId: "approval-1",
-          from: "pending",
-          to: "approved",
-          now: 21,
-          actorPlatform: "discord",
-          actorUserId: "user-1",
-        }),
-      ).toBe(true);
+        store.tryClaimTrustedRun({ runId: "run-1", claimerId: "engine", now: 21 })?.state,
+      ).toBe("running");
       await projector.ensureInitialCard("run-1");
       expect(adapter.contents.at(-1)?.actions?.map((action) => action.label)).toEqual([
         "Pause",
@@ -1997,9 +1943,7 @@ describe("WorkflowProgressProjector", () => {
       await restarted.start();
       expect(store.getSurfaceBinding("run-1")?.messageRef?.messageId).toBe("card-2");
 
-      expect(
-        store.tryClaimApprovedRun({ runId: "run-1", claimerId: "engine", now: 50 })?.state,
-      ).toBe("running");
+      expect(store.getRun("run-1")?.state).toBe("running");
       expect(
         store.createOperation(
           {
@@ -2170,15 +2114,8 @@ describe("WorkflowProgressProjector", () => {
       createInvocation(store);
       const first = await projector.ensureInitialCard("run-1");
       expect(
-        store.transitionApproval({
-          approvalId: "approval-1",
-          from: "pending",
-          to: "approved",
-          now: 21,
-          actorPlatform: "discord",
-          actorUserId: "user-1",
-        }),
-      ).toBe(true);
+        store.tryClaimTrustedRun({ runId: "run-1", claimerId: "engine", now: 21 })?.state,
+      ).toBe("running");
       adapter.failNextEditNotFound = true;
       await expect(projector.ensureInitialCard("run-1")).rejects.toThrow("could not be created");
       expect(store.getSurfaceBinding("run-1")?.messageRef).toBeNull();
@@ -2280,12 +2217,7 @@ describe("WorkflowProgressProjector", () => {
       await projector.ensureInitialCard("run-1");
       expect(store.getSurfaceBinding("run-1")).toMatchObject({ retryCount: 0, lastError: null });
 
-      store.transitionApproval({
-        approvalId: "approval-1",
-        from: "pending",
-        to: "approved",
-        now: 101,
-      });
+      store.tryClaimTrustedRun({ runId: "run-1", claimerId: "engine", now: 101 });
       const before = adapter.edits;
       projector.requestProjection("run-1");
       projector.requestProjection("run-1");

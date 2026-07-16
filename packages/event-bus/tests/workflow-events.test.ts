@@ -101,18 +101,7 @@ describe("run-oriented workflow events", () => {
     expect(raw.lastMessage?.key).toBe("run-1");
   });
 
-  it("routes approval-only events by revision", async () => {
-    const raw = new CapturingRawBus();
-    const bus = createLilacBus(raw);
-
-    await bus.publish(lilacEventTypes.EvtWorkflowApprovalChanged, {
-      approvalId: "approval-1",
-      revisionId: "revision-1",
-      state: "pending",
-      ts: 100,
-    });
-    expect(raw.lastMessage?.key).toBe("revision-1");
-
+  it("exports workflow progress event names", () => {
     expect(lilacEventTypes.EvtWorkflowProgressRequested).toBe("evt.workflow.progress.requested");
     expect(lilacEventTypes.EvtWorkflowUsageChanged).toBe("evt.workflow.usage.changed");
     expect(lilacEventTypes.EvtWorkflowResultReady).toBe("evt.workflow.result.ready");

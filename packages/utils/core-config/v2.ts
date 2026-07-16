@@ -11,7 +11,6 @@ import {
   modelCapabilityCostPatchSchema,
   modelCapabilityLimitPatchSchema,
   modelCapabilityModalitiesPatchSchema,
-  pluginsSchema,
   routerSchema,
   statsForNerdsSchema,
   webExtractConfigSchema,
@@ -23,6 +22,7 @@ import type {
   ConfigParser,
   CoreConfigParseOptions,
   CoreConfigVersion,
+  SubagentProfileConfig,
   UniversalCoreConfig,
 } from "./types";
 
@@ -35,30 +35,104 @@ export const SUPPORTED_CORE_CONFIG_VERSIONS = [
 
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
+const pluginsSchemaV2 = z
+  .object({
+    disabled: z.array(z.string().min(1)).default([]),
+    config: z.record(z.string(), z.unknown()).default({}),
+  })
+  .default({ disabled: [], config: {} });
+
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
 
 const modelReasoningEffortSchema = z.enum(MODEL_REASONING_EFFORTS);
 
-const subagentProfileSchemaV2 = z
-  .object({
-    modelSlot: z.enum(["main", "fast"]).default("main"),
-    /** Optional direct model ref (provider/model or alias from models.def). */
-    model: z.string().min(1).optional(),
-    /** Optional portable AI SDK reasoning effort. */
-    reasoning: modelReasoningEffortSchema.optional(),
-    /** Optional providerOptions override merged onto models.def.<alias>.options. */
-    options: jsonObjectSchema.optional(),
-    promptOverlay: z.string().min(1).optional(),
-  })
-  .superRefine((input, ctx) => {
-    if (input.options && !input.model) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["options"],
-        message: "options requires model to be set",
-      });
-    }
-  });
+const profileNamesSchema = z.array(z.string().trim().min(1)).default([]);
+
+const profileLevel1Schema = z.object({
+  tools: profileNamesSchema,
+  plugins: profileNamesSchema,
+});
+
+const profileLevel2Schema = z.object({
+  callables: profileNamesSchema,
+  plugins: profileNamesSchema,
+});
+
+const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfig = {
+  modelSlot: "main",
+  level1: {
+    tools: ["read_file", "glob", "grep", "fuzzy_search", "scratch_read", "scratch_write", "batch"],
+    plugins: ["builtin-local-tools"],
+  },
+  level2: {
+    callables: [
+      "fetch",
+      "search",
+      "skills.list",
+      "skills.brief",
+      "skills.full",
+      "content.inspect",
+      "discovery.search",
+      "conversation.thread.search",
+      "surface.help",
+      "surface.sessions.listParticipants",
+      "surface.messages.list",
+      "surface.messages.read",
+      "surface.messages.search",
+      "surface.reactions.list",
+      "surface.reactions.listDetailed",
+    ],
+    plugins: ["web", "skills", "content.inspect", "discovery", "conversation.thread", "surface"],
+  },
+  network: true,
+  workspaceWrites: false,
+  execution: false,
+  delegation: false,
+};
+
+const GENERAL_PROFILE_DEFAULT: SubagentProfileConfig = {
+  modelSlot: "main",
+  level1: { tools: ["*"], plugins: ["*"] },
+  level2: { callables: ["*"], plugins: ["*"] },
+  network: true,
+  workspaceWrites: true,
+  execution: true,
+  delegation: false,
+};
+
+const SELF_PROFILE_DEFAULT: SubagentProfileConfig = {
+  ...GENERAL_PROFILE_DEFAULT,
+  delegation: true,
+};
+
+function subagentProfileSchemaV2(defaults: SubagentProfileConfig) {
+  return z
+    .object({
+      modelSlot: z.enum(["main", "fast"]).default("main"),
+      /** Optional direct model ref (provider/model or alias from models.def). */
+      model: z.string().min(1).optional(),
+      /** Optional portable AI SDK reasoning effort. */
+      reasoning: modelReasoningEffortSchema.optional(),
+      /** Optional providerOptions override merged onto models.def.<alias>.options. */
+      options: jsonObjectSchema.optional(),
+      promptOverlay: z.string().min(1).optional(),
+      level1: profileLevel1Schema.default(defaults.level1),
+      level2: profileLevel2Schema.default(defaults.level2),
+      network: z.boolean().default(defaults.network),
+      workspaceWrites: z.boolean().default(defaults.workspaceWrites),
+      execution: z.boolean().default(defaults.execution),
+      delegation: z.boolean().default(defaults.delegation),
+    })
+    .superRefine((input, ctx) => {
+      if (input.options && !input.model) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["options"],
+          message: "options requires model to be set",
+        });
+      }
+    });
+}
 
 const modelCapabilityOverrideSchemaV2 = z
   .object({
@@ -138,14 +212,14 @@ const subagentsSchemaV2 = z.object({
   delegatePromptOverlay: z.string().trim().min(1).optional(),
   profiles: z
     .object({
-      explore: subagentProfileSchemaV2.default({ modelSlot: "main" }),
-      general: subagentProfileSchemaV2.default({ modelSlot: "main" }),
-      self: subagentProfileSchemaV2.default({ modelSlot: "main" }),
+      explore: subagentProfileSchemaV2(EXPLORE_PROFILE_DEFAULT).default(EXPLORE_PROFILE_DEFAULT),
+      general: subagentProfileSchemaV2(GENERAL_PROFILE_DEFAULT).default(GENERAL_PROFILE_DEFAULT),
+      self: subagentProfileSchemaV2(SELF_PROFILE_DEFAULT).default(SELF_PROFILE_DEFAULT),
     })
     .default({
-      explore: { modelSlot: "main" },
-      general: { modelSlot: "main" },
-      self: { modelSlot: "main" },
+      explore: EXPLORE_PROFILE_DEFAULT,
+      general: GENERAL_PROFILE_DEFAULT,
+      self: SELF_PROFILE_DEFAULT,
     }),
 });
 
@@ -456,7 +530,7 @@ export const coreConfigInputSchemaV2 = z.object({
   configVersion: configVersionSchema,
 
   tools: toolsSchema,
-  plugins: pluginsSchema,
+  plugins: pluginsSchemaV2,
   conversation: conversationSchemaV2,
 
   surface: z
@@ -513,9 +587,9 @@ export const coreConfigInputSchemaV2 = z.object({
         maxDepth: 2,
         idleTimeoutMs: 6 * 60 * 1000,
         profiles: {
-          explore: { modelSlot: "main" },
-          general: { modelSlot: "main" },
-          self: { modelSlot: "main" },
+          explore: EXPLORE_PROFILE_DEFAULT,
+          general: GENERAL_PROFILE_DEFAULT,
+          self: SELF_PROFILE_DEFAULT,
         },
       }),
     })
@@ -534,9 +608,9 @@ export const coreConfigInputSchemaV2 = z.object({
         maxDepth: 2,
         idleTimeoutMs: 6 * 60 * 1000,
         profiles: {
-          explore: { modelSlot: "main" },
-          general: { modelSlot: "main" },
-          self: { modelSlot: "main" },
+          explore: EXPLORE_PROFILE_DEFAULT,
+          general: GENERAL_PROFILE_DEFAULT,
+          self: SELF_PROFILE_DEFAULT,
         },
       },
     }),

@@ -18,7 +18,6 @@ import { computeNextCronAtMs } from "../../workflow/cron";
 import {
   jsonObjectSchema,
   workflowRunStateSchema,
-  type WorkflowApproval,
   type WorkflowRevision,
   type WorkflowRun,
   type WorkflowSafetyMode,
@@ -26,7 +25,6 @@ import {
 } from "../../workflow/workflow-domain";
 import type { RequestContext, ServerTool } from "../types";
 import type { WorkflowProgressCardService } from "../../workflow/workflow-progress-projector";
-import type { WorkflowReviewerResolver } from "../../workflow/workflow-reviewer";
 import { parseToolInput } from "../validation-error-message";
 import { zodObjectToCliLines } from "./zod-cli";
 import { readWorkflowValueArtifact } from "../../workflow/workflow-artifact-store";
@@ -151,16 +149,15 @@ const runCancelInputSchema = z.strictObject({
 });
 const runPauseInputSchema = z.strictObject({ runId: z.string().min(1).max(200) });
 const runResumeInputSchema = z.strictObject({ runId: z.string().min(1).max(200) });
-const approvalRevokeInputSchema = z.strictObject({
-  approvalId: z.string().min(1).max(200),
-  reason: z.string().min(1).max(16_384).optional(),
-});
-
 function safetyMode(context: RequestContext | undefined): WorkflowSafetyMode {
   return context?.safetyMode === "trusted" ? "trusted" : "restricted";
 }
 
-function requireWorkflowControlContext(context: RequestContext | undefined): RequestContext {
+function requireWorkflowControlContext(context: RequestContext | undefined): RequestContext & {
+  authenticatedPrincipal: NonNullable<RequestContext["authenticatedPrincipal"]>;
+  safetyMode: "trusted";
+  serverOwnedRequest: true;
+} {
   if (context?.serverOwnedRequest !== true) {
     throw new Error("Workflow tools require a server-owned active request context");
   }
@@ -170,10 +167,18 @@ function requireWorkflowControlContext(context: RequestContext | undefined): Req
   if (!context.authenticatedPrincipal && !context.operator) {
     throw new Error("Workflow tools require an authenticated canonical principal");
   }
-  return context;
+  if (!context.authenticatedPrincipal) {
+    throw new Error("Workflow tools require an authenticated main-agent principal");
+  }
+  return {
+    ...context,
+    authenticatedPrincipal: context.authenticatedPrincipal,
+    safetyMode: "trusted",
+    serverOwnedRequest: true,
+  };
 }
 
-function principalReviewer(context: RequestContext) {
+function principalProgressTarget(context: RequestContext) {
   const principal = context.authenticatedPrincipal;
   if (!principal || !context.sessionId) return null;
   return {
@@ -189,7 +194,6 @@ function assertPrincipalScope(input: {
   canonicalProjectId: string;
   revision: WorkflowRevision;
   run?: WorkflowRun | null;
-  approval?: WorkflowApproval | null;
   trigger?: WorkflowTrigger | null;
 }): void {
   const principal = input.context.authenticatedPrincipal;
@@ -210,22 +214,6 @@ function assertPrincipalScope(input: {
     (input.run.origin.client !== principal.platform || input.run.origin.userId !== principal.userId)
   ) {
     throw new Error("Workflow record is outside the authenticated principal scope");
-  }
-  const internalGeneratedRunGrant =
-    input.run?.completionTarget.kind === "live_parent" &&
-    input.revision.normalizedPath === ".lilac/internal/subagent-delegate.js" &&
-    input.revision.name === "subagent-delegate" &&
-    input.approval?.state === "approved" &&
-    input.approval.expectedReviewerPlatform === null &&
-    input.approval.expectedReviewerUserId === null &&
-    input.approval.decisionSource === "internal trusted subagent delegation";
-  if (
-    input.approval &&
-    !internalGeneratedRunGrant &&
-    (input.approval.expectedReviewerPlatform !== principal.platform ||
-      input.approval.expectedReviewerUserId !== principal.userId)
-  ) {
-    throw new Error("Workflow grant is outside the authenticated principal scope");
   }
 }
 
@@ -270,10 +258,12 @@ function redactTrigger(trigger: WorkflowTrigger, revision: WorkflowRevision) {
 function requireTrustedTriggerContext(context: RequestContext | undefined): RequestContext & {
   cwd: string;
   safetyMode: "trusted";
+  authenticatedPrincipal: NonNullable<RequestContext["authenticatedPrincipal"]>;
+  serverOwnedRequest: true;
 } {
-  requireWorkflowControlContext(context);
+  const trusted = requireWorkflowControlContext(context);
   if (!context?.cwd) throw new Error("workflow.run.trigger requires server-resolved request cwd");
-  return { ...context, cwd: context.cwd, safetyMode: "trusted" };
+  return { ...trusted, cwd: context.cwd };
 }
 
 function validationResult(definition: Awaited<ReturnType<WorkflowDefinitionStore["get"]>>) {
@@ -284,14 +274,14 @@ function validationResult(definition: Awaited<ReturnType<WorkflowDefinitionStore
     normalizedPath: definition.normalizedPath,
     metadata: definition.validation.metadata,
     inputSchema: definition.validation.inputSchema,
-    capabilities: definition.validation.capabilities,
+    resources: definition.validation.resources,
     limits: definition.validation.limits,
     sensitiveFields: definition.validation.sensitiveFields,
     sourceSha256: definition.validation.sourceSha256,
     inputSchemaSha256: definition.validation.inputSchemaSha256,
-    capabilitySha256: definition.validation.capabilitySha256,
+    resourcePolicySha256: definition.validation.resourcePolicySha256,
     runtimeVersion: WORKFLOW_RUNTIME_VERSION,
-    reviewSummary: definition.validation.reviewSummary,
+    validationSummary: definition.validation.validationSummary,
   };
 }
 
@@ -308,7 +298,6 @@ export class ProgrammaticWorkflow implements ServerTool {
       now?: () => number;
       store?: DurableWorkflowStore;
       bus?: LilacBus;
-      reviewerResolver?: WorkflowReviewerResolver;
       progressCards?: WorkflowProgressCardService;
     } = {},
   ) {}
@@ -371,7 +360,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         callableId: "workflow.run.trigger",
         name: "Workflow Run Trigger",
         description:
-          "Persist an immutable workflow invocation for review and automatic durable execution.",
+          "Persist an immutable trusted workflow invocation for immediate durable execution.",
         shortInput: zodObjectToCliLines(runTriggerInputSchema, { mode: "required" }),
         input: [
           ...zodObjectToCliLines(runTriggerInputSchema),
@@ -413,7 +402,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         callableId: "workflow.run.get",
         name: "Workflow Run Get",
         description:
-          "Inspect one durable workflow run, approval, and isolated-edit patch outputs; optionally read one authorized patch in bounded chunks.",
+          "Inspect one durable workflow run and isolated-edit patch outputs; optionally read one authorized patch in bounded chunks.",
         shortInput: zodObjectToCliLines(runGetInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(runGetInputSchema),
         primaryPositional: { field: "runId" },
@@ -448,14 +437,6 @@ export class ProgrammaticWorkflow implements ServerTool {
         shortInput: zodObjectToCliLines(runResumeInputSchema, { mode: "required" }),
         input: zodObjectToCliLines(runResumeInputSchema),
         primaryPositional: { field: "runId" },
-      },
-      {
-        callableId: "workflow.approval.revoke",
-        name: "Workflow Approval Revoke",
-        description: "Revoke an exact revision grant and pause attached queued runs.",
-        shortInput: zodObjectToCliLines(approvalRevokeInputSchema, { mode: "required" }),
-        input: zodObjectToCliLines(approvalRevokeInputSchema),
-        primaryPositional: { field: "approvalId" },
       },
     ];
   }
@@ -572,12 +553,9 @@ export class ProgrammaticWorkflow implements ServerTool {
     if (callableId === "workflow.trigger.create") {
       const definitions = await this.definitions(projectScope.canonicalRoot);
       const context = requireTrustedTriggerContext(opts?.context);
-      const reviewer =
-        (this.params.reviewerResolver
-          ? await this.params.reviewerResolver.resolve(context)
-          : null) ?? principalReviewer(context);
-      if (!reviewer) {
-        throw new Error("workflow.trigger.create requires an authenticated originating reviewer");
+      const principalTarget = principalProgressTarget(context);
+      if (!principalTarget) {
+        throw new Error("workflow.trigger.create requires an authenticated originating session");
       }
       const input = parseToolInput({
         callableId,
@@ -586,8 +564,8 @@ export class ProgrammaticWorkflow implements ServerTool {
       });
       if (
         input.progress?.client &&
-        (input.progress.client !== reviewer.platform ||
-          input.progress.sessionId !== reviewer.sessionRef.channelId)
+        (input.progress.client !== principalTarget.platform ||
+          input.progress.sessionId !== principalTarget.sessionRef.channelId)
       ) {
         throw new Error("Workflow progress must target the authenticated originating session");
       }
@@ -613,7 +591,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         normalizedPath: definition.normalizedPath,
         sourceSha256: definition.validation.sourceSha256,
         inputSchemaSha256: definition.validation.inputSchemaSha256,
-        capabilitySha256: definition.validation.capabilitySha256,
+        resourcePolicySha256: definition.validation.resourcePolicySha256,
         runtimeVersion: WORKFLOW_RUNTIME_VERSION,
       } as const;
       const revisionId = `wfr:${canonicalJsonSha256(jsonObjectSchema.parse(revisionIdentity))}`;
@@ -624,7 +602,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         snapshotArtifactId: snapshot.artifactId,
         metadata: definition.validation.metadata,
         inputSchema: definition.validation.inputSchema,
-        capabilities: definition.validation.capabilities,
+        resources: definition.validation.resources,
         limits: definition.validation.limits,
         createdAt: now,
       };
@@ -670,9 +648,9 @@ export class ProgrammaticWorkflow implements ServerTool {
               now,
             );
       const progressTarget = {
-        platform: reviewer.platform,
-        channelId: reviewer.sessionRef.channelId,
-        replyToMessageId: reviewer.originMessageRef?.messageId ?? null,
+        platform: principalTarget.platform,
+        channelId: principalTarget.sessionRef.channelId,
+        replyToMessageId: null,
       };
       const trigger: WorkflowTrigger = {
         triggerId,
@@ -695,8 +673,8 @@ export class ProgrammaticWorkflow implements ServerTool {
         origin: {
           requestId: context.requestId ?? null,
           sessionId: context.sessionId ?? null,
-          client: reviewer.platform,
-          userId: reviewer.userId,
+          client: principalTarget.platform,
+          userId: principalTarget.userId,
           safetyMode: "trusted",
           projectCwd: definitions.canonicalWorkspaceRoot,
         },
@@ -721,7 +699,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         revisionId,
         sourceSha256: revision.sourceSha256,
         message:
-          "The immutable revision is pinned. Every fire creates a distinct run and rechecks exact-revision approval.",
+          "The immutable revision and authenticated owner are pinned. Every fire creates a distinct trusted queued run.",
       };
     }
     if (callableId === "workflow.trigger.get") {
@@ -817,10 +795,8 @@ export class ProgrammaticWorkflow implements ServerTool {
     if (callableId === "workflow.run.trigger") {
       const definitions = await this.definitions(projectScope.canonicalRoot);
       const context = requireTrustedTriggerContext(opts?.context);
-      const reviewer =
-        (this.params.reviewerResolver
-          ? await this.params.reviewerResolver.resolve(context)
-          : null) ?? principalReviewer(context);
+      const principalTarget = principalProgressTarget(context);
+      const principal = context.authenticatedPrincipal;
       const input = parseToolInput({ callableId, input: rawInput, schema: runTriggerInputSchema });
       const definition = await definitions.get({
         scope: input.scope,
@@ -844,7 +820,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         normalizedPath: definition.normalizedPath,
         sourceSha256: definition.validation.sourceSha256,
         inputSchemaSha256: definition.validation.inputSchemaSha256,
-        capabilitySha256: definition.validation.capabilitySha256,
+        resourcePolicySha256: definition.validation.resourcePolicySha256,
         runtimeVersion: WORKFLOW_RUNTIME_VERSION,
       } as const;
       const revisionId = `wfr:${canonicalJsonSha256(jsonObjectSchema.parse(revisionIdentity))}`;
@@ -855,7 +831,7 @@ export class ProgrammaticWorkflow implements ServerTool {
         snapshotArtifactId: snapshot.artifactId,
         metadata: definition.validation.metadata,
         inputSchema: definition.validation.inputSchema,
-        capabilities: definition.validation.capabilities,
+        resources: definition.validation.resources,
         limits: definition.validation.limits,
         createdAt: now,
       };
@@ -875,25 +851,24 @@ export class ProgrammaticWorkflow implements ServerTool {
       )}`;
       const requestedProgress = input.progress;
       if (
-        reviewer &&
+        principalTarget &&
         requestedProgress?.client &&
-        (requestedProgress.client !== reviewer.platform ||
-          requestedProgress.sessionId !== reviewer.sessionRef.channelId)
+        (requestedProgress.client !== principalTarget.platform ||
+          requestedProgress.sessionId !== principalTarget.sessionRef.channelId)
       ) {
         throw new Error("Workflow progress must target the authenticated originating session");
       }
-      const progressTarget = reviewer
+      const progressTarget = principalTarget
         ? {
-            platform: reviewer.platform,
-            channelId: reviewer.sessionRef.channelId,
-            replyToMessageId: reviewer.originMessageRef?.messageId ?? null,
+            platform: principalTarget.platform,
+            channelId: principalTarget.sessionRef.channelId,
+            replyToMessageId: null,
           }
         : null;
       const run: WorkflowRun = {
         runId,
         revisionId,
-        approvalId: null,
-        state: "awaiting_review",
+        state: "queued",
         inputSchemaSnapshot: definition.validation.inputSchema,
         args,
         argsSha256: canonicalJsonSha256(args),
@@ -904,7 +879,7 @@ export class ProgrammaticWorkflow implements ServerTool {
             context.requestClient && isAdapterPlatform(context.requestClient)
               ? context.requestClient
               : null,
-          userId: reviewer?.userId ?? null,
+          userId: principal.userId,
           safetyMode: "trusted",
           projectCwd: definitions.canonicalWorkspaceRoot,
         },
@@ -920,28 +895,9 @@ export class ProgrammaticWorkflow implements ServerTool {
         updatedAt: now,
         terminalAt: null,
       };
-      const approval: WorkflowApproval = {
-        approvalId: `wfapproval:${crypto.randomUUID()}`,
-        revisionId,
-        state: "pending",
-        expectedReviewerPlatform: reviewer?.platform ?? null,
-        expectedReviewerUserId: reviewer?.userId ?? null,
-        firstRunId: runId,
-        decisionActorPlatform: null,
-        decisionActorUserId: null,
-        decisionSource: null,
-        expiresAt: null,
-        decidedAt: null,
-        revokedAt: null,
-        revocationReason: null,
-        createdAt: now,
-        updatedAt: now,
-      };
       const invocation = this.store().createInvocation({
         revision,
         run,
-        pendingApproval: approval,
-        queueApproved: true,
         idempotency: { key: idempotencyKey, fingerprintSha256: invocationFingerprint },
       });
       let card: { platform: string; channelId: string; messageId: string } | null = null;
@@ -969,23 +925,15 @@ export class ProgrammaticWorkflow implements ServerTool {
         ok: true as const,
         runId: invocation.run.runId,
         state: invocation.run.state,
-        approvalId: invocation.approval.approvalId,
-        approvalState: invocation.approval.state,
         resolvedScope: definition.scope,
         path: definition.canonicalPath,
         revisionId: invocation.revision.revisionId,
         sourceSha256: invocation.revision.sourceSha256,
         inputSchemaSha256: invocation.revision.inputSchemaSha256,
-        capabilitySha256: invocation.revision.capabilitySha256,
+        resourcePolicySha256: invocation.revision.resourcePolicySha256,
         argsSha256: invocation.run.argsSha256,
-        reviewerAvailable: reviewer !== null,
         progressCard: card,
-        message:
-          invocation.run.state === "queued"
-            ? "Exact revision grant already approved; run is queued for durable execution."
-            : reviewer
-              ? "Run awaits deterministic review from the authenticated originating user."
-              : "Run remains awaiting_review because no authenticated originating reviewer is available.",
+        message: "Authenticated trusted invocation is queued for durable execution.",
       };
     }
     if (callableId === "workflow.run.get") {
@@ -994,13 +942,11 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
       const revision = this.store().getRevision(run.revisionId);
       if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
       assertPrincipalScope({
         context: controlContext,
         canonicalProjectId: projectScope.canonicalProjectId,
         revision,
         run,
-        approval,
       });
       const fullResultAllowed = input.includeSensitiveResult;
       const worktreeOutputTotal = this.store().countWorktreeOutputs(run.runId);
@@ -1049,7 +995,6 @@ export class ProgrammaticWorkflow implements ServerTool {
         ok: true as const,
         run: fullResultAllowed ? run : redactRun(run),
         revision,
-        approval,
         worktreeOutputs: worktreeOutputs.map(publicWorkflowWorktreeOutput),
         worktreeOutputPage: {
           offset: input.worktreeOutputOffset,
@@ -1097,15 +1042,13 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
       const revision = this.store().getRevision(run.revisionId);
       if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
       assertPrincipalScope({
         context: controlContext,
         canonicalProjectId: projectScope.canonicalProjectId,
         revision,
         run,
-        approval,
       });
-      const terminal = ["succeeded", "failed", "rejected", "cancelled"].includes(run.state);
+      const terminal = ["succeeded", "failed", "cancelled"].includes(run.state);
       if (terminal) return { ok: true as const, run: redactRun(run), changed: false };
       const now = this.params.now?.() ?? Date.now();
       const activeRequests = this.store()
@@ -1155,18 +1098,13 @@ export class ProgrammaticWorkflow implements ServerTool {
       if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
       const revision = this.store().getRevision(run.revisionId);
       if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-      const approval = run.approvalId ? this.store().getApproval(run.approvalId) : null;
       assertPrincipalScope({
         context: controlContext,
         canonicalProjectId: projectScope.canonicalProjectId,
         revision,
         run,
-        approval,
       });
       const to = callableId === "workflow.run.pause" ? "paused" : "queued";
-      if (to === "queued" && approval?.state !== "approved") {
-        throw new Error("Cannot resume a workflow without an active exact-revision grant");
-      }
       const allowed =
         to === "paused"
           ? ["queued", "running", "blocked"].includes(run.state)
@@ -1210,46 +1148,6 @@ export class ProgrammaticWorkflow implements ServerTool {
         run: updated ? redactRun(updated) : null,
         changed,
       };
-    }
-    if (callableId === "workflow.approval.revoke") {
-      const input = parseToolInput({
-        callableId,
-        input: rawInput,
-        schema: approvalRevokeInputSchema,
-      });
-      const approval = this.store().getApproval(input.approvalId);
-      if (!approval) throw new Error(`Workflow approval not found: ${input.approvalId}`);
-      const revision = this.store().getRevision(approval.revisionId);
-      if (!revision) throw new Error(`Workflow revision not found: ${approval.revisionId}`);
-      assertPrincipalScope({
-        context: controlContext,
-        canonicalProjectId: projectScope.canonicalProjectId,
-        revision,
-        approval,
-      });
-      if (approval.state !== "approved") {
-        return { ok: true as const, approval, changed: false };
-      }
-      const now = this.params.now?.() ?? Date.now();
-      const changed = this.store().transitionApproval({
-        approvalId: approval.approvalId,
-        from: "approved",
-        to: "revoked",
-        now,
-        reason: input.reason ?? "Revoked through workflow.approval.revoke",
-      });
-      const updated = this.store().getApproval(approval.approvalId);
-      await this.params.bus?.publish(lilacEventTypes.EvtWorkflowApprovalChanged, {
-        approvalId: approval.approvalId,
-        revisionId: approval.revisionId,
-        state: "revoked",
-        previousState: "approved",
-        ts: now,
-      });
-      for (const run of this.store().listRuns({ approvalId: approval.approvalId, limit: 1_000 })) {
-        this.params.progressCards?.requestProjection(run.runId);
-      }
-      return { ok: true as const, approval: updated, changed };
     }
     throw new Error(`Invalid callable ID '${callableId}'`);
   }

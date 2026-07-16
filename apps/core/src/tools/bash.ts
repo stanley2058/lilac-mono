@@ -1,4 +1,4 @@
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+import type { CoreConfig, ResolvedNativeSubagentProfile } from "@stanley2058/lilac-utils";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -100,15 +100,19 @@ export function bashToolWithCwd(
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
     workflowPolicy?: WorkflowRequestPolicy;
-    workflowCapability?: string;
+    workflowControlToken?: string;
     controlCapability?: string;
     trustedWorkflowRuntime?: TrustedWorkflowBashRuntime;
+    nativeProfile?: ResolvedNativeSubagentProfile;
+    scratchRoot?: string;
   },
 ) {
+  const workflow = opts?.workflowPolicy !== undefined;
   return {
     bash: tool({
-      description:
-        "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true. When output is truncated, use read_file with truncation.artifactUri to inspect the complete transient result.",
+      description: workflow || opts?.nativeProfile
+        ? "Execute installed local commands in a secret-free sandbox rooted at the operation cwd. Network follows the native subagent profile. The complete process tree is cancellable, time-bounded, cgrouped, and output-bounded."
+        : "Execute command in bash. Safety guardrails may block destructive commands unless dangerouslyAllow=true. When output is truncated, use read_file with truncation.artifactUri to inspect the complete transient result.",
       inputSchema: bashInputSchema,
       outputSchema: bashOutputSchema,
       execute: (input, { context, abortSignal, toolCallId }) => {
@@ -120,22 +124,23 @@ export function bashToolWithCwd(
               safetyMode?: "trusted" | "restricted";
             }
           | undefined;
-        const workflowRequestedCwd =
-          opts?.workflowPolicy?.canonicalRequestedCwd ?? opts?.workflowPolicy?.canonicalCwd;
+        const workflowRequestedCwd = opts?.workflowPolicy?.canonicalCwd;
         const workflowAuthorityRoot = opts?.workflowPolicy?.canonicalAuthorityRoot;
-        const payload = { ...input, cwd: input.cwd ?? workflowRequestedCwd ?? defaultCwd };
+        const suppliedCwd = "cwd" in input && typeof input.cwd === "string" ? input.cwd : undefined;
+        const payload = { ...input, cwd: suppliedCwd ?? workflowRequestedCwd ?? defaultCwd };
         if (
           typedContext?.safetyMode === "restricted" ||
-          opts?.workflowPolicy?.safetyMode === "restricted" ||
-          opts?.workflowPolicy?.executables === "none"
+          opts?.workflowPolicy?.safetyMode === "restricted"
         ) {
           return executeRestrictedBash(payload, {
             workspaceRoot: workflowAuthorityRoot ?? defaultCwd,
             context: {
               ...typedContext,
-              workflowCapability: opts?.workflowCapability,
+              workflowControlToken: opts?.workflowControlToken,
               controlCapability: opts?.controlCapability,
-              workspaceWritable: opts?.workflowPolicy?.editing === true,
+              workspaceWritable:
+                opts?.nativeProfile?.workspaceWrites ?? opts?.workflowPolicy?.profile !== "explore",
+              subagentProfile: opts?.nativeProfile?.name,
             },
             abortSignal,
             toolCallId,
@@ -143,11 +148,26 @@ export function bashToolWithCwd(
             outputConfig: opts?.outputConfig,
           });
         }
-        if (opts?.workflowPolicy) {
+        if (opts?.workflowPolicy || opts?.nativeProfile) {
           return executeTrustedWorkflowBash(payload, {
-            workspaceRoot: opts.workflowPolicy.canonicalAuthorityRoot,
-            workspaceWritable: opts.workflowPolicy.editing,
-            context: typedContext,
+            workspaceRoot:
+              opts.workflowPolicy?.isolation === "worktree"
+                ? opts.workflowPolicy.canonicalCwd
+                : (opts.workflowPolicy?.canonicalAuthorityRoot ?? defaultCwd),
+            workspaceWritable:
+              opts.nativeProfile?.workspaceWrites ?? opts.workflowPolicy?.profile !== "explore",
+            networkEnabled: opts.nativeProfile?.network ?? false,
+            workspaceIdentity:
+              opts.workflowPolicy?.isolation === "worktree"
+                ? opts.workflowPolicy.canonicalCwdIdentity
+                : opts.workflowPolicy?.canonicalAuthorityRootIdentity,
+            cwdIdentity: suppliedCwd ? undefined : opts.workflowPolicy?.canonicalCwdIdentity,
+            scratchRoot: opts.workflowPolicy?.canonicalScratchRoot ?? opts.scratchRoot,
+            context: {
+              ...typedContext,
+              workflowControlToken: opts?.workflowControlToken,
+              subagentProfile: opts?.nativeProfile?.name,
+            },
             abortSignal,
             toolCallId,
             artifacts: opts.artifacts,

@@ -18,6 +18,7 @@ import {
 import { extname } from "node:path";
 
 import type { ServerTool } from "../types";
+import type { RequestContext } from "../types";
 import { zodObjectToCliLines } from "./zod-cli";
 
 const V2_CONTENT_INSPECT_DEFAULT_MODEL = "google/gemini-3.5-flash";
@@ -134,7 +135,7 @@ export class ContentInspect implements ServerTool {
     input: Record<string, unknown>,
     opts?: {
       signal?: AbortSignal;
-      context?: unknown;
+      context?: RequestContext;
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
@@ -143,7 +144,10 @@ export class ContentInspect implements ServerTool {
     const payload = contentInspectInputSchema.parse(input);
     try {
       const model = await resolveContentInspectModel(this.options.getConfig);
-      const text = await inspectContent(payload, { abortSignal: opts?.signal, model });
+      const text = await inspectContent(payload, {
+        abortSignal: opts?.signal,
+        model,
+      });
       return {
         isError: false,
         text,

@@ -16,7 +16,7 @@ import {
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
 import {
-  normalizeWorkflowCapabilityProfile,
+  normalizeWorkflowResourcePolicy,
   type WorkflowWait,
 } from "../../src/workflow/workflow-domain";
 import { shouldSuppressRouterForWorkflowReply } from "../../src/workflow/workflow-router-suppression";
@@ -131,7 +131,6 @@ function createRunAndWait(
   input: { runId: string; operationId: string; wait: Omit<WorkflowWait, "runId" | "operationId"> },
 ): void {
   const revisionId = `revision-${input.runId}`;
-  const approvalId = `approval-${input.runId}`;
   store.createInvocation({
     revision: {
       revisionId,
@@ -143,24 +142,14 @@ function createRunAndWait(
       snapshotArtifactId: `workflow-source:${sha256(input.runId)}`,
       sourceSha256: sha256(input.runId),
       inputSchemaSha256: "a".repeat(64),
-      capabilitySha256: "b".repeat(64),
+      resourcePolicySha256: "b".repeat(64),
       metadata: { name: input.runId, description: "Wait test" },
       inputSchema: { type: "object", additionalProperties: false },
-      capabilities: normalizeWorkflowCapabilityProfile({
+      resources: normalizeWorkflowResourcePolicy({
         agents: {
-          profiles: ["explore"],
-          models: ["inherit"],
-          reasoning: ["provider-default"],
-          allowedRoots: ["project"],
-          tools: ["read_file"],
-          executables: "none",
-          editing: [],
-          delegation: false,
           maxConcurrent: 1,
           maxTotal: 1,
         },
-        level2: { callables: [] },
-        surfaces: { origin: [] },
         maxNestingDepth: 2,
         maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
@@ -174,14 +163,13 @@ function createRunAndWait(
         maxResultBytes: 10_000,
         maxRuntimeMemoryBytes: 256 * 1024 * 1024,
       },
-      runtimeVersion: "lilac-workflow-js-v2",
+      runtimeVersion: "lilac-workflow-js-v3",
       createdAt: 1,
     },
     run: {
       runId: input.runId,
       revisionId,
-      approvalId: null,
-      state: "awaiting_review",
+      state: "queued",
       inputSchemaSnapshot: { type: "object", additionalProperties: false },
       args: {},
       argsSha256: canonicalJsonSha256({}),
@@ -205,26 +193,8 @@ function createRunAndWait(
       updatedAt: 1,
       terminalAt: null,
     },
-    pendingApproval: {
-      approvalId,
-      revisionId,
-      state: "pending",
-      expectedReviewerPlatform: "discord",
-      expectedReviewerUserId: "user-1",
-      firstRunId: input.runId,
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: null,
-      expiresAt: null,
-      decidedAt: null,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: 1,
-      updatedAt: 1,
-    },
   });
-  store.transitionApproval({ approvalId, from: "pending", to: "approved", now: 2 });
-  store.tryClaimApprovedRun({ runId: input.runId, claimerId: "engine", now: 3 });
+  store.tryClaimTrustedRun({ runId: input.runId, claimerId: "engine", now: 3 });
   store.createOperation(
     {
       runId: input.runId,

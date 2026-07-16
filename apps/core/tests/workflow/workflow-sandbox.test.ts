@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +23,7 @@ export default defineWorkflow({
   name: "sandbox-test",
   description: "Sandbox test",
   input: { type: "object", properties: {} },
-  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 2, maxTotal: 10, editing: [] }, waits: ["reply", "sleep"] },
+  resources: { agents: { maxConcurrent: 2, maxTotal: 10 }, waits: ["reply", "sleep"] },
   async run({ args, agent, parallel, pipeline, phase, waitForReply, sleep }) { ${runBody} },
 });`;
 }
@@ -38,7 +38,7 @@ export default defineWorkflow({
   name: "sandbox-test",
   description: "Sandbox test",
   input: { type: "object", properties: {} },
-  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: [] }, waits: [] },
+  resources: { agents: { maxConcurrent: 1, maxTotal: 1 }, waits: [] },
   async run({ agent }) { return await invoke(agent, "called"); },
 });`;
 }
@@ -389,6 +389,7 @@ describe("workflow sandbox unit-start handshake", () => {
     let stderrController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const writes: string[] = [];
     const commands: string[][] = [];
+    let spawnCommand: string[] = [];
     const activeProbe = new Promise<typeof successfulCommand>((resolve) => {
       resolveActive = resolve;
     });
@@ -399,27 +400,30 @@ describe("workflow sandbox unit-start handshake", () => {
       resolveFirstWrite = resolve;
     });
     const runtime: WorkflowSandboxRuntimeProbes = {
-      spawn: () => ({
-        stdin: {
-          write: (value) => {
-            writes.push(value);
-            resolveFirstWrite();
+      spawn: (command) => {
+        spawnCommand = [...command];
+        return {
+          stdin: {
+            write: (value) => {
+              writes.push(value);
+              resolveFirstWrite();
+            },
+            end: () => {},
           },
-          end: () => {},
-        },
-        stdout: new ReadableStream<Uint8Array>({
-          start: (controller) => {
-            stdoutController = controller;
-          },
-        }),
-        stderr: new ReadableStream<Uint8Array>({
-          start: (controller) => {
-            stderrController = controller;
-          },
-        }),
-        exited,
-        kill: () => {},
-      }),
+          stdout: new ReadableStream<Uint8Array>({
+            start: (controller) => {
+              stdoutController = controller;
+            },
+          }),
+          stderr: new ReadableStream<Uint8Array>({
+            start: (controller) => {
+              stderrController = controller;
+            },
+          }),
+          exited,
+          kill: () => {},
+        };
+      },
       run: async (command) => {
         commands.push([...command]);
         if (command.includes("is-active")) return activeProbe;
@@ -446,6 +450,7 @@ describe("workflow sandbox unit-start handshake", () => {
       runtime,
       writes,
       commands,
+      spawnCommand: () => spawnCommand,
       firstWrite,
       activate: () => resolveActive({ ...successfulCommand, stdout: "active\n" }),
       finish: (result: JsonValue) => {
@@ -513,6 +518,30 @@ describe("workflow sandbox unit-start handshake", () => {
     fake.finish({ ok: true });
     await expect(sandbox.result).resolves.toEqual({ ok: true });
     expect(fake.writes).toHaveLength(1);
+  });
+
+  it("keeps every Bubblewrap host source descriptor pinned through child exit", async () => {
+    const fake = controlledRuntime();
+    const sandbox = startWorkflowSandbox({
+      source: "active source",
+      args: {},
+      maxWallTimeMs: 10_000,
+      onCall: async () => null,
+      runtimeProbes: fake.runtime,
+    });
+    const command = fake.spawnCommand();
+    const sources = command.flatMap((value, index) =>
+      value === "--ro-bind" && command[index + 1]?.startsWith(`/proc/${process.pid}/fd/`)
+        ? [command[index + 1]!]
+        : [],
+    );
+    expect(sources).toHaveLength(3);
+    for (const sourcePath of sources) await expect(stat(sourcePath)).resolves.toBeDefined();
+    fake.activate();
+    await fake.firstWrite;
+    fake.finish({ ok: true });
+    await sandbox.result;
+    for (const sourcePath of sources) await expect(stat(sourcePath)).rejects.toThrow();
   });
 
   it("rejects forged call kinds at the parent protocol boundary", async () => {
@@ -781,7 +810,7 @@ export default defineWorkflow({
   name: "sandbox-test",
   description: "Sandbox test",
   input: { type: "object", properties: {} },
-  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 2, maxTotal: 2, editing: [] }, waits: [] },
+  resources: { agents: { maxConcurrent: 2, maxTotal: 2 }, waits: [] },
   async run({ agent }) { return await Promise.all([invoke(agent, "a"), invoke(agent, "b")]); },
 });`;
     const sandbox = startWorkflowSandbox({

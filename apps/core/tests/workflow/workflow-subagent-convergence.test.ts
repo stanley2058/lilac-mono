@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import path from "node:path";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import {
   createLilacBus,
@@ -269,10 +269,6 @@ async function createRun(parentRequestId = "parent:1") {
   const setupResult = await setup();
   const handle = await setupResult.dispatcher.delegate(
     registration(setupResult.projectRoot, parentRequestId),
-    {
-      editing: false,
-      level2Callables: ["search"],
-    },
   );
   const run = setupResult.store.getRun(handle.runId);
   if (!run) throw new Error("generated subagent run not found");
@@ -288,10 +284,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("workflow subagent convergence", () => {
-  it("creates an approved immutable run under the project root when the tool workspace differs", async () => {
+  it("creates a trusted immutable run under the project root when the tool workspace differs", async () => {
     const { workspaceRoot, projectRoot, store, handle, run } = await createRun();
     const revision = store.getRevision(run.revisionId);
-    const approval = run.approvalId ? store.getApproval(run.approvalId) : null;
 
     expect(run.state).toBe("queued");
     expect(run.origin).toMatchObject({ client: "discord", userId: "user-1" });
@@ -306,12 +301,10 @@ describe("workflow subagent convergence", () => {
     expect(revision?.name).toBe("subagent-delegate");
     expect(revision?.canonicalWorkspaceRoot).toBe(projectRoot);
     expect(revision?.canonicalWorkspaceRoot).not.toBe(workspaceRoot);
-    expect(revision?.capabilities.agents).toMatchObject({
-      profiles: ["explore"],
+    expect(revision?.resources.agents).toMatchObject({
       maxConcurrent: 1,
       maxTotal: 1,
     });
-    expect(approval?.state).toBe("approved");
     expect(store.listActiveLiveParentRuns("parent:1").map((item) => item.runId)).toEqual([
       handle.runId,
     ]);
@@ -323,14 +316,8 @@ describe("workflow subagent convergence", () => {
     const otherProjectRoot = path.join(root, "unrelated-project");
     await mkdir(otherProjectRoot);
 
-    const direct = await dispatcher.delegate(registration(projectRoot, "parent:direct-root"), {
-      editing: false,
-      level2Callables: ["search"],
-    });
-    const nested = await dispatcher.delegate(registration(otherProjectRoot, "parent:nested-root"), {
-      editing: false,
-      level2Callables: ["search"],
-    });
+    const direct = await dispatcher.delegate(registration(projectRoot, "parent:direct-root"));
+    const nested = await dispatcher.delegate(registration(otherProjectRoot, "parent:nested-root"));
     const directRun = store.getRun(direct.runId);
     const nestedRun = store.getRun(nested.runId);
     const directRevision = directRun ? store.getRevision(directRun.revisionId) : null;
@@ -346,19 +333,18 @@ describe("workflow subagent convergence", () => {
     const { projectRoot, store, dispatcher } = await setup();
     const syntheticParentSessionId = "sub:channel:1:named:outer";
     const nested = registration(projectRoot, "wfr:nested-parent");
-    const handle = await dispatcher.delegate(
-      {
-        ...nested,
-        parentSessionId: syntheticParentSessionId,
-        parentRequestClient: "unknown",
-        parentHeaders: {
-          ...nested.parentHeaders,
-          session_id: syntheticParentSessionId,
-          request_client: "unknown",
-        },
+    const familyScratchRoot = path.join(projectRoot, ".scratch", "family");
+    const handle = await dispatcher.delegate({
+      ...nested,
+      familyScratchRoot,
+      parentSessionId: syntheticParentSessionId,
+      parentRequestClient: "unknown",
+      parentHeaders: {
+        ...nested.parentHeaders,
+        session_id: syntheticParentSessionId,
+        request_client: "unknown",
       },
-      { editing: false, level2Callables: ["search"] },
-    );
+    });
     const run = store.getRun(handle.runId);
 
     expect(run?.origin).toMatchObject({
@@ -366,6 +352,7 @@ describe("workflow subagent convergence", () => {
       client: "discord",
       userId: "user-1",
     });
+    expect(run?.completionTarget).toMatchObject({ familyScratchRoot });
     expect(run?.completionTarget).toMatchObject({
       kind: "live_parent",
       parentSessionId: syntheticParentSessionId,
@@ -439,7 +426,7 @@ describe("workflow subagent convergence", () => {
     }
   });
 
-  it("keeps legacy ownerless generated runs operator-only", async () => {
+  it("keeps legacy ownerless generated runs unavailable to principals and synthetic operators", async () => {
     const { workspaceRoot, projectRoot, dataDir, dbPath, store, run } = await createRun();
     const legacy = new Database(dbPath);
     legacy.run(
@@ -469,35 +456,38 @@ describe("workflow subagent convergence", () => {
       await expect(
         tool.call("workflow.run.get", { runId: run.runId }, { context: principalContext }),
       ).rejects.toThrow("principal scope");
-      expect(
-        await tool.call("workflow.run.get", { runId: run.runId }, { context: operatorContext }),
-      ).toMatchObject({ run: { runId: run.runId, origin: { client: null, userId: null } } });
+      await expect(
+        tool.call("workflow.run.get", { runId: run.runId }, { context: operatorContext }),
+      ).rejects.toThrow("authenticated main-agent principal");
     } finally {
       await tool.destroy();
       store.close();
     }
   });
 
-  it("keeps ordinary editing subagents on safe shared workspace isolation", async () => {
-    const { projectRoot, store, dispatcher } = await setup();
-    const handle = await dispatcher.delegate(
-      {
-        ...registration(projectRoot),
-        profile: "general",
-        childHeaders: {
-          ...registration(projectRoot).childHeaders,
-          subagent_profile: "general",
-        },
+  it("preserves a self profile in the generated workflow", async () => {
+    const { dataDir, projectRoot, store, dispatcher } = await setup();
+    const handle = await dispatcher.delegate({
+      ...registration(projectRoot),
+      profile: "self",
+      childHeaders: {
+        ...registration(projectRoot).childHeaders,
+        subagent_profile: "self",
       },
-      { editing: true, level2Callables: [] },
-    );
+    });
     const run = store.getRun(handle.runId);
     const revision = run ? store.getRevision(run.revisionId) : null;
-    expect(revision?.capabilities.agents).toMatchObject({
-      profiles: ["general"],
-      editing: ["shared"],
+    expect(run?.completionTarget).toMatchObject({ kind: "live_parent", profile: "self" });
+    expect(revision?.resources.agents).toMatchObject({
       maxConcurrent: 1,
     });
+    if (!revision) throw new Error("generated self revision missing");
+    const generated = await readFile(
+      path.join(dataDir, "workflow-snapshots", `${revision.sourceSha256}.js`),
+      "utf8",
+    );
+    expect(generated).toContain('profile: { type: "string", const: "self" }');
+    expect(generated).not.toContain("delegation:");
     store.close();
   });
 
@@ -521,7 +511,7 @@ describe("workflow subagent convergence", () => {
       ttlMs: 60_000,
       maxBytesPerSession: 1_000_000,
     });
-    const handle = await dispatcher.delegate(child, { editing: false, level2Callables: [] });
+    const handle = await dispatcher.delegate(child);
     const run = setupResult.store.getRun(handle.runId);
     if (!run) throw new Error("generated run missing");
     expect(
@@ -551,10 +541,10 @@ describe("workflow subagent convergence", () => {
 
   it("uses the same durable terminal run without deferred delivery for synchronous completion", async () => {
     const setupResult = await setup();
-    const handle = await setupResult.dispatcher.delegate(
-      { ...registration(setupResult.projectRoot), mode: "sync" },
-      { editing: false, level2Callables: ["search"] },
-    );
+    const handle = await setupResult.dispatcher.delegate({
+      ...registration(setupResult.projectRoot),
+      mode: "sync",
+    });
     const run = setupResult.store.getRun(handle.runId);
     if (!run) throw new Error("generated subagent run not found");
     const { store } = setupResult;
@@ -615,9 +605,9 @@ describe("workflow subagent convergence", () => {
           childSessionId = message.headers?.session_id;
           childRequestId = message.headers?.request_id;
           const workflow = Reflect.get(message.data.raw ?? {}, "workflow");
-          const capability =
+          const controlToken =
             workflow !== null && typeof workflow === "object"
-              ? Reflect.get(workflow, "capability")
+              ? Reflect.get(workflow, "controlToken")
               : undefined;
           const dispatchEpoch =
             workflow !== null && typeof workflow === "object"
@@ -626,28 +616,33 @@ describe("workflow subagent convergence", () => {
           hasOpaqueAuthority =
             workflow !== null &&
             typeof workflow === "object" &&
-            typeof capability === "string" &&
+            typeof controlToken === "string" &&
             Reflect.get(workflow, "editing") === undefined;
           if (
             !childRequestId ||
             !childSessionId ||
-            typeof capability !== "string" ||
+            typeof controlToken !== "string" ||
             typeof dispatchEpoch !== "string"
           ) {
             throw new Error("generated workflow request authority is incomplete");
           }
           const authorized = store.authorizeWorkflowRequest({
             requestId: childRequestId,
-            token: capability,
+            token: controlToken,
             sessionId: childSessionId,
             platform: "unknown",
             now: Date.now(),
           });
           if (!authorized) throw new Error("generated workflow request was not authorized");
+          expect(authorized.policy).toMatchObject({
+            profile: "explore",
+            model: null,
+            reasoning: null,
+          });
           expect(
             store.claimWorkflowRequest({
               requestId: childRequestId,
-              token: capability,
+              token: controlToken,
               dispatchEpoch,
               ownerId: "generated-runner",
               now: Date.now(),
@@ -706,7 +701,7 @@ describe("workflow subagent convergence", () => {
           depth: 1,
           input: {
             prompt: "Audit the authentication flow",
-            options: { profile: "explore", model: "inherit", label: "subagent explore" },
+            options: { profile: "explore", label: "subagent explore" },
           },
         }),
       }),
@@ -813,10 +808,6 @@ describe("workflow subagent convergence", () => {
     const setupResult = await setup();
     const first = await setupResult.dispatcher.delegate(
       registration(setupResult.projectRoot, "parent:ordered"),
-      {
-        editing: false,
-        level2Callables: ["search"],
-      },
     );
     const secondRegistration = {
       ...registration(setupResult.projectRoot, "parent:ordered"),
@@ -825,10 +816,7 @@ describe("workflow subagent convergence", () => {
       sessionName: "audit-2",
       parentToolCallId: "tool:delegate:2",
     };
-    const second = await setupResult.dispatcher.delegate(secondRegistration, {
-      editing: false,
-      level2Callables: ["search"],
-    });
+    const second = await setupResult.dispatcher.delegate(secondRegistration);
     setupResult.store.transitionRun({
       runId: first.runId,
       from: "queued",
@@ -913,18 +901,15 @@ describe("workflow subagent convergence", () => {
 
     for (let index = 0; index < 30; index += 1) {
       const childRequestId = `sub:sequential:${index}`;
-      const handle = await setupResult.dispatcher.delegate(
-        {
-          ...registration(setupResult.projectRoot, "parent:sequential"),
-          childRequestId,
-          childSessionId: `sub:session:${index}`,
-        },
-        { editing: false, level2Callables: [] },
-      );
+      const handle = await setupResult.dispatcher.delegate({
+        ...registration(setupResult.projectRoot, "parent:sequential"),
+        childRequestId,
+        childSessionId: `sub:session:${index}`,
+      });
       const run = setupResult.store.getRun(handle.runId);
       if (!run) throw new Error("sequential child run missing");
       expect(
-        setupResult.store.tryClaimApprovedRun({
+        setupResult.store.tryClaimTrustedRun({
           runId: run.runId,
           claimerId: "sequential-engine",
           now: 100 + index,

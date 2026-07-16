@@ -164,12 +164,12 @@ export default defineWorkflow({
       token: { type: "string", sensitive: true },
     },
   },
-  capabilities: {
-    agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: [] },
+  resources: {
+    agents: { maxConcurrent: 1, maxTotal: 1 },
     waits: [],
   },
   async run({ args, phase, agent }) {
-    return phase("audit", () => agent("Inspect " + args.target, { label: "integration audit" }));
+    return phase("audit", () => agent("Inspect " + args.target, { profile: "explore", label: "integration audit" }));
   },
 });
 `;
@@ -223,18 +223,6 @@ describe("unified workflow integration", () => {
       store,
       bus,
       progressCards: projector,
-      reviewerResolver: {
-        resolve: async () => ({
-          platform: "discord",
-          userId: "reviewer-1",
-          sessionRef: { platform: "discord", channelId: "channel-1" },
-          originMessageRef: {
-            platform: "discord",
-            channelId: "channel-1",
-            messageId: "origin-1",
-          },
-        }),
-      },
     });
     const requestIds: string[] = [];
     const requestResponder = await bus.subscribeTopic(
@@ -250,14 +238,14 @@ describe("unified workflow integration", () => {
                 runId: z.string(),
                 operationId: z.string(),
                 dispatchEpoch: z.string(),
-                capability: z.string(),
+                controlToken: z.string(),
               }),
             })
             .parse(message.data.raw).workflow;
           expect(
             store.claimWorkflowRequest({
               requestId,
-              token: workflow.capability,
+              token: workflow.controlToken,
               dispatchEpoch: workflow.dispatchEpoch,
               ownerId: "integration-agent",
               now: 100,
@@ -347,28 +335,13 @@ describe("unified workflow integration", () => {
         { context },
       );
       const { runId } = z.object({ runId: z.string() }).parse(triggered);
-      expect(store.getRun(runId)?.state).toBe("awaiting_review");
+      expect(store.getRun(runId)?.state).toBe("queued");
       expect(adapter.contents[0]?.actions?.map((action) => action.label)).toEqual([
-        "Approve",
-        "Reject",
+        "Pause",
+        "Cancel",
       ]);
       expect(JSON.stringify(adapter.contents)).not.toContain("super-secret-value");
-
-      const approveToken = adapter.contents[0]?.actions?.find(
-        (action) => action.label === "Approve",
-      )?.actionId;
-      const binding = store.getSurfaceBinding(runId);
-      if (!approveToken || !binding?.messageRef) throw new Error("review action was not bound");
       await engine.start();
-      await Bun.sleep(25);
-      expect(store.listOperations(runId)).toEqual([]);
-      await bus.publish(lilacEventTypes.EvtAdapterActionInvoked, {
-        actionId: approveToken,
-        platform: "discord",
-        userId: "reviewer-1",
-        messageRef: binding.messageRef,
-        ts: Date.now(),
-      });
       expect(["queued", "running", "succeeded"].includes(store.getRun(runId)?.state ?? "")).toBe(
         true,
       );
@@ -427,18 +400,6 @@ describe("unified workflow integration", () => {
       authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
       toolCallId: "restart-tool-1",
     };
-    const reviewerResolver = {
-      resolve: async () => ({
-        platform: "discord" as const,
-        userId: "reviewer-1",
-        sessionRef: { platform: "discord" as const, channelId: "channel-1" },
-        originMessageRef: {
-          platform: "discord" as const,
-          channelId: "channel-1",
-          messageId: "origin-1",
-        },
-      }),
-    };
     const firstProjector = new WorkflowProgressProjector({
       bus,
       store,
@@ -452,7 +413,6 @@ describe("unified workflow integration", () => {
       store,
       bus,
       progressCards: firstProjector,
-      reviewerResolver,
     });
     await tool.init();
     await firstProjector.start();
@@ -470,10 +430,7 @@ describe("unified workflow integration", () => {
       },
       { context },
     );
-    const { runId, approvalId } = z
-      .object({ runId: z.string(), approvalId: z.string() })
-      .parse(triggered);
-    store.transitionApproval({ approvalId, from: "pending", to: "approved", now: Date.now() });
+    const { runId } = z.object({ runId: z.string() }).parse(triggered);
     const firstBinding = store.getSurfaceBinding(runId)?.messageRef;
     const firstEngine = new WorkflowEngine({
       bus,
@@ -497,7 +454,7 @@ describe("unified workflow integration", () => {
           parentPath: null,
           phase: "audit",
           depth: 1,
-          input: { prompt: "restart", options: { label: "restart agent" } },
+          input: { prompt: "restart", options: { profile: "explore", label: "restart agent" } },
         }),
       }),
       dispatchAgentRequest: async ({ signal }) => {
@@ -557,7 +514,7 @@ describe("unified workflow integration", () => {
             parentPath: null,
             phase: "audit",
             depth: 1,
-            input: { prompt: "restart", options: { label: "restart agent" } },
+            input: { prompt: "restart", options: { profile: "explore", label: "restart agent" } },
           }),
         }),
         dispatchAgentRequest: async ({ requestId, reconcile }) => {

@@ -1,28 +1,22 @@
 import { createHash } from "node:crypto";
-import path from "node:path";
 import ts from "typescript-codegen";
 import { z } from "zod";
 
 import {
   jsonObjectSchema,
   compareCodeUnits,
-  normalizeWorkflowCapabilityProfile,
-  workflowAgentProfileSchema,
-  workflowEditingModeSchema,
-  workflowExecutableAuthoritySchema,
-  workflowLevel1ToolSchema,
-  workflowReasoningSchema,
+  normalizeWorkflowResourcePolicy,
   workflowLimitsSchema,
   workflowMetadataSchema,
   type JsonObject,
   type JsonValue,
-  type WorkflowCapabilityProfile,
+  type WorkflowResourcePolicy,
   type WorkflowLimits,
   type WorkflowMetadata,
   type WorkflowSafetyMode,
 } from "./workflow-domain";
 
-export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v2";
+export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v3";
 export const MAX_WORKFLOW_SOURCE_BYTES = 256 * 1024;
 export const MAX_WORKFLOW_INPUT_BYTES = 256 * 1024;
 
@@ -41,6 +35,16 @@ const WORKFLOW_HOST_CALL_NAMES = new Set([
   "sleep",
 ]);
 const WORKFLOW_RUN_CONTEXT_NAMES = new Set(["args", ...WORKFLOW_HOST_CALL_NAMES]);
+const REMOVED_REVISION_AGENT_FIELDS = [
+  "profiles",
+  "models",
+  "reasoning",
+  "allowedRoots",
+  "tools",
+  "executables",
+  "editing",
+  "delegation",
+] as const;
 
 export const workflowDefinitionNameSchema = z
   .string()
@@ -140,29 +144,11 @@ const workflowJsonSchema: z.ZodType<WorkflowJsonSchema> = z.lazy(() =>
   ]),
 );
 
-const sourceCapabilitySchema = z.strictObject({
+const sourceResourcePolicySchema = z.strictObject({
   agents: z.strictObject({
-    profiles: z.array(workflowAgentProfileSchema).min(1).max(3),
-    models: z.array(z.string().min(1).max(200)).min(1).max(64),
-    reasoning: z.array(workflowReasoningSchema).min(1).default(["provider-default"]),
-    allowedRoots: z.array(z.string().min(1).max(4_096)).min(1).max(64).default(["project"]),
-    tools: z.array(workflowLevel1ToolSchema).default(["glob", "read_file"]),
-    executables: workflowExecutableAuthoritySchema.default("none"),
     maxConcurrent: z.number().int().min(1).max(64),
     maxTotal: z.number().int().min(1).max(10_000),
-    editing: z.array(workflowEditingModeSchema).max(2).default([]),
-    delegation: z.boolean().default(false),
   }),
-  level2: z
-    .strictObject({
-      callables: z.array(z.string().min(1).max(200)).max(512).default([]),
-    })
-    .default({ callables: [] }),
-  surfaces: z
-    .strictObject({
-      origin: z.array(z.string().min(1).max(200)).max(64).default([]),
-    })
-    .default({ origin: [] }),
   waits: z
     .array(z.enum(["reply", "sleep"]))
     .max(16)
@@ -180,9 +166,9 @@ const sourceCapabilitySchema = z.strictObject({
     .min(1_000)
     .max(24 * 60 * 60 * 1_000)
     .default(10 * 60 * 1_000),
-  safety: z
-    .strictObject({ escalation: z.enum(["none", "trusted_with_review"]).default("none") })
-    .default({ escalation: "none" }),
+  safety: z.strictObject({ escalation: z.literal("none").default("none") }).default({
+    escalation: "none",
+  }),
 });
 
 const sourceLimitsSchema = workflowLimitsSchema
@@ -222,13 +208,13 @@ const sourceLimitsSchema = workflowLimitsSchema
 export type ValidatedWorkflowDefinition = {
   metadata: WorkflowMetadata;
   inputSchema: JsonObject;
-  capabilities: WorkflowCapabilityProfile;
+  resources: WorkflowResourcePolicy;
   limits: WorkflowLimits;
   sensitiveFields: string[];
   sourceSha256: string;
   inputSchemaSha256: string;
-  capabilitySha256: string;
-  reviewSummary: string;
+  resourcePolicySha256: string;
+  validationSummary: string;
 };
 
 export function sha256(value: string | Uint8Array): string {
@@ -771,7 +757,7 @@ function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
 }
 
 function extractStaticMetadata(definition: ts.ObjectLiteralExpression): JsonObject {
-  const allowed = new Set(["name", "description", "input", "capabilities", "limits", "run"]);
+  const allowed = new Set(["name", "description", "input", "resources", "limits", "run"]);
   const output: Record<string, JsonValue> = {};
   const seen = new Set<string>();
   let hasRun = false;
@@ -779,6 +765,11 @@ function extractStaticMetadata(definition: ts.ObjectLiteralExpression): JsonObje
   for (const property of definition.properties) {
     if (!property.name) throw new Error("Workflow definition properties must be named");
     const name = propertyName(property.name);
+    if (name === "capabilities") {
+      throw new Error(
+        "Workflow definition property 'capabilities' was removed; rename resource bounds to 'resources'",
+      );
+    }
     if (!allowed.has(name)) throw new Error(`Unknown workflow definition property: ${name}`);
     if (seen.has(name)) throw new Error(`Duplicate workflow definition property: ${name}`);
     seen.add(name);
@@ -1089,20 +1080,30 @@ export function validateWorkflowSource(params: {
   assertSchemaBounds(parsedInput);
   const normalizedInput = normalizeInputSchema(parsedInput);
   const inputSchema = jsonObjectSchema.parse(normalizedInput);
-  const sourceCapabilities = sourceCapabilitySchema.parse(raw.capabilities);
-  for (const root of sourceCapabilities.agents.allowedRoots) {
-    if (root === "project") continue;
-    if (!path.isAbsolute(root) || path.normalize(root) !== root) {
+  const rawResources = jsonObjectSchema.safeParse(raw.resources);
+  if (rawResources.success) {
+    const rawAgents = jsonObjectSchema.safeParse(rawResources.data["agents"]);
+    const removedAgentField = rawAgents.success
+      ? REMOVED_REVISION_AGENT_FIELDS.find((field) => field in rawAgents.data)
+      : undefined;
+    if (removedAgentField) {
       throw new Error(
-        `Workflow allowed root must be project or a canonical absolute path: ${root}`,
+        `Workflow revision field 'agents.${removedAgentField}' was removed; migrate to profile-native agent() options`,
+      );
+    }
+    const removedTopLevel = ["level2", "surfaces"].find((field) => field in rawResources.data);
+    if (removedTopLevel) {
+      throw new Error(
+        `Workflow revision field '${removedTopLevel}' was removed; profiles now own agent tool access`,
       );
     }
   }
-  const capabilities = normalizeWorkflowCapabilityProfile({
-    ...sourceCapabilities,
+  const sourceResources = sourceResourcePolicySchema.parse(raw.resources);
+  const resources = normalizeWorkflowResourcePolicy({
+    ...sourceResources,
     safety: {
       originatingMode: params.safetyMode ?? "trusted",
-      escalation: sourceCapabilities.safety.escalation,
+      escalation: sourceResources.safety.escalation,
     },
   });
   const limits = sourceLimitsSchema.parse(raw.limits ?? {});
@@ -1113,27 +1114,25 @@ export function validateWorkflowSource(params: {
   }
   const sourceSha256 = sha256(params.source);
   const inputSchemaSha256 = canonicalJsonSha256(inputSchema);
-  const capabilitySha256 = canonicalJsonSha256(jsonObjectSchema.parse({ capabilities, limits }));
+  const resourcePolicySha256 = canonicalJsonSha256(jsonObjectSchema.parse({ resources, limits }));
   const sensitiveFields = collectSensitiveFields(normalizedInput);
-  const reviewSummary = [
+  const validationSummary = [
     `${metadata.name}: ${metadata.description}`,
-    `Agents: profiles=${capabilities.agents.profiles.join(",")}; models=${capabilities.agents.models.join(",")}; reasoning=${capabilities.agents.reasoning.join(",")}; max=${capabilities.agents.maxConcurrent}/${capabilities.agents.maxTotal}`,
-    `Roots: ${capabilities.agents.allowedRoots.join(",")}; tools=${capabilities.agents.tools.join(",")}; executables=${capabilities.agents.executables}`,
-    `Editing: ${capabilities.agents.editing.join(",") || "none"}; delegation=${capabilities.agents.delegation ? "yes" : "no"}; waits=${capabilities.waits.join(",") || "none"}`,
-    `Level-2: ${capabilities.level2.callables.join(",") || "none"}; origin surface=${capabilities.surfaces.origin.join(",") || "none"}`,
-    `Limits: wall=${capabilities.maxWallTimeMs}ms; input=${limits.maxInputBytes} bytes`,
+    `Agents: max=${resources.agents.maxConcurrent}/${resources.agents.maxTotal}`,
+    `Waits: ${resources.waits.join(",") || "none"}`,
+    `Limits: wall=${resources.maxWallTimeMs}ms; input=${limits.maxInputBytes} bytes`,
     `Sensitive inputs: ${sensitiveFields.join(", ") || "none declared"}`,
   ].join("\n");
 
   return {
     metadata,
     inputSchema,
-    capabilities,
+    resources,
     limits,
     sensitiveFields,
     sourceSha256,
     inputSchemaSha256,
-    capabilitySha256,
-    reviewSummary,
+    resourcePolicySha256,
+    validationSummary,
   };
 }

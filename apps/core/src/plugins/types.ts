@@ -14,9 +14,9 @@ import type { TranscriptStore } from "../transcript/transcript-store";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import type { DurableWorkflowStore } from "../workflow/durable-workflow-store";
 import type { WorkflowProgressCardService } from "../workflow/workflow-progress-projector";
-import type { WorkflowReviewerResolver } from "../workflow/workflow-reviewer";
 
 export type CoreToolPluginRuntime = {
+  dataDir?: string;
   bus?: LilacBus;
   adapter?: SurfaceAdapter;
   config?: CoreConfig;
@@ -28,7 +28,6 @@ export type CoreToolPluginRuntime = {
   toolResultArtifacts?: ToolResultArtifactStore;
   durableWorkflowStore?: DurableWorkflowStore;
   workflowProgressCards?: WorkflowProgressCardService;
-  workflowReviewerResolver?: WorkflowReviewerResolver;
 };
 
 const BOUNDED_BUILTIN_OUTPUT = Symbol("bounded-builtin-output");

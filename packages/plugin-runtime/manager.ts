@@ -7,6 +7,8 @@ import type {
   PluginLogger,
   ToolPluginCreateContext,
   ToolPluginStatus,
+  Level1ContributionInfo,
+  Level2ContributionInfo,
 } from "./types";
 
 function loggerCall(
@@ -99,6 +101,29 @@ export class ToolPluginManager<TRuntimeContext, TLevel1, TLevel2> {
 
   getLevel2Tools(): readonly TLevel2[] {
     return this.getLevel2Items();
+  }
+
+  getLevel2ContributionInfo(): ReadonlyMap<TLevel2, Level2ContributionInfo> {
+    const result = new Map<TLevel2, Level2ContributionInfo>();
+    for (const plugin of this.state.loaded) {
+      for (const item of plugin.level2) {
+        result.set(item, { pluginId: plugin.meta.id, source: plugin.source });
+      }
+    }
+    return result;
+  }
+
+  getLevel1ContributionInfo(): ReadonlyMap<TLevel1, Level1ContributionInfo> {
+    const result = new Map<TLevel1, Level1ContributionInfo>();
+    for (const plugin of this.state.loaded) {
+      for (const item of plugin.level1) {
+        result.set(item, {
+          pluginId: plugin.meta.id,
+          source: plugin.source,
+        });
+      }
+    }
+    return result;
   }
 
   getStatuses(): readonly ToolPluginStatus[] {

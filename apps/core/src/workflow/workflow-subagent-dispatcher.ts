@@ -18,7 +18,6 @@ import {
 } from "./workflow-definition";
 import { WorkflowDefinitionStore } from "./workflow-definition-store";
 import type {
-  WorkflowApproval,
   WorkflowCompletionTarget,
   WorkflowProgressTarget,
   WorkflowRevision,
@@ -29,17 +28,10 @@ import { resolveWorkflowSubagentToolResult } from "./workflow-subagent-output";
 
 const GENERATED_WORKFLOW_NAME = "subagent-delegate";
 
-export type WorkflowSubagentPolicy = {
-  editing: boolean;
-  level2Callables: readonly string[];
-};
-
 function generatedSource(input: {
   profile: SubagentDelegationRegistration["profile"];
-  model: string;
-  reasoning: string;
-  editing: boolean;
-  level2Callables: readonly string[];
+  model?: string;
+  reasoning?: string;
   idleTimeoutMs: number;
 }): string {
   const operationIdleTimeoutMs = Math.min(
@@ -58,28 +50,17 @@ export default defineWorkflow({
   input: {
     type: "object",
     additionalProperties: false,
-    required: ["task", "profile", "model"],
+    required: ["task", "profile"],
     properties: {
       task: { type: "string", minLength: 1 },
       profile: { type: "string", const: ${JSON.stringify(input.profile)} },
-      model: { type: "string", const: ${JSON.stringify(input.model)} },
     },
   },
-  capabilities: {
+  resources: {
     agents: {
-      profiles: [${JSON.stringify(input.profile)}],
-      models: [${JSON.stringify(input.model)}],
-      reasoning: [${JSON.stringify(input.reasoning)}],
-      allowedRoots: ["project"],
-      tools: ${JSON.stringify(input.profile === "explore" ? ["batch", "glob", "grep", "read_file"] : ["apply_patch", "bash", "batch", "glob", "grep", "read_file"])},
-      executables: ${JSON.stringify(input.profile === "explore" ? "none" : "trusted-container")},
       maxConcurrent: 1,
       maxTotal: 1,
-      editing: ${JSON.stringify(input.editing ? ["shared"] : [])},
-      delegation: false,
     },
-    level2: { callables: ${JSON.stringify(input.level2Callables)} },
-    surfaces: { origin: [] },
     waits: [],
     maxNestingDepth: 1,
     maxWallTimeMs: ${maxWallTimeMs},
@@ -96,13 +77,8 @@ export default defineWorkflow({
   async run({ args, agent }) {
     return agent(args.task, {
       profile: args.profile,
-      model: args.model,
-      reasoning: ${JSON.stringify(input.reasoning)},
-      editing: ${input.editing},
-      ${input.editing ? 'isolation: "shared",' : ""}
-      executables: ${JSON.stringify(input.profile === "explore" ? "none" : "trusted-container")},
-      level2Callables: ${JSON.stringify(input.level2Callables)},
-      surfaceOriginOperations: [],
+      ${input.model ? `model: ${JSON.stringify(input.model)},` : ""}
+      ${input.reasoning ? `reasoning: ${JSON.stringify(input.reasoning)},` : ""}
       label: "subagent " + args.profile,
     });
   },
@@ -202,18 +178,13 @@ export class WorkflowSubagentDispatcher {
 
   async delegate(
     registration: TrustedSubagentDelegationRegistration,
-    policy: WorkflowSubagentPolicy,
   ): Promise<SubagentDelegationHandle> {
     const definitions = await this.definitions(registration.projectRoot);
     const now = this.input.now?.() ?? Date.now();
-    const model = registration.modelOverride ?? "inherit";
-    const reasoning = registration.reasoningOverride ?? "provider-default";
     const source = generatedSource({
       profile: registration.profile,
-      model,
-      reasoning,
-      editing: policy.editing,
-      level2Callables: policy.level2Callables,
+      ...(registration.modelOverride ? { model: registration.modelOverride } : {}),
+      ...(registration.reasoningOverride ? { reasoning: registration.reasoningOverride } : {}),
       idleTimeoutMs: registration.idleTimeoutMs,
     });
     const validation = validateWorkflowSource({
@@ -227,7 +198,7 @@ export class WorkflowSubagentDispatcher {
         definitions.canonicalProjectId,
         validation.sourceSha256,
         validation.inputSchemaSha256,
-        validation.capabilitySha256,
+        validation.resourcePolicySha256,
         WORKFLOW_RUNTIME_VERSION,
       ].join(":"),
     ).slice(0, 48)}`;
@@ -241,17 +212,17 @@ export class WorkflowSubagentDispatcher {
       snapshotArtifactId: snapshot.artifactId,
       sourceSha256: validation.sourceSha256,
       inputSchemaSha256: validation.inputSchemaSha256,
-      capabilitySha256: validation.capabilitySha256,
+      resourcePolicySha256: validation.resourcePolicySha256,
       metadata: validation.metadata,
       inputSchema: validation.inputSchema,
-      capabilities: validation.capabilities,
+      resources: validation.resources,
       limits: validation.limits,
       runtimeVersion: WORKFLOW_RUNTIME_VERSION,
       createdAt: now,
     };
     const args = validateWorkflowArgs({
       inputSchema: revision.inputSchema,
-      args: { task: registration.task, profile: registration.profile, model },
+      args: { task: registration.task, profile: registration.profile },
       maxInputBytes: revision.limits.maxInputBytes,
     });
     const runId = `wfrun:subagent:${crypto.randomUUID()}`;
@@ -275,29 +246,13 @@ export class WorkflowSubagentDispatcher {
       fallbackToSurface: fallbackProgressTarget !== null,
       fallbackProgressTarget,
       deferredDelivery: registration.mode === "deferred",
-    };
-    const approvalId = `wfapproval:internal:${sha256(revisionId).slice(0, 48)}`;
-    const approval: WorkflowApproval = {
-      approvalId,
-      revisionId,
-      state: "approved",
-      expectedReviewerPlatform: null,
-      expectedReviewerUserId: null,
-      firstRunId: runId,
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: "internal trusted subagent delegation",
-      expiresAt: null,
-      decidedAt: now,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: now,
-      updatedAt: now,
+      ...(registration.familyScratchRoot
+        ? { familyScratchRoot: registration.familyScratchRoot }
+        : {}),
     };
     const requestedRun: WorkflowRun = {
       runId,
       revisionId,
-      approvalId,
       state: "queued",
       inputSchemaSnapshot: revision.inputSchema,
       args,
@@ -322,10 +277,9 @@ export class WorkflowSubagentDispatcher {
       updatedAt: now,
       terminalAt: null,
     };
-    const { run } = this.input.store.createApprovedInvocation({
+    const { run } = this.input.store.createInvocation({
       revision,
       run: requestedRun,
-      approval,
     });
     await this.input.onRunCreated?.(run);
     const waitForCompletion = () => this.waitForCompletion(runId, registration.mode === "sync");
@@ -337,7 +291,7 @@ export class WorkflowSubagentDispatcher {
       },
       cancel: async (detail) => {
         const current = this.input.store.getRun(runId);
-        if (!current || ["succeeded", "failed", "rejected", "cancelled"].includes(current.state)) {
+        if (!current || ["succeeded", "failed", "cancelled"].includes(current.state)) {
           return;
         }
         const cancelled = this.input.store.cancelRunAndChildren({
@@ -359,7 +313,7 @@ export class WorkflowSubagentDispatcher {
     while (true) {
       const run = this.input.store.getRun(runId);
       if (!run) throw new Error(`Subagent workflow run disappeared: ${runId}`);
-      if (["succeeded", "failed", "rejected", "cancelled"].includes(run.state)) {
+      if (["succeeded", "failed", "cancelled"].includes(run.state)) {
         const completion = await completionStatus(
           run,
           this.input.store,

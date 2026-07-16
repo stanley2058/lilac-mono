@@ -25,6 +25,7 @@ import {
   type WebSearchProviderId,
   type WebSearchProvider,
 } from "./web-search";
+import type { RequestContext } from "../types";
 
 const getPageModeSchema = z.enum(["auto", "fetch", "browser", "extract", "provider-only"]);
 
@@ -689,7 +690,7 @@ export class Web implements ServerTool {
     rawInput: Record<string, unknown>,
     opts?: {
       signal?: AbortSignal;
-      context?: unknown;
+      context?: RequestContext;
       messages?: readonly unknown[];
     },
   ): Promise<unknown> {
@@ -702,6 +703,7 @@ export class Web implements ServerTool {
     rawInput: unknown,
     opts?: {
       signal?: AbortSignal;
+      context?: RequestContext;
     },
   ) {
     const input = getPageSchema.parse(rawInput);
@@ -892,9 +894,7 @@ export class Web implements ServerTool {
     const timeoutSignal = AbortSignal.timeout(timeout);
     const signal = AbortSignal.any([timeoutSignal, ...(requestSignal ? [requestSignal] : [])]);
     const res = await fetch(url, {
-      headers: {
-        Accept: acceptHeader,
-      },
+      headers: { Accept: acceptHeader },
       signal,
     });
 

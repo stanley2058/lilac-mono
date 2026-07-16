@@ -8,7 +8,7 @@ import {
   type LilacBus,
   type RequestLifecycleState,
 } from "@stanley2058/lilac-event-bus";
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger, type DurableResolvedModelRequest } from "@stanley2058/lilac-utils";
 
 import {
   DurableWorkflowStore,
@@ -43,11 +43,17 @@ import {
   writeWorkflowValueArtifact,
 } from "./workflow-artifact-store";
 import type { WorkflowRequestPolicy } from "./workflow-request-authority";
+import { readWorkflowPathIdentity } from "./workflow-descriptor-path";
 import {
   resolveWorkflowAgentOperationInput,
   resolvedWorkflowAgentInputSchema,
   type ResolvedWorkflowAgentInput,
 } from "./workflow-operation-policy";
+import {
+  assertExistingWorkflowScratch,
+  ensureWorkflowRunScratch,
+  workflowRunScratchPath,
+} from "./workflow-scratch";
 import {
   captureWorkflowWorktreePatch,
   readWorkflowWorktreePatch,
@@ -57,6 +63,7 @@ import {
 
 const WORKFLOW_LEASE_STALE_MS = 60_000;
 const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
+const WORKFLOW_WORKTREE_EXECUTION_ENABLED = false;
 
 const phaseInputSchema = z.strictObject({ name: z.string().min(1).max(200) });
 const parallelInputSchema = z.strictObject({
@@ -92,7 +99,14 @@ type AgentRequestResult = {
   source?: "receipt" | "terminal_receipt" | "terminal_without_receipt";
 };
 
+type ResolvedAgentSelection = {
+  model: string;
+  reasoning: NonNullable<ResolvedWorkflowAgentInput["options"]["reasoning"]> | null;
+  request: DurableResolvedModelRequest;
+};
+
 const TERMINAL_RECEIPT_WAIT_MS = 250;
+const IDLE_CANCEL_QUIESCENCE_WAIT_MS = 10_000;
 
 type ActiveRun = {
   controller: AbortController;
@@ -147,6 +161,44 @@ export class WorkflowEngine {
   private wakeSubscription: { stop(): Promise<void> } | null = null;
   private tickPromise: Promise<void> | null = null;
 
+  private async cleanupExpiredScratch(): Promise<void> {
+    const container = path.dirname(workflowRunScratchPath(this.input.dataDir, "cleanup-probe"));
+    const entries = await fs.readdir(container, { withFileTypes: true }).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    });
+    const retentionCutoff = this.now() - 7 * 24 * 60 * 60 * 1_000;
+    const runsByScratch = new Map<string, WorkflowRun[]>();
+    for (const run of this.input.store.listRuns({ limit: 10_000 })) {
+      const scratchRoot =
+        run.completionTarget.kind === "live_parent" && run.completionTarget.familyScratchRoot
+          ? run.completionTarget.familyScratchRoot
+          : workflowRunScratchPath(this.input.dataDir, run.runId);
+      const family = runsByScratch.get(scratchRoot) ?? [];
+      family.push(run);
+      runsByScratch.set(scratchRoot, family);
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const candidate = path.join(container, entry.name);
+      const stats = await fs.lstat(candidate);
+      if (stats.mtimeMs >= retentionCutoff) continue;
+      const matchingRuns = runsByScratch.get(candidate);
+      if (
+        !matchingRuns ||
+        matchingRuns.some(
+          (run) =>
+            !["succeeded", "failed", "cancelled"].includes(run.state) ||
+            run.terminalAt === null ||
+            run.terminalAt >= retentionCutoff,
+        )
+      ) {
+        continue;
+      }
+      await fs.rm(candidate, { recursive: true, force: true });
+    }
+  }
+
   constructor(
     private readonly input: {
       bus: LilacBus;
@@ -181,24 +233,29 @@ export class WorkflowEngine {
         runId: string;
         operationId: string;
         dispatchEpoch: string;
-        capability: string;
+        controlToken: string;
         runOwnerId: string;
       }) => Promise<void>;
       createDispatchEpoch?: () => string;
+      validateAgentSelection?: (input: {
+        profile: "explore" | "general" | "self";
+        model?: string;
+        reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
+      }) => void | ResolvedAgentSelection | Promise<void | ResolvedAgentSelection>;
       dispatchAgentRequest?: (input: {
         run: WorkflowRun;
         revision: WorkflowRevision;
         operation: WorkflowOperation;
         prompt: string;
         profile: "explore" | "general" | "self";
-        model: string;
-        reasoning: ResolvedWorkflowAgentInput["options"]["reasoning"];
+        model?: string;
+        reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
         policy: WorkflowRequestPolicy;
         requestId: string;
         agentCwd: string;
         signal: AbortSignal;
         reconcile: boolean;
-        capability: string | null;
+        controlToken: string | null;
         dispatchEpoch: string;
         sessionId: string;
         publishRequest: boolean;
@@ -208,7 +265,8 @@ export class WorkflowEngine {
 
   async start(): Promise<void> {
     await (this.input.assertSandbox ?? assertWorkflowSandboxAvailable)();
-    await this.reconcileWorktreeCleanup();
+    await this.cleanupExpiredScratch();
+    if (WORKFLOW_WORKTREE_EXECUTION_ENABLED) await this.reconcileWorktreeCleanup();
     this.stopping = false;
     this.wakeSubscription = await this.input.bus.subscribeTopic(
       "evt.workflow",
@@ -294,21 +352,8 @@ export class WorkflowEngine {
     const cancellations: Promise<void>[] = [];
     for (const [runId, active] of this.active) {
       const run = this.input.store.getRun(runId);
-      const approval = run?.approvalId ? this.input.store.getApproval(run.approvalId) : null;
-      if (
-        !run ||
-        run.state === "cancelled" ||
-        run.state === "paused" ||
-        approval?.state !== "approved"
-      ) {
-        if (run?.state === "running" && approval?.state !== "approved") {
-          this.input.store.pauseRunAndChildren({
-            runId,
-            now: this.now(),
-            detail: "Exact revision approval is no longer active",
-          });
-        }
-        active.controller.abort(run?.state ?? "approval_revoked");
+      if (!run || run.state === "cancelled" || run.state === "paused") {
+        active.controller.abort(run?.state ?? "run_missing");
         cancellations.push(
           Promise.resolve().then(() => active.sandbox.cancel()),
           Promise.resolve().then(() => this.stopAgentRequests(runId)),
@@ -337,7 +382,7 @@ export class WorkflowEngine {
 
   private async claimAndLaunch(run: WorkflowRun, staleAfterMs?: number): Promise<void> {
     if (this.active.has(run.runId) || this.stopping) return;
-    const claimed = this.input.store.tryClaimApprovedRun({
+    const claimed = this.input.store.tryClaimTrustedRun({
       runId: run.runId,
       claimerId: this.workerId,
       now: this.now(),
@@ -347,6 +392,23 @@ export class WorkflowEngine {
     const controller = new AbortController();
     let sandbox: WorkflowSandboxRun;
     try {
+      const familyScratchRoot =
+        claimed.completionTarget.kind === "live_parent"
+          ? claimed.completionTarget.familyScratchRoot
+          : undefined;
+      if (familyScratchRoot) {
+        const parentPolicy = this.input.store.getWorkflowRequestDispatchPolicy(
+          claimed.completionTarget.kind === "live_parent"
+            ? claimed.completionTarget.parentRequestId
+            : "",
+        );
+        if (parentPolicy?.canonicalScratchRoot !== familyScratchRoot) {
+          throw new Error("Generated delegation family scratch does not match its durable parent");
+        }
+        await assertExistingWorkflowScratch(familyScratchRoot);
+      } else {
+        await ensureWorkflowRunScratch({ dataDir: this.input.dataDir, runId: claimed.runId });
+      }
       sandbox = await this.createSandbox(claimed, controller.signal);
     } catch (error) {
       await this.finishRun(claimed, "failed", null, boundedError(error));
@@ -380,24 +442,24 @@ export class WorkflowEngine {
   private async createSandbox(run: WorkflowRun, signal: AbortSignal): Promise<WorkflowSandboxRun> {
     const revision = this.input.store.getRevision(run.revisionId);
     if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-    this.assertApproval(run, revision);
+    this.assertTrustedRun(run, revision);
     this.assertPersistedIntegrity(run, revision);
     if (revision.runtimeVersion !== WORKFLOW_RUNTIME_VERSION) {
       throw new Error(`Unsupported workflow runtime: ${revision.runtimeVersion}`);
     }
     const source = await this.loadSnapshot(revision);
     this.assertPersistedIntegrity(run, revision);
-    this.assertApproval(run, revision);
+    this.assertTrustedRun(run, revision);
     const compiled = (this.input.compileSource ?? compileWorkflowSource)(
       source,
       revision.sourceSha256,
     );
-    const semaphore = new Semaphore(revision.capabilities.agents.maxConcurrent);
+    const semaphore = new Semaphore(revision.resources.agents.maxConcurrent);
     const start = this.input.startSandbox ?? startWorkflowSandbox;
     return start({
       source: compiled,
       args: run.args,
-      maxWallTimeMs: revision.capabilities.maxWallTimeMs,
+      maxWallTimeMs: revision.resources.maxWallTimeMs,
       memoryBytes: revision.limits.maxRuntimeMemoryBytes,
       signal,
       onCall: (call) => this.handleCall(run.runId, revision, call, semaphore, signal),
@@ -414,7 +476,7 @@ export class WorkflowEngine {
           normalizedPath: revision.normalizedPath,
           sourceSha256: revision.sourceSha256,
           inputSchemaSha256: revision.inputSchemaSha256,
-          capabilitySha256: revision.capabilitySha256,
+          resourcePolicySha256: revision.resourcePolicySha256,
           runtimeVersion: revision.runtimeVersion,
         }),
       )}`;
@@ -427,10 +489,10 @@ export class WorkflowEngine {
     }
     if (
       canonicalJsonSha256(
-        jsonValueSchema.parse({ capabilities: revision.capabilities, limits: revision.limits }),
-      ) !== revision.capabilitySha256
+        jsonValueSchema.parse({ resources: revision.resources, limits: revision.limits }),
+      ) !== revision.resourcePolicySha256
     ) {
-      throw new Error("Persisted workflow capability hash mismatch");
+      throw new Error("Persisted workflow resource policy hash mismatch");
     }
     const args = validateWorkflowArgs({
       inputSchema: revision.inputSchema,
@@ -451,16 +513,12 @@ export class WorkflowEngine {
     }
   }
 
-  private assertApproval(run: WorkflowRun, revision: WorkflowRevision): void {
+  private assertTrustedRun(run: WorkflowRun, revision: WorkflowRevision): void {
     if (
       run.origin.safetyMode !== "trusted" ||
-      revision.capabilities.safety.originatingMode !== "trusted"
+      revision.resources.safety.originatingMode !== "trusted"
     ) {
       throw new Error("Restricted workflow sessions are denied");
-    }
-    const approval = run.approvalId ? this.input.store.getApproval(run.approvalId) : null;
-    if (!approval || approval.state !== "approved" || approval.revisionId !== revision.revisionId) {
-      throw new Error("Exact workflow revision approval is not active");
     }
   }
 
@@ -497,9 +555,9 @@ export class WorkflowEngine {
     const run = this.input.store.getRun(runId);
     if (!run || run.state !== "running" || run.claimedBy !== this.workerId || signal.aborted)
       throw new Error("Workflow is not running");
-    this.assertApproval(run, revision);
-    if (call.depth > revision.capabilities.maxNestingDepth) {
-      throw new Error(`Workflow nesting exceeds ${revision.capabilities.maxNestingDepth}`);
+    this.assertTrustedRun(run, revision);
+    if (call.depth > revision.resources.maxNestingDepth) {
+      throw new Error(`Workflow nesting exceeds ${revision.resources.maxNestingDepth}`);
     }
     const id = operationId(call.path);
     const parentOperationId = call.parentPath ? operationId(call.parentPath) : null;
@@ -507,10 +565,19 @@ export class WorkflowEngine {
       call.kind === "agent"
         ? await resolveWorkflowAgentOperationInput({
             value: call.input,
-            capabilities: revision.capabilities,
             canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
+            dataDir: this.input.dataDir,
           })
         : jsonValueSchema.parse(call.input);
+    if (
+      call.kind === "agent" &&
+      resolvedWorkflowAgentInputSchema.parse(input).options.isolation === "worktree" &&
+      !WORKFLOW_WORKTREE_EXECUTION_ENABLED
+    ) {
+      throw new Error(
+        "Workflow worktree isolation is temporarily unavailable while host Git discovery and creation are being hardened",
+      );
+    }
     const inputSha256 = canonicalJsonSha256(input);
     const persistedKind =
       call.kind === "waitForReply" || call.kind === "sleep" ? "wait" : call.kind;
@@ -543,27 +610,22 @@ export class WorkflowEngine {
       if (existing.kind === "agent") {
         const agentInput = resolvedWorkflowAgentInputSchema.parse(input);
         return await semaphore.use(() =>
-          agentInput.options.editing && agentInput.options.isolation === "shared"
-            ? this.useSharedEditorLease(
-                run,
-                existing,
-                agentInput.options.authorityRoot,
-                signal,
-                (leaseSignal) =>
-                  this.dispatchAgentSafely(run, revision, existing, agentInput, leaseSignal, true),
-              )
-            : this.dispatchAgentSafely(run, revision, existing, agentInput, signal, true),
+          this.dispatchAgentSafely(run, revision, existing, agentInput, signal, true),
         );
       }
       return await this.completeStructuralOperation(run, revision, existing);
     }
 
     if (call.kind === "agent") {
-      if (
-        this.input.store.countOperations(runId, "agent") >= revision.capabilities.agents.maxTotal
-      ) {
-        throw new Error(`Workflow agent total exceeds ${revision.capabilities.agents.maxTotal}`);
+      if (this.input.store.countOperations(runId, "agent") >= revision.resources.agents.maxTotal) {
+        throw new Error(`Workflow agent total exceeds ${revision.resources.agents.maxTotal}`);
       }
+      const options = resolvedWorkflowAgentInputSchema.parse(input).options;
+      await this.input.validateAgentSelection?.({
+        profile: options.profile,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.reasoning ? { reasoning: options.reasoning } : {}),
+      });
     }
     const parsedLabel =
       call.kind === "agent"
@@ -607,77 +669,13 @@ export class WorkflowEngine {
     if (call.kind === "agent") {
       const agentInput = resolvedWorkflowAgentInputSchema.parse(input);
       return await semaphore.use(() =>
-        agentInput.options.editing && agentInput.options.isolation === "shared"
-          ? this.useSharedEditorLease(
-              run,
-              operation,
-              agentInput.options.authorityRoot,
-              signal,
-              (leaseSignal) =>
-                this.dispatchAgentSafely(run, revision, operation, agentInput, leaseSignal, false),
-            )
-          : this.dispatchAgentSafely(run, revision, operation, agentInput, signal, false),
+        this.dispatchAgentSafely(run, revision, operation, agentInput, signal, false),
       );
     }
     if (call.kind === "phase") phaseInputSchema.parse(input);
     else if (call.kind === "parallel") parallelInputSchema.parse(input);
     else pipelineInputSchema.parse(input);
     return await this.completeStructuralOperation(run, revision, operation);
-  }
-
-  private async useSharedEditorLease<T>(
-    run: WorkflowRun,
-    operation: WorkflowOperation,
-    authorityRoot: string,
-    signal: AbortSignal,
-    execute: (signal: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    while (!signal.aborted) {
-      const now = this.now();
-      if (
-        this.input.store.acquireSharedEditorLease({
-          authorityRoot,
-          runId: run.runId,
-          operationId: operation.operationId,
-          ownerId: this.workerId,
-          now,
-          staleBefore: now - WORKFLOW_LEASE_STALE_MS,
-        })
-      ) {
-        const leaseController = new AbortController();
-        const leaseSignal = AbortSignal.any([signal, leaseController.signal]);
-        const heartbeat = setInterval(
-          () => {
-            if (
-              !this.input.store.refreshSharedEditorLease({
-                authorityRoot,
-                runId: run.runId,
-                operationId: operation.operationId,
-                ownerId: this.workerId,
-                now: this.now(),
-              })
-            ) {
-              leaseController.abort(new Error("Workflow shared editor lease was lost"));
-            }
-          },
-          Math.floor(WORKFLOW_LEASE_STALE_MS / 3),
-        );
-        heartbeat.unref?.();
-        try {
-          return await execute(leaseSignal);
-        } finally {
-          clearInterval(heartbeat);
-          this.input.store.releaseSharedEditorLease({
-            authorityRoot,
-            runId: run.runId,
-            operationId: operation.operationId,
-            ownerId: this.workerId,
-          });
-        }
-      }
-      await Bun.sleep(this.input.pollMs ?? 250);
-    }
-    throw new Error("Workflow shared editor lease interrupted");
   }
 
   private validateOperationInput(kind: WorkflowSandboxCall["kind"], input: JsonValue): void {
@@ -697,9 +695,9 @@ export class WorkflowEngine {
     input: JsonValue,
     signal: AbortSignal,
   ): Promise<JsonValue> {
-    const capability = kind === "waitForReply" ? "reply" : "sleep";
-    if (!revision.capabilities.waits.includes(capability)) {
-      throw new Error(`Workflow wait capability is not approved: ${capability}`);
+    const waitKind = kind === "waitForReply" ? "reply" : "sleep";
+    if (!revision.resources.waits.includes(waitKind)) {
+      throw new Error(`Workflow wait is not enabled by resource policy: ${waitKind}`);
     }
     const now = this.now();
     const operationCreatedAt = operation.createdAt;
@@ -891,7 +889,7 @@ export class WorkflowEngine {
     signal: AbortSignal,
     reconcile: boolean,
   ): Promise<JsonValue> {
-    const { profile, model, reasoning, editing, isolation, tools, delegation } = input.options;
+    const { profile, model, reasoning, isolation } = input.options;
     const expectedRequestId = workflowAgentRequestId(
       run.runId,
       operation.operationId,
@@ -932,7 +930,11 @@ export class WorkflowEngine {
     if (handoff.status === "receipt") {
       result = await adoptReceipt(handoff.receipt);
     } else {
-      if (editing && isolation === "worktree") {
+      const scratchRoot =
+        run.completionTarget.kind === "live_parent" && run.completionTarget.familyScratchRoot
+          ? run.completionTarget.familyScratchRoot
+          : workflowRunScratchPath(this.input.dataDir, run.runId);
+      if (isolation === "worktree") {
         preparedWorktree = await (this.input.prepareWorktree ?? this.prepareWorktree.bind(this))(
           run,
           operation,
@@ -961,6 +963,9 @@ export class WorkflowEngine {
             path.relative(input.options.authorityRoot, input.options.cwd),
           )
         : input.options.cwd;
+      const agentCwdIdentity = preparedWorktree
+        ? await readWorkflowPathIdentity(agentCwd)
+        : input.options.cwdIdentity;
       if (preparedWorktree && !this.input.prepareWorktree) {
         const stats = await fs.lstat(agentCwd);
         if (
@@ -972,29 +977,53 @@ export class WorkflowEngine {
         }
       }
       const liveOwner = reconcile && handoff.status === "live";
-      let capability: string | null = null;
+      const durableHandoff = handoff.status === "live" || handoff.status === "stale";
+      const resolvedSelection = durableHandoff
+        ? {
+            model: handoff.policy.resolvedModel,
+            reasoning: handoff.policy.resolvedReasoning,
+            request: handoff.policy.resolvedModelRequest,
+          }
+        : await this.input.validateAgentSelection?.({
+            profile,
+            ...(model ? { model } : {}),
+            ...(reasoning ? { reasoning } : {}),
+          });
+      const concreteSelection = resolvedSelection ?? {
+        model: model ?? `profile-native:${profile}`,
+        reasoning: reasoning ?? null,
+        request: {
+          spec: model ?? `profile-native:${profile}`,
+          provider: "unresolved",
+          modelId: model ?? `profile-native:${profile}`,
+          ...(reasoning ? { reasoning } : {}),
+          reasoningDisplay: "simple",
+        },
+      };
+      let controlToken: string | null = null;
       const dispatchEpoch = liveOwner
         ? handoff.dispatchEpoch
         : (this.input.createDispatchEpoch?.() ?? crypto.randomUUID());
-      const policy = {
+      const newlyResolvedPolicy = {
         runId: run.runId,
         operationId: operation.operationId,
         dispatchEpoch,
         profile,
-        model,
-        reasoning,
-        tools,
-        executables: input.options.executables,
+        model: model ?? null,
+        reasoning: reasoning ?? null,
+        resolvedModel: concreteSelection.model,
+        resolvedReasoning: concreteSelection.reasoning,
+        resolvedModelRequest: concreteSelection.request,
         safetyMode: run.origin.safetyMode,
-        editing,
         isolation,
-        delegation,
-        level2Callables: input.options.level2Callables,
-        surfaceOriginOperations: input.options.surfaceOriginOperations,
         canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
         canonicalAuthorityRoot: input.options.authorityRoot,
+        canonicalAuthorityRootIdentity: input.options.authorityRootIdentity,
         canonicalRequestedCwd: input.options.cwd,
+        canonicalRequestedCwdIdentity: input.options.cwdIdentity,
         canonicalCwd: agentCwd,
+        canonicalCwdIdentity: agentCwdIdentity,
+        canonicalScratchRoot: scratchRoot,
         canonicalProjectId: revision.canonicalProjectId,
         originSessionId: run.origin.sessionId,
         originClient:
@@ -1005,10 +1034,12 @@ export class WorkflowEngine {
         revisionId: revision.revisionId,
         sourceSha256: revision.sourceSha256,
         inputSchemaSha256: revision.inputSchemaSha256,
-        capabilitySha256: revision.capabilitySha256,
         argsSha256: run.argsSha256,
         operationInputSha256: operation.inputSha256,
       } satisfies WorkflowRequestPolicy;
+      const policy: WorkflowRequestPolicy = durableHandoff
+        ? { ...handoff.policy, dispatchEpoch }
+        : newlyResolvedPolicy;
       if (
         handoff.status === "live" &&
         canonicalJson(jsonValueSchema.parse(policy)) !==
@@ -1020,18 +1051,18 @@ export class WorkflowEngine {
       }
       let racedReceipt: WorkflowRequestTerminalReceipt | null = null;
       if (!liveOwner) {
-        capability = crypto.randomUUID() + crypto.randomUUID();
+        controlToken = crypto.randomUUID() + crypto.randomUUID();
         const dispatched = this.input.store.authorizeAgentDispatch({
           requestId: reqId,
           runId: run.runId,
           operationId: operation.operationId,
           runOwnerId: this.workerId,
-          token: capability,
+          token: controlToken,
           sessionId,
           platform: "unknown",
           policy,
           now: this.now(),
-          expiresAt: (run.startedAt ?? run.createdAt) + revision.capabilities.maxWallTimeMs,
+          expiresAt: (run.startedAt ?? run.createdAt) + revision.resources.maxWallTimeMs,
           staleOwnerBefore: this.now() - WORKFLOW_REQUEST_LEASE_STALE_MS,
         });
         if (!dispatched) {
@@ -1059,7 +1090,7 @@ export class WorkflowEngine {
           agentCwd,
           signal,
           reconcile,
-          capability,
+          controlToken,
           dispatchEpoch,
           sessionId,
           publishRequest: !liveOwner,
@@ -1163,7 +1194,7 @@ export class WorkflowEngine {
           })
         : null;
     let worktreeOutput: WorkflowWorktreeOutput | null = null;
-    if (result.state === "resolved" && editing && isolation === "worktree") {
+    if (result.state === "resolved" && isolation === "worktree") {
       worktreeOutput = await this.captureDurableWorktreeOutput({
         run,
         operation,
@@ -1258,14 +1289,14 @@ export class WorkflowEngine {
     operation: WorkflowOperation;
     prompt: string;
     profile: "explore" | "general" | "self";
-    model: string;
-    reasoning: ResolvedWorkflowAgentInput["options"]["reasoning"];
+    model?: string;
+    reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
     policy: WorkflowRequestPolicy;
     requestId: string;
     agentCwd: string;
     signal: AbortSignal;
     reconcile: boolean;
-    capability: string | null;
+    controlToken: string | null;
     dispatchEpoch: string;
     sessionId: string;
     publishRequest: boolean;
@@ -1275,7 +1306,9 @@ export class WorkflowEngine {
     let lifecycle: RequestLifecycleState | null = null;
     let detail: string | null = null;
     let settled = false;
+    let idleTimedOut = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleCancellationTimer: ReturnType<typeof setTimeout> | null = null;
     let receiptTimer: ReturnType<typeof setTimeout> | null = null;
     let readingReceipt = false;
     let settle: (value: AgentRequestResult) => void = () => {};
@@ -1284,6 +1317,7 @@ export class WorkflowEngine {
       if (settled) return;
       settled = true;
       if (idleTimer) clearTimeout(idleTimer);
+      if (idleCancellationTimer) clearTimeout(idleCancellationTimer);
       if (receiptTimer) clearTimeout(receiptTimer);
       settle(value);
     };
@@ -1309,7 +1343,13 @@ export class WorkflowEngine {
       source: "receipt" | "terminal_receipt",
     ): Promise<void> => {
       const adopted = await this.adoptTerminalReceipt(receipt, input.revision);
-      finishResult({ ...adopted, source });
+      finishResult({
+        ...adopted,
+        ...(idleTimedOut
+          ? { state: "timed_out" as const, detail: "Agent operation idle timeout" }
+          : {}),
+        source,
+      });
     };
     const pollReceipt = async (): Promise<void> => {
       if (settled || readingReceipt || this.stopping) return;
@@ -1338,16 +1378,49 @@ export class WorkflowEngine {
       }, this.input.receiptPollMs ?? 25);
       receiptTimer.unref?.();
     };
+    const publishIdleCancellation = async (): Promise<void> => {
+      while (!settled && idleTimedOut && !this.stopping && !input.signal.aborted) {
+        try {
+          await this.input.bus.publish(
+            lilacEventTypes.CmdRequestMessage,
+            { queue: "interrupt", messages: [], raw: { cancel: true, cancelQueued: true } },
+            {
+              headers: {
+                request_id: input.requestId,
+                session_id: input.sessionId,
+                request_client: "unknown",
+                workflow_dispatch_epoch: input.dispatchEpoch,
+              },
+            },
+          );
+          return;
+        } catch {
+          await Bun.sleep(100);
+        }
+      }
+    };
     const armIdle = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(
-        () => finish("timed_out"),
-        input.revision.capabilities.operationIdleTimeoutMs,
-      );
+      idleTimer = setTimeout(() => {
+        if (settled || idleTimedOut) return;
+        idleTimedOut = true;
+        idleCancellationTimer = setTimeout(() => {
+          finishResult({
+            state: "timed_out",
+            output: "",
+            detail:
+              "Agent operation idle cancellation did not reach an exact terminal receipt after process-tree quiescence wait",
+            usage,
+            source: "terminal_without_receipt",
+          });
+        }, IDLE_CANCEL_QUIESCENCE_WAIT_MS);
+        idleCancellationTimer.unref?.();
+        void publishIdleCancellation();
+      }, input.revision.resources.operationIdleTimeoutMs);
       idleTimer.unref?.();
     };
     const resetIdle = (): void => {
-      armIdle();
+      if (!idleTimedOut) armIdle();
     };
     const suffix = `${input.requestId}:${crypto.randomUUID()}`;
     const handleOutputMessage = async (
@@ -1506,13 +1579,13 @@ export class WorkflowEngine {
       } while (!settled);
     }
     if (input.publishRequest && !settled) {
-      if (!input.capability) throw new Error("Workflow dispatch capability is missing");
+      if (!input.controlToken) throw new Error("Workflow dispatch control token is missing");
       await this.input.beforePromptPublication?.({
         requestId: input.requestId,
         runId: input.run.runId,
         operationId: input.operation.operationId,
         dispatchEpoch: input.dispatchEpoch,
-        capability: input.capability,
+        controlToken: input.controlToken,
         runOwnerId: this.workerId,
       });
       const publicationClaimed = this.input.store.claimWorkflowRequestPromptPublication({
@@ -1541,18 +1614,18 @@ export class WorkflowEngine {
         {
           queue: "prompt",
           messages: [{ role: "user", content: input.prompt }],
-          ...(input.model === "inherit" ? {} : { modelOverride: input.model }),
+          ...(input.model ? { modelOverride: input.model } : {}),
           raw: {
             workflow: {
               runId: input.run.runId,
               operationId: input.operation.operationId,
               dispatchEpoch: input.dispatchEpoch,
-              capability: input.capability,
+              controlToken: input.controlToken,
             },
             subagent: {
               profile: input.profile,
               depth: liveParent?.depth ?? 1,
-              reasoning: input.reasoning,
+              ...(input.reasoning ? { reasoning: input.reasoning } : {}),
               ...(liveParent
                 ? {
                     parentRequestId: liveParent.parentRequestId,

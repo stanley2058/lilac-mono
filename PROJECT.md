@@ -16,7 +16,7 @@ The main loop is:
 4. GitHub webhook handlers can publish `cmd.request.message` directly for GitHub-triggered runs.
 5. An agent runner consumes request messages, runs an LLM (AI SDK) with local tools, and publishes streamed output to request-scoped topics (`out.req.<request_id>`).
 6. A relay subscribes to `out.req.<request_id>` and streams output back to surface adapters (Discord and GitHub).
-7. The unified workflow engine executes reviewed immutable programs through the same request bus and projects durable progress independently of request output relays.
+7. The unified workflow engine executes trusted immutable programs through the same request bus and projects durable progress independently of request output relays.
 
 This document explains where things live, the words used in code, and the project’s “shape” so you don’t have to re-derive it each time.
 
@@ -250,7 +250,7 @@ Important detail: `request_id` sometimes encodes “reply-to” behavior.
 
 ### Workflow
 
-Programmatic workflows are immutable reviewed JavaScript revisions executed by one durable engine.
+Programmatic workflows are immutable JavaScript revisions executed by one durable engine. Workflows own deterministic orchestration; deployed subagent profiles own agent tool access, editing, executable access, and delegation behavior.
 
 - Domain and SQLite authority: `apps/core/src/workflow/workflow-domain.ts` and `durable-workflow-store.ts`.
 - Sandboxed replay runtime: `workflow-engine.ts`, `workflow-sandbox.ts`, and `workflow-sandbox-child.js`.
@@ -258,9 +258,9 @@ Programmatic workflows are immutable reviewed JavaScript revisions executed by o
 - Timestamp/cron run creation: `workflow-trigger-scheduler.ts`.
 - Generated one-agent subagent runs and live-parent delivery: `workflow-subagent-dispatcher.ts` and `workflow-live-parent-bridge.ts`.
 - Independent progress cards: `workflow-progress-projector.ts`.
-- Level-2 definition, run, approval, and trigger APIs: `tool-server/tools/programmatic-workflow.ts`.
+- Level-2 definition, run, and trigger APIs: `tool-server/tools/programmatic-workflow.ts`.
 
-Definitions live in `<selected-project-root>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. The selected project root is the authenticated Level-1 shell cwd for each Level-2 workflow invocation, not a process-wide workspace setting. Every run is pinned to a content-addressed source snapshot and exact capability approval. Revision capabilities are a maximum envelope: each `agent()` operation journals a canonical subset covering profile, model, reasoning, approved-root cwd, editing/isolation, exact Level-1 tools, executable authority, and delegation policy before dispatch. Shared editors serialize, read-only operations may overlap one shared editor, and worktree editors use operation-selected approved repository roots. Level-2 callable IDs and origin-surface operations are concrete hash inputs, so plugin reloads cannot expand a grant. `waitForReply` and `sleep` are journaled host operations. Timestamp and cron fires create distinct runs and recheck approval; timestamp triggers become complete only when their created run is terminal. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same operation journal. Live parents receive durable synthetic results in completion order; absent parents fall back to a persisted progress card. Legacy WorkflowDefinitionV2/V3 records and pre-envelope workflow revisions are not read; schema migration 18 removes their durable runs, approvals, triggers, and revisions so source definitions can be reviewed again under the normalized contract.
+Definitions live in `<selected-project-root>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. The selected project root is the authenticated Level-1 shell cwd for each Level-2 workflow invocation, not a process-wide workspace setting. Every run is pinned to content-addressed source and input-schema snapshots plus a normalized resource-policy hash. Authenticated trusted main-agent calls create `queued` runs immediately; restricted, public, unauthenticated, synthetic, stale, and forged origins fail before run creation. Durable triggers pin the immutable revision and authenticated owner when created, then fire without a human recheck. `agent()` selects a server-owned native profile plus optional cwd/model/reasoning/label/isolation; workflow carries that identity and durable request context but does not construct a behavioral envelope. Cwd may be any canonical service-UID-accessible directory outside exact deployment authority roots, with symlink spellings canonicalized to their real target. Shared operations may race, one workflow family shares durable scratch, Bash network follows the selected profile, and explicit worktrees remain the next implementation stage. `waitForReply` and `sleep` are journaled host operations. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same journal. Dispatch epochs, terminal receipts, ownership, cancellation, cgroups, waits, and Redis correlation remain durable.
 
 ### Layered Tools (Progressive Disclosure)
 
@@ -369,7 +369,8 @@ Key sections:
 - `tools.web.fetch.mode`: default fetch strategy (`auto`, `fetch`, `browser`, `extract`, or `provider-only`).
 - `agent.idleTimeoutMs`: primary agent inactivity timeout; active runs have no total runtime cap.
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
-  - Built-in profiles: `explore` (read/search only), `general` (full primary-equivalent tools with subagent framing), `self` (isolated primary-prompt fork with full tools).
+  - Built-in defaults: `explore` (read/search and durable scratch, no workspace writes/Bash/delegation), `general` (full useful tools/plugins, workspace writes, Bash, and network, without delegation), and `self` (the same plus delegation).
+  - Each profile may configure Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation. `resolveNativeSubagentProfile` is authoritative for every launch path.
   - `delegatePromptOverlay` appends free-form routing policy to the parent-visible `subagent_delegate` description.
 - `models.def`: reusable model aliases. `comment` documents an alias to the orchestrating agent, while `agentCanSelect: true` explicitly opts it into dynamic subagent selection without changing explicit static or human selection.
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.

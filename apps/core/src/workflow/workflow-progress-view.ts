@@ -3,7 +3,6 @@ import type { DurableWorkflowStore } from "./durable-workflow-store";
 import type {
   JsonObject,
   JsonValue,
-  WorkflowApproval,
   WorkflowOperation,
   WorkflowRevision,
   WorkflowRun,
@@ -27,7 +26,6 @@ export type WorkflowProgressPhase = {
 export type WorkflowProgressView = {
   run: WorkflowRun;
   revision: WorkflowRevision;
-  approval: WorkflowApproval | null;
   elapsedMs: number;
   review: {
     source: string | null;
@@ -94,7 +92,6 @@ export function redactWorkflowValue(value: JsonValue, schema: JsonValue | undefi
 
 function availableActions(input: {
   run: WorkflowRun;
-  approval: WorkflowApproval | null;
   manualReconciliationRequired: boolean;
 }): WorkflowSurfaceActionKind[] {
   if (
@@ -102,14 +99,6 @@ function availableActions(input: {
     ["queued", "running", "blocked", "paused"].includes(input.run.state)
   ) {
     return ["cancel"];
-  }
-  if (
-    input.run.state === "awaiting_review" &&
-    input.approval?.state === "pending" &&
-    input.approval.expectedReviewerPlatform !== null &&
-    input.approval.expectedReviewerUserId !== null
-  ) {
-    return ["approve", "reject"];
   }
   if (["queued", "running", "blocked"].includes(input.run.state)) return ["pause", "cancel"];
   if (input.run.state === "paused") return ["resume", "cancel"];
@@ -143,8 +132,6 @@ export async function buildWorkflowProgressView(input: {
   if (!run) throw new Error(`Workflow run not found: ${input.runId}`);
   const revision = input.store.getRevision(run.revisionId);
   if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-  const approval = run.approvalId ? input.store.getApproval(run.approvalId) : null;
-  const firstRun = approval ? input.store.getRun(approval.firstRunId) : run;
   const operations = input.store.listOperations(run.runId, { limit: 1_000 });
   const worktreeOutputs = input.store
     .listWorktreeOutputs(run.runId, { limit: 1_000 })
@@ -167,14 +154,11 @@ export async function buildWorkflowProgressView(input: {
   return {
     run,
     revision,
-    approval,
     elapsedMs: Math.max(0, end - (run.startedAt ?? run.createdAt)),
     review: {
       source: input.loadSource ? await input.loadSource(revision) : null,
       sourceAccess: `tools workflow.run.get ${run.runId} --include-source=true (immutable artifact ${revision.snapshotArtifactId})`,
-      firstArgs: jsonObjectSchema.parse(
-        redactWorkflowValue(firstRun?.args ?? run.args, run.inputSchemaSnapshot),
-      ),
+      firstArgs: jsonObjectSchema.parse(redactWorkflowValue(run.args, run.inputSchemaSnapshot)),
       inputSchema: run.inputSchemaSnapshot,
     },
     phases: summarizePhases(operations, sensitive),
@@ -189,7 +173,6 @@ export async function buildWorkflowProgressView(input: {
     nextTriggerAt: trigger?.nextFireAt ?? null,
     availableActions: availableActions({
       run,
-      approval,
       manualReconciliationRequired: input.store.getManualReconciliationDetail(run.runId) !== null,
     }),
     sensitive,
@@ -211,12 +194,7 @@ export function toSurfaceActions(input: {
       {
         actionId,
         label: actionLabel(kind),
-        style:
-          kind === "approve"
-            ? "success"
-            : kind === "reject" || kind === "cancel"
-              ? "danger"
-              : "secondary",
+        style: kind === "cancel" ? "danger" : "secondary",
       },
     ];
   });
@@ -241,12 +219,12 @@ function reviewJson(view: WorkflowProgressView): string {
       hashes: {
         source: view.revision.sourceSha256,
         inputSchema: view.revision.inputSchemaSha256,
-        capabilities: view.revision.capabilitySha256,
+        resourcePolicy: view.revision.resourcePolicySha256,
         ...(view.sensitive ? {} : { args: view.run.argsSha256 }),
       },
       firstArgsRedacted: view.review.firstArgs,
       inputSchema: view.review.inputSchema,
-      capabilities: view.revision.capabilities,
+      resources: view.revision.resources,
       limits: view.revision.limits,
       sourceAccess: view.review.sourceAccess,
     },
@@ -261,7 +239,6 @@ export function renderWorkflowProgressView(input: {
   actions: SurfaceAction[];
 }): { text: string; actions: SurfaceAction[]; attachments: SurfaceAttachment[] } {
   const view = input.view;
-  const reviewer = view.approval?.expectedReviewerUserId ?? "unavailable";
   const phaseLines = view.phases.map(
     (phase) =>
       `- ${phase.name}: ${phase.completed} complete, ${phase.running} running, ${phase.failed} failed, ${phase.total} total`,
@@ -297,21 +274,16 @@ export function renderWorkflowProgressView(input: {
     `State: **${view.run.state}** | Elapsed: ${Math.floor(view.elapsedMs / 1_000)}s`,
     `Scope/path: \`${view.revision.scope}:${view.revision.normalizedPath}\``,
     `Project: \`${view.revision.canonicalProjectId}\``,
-    `Review: ${view.approval?.state ?? "none"} | Reviewer: \`${reviewer}\``,
     "",
-    "### Capabilities and scale",
-    `Profiles: ${view.revision.capabilities.agents.profiles.join(", ")} | Models: ${view.revision.capabilities.agents.models.join(", ")}`,
-    `Reasoning: ${view.revision.capabilities.agents.reasoning.join(", ")} | Agents: ${view.revision.capabilities.agents.maxConcurrent} concurrent / ${view.revision.capabilities.agents.maxTotal} total`,
-    `Roots: ${view.revision.capabilities.agents.allowedRoots.join(", ")} | Editing: ${view.revision.capabilities.agents.editing.join(", ") || "none"} | Delegation: ${view.revision.capabilities.agents.delegation ? "yes" : "no"}`,
-    `Level-1 tools: ${view.revision.capabilities.agents.tools.join(", ") || "none"} | Executables: ${view.revision.capabilities.agents.executables}`,
-    `Level-2 callables: ${view.revision.capabilities.level2.callables.join(", ") || "none"} | Origin surface: ${view.revision.capabilities.surfaces.origin.join(", ") || "none"}`,
-    `Waits: ${view.revision.capabilities.waits.join(", ") || "none"}`,
-    `Limits: wall ${view.revision.capabilities.maxWallTimeMs}ms, idle ${view.revision.capabilities.operationIdleTimeoutMs}ms, nesting ${view.revision.capabilities.maxNestingDepth}, source ${view.revision.limits.maxSourceBytes}B, input ${view.revision.limits.maxInputBytes}B, operation output ${view.revision.limits.maxOperationOutputBytes}B, result ${view.revision.limits.maxResultBytes}B`,
+    "### Resources and durability",
+    `Agents: ${view.revision.resources.agents.maxConcurrent} concurrent / ${view.revision.resources.agents.maxTotal} total`,
+    `Waits: ${view.revision.resources.waits.join(", ") || "none"}`,
+    `Limits: wall ${view.revision.resources.maxWallTimeMs}ms, idle ${view.revision.resources.operationIdleTimeoutMs}ms, nesting ${view.revision.resources.maxNestingDepth}, source ${view.revision.limits.maxSourceBytes}B, input ${view.revision.limits.maxInputBytes}B, operation output ${view.revision.limits.maxOperationOutputBytes}B, result ${view.revision.limits.maxResultBytes}B`,
     "",
     "### Hashes",
     `Source: \`${view.revision.sourceSha256}\``,
     `Input schema: \`${view.revision.inputSchemaSha256}\``,
-    `Capabilities: \`${view.revision.capabilitySha256}\``,
+    `Resource policy: \`${view.revision.resourcePolicySha256}\``,
     ...(view.sensitive ? [] : [`Arguments: \`${view.run.argsSha256}\``]),
     ...exactReviewDetails,
     `Source access: \`${view.review.sourceAccess}\``,

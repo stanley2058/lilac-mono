@@ -1,3 +1,4 @@
+import { closeSync, constants, openSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -29,6 +30,10 @@ const BWRAP_PATH = "/usr/bin/bwrap";
 const SYSTEMD_RUN_PATH = "/usr/bin/systemd-run";
 const SYSTEMCTL_PATH = "/usr/bin/systemctl";
 const REQUIRED_EXECUTABLES = [BWRAP_PATH, SYSTEMD_RUN_PATH, SYSTEMCTL_PATH] as const;
+
+function descriptorPath(fd: number): string {
+  return `/proc/${process.pid}/fd/${fd}`;
+}
 
 const sandboxCallSchema = z.strictObject({
   type: z.literal("call"),
@@ -385,6 +390,8 @@ export async function assertWorkflowSandboxAvailable(
 
   const unit = probes.createUnitName();
   let probeFailure: Error | null = null;
+  const systemFd = openSync("/usr/lib", constants.O_RDONLY | constants.O_DIRECTORY);
+  const bunFd = openSync(process.execPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const sandboxProbe = await probes.run(
       [
@@ -409,7 +416,7 @@ export async function assertWorkflowSandboxAvailable(
         "--cap-drop",
         "ALL",
         "--ro-bind",
-        "/usr/lib",
+        descriptorPath(systemFd),
         "/usr/lib",
         "--symlink",
         "usr/lib",
@@ -420,7 +427,7 @@ export async function assertWorkflowSandboxAvailable(
         "--dir",
         "/sandbox",
         "--ro-bind",
-        process.execPath,
+        descriptorPath(bunFd),
         "/sandbox/bun",
         "--proc",
         "/proc",
@@ -493,6 +500,8 @@ export async function assertWorkflowSandboxAvailable(
     }
   }
   const cleanupFailure = await cleanupPreflightUnit(probes, unit);
+  closeSync(systemFd);
+  closeSync(bunFd);
   if (cleanupFailure) {
     throw unavailable(
       `could not clean up transient preflight unit ${unit} (${cleanupFailure}); run ${SYSTEMCTL_PATH} --user stop ${unit} and inspect the user manager${probeFailure ? `; the sandbox probe also failed: ${probeFailure.message}` : ""}`,
@@ -527,6 +536,17 @@ export function startWorkflowSandbox(input: {
     parseWorkflowCallSiteManifest(input.source).map((entry) => [entry.callSiteId, entry.kind]),
   );
   const helperPath = path.join(import.meta.dir, "workflow-sandbox-child.js");
+  const systemFd = openSync("/usr/lib", constants.O_RDONLY | constants.O_DIRECTORY);
+  const bunFd = openSync(process.execPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const helperFd = openSync(helperPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let pinnedSourcesClosed = false;
+  const closePinnedSources = (): void => {
+    if (pinnedSourcesClosed) return;
+    pinnedSourcesClosed = true;
+    closeSync(systemFd);
+    closeSync(bunFd);
+    closeSync(helperFd);
+  };
   const unit = runtime.createUnitName();
   const memoryBytes = Math.min(input.memoryBytes ?? SANDBOX_MEMORY_BYTES, SANDBOX_MEMORY_BYTES);
   const command = [
@@ -553,7 +573,7 @@ export function startWorkflowSandbox(input: {
     "--cap-drop",
     "ALL",
     "--ro-bind",
-    "/usr/lib",
+    descriptorPath(systemFd),
     "/usr/lib",
     "--symlink",
     "usr/lib",
@@ -564,10 +584,10 @@ export function startWorkflowSandbox(input: {
     "--dir",
     "/sandbox",
     "--ro-bind",
-    process.execPath,
+    descriptorPath(bunFd),
     "/sandbox/bun",
     "--ro-bind",
-    helperPath,
+    descriptorPath(helperFd),
     "/sandbox/runner.js",
     "--proc",
     "/proc",
@@ -581,7 +601,13 @@ export function startWorkflowSandbox(input: {
     "--smol",
     "/sandbox/runner.js",
   ];
-  const subprocess = runtime.spawn(command);
+  let subprocess: WorkflowSandboxLauncher;
+  try {
+    subprocess = runtime.spawn(command);
+  } catch (error) {
+    closePinnedSources();
+    throw error;
+  }
   let cancelled = false;
   let terminal = false;
   let activeConfirmed = false;
@@ -868,7 +894,9 @@ export function startWorkflowSandbox(input: {
       throw error;
     },
   );
-  const result = Promise.race([executionAfterCancellation, cancellationResult]);
+  const result = Promise.race([executionAfterCancellation, cancellationResult]).finally(
+    closePinnedSources,
+  );
 
   return { result, cancel };
 }

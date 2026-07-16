@@ -102,7 +102,6 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "surface.reactions.remove",
   "surface.sessions.list",
   "surface.sessions.listParticipants",
-  "workflow.approval.revoke",
   "workflow.definition.get",
   "workflow.definition.list",
   "workflow.definition.save",
@@ -258,6 +257,48 @@ describe("core tool plugin manager", () => {
     ]);
   });
 
+  it("builds identical native profile tools for direct and workflow launches", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-profile-parity-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const scratchRoot = path.join(dataDir, "workflow-runtime", "scratch", "parity");
+    await fs.mkdir(scratchRoot, { recursive: true });
+    const cfg = testConfig({});
+    const manager = createCoreToolPluginManager({ runtime: { config: cfg }, dataDir });
+    await manager.init();
+
+    for (const profile of ["explore", "general", "self"] as const) {
+      const requestContext = {
+        requestId: `profile-parity-${profile}`,
+        sessionId: `profile-parity-${profile}`,
+        requestClient: "test",
+        subagentDepth: 1,
+        subagentProfile: profile,
+        safetyMode: "trusted" as const,
+        metadata: { familyScratchRoot: scratchRoot },
+      };
+      const direct = await manager.buildLevel1Toolset({
+        cwd: tmpRoot,
+        runProfile: profile,
+        editingToolMode: profile === "explore" ? "none" : "apply_patch",
+        subagentDepth: 1,
+        subagentConfig: cfg.agent.subagents,
+        requestContext,
+      });
+      const workflow = await manager.buildLevel1Toolset({
+        cwd: tmpRoot,
+        runProfile: profile,
+        editingToolMode: profile === "explore" ? "none" : "apply_patch",
+        subagentDepth: 1,
+        subagentConfig: cfg.agent.subagents,
+        requestContext: {
+          ...requestContext,
+          metadata: { ...requestContext.metadata, workflowPolicy: { profile } },
+        },
+      });
+      expect([...workflow.specs.keys()].sort()).toEqual([...direct.specs.keys()].sort());
+    }
+  });
+
   it("hides unsandboxed local tools in restricted mode", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");
@@ -299,20 +340,29 @@ describe("core tool plugin manager", () => {
       operationId: "operation-1",
       dispatchEpoch: "dispatch-epoch-0001",
       profile: "explore",
-      model: "inherit",
-      reasoning: "provider-default",
-      tools: ["glob", "read_file"],
-      executables: "none",
+      model: null,
+      reasoning: null,
+      resolvedModel: "test/model",
+      resolvedReasoning: null,
+      resolvedModelRequest: {
+        spec: "test/model",
+        provider: "test",
+        modelId: "model",
+        reasoningDisplay: "simple",
+      },
       safetyMode: "restricted",
-      editing: false,
       isolation: "shared",
-      delegation: false,
-      level2Callables: [],
-      surfaceOriginOperations: [],
       canonicalWorkspaceRoot: dataDir,
       canonicalAuthorityRoot: dataDir,
       canonicalRequestedCwd: dataDir,
       canonicalCwd: dataDir,
+      canonicalScratchRoot: path.join(
+        dataDir,
+        ".lilac-data",
+        "workflow-runtime",
+        "scratch",
+        "run-1",
+      ),
       canonicalProjectId: "project-1",
       originSessionId: "public-channel",
       originClient: "discord",
@@ -320,7 +370,6 @@ describe("core tool plugin manager", () => {
       revisionId: "revision-1",
       sourceSha256: "a".repeat(64),
       inputSchemaSha256: "b".repeat(64),
-      capabilitySha256: "c".repeat(64),
       argsSha256: "d".repeat(64),
       operationInputSha256: "e".repeat(64),
     } as const;
@@ -330,7 +379,6 @@ describe("core tool plugin manager", () => {
       editingToolMode: "none",
       subagentDepth: 1,
       subagentConfig: cfg.agent.subagents!,
-      allowedToolNames: new Set(["bash", "read_file", "glob"]),
       requestContext: {
         requestId: "workflow-explore",
         sessionId: "public-channel",
@@ -341,7 +389,33 @@ describe("core tool plugin manager", () => {
         metadata: { workflowPolicy },
       },
     });
-    expect([...workflowExplore.specs.keys()].sort()).toEqual(["glob", "read_file"]);
+    expect([...workflowExplore.specs.keys()].sort()).toEqual([
+      "batch",
+      "read_file",
+      "scratch_read",
+      "scratch_write",
+    ]);
+    await fs.mkdir(workflowPolicy.canonicalScratchRoot, { recursive: true });
+    const exploreTools = workflowExplore.tools as Record<
+      string,
+      { execute?: (...args: readonly unknown[]) => unknown }
+    >;
+    await expect(
+      resolveExecuteResult(
+        getExecutableTool(exploreTools, "scratch_write").execute!(
+          { path: "handoff.txt", content: "explore handoff" },
+          { toolCallId: "scratch-write", messages: [] },
+        ),
+      ),
+    ).resolves.toMatchObject({ bytes: 15 });
+    await expect(
+      resolveExecuteResult(
+        getExecutableTool(exploreTools, "scratch_read").execute!(
+          { path: "handoff.txt" },
+          { toolCallId: "scratch-read", messages: [] },
+        ),
+      ),
+    ).resolves.toMatchObject({ content: "explore handoff" });
 
     const workflowGeneral = await manager.buildLevel1Toolset({
       cwd: dataDir,
@@ -349,7 +423,6 @@ describe("core tool plugin manager", () => {
       editingToolMode: "apply_patch",
       subagentDepth: 1,
       subagentConfig: cfg.agent.subagents!,
-      allowedToolNames: new Set(["bash", "read_file", "glob", "apply_patch"]),
       requestContext: {
         requestId: "workflow-general",
         sessionId: "public-channel",
@@ -357,15 +430,36 @@ describe("core tool plugin manager", () => {
         subagentDepth: 1,
         subagentProfile: "general",
         safetyMode: "restricted",
-        metadata: { workflowPolicy: { ...workflowPolicy, profile: "general", editing: true } },
+        metadata: { workflowPolicy: { ...workflowPolicy, profile: "general" } },
       },
     });
     expect([...workflowGeneral.specs.keys()].sort()).toEqual([
-      "apply_patch",
       "bash",
-      "glob",
+      "batch",
       "read_file",
+      "scratch_read",
+      "scratch_write",
     ]);
+
+    const workflowSelf = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "self",
+      editingToolMode: "apply_patch",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+      requestContext: {
+        requestId: "workflow-self",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 1,
+        subagentProfile: "self",
+        safetyMode: "trusted",
+        metadata: { workflowPolicy: { ...workflowPolicy, profile: "self" } },
+      },
+    });
+    expect([...workflowSelf.specs.keys()].sort()).toContain("subagent_delegate");
+    expect([...workflowSelf.specs.keys()]).toContain("apply_patch");
+    expect([...workflowSelf.specs.keys()]).not.toContain("edit_file");
   });
 
   it("threads direct attachment support metadata into read_file description", async () => {
@@ -622,6 +716,11 @@ describe("core tool plugin manager", () => {
         .filter((id) => OPTIONAL_DYNAMIC_LEVEL2_CALLABLE_IDS.has(id))
         .every((id) => OPTIONAL_DYNAMIC_LEVEL2_CALLABLE_IDS.has(id)),
     ).toBe(true);
+
+    const contributionByTool = manager.getLevel2ContributionInfo();
+    const webTool = manager.getLevel2Tools().find((tool) => tool.id === "web");
+    if (!webTool) throw new Error("missing web tool");
+    expect(contributionByTool.get(webTool)?.pluginId).toBe("web");
   });
 
   it("skips capability-dependent plugins in dev mode", async () => {
@@ -710,5 +809,104 @@ describe("core tool plugin manager", () => {
       )
     ).flat();
     expect(callableIds).toContain("fixture.echo");
+  });
+
+  it("uses the same native profile plugin gates for direct and workflow requests", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    await writeExternalPlugin({
+      dataDir,
+      pluginId: "workflow-fixture",
+      entryBody: `export default {
+  meta: { id: "workflow-fixture" },
+  create() { return {
+    level1: [{
+      name: "fixture_write",
+      createTool() { return { execute() { return { ok: true }; } }; },
+      isEnabled() { return true; },
+    }],
+    level2: [{
+      id: "fixture",
+      async init() {}, async destroy() {},
+      async list() { return [{ callableId: "fixture.echo", name: "Fixture", description: "Fixture", shortInput: [] }]; },
+      async call() { return { ok: true }; },
+    }],
+  }; },
+};`,
+    });
+    const base = testConfig({});
+    const makeManager = (enabled: boolean) =>
+      createCoreToolPluginManager({
+        runtime: {
+          config: {
+            ...base,
+            agent: {
+              ...base.agent,
+              subagents: {
+                ...base.agent.subagents,
+                profiles: {
+                  ...base.agent.subagents.profiles,
+                  general: {
+                    ...base.agent.subagents.profiles.general,
+                    level1: {
+                      ...base.agent.subagents.profiles.general.level1,
+                      plugins: enabled ? ["workflow-fixture"] : [],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        dataDir,
+      });
+    const requestContext = {
+      requestId: "workflow-plugin",
+      sessionId: "workflow-plugin",
+      requestClient: "unknown",
+      subagentDepth: 1,
+      subagentProfile: "general" as const,
+      metadata: { workflowPolicy: {} },
+    };
+
+    const denied = makeManager(false);
+    await denied.init();
+    expect(
+      (
+        await denied.buildLevel1Toolset({
+          cwd: dataDir,
+          runProfile: "general",
+          editingToolMode: "none",
+          subagentDepth: 1,
+          subagentConfig: base.agent.subagents!,
+          requestContext,
+        })
+      ).specs.has("fixture_write"),
+    ).toBe(false);
+    await denied.destroy();
+
+    const enabled = makeManager(true);
+    await enabled.init();
+    expect(
+      (
+        await enabled.buildLevel1Toolset({
+          cwd: dataDir,
+          runProfile: "general",
+          editingToolMode: "none",
+          subagentDepth: 1,
+          subagentConfig: base.agent.subagents!,
+          requestContext,
+        })
+      ).specs.has("fixture_write"),
+    ).toBe(true);
+    const direct = await enabled.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "general",
+      editingToolMode: "none",
+      subagentDepth: 1,
+      subagentConfig: base.agent.subagents,
+    });
+    expect(direct.specs.has("fixture_write")).toBe(true);
+    await enabled.destroy();
   });
 });

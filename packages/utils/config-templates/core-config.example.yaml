@@ -238,6 +238,17 @@ agent:
     profiles:
       explore:
         modelSlot: main
+        # Profile behavior applies identically to direct and workflow launches.
+        level1:
+          tools: [read_file, glob, grep, fuzzy_search, scratch_read, scratch_write, batch]
+          plugins: [builtin-local-tools]
+        level2:
+          callables: [fetch, search, skills.list, skills.brief, skills.full, content.inspect, discovery.search, conversation.thread.search, surface.help, surface.sessions.listParticipants, surface.messages.list, surface.messages.read, surface.messages.search, surface.reactions.list, surface.reactions.listDetailed]
+          plugins: [web, skills, content.inspect, discovery, conversation.thread, surface]
+        network: true
+        workspaceWrites: false
+        execution: false
+        delegation: false
         # Optional direct model override. Can be provider/model or an alias from models.def.
         # model: "openrouter/openai/gpt-4o"
         # Optional portable reasoning override for this subagent profile.
@@ -249,7 +260,13 @@ agent:
         #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
       general:
         modelSlot: main
-        # General subagent runs with full primary-equivalent tool access.
+        # "*" includes every globally enabled built-in or external contribution.
+        level1: { tools: ["*"], plugins: ["*"] }
+        level2: { callables: ["*"], plugins: ["*"] }
+        network: true
+        workspaceWrites: true
+        execution: true
+        delegation: false
         # model: "openrouter/openai/gpt-4o"
         # reasoning: medium
         # options:
@@ -259,6 +276,12 @@ agent:
         #   Prioritize execution over discussion and report concrete outcomes.
       self:
         modelSlot: main
+        level1: { tools: ["*"], plugins: ["*"] }
+        level2: { callables: ["*"], plugins: ["*"] }
+        network: true
+        workspaceWrites: true
+        execution: true
+        delegation: true
         # Self subagent is an isolated fork of the primary agent prompt/tooling.
         # model: "openrouter/openai/gpt-4o"
         # reasoning: high

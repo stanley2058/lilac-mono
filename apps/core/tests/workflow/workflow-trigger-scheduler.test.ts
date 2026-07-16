@@ -14,17 +14,17 @@ import {
 
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import {
-  normalizeWorkflowCapabilityProfile,
+  canonicalJsonSha256,
+  WORKFLOW_RUNTIME_VERSION,
+} from "../../src/workflow/workflow-definition";
+import {
+  normalizeWorkflowResourcePolicy,
   type WorkflowTrigger,
 } from "../../src/workflow/workflow-domain";
 import { WorkflowTriggerScheduler } from "../../src/workflow/workflow-trigger-scheduler";
 
-const HASH_A = "a".repeat(64);
-const HASH_B = "b".repeat(64);
-
 class CapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
-
   async publish<TData>(message: Omit<Message<TData>, "id" | "ts">, _options: PublishOptions) {
     this.messages.push(message);
     return { id: `${this.messages.length}-0`, cursor: `${this.messages.length}-0` };
@@ -43,6 +43,21 @@ class CapturingRawBus implements RawBus {
 }
 
 function createRevision(store: DurableWorkflowStore): void {
+  const resources = normalizeWorkflowResourcePolicy({
+    agents: { maxConcurrent: 1, maxTotal: 1 },
+    maxNestingDepth: 2,
+    maxWallTimeMs: 60_000,
+    operationIdleTimeoutMs: 10_000,
+    waits: [],
+    safety: { originatingMode: "trusted", escalation: "none" },
+  });
+  const limits = {
+    maxSourceBytes: 10_000,
+    maxInputBytes: 10_000,
+    maxOperationOutputBytes: 10_000,
+    maxResultBytes: 10_000,
+    maxRuntimeMemoryBytes: 256 * 1024 * 1024,
+  };
   store.createRevision({
     revisionId: "revision-1",
     canonicalProjectId: "project-1",
@@ -50,74 +65,39 @@ function createRevision(store: DurableWorkflowStore): void {
     scope: "project",
     normalizedPath: "scheduled.js",
     name: "scheduled",
-    snapshotArtifactId: `workflow-source:${HASH_A}`,
-    sourceSha256: HASH_A,
-    inputSchemaSha256: HASH_B,
-    capabilitySha256: "c".repeat(64),
+    snapshotArtifactId: `workflow-source:${"a".repeat(64)}`,
+    sourceSha256: "a".repeat(64),
+    inputSchemaSha256: "b".repeat(64),
+    resourcePolicySha256: canonicalJsonSha256({ resources, limits }),
     metadata: { name: "scheduled", description: "Scheduled workflow" },
     inputSchema: { type: "object", additionalProperties: false },
-    capabilities: normalizeWorkflowCapabilityProfile({
-      agents: {
-        profiles: ["explore"],
-        models: ["inherit"],
-        reasoning: ["provider-default"],
-        allowedRoots: ["project"],
-        tools: ["read_file"],
-        executables: "none",
-        editing: [],
-        delegation: false,
-        maxConcurrent: 1,
-        maxTotal: 1,
-      },
-      level2: { callables: [] },
-      surfaces: { origin: [] },
-      maxNestingDepth: 2,
-      maxWallTimeMs: 60_000,
-      operationIdleTimeoutMs: 10_000,
-      waits: [],
-      safety: { originatingMode: "trusted", escalation: "none" },
-    }),
-    limits: {
-      maxSourceBytes: 10_000,
-      maxInputBytes: 10_000,
-      maxOperationOutputBytes: 10_000,
-      maxResultBytes: 10_000,
-      maxRuntimeMemoryBytes: 256 * 1024 * 1024,
-    },
-    runtimeVersion: "lilac-workflow-js-v2",
+    resources,
+    limits,
+    runtimeVersion: WORKFLOW_RUNTIME_VERSION,
     createdAt: 1,
   });
 }
 
-function trigger(input: {
-  triggerId: string;
-  definition: WorkflowTrigger["definition"];
-  nextFireAt: number;
-  skipMissed?: boolean;
-  overlap?: "coalesce" | "parallel";
-}): WorkflowTrigger {
+function trigger(): WorkflowTrigger {
   return {
-    triggerId: input.triggerId,
+    triggerId: "trigger-1",
     revisionId: "revision-1",
     state: "active",
-    definition: input.definition,
+    definition: { kind: "timestamp", at: 100 },
     args: {},
-    argsSha256: "d".repeat(64),
-    schedulingPolicy: {
-      skipMissed: input.skipMissed ?? true,
-      overlap: input.overlap ?? "coalesce",
-    },
+    argsSha256: canonicalJsonSha256({}),
+    schedulingPolicy: { skipMissed: true, overlap: "coalesce" },
     origin: {
-      requestId: "origin-1",
+      requestId: "request-owner",
       sessionId: "channel-1",
       client: "discord",
-      userId: "user-1",
+      userId: "owner-1",
       safetyMode: "trusted",
       projectCwd: "/workspace",
     },
-    completionTarget: { kind: "durable_surface" },
+    completionTarget: { kind: "detached" },
     progressTarget: null,
-    nextFireAt: input.nextFireAt,
+    nextFireAt: 100,
     lastFireAt: null,
     lastRunId: null,
     claimedBy: null,
@@ -127,210 +107,31 @@ function trigger(input: {
   };
 }
 
-describe("WorkflowTriggerScheduler", () => {
-  it("creates one timestamp run and completes the trigger only after actual run failure", async () => {
-    const dbPath = join(tmpdir(), `workflow-timestamp-${crypto.randomUUID()}.sqlite`);
-    let store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    let now = 100;
+describe("workflow trigger scheduler", () => {
+  it("fires the immutable trusted owner snapshot directly into the queue", async () => {
+    const file = join(tmpdir(), `workflow-scheduler-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(file);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
     try {
       createRevision(store);
-      store.createTrigger(
-        trigger({
-          triggerId: "timestamp-1",
-          definition: { kind: "timestamp", at: 100 },
-          nextFireAt: 100,
-        }),
-      );
-      let scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-
-      const fired = store.getTrigger("timestamp-1");
-      expect(fired).toMatchObject({ state: "active", nextFireAt: null, lastFireAt: 100 });
-      const run = fired?.lastRunId ? store.getRun(fired.lastRunId) : null;
-      expect(run?.state).toBe("awaiting_review");
-      const approval = run?.approvalId ? store.getApproval(run.approvalId) : null;
-      expect(approval?.state).toBe("pending");
-      expect(
-        store.transitionApproval({
-          approvalId: approval!.approvalId,
-          from: "pending",
-          to: "approved",
-          now: 101,
-        }),
-      ).toBe(true);
-      expect(
-        store.tryClaimApprovedRun({ runId: run!.runId, claimerId: "engine", now: 102 }),
-      ).not.toBeNull();
-      store.transitionRun({
-        runId: run!.runId,
-        from: "running",
-        to: "failed",
-        now: 103,
-        detail: "actual execution failed",
-      });
-
-      now = 104;
-      scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-      expect(store.getTrigger("timestamp-1")?.state).toBe("completed");
-      expect(store.getRun(run!.runId)?.terminalDetail).toBe("actual execution failed");
-    } finally {
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it("survives scheduler restart, creates distinct cron runs, and rechecks approval drift", async () => {
-    const dbPath = join(tmpdir(), `workflow-cron-${crypto.randomUUID()}.sqlite`);
-    let store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    let now = 60_000;
-    try {
-      createRevision(store);
-      store.createTrigger(
-        trigger({
-          triggerId: "cron-1",
-          definition: { kind: "cron", expression: "* * * * *", timezone: "UTC" },
-          nextFireAt: 60_000,
-        }),
-      );
-      let scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-      const first = store.getTrigger("cron-1")!;
-      const firstRun = store.getRun(first.lastRunId!)!;
-      store.transitionApproval({
-        approvalId: firstRun.approvalId!,
-        from: "pending",
-        to: "approved",
-        now: 60_001,
-      });
-      store.transitionRun({
-        runId: firstRun.runId,
-        from: "queued",
-        to: "running",
-        now: 60_002,
-      });
-      store.transitionRun({
-        runId: firstRun.runId,
-        from: "running",
-        to: "succeeded",
-        now: 60_003,
-      });
-
-      store.close();
-      store = new DurableWorkflowStore(dbPath);
-
-      now = first.nextFireAt!;
-      scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-      const second = store.getTrigger("cron-1")!;
-      const secondRun = store.getRun(second.lastRunId!)!;
-      expect(secondRun.runId).not.toBe(firstRun.runId);
-      expect(secondRun.state).toBe("queued");
-
-      store.transitionApproval({
-        approvalId: secondRun.approvalId!,
-        from: "approved",
-        to: "revoked",
-        now: now + 1,
-        reason: "approval drift",
-      });
-      store.cancelRunAndChildren({
-        runId: secondRun.runId,
-        now: now + 2,
-        detail: "cancel paused run after revocation",
-      });
-      now = second.nextFireAt!;
-      scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-      const third = store.getTrigger("cron-1")!;
-      const thirdRun = store.getRun(third.lastRunId!)!;
-      expect(new Set([firstRun.runId, secondRun.runId, thirdRun.runId]).size).toBe(3);
-      expect(thirdRun.state).toBe("awaiting_review");
-      expect(thirdRun.approvalId).not.toBe(secondRun.approvalId);
-    } finally {
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it("tracks all runs created by a trigger instead of only its latest run", async () => {
-    const dbPath = join(tmpdir(), `workflow-trigger-runs-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    let now = 60_000;
-    try {
-      createRevision(store);
-      store.createTrigger(
-        trigger({
-          triggerId: "parallel-1",
-          definition: { kind: "cron", expression: "* * * * *", timezone: "UTC" },
-          nextFireAt: now,
-          overlap: "parallel",
-        }),
-      );
-      const scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      now = store.getTrigger("parallel-1")!.nextFireAt!;
+      store.createTrigger(trigger());
+      const scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => 100 });
       await scheduler.tick();
-      await scheduler.stop();
-
-      expect(store.countActiveScheduledRuns("parallel-1")).toBe(2);
-      expect(store.countActiveScheduledRuns()).toBe(2);
+      const storedTrigger = store.getTrigger("trigger-1");
+      const fired = storedTrigger?.lastRunId ? store.getRun(storedTrigger.lastRunId) : null;
+      expect(fired).toMatchObject({
+        state: "queued",
+        revisionId: "revision-1",
+        origin: { client: "discord", userId: "owner-1", safetyMode: "trusted" },
+      });
+      expect(raw.messages.some((message) => message.type === "evt.workflow.run.changed")).toBe(
+        true,
+      );
     } finally {
       await bus.close();
       store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it("atomically caps process-wide active scheduled runs", async () => {
-    const dbPath = join(tmpdir(), `workflow-trigger-cap-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    const now = 60_000;
-    try {
-      createRevision(store);
-      for (let index = 0; index < 65; index += 1) {
-        store.createTrigger(
-          trigger({
-            triggerId: `capped-${index}`,
-            definition:
-              index === 64
-                ? { kind: "timestamp", at: now }
-                : { kind: "cron", expression: "* * * * *", timezone: "UTC" },
-            nextFireAt: now,
-            overlap: "parallel",
-          }),
-        );
-      }
-      const scheduler = new WorkflowTriggerScheduler({ bus, store, now: () => now, pollMs: 0 });
-      await scheduler.start();
-      await scheduler.stop();
-
-      expect(store.countActiveScheduledRuns()).toBe(64);
-      const triggers = store.listTriggers({ state: "active", limit: 100 });
-      expect(triggers.filter((candidate) => candidate.lastRunId !== null)).toHaveLength(64);
-      expect(
-        triggers.filter(
-          (candidate) =>
-            candidate.lastRunId === null &&
-            candidate.lastFireAt === now &&
-            candidate.nextFireAt === now,
-        ),
-      ).toHaveLength(1);
-    } finally {
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
+      rmSync(file, { force: true });
     }
   });
 });

@@ -108,7 +108,7 @@ const workflowPolicyRawSchema = z
         runId: z.string().min(1).max(200),
         operationId: z.string().min(1).max(200),
         dispatchEpoch: z.string().min(16).max(200).optional(),
-        capability: z.string().min(32).max(500),
+        controlToken: z.string().min(32).max(500),
       })
       .optional(),
   })

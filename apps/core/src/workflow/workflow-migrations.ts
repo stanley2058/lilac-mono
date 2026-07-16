@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 
 import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
 
-export const WORKFLOW_SCHEMA_VERSION = 19;
+export const WORKFLOW_SCHEMA_VERSION = 20;
 
 type WorkflowMigration = {
   version: number;
@@ -803,7 +803,7 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        WHERE revision_id IN (
           SELECT revision_id FROM workflow_revisions
           WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
-        )`,
+          )`,
       `DELETE FROM workflow_runs
        WHERE revision_id IN (
          SELECT revision_id FROM workflow_revisions
@@ -826,7 +826,7 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        WHERE revision_id IN (
          SELECT revision_id FROM workflow_revisions
          WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
-       )`,
+        )`,
       `DELETE FROM workflow_runs
        WHERE revision_id IN (
          SELECT revision_id FROM workflow_revisions
@@ -851,6 +851,176 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       )`,
       `CREATE INDEX idx_workflow_shared_editor_leases_heartbeat
        ON workflow_shared_editor_leases(heartbeat_at)`,
+    ],
+  },
+  {
+    version: 20,
+    name: "profile-native trusted auto-run clean break",
+    statements: [
+      `CREATE TABLE workflow_legacy_audit_records (
+        record_kind TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        archived_at INTEGER NOT NULL,
+        PRIMARY KEY (record_kind, record_id)
+      )`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'revision', revision_id, 'v19_maximum_envelope_incompatible_with_profile_native_policy',
+         json_object(
+           'revisionId', revision_id,
+           'runtimeVersion', runtime_version,
+           'sourceSha256', source_sha256,
+           'inputSchemaSha256', input_schema_sha256,
+           'capabilitySha256', capability_sha256,
+           'snapshotArtifactId', snapshot_artifact_id,
+           'createdAt', created_at
+         ), created_at
+       FROM workflow_revisions
+       WHERE runtime_version <> 'lilac-workflow-js-v3'`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'run', run_id,
+         CASE WHEN state IN ('succeeded', 'failed', 'rejected', 'cancelled')
+           THEN 'v19_terminal_audit_record_retired'
+           ELSE 'v19_nonterminal_run_terminalized_for_profile_native_migration'
+         END,
+         json_object(
+           'runId', run_id,
+           'revisionId', revision_id,
+           'state', state,
+           'argsSha256', args_sha256,
+           'originRequestId', origin_request_id,
+           'originClient', origin_client,
+           'originUserId', origin_user_id,
+           'terminalDetail', terminal_detail,
+           'createdAt', created_at,
+           'terminalAt', terminal_at
+         ), COALESCE(terminal_at, updated_at)
+       FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v3'
+       )`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'trigger', trigger_id,
+         CASE WHEN state IN ('active', 'paused')
+           THEN 'v19_active_trigger_cancelled_for_profile_native_migration'
+           ELSE 'v19_terminal_trigger_retired'
+         END,
+         json_object(
+           'triggerId', trigger_id,
+           'revisionId', revision_id,
+           'state', state,
+           'argsSha256', args_sha256,
+           'nextFireAt', next_fire_at,
+           'lastRunId', last_run_id,
+           'createdAt', created_at
+         ), updated_at
+       FROM workflow_triggers
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v3'
+        )`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'terminal_receipt', request_id,
+         'v19_terminal_receipt_retired_with_legacy_run',
+         json_object(
+           'requestId', request_id,
+           'runId', run_id,
+           'operationId', operation_id,
+           'dispatchEpoch', dispatch_epoch,
+           'state', state,
+           'detail', detail,
+           'resultArtifactId', result_artifact_id,
+           'createdAt', created_at
+         ), created_at
+       FROM workflow_request_terminal_receipts
+       WHERE run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v3'
+         )
+       )`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'run', run_id,
+         'v19_nonterminal_run_terminalized_for_profile_native_migration', updated_at
+       FROM workflow_runs
+       WHERE state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')
+         AND revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v3'
+         )`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'operation', run_id || ':' || operation_id,
+         'v19_nonterminal_operation_cancelled_for_profile_native_migration', updated_at
+       FROM workflow_operations
+       WHERE state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')
+         AND run_id IN (
+           SELECT run_id FROM workflow_runs
+           WHERE revision_id IN (
+             SELECT revision_id FROM workflow_revisions
+             WHERE runtime_version <> 'lilac-workflow-js-v3'
+           )
+         )`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'trigger', trigger_id,
+         'v19_active_trigger_cancelled_for_profile_native_migration', updated_at
+       FROM workflow_triggers
+       WHERE state IN ('active', 'paused')
+         AND revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v3'
+         )`,
+      `UPDATE workflow_request_dispatches
+       SET active = 0, expires_at = MIN(expires_at, updated_at)
+       WHERE active = 1 AND run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v3'
+         )
+       )`,
+      `DELETE FROM workflow_triggers
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v3'
+        )`,
+      `DELETE FROM workflow_request_terminal_receipts
+       WHERE run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v3'
+         )
+       )`,
+      `DELETE FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v3'
+       )`,
+      `DELETE FROM workflow_approvals
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v3'
+       )`,
+      `DELETE FROM workflow_revisions
+       WHERE runtime_version <> 'lilac-workflow-js-v3'`,
+      `DROP TABLE workflow_shared_editor_leases`,
     ],
   },
 ];

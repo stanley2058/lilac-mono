@@ -4,10 +4,10 @@ import { createLogger } from "@stanley2058/lilac-utils";
 import { DurableWorkflowStore } from "./durable-workflow-store";
 import { computeNextCronAtMs } from "./cron";
 import { sha256 } from "./workflow-definition";
-import type { WorkflowApproval, WorkflowRun, WorkflowTrigger } from "./workflow-domain";
+import type { WorkflowRun, WorkflowTrigger } from "./workflow-domain";
 import type { WorkflowProgressCardService } from "./workflow-progress-projector";
 
-const TERMINAL_RUN_STATES = new Set(["succeeded", "failed", "rejected", "cancelled"]);
+const TERMINAL_RUN_STATES = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_ACTIVE_SCHEDULED_RUNS = 64;
 
 export class WorkflowTriggerScheduler {
@@ -96,8 +96,7 @@ export class WorkflowTriggerScheduler {
     const run: WorkflowRun = {
       runId,
       revisionId: revision.revisionId,
-      approvalId: null,
-      state: "awaiting_review",
+      state: "queued",
       inputSchemaSnapshot: revision.inputSchema,
       args: trigger.args,
       argsSha256: trigger.argsSha256,
@@ -114,33 +113,12 @@ export class WorkflowTriggerScheduler {
       updatedAt: now,
       terminalAt: null,
     };
-    const approval: WorkflowApproval = {
-      approvalId: `wfapproval:${crypto.randomUUID()}`,
-      revisionId: revision.revisionId,
-      state: "pending",
-      expectedReviewerPlatform:
-        trigger.origin.client === "discord" || trigger.origin.client === "github"
-          ? trigger.origin.client
-          : null,
-      expectedReviewerUserId: trigger.origin.userId,
-      firstRunId: runId,
-      decisionActorPlatform: null,
-      decisionActorUserId: null,
-      decisionSource: null,
-      expiresAt: null,
-      decidedAt: null,
-      revokedAt: null,
-      revocationReason: null,
-      createdAt: now,
-      updatedAt: now,
-    };
     const fired = this.input.store.fireClaimedTrigger({
       triggerId: trigger.triggerId,
       claimerId: this.workerId,
       expectedFireAt: fireAt,
       nextFireAt,
       run,
-      pendingApproval: approval,
       maxActiveScheduledRuns: MAX_ACTIVE_SCHEDULED_RUNS,
       now,
     });
