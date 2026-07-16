@@ -85,7 +85,7 @@ done
 suffix="$(/usr/bin/id -u)-$$"
 smoke_unit="lilac-verify-bwrap-${suffix}.service"
 units+=("$smoke_unit")
-if ! /usr/bin/timeout 12s /usr/bin/systemd-run --user --wait --collect --quiet \
+if ! /usr/bin/timeout 12s /usr/bin/systemd-run --user --wait --quiet \
   --unit="$smoke_unit" \
   --property=MemoryMax=64M \
   --property=MemorySwapMax=0 \

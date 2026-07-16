@@ -6,12 +6,26 @@ Lilac's supported container topology runs systemd as container PID 1. Systemd st
 
 - Linux Docker server 28 or newer. The client version alone is not sufficient.
 - A unified cgroup v2 host exposing the memory and PID controllers.
+- Unprivileged user namespaces enabled: `kernel.unprivileged_userns_clone=1` when that setting exists, and `user.max_user_namespaces` greater than zero.
+- On Ubuntu hosts that expose it, `kernel.apparmor_restrict_unprivileged_userns=0`. The default value of `1` blocks Bubblewrap even when the container uses `apparmor=unconfined`.
 - Docker's private cgroup namespace with `writable-cgroups=true`.
 - `seccomp=unconfined` and `apparmor=unconfined` for nested namespace operations, plus `systempaths=unconfined` for the workflow's private `/proc` mount.
 - The `/run`, `/run/lock`, and `/tmp` tmpfs mounts and systemd stop signal in `compose.yaml`.
 - Enough headroom for the configured container memory and PID limits.
 
 Do not add `privileged: true`, use the host cgroup namespace, or bind-mount `/sys/fs/cgroup`. Docker 28+ supplies a writable view of only the container's private cgroup hierarchy.
+
+Ubuntu hosts can persist the required namespace settings with:
+
+```sh
+printf '%s\n' \
+  'kernel.unprivileged_userns_clone = 1' \
+  'kernel.apparmor_restrict_unprivileged_userns = 0' \
+  | sudo tee /etc/sysctl.d/99-lilac-userns.conf >/dev/null
+sudo sysctl --system
+```
+
+Disabling `kernel.apparmor_restrict_unprivileged_userns` permits unprivileged user namespaces host-wide. Treat this as part of the host security model: keep the host patched, limit shell access, and dedicate the host to trusted workloads when practical.
 
 The runtime verifies seven dependency groups:
 

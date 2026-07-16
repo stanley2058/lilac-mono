@@ -11,7 +11,7 @@ fail() {
 check_host() {
   command -v docker >/dev/null 2>&1 || fail "docker is unavailable"
 
-  local server_version major cgroup_version os_type
+  local server_version major cgroup_version max_user_namespaces os_type userns_clone
   server_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) ||
     fail "cannot reach the Docker daemon"
   major=${server_version%%.*}
@@ -25,6 +25,21 @@ check_host() {
   cgroup_version=$(docker info --format '{{.CgroupVersion}}' 2>/dev/null) ||
     fail "cannot inspect Docker cgroups"
   [[ $cgroup_version == 2 ]] || fail "cgroup v2 is required (found v$cgroup_version)"
+
+  if [[ -r /proc/sys/kernel/unprivileged_userns_clone ]]; then
+    read -r userns_clone </proc/sys/kernel/unprivileged_userns_clone
+    [[ $userns_clone == 1 ]] ||
+      fail "unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=$userns_clone)"
+  fi
+  read -r max_user_namespaces </proc/sys/user/max_user_namespaces
+  [[ $max_user_namespaces =~ ^[0-9]+$ ]] ||
+    fail "cannot parse user.max_user_namespaces: $max_user_namespaces"
+  ((max_user_namespaces > 0)) || fail "unprivileged user namespaces are disabled (user.max_user_namespaces=0)"
+  if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+    read -r userns_clone </proc/sys/kernel/apparmor_restrict_unprivileged_userns
+    [[ $userns_clone == 0 ]] ||
+      fail "AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=$userns_clone)"
+  fi
 }
 
 check_host
