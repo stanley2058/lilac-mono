@@ -689,6 +689,50 @@ describe("workflow sandbox cancellation", () => {
 const integrationDescribe =
   process.env.LILAC_WORKFLOW_SANDBOX_INTEGRATION === "1" ? describe : describe.skip;
 integrationDescribe("workflow sandbox runtime", () => {
+  it("locks globals before evaluating direct compiled workflow source", async () => {
+    const sandbox = startWorkflowSandbox({
+      source: `
+        const capturedTopLevelThis = this;
+        const capturedBun = Bun;
+        const capturedProcess = process;
+        const capturedDate = Date;
+        const escapeUnavailable = (constructor) => {
+          try {
+            return constructor("return this")() === undefined;
+          } catch {
+            return true;
+          }
+        };
+        const evaluation = {
+          topLevelThisUnavailable: capturedTopLevelThis === undefined,
+          bunUnavailable: capturedBun === undefined,
+          processUnavailable: capturedProcess === undefined,
+          dateUnavailable: capturedDate === undefined,
+          objectConstructorEscapeUnavailable: escapeUnavailable(({}).constructor?.constructor),
+          functionConstructorEscapeUnavailable: escapeUnavailable((function () {}).constructor),
+        };
+        globalThis.__lilacWorkflow = {
+          async run() {
+            return { ...evaluation, transport: "ok" };
+          },
+        };
+      `,
+      args: {},
+      maxWallTimeMs: 10_000,
+      onCall: async () => null,
+    });
+
+    await expect(sandbox.result).resolves.toEqual({
+      topLevelThisUnavailable: true,
+      bunUnavailable: true,
+      processUnavailable: true,
+      dateUnavailable: true,
+      objectConstructorEscapeUnavailable: true,
+      functionConstructorEscapeUnavailable: true,
+      transport: "ok",
+    });
+  });
+
   it("does not resolve launchers from a hostile PATH", async () => {
     const directory = await mkdtemp(join(tmpdir(), "lilac-hostile-path-"));
     const sentinel = join(directory, "launcher-ran");

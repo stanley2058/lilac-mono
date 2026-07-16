@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 const MAX_PROTOCOL_BYTES = 16 * 1024 * 1024;
 const bunRuntime = Bun;
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const setExitCode = (code) => {
   process.exitCode = code;
 };
@@ -165,8 +166,8 @@ function lockDownGlobals() {
 }
 
 async function start(message) {
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const sandboxGlobal = {};
+  lockDownGlobals();
   const evaluate = new AsyncFunction(
     "globalThis",
     "Bun",
@@ -176,7 +177,7 @@ async function start(message) {
     "EventSource",
     "Worker",
     "Function",
-    "eval",
+    "blockedEval",
     "Date",
     "crypto",
     "console",
@@ -189,7 +190,7 @@ async function start(message) {
     "require",
     "module",
     "Deno",
-    `${message.source}\nreturn globalThis.__lilacWorkflow;`,
+    `"use strict";\n${message.source}\nreturn globalThis.__lilacWorkflow;`,
   );
   const definition = await evaluate(
     sandboxGlobal,
@@ -215,7 +216,6 @@ async function start(message) {
   );
   if (!definition || typeof definition.run !== "function")
     throw new Error("Compiled workflow is invalid");
-  lockDownGlobals();
   const result = await contextStorage.run(
     { path: "root", parentOperationPath: null, phase: null, depth: 0 },
     () =>

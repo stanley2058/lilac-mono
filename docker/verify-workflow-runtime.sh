@@ -85,15 +85,18 @@ done
 suffix="$(/usr/bin/id -u)-$$"
 smoke_unit="lilac-verify-bwrap-${suffix}.service"
 units+=("$smoke_unit")
-/usr/bin/timeout 12s /usr/bin/systemd-run --user --wait --collect --quiet --unit="$smoke_unit" \
+if ! /usr/bin/timeout 12s /usr/bin/systemd-run --user --wait --collect --quiet \
+  --unit="$smoke_unit" \
   --property=MemoryMax=64M \
   --property=MemorySwapMax=0 \
   --property=TasksMax=16 \
   --property=RuntimeMaxSec=8s \
   /usr/bin/bwrap --unshare-all --die-with-parent --new-session --clearenv --cap-drop ALL \
   --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib /lib64 \
-  --proc /proc --dev /dev --tmpfs /tmp /usr/bin/true >/dev/null ||
+  --proc /proc --dev /dev --tmpfs /tmp /usr/bin/true >/dev/null; then
+  /usr/bin/systemctl --user status "$smoke_unit" --no-pager >&2 || true
   fail "transient bubblewrap smoke test failed"
+fi
 
 limits_unit="lilac-verify-limits-${suffix}.service"
 units+=("$limits_unit")

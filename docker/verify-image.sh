@@ -56,6 +56,7 @@ docker run --detach \
   --tmpfs /run/lock:rw,nosuid,nodev,mode=755,size=16m \
   --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=1g \
   --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
   --security-opt writable-cgroups=true \
   --security-opt systempaths=unconfined \
   --memory 4g \
@@ -97,4 +98,6 @@ docker exec --user lilac "$container_name" /usr/local/bin/verify-workflow-runtim
 docker exec --user lilac \
   --env LILAC_WORKFLOW_SANDBOX_INTEGRATION=1 \
   "$container_name" \
-  /home/lilac/.bun/bin/bun test ./apps/core/tests/workflow/workflow-sandbox.test.ts
+  /home/lilac/.bun/bin/bun test \
+  ./apps/core/tests/workflow/workflow-sandbox.test.ts \
+  ./apps/core/tests/workflow/workflow-integration.test.ts

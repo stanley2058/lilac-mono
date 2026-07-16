@@ -50,6 +50,7 @@ services:
       # Nested bwrap needs unshare/clone, and systemd needs its private cgroup
       # hierarchy writable so it can delegate workflow memory/PID controllers.
       - seccomp=unconfined
+      - apparmor=unconfined
       - writable-cgroups=true
       # Required while the workflow bwrap command mounts a private /proc.
       - systempaths=unconfined

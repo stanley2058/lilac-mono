@@ -191,6 +191,7 @@ describe("unified workflow integration", () => {
   });
 
   it("authors, reviews, approves, sandboxes, dispatches through the request bus, persists, and projects the terminal result", async () => {
+    if (process.env.LILAC_WORKFLOW_SANDBOX_INTEGRATION !== "1") return;
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-integration-"));
     roots.push(root);
     const workspaceRoot = path.join(root, "workspace");

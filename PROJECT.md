@@ -471,6 +471,6 @@ Shutdown happens in reverse (best-effort).
   - `sub:<parent_request_id>:<uuid>` identifies delegated subagent runs.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
 - The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
-- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The systemd-PID1 Docker image provides this boundary under the exact Compose contract documented in `docs/docker-deployment.md`: Linux Docker 28+, private writable cgroups, and unconfined seccomp/system paths, without privileged mode or a host cgroup mount.
+- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The systemd-PID1 Docker image provides this boundary under the exact Compose contract documented in `docs/docker-deployment.md`: Linux Docker 28+, private writable cgroups, and unconfined seccomp/AppArmor/system paths, without privileged mode or a host cgroup mount.
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
 - The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.

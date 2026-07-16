@@ -7,7 +7,7 @@ Lilac's supported container topology runs systemd as container PID 1. Systemd st
 - Linux Docker server 28 or newer. The client version alone is not sufficient.
 - A unified cgroup v2 host exposing the memory and PID controllers.
 - Docker's private cgroup namespace with `writable-cgroups=true`.
-- `seccomp=unconfined` for nested namespace operations and `systempaths=unconfined` for the workflow's private `/proc` mount.
+- `seccomp=unconfined` and `apparmor=unconfined` for nested namespace operations, plus `systempaths=unconfined` for the workflow's private `/proc` mount.
 - The `/run`, `/run/lock`, and `/tmp` tmpfs mounts and systemd stop signal in `compose.yaml`.
 - Enough headroom for the configured container memory and PID limits.
 
@@ -34,7 +34,7 @@ bun run docker:verify-image
 
 The image smoke creates a uniquely named, network-disabled container with Core condition-disabled, waits for the `lilac` user manager, runs `/usr/local/bin/verify-workflow-runtime` as `lilac`, and then runs the gated workflow-sandbox test with the image's production `/home/lilac/.bun/bin/bun`. Together these checks exercise the loader, bind mounts, helper process, runtime command, namespace boundary, and cgroup enforcement without Redis, Discord, or provider credentials. The verifier inspects every transient unit it creates and fails unless cleanup leaves each unit inactive or absent. The container is removed on success or failure. To verify another tag, run `bun run docker:verify-image my-registry/lilac:tag`.
 
-The regular source-test job does not enable `LILAC_WORKFLOW_SANDBOX_INTEGRATION`; the Docker image job owns live workflow-sandbox coverage because it supplies the production systemd, Bubblewrap, Bun, and cgroup environment.
+The regular source-test job does not enable `LILAC_WORKFLOW_SANDBOX_INTEGRATION`; the Docker image job owns the live workflow-sandbox and end-to-end workflow integration coverage because it supplies the production systemd, Bubblewrap, Bun, and cgroup environment.
 
 Start the deployment and verify the same boundary in the running service:
 
