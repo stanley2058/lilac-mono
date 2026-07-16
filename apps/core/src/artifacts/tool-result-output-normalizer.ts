@@ -208,20 +208,6 @@ export function createToolResultOutputNormalizer(params: {
   };
 }
 
-export function normalizeSubagentFinalTextForSnapshot(
-  finalText: string,
-  maxPreviewBytes: number,
-): string {
-  const sanitized = sanitizeText(finalText);
-  if (
-    utf8Bytes(sanitized) <= maxPreviewBytes ||
-    isGeneratedTruncationEnvelope(sanitized, maxPreviewBytes)
-  ) {
-    return sanitized;
-  }
-  return buildTruncatedText(sanitized, maxPreviewBytes);
-}
-
 export async function normalizeSubagentFinalText(params: {
   normalize: NormalizeToolResultOutputFn;
   finalText: string;

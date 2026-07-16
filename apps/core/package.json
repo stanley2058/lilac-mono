@@ -54,6 +54,7 @@
     "sqlite-vec": "0.1.9",
     "superjson": "^2.2.6",
     "turndown": "^7.2.4",
+    "typescript-codegen": "npm:typescript@6.0.3",
     "zod": "^4.3.6"
   }
 }

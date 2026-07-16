@@ -3,6 +3,7 @@ import {
   createLogger,
   extractAiErrorLogDetails,
   getBuildInfo,
+  isRecord,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
@@ -23,6 +24,8 @@ import {
   type ToolServerHealthSnapshot,
 } from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
+import type { AuthorizedWorkflowRequest } from "../workflow/workflow-request-authority";
+import { authorizeWorkflowPathInput } from "../workflow/workflow-path-authority";
 import { ToolInputValidationError } from "./validation-error-message";
 
 type ToolPluginManagerLike = {
@@ -89,9 +92,30 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
     sessionId: headerStr(headers["x-lilac-session-id"]),
     requestClient: headerStr(headers["x-lilac-request-client"]),
     cwd: headerStr(headers["x-lilac-cwd"]),
+    toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
+    controlCapability: headerStr(headers["x-lilac-control-capability"]),
+    workflowCapability: headerStr(headers["x-lilac-workflow-capability"]),
     safetyMode:
       headerStr(headers["x-lilac-safety-mode"]) === "restricted" ? "restricted" : undefined,
   };
+}
+
+function authenticateRequestContext(
+  context: RequestContext,
+  cache: ToolServerOptions["requestMessageCache"],
+): readonly unknown[] | undefined {
+  if (!context.requestId) return undefined;
+  const messages = cache?.get(context.requestId);
+  const origin = cache?.getOrigin?.(context.requestId);
+  context.serverOwnedRequest =
+    messages !== undefined &&
+    origin !== undefined &&
+    origin.sessionId === context.sessionId &&
+    origin.platform === context.requestClient;
+  if (context.serverOwnedRequest && origin?.actorUserId) {
+    context.authenticatedPrincipal = { platform: origin.platform, userId: origin.actorUserId };
+  }
+  return messages;
 }
 
 type SafetyMode = "trusted" | "restricted";
@@ -169,7 +193,36 @@ export type ToolServerOptions = {
   /** Optional cache to provide request-scoped messages to tools. */
   requestMessageCache?: {
     get(requestId: string): readonly unknown[] | undefined;
+    getOrigin?(requestId: string):
+      | {
+          sessionId: string;
+          platform: "discord" | "github";
+          actorUserId: string | null;
+        }
+      | undefined;
   };
+  canonicalWorkspaceRoot?: string;
+  authorizeWorkflowRequest?: (input: {
+    requestId: string;
+    token: string;
+    sessionId: string;
+    platform: string;
+    now: number;
+  }) => AuthorizedWorkflowRequest | null;
+  authorizeControlRequest?: (input: {
+    requestId: string;
+    token: string;
+    sessionId: string;
+    platform: string;
+    now: number;
+  }) => {
+    kind: "primary" | "heartbeat";
+    principal: { platform: "discord" | "github"; userId: string } | null;
+    allowedCallables: readonly string[] | null;
+    canonicalCwd: string;
+    safetyMode: SafetyMode;
+  } | null;
+  resolveServerSafetyMode?: (context: RequestContext) => Promise<SafetyMode>;
 };
 
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -254,7 +307,11 @@ export function createToolServer(options: ToolServerOptions) {
   }
 
   async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
+    if (ctx.workflowPolicy)
+      return ctx.workflowPolicy.externalTools ? (ctx.safetyMode ?? "trusted") : "trusted";
+    if (ctx.controlPolicy) return ctx.safetyMode ?? "restricted";
     if (ctx.safetyMode === "restricted") return "restricted";
+    if (options.resolveServerSafetyMode) return await options.resolveServerSafetyMode(ctx);
     const sessionId = ctx.sessionId;
     if (!sessionId || !options.getConfig) return "trusted";
     try {
@@ -265,7 +322,7 @@ export function createToolServer(options: ToolServerOptions) {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return "trusted";
+      return "restricted";
     }
   }
 
@@ -285,8 +342,11 @@ export function createToolServer(options: ToolServerOptions) {
         s
           .filter(
             (entry) =>
-              safetyMode !== "restricted" ||
-              isRestrictedCallableAllowed({ callableId: entry.callableId, ctx }),
+              isCallableAllowedForControlCapability(entry.callableId, ctx) &&
+              isCallableAllowedForWorkflowChild(entry.callableId, undefined, ctx) &&
+              (!entry.callableId.startsWith("workflow.") || ctx.serverOwnedRequest === true) &&
+              (safetyMode !== "restricted" ||
+                isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })),
           )
           .map((entry: Awaited<ReturnType<ServerTool["list"]>>[number]) => ({
             callableId: entry.callableId,
@@ -298,6 +358,97 @@ export function createToolServer(options: ToolServerOptions) {
           })),
       ),
     };
+  }
+
+  const SURFACE_CREATE_CALLABLES = new Set(["surface.messages.send"]);
+  const WORKFLOW_EXTERNAL_READ_CALLABLES = new Set([
+    "search",
+    "discovery.search",
+    "skills.list",
+    "skills.brief",
+  ]);
+
+  function isCallableAllowedForWorkflowChild(
+    callableId: string,
+    input: unknown,
+    ctx: RequestContext,
+  ): boolean {
+    const policy = ctx.workflowPolicy;
+    if (!policy) return true;
+    if (callableId.startsWith("workflow.")) return false;
+    if (callableId.startsWith("surface.")) {
+      if (!SURFACE_CREATE_CALLABLES.has(callableId) || !policy.surfaceSends) return false;
+      return isCurrentSessionScopedSurfaceCall({
+        callableId,
+        input,
+        sessionId: ctx.sessionId,
+      });
+    }
+    return policy.externalTools && WORKFLOW_EXTERNAL_READ_CALLABLES.has(callableId);
+  }
+
+  function isCallableAllowedForControlCapability(callableId: string, ctx: RequestContext): boolean {
+    if (ctx.controlPolicy?.kind !== "heartbeat") return true;
+    return ctx.controlPolicy.allowedCallables?.includes(callableId) === true;
+  }
+
+  function authenticateContext(headers: Record<string, unknown>): {
+    context: RequestContext;
+    messages: readonly unknown[] | undefined;
+  } {
+    const context = parseRequestContext(headers);
+    const messages = authenticateRequestContext(context, options.requestMessageCache);
+    if (context.serverOwnedRequest && options.canonicalWorkspaceRoot) {
+      context.cwd = options.canonicalWorkspaceRoot;
+    }
+    if (context.workflowCapability) {
+      if (!context.requestId || !context.sessionId || !context.requestClient) {
+        throw new Error("Workflow capability requires complete request context");
+      }
+      const authorized = options.authorizeWorkflowRequest?.({
+        requestId: context.requestId,
+        token: context.workflowCapability,
+        sessionId: context.sessionId,
+        platform: context.requestClient,
+        now: Date.now(),
+      });
+      if (!authorized) throw new Error("Workflow tool capability is invalid or expired");
+      context.serverOwnedRequest = false;
+      context.cwd = authorized.policy.canonicalCwd;
+      context.safetyMode = authorized.policy.safetyMode;
+      context.workflowPolicy = authorized.policy;
+      if (authorized.policy.originSessionId && authorized.policy.originClient) {
+        context.sessionId = authorized.policy.originSessionId;
+        context.requestClient = authorized.policy.originClient;
+      }
+    } else if (options.authorizeControlRequest) {
+      if (
+        !context.controlCapability ||
+        !context.requestId ||
+        !context.sessionId ||
+        !context.requestClient ||
+        !context.cwd
+      ) {
+        throw new Error("Level-2 tools require an active server-issued request capability");
+      }
+      const authorized = options.authorizeControlRequest?.({
+        requestId: context.requestId,
+        token: context.controlCapability,
+        sessionId: context.sessionId,
+        platform: context.requestClient,
+        now: Date.now(),
+      });
+      if (!authorized) throw new Error("Request control capability is invalid or expired");
+      context.serverOwnedRequest = true;
+      context.cwd = authorized.canonicalCwd;
+      context.safetyMode = authorized.safetyMode;
+      context.controlPolicy = {
+        kind: authorized.kind,
+        allowedCallables: authorized.allowedCallables,
+      };
+      if (authorized.principal) context.authenticatedPrincipal = authorized.principal;
+    }
+    return { context, messages };
   }
 
   const app = options.app ?? new Elysia();
@@ -358,7 +509,8 @@ export function createToolServer(options: ToolServerOptions) {
     "/list",
     async ({ headers }) => {
       await ensureFreshToolMapping();
-      return await listToolsForContext(parseRequestContext(headers));
+      const { context } = authenticateContext(headers);
+      return await listToolsForContext(context);
     },
     {
       response: BridgeListResponse,
@@ -378,11 +530,14 @@ export function createToolServer(options: ToolServerOptions) {
 
   app.get("/help/:callableId", async ({ params, headers }) => {
     await ensureFreshToolMapping();
-    const ctx = parseRequestContext(headers);
+    const { context: ctx } = authenticateContext(headers);
     const safetyMode = await resolveSafetyMode(ctx);
     if (
-      safetyMode === "restricted" &&
-      !isRestrictedCallableAllowed({ callableId: params.callableId, ctx })
+      !isCallableAllowedForControlCapability(params.callableId, ctx) ||
+      (params.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) ||
+      !isCallableAllowedForWorkflowChild(params.callableId, undefined, ctx) ||
+      (safetyMode === "restricted" &&
+        !isRestrictedCallableAllowed({ callableId: params.callableId, ctx }))
     ) {
       throw new NotFoundError(`Unknown callable ID '${params.callableId}'`);
     }
@@ -410,9 +565,38 @@ export function createToolServer(options: ToolServerOptions) {
         throw new NotFoundError(`Unknown callable ID '${body.callableId}'`);
       }
 
-      const ctx = parseRequestContext(headers);
+      const { context: ctx, messages } = authenticateContext(headers);
       const safetyMode = await resolveSafetyMode(ctx);
       ctx.safetyMode = safetyMode;
+      if (
+        ctx.controlPolicy?.kind === "heartbeat" &&
+        body.callableId === "surface.messages.send" &&
+        isRecord(body.input) &&
+        ["paths", "filenames", "mimeTypes"].some((key) => body.input[key] !== undefined)
+      ) {
+        return {
+          isError: true,
+          output: "Heartbeat surface messages are text-only and cannot include attachments",
+        };
+      }
+      if (!isCallableAllowedForControlCapability(body.callableId, ctx)) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' is outside the internal request capability`,
+        };
+      }
+      if (body.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' requires a server-owned active request context`,
+        };
+      }
+      if (!isCallableAllowedForWorkflowChild(body.callableId, body.input, ctx)) {
+        return {
+          isError: true,
+          output: `Tool '${body.callableId}' is outside the approved workflow capability`,
+        };
+      }
       if (
         safetyMode === "restricted" &&
         !isRestrictedCallableAllowed({ callableId: body.callableId, input: body.input, ctx })
@@ -422,7 +606,15 @@ export function createToolServer(options: ToolServerOptions) {
           output: `Tool '${body.callableId}' is not allowed in restricted public-session mode`,
         };
       }
-      const inputBytes = estimateJsonBytes(body.input);
+      const pathAuthorization = ctx.workflowPolicy
+        ? await authorizeWorkflowPathInput({
+            callableId: body.callableId,
+            value: body.input,
+            policy: ctx.workflowPolicy,
+          })
+        : { value: body.input, close: async () => {} };
+      const authorizedInput = pathAuthorization.value;
+      const inputBytes = estimateJsonBytes(authorizedInput);
       const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
       const deadlineAt = Date.now() + timeoutMs;
       const timeoutSignal = createDeadlineSignal(timeoutMs);
@@ -446,14 +638,12 @@ export function createToolServer(options: ToolServerOptions) {
 
       logger.debug("tool call input", {
         callableId: body.callableId,
-        input: safeJsonPreview(body.input),
+        input: safeJsonPreview(
+          body.callableId.startsWith("workflow.") ? "<redacted workflow input>" : body.input,
+        ),
       });
 
       try {
-        const messages = ctx.requestId
-          ? options.requestMessageCache?.get(ctx.requestId)
-          : undefined;
-
         if (!ctx.requestId || !ctx.sessionId || !ctx.requestClient) {
           logger.warn("tool.call.context_missing", {
             callableId: body.callableId,
@@ -468,7 +658,7 @@ export function createToolServer(options: ToolServerOptions) {
 
         const callResult = Promise.resolve()
           .then(() =>
-            tool.call(body.callableId, body.input, {
+            tool.call(body.callableId, authorizedInput, {
               signal: combinedSignal,
               context: ctx,
               messages,
@@ -485,6 +675,9 @@ export function createToolServer(options: ToolServerOptions) {
           })
           .finally(() => {
             timeoutSignal.cancel();
+          })
+          .finally(async () => {
+            await pathAuthorization.close();
           });
 
         const timeoutResult = new Promise<{ kind: "timeout" }>((resolve) => {

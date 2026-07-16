@@ -6,6 +6,8 @@ import { deriveApiBaseUrl, readGithubAppPrivateKeyPem, readGithubAppSecret } fro
 import {
   getGithubUserLoginOrNull as getGithubUserLoginFromAuth,
   getGithubViewerLoginOrNull as getGithubViewerLoginByTokenOrNull,
+  resolveGithubViewerLoginOrThrow,
+  getGithubUserAuthOrNull,
   getPreferredGithubAuthOrNull,
   getPreferredGithubAuthOrThrow,
 } from "./github-auth";
@@ -14,6 +16,30 @@ type GithubApiCtx = {
   apiBaseUrl: string;
   token: string;
 };
+
+export class GithubApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GithubApiError";
+  }
+}
+
+function githubApiError(input: {
+  status: number;
+  statusText: string;
+  path: string;
+  body: string;
+}): GithubApiError {
+  return new GithubApiError(
+    input.status,
+    input.path,
+    `GitHub API error (${input.status} ${input.statusText}) at ${input.path}${input.body ? `: ${input.body}` : ""}`,
+  );
+}
 
 function headers(token: string, extra?: Record<string, string>): HeadersInit {
   return {
@@ -45,9 +71,12 @@ async function githubFetchJson<T>(input: {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GitHub API error (${res.status} ${res.statusText}) at ${input.path}${text ? `: ${text}` : ""}`,
-    );
+    throw githubApiError({
+      status: res.status,
+      statusText: res.statusText,
+      path: input.path,
+      body: text,
+    });
   }
   return (await res.json()) as T;
 }
@@ -65,9 +94,12 @@ async function githubFetchNoBody(input: {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GitHub API error (${res.status} ${res.statusText}) at ${input.path}${text ? `: ${text}` : ""}`,
-    );
+    throw githubApiError({
+      status: res.status,
+      statusText: res.statusText,
+      path: input.path,
+      body: text,
+    });
   }
 }
 
@@ -155,6 +187,7 @@ export async function getIssueComment(input: {
   created_at?: string;
   updated_at?: string;
   html_url?: string;
+  performed_via_github_app?: { id?: number; slug?: string } | null;
 }> {
   const c = await ctx();
   return await githubFetchJson({
@@ -212,6 +245,7 @@ export async function listIssueComments(input: {
   repo: string;
   number: number;
   limit: number;
+  page?: number;
 }): Promise<
   Array<{
     id: number;
@@ -220,13 +254,14 @@ export async function listIssueComments(input: {
     created_at?: string;
     updated_at?: string;
     html_url?: string;
+    performed_via_github_app?: { id?: number; slug?: string } | null;
   }>
 > {
   const c = await ctx();
   const perPage = Math.min(Math.max(input.limit, 1), 100);
   return await githubFetchJson({
     ...c,
-    path: `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments?per_page=${perPage}`,
+    path: `/repos/${input.owner}/${input.repo}/issues/${input.number}/comments?per_page=${perPage}&page=${Math.max(1, input.page ?? 1)}`,
   });
 }
 
@@ -314,6 +349,29 @@ export async function getPullRequest(input: {
 
 export async function getGithubUserLoginOrNull(): Promise<string | null> {
   return await getGithubUserLoginFromAuth({ dataDir: env.dataDir });
+}
+
+export async function getConfiguredGithubAppIdOrNull(): Promise<number | null> {
+  return (await readGithubAppSecret(env.dataDir))?.appId ?? null;
+}
+
+export type GithubAuthoritativeActor =
+  | { source: "app"; appId: number }
+  | { source: "user"; login: string };
+
+export async function getPreferredGithubAuthoritativeActorOrNull(
+  params: { dataDir: string } = { dataDir: env.dataDir },
+): Promise<GithubAuthoritativeActor | null> {
+  const user = await getGithubUserAuthOrNull(params);
+  if (user) {
+    const login = await resolveGithubViewerLoginOrThrow({
+      apiBaseUrl: user.apiBaseUrl,
+      token: user.token,
+    });
+    return { source: "user", login: login.toLowerCase() };
+  }
+  const app = await readGithubAppSecret(params.dataDir);
+  return app ? { source: "app", appId: app.appId } : null;
 }
 
 export async function getPreferredGithubActorLoginOrNull(): Promise<string | null> {

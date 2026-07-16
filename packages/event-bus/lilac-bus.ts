@@ -78,20 +78,20 @@ function getStaticTopicForType<TType extends Exclude<LilacEventType, OutputEvent
       [lilacEventTypes.EvtAdapterMessageDeleted]: "evt.adapter",
       [lilacEventTypes.EvtAdapterReactionAdded]: "evt.adapter",
       [lilacEventTypes.EvtAdapterReactionRemoved]: "evt.adapter",
+      [lilacEventTypes.EvtAdapterActionInvoked]: "evt.adapter",
+      [lilacEventTypes.EvtWorkflowWaitResolverBarrier]: "evt.adapter",
 
       [lilacEventTypes.EvtRequestLifecycleChanged]: "evt.request",
       [lilacEventTypes.EvtRequestReply]: "evt.request",
 
       [lilacEventTypes.EvtSurfaceOutputMessageCreated]: "evt.surface",
 
-      [lilacEventTypes.CmdWorkflowTaskCreate]: "cmd.workflow",
-      [lilacEventTypes.CmdWorkflowCreate]: "cmd.workflow",
-      [lilacEventTypes.CmdWorkflowCancel]: "cmd.workflow",
-
-      [lilacEventTypes.EvtWorkflowTaskResolved]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowTaskLifecycleChanged]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowResolved]: "evt.workflow",
-      [lilacEventTypes.EvtWorkflowLifecycleChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowRunChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowOperationChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowApprovalChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowProgressRequested]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowUsageChanged]: "evt.workflow",
+      [lilacEventTypes.EvtWorkflowResultReady]: "evt.workflow",
 
       [lilacEventTypes.CmdAgentCreate]: "cmd.agent",
     } as const satisfies Record<string, string>
@@ -156,14 +156,25 @@ function getKeyForType<TType extends LilacEventType>(
       return (data as { channelId: string; messageId: string }).messageId;
     }
 
-    case lilacEventTypes.CmdWorkflowTaskCreate:
-    case lilacEventTypes.EvtWorkflowTaskResolved:
-    case lilacEventTypes.EvtWorkflowTaskLifecycleChanged:
-    case lilacEventTypes.CmdWorkflowCreate:
-    case lilacEventTypes.EvtWorkflowResolved:
-    case lilacEventTypes.CmdWorkflowCancel:
-    case lilacEventTypes.EvtWorkflowLifecycleChanged: {
-      return (data as { workflowId: string }).workflowId;
+    case lilacEventTypes.EvtAdapterActionInvoked: {
+      return (data as { actionId: string }).actionId;
+    }
+
+    case lilacEventTypes.EvtWorkflowWaitResolverBarrier: {
+      return (data as { barrierId: string }).barrierId;
+    }
+
+    case lilacEventTypes.EvtWorkflowRunChanged:
+    case lilacEventTypes.EvtWorkflowOperationChanged:
+    case lilacEventTypes.EvtWorkflowProgressRequested:
+    case lilacEventTypes.EvtWorkflowUsageChanged:
+    case lilacEventTypes.EvtWorkflowResultReady: {
+      return (data as { runId: string }).runId;
+    }
+
+    case lilacEventTypes.EvtWorkflowApprovalChanged: {
+      const approval = data as { revisionId: string; runId?: string };
+      return approval.runId ?? approval.revisionId;
     }
 
     case lilacEventTypes.CmdAgentCreate: {
@@ -230,6 +241,23 @@ export interface LilacBus {
     messages: Array<{ msg: LilacMessageForTopic<TTopic>; cursor: Cursor }>;
     next?: Cursor;
   }>;
+
+  /** Return the latest durable cursor currently present on a topic. */
+  getTopicWatermark(topic: LilacTopic): Promise<Cursor | null>;
+
+  /** Reclaim a processed prefix while retaining a safety margin behind all durable frontiers. */
+  trimTopicBeforeCheckpoint(
+    topic: LilacTopic,
+    checkpoint: Cursor,
+    safetyMargin: number,
+  ): Promise<number>;
+
+  /** Remove a retired durable consumer group after checking for registered old-version consumers. */
+  retireTopicConsumerGroup(
+    topic: LilacTopic,
+    group: string,
+    confirmSingleVersionRollout?: boolean,
+  ): Promise<"absent" | "destroyed">;
 
   /** Close the underlying transport. */
   close(): Promise<void>;
@@ -318,6 +346,23 @@ export function createLilacBus(raw: RawBus): LilacBus {
         }>,
         next: res.next,
       };
+    },
+
+    getTopicWatermark: async (topic) => {
+      if (!raw.watermark) {
+        throw new Error("The configured event bus does not expose durable topic watermarks");
+      }
+      return await raw.watermark(topic);
+    },
+
+    trimTopicBeforeCheckpoint: async (topic, checkpoint, safetyMargin) => {
+      return (await raw.trimBeforeCheckpoint?.(topic, checkpoint, safetyMargin)) ?? 0;
+    },
+
+    retireTopicConsumerGroup: async (topic, group, confirmSingleVersionRollout = false) => {
+      return (
+        (await raw.retireConsumerGroup?.(topic, group, confirmSingleVersionRollout)) ?? "absent"
+      );
     },
 
     close: async () => {

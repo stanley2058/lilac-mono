@@ -8,11 +8,11 @@ import {
   Discovery,
   Generate,
   Onboarding,
+  ProgrammaticWorkflow,
   SSH,
   Skills,
   Surface,
   Web,
-  Workflow,
 } from "../../tool-server/tools";
 import type { CoreToolPlugin } from "../types";
 
@@ -121,18 +121,18 @@ export function createBuiltinWorkflowPlugin(): CoreToolPlugin {
     meta: {
       id: "workflow",
     },
-    create({ runtime }) {
+    create({ runtime, dataDir }) {
       if (!runtime.bus) {
         throw new ToolPluginSkipError("workflow requires bus");
       }
       return {
         level2: [
-          new Workflow({
+          new ProgrammaticWorkflow({
+            dataDir,
+            store: runtime.durableWorkflowStore,
             bus: runtime.bus,
-            adapter: runtime.adapter,
-            config: runtime.config,
-            getConfig: runtime.getConfig,
-            workflowStore: runtime.workflowStore,
+            reviewerResolver: runtime.workflowReviewerResolver,
+            progressCards: runtime.workflowProgressCards,
           }),
         ],
       };

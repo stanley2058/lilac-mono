@@ -22,6 +22,30 @@ async function waitFor(
 }
 
 describe("RedisStreamsBus", () => {
+  it("returns the latest durable topic watermark", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const raw = createRedisStreamsBus({
+      redis,
+      keyPrefix: `test:lilac-event-bus:${randomId("watermark")}`,
+      ownsRedis: true,
+    });
+    try {
+      expect(await raw.watermark("evt.adapter")).toBeNull();
+      const first = await raw.publish(
+        { topic: "evt.adapter", type: "test.first", data: {} },
+        { topic: "evt.adapter", type: "test.first" },
+      );
+      const second = await raw.publish(
+        { topic: "evt.adapter", type: "test.second", data: {} },
+        { topic: "evt.adapter", type: "test.second" },
+      );
+      expect(await raw.watermark("evt.adapter")).toBe(second.cursor);
+      expect(second.cursor).not.toBe(first.cursor);
+    } finally {
+      await raw.close();
+    }
+  });
+
   it("does not block publish while a tail subscription is blocked", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("hol")}`;
@@ -235,6 +259,166 @@ describe("RedisStreamsBus", () => {
     await waitFor(() => commits.length === 2);
     await commits[0]!();
     await commits[1]!();
+    await Bun.sleep(200);
+    expect(await redis.xlen(streamKey)).toBe(2);
+
+    await sub.stop();
+    await redis.del(streamKey);
+    await raw.close();
+    await redis.quit();
+  });
+
+  it("bounds evt.adapter history behind the durable checkpoint safety margin", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-checkpoint-trim")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const cursors: string[] = [];
+    try {
+      for (let index = 0; index < 150; index += 1) {
+        const published = await raw.publish(
+          { topic: "evt.adapter", type: "test", data: index },
+          { topic: "evt.adapter", type: "test" },
+        );
+        cursors.push(published.cursor);
+      }
+      expect(await raw.trimBeforeCheckpoint("evt.adapter", cursors.at(-1)!, 20)).toBe(130);
+      expect(await redis.xlen(streamKey)).toBe(20);
+      expect(await redis.xrange(streamKey, cursors[129]!, cursors[129]!)).toHaveLength(0);
+      expect(await redis.xrange(streamKey, cursors[130]!, cursors[130]!)).toHaveLength(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("does not reclaim beyond a lagging resolver checkpoint or durable group frontier", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-lag-frontier")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const cursors: string[] = [];
+    try {
+      for (let index = 0; index < 120; index += 1) {
+        const published = await raw.publish(
+          { topic: "evt.adapter", type: index === 100 ? "test.barrier" : "test", data: index },
+          { topic: "evt.adapter", type: index === 100 ? "test.barrier" : "test" },
+        );
+        cursors.push(published.cursor);
+      }
+
+      await raw.trimBeforeCheckpoint("evt.adapter", cursors[49]!, 10);
+      expect(await redis.xrange(streamKey, cursors[49]!, cursors[49]!)).toHaveLength(1);
+      expect(await redis.xrange(streamKey, cursors[39]!, cursors[39]!)).toHaveLength(0);
+
+      await redis.xgroup("CREATE", streamKey, "durable-adapter-reader", cursors[79]!);
+      await raw.trimBeforeCheckpoint("evt.adapter", cursors.at(-1)!, 10);
+      expect(await redis.xrange(streamKey, cursors[79]!, cursors[79]!)).toHaveLength(1);
+      expect(await redis.xrange(streamKey, cursors[69]!, cursors[69]!)).toHaveLength(0);
+      expect(await redis.xrange(streamKey, cursors[100]!, cursors[100]!)).toHaveLength(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("retires the pre-tail workflow wait group without pinning adapter retention", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("retired-workflow-waits")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    try {
+      const first = await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 1 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      const second = await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 2 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      await redis.xgroup("CREATE", streamKey, "core:workflow-waits", first.cursor);
+
+      expect(await raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", true)).toBe(
+        "destroyed",
+      );
+      expect(await redis.xinfo("GROUPS", streamKey)).toEqual([]);
+      expect(await raw.trimBeforeCheckpoint("evt.adapter", second.cursor, 1)).toBe(1);
+      expect(await redis.xlen(streamKey)).toBe(1);
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("requires single-version confirmation before retiring registered pre-tail consumers", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("workflow-waits-rollout-guard")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    try {
+      await raw.publish(
+        { topic: "evt.adapter", type: "test", data: 1 },
+        { topic: "evt.adapter", type: "test" },
+      );
+      await redis.xgroup("CREATE", streamKey, "core:workflow-waits", "0-0");
+      await redis.xreadgroup(
+        "GROUP",
+        "core:workflow-waits",
+        "old-core",
+        "COUNT",
+        1,
+        "STREAMS",
+        streamKey,
+        ">",
+      );
+
+      await expect(
+        raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", false),
+      ).rejects.toThrow("confirmed single-version rollout");
+      expect(await raw.retireConsumerGroup("evt.adapter", "core:workflow-waits", true)).toBe(
+        "destroyed",
+      );
+    } finally {
+      await redis.del(streamKey);
+      await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("preserves lagged evt.adapter entries when other groups acknowledge later entries", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("adapter-recovery")}`;
+    const streamKey = `${keyPrefix}:evt.adapter`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const commits: Array<() => Promise<void>> = [];
+    const sub = await raw.subscribe(
+      "evt.adapter",
+      {
+        mode: "fanout",
+        subscriptionId: "other-adapter-group",
+        consumerId: "other-consumer",
+        offset: { type: "now" },
+        batch: { maxWaitMs: 50 },
+      },
+      async (_msg, ctx) => {
+        commits.push(ctx.commit);
+      },
+    );
+
+    await raw.publish(
+      { topic: "evt.adapter", type: "test.reply", data: 1 },
+      { topic: "evt.adapter", type: "test.reply", retention: { maxLenApprox: 1 } },
+    );
+    await raw.publish(
+      { topic: "evt.adapter", type: "test.barrier", data: 2 },
+      { topic: "evt.adapter", type: "test.barrier", retention: { maxLenApprox: 1 } },
+    );
+    await waitFor(() => commits.length === 2);
+    await commits[1]!();
+    await commits[0]!();
     await Bun.sleep(200);
     expect(await redis.xlen(streamKey)).toBe(2);
 

@@ -37,6 +37,19 @@ export interface RawBus {
     next?: Cursor;
   }>;
 
+  /** Return the latest durable cursor currently present on a topic. */
+  watermark?(topic: Topic): Promise<Cursor | null>;
+
+  /** Reclaim entries older than a durable tail checkpoint and every durable group frontier. */
+  trimBeforeCheckpoint?(topic: Topic, checkpoint: Cursor, safetyMargin: number): Promise<number>;
+
+  /** Destroy a retired durable group, optionally after an explicit mixed-version rollout guard. */
+  retireConsumerGroup?(
+    topic: Topic,
+    group: string,
+    confirmSingleVersionRollout: boolean,
+  ): Promise<"absent" | "destroyed">;
+
   /** Close any owned resources (connections, timers, etc). */
   close(): Promise<void>;
 }

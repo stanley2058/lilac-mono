@@ -37,6 +37,7 @@ export type BuildLevel1ToolsetParams = {
     ok?: boolean;
     error?: string;
   }) => void | Promise<void>;
+  allowedToolNames?: ReadonlySet<string>;
 };
 
 export type BuiltLevel1Toolset = {
@@ -103,7 +104,13 @@ export function createCoreToolPluginManager(params: {
         requestContext: buildParams.requestContext,
       };
 
-      const enabledSpecs = manager.getLevel1Items().filter((spec) => spec.isEnabled(runContext));
+      const enabledSpecs = manager
+        .getLevel1Items()
+        .filter(
+          (spec) =>
+            spec.isEnabled(runContext) &&
+            (!buildParams.allowedToolNames || buildParams.allowedToolNames.has(spec.name)),
+        );
 
       for (const spec of enabledSpecs) {
         specs.set(spec.name, spec);

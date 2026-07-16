@@ -16,7 +16,7 @@ The main loop is:
 4. GitHub webhook handlers can publish `cmd.request.message` directly for GitHub-triggered runs.
 5. An agent runner consumes request messages, runs an LLM (AI SDK) with local tools, and publishes streamed output to request-scoped topics (`out.req.<request_id>`).
 6. A relay subscribes to `out.req.<request_id>` and streams output back to surface adapters (Discord and GitHub).
-7. Optional: a workflow service creates durable “wait for reply / timeout” tasks and later publishes a resume request.
+7. The unified workflow engine executes reviewed immutable programs through the same request bus and projects durable progress independently of request output relays.
 
 This document explains where things live, the words used in code, and the project’s “shape” so you don’t have to re-derive it each time.
 
@@ -27,7 +27,7 @@ This document explains where things live, the words used in code, and the projec
 Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains vendored upstreams as git submodules and is treated as read-only.
 
 - `apps/core/`
-  - The core runtime process (Discord + optional GitHub surfaces, event bus, router, agent runner, workflow service/scheduler, tool server, and runtime recovery/search services).
+  - The core runtime process (Discord + optional GitHub surfaces, event bus, router, agent runner, unified workflow engine, tool server, and runtime recovery/search services).
   - Entry: `apps/core/src/runtime/main.ts` (starts/stops `createCoreRuntime()`).
   - Most of the “system wiring” is in `apps/core/src/runtime/create-core-runtime.ts`.
 
@@ -71,8 +71,10 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Root harness that runs workspace tests: `__tests__/workspaces.test.ts`.
 
 - `compose.yaml` and `Dockerfile`
-  - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
+  - A systemd-PID1 container that starts the `lilac` user manager and Core; Compose includes Redis.
   - The docker build installs Bun, system tools (git, rg, browser dependencies, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+  - On Linux with Docker 28+ and cgroup v2, the Compose cgroup/security contract supports the fail-closed Bubblewrap workflow runtime without privileged mode or a host cgroup bind.
+  - `bun run docker:verify-image` boots a credential-free verify-only container; `bun run docker:verify` checks a running Compose service.
   - Docker compose persists extra home directories for agent ergonomics:
     - `./home/agents:/home/lilac/.agents`
     - `./home/.ssh:/home/lilac/.ssh`
@@ -88,7 +90,7 @@ The event bus is Redis Streams underneath, wrapped in a typed API.
 Implementation note: subscriptions use a small Redis connection pool because Redis Streams reads are blocking (`XREAD`/`XREADGROUP`). See `packages/event-bus/redis-connection-pool.ts` and `packages/event-bus/redis-streams-bus.ts`.
 
 - Topic: a logical channel (backed by a Redis Stream key).
-  - Examples (static topics): `cmd.request`, `evt.adapter`, `evt.request`, `cmd.workflow`, `evt.workflow`.
+  - Examples (static topics): `cmd.request`, `evt.adapter`, `evt.request`, `evt.workflow`.
   - Output topics are request-scoped: `out.req.<request_id>`.
 
 - Event type: a string like `cmd.request.message`.
@@ -248,22 +250,17 @@ Important detail: `request_id` sometimes encodes “reply-to” behavior.
 
 ### Workflow
 
-Workflow is a durable “wait for something, then resume later” mechanism.
+Programmatic workflows are immutable reviewed JavaScript revisions executed by one durable engine.
 
-- Service: `apps/core/src/workflow/workflow-service.ts`.
-- Scheduler (time-based triggers): `apps/core/src/workflow/workflow-scheduler.ts`.
-- Store: `apps/core/src/workflow/workflow-store.ts` (SQLite-backed; default `SQLITE_URL` is `data/data.sqlite3`).
+- Domain and SQLite authority: `apps/core/src/workflow/workflow-domain.ts` and `durable-workflow-store.ts`.
+- Sandboxed replay runtime: `workflow-engine.ts`, `workflow-sandbox.ts`, and `workflow-sandbox-child.js`.
+- Durable reply/timer matching: `workflow-wait-resolver.ts`.
+- Timestamp/cron run creation: `workflow-trigger-scheduler.ts`.
+- Generated one-agent subagent runs and live-parent delivery: `workflow-subagent-dispatcher.ts` and `workflow-live-parent-bridge.ts`.
+- Independent progress cards: `workflow-progress-projector.ts`.
+- Level-2 definition, run, approval, and trigger APIs: `tool-server/tools/programmatic-workflow.ts`.
 
-Two workflow “shapes” currently exist:
-
-- v2 (interactive resume): tasks like `discord.wait_for_reply` that resume the agent in a real surface session.
-  - When tasks resolve, the workflow service publishes a new `cmd.request.message` resume prompt with request id like `wf:<workflow_id>:<resume_seq>`.
-
-- v3 (scheduled jobs): time-based triggers (`time.wait_until`, `time.cron`) that publish a new `cmd.request.message` when the trigger fires.
-  - These runs use a synthetic session (`job:<workflow_id>`) and `request_client="unknown"`.
-  - Scheduled jobs should generally use Level-2 tools (`tools surface.messages.send`, etc.) to produce user-visible output.
-
-This is how you can “send a DM, wait for reply, then pick up where you left off” without keeping an in-memory agent around.
+Definitions live in `<workspace>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. Every run is pinned to a content-addressed source snapshot and exact capability approval. `waitForReply` and `sleep` are journaled host operations. Timestamp and cron fires create distinct runs and recheck approval; timestamp triggers become complete only when their created run is terminal. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same operation journal. Live parents receive durable synthetic results in completion order; absent parents fall back to a persisted progress card. Legacy WorkflowDefinitionV2/V3 records and tables are not read.
 
 ### Layered Tools (Progressive Disclosure)
 
@@ -299,7 +296,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Tool definitions live in `apps/core/src/tool-server/tools/*`.
    - Registration now goes through the same shared plugin runtime used by Level 1 (`apps/core/src/plugins/manager.ts`).
    - Built-in Level 2 plugins live in `apps/core/src/plugins/builtin/*`; external plugins are discovered from `DATA_DIR/plugins/*`.
-   - The tool server uses request context headers (`x-lilac-request-id`, etc.) and an optional request-message cache (`apps/core/src/tool-server/request-message-cache.ts`) for request-scoped behavior.
+    - The tool server uses request context headers (`x-lilac-request-id`, etc.) and a request-message cache (`apps/core/src/tool-server/request-message-cache.ts`) for request-scoped behavior. Every privileged `workflow.*` call additionally requires the request ID to match server-owned cached request state; headers alone are not authority.
    - `apps/tool-bridge/client.ts` provides a human-friendly `tools` CLI that calls the tool server; the agent can also invoke it through Level-1 `bash`.
    - Capability-bound plugins skip cleanly in dev mode when required services are absent.
 
@@ -316,6 +313,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
 - It can pass correlation headers via env vars:
   - `LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`
 - It can point at a non-default tool server via `TOOL_SERVER_BACKEND_URL`.
+- The core tool server has no general HTTP authentication layer. Keep it on a trusted host/network boundary; workflow callables add server-owned active-request enforcement but this does not authenticate unrelated Level-2 APIs.
 - It supports `--input=@file.json` and `--stdin` for whole-JSON payloads, plus `--field:value` flags.
 
 ---
@@ -407,14 +405,13 @@ Startup order is intentional:
 
 1. Start Discord search indexer
 2. Bridge adapter -> bus (so early Discord events don’t get lost)
-3. Workflow service + scheduler (subscribes to adapter events; handles time-based triggers)
-4. Router (subscribes to adapter events and request lifecycle)
-5. Tool server + request message cache (so tools can see request messages)
-6. Connect Discord adapter
-7. Bridge bus -> Discord adapter (so output relay is ready)
-8. Optionally start GitHub webhook ingress + bus -> GitHub relay (if GitHub App secret exists)
-9. Agent runner (so it can’t publish replies before relays are online)
-10. Optionally restore graceful-restart snapshots
+3. Request-message cache, durable workflow action/wait resolvers, and surface adapters
+4. Workflow progress projector, trigger scheduler, and live-parent completion bridge
+5. Router and privileged Level-2 tool server
+6. Surface output relays and optional GitHub webhook ingress
+7. Agent runner
+8. Restore graceful-restart request/relay snapshots
+9. Unified workflow engine, which reclaims active durable runs and replays their operation journals
 
 Shutdown happens in reverse (best-effort).
 
@@ -430,8 +427,8 @@ Shutdown happens in reverse (best-effort).
 - Add a new external plugin or change the shared plugin contract: `packages/plugin-runtime/*` and `PLUGIN_AUTHORING.md`.
 - Change how tool invocations are served/logged: `apps/core/src/tool-server/create-tool-server.ts`.
 - Change Discord ingestion/persistence/output rendering: `apps/core/src/surface/discord/discord-adapter.ts` and `apps/core/src/surface/discord/output/*`.
-- Modify workflow behavior or add a new task kind: `apps/core/src/workflow/*`.
-- Modify scheduled workflows: `apps/core/src/workflow/workflow-scheduler.ts` and `apps/core/src/workflow/cron.ts`.
+- Modify workflow behavior or add a host operation: `apps/core/src/workflow/*`.
+- Modify scheduled workflows: `apps/core/src/workflow/workflow-trigger-scheduler.ts` and `apps/core/src/workflow/cron.ts`.
 - Modify skill discovery rules: `packages/utils/skills.ts`.
 
 ---
@@ -457,7 +454,9 @@ Shutdown happens in reverse (best-effort).
   - Per workspace: `cd apps/core && bun test` (and similarly for `packages/*` that have tests)
 
 - Docker (includes Redis):
-  - `docker compose up --build`
+  - `docker compose up --build -d`
+  - `bun run docker:verify`
+  - Credential-free image smoke: `bun run docker:build --tag lilac:dev . && bun run docker:verify-image`
   - This command is for humans, DO NOT run it if you are an agent. Otherwise it will hang your bash tool.
 
 ---
@@ -468,9 +467,10 @@ Shutdown happens in reverse (best-effort).
 - Request IDs are meaningful:
   - `discord:<channelId>:<messageId>` implies “reply to this message”.
   - `github:<owner/repo#number>:<triggerId>[:<suffix>]` identifies GitHub-triggered runs.
-  - `wf:<workflowId>:<seq>` is a workflow resume request.
+  - `wfr:<run-hash>:<operation-hash>:<attempt>` identifies a workflow agent operation.
   - `sub:<parent_request_id>:<uuid>` identifies delegated subagent runs.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
 - The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
+- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The systemd-PID1 Docker image provides this boundary under the exact Compose contract documented in `docs/docker-deployment.md`: Linux Docker 28+, private writable cgroups, and unconfined seccomp/AppArmor/system paths, without privileged mode or a host cgroup mount.
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
 - The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.

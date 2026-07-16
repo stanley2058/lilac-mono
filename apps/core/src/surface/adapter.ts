@@ -20,6 +20,17 @@ export type SurfaceToolStatusUpdate = {
   error?: string;
 };
 
+export class SurfaceMessageNotFoundError extends Error {
+  constructor(
+    readonly platform: "discord" | "github",
+    readonly code: number | string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SurfaceMessageNotFoundError";
+  }
+}
+
 export type SurfaceReasoningStatusUpdate = {
   startedAtMs: number;
   /** Freeze timer at this timestamp once text starts streaming. */
@@ -122,6 +133,24 @@ export interface SurfaceAdapter {
 
   getUnRead(sessionRef: SessionRef): Promise<SurfaceMessage[]>;
   markRead(sessionRef: SessionRef, upToMsgRef?: MsgRef): Promise<void>;
+}
+
+export interface SurfaceAuthoritativeSelfMessageProvider {
+  resolveAuthoritativeSelfMessageVerifier(): Promise<(message: SurfaceMessage) => boolean>;
+  isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean>;
+}
+
+export function hasAuthoritativeSelfMessageProvider(
+  adapter: SurfaceAdapter,
+): adapter is SurfaceAdapter & SurfaceAuthoritativeSelfMessageProvider {
+  const maybe = adapter as unknown as {
+    resolveAuthoritativeSelfMessageVerifier?: unknown;
+    isAuthoritativelySelfAuthored?: unknown;
+  };
+  return (
+    typeof maybe.resolveAuthoritativeSelfMessageVerifier === "function" &&
+    typeof maybe.isAuthoritativelySelfAuthored === "function"
+  );
 }
 
 /** Optional capability: plan reply-chain traversal using local metadata/indexes. */

@@ -16,11 +16,13 @@ import {
   type Presence,
   type Interaction,
   type Message,
+  type MessageCreateOptions,
   type MessageReaction,
   type PartialMessage,
   type TextBasedChannel,
   type User,
 } from "discord.js";
+import { z } from "zod";
 import type {
   EvtAdapterMessageCreatedData,
   EvtAdapterMessageDeletedData,
@@ -60,11 +62,30 @@ import type {
   StartOutputOpts,
   SurfaceAdapter,
 } from "../adapter";
+import { SurfaceMessageNotFoundError } from "../adapter";
 import { createDiscordEntityMapper, type EntityMapper } from "../../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../store/discord-surface-store";
 import { splitByDiscordWindowOldestToNewest } from "./merge-window";
 import { DiscordOutputStream, sendDiscordStyledMessage } from "./output/discord-output-stream";
 import { parseCancelCustomId } from "./discord-cancel";
+import { buildDiscordActionComponents, parseDiscordActionCustomId } from "./discord-actions";
+
+const discordNotFoundErrorSchema = z
+  .object({ code: z.union([z.literal(10_003), z.literal(10_008)]) })
+  .passthrough();
+
+function discordNotFoundCode(error: unknown): 10_003 | 10_008 | null {
+  const parsed = discordNotFoundErrorSchema.safeParse(error);
+  return parsed.success ? parsed.data.code : null;
+}
+
+export function classifyDiscordSurfaceNotFound(
+  error: unknown,
+  message: string,
+): SurfaceMessageNotFoundError | null {
+  const code = discordNotFoundCode(error);
+  return code === null ? null : new SurfaceMessageNotFoundError("discord", code, message);
+}
 import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import {
@@ -791,6 +812,32 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const useSmartSplitting = true;
 
+    if (content.actions && content.actions.length > 0) {
+      const channel = await client.channels.fetch(sessionRef.channelId).catch(() => null);
+      if (!channel || !("send" in channel)) {
+        throw new Error(`Discord channel not found: ${sessionRef.channelId}`);
+      }
+      const text = this.entityMapper?.rewriteOutgoingText(content.text ?? "") ?? content.text ?? "";
+      const message = await (
+        channel as TextBasedChannel & {
+          send(options: MessageCreateOptions): Promise<Message>;
+        }
+      ).send({
+        embeds: [new EmbedBuilder().setDescription(text || "*<empty_string>*")],
+        components: buildDiscordActionComponents(content.actions),
+        files: content.attachments?.map((attachment) => ({
+          attachment: Buffer.from(attachment.bytes),
+          name: attachment.filename,
+        })),
+        reply:
+          opts?.replyTo?.platform === "discord"
+            ? { messageReference: opts.replyTo.messageId }
+            : undefined,
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+      return asDiscordMsgRef(sessionRef.channelId, message.id);
+    }
+
     return await sendDiscordStyledMessage({
       client,
       sessionRef,
@@ -841,12 +888,30 @@ export class DiscordAdapter implements SurfaceAdapter {
       throw new Error("Discord client user is unavailable");
     }
 
-    const channel = await client.channels.fetch(msgRef.channelId).catch(() => null);
+    const channel = await client.channels.fetch(msgRef.channelId).catch((error: unknown) => {
+      const notFound = classifyDiscordSurfaceNotFound(
+        error,
+        `Discord channel not found: ${msgRef.channelId}`,
+      );
+      if (notFound) throw notFound;
+      throw error;
+    });
     if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
-      throw new Error(`Discord channel not found: ${msgRef.channelId}`);
+      throw new SurfaceMessageNotFoundError(
+        "discord",
+        10_003,
+        `Discord channel not found: ${msgRef.channelId}`,
+      );
     }
 
-    const msg = await channel.messages.fetch(msgRef.messageId);
+    const msg = await channel.messages.fetch(msgRef.messageId).catch((error: unknown) => {
+      const notFound = classifyDiscordSurfaceNotFound(
+        error,
+        `Discord message not found: ${msgRef.messageId}`,
+      );
+      if (notFound) throw notFound;
+      throw error;
+    });
 
     const raw = content.text ?? "";
     const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;
@@ -857,8 +922,11 @@ export class DiscordAdapter implements SurfaceAdapter {
       content: msg.content,
     });
 
+    const components =
+      content.actions === undefined ? undefined : buildDiscordActionComponents(content.actions);
+
     if (editTarget === "content") {
-      await msg.edit({ content: rewritten });
+      await msg.edit({ content: rewritten, components });
       return;
     }
 
@@ -869,7 +937,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const embed = new EmbedBuilder(existingEmbed.toJSON());
     embed.setDescription(rewritten);
-    await msg.edit({ embeds: [embed] });
+    await msg.edit({ embeds: [embed], components });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {
@@ -1499,6 +1567,10 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
   }
 
+  private async emitAndWait(evt: AdapterEvent): Promise<void> {
+    await Promise.all([...this.handlers].map(async (handler) => await handler(evt)));
+  }
+
   private getParentChannelIdFromInteractionChannel(
     interaction: ChatInputCommandInteraction<CacheType> | AutocompleteInteraction<CacheType>,
   ): string | undefined {
@@ -1581,6 +1653,35 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
 
     if (!interaction.isButton()) return;
+
+    const actionId = parseDiscordActionCustomId(interaction.customId);
+    if (actionId) {
+      const channelId = interaction.channelId;
+      const messageId = interaction.message?.id;
+      const userId = interaction.user?.id;
+      if (!channelId || !messageId || !userId) {
+        await tryReplyEphemeral(interaction, "Unable to authenticate this workflow action.");
+        return;
+      }
+      try {
+        await this.emitAndWait({
+          type: "adapter.action.invoked",
+          platform: "discord",
+          ts: Date.now(),
+          actionId,
+          userId,
+          messageRef: { platform: "discord", channelId, messageId },
+        });
+        await tryReplyEphemeral(interaction, "Workflow action received.");
+      } catch (error) {
+        this.logger.error("workflow action durable publication failed", { actionId }, error);
+        await tryReplyEphemeral(
+          interaction,
+          "Workflow action could not be recorded. Please retry.",
+        );
+      }
+      return;
+    }
 
     const parsed = parseCancelCustomId(interaction.customId);
     if (!parsed) return;
@@ -2035,12 +2136,18 @@ export class DiscordAdapter implements SurfaceAdapter {
   }): Promise<Message | null> {
     const cfg = this.cfg;
     const client = this.client;
-    if (!cfg || !client) return null;
+    if (!cfg || !client) throw new Error("Discord adapter is not connected");
 
-    const ch = await client.channels.fetch(input.channelId).catch(() => null);
+    const ch = await client.channels.fetch(input.channelId).catch((error: unknown) => {
+      if (discordNotFoundErrorSchema.safeParse(error).success) return null;
+      throw error;
+    });
     if (!ch || !("messages" in ch) || !ch.messages?.fetch) return null;
 
-    const msg = await ch.messages.fetch(input.messageId).catch(() => null);
+    const msg = await ch.messages.fetch(input.messageId).catch((error: unknown) => {
+      if (discordNotFoundErrorSchema.safeParse(error).success) return null;
+      throw error;
+    });
     if (!msg) return null;
 
     if (

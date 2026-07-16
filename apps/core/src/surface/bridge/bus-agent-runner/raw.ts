@@ -101,6 +101,26 @@ const customCommandRawSchema = z
   })
   .passthrough();
 
+const workflowPolicyRawSchema = z
+  .object({
+    workflow: z
+      .strictObject({
+        runId: z.string().min(1).max(200),
+        operationId: z.string().min(1).max(200),
+        dispatchEpoch: z.string().min(16).max(200).optional(),
+        capability: z.string().min(32).max(500),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+export type WorkflowRequestHint = NonNullable<z.infer<typeof workflowPolicyRawSchema>["workflow"]>;
+
+export function parseWorkflowRequestHintFromRaw(raw: unknown): WorkflowRequestHint | null {
+  const parsed = workflowPolicyRawSchema.safeParse(raw);
+  return parsed.success ? (parsed.data.workflow ?? null) : null;
+}
+
 function parseRouterRaw(raw: unknown): z.infer<typeof routerRawSchema> | null {
   const parsed = routerRawSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;

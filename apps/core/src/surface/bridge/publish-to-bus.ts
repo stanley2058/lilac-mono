@@ -357,6 +357,10 @@ export async function bridgeAdapterToBus(params: {
               messages: [{ role: "user", content: buildSlashCommandUserMessageContent(evt) }],
               ...(evt.modelOverride ? { modelOverride: evt.modelOverride } : {}),
               raw: {
+                authenticatedActor: {
+                  platform: evt.platform,
+                  userId: evt.userId,
+                },
                 sessionMode: evt.sessionMode,
                 sessionConfigId: evt.sessionConfigId,
                 ...(evt.modelOverride ? { modelOverride: evt.modelOverride } : {}),
@@ -399,6 +403,18 @@ export async function bridgeAdapterToBus(params: {
           });
           throw e;
         }
+        break;
+      }
+
+      case "adapter.action.invoked": {
+        await bus.publish(lilacEventTypes.EvtAdapterActionInvoked, {
+          actionId: evt.actionId,
+          platform: evt.platform,
+          userId: evt.userId,
+          messageRef: evt.messageRef,
+          sourceMessageId: evt.sourceMessageId,
+          ts: evt.ts,
+        });
         break;
       }
 

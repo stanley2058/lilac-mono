@@ -1,0 +1,793 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import path from "node:path";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import {
+  createLilacBus,
+  lilacEventTypes,
+  outReqTopic,
+  type HandleContext,
+  type Message,
+  type PublishOptions,
+  type RawBus,
+  type SubscriptionOptions,
+} from "@stanley2058/lilac-event-bus";
+
+import type { SubagentDelegationRegistration } from "../../src/tools/subagent";
+import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
+import { WorkflowLiveParentBridge } from "../../src/workflow/workflow-live-parent-bridge";
+import { WorkflowSubagentDispatcher } from "../../src/workflow/workflow-subagent-dispatcher";
+import { WorkflowEngine } from "../../src/workflow/workflow-engine";
+import { createToolResultArtifactStore } from "../../src/artifacts/tool-result-artifact-store";
+
+const roots: string[] = [];
+
+function createInMemoryRawBus(): RawBus & { activeSubscriptions(): number } {
+  const topics = new Map<string, Array<Message<unknown>>>();
+  const subscriptions = new Set<{
+    topic: string;
+    handler: (message: Message<unknown>, context: HandleContext) => Promise<void>;
+  }>();
+  return {
+    publish: async <TData>(message: Omit<Message<TData>, "id" | "ts">, options: PublishOptions) => {
+      const id = crypto.randomUUID();
+      const stored: Message<unknown> = {
+        topic: options.topic,
+        id,
+        type: options.type,
+        ts: Date.now(),
+        key: options.key,
+        headers: options.headers,
+        data: message.data,
+      };
+      const existing = topics.get(options.topic) ?? [];
+      existing.push(stored);
+      topics.set(options.topic, existing);
+      for (const subscription of subscriptions) {
+        if (subscription.topic === options.topic) {
+          await subscription.handler(stored, { cursor: id, commit: async () => {} });
+        }
+      }
+      return { id, cursor: id };
+    },
+    subscribe: async <TData>(
+      topic: string,
+      _options: SubscriptionOptions,
+      handler: (message: Message<TData>, context: HandleContext) => Promise<void>,
+    ) => {
+      const entry = {
+        topic,
+        handler: (message: Message<unknown>, context: HandleContext) =>
+          handler(message as Message<TData>, context),
+      };
+      subscriptions.add(entry);
+      return {
+        stop: async () => {
+          subscriptions.delete(entry);
+        },
+      };
+    },
+    fetch: async <TData>(topic: string) => ({
+      messages: (topics.get(topic) ?? []).map((message) => ({
+        msg: message as Message<TData>,
+        cursor: message.id,
+      })),
+    }),
+    activeSubscriptions: () => subscriptions.size,
+    close: async () => {},
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0, roots.length).map((root) => rm(root, { recursive: true })));
+});
+
+async function setup() {
+  const root = await mkdtemp(path.join(tmpdir(), "lilac-subagent-workflow-"));
+  roots.push(root);
+  const workspaceRoot = path.join(root, "workspace");
+  const dataDir = path.join(root, "data");
+  await Promise.all([
+    mkdir(workspaceRoot, { recursive: true }),
+    mkdir(dataDir, { recursive: true }),
+  ]);
+  const store = new DurableWorkflowStore(path.join(root, "workflow.db"));
+  const dispatcher = await WorkflowSubagentDispatcher.create({
+    store,
+    workspaceRoot,
+    dataDir,
+    pollMs: 1,
+  });
+  return { root, workspaceRoot, dataDir, store, dispatcher };
+}
+
+function registration(parentRequestId = "parent:1"): SubagentDelegationRegistration {
+  return {
+    mode: "deferred",
+    profile: "explore",
+    sessionName: "audit",
+    task: "Audit the authentication flow",
+    idleTimeoutMs: 2_000,
+    depth: 1,
+    parentRequestId,
+    parentSessionId: "channel:1",
+    parentRequestClient: "discord",
+    parentToolCallId: "tool:delegate",
+    childRequestId: "sub:child:1",
+    childSessionId: "sub:channel:1:named:audit",
+    parentHeaders: {
+      request_id: parentRequestId,
+      session_id: "channel:1",
+      request_client: "discord",
+    },
+    childHeaders: {
+      request_id: "sub:child:1",
+      session_id: "sub:channel:1:named:audit",
+      request_client: "unknown",
+      parent_request_id: parentRequestId,
+      parent_tool_call_id: "tool:delegate",
+      subagent_profile: "explore",
+      subagent_depth: "1",
+    },
+    initialMessages: [{ role: "user", content: "Audit the authentication flow" }],
+  };
+}
+
+async function createRun(parentRequestId = "parent:1") {
+  const setupResult = await setup();
+  const handle = await setupResult.dispatcher.delegate(registration(parentRequestId), {
+    editing: false,
+    externalTools: true,
+  });
+  const run = setupResult.store.getRun(handle.runId);
+  if (!run) throw new Error("generated subagent run not found");
+  return { ...setupResult, handle, run };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for workflow state");
+    await Bun.sleep(5);
+  }
+}
+
+describe("workflow subagent convergence", () => {
+  it("creates an approved immutable one-agent workflow run", async () => {
+    const { store, handle, run } = await createRun();
+    const revision = store.getRevision(run.revisionId);
+    const approval = run.approvalId ? store.getApproval(run.approvalId) : null;
+
+    expect(run.state).toBe("queued");
+    expect(run.completionTarget).toMatchObject({
+      kind: "live_parent",
+      parentRequestId: "parent:1",
+      parentToolCallId: "tool:delegate",
+      childSessionId: "sub:channel:1:named:audit",
+      profile: "explore",
+      sessionName: "audit",
+    });
+    expect(revision?.name).toBe("subagent-delegate");
+    expect(revision?.capabilities.agents).toMatchObject({
+      profiles: ["explore"],
+      maxConcurrent: 1,
+      maxTotal: 1,
+    });
+    expect(approval?.state).toBe("approved");
+    expect(store.listActiveLiveParentRuns("parent:1").map((item) => item.runId)).toEqual([
+      handle.runId,
+    ]);
+    store.close();
+  });
+
+  it("keeps ordinary editing subagents on safe shared workspace isolation", async () => {
+    const { store, dispatcher } = await setup();
+    const handle = await dispatcher.delegate(
+      {
+        ...registration(),
+        profile: "general",
+        childHeaders: { ...registration().childHeaders, subagent_profile: "general" },
+      },
+      { editing: true, externalTools: false },
+    );
+    const run = store.getRun(handle.runId);
+    const revision = run ? store.getRevision(run.revisionId) : null;
+    expect(revision?.capabilities.agents).toMatchObject({
+      profiles: ["general"],
+      editing: true,
+      isolation: "shared",
+      maxConcurrent: 1,
+    });
+    store.close();
+  });
+
+  it("transfers child tool-result wrappers before parent delivery", async () => {
+    const setupResult = await setup();
+    const artifacts = createToolResultArtifactStore(path.join(setupResult.dataDir, "tool-results"));
+    await artifacts.init();
+    const dispatcher = await WorkflowSubagentDispatcher.create({
+      store: setupResult.store,
+      workspaceRoot: setupResult.workspaceRoot,
+      dataDir: setupResult.dataDir,
+      toolResultArtifacts: artifacts,
+      pollMs: 1,
+    });
+    const child = registration();
+    const artifact = await artifacts.create({
+      sessionId: child.childSessionId,
+      requestId: child.childRequestId,
+      toolCallId: "child-tool-call",
+      toolName: "grep",
+      content: "complete child tool output",
+      ttlMs: 60_000,
+      maxBytesPerSession: 1_000_000,
+    });
+    const handle = await dispatcher.delegate(child, { editing: false, externalTools: false });
+    const run = setupResult.store.getRun(handle.runId);
+    if (!run) throw new Error("generated run missing");
+    expect(
+      setupResult.store.transitionRun({
+        runId: run.runId,
+        from: "queued",
+        to: "running",
+        now: 20,
+      }),
+    ).toBe(true);
+    const wrapper = `head\n\n[tool result truncated: 10 characters omitted]\nComplete output: ${artifact.uri}\nUse read_file with this URI and start: { "type": "offset", "offset": 0 }. Reuse the returned nextStart unchanged while more content remains.\n\ntail`;
+    expect(
+      setupResult.store.transitionRun({
+        runId: run.runId,
+        from: "running",
+        to: "succeeded",
+        now: 21,
+        result: wrapper,
+      }),
+    ).toBe(true);
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "resolved",
+      finalText: "complete child tool output",
+    });
+    setupResult.store.close();
+  });
+
+  it("uses the same durable terminal run without deferred delivery for synchronous completion", async () => {
+    const setupResult = await setup();
+    const handle = await setupResult.dispatcher.delegate(
+      { ...registration(), mode: "sync" },
+      { editing: false, externalTools: true },
+    );
+    const run = setupResult.store.getRun(handle.runId);
+    if (!run) throw new Error("generated subagent run not found");
+    const { store } = setupResult;
+    expect(store.listActiveLiveParentRuns("parent:1").map((item) => item.runId)).toEqual([
+      handle.runId,
+    ]);
+    expect(store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 })).toBe(
+      true,
+    );
+    expect(
+      store.transitionRun({
+        runId: run.runId,
+        from: "running",
+        to: "succeeded",
+        now: 20,
+        result: "audit complete",
+      }),
+    ).toBe(true);
+
+    await expect(handle.completion).resolves.toEqual({
+      status: "resolved",
+      finalText: "audit complete",
+    });
+    expect(store.listPendingLiveParentCompletions("parent:1", 100, true)).toEqual([]);
+    store.close();
+  });
+
+  it("dispatches the generated agent operation through the workflow engine", async () => {
+    const { store, handle, run, dataDir } = await createRun();
+    const bus = createLilacBus(createInMemoryRawBus());
+    let childSessionId: string | undefined;
+    let childRequestId: string | undefined;
+    let hasOpaqueAuthority = false;
+    const progress: string[] = [];
+    await bus.subscribeTopic(
+      outReqTopic("parent:1"),
+      { mode: "tail", offset: { type: "begin" } },
+      async (message, context) => {
+        if (message.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          progress.push(message.data.display);
+        }
+        await context.commit();
+      },
+    );
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "generated-subagent-parent-bridge",
+    });
+    await bridge.start();
+    const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+    await parent.ready;
+    await bus.subscribeTopic(
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "generated-agent", offset: { type: "now" } },
+      async (message, context) => {
+        if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
+          childSessionId = message.headers?.session_id;
+          childRequestId = message.headers?.request_id;
+          const workflow = Reflect.get(message.data.raw ?? {}, "workflow");
+          const capability =
+            workflow !== null && typeof workflow === "object"
+              ? Reflect.get(workflow, "capability")
+              : undefined;
+          const dispatchEpoch =
+            workflow !== null && typeof workflow === "object"
+              ? Reflect.get(workflow, "dispatchEpoch")
+              : undefined;
+          hasOpaqueAuthority =
+            workflow !== null &&
+            typeof workflow === "object" &&
+            typeof capability === "string" &&
+            Reflect.get(workflow, "editing") === undefined;
+          if (
+            !childRequestId ||
+            !childSessionId ||
+            typeof capability !== "string" ||
+            typeof dispatchEpoch !== "string"
+          ) {
+            throw new Error("generated workflow request authority is incomplete");
+          }
+          const authorized = store.authorizeWorkflowRequest({
+            requestId: childRequestId,
+            token: capability,
+            sessionId: childSessionId,
+            platform: "unknown",
+            now: Date.now(),
+          });
+          if (!authorized) throw new Error("generated workflow request was not authorized");
+          expect(
+            store.claimWorkflowRequest({
+              requestId: childRequestId,
+              token: capability,
+              dispatchEpoch,
+              ownerId: "generated-runner",
+              now: Date.now(),
+            }),
+          ).toBe(true);
+          expect(
+            store.recordWorkflowRequestTerminal({
+              requestId: childRequestId,
+              runId: authorized.policy.runId,
+              operationId: authorized.policy.operationId,
+              dispatchEpoch,
+              ownerId: "generated-runner",
+              state: "resolved",
+              output: "engine result",
+              now: Date.now(),
+            }),
+          ).toBe(true);
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputDeltaText,
+            { delta: "checking authentication middleware" },
+            { headers: message.headers },
+          );
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputResponseText,
+            { finalText: "engine result" },
+            { headers: message.headers },
+          );
+          await bus.publish(
+            lilacEventTypes.EvtRequestLifecycleChanged,
+            { state: "resolved" },
+            { headers: message.headers },
+          );
+        }
+        await context.commit();
+      },
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "generated-subagent-engine",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "generated-agent",
+          occurrence: 0,
+          path: "root:generated-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 1,
+          input: {
+            prompt: "Audit the authentication flow",
+            options: { profile: "explore", model: "inherit", label: "subagent explore" },
+          },
+        }),
+      }),
+    });
+
+    await engine.start();
+    await waitFor(() => store.getRun(run.runId)?.state === "succeeded");
+    await waitFor(() =>
+      progress.some((display) => display.includes("checking authentication middleware")),
+    );
+    expect(childSessionId).toBe("sub:channel:1:named:audit");
+    expect(hasOpaqueAuthority).toBe(true);
+    expect(
+      childRequestId ? store.getWorkflowRequestTerminalReceipt(childRequestId) : null,
+    ).toMatchObject({ state: "resolved", output: "engine result" });
+    expect(progress.some((display) => display.includes("subagent (explore;"))).toBe(true);
+    expect(progress.some((display) => display.includes("checking authentication middleware"))).toBe(
+      true,
+    );
+    expect(parent.listPending().map((completion) => completion.runId)).toEqual([run.runId]);
+    await expect(handle.completion).resolves.toEqual({
+      status: "resolved",
+      finalText: "engine result",
+    });
+
+    await engine.stop();
+    await parent.acknowledge([run.runId]);
+    expect(parent.listPending()).toEqual([]);
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("recovers and acknowledges pending completions in terminal order", async () => {
+    const { store, run } = await createRun();
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      result: "done",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+
+    expect(parent.snapshot()).toMatchObject({
+      hasPendingCompletions: true,
+      hasOutstandingRuns: false,
+    });
+    const pending = parent.listPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      runId: run.runId,
+      status: "resolved",
+      finalText: "done",
+    });
+    parent.acknowledge([run.runId]);
+    expect(parent.snapshot().hasPendingCompletions).toBe(false);
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("keeps artifact-backed completion pending when artifact loading fails", async () => {
+    const { store, run, dataDir } = await createRun();
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      resultArtifactId: `workflow-value:${"f".repeat(64)}`,
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "missing-artifact-delivery",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+    await expect(parent.listPendingAsync()).rejects.toThrow();
+    expect(parent.snapshot().hasPendingCompletions).toBe(true);
+    await parent.close();
+    await expect(bridge.enableFallbacks()).rejects.toThrow();
+    expect(store.listOrphanedLiveParentCompletions().map((item) => item.runId)).toEqual([
+      run.runId,
+    ]);
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("orders out-of-order child completions by durable terminal time", async () => {
+    const setupResult = await setup();
+    const first = await setupResult.dispatcher.delegate(registration("parent:ordered"), {
+      editing: false,
+      externalTools: true,
+    });
+    const secondRegistration = {
+      ...registration("parent:ordered"),
+      childRequestId: "sub:child:2",
+      childSessionId: "sub:channel:1:named:audit-2",
+      sessionName: "audit-2",
+      parentToolCallId: "tool:delegate:2",
+    };
+    const second = await setupResult.dispatcher.delegate(secondRegistration, {
+      editing: false,
+      externalTools: true,
+    });
+    setupResult.store.transitionRun({
+      runId: first.runId,
+      from: "queued",
+      to: "running",
+      now: 10,
+    });
+    setupResult.store.transitionRun({
+      runId: second.runId,
+      from: "queued",
+      to: "running",
+      now: 10,
+    });
+    setupResult.store.transitionRun({
+      runId: first.runId,
+      from: "running",
+      to: "succeeded",
+      now: 30,
+      result: "first",
+    });
+    setupResult.store.transitionRun({
+      runId: second.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      result: "second",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store: setupResult.store,
+      subscriptionId: "test-live-parent-order",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:ordered" });
+
+    expect(parent.listPending().map((completion) => completion.runId)).toEqual([
+      second.runId,
+      first.runId,
+    ]);
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    setupResult.store.close();
+  });
+
+  it("cascades parent cancellation to active generated runs", async () => {
+    const { store, run } = await createRun();
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent-cancel",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:1" });
+    await parent.cancelAll("parent request cancelled");
+
+    expect(store.getRun(run.runId)?.state).toBe("cancelled");
+    expect(parent.snapshot()).toMatchObject({
+      hasPendingCompletions: false,
+      hasOutstandingRuns: false,
+    });
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("releases each child activity subscription across many sequential children", async () => {
+    const setupResult = await setup();
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store: setupResult.store,
+      subscriptionId: "test-live-parent-sequential",
+    });
+    await bridge.start();
+    const parent = bridge.registerParent({ parentRequestId: "parent:sequential" });
+    await parent.ready;
+    expect(raw.activeSubscriptions()).toBe(1);
+
+    for (let index = 0; index < 30; index += 1) {
+      const childRequestId = `sub:sequential:${index}`;
+      const handle = await setupResult.dispatcher.delegate(
+        {
+          ...registration("parent:sequential"),
+          childRequestId,
+          childSessionId: `sub:session:${index}`,
+        },
+        { editing: false, externalTools: false },
+      );
+      const run = setupResult.store.getRun(handle.runId);
+      if (!run) throw new Error("sequential child run missing");
+      expect(
+        setupResult.store.tryClaimApprovedRun({
+          runId: run.runId,
+          claimerId: "sequential-engine",
+          now: 100 + index,
+        }),
+      ).not.toBeNull();
+      const operationId = `operation-${index}`;
+      expect(
+        setupResult.store.createOperation(
+          {
+            runId: run.runId,
+            operationId,
+            callSiteId: `site-${index}`,
+            parentOperationId: null,
+            phase: null,
+            label: "sequential child",
+            kind: "agent",
+            input: {},
+            inputSha256: "a".repeat(64),
+            state: "running",
+            attempt: 0,
+            requestId: childRequestId,
+            output: null,
+            resultArtifactId: null,
+            error: null,
+            usage: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 100 + index,
+            startedAt: 100 + index,
+            updatedAt: 100 + index,
+            terminalAt: null,
+          },
+          "sequential-engine",
+        ),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowOperationChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        operationId,
+        kind: "agent",
+        state: "running",
+        ts: 100 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(2);
+      expect(
+        setupResult.store.transitionOperation({
+          runOwnerId: "sequential-engine",
+          runId: run.runId,
+          operationId,
+          from: "running",
+          to: "succeeded",
+          now: 190 + index,
+          output: `result-${index}`,
+        }),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowOperationChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        operationId,
+        kind: "agent",
+        state: "succeeded",
+        previousState: "running",
+        ts: 190 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(1);
+      expect(
+        setupResult.store.terminalizeRun({
+          runId: run.runId,
+          from: "running",
+          to: "succeeded",
+          ownerId: "sequential-engine",
+          now: 200 + index,
+          detail: "complete",
+          result: `result-${index}`,
+          resultArtifactId: null,
+        }),
+      ).toBe(true);
+      await bus.publish(lilacEventTypes.EvtWorkflowRunChanged, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        state: "succeeded",
+        previousState: "running",
+        ts: 200 + index,
+      });
+      expect(raw.activeSubscriptions()).toBe(1);
+    }
+
+    await parent.close();
+    await bridge.stop();
+    expect(raw.activeSubscriptions()).toBe(0);
+    await bus.close();
+    setupResult.store.close();
+  });
+
+  it("activates the persisted surface fallback when the parent is absent", async () => {
+    const { store, run } = await createRun();
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      result: "fallback result",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const projected: string[] = [];
+    await bus.subscribeTopic(
+      "evt.workflow",
+      { mode: "tail", offset: { type: "begin" } },
+      async (message, context) => {
+        if (message.type === lilacEventTypes.EvtWorkflowProgressRequested) {
+          projected.push(message.data.runId);
+        }
+        await context.commit();
+      },
+    );
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent-fallback",
+    });
+    await bridge.enableFallbacks();
+
+    expect(store.getRun(run.runId)?.progressTarget).toEqual({
+      platform: "discord",
+      channelId: "channel:1",
+      replyToMessageId: null,
+    });
+    expect(projected).toContain(run.runId);
+
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("does not fall back while a restored parent is reattaching", async () => {
+    const { store, run } = await createRun("parent:restored");
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      result: "restored result",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent-protected",
+    });
+    await bridge.enableFallbacks({
+      protectedParentRequestIds: ["parent:restored"],
+      protectionMs: 20,
+    });
+    expect(store.getRun(run.runId)?.progressTarget).toBeNull();
+
+    const parent = bridge.registerParent({ parentRequestId: "parent:restored" });
+    await Bun.sleep(30);
+    expect(store.getRun(run.runId)?.progressTarget).toBeNull();
+    expect(parent.listPending()).toHaveLength(1);
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+});

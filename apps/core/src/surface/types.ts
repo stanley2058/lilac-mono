@@ -101,6 +101,8 @@ export type SurfaceReactionSummary = {
 
 export type LimitOpts = {
   limit?: number;
+  /** Optional one-based page for adapters backed by page-number APIs. */
+  page?: number;
   /**
    * Optional paging cursor.
    *
@@ -122,10 +124,17 @@ export type SurfaceAttachment = {
   bytes: Uint8Array;
 };
 
+export type SurfaceAction = {
+  actionId: string;
+  label: string;
+  style: "primary" | "success" | "danger" | "secondary";
+};
+
 export type ContentOpts = {
   text?: string;
   format?: "markdown" | "plain";
   attachments?: SurfaceAttachment[];
+  actions?: SurfaceAction[];
 };
 
 export type SendOpts = {

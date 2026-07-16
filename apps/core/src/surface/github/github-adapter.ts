@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   AdapterCapabilities,
   ContentOpts,
@@ -16,16 +18,20 @@ import type {
   SurfaceAdapter,
   SurfaceOutputStream,
 } from "../adapter";
-
 import {
   createIssueComment,
   editIssueComment,
   getIssue,
+  getIssueComment,
+  getPreferredGithubAuthoritativeActorOrNull,
+  GithubApiError,
   listIssueComments,
+  type GithubAuthoritativeActor,
 } from "../../github/github-api";
 import { markGithubAgentComment } from "../../github/github-comment-marker";
 import { isGithubIssueTriggerId, parseGithubSessionId } from "../../github/github-ids";
 import { GithubOutputStream } from "./output/github-output-stream";
+import { renderGithubActionContent } from "./github-actions";
 
 function assertGithubSessionRef(sessionRef: SessionRef) {
   if (sessionRef.platform !== "github") {
@@ -39,7 +45,27 @@ function assertGithubMsgRef(msgRef: MsgRef) {
   }
 }
 
+export function isGithubCommentAuthoredByActor(
+  raw: unknown,
+  actor: GithubAuthoritativeActor,
+): boolean {
+  const parsed = z
+    .object({
+      user: z.object({ login: z.string().min(1), id: z.number().int().positive() }).optional(),
+      performed_via_github_app: z.object({ id: z.number().int().positive() }).nullable().optional(),
+    })
+    .safeParse(raw);
+  if (!parsed.success) return false;
+  return actor.source === "app"
+    ? parsed.data.performed_via_github_app?.id === actor.appId
+    : parsed.data.user?.login.toLowerCase() === actor.login;
+}
+
 export class GithubAdapter implements SurfaceAdapter {
+  constructor(
+    private readonly resolveAuthoritativeActor: typeof getPreferredGithubAuthoritativeActorOrNull = getPreferredGithubAuthoritativeActorOrNull,
+  ) {}
+
   async connect(): Promise<void> {
     // No persistent connection.
   }
@@ -52,6 +78,19 @@ export class GithubAdapter implements SurfaceAdapter {
     // We don't have a stable user id for GitHub App installation tokens.
     // Best-effort: return a placeholder; webhook matching uses gh/app slug.
     return { platform: "github", userId: "github", userName: "github" };
+  }
+
+  async isAuthoritativelySelfAuthored(message: SurfaceMessage): Promise<boolean> {
+    const verify = await this.resolveAuthoritativeSelfMessageVerifier();
+    return verify(message);
+  }
+
+  async resolveAuthoritativeSelfMessageVerifier(): Promise<(message: SurfaceMessage) => boolean> {
+    const actor = await this.resolveAuthoritativeActor();
+    return (message) =>
+      message.ref.platform === "github" &&
+      actor !== null &&
+      isGithubCommentAuthoredByActor(message.raw, actor);
   }
 
   async getCapabilities(): Promise<AdapterCapabilities> {
@@ -90,6 +129,31 @@ export class GithubAdapter implements SurfaceAdapter {
       issueNumber: thread.number,
       body: markGithubAgentComment(text),
     });
+    if (content.actions && content.actions.length > 0) {
+      try {
+        await editIssueComment({
+          owner: thread.owner,
+          repo: thread.repo,
+          commentId: res.id,
+          body: markGithubAgentComment(
+            renderGithubActionContent({
+              text,
+              messageId: String(res.id),
+              actions: content.actions,
+            }),
+          ),
+        });
+      } catch (error) {
+        throw new GithubMessageCreatedError(
+          {
+            platform: "github",
+            channelId: sessionRef.channelId,
+            messageId: String(res.id),
+          },
+          error,
+        );
+      }
+    }
     return {
       platform: "github",
       channelId: sessionRef.channelId,
@@ -112,27 +176,32 @@ export class GithubAdapter implements SurfaceAdapter {
         owner: thread.owner,
         repo: thread.repo,
         number: thread.number,
+      }).catch((error: unknown) => {
+        if (error instanceof GithubApiError && error.status === 404) return null;
+        throw error;
       });
+      if (!issue) return null;
       return {
         ref: msgRef,
         session: { platform: "github", channelId: msgRef.channelId },
-        userId: "github",
-        userName: undefined,
+        userId: typeof issue.user?.login === "string" ? issue.user.login : "unknown",
+        userName: typeof issue.user?.login === "string" ? issue.user.login : undefined,
         text: issue.body ?? "",
         ts: Date.now(),
         raw: issue,
       };
     }
 
-    // Fetch comment via list (best-effort; keep adapter minimal).
-    const comments = await listIssueComments({
+    const id = Number(msgRef.messageId);
+    if (!Number.isSafeInteger(id) || id <= 0) return null;
+    const match = await getIssueComment({
       owner: thread.owner,
       repo: thread.repo,
-      number: thread.number,
-      limit: 100,
+      commentId: id,
+    }).catch((error: unknown) => {
+      if (error instanceof GithubApiError && error.status === 404) return null;
+      throw error;
     });
-    const id = Number(msgRef.messageId);
-    const match = comments.find((c) => c.id === id);
     if (!match) return null;
     return {
       ref: msgRef,
@@ -154,6 +223,7 @@ export class GithubAdapter implements SurfaceAdapter {
       repo: thread.repo,
       number: thread.number,
       limit,
+      page: opts?.page,
     });
     return comments.map((c) => ({
       ref: {
@@ -181,11 +251,18 @@ export class GithubAdapter implements SurfaceAdapter {
     if (!Number.isFinite(commentId) || commentId <= 0) {
       throw new Error(`github adapter: invalid comment id '${msgRef.messageId}'`);
     }
+    const rendered = content.actions
+      ? renderGithubActionContent({
+          text: body,
+          messageId: msgRef.messageId,
+          actions: content.actions,
+        })
+      : body;
     await editIssueComment({
       owner: thread.owner,
       repo: thread.repo,
       commentId,
-      body,
+      body: markGithubAgentComment(rendered),
     });
   }
 
@@ -231,5 +308,17 @@ export class GithubAdapter implements SurfaceAdapter {
 
   async markRead(_sessionRef: SessionRef, _upToMsgRef?: MsgRef): Promise<void> {
     // no-op
+  }
+}
+
+export class GithubMessageCreatedError extends Error {
+  constructor(
+    readonly messageRef: MsgRef,
+    cause: unknown,
+  ) {
+    super(
+      `GitHub comment ${messageRef.messageId} was created but its action edit failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
   }
 }

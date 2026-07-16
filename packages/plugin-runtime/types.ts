@@ -8,6 +8,27 @@ export type RequestContext = {
   requestClient?: string;
   cwd?: string;
   safetyMode?: "trusted" | "restricted";
+  /** Set only after matching request headers to a server-owned authenticated surface origin. */
+  serverOwnedRequest?: boolean;
+  authenticatedPrincipal?: { platform: "discord" | "github"; userId: string };
+  toolCallId?: string;
+  controlCapability?: string;
+  controlPolicy?: {
+    kind: "primary" | "heartbeat";
+    allowedCallables: readonly string[] | null;
+  };
+  workflowCapability?: string;
+  workflowPolicy?: {
+    runId: string;
+    operationId: string;
+    externalTools: boolean;
+    surfaceSends: boolean;
+    canonicalProjectId: string;
+    canonicalWorkspaceRoot: string;
+    canonicalCwd: string;
+    originSessionId: string | null;
+    originClient: "discord" | "github" | null;
+  };
 };
 
 export type ServerToolPrimaryPositional = {

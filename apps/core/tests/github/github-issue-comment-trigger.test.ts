@@ -5,6 +5,10 @@ import {
   markGithubAgentComment,
 } from "../../src/github/github-comment-marker";
 import { parseIssueCommentTrigger } from "../../src/github/webhook/github-webhook-server";
+import {
+  parseGithubWorkflowActionReply,
+  renderGithubActionContent,
+} from "../../src/surface/github/github-actions";
 
 const BOT_LOGINS = ["catalinna-df[bot]", "DF-wu"] as const;
 
@@ -102,5 +106,29 @@ describe("github agent comment marker", () => {
 
   it("does not treat normal comments as marked agent comments", () => {
     expect(isMarkedGithubAgentComment("/lilac hello")).toBe(false);
+  });
+});
+
+describe("github workflow review replies", () => {
+  it("accepts only the exact card-bound opaque token syntax", () => {
+    const token = "0d39f88d-3ad4-4df9-92ac-48927bb96269";
+    expect(parseGithubWorkflowActionReply(`lilac-workflow-action 123 ${token}`)).toEqual({
+      messageId: "123",
+      actionId: token,
+    });
+    expect(parseGithubWorkflowActionReply(` lilac-workflow-action 123 ${token}`)).toBeNull();
+    expect(parseGithubWorkflowActionReply(`lilac-workflow-action 123 ${token}\nplease`)).toBeNull();
+    expect(parseGithubWorkflowActionReply(`/lilac approve ${token}`)).toBeNull();
+  });
+
+  it("renders exact instructions and remains marked when edited", () => {
+    const rendered = renderGithubActionContent({
+      text: "Review pending",
+      messageId: "123",
+      actions: [{ actionId: "opaque-action-token-1234", label: "Approve", style: "success" }],
+    });
+    const edited = markGithubAgentComment(rendered);
+    expect(edited).toContain("`lilac-workflow-action 123 opaque-action-token-1234`");
+    expect(isMarkedGithubAgentComment(edited)).toBe(true);
   });
 });

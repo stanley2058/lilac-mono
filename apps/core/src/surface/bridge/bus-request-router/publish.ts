@@ -148,6 +148,11 @@ export async function publishComposedRequest(params: {
       modelOverride: params.input.modelOverride,
       messages: composed.messages,
       raw: {
+        authenticatedOrigin: {
+          platform: "discord",
+          userId: params.input.userId,
+          messageRef: params.input.msgRef,
+        },
         triggerType: params.input.triggerType,
         chainMessageIds: composed.chainMessageIds,
         mergedGroups: composed.mergedGroups,
@@ -215,6 +220,10 @@ export async function publishActiveChannelPrompt(params: {
           triggerType: params.input.triggerType,
         });
 
+  const originMessage = params.input.triggerMsgRef
+    ? await params.adapter.readMsg(params.input.triggerMsgRef).catch(() => null)
+    : null;
+
   await publishBusRequest({
     logger: params.logger,
     bus: params.bus,
@@ -229,6 +238,15 @@ export async function publishActiveChannelPrompt(params: {
       modelOverride: params.input.modelOverride,
       messages: composed.messages,
       raw: {
+        ...(originMessage && params.input.triggerMsgRef
+          ? {
+              authenticatedOrigin: {
+                platform: "discord" as const,
+                userId: originMessage.userId,
+                messageRef: params.input.triggerMsgRef,
+              },
+            }
+          : {}),
         triggerType: params.input.triggerType ?? "active",
         chainMessageIds: composed.chainMessageIds,
         mergedGroups: composed.mergedGroups,
@@ -286,6 +304,15 @@ export async function publishSingleMessageToActiveRequest(params: {
       sessionMode: params.input.sessionMode,
       messages: [msg],
       raw: {
+        ...(surfaceMessage
+          ? {
+              authenticatedOrigin: {
+                platform: "discord" as const,
+                userId: surfaceMessage.userId,
+                messageRef: params.input.msgRef,
+              },
+            }
+          : {}),
         triggerType: "active",
         participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
           exclude: self.userId,
@@ -342,6 +369,15 @@ export async function publishSingleMessagePrompt(params: {
       modelOverride: params.input.modelOverride,
       messages: [msg],
       raw: {
+        ...(surfaceMessage
+          ? {
+              authenticatedOrigin: {
+                platform: "discord" as const,
+                userId: surfaceMessage.userId,
+                messageRef: params.input.msgRef,
+              },
+            }
+          : {}),
         triggerType: "active",
         chainMessageIds: [params.input.msgRef.messageId],
         participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {

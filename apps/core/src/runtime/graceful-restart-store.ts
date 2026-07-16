@@ -5,7 +5,7 @@ import type { AgentRunnerRecoveryEntry } from "../surface/bridge/bus-agent-runne
 import type { BusToAdapterRelaySnapshot } from "../surface/bridge/subscribe-from-bus";
 
 export type GracefulRestartSnapshot = {
-  version: 1;
+  version: 2;
   createdAt: number;
   deadlineMs: number;
   agent: AgentRunnerRecoveryEntry[];
@@ -89,7 +89,7 @@ export class SqliteGracefulRestartStore {
 
       try {
         const parsed = JSON.parse<GracefulRestartSnapshot>(row.payload_json);
-        if (!parsed || parsed.version !== 1) {
+        if (!parsed || parsed.version !== 2) {
           return { snapshot: null, reason: "version_mismatch" };
         }
 

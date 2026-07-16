@@ -19,20 +19,20 @@ export const lilacEventTypes = {
   EvtAdapterMessageDeleted: "evt.adapter.message.deleted",
   EvtAdapterReactionAdded: "evt.adapter.reaction.added",
   EvtAdapterReactionRemoved: "evt.adapter.reaction.removed",
+  EvtAdapterActionInvoked: "evt.adapter.action.invoked",
+  EvtWorkflowWaitResolverBarrier: "evt.adapter.workflow-wait-resolver.barrier",
 
   EvtRequestLifecycleChanged: "evt.request.lifecycle.changed",
   EvtRequestReply: "evt.request.reply",
 
   EvtSurfaceOutputMessageCreated: "evt.surface.output.message.created",
 
-  CmdWorkflowTaskCreate: "cmd.workflow.task.create",
-  EvtWorkflowTaskResolved: "evt.workflow.task.resolved",
-  EvtWorkflowTaskLifecycleChanged: "evt.workflow.task.lifecycle.changed",
-
-  CmdWorkflowCreate: "cmd.workflow.create",
-  EvtWorkflowResolved: "evt.workflow.resolved",
-  CmdWorkflowCancel: "cmd.workflow.cancel",
-  EvtWorkflowLifecycleChanged: "evt.workflow.lifecycle.changed",
+  EvtWorkflowRunChanged: "evt.workflow.run.changed",
+  EvtWorkflowOperationChanged: "evt.workflow.operation.changed",
+  EvtWorkflowApprovalChanged: "evt.workflow.approval.changed",
+  EvtWorkflowProgressRequested: "evt.workflow.progress.requested",
+  EvtWorkflowUsageChanged: "evt.workflow.usage.changed",
+  EvtWorkflowResultReady: "evt.workflow.result.ready",
 
   CmdAgentCreate: "cmd.agent.create",
 
@@ -56,22 +56,6 @@ export function outReqTopic(requestId: string): OutReqTopic {
 }
 
 export type RequestLifecycleState = "queued" | "running" | "resolved" | "failed" | "cancelled";
-
-export type WorkflowLifecycleState =
-  | "queued"
-  | "running"
-  | "blocked"
-  | "resolved"
-  | "failed"
-  | "cancelled";
-
-export type TaskLifecycleState =
-  | "queued"
-  | "running"
-  | "blocked"
-  | "resolved"
-  | "failed"
-  | "cancelled";
 
 export type AdapterPlatform =
   | "discord"
@@ -176,6 +160,20 @@ export type EvtAdapterReactionRemovedData = {
   raw?: unknown;
 };
 
+export type EvtAdapterActionInvokedData = {
+  actionId: string;
+  platform: AdapterPlatform;
+  userId: string;
+  messageRef: SurfaceMsgRef;
+  sourceMessageId?: string;
+  ts: number;
+};
+
+export type EvtWorkflowWaitResolverBarrierData = {
+  barrierId: string;
+  ts: number;
+};
+
 export type EvtRequestLifecycleChangedData = {
   state: RequestLifecycleState;
   detail?: string;
@@ -189,50 +187,92 @@ export type EvtSurfaceOutputMessageCreatedData = {
   msgRef: SurfaceMsgRef;
 };
 
-export type CmdWorkflowTaskCreateData = {
-  workflowId: string;
-  taskId: string;
-  kind: string;
-  /** Human-readable description included in resume context. */
-  description: string;
-  input?: unknown;
-};
+export type WorkflowRunEventState =
+  | "awaiting_review"
+  | "queued"
+  | "running"
+  | "blocked"
+  | "paused"
+  | "succeeded"
+  | "failed"
+  | "rejected"
+  | "cancelled";
 
-export type EvtWorkflowTaskResolvedData = {
-  workflowId: string;
-  taskId: string;
-  result: unknown;
-};
+export type WorkflowOperationEventState =
+  | "queued"
+  | "dispatched"
+  | "running"
+  | "blocked"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
 
-export type EvtWorkflowTaskLifecycleChangedData = {
-  workflowId: string;
-  taskId: string;
-  state: TaskLifecycleState;
+export type WorkflowApprovalEventState =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "revoked"
+  | "expired";
+
+export type EvtWorkflowRunChangedData = {
+  runId: string;
+  revisionId: string;
+  state: WorkflowRunEventState;
+  previousState?: WorkflowRunEventState;
   detail?: string;
-  ts?: number;
+  ts: number;
 };
 
-export type CmdWorkflowCreateData = {
-  workflowId: string;
-  /** Workflow trigger definition (tasks/conditions). */
-  definition?: unknown;
+export type EvtWorkflowOperationChangedData = {
+  runId: string;
+  revisionId: string;
+  operationId: string;
+  kind: "agent" | "parallel" | "pipeline" | "phase" | "wait";
+  state: WorkflowOperationEventState;
+  previousState?: WorkflowOperationEventState;
+  phase?: string;
+  label?: string;
+  ts: number;
 };
 
-export type EvtWorkflowResolvedData = {
-  workflowId: string;
-  result: unknown;
+export type EvtWorkflowApprovalChangedData = {
+  approvalId: string;
+  revisionId: string;
+  runId?: string;
+  state: WorkflowApprovalEventState;
+  previousState?: WorkflowApprovalEventState;
+  ts: number;
 };
 
-export type CmdWorkflowCancelData = {
-  workflowId: string;
-  reason?: string;
+export type EvtWorkflowProgressRequestedData = {
+  runId: string;
+  revisionId: string;
+  reason: "created" | "state_changed" | "operation_changed" | "usage_changed" | "reconcile";
+  ts: number;
 };
 
-export type EvtWorkflowLifecycleChangedData = {
-  workflowId: string;
-  state: WorkflowLifecycleState;
-  detail?: string;
-  ts?: number;
+export type EvtWorkflowUsageChangedData = {
+  runId: string;
+  revisionId: string;
+  operationId?: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    agentCount: number;
+    activeAgents: number;
+  };
+  ts: number;
+};
+
+export type EvtWorkflowResultReadyData = {
+  runId: string;
+  revisionId: string;
+  state: "succeeded" | "failed" | "rejected" | "cancelled";
+  summary?: string;
+  resultArtifactId?: string;
+  ts: number;
 };
 
 export type CmdAgentCreateData = {
@@ -257,6 +297,12 @@ export type EvtAgentOutputResponseTextData = {
   delivery?: "reply" | "skip";
   /** Optional one-line token/model stats for surface rendering. */
   statsForNerdsLine?: string;
+  /** Structured aggregate usage for durable workflow consumers. */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
 };
 
 export type EvtAgentOutputResponseBinaryData = {
@@ -330,6 +376,18 @@ export type LilacEventSpec = {
     data: EvtAdapterReactionRemovedData;
   };
 
+  [lilacEventTypes.EvtAdapterActionInvoked]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtAdapterActionInvokedData;
+  };
+
+  [lilacEventTypes.EvtWorkflowWaitResolverBarrier]: {
+    topic: "evt.adapter";
+    key: string;
+    data: EvtWorkflowWaitResolverBarrierData;
+  };
+
   [lilacEventTypes.EvtRequestLifecycleChanged]: {
     topic: "evt.request";
     key: string;
@@ -348,46 +406,40 @@ export type LilacEventSpec = {
     data: EvtSurfaceOutputMessageCreatedData;
   };
 
-  [lilacEventTypes.CmdWorkflowTaskCreate]: {
-    topic: "cmd.workflow";
-    key: string;
-    data: CmdWorkflowTaskCreateData;
-  };
-
-  [lilacEventTypes.EvtWorkflowTaskResolved]: {
+  [lilacEventTypes.EvtWorkflowRunChanged]: {
     topic: "evt.workflow";
     key: string;
-    data: EvtWorkflowTaskResolvedData;
+    data: EvtWorkflowRunChangedData;
   };
 
-  [lilacEventTypes.EvtWorkflowTaskLifecycleChanged]: {
+  [lilacEventTypes.EvtWorkflowOperationChanged]: {
     topic: "evt.workflow";
     key: string;
-    data: EvtWorkflowTaskLifecycleChangedData;
+    data: EvtWorkflowOperationChangedData;
   };
 
-  [lilacEventTypes.CmdWorkflowCreate]: {
-    topic: "cmd.workflow";
-    key: string;
-    data: CmdWorkflowCreateData;
-  };
-
-  [lilacEventTypes.EvtWorkflowResolved]: {
+  [lilacEventTypes.EvtWorkflowApprovalChanged]: {
     topic: "evt.workflow";
     key: string;
-    data: EvtWorkflowResolvedData;
+    data: EvtWorkflowApprovalChangedData;
   };
 
-  [lilacEventTypes.CmdWorkflowCancel]: {
-    topic: "cmd.workflow";
-    key: string;
-    data: CmdWorkflowCancelData;
-  };
-
-  [lilacEventTypes.EvtWorkflowLifecycleChanged]: {
+  [lilacEventTypes.EvtWorkflowProgressRequested]: {
     topic: "evt.workflow";
     key: string;
-    data: EvtWorkflowLifecycleChangedData;
+    data: EvtWorkflowProgressRequestedData;
+  };
+
+  [lilacEventTypes.EvtWorkflowUsageChanged]: {
+    topic: "evt.workflow";
+    key: string;
+    data: EvtWorkflowUsageChangedData;
+  };
+
+  [lilacEventTypes.EvtWorkflowResultReady]: {
+    topic: "evt.workflow";
+    key: string;
+    data: EvtWorkflowResultReadyData;
   };
 
   [lilacEventTypes.CmdAgentCreate]: {

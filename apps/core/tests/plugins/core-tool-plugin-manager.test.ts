@@ -102,11 +102,21 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "surface.reactions.remove",
   "surface.sessions.list",
   "surface.sessions.listParticipants",
-  "workflow.cancel",
-  "workflow.list",
-  "workflow.schedule",
-  "workflow.wait_for_reply.create",
-  "workflow.wait_for_reply.send_and_wait",
+  "workflow.approval.revoke",
+  "workflow.definition.get",
+  "workflow.definition.list",
+  "workflow.definition.save",
+  "workflow.definition.validate",
+  "workflow.run.cancel",
+  "workflow.run.get",
+  "workflow.run.list",
+  "workflow.run.pause",
+  "workflow.run.resume",
+  "workflow.run.trigger",
+  "workflow.trigger.cancel",
+  "workflow.trigger.create",
+  "workflow.trigger.get",
+  "workflow.trigger.list",
 ].sort();
 
 const OPTIONAL_DYNAMIC_LEVEL2_CALLABLE_IDS = new Set(["generate.image", "generate.video"]);
@@ -283,6 +293,69 @@ describe("core tool plugin manager", () => {
     });
 
     expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "batch", "read_file"]);
+
+    const workflowPolicy = {
+      runId: "run-1",
+      operationId: "operation-1",
+      profile: "explore",
+      safetyMode: "restricted",
+      editing: false,
+      externalTools: false,
+      surfaceSends: false,
+      subagents: false,
+      canonicalWorkspaceRoot: dataDir,
+      canonicalCwd: dataDir,
+      canonicalProjectId: "project-1",
+      originSessionId: "public-channel",
+      originClient: "discord",
+      revisionId: "revision-1",
+      sourceSha256: "a".repeat(64),
+      inputSchemaSha256: "b".repeat(64),
+      capabilitySha256: "c".repeat(64),
+      argsSha256: "d".repeat(64),
+    } as const;
+    const workflowExplore = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "explore",
+      editingToolMode: "none",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+      allowedToolNames: new Set(["bash", "read_file", "glob"]),
+      requestContext: {
+        requestId: "workflow-explore",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 1,
+        subagentProfile: "explore",
+        safetyMode: "restricted",
+        metadata: { workflowPolicy },
+      },
+    });
+    expect([...workflowExplore.specs.keys()].sort()).toEqual(["glob", "read_file"]);
+
+    const workflowGeneral = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "general",
+      editingToolMode: "apply_patch",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents!,
+      allowedToolNames: new Set(["bash", "read_file", "glob", "apply_patch"]),
+      requestContext: {
+        requestId: "workflow-general",
+        sessionId: "public-channel",
+        requestClient: "discord",
+        subagentDepth: 1,
+        subagentProfile: "general",
+        safetyMode: "restricted",
+        metadata: { workflowPolicy: { ...workflowPolicy, profile: "general", editing: true } },
+      },
+    });
+    expect([...workflowGeneral.specs.keys()].sort()).toEqual([
+      "apply_patch",
+      "bash",
+      "glob",
+      "read_file",
+    ]);
   });
 
   it("threads direct attachment support metadata into read_file description", async () => {

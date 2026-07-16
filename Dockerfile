@@ -1,6 +1,5 @@
 ARG BASE_IMAGE=ubuntu:24.04
 ARG NODE_MAJOR=22
-ARG CONTAINER_USER=lilac
 ARG CONTAINER_UID=1000
 
 ############################
@@ -8,10 +7,7 @@ ARG CONTAINER_UID=1000
 ############################
 FROM ${BASE_IMAGE} AS tools
 ARG NODE_MAJOR
-ARG CONTAINER_USER
-ARG CONTAINER_UID
-ENV LILAC_USER=${CONTAINER_USER}
-ENV LILAC_UID=${CONTAINER_UID}
+ENV LILAC_USER=lilac
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -37,8 +33,11 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
+  bubblewrap \
   build-essential \
   cmake \
+  dbus \
+  dbus-user-session \
   dnsutils \
   fd-find \
   ffmpeg \
@@ -50,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   iproute2 \
   iputils-ping \
   jq \
+  libpam-systemd \
   libvulkan1 \
   mesa-vulkan-drivers \
   nodejs \
@@ -61,6 +61,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3-venv \
   ripgrep \
   sqlite3 \
+  systemd \
+  systemd-sysv \
   tar \
   unzip \
   vulkan-tools \
@@ -73,22 +75,49 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Ubuntu/Debian call it "fdfind"
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
-# Non-root user (needed for bun/npm global installs)
-RUN if id -u "$LILAC_USER" >/dev/null 2>&1; then \
-      if [ "$(id -u "$LILAC_USER")" != "$LILAC_UID" ]; then \
-        usermod -u "$LILAC_UID" "$LILAC_USER"; \
-      fi; \
-      usermod -d "/home/$LILAC_USER" -m -s /bin/bash "$LILAC_USER"; \
-    elif getent passwd "$LILAC_UID" >/dev/null 2>&1; then \
-      existing_user="$(getent passwd "$LILAC_UID" | cut -d: -f1)"; \
-      usermod -l "$LILAC_USER" "$existing_user"; \
-      usermod -d "/home/$LILAC_USER" -m -s /bin/bash "$LILAC_USER"; \
-      if getent group "$existing_user" >/dev/null 2>&1; then \
-        groupmod -n "$LILAC_USER" "$existing_user"; \
-      fi; \
-    else \
-      useradd -m -u "$LILAC_UID" -s /bin/bash "$LILAC_USER"; \
-    fi
+# The workflow sandbox presents /lib64 as /usr/lib. Expose Ubuntu's dynamic
+# loader there as well so the bind-mounted Bun executable remains runnable.
+RUN ARCH="$(dpkg --print-architecture)" \
+  && case "$ARCH" in \
+       amd64) ln -s x86_64-linux-gnu/ld-linux-x86-64.so.2 /usr/lib/ld-linux-x86-64.so.2 ;; \
+       arm64) ln -s aarch64-linux-gnu/ld-linux-aarch64.so.1 /usr/lib/ld-linux-aarch64.so.1 ;; \
+     esac
+
+ARG CONTAINER_UID
+ENV LILAC_UID=${CONTAINER_UID}
+
+# Create a dedicated regular user instead of inheriting an image account's
+# groups or account settings. Ubuntu reserves UID/GID 1000 for `ubuntu`.
+RUN case "$LILAC_UID" in \
+      ''|*[!0-9]*) echo "CONTAINER_UID must be a numeric regular-user UID" >&2; exit 1 ;; \
+    esac \
+  && if [ "$LILAC_UID" -lt 1000 ] || [ "$LILAC_UID" -gt 60000 ]; then \
+       echo "CONTAINER_UID must be between 1000 and 60000" >&2; exit 1; \
+     fi \
+  && if id -u "$LILAC_USER" >/dev/null 2>&1; then \
+       userdel --remove "$LILAC_USER"; \
+     fi \
+  && existing_user="$(getent passwd "$LILAC_UID" | cut -d: -f1 || true)" \
+  && if [ -n "$existing_user" ]; then \
+       if [ "$existing_user" != "ubuntu" ]; then \
+         echo "CONTAINER_UID is already assigned to a base-image account" >&2; exit 1; \
+       fi; \
+       userdel --remove ubuntu; \
+     fi \
+  && if getent group "$LILAC_USER" >/dev/null 2>&1; then \
+       groupdel "$LILAC_USER"; \
+     fi \
+  && existing_group="$(getent group "$LILAC_UID" | cut -d: -f1 || true)" \
+  && if [ -n "$existing_group" ]; then \
+       if [ "$existing_group" != "ubuntu" ]; then \
+         echo "CONTAINER_UID is already assigned to a base-image group" >&2; exit 1; \
+       fi; \
+       groupdel ubuntu; \
+     fi \
+  && groupadd --gid "$LILAC_UID" "$LILAC_USER" \
+  && useradd --create-home --uid "$LILAC_UID" --gid "$LILAC_USER" \
+       --shell /bin/bash "$LILAC_USER" \
+  && [ "$(id -G "$LILAC_USER")" = "$LILAC_UID" ]
 ENV HOME=/home/${LILAC_USER}
 ENV DATA_DIR=/data
 ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
@@ -99,6 +128,8 @@ ENV BUN_INSTALL_BIN=${DATA_DIR}/bin
 ENV BUN_INSTALL_CACHE_DIR=${DATA_DIR}/.bun/install/cache
 ENV NPM_CONFIG_PREFIX=${DATA_DIR}/.npm-global
 ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
+ENV XDG_RUNTIME_DIR=/run/user/${LILAC_UID}
+ENV DBUS_SESSION_BUS_ADDRESS=unix:path=${XDG_RUNTIME_DIR}/bus
 ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN mkdir -p $DATA_DIR $DATA_DIR/secret
@@ -165,6 +196,37 @@ RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; 
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app/build
 # Make `tools` available globally
 RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
-USER ${LILAC_USER}
-# Entrypoint: core runtime
-CMD ["bun", "apps/core/src/runtime/main.ts"]
+
+# The system manager starts both the per-user manager and Core. UID substitution
+# happens at image build time so startup never generates or mutates unit files.
+COPY docker/lilac-core.service /etc/systemd/system/lilac-core.service.in
+COPY docker/user-manager-delegate.conf /etc/systemd/system/user@.service.d/delegate.conf
+COPY --chmod=0755 docker/systemd-entrypoint.sh /usr/local/sbin/lilac-systemd-entrypoint
+COPY docker/write-container-environment.mjs /usr/local/libexec/write-container-environment.mjs
+COPY --chmod=0755 docker/verify-workflow-runtime.sh /usr/local/bin/verify-workflow-runtime
+RUN sed "s/@LILAC_UID@/${LILAC_UID}/g" \
+      /etc/systemd/system/lilac-core.service.in \
+      > /etc/systemd/system/lilac-core.service \
+  && rm /etc/systemd/system/lilac-core.service.in \
+  && install -d -m 0755 /var/lib/systemd/linger \
+  && touch /var/lib/systemd/linger/${LILAC_USER} \
+  && ln -s /etc/systemd/system/lilac-core.service \
+      /etc/systemd/system/multi-user.target.wants/lilac-core.service \
+  && systemctl mask \
+      console-getty.service \
+      getty@.service \
+      getty-static.service \
+      serial-getty@.service \
+      apt-daily.service \
+      apt-daily.timer \
+      apt-daily-upgrade.service \
+      apt-daily-upgrade.timer \
+      motd-news.service \
+      motd-news.timer \
+      systemd-udevd-control.socket \
+      systemd-udevd-kernel.socket \
+      systemd-udevd.service
+
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/usr/local/sbin/lilac-systemd-entrypoint"]
+CMD ["/sbin/init"]

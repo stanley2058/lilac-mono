@@ -6,6 +6,8 @@ import SuperJSON from "../packages/event-bus/node_modules/superjson";
 // Apply after deploying fc24e98:
 // REDIS_URL=redis://... bun migrations/20260712-redis-event-stream-cleanup.ts --apply --confirm-deployed-fc24e98
 // Add --destroy-legacy-groups --confirm-no-legacy-processes only after replacing every old instance.
+// Add --confirm-single-version-workflow-waits to retire the pre-tail workflow wait group after
+// every core instance runs the ordered tail resolver.
 
 const OUTPUT_TTL_MS = 24 * 60 * 60 * 1000;
 const SCAN_COUNT = 500;
@@ -13,8 +15,11 @@ const PENDING_BATCH_SIZE = 500;
 const STALE_CONSUMER_IDLE_MS = 60 * 60 * 1000;
 const REQUIRED_DEPLOY_CONFIRMATION = "--confirm-deployed-fc24e98";
 const REQUIRED_LEGACY_PROCESS_CONFIRMATION = "--confirm-no-legacy-processes";
+const WORKFLOW_WAIT_ROLLOUT_CONFIRMATION = "--confirm-single-version-workflow-waits";
 const LEGACY_EPHEMERAL_GROUP_PREFIXES = ["subagent:", "deferred-subagent:"] as const;
-const TAIL_REPLAY_TOPICS = new Set(["evt.request"]);
+// These topics require application-owned durable checkpoints that this standalone migration
+// cannot observe. Runtime reclamation combines those checkpoints with consumer-group frontiers.
+const TAIL_REPLAY_TOPICS = new Set(["evt.request", "evt.adapter"]);
 
 const TRIM_ACKNOWLEDGED_PREFIX_SCRIPT = `
 local groups = redis.call("XINFO", "GROUPS", KEYS[1])
@@ -72,12 +77,28 @@ if last_generated_id ~= ARGV[1] then return 0 end
 return redis.call("PEXPIREAT", KEYS[1], ARGV[2])
 `;
 
+const RETIRE_CONSUMER_GROUP_SCRIPT = `
+if redis.call("TYPE", KEYS[1]).ok ~= "stream" then return 0 end
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+local found = false
+for _, fields in ipairs(groups) do
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" and fields[index + 1] == ARGV[1] then found = true end
+  end
+end
+if not found then return 0 end
+if ARGV[2] ~= "1" then return -1 end
+return redis.call("XGROUP", "DESTROY", KEYS[1], ARGV[1])
+`;
+
 type MigrationOptions = {
   apply: boolean;
   rewriteAof: boolean;
   destroyLegacyGroups: boolean;
   redisUrl: string;
   keyPrefix: string;
+  subscriptionPrefix: string;
+  confirmSingleVersionWorkflowWaits: boolean;
 };
 
 type Summary = {
@@ -94,6 +115,8 @@ type Summary = {
   staleConsumersFound: number;
   sharedStreamsScanned: number;
   streamEntriesTrimmed: number;
+  legacyWorkflowWaitGroupsFound: number;
+  legacyWorkflowWaitGroupsRetired: number;
 };
 
 type PendingEntry = {
@@ -106,8 +129,12 @@ function parseOptions(argv: readonly string[]): MigrationOptions {
   const destroyLegacyGroups = argv.includes("--destroy-legacy-groups");
   const redisUrlArg = argv.find((arg) => arg.startsWith("--redis-url="));
   const keyPrefixArg = argv.find((arg) => arg.startsWith("--key-prefix="));
+  const subscriptionPrefixArg = argv.find((arg) => arg.startsWith("--subscription-prefix="));
   const redisUrl = redisUrlArg?.slice("--redis-url=".length) ?? process.env.REDIS_URL;
   const keyPrefix = keyPrefixArg?.slice("--key-prefix=".length) ?? "lilac:event-bus";
+  const subscriptionPrefix =
+    subscriptionPrefixArg?.slice("--subscription-prefix=".length) ?? "core";
+  const confirmSingleVersionWorkflowWaits = argv.includes(WORKFLOW_WAIT_ROLLOUT_CONFIRMATION);
 
   if (!redisUrl) {
     throw new Error("REDIS_URL or --redis-url=<url> is required");
@@ -125,7 +152,15 @@ function parseOptions(argv: readonly string[]): MigrationOptions {
     throw new Error(`--destroy-legacy-groups requires ${REQUIRED_LEGACY_PROCESS_CONFIRMATION}`);
   }
 
-  return { apply, rewriteAof, destroyLegacyGroups, redisUrl, keyPrefix };
+  return {
+    apply,
+    rewriteAof,
+    destroyLegacyGroups,
+    redisUrl,
+    keyPrefix,
+    subscriptionPrefix,
+    confirmSingleVersionWorkflowWaits,
+  };
 }
 
 function pairsToRecord(value: unknown): Record<string, unknown> {
@@ -309,6 +344,38 @@ async function removeLegacyEphemeralGroups(
   }
 }
 
+async function retireLegacyWorkflowWaitGroup(
+  redis: Redis,
+  options: MigrationOptions,
+  summary: Summary,
+): Promise<void> {
+  const streamKey = `${options.keyPrefix}:evt.adapter`;
+  if ((await redis.exists(streamKey)) === 0) return;
+  const group = `${options.subscriptionPrefix}:workflow-waits`;
+  const rawGroups = (await redis.xinfo("GROUPS", streamKey)) as unknown;
+  if (
+    !Array.isArray(rawGroups) ||
+    !rawGroups.some((rawGroup) => pairsToRecord(rawGroup)["name"] === group)
+  ) {
+    return;
+  }
+  summary.legacyWorkflowWaitGroupsFound += 1;
+  if (!options.apply) return;
+  const retired = await redis.eval(
+    RETIRE_CONSUMER_GROUP_SCRIPT,
+    1,
+    streamKey,
+    group,
+    options.confirmSingleVersionWorkflowWaits ? "1" : "0",
+  );
+  if (retired === -1) {
+    throw new Error(
+      `Refusing to retire ${group} without explicit single-version confirmation; stop all old core instances and pass ${WORKFLOW_WAIT_ROLLOUT_CONFIRMATION}`,
+    );
+  }
+  if (retired === 1) summary.legacyWorkflowWaitGroupsRetired += 1;
+}
+
 async function repairKnownIgnoredPending(
   redis: Redis,
   options: MigrationOptions,
@@ -438,6 +505,8 @@ async function main(): Promise<void> {
     staleConsumersFound: 0,
     sharedStreamsScanned: 0,
     streamEntriesTrimmed: 0,
+    legacyWorkflowWaitGroupsFound: 0,
+    legacyWorkflowWaitGroupsRetired: 0,
   };
 
   try {
@@ -455,6 +524,7 @@ async function main(): Promise<void> {
 
     await migrateOutputExpirations(redis, options, summary);
     await removeLegacyEphemeralGroups(redis, options, summary);
+    await retireLegacyWorkflowWaitGroup(redis, options, summary);
     await repairKnownIgnoredPending(redis, options, summary);
     await reportStaleEmptyConsumers(redis, sharedStreamKeys, summary);
     await trimSharedStreams(redis, options, sharedStreamKeys, summary);
@@ -468,6 +538,7 @@ async function main(): Promise<void> {
           keyPrefix: options.keyPrefix,
           rewriteAofRequested: options.rewriteAof,
           destroyLegacyGroupsRequested: options.destroyLegacyGroups,
+          workflowWaitSingleVersionConfirmed: options.confirmSingleVersionWorkflowWaits,
           summary,
           note: options.apply
             ? "Cleanup applied. Re-run in dry-run mode and inspect INFO memory/persistence."

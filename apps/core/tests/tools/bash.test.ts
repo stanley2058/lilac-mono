@@ -391,6 +391,127 @@ describe("executeRestrictedBash", () => {
     }
   });
 
+  it("blocks every restricted workspace write primitive from protected and escaped paths", async () => {
+    const root = await fs.mkdtemp(
+      path.join(await fs.realpath("/tmp"), "lilac-restricted-protected-writes-"),
+    );
+    const workspace = path.join(root, "workspace");
+    const outside = path.join(root, "outside.txt");
+    const sessionId = "restricted-protected-writes";
+    await fs.mkdir(path.join(workspace, ".git", "hooks"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".env.local"));
+    await fs.writeFile(path.join(workspace, ".env"), "SECRET=original\n");
+    await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=original\n");
+    await fs.writeFile(path.join(workspace, ".env.local", "token"), "DESCENDANT=secret\n");
+    await fs.writeFile(path.join(workspace, "core-config.yaml"), "safe: true\n");
+    await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]\n");
+    await fs.writeFile(path.join(workspace, "source.txt"), "source\n");
+    await fs.link(path.join(workspace, ".env"), path.join(workspace, "env-alias.txt"));
+    await fs.link(
+      path.join(workspace, ".git", "config"),
+      path.join(workspace, "git-config-alias.txt"),
+    );
+    await fs.mkdir(path.join(workspace, "nested", ".git"), { recursive: true });
+    await fs.writeFile(path.join(workspace, "nested", ".env"), "NESTED=secret\n");
+    await fs.writeFile(path.join(workspace, "nested", ".git", "config"), "[nested]\n");
+    await fs.writeFile(outside, "outside\n");
+
+    const commands = [
+      "printf hacked > .env",
+      "printf hacked > .envrc",
+      "printf hacked > .env.local/token",
+      "printf hacked > env-alias.txt",
+      "printf hacked >> git-config-alias.txt",
+      "rm env-alias.txt",
+      "printf hacked >> core-config.yaml",
+      "rm .git/config",
+      "mv source.txt .git/hooks/pre-commit",
+      "cp source.txt .env.production",
+      "mkdir .git/hooks/new-hook",
+      "ln source.txt .git/config",
+      "ln -s source.txt .env.local",
+      "printf escaped > ../outside.txt",
+      "rm -rf nested",
+      "mv nested moved-nested",
+      "cp -r nested copied-nested",
+    ];
+    try {
+      const hardLinkRead = await executeRestrictedBash(
+        { command: "cat env-alias.txt; grep safe git-config-alias.txt", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-protected-hard-link-read",
+            sessionId,
+            requestClient: "test",
+          },
+        },
+      );
+      expect(hardLinkRead.exitCode).not.toBe(0);
+      expect(hardLinkRead.stdout).not.toContain("SECRET=original");
+      expect(hardLinkRead.stdout).not.toContain("[safe]");
+      const envDescendantRead = await executeRestrictedBash(
+        { command: "cat .env.local/token", cwd: workspace },
+        {
+          workspaceRoot: workspace,
+          context: {
+            requestId: "restricted-env-descendant-read",
+            sessionId,
+            requestClient: "test",
+          },
+        },
+      );
+      expect(envDescendantRead.exitCode).not.toBe(0);
+      expect(envDescendantRead.stdout).not.toContain("DESCENDANT=secret");
+
+      for (const [index, command] of commands.entries()) {
+        const result = await executeRestrictedBash(
+          { command, cwd: workspace },
+          {
+            workspaceRoot: workspace,
+            context: {
+              requestId: `restricted-protected-write-${index}`,
+              sessionId,
+              requestClient: "test",
+              workspaceWritable: true,
+            },
+          },
+        );
+        if (result.exitCode === 0 && command !== "rm -rf nested") {
+          throw new Error(`Protected write unexpectedly succeeded: ${command}`);
+        }
+      }
+      expect(await fs.readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=original\n");
+      expect(await fs.readFile(path.join(workspace, ".envrc"), "utf8")).toBe(
+        "export SECRET=original\n",
+      );
+      expect(await fs.readFile(path.join(workspace, ".env.local", "token"), "utf8")).toBe(
+        "DESCENDANT=secret\n",
+      );
+      expect(await fs.readFile(path.join(workspace, "core-config.yaml"), "utf8")).toBe(
+        "safe: true\n",
+      );
+      expect(await fs.readFile(path.join(workspace, ".git", "config"), "utf8")).toBe("[safe]\n");
+      expect(await fs.readFile(path.join(workspace, "env-alias.txt"), "utf8")).toBe(
+        "SECRET=original\n",
+      );
+      expect(await fs.readFile(path.join(workspace, "git-config-alias.txt"), "utf8")).toBe(
+        "[safe]\n",
+      );
+      expect(await fs.readFile(path.join(workspace, "source.txt"), "utf8")).toBe("source\n");
+      expect(await fs.readFile(path.join(workspace, "nested", ".env"), "utf8")).toBe(
+        "NESTED=secret\n",
+      );
+      expect(await fs.readFile(path.join(workspace, "nested", ".git", "config"), "utf8")).toBe(
+        "[nested]\n",
+      );
+      expect(await fs.readFile(outside, "utf8")).toBe("outside\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(resolveRestrictedSessionTmpDir(sessionId), { recursive: true, force: true });
+    }
+  });
+
   it("does not share cached shell state across sessions with the same request ID", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath("/tmp"), "lilac-restricted-isolation-workspace-"),

@@ -77,3 +77,13 @@ Default changes from v1:
 - `surface.discord.markdownTableRender: { enabled: true, style: unicode, maxWidth: 50, fallbackMode: list }`
 - `agent.reasoningDisplay: detailed`
 - `agent.subagents.idleTimeoutMs: 360000`; explicit v1 `defaultTimeoutMs` values are preserved, while omitted values use the new universal default.
+
+## Workflow Runtime Clean Break
+
+The unified programmatic workflow runtime does not read or migrate legacy `WorkflowDefinitionV2`/`WorkflowDefinitionV3` records. Existing `workflows` and `workflow_tasks` SQLite tables may remain on disk but are inert. Recreate scheduled jobs as JavaScript definitions plus `workflow.trigger.create`; existing approvals do not carry forward because approval identity includes the immutable source, schema, capability profile, project path, and runtime version.
+
+Deferred subagents now persist as generated unified workflow runs. Graceful-restart snapshots no longer contain runner-local deferred child handles, output cursors, timers, or buffered completions. Active generated runs and pending live-parent deliveries recover from the durable workflow database; terminal results fall back to a durable progress card when the parent cannot be restored.
+
+Workflow JavaScript has no unsandboxed fallback. The Docker image is workflow-ready when run with the repository's systemd-PID1 Compose contract: Linux, Docker 28+, cgroup v2, a private writable cgroup namespace, and the documented unconfined seccomp/AppArmor/system-path options. It does not require privileged mode or a host cgroup bind. The image provisions Bubblewrap and a reachable `lilac` user systemd manager with delegated memory/PID controls; `bun run docker:verify-image` verifies the built image without credentials, and missing dependencies still fail workflow-engine startup closed with an actionable error. See `docs/docker-deployment.md`.
+
+The Level-2 HTTP server remains an internal trusted-network service rather than a generally authenticated public API. Unified `workflow.*` callables additionally require an active request ID found in the server-owned request cache and a trusted safety resolution; caller-provided headers alone cannot authorize workflow control.

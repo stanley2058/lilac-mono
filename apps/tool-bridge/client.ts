@@ -78,6 +78,23 @@ type LocalVersionInfo = BuildInfo & {
 
 let callableIdsCache: string[] | undefined;
 
+function lilacRequestHeaders(includeJson = false): Record<string, string> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+  const values = [
+    ["x-lilac-request-id", process.env.LILAC_REQUEST_ID],
+    ["x-lilac-session-id", process.env.LILAC_SESSION_ID],
+    ["x-lilac-request-client", process.env.LILAC_REQUEST_CLIENT],
+    ["x-lilac-cwd", process.env.LILAC_CWD],
+    ["x-lilac-tool-call-id", process.env.LILAC_TOOL_CALL_ID],
+    ["x-lilac-control-capability", process.env.LILAC_CONTROL_CAPABILITY],
+    ["x-lilac-workflow-capability", process.env.LILAC_WORKFLOW_CAPABILITY],
+  ] as const;
+  for (const [name, value] of values) {
+    if (value) headers[name] = value;
+  }
+  return headers;
+}
+
 const objectLikeSchema = z.record(z.string(), z.unknown());
 
 const listPayloadSchema = z.object({
@@ -123,7 +140,7 @@ async function listCallableIdsBestEffort(): Promise<string[]> {
   if (callableIdsCache !== undefined) return callableIdsCache;
 
   try {
-    const res = await fetchNoTimeout(`${BACKEND_URL}/list`);
+    const res = await fetchNoTimeout(`${BACKEND_URL}/list`, { headers: lilacRequestHeaders() });
     if (!res.ok) {
       callableIdsCache = [];
       return callableIdsCache;
@@ -292,7 +309,7 @@ async function buildCallableIdErrorMessage(params: {
 }
 
 async function listTools() {
-  const res = await fetchNoTimeout(`${BACKEND_URL}/list`);
+  const res = await fetchNoTimeout(`${BACKEND_URL}/list`, { headers: lilacRequestHeaders() });
   if (!res.ok) {
     const detail = await readHttpErrorMessage(res);
     throw new Error(formatHttpFailure("fetch tools list", res, detail));
@@ -321,7 +338,9 @@ async function getBackendVersionInfoBestEffort(): Promise<BackendVersionInfo | n
 }
 
 async function toolHelp(callableId: string) {
-  const res = await fetchNoTimeout(`${BACKEND_URL}/help/${encodeURIComponent(callableId)}`);
+  const res = await fetchNoTimeout(`${BACKEND_URL}/help/${encodeURIComponent(callableId)}`, {
+    headers: lilacRequestHeaders(),
+  });
   if (!res.ok) {
     const detail = await readHttpErrorMessage(res);
     throw new Error(
@@ -338,19 +357,7 @@ async function toolHelp(callableId: string) {
 }
 
 async function callTool(callableId: string, input: Record<string, unknown>) {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  const requestId = process.env.LILAC_REQUEST_ID;
-  const sessionId = process.env.LILAC_SESSION_ID;
-  const requestClient = process.env.LILAC_REQUEST_CLIENT;
-  const cwd = process.env.LILAC_CWD;
-
-  if (requestId) headers["x-lilac-request-id"] = requestId;
-  if (sessionId) headers["x-lilac-session-id"] = sessionId;
-  if (requestClient) headers["x-lilac-request-client"] = requestClient;
-  if (cwd) headers["x-lilac-cwd"] = cwd;
+  const headers = lilacRequestHeaders(true);
 
   const res = await fetchNoTimeout(`${BACKEND_URL}/call`, {
     method: "POST",
@@ -767,9 +774,9 @@ async function main() {
             section(
               "Examples",
               formatBullets([
-                "tools workflow.wait_for_reply.create --input=@workflow.json",
-                "cat workflow.json | tools workflow.wait_for_reply.create --stdin",
-                'cat tasks.json | tools workflow.wait_for_reply.create --summary="..." --tasks:json=@-',
+                "tools workflow.definition.validate --scope=auto --name=audit-routes",
+                "tools workflow.run.trigger --input=@workflow-run.json",
+                "cat workflow-trigger.json | tools workflow.trigger.create --stdin",
               ]),
             ),
             "",

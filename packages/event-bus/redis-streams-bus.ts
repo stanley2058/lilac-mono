@@ -25,7 +25,7 @@ const DEFAULT_BLOCK_MS = 1000;
 const OUTPUT_STREAM_TTL_SECONDS = 24 * 60 * 60;
 const TRIM_DEBOUNCE_MS = 100;
 const EPHEMERAL_GROUP_PREFIX = "__lilac_ephemeral__:";
-const TAIL_REPLAY_TOPICS = new Set<Topic>(["evt.request"]);
+const TAIL_REPLAY_TOPICS = new Set<Topic>(["evt.request", "evt.adapter"]);
 
 const XADD_WITH_EXPIRY_SCRIPT = `
 local id = redis.call("XADD", KEYS[1], unpack(ARGV, 2))
@@ -76,6 +76,68 @@ for _, fields in ipairs(groups) do
 end
 
 return redis.call("XTRIM", KEYS[1], "MINID", "=", watermark)
+`;
+
+const TRIM_BEFORE_CHECKPOINT_SCRIPT = `
+if redis.call("TYPE", KEYS[1]).ok ~= "stream" then return 0 end
+
+local function component_less_than(left, right)
+  if string.len(left) ~= string.len(right) then return string.len(left) < string.len(right) end
+  return left < right
+end
+
+local function less_than(left, right)
+  local left_dash = string.find(left, "-", 1, true)
+  local right_dash = string.find(right, "-", 1, true)
+  local left_time = string.sub(left, 1, left_dash - 1)
+  local right_time = string.sub(right, 1, right_dash - 1)
+  if left_time ~= right_time then return component_less_than(left_time, right_time) end
+  return component_less_than(string.sub(left, left_dash + 1), string.sub(right, right_dash + 1))
+end
+
+local watermark = ARGV[1]
+if watermark == "0-0" then return 0 end
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+for _, fields in ipairs(groups) do
+  local name = nil
+  local pending = nil
+  local last_delivered_id = nil
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" then name = fields[index + 1] end
+    if fields[index] == "pending" then pending = fields[index + 1] end
+    if fields[index] == "last-delivered-id" then last_delivered_id = fields[index + 1] end
+  end
+  if not name or pending == nil or not last_delivered_id then return 0 end
+  if string.sub(name, 1, string.len(ARGV[3])) ~= ARGV[3] then
+    local boundary = last_delivered_id
+    if pending > 0 then
+      local pending_summary = redis.call("XPENDING", KEYS[1], name)
+      boundary = pending_summary[2]
+      if not boundary then return 0 end
+    end
+    if boundary == "0-0" then return 0 end
+    if less_than(boundary, watermark) then watermark = boundary end
+  end
+end
+
+local retained = redis.call("XREVRANGE", KEYS[1], watermark, "-", "COUNT", ARGV[2])
+if #retained < tonumber(ARGV[2]) then return 0 end
+local cutoff = retained[#retained][1]
+return redis.call("XTRIM", KEYS[1], "MINID", "=", cutoff)
+`;
+
+const RETIRE_CONSUMER_GROUP_SCRIPT = `
+if redis.call("TYPE", KEYS[1]).ok ~= "stream" then return 0 end
+local groups = redis.call("XINFO", "GROUPS", KEYS[1])
+local found = false
+for _, fields in ipairs(groups) do
+  for index = 1, #fields, 2 do
+    if fields[index] == "name" and fields[index + 1] == ARGV[1] then found = true end
+  end
+end
+if not found then return 0 end
+if ARGV[2] ~= "1" then return -1 end
+return redis.call("XGROUP", "DESTROY", KEYS[1], ARGV[1])
 `;
 
 function randomConsumerId(): string {
@@ -313,6 +375,49 @@ export class RedisStreamsBus implements RawBus {
     }
   }
 
+  async trimBeforeCheckpoint(
+    topic: Topic,
+    checkpoint: Cursor,
+    safetyMargin: number,
+  ): Promise<number> {
+    const retainedCount = Math.max(1, Math.floor(safetyMargin));
+    const trimmed = await this.redis.eval(
+      TRIM_BEFORE_CHECKPOINT_SCRIPT,
+      1,
+      this.streamKey(topic),
+      checkpoint,
+      String(retainedCount),
+      EPHEMERAL_GROUP_PREFIX,
+    );
+    if (typeof trimmed !== "number") throw new Error("Redis XTRIM returned an invalid count");
+    if (trimmed > 0) {
+      this.logger.debug("event_bus.checkpoint_trimmed", { topic, checkpoint, trimmed });
+    }
+    return trimmed;
+  }
+
+  async retireConsumerGroup(
+    topic: Topic,
+    group: string,
+    confirmSingleVersionRollout: boolean,
+  ): Promise<"absent" | "destroyed"> {
+    const result = await this.redis.eval(
+      RETIRE_CONSUMER_GROUP_SCRIPT,
+      1,
+      this.streamKey(topic),
+      group,
+      confirmSingleVersionRollout ? "1" : "0",
+    );
+    if (result === -1) {
+      throw new Error(
+        `Refusing to retire consumer group ${group} without a confirmed single-version rollout`,
+      );
+    }
+    if (result === 0) return "absent";
+    if (result === 1) return "destroyed";
+    throw new Error("Redis XGROUP DESTROY returned an invalid result");
+  }
+
   /** Publish a message via `XADD`. */
   async publish<TData>(
     msg: Omit<Message<TData>, "id" | "ts">,
@@ -341,9 +446,10 @@ export class RedisStreamsBus implements RawBus {
 
     // If requested, apply approximate trimming.
     // TODO: decide retention policy and move to config.
-    const xaddArgs = opts.retention?.maxLenApprox
-      ? ["MAXLEN", "~", String(opts.retention.maxLenApprox), "*", ...fields]
-      : ["*", ...fields];
+    const xaddArgs =
+      opts.retention?.maxLenApprox && !TAIL_REPLAY_TOPICS.has(opts.topic)
+        ? ["MAXLEN", "~", String(opts.retention.maxLenApprox), "*", ...fields]
+        : ["*", ...fields];
     const id = this.isOutputTopic(opts.topic)
       ? await this.redis.eval(
           XADD_WITH_EXPIRY_SCRIPT,
@@ -404,6 +510,19 @@ export class RedisStreamsBus implements RawBus {
 
     const next = messages.length > 0 ? messages[messages.length - 1]!.cursor : undefined;
     return { messages, next };
+  }
+
+  async watermark(topic: Topic): Promise<Cursor | null> {
+    const entries = (await this.redis.xrevrange(
+      this.streamKey(topic),
+      "+",
+      "-",
+      "COUNT",
+      1,
+    )) as unknown;
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+    const latest = entries[0];
+    return Array.isArray(latest) && typeof latest[0] === "string" ? latest[0] : null;
   }
 
   /**

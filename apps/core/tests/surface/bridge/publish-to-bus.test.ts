@@ -529,6 +529,10 @@ describe("bridgeAdapterToBus cancel mapping", () => {
         },
       ],
       raw: {
+        authenticatedActor: {
+          platform: "discord",
+          userId: "u1",
+        },
         sessionMode: "mention",
         sessionConfigId: "chan",
         customCommand: {
