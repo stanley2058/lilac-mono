@@ -83,6 +83,30 @@ class CapturingRawBus implements RawBus {
   async close() {}
 }
 
+class FailingInterruptRawBus extends CapturingRawBus {
+  readonly interruptAttempts: string[] = [];
+  private failNextInterrupt = true;
+
+  override async publish<TData>(
+    message: Omit<Message<TData>, "id" | "ts">,
+    options: PublishOptions,
+  ) {
+    const data = z.object({ queue: z.string() }).safeParse(message.data);
+    if (
+      message.type === lilacEventTypes.CmdRequestMessage &&
+      data.success &&
+      data.data.queue === "interrupt"
+    ) {
+      this.interruptAttempts.push(message.headers?.request_id ?? "missing");
+      if (this.failNextInterrupt) {
+        this.failNextInterrupt = false;
+        throw new Error("injected interrupt failure");
+      }
+    }
+    return await super.publish(message, options);
+  }
+}
+
 class LiveCapturingRawBus implements RawBus {
   readonly messages: Array<Omit<Message<unknown>, "id" | "ts">> = [];
   private sequence = 0;
@@ -1467,6 +1491,149 @@ describe("WorkflowEngine", () => {
             message.data.queue === "interrupt",
         ),
       ).toBe(false);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("tick attempts every sandbox and agent cancellation when earlier cancellations fail", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-tick-cancel-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new FailingInterruptRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(store);
+    createApprovedRun(store, "run-2");
+    const sandboxCancellations: number[] = [];
+    let launches = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "tick-cancellation-fanout",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => {
+        const launch = ++launches;
+        return {
+          cancel: async () => {
+            sandboxCancellations.push(launch);
+            if (launch === 1) throw new Error("injected sandbox cancellation failure");
+          },
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        };
+      },
+      dispatchAgentRequest: async ({ signal }) => {
+        if (signal.aborted) {
+          return { state: "cancelled", output: "", detail: "cancelled", usage: null };
+        }
+        return await new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "cancelled", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(
+        () =>
+          store.listOperations("run-1", { state: "dispatched" }).length === 1 &&
+          store.listOperations("run-2", { state: "dispatched" }).length === 1,
+      );
+      store.cancelRunAndChildren({ runId: "run-1", now: 10, detail: "cancel one" });
+      store.cancelRunAndChildren({ runId: "run-2", now: 10, detail: "cancel two" });
+      await waitFor(() => sandboxCancellations.length === 2 && raw.interruptAttempts.length === 2);
+      expect(sandboxCancellations.sort()).toEqual([1, 2]);
+      expect(new Set(raw.interruptAttempts).size).toBe(2);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("stop aggregates failures after attempting every sandbox and agent cancellation", async () => {
+    const dbPath = join(tmpdir(), `workflow-engine-stop-cancel-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new FailingInterruptRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(store);
+    createApprovedRun(store, "run-2");
+    const sandboxCancellations: number[] = [];
+    let launches = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "stop-cancellation-fanout",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => {
+        const launch = ++launches;
+        return {
+          cancel: async () => {
+            sandboxCancellations.push(launch);
+            if (launch === 1) throw new Error("injected sandbox cancellation failure");
+          },
+          result: input.onCall({
+            type: "call",
+            id: 1,
+            kind: "agent",
+            callSiteId: "site-agent",
+            occurrence: 0,
+            path: "root:site-agent:0",
+            parentPath: null,
+            phase: null,
+            depth: 0,
+            input: { prompt: "inspect", options: {} },
+          }),
+        };
+      },
+      dispatchAgentRequest: async ({ signal }) => {
+        if (signal.aborted) {
+          return { state: "cancelled", output: "", detail: "stopped", usage: null };
+        }
+        return await new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => resolve({ state: "cancelled", output: "", detail: "stopped", usage: null }),
+            { once: true },
+          );
+        });
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(
+        () =>
+          store.listOperations("run-1", { state: "dispatched" }).length === 1 &&
+          store.listOperations("run-2", { state: "dispatched" }).length === 1,
+      );
+      await expect(engine.stop()).rejects.toThrow(/stop failed while cancelling active work/u);
+      expect(sandboxCancellations.sort()).toEqual([1, 2]);
+      expect(raw.interruptAttempts).toHaveLength(2);
+      expect(new Set(raw.interruptAttempts).size).toBe(2);
     } finally {
       await engine.stop();
       await bus.close();

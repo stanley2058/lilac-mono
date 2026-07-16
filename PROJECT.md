@@ -71,8 +71,10 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Root harness that runs workspace tests: `__tests__/workspaces.test.ts`.
 
 - `compose.yaml` and `Dockerfile`
-  - A dev container that runs `apps/core/src/runtime/main.ts` and includes Redis.
+  - A systemd-PID1 container that starts the `lilac` user manager and Core; Compose includes Redis.
   - The docker build installs Bun, system tools (git, rg, browser dependencies, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
+  - On Linux with Docker 28+ and cgroup v2, the Compose cgroup/security contract supports the fail-closed Bubblewrap workflow runtime without privileged mode or a host cgroup bind.
+  - `bun run docker:verify-image` boots a credential-free verify-only container; `bun run docker:verify` checks a running Compose service.
   - Docker compose persists extra home directories for agent ergonomics:
     - `./home/agents:/home/lilac/.agents`
     - `./home/.ssh:/home/lilac/.ssh`
@@ -452,7 +454,9 @@ Shutdown happens in reverse (best-effort).
   - Per workspace: `cd apps/core && bun test` (and similarly for `packages/*` that have tests)
 
 - Docker (includes Redis):
-  - `docker compose up --build`
+  - `docker compose up --build -d`
+  - `bun run docker:verify`
+  - Credential-free image smoke: `bun run docker:build --tag lilac:dev . && bun run docker:verify-image`
   - This command is for humans, DO NOT run it if you are an agent. Otherwise it will hang your bash tool.
 
 ---
@@ -467,6 +471,6 @@ Shutdown happens in reverse (best-effort).
   - `sub:<parent_request_id>:<uuid>` identifies delegated subagent runs.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
 - The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
-- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The current development `Dockerfile`/`compose.yaml` does not provision a user systemd manager and therefore is not a workflow-runtime deployment target without host-specific container changes.
+- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The systemd-PID1 Docker image provides this boundary under the exact Compose contract documented in `docs/docker-deployment.md`: Linux Docker 28+, private writable cgroups, and unconfined seccomp/system paths, without privileged mode or a host cgroup mount.
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
 - The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.

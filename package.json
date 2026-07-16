@@ -10,6 +10,8 @@
     "codegen:model-options:check": "bun scripts/generate-provider-option-shapes.ts --check",
     "docker:build": "bun scripts/docker-build.ts build",
     "docker:compose:build": "bun scripts/docker-build.ts compose-build",
+    "docker:verify": "docker compose exec -T --user lilac lilac /usr/local/bin/verify-workflow-runtime",
+    "docker:verify-image": "bash docker/verify-image.sh",
     "lint": "oxlint --tsconfig tsconfig.json apps packages scripts/generate-provider-option-shapes.ts examples __tests__",
     "lint:fix": "oxlint --tsconfig tsconfig.json --fix apps packages scripts/generate-provider-option-shapes.ts examples __tests__",
     "typecheck": "set -e; pids=''; for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit & pids=\"$pids $!\"; fi; done; for pid in $pids; do wait \"$pid\"; done; bun run typecheck:codegen",

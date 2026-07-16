@@ -4,15 +4,55 @@
 
 **/node_modules
 
+# local environments and credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+home/
+**/.ssh
+**/.gnupg
+**/.npmrc
+**/.netrc
+**/.git-credentials
+**/.docker/config.json
+**/.config/gh/hosts.yml
+**/.config/gcloud
+**/id_rsa
+**/id_rsa.*
+**/id_dsa
+**/id_dsa.*
+**/id_ecdsa
+**/id_ecdsa.*
+**/id_ed25519
+**/id_ed25519.*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/*.kdbx
+
 # build artifacts
 **/dist
 !apps/tool-bridge/dist/
 !apps/tool-bridge/dist/index.js
 **/*.tsbuildinfo
 
-# local data / caches
-data/*
+# local data, secrets, and caches
+data/
+secrets/
+.secrets/
+**/.secrets
 **/.cache
+**/.bun
+**/.npm
+**/.pnpm-store
+**/.turbo
+**/.yarn/cache
 **/*.log
 
 # reference/vendored repos

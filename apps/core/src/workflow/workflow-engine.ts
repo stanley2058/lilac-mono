@@ -231,16 +231,36 @@ export class WorkflowEngine {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    await this.wakeSubscription?.stop();
+    const failures: unknown[] = [];
+    const subscription = this.wakeSubscription;
     this.wakeSubscription = null;
-    await this.tickPromise;
+    if (subscription) {
+      const settled = await Promise.allSettled([Promise.resolve().then(() => subscription.stop())]);
+      if (settled[0]?.status === "rejected") failures.push(settled[0].reason);
+    }
+    if (this.tickPromise) {
+      const settled = await Promise.allSettled([this.tickPromise]);
+      if (settled[0]?.status === "rejected") failures.push(settled[0].reason);
+    }
     const active = [...this.active.values()];
-    for (const run of active) {
-      run.controller.abort("shutdown");
-      await run.sandbox.cancel();
+    for (const run of active) run.controller.abort("shutdown");
+    const cancellations = await Promise.allSettled(
+      [...this.active.entries()].flatMap(([runId, run]) => [
+        Promise.resolve().then(() => run.sandbox.cancel()),
+        Promise.resolve().then(() => this.stopAgentRequests(runId)),
+      ]),
+    );
+    for (const cancellation of cancellations) {
+      if (cancellation.status === "rejected") failures.push(cancellation.reason);
     }
     await Promise.allSettled(active.map((run) => run.promise));
     this.active.clear();
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        "Workflow engine stop failed while cancelling active work",
+      );
+    }
   }
 
   private now(): number {
@@ -256,6 +276,7 @@ export class WorkflowEngine {
 
   private async tick(): Promise<void> {
     if (this.stopping) return;
+    const cancellations: Promise<void>[] = [];
     for (const [runId, active] of this.active) {
       const run = this.input.store.getRun(runId);
       const approval = run?.approvalId ? this.input.store.getApproval(run.approvalId) : null;
@@ -273,14 +294,26 @@ export class WorkflowEngine {
           });
         }
         active.controller.abort(run?.state ?? "approval_revoked");
-        await active.sandbox.cancel();
-        await this.stopAgentRequests(runId);
+        cancellations.push(
+          Promise.resolve().then(() => active.sandbox.cancel()),
+          Promise.resolve().then(() => this.stopAgentRequests(runId)),
+        );
       } else {
         if (!this.input.store.refreshRunClaim(runId, this.workerId, this.now())) {
           active.controller.abort("workflow lease lost");
-          await active.sandbox.cancel();
+          cancellations.push(Promise.resolve().then(() => active.sandbox.cancel()));
         }
       }
+    }
+    const settledCancellations = await Promise.allSettled(cancellations);
+    const cancellationFailures = settledCancellations
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (cancellationFailures.length > 0) {
+      this.logger.error(
+        "Workflow cancellation reconciliation failed",
+        new AggregateError(cancellationFailures, "One or more workflow cancellations failed"),
+      );
     }
     for (const run of this.input.store.listRuns({ state: "queued", limit: 1_000 })) {
       await this.claimAndLaunch(run);
@@ -1550,27 +1583,37 @@ export class WorkflowEngine {
     const operations = this.input.store
       .listOperations(runId, { limit: 1_000 })
       .filter((operation) => operation.kind === "agent" && operation.requestId !== null);
-    for (const operation of operations) {
-      if (operation.requestId) {
-        await this.input.bus.publish(
-          lilacEventTypes.CmdRequestMessage,
-          {
-            queue: "interrupt",
-            messages: [],
-            raw: { cancel: true, cancelQueued: true, requiresActive: false },
-          },
-          {
-            headers: {
-              request_id: operation.requestId,
-              session_id:
-                target?.kind === "live_parent"
-                  ? target.childSessionId
-                  : `workflow:${runId}:${operation.operationId}`,
-              request_client: "unknown",
+    const cancellations = await Promise.allSettled(
+      operations.map((operation) => {
+        const requestId = operation.requestId;
+        if (!requestId) throw new Error("Agent operation is missing its request ID");
+        return Promise.resolve().then(() =>
+          this.input.bus.publish(
+            lilacEventTypes.CmdRequestMessage,
+            {
+              queue: "interrupt",
+              messages: [],
+              raw: { cancel: true, cancelQueued: true, requiresActive: false },
             },
-          },
+            {
+              headers: {
+                request_id: requestId,
+                session_id:
+                  target?.kind === "live_parent"
+                    ? target.childSessionId
+                    : `workflow:${runId}:${operation.operationId}`,
+                request_client: "unknown",
+              },
+            },
+          ),
         );
-      }
+      }),
+    );
+    const failures = cancellations
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to cancel agent requests for workflow ${runId}`);
     }
   }
 
