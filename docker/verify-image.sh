@@ -109,6 +109,28 @@ core_condition=$(docker exec "$container_name" \
   /usr/bin/systemctl show lilac-core.service --property=ConditionResult --value)
 [[ $core_condition == no ]] || fail "Core was not condition-disabled for verify-only boot"
 
+token_metadata=$(docker exec "$container_name" /usr/bin/stat --format='%a:%u:%g' \
+  /run/lilac/operator-token)
+[[ $token_metadata == 600:0:0 ]] || fail "operator token is not root:root mode 0600"
+if docker exec --user lilac "$container_name" /usr/bin/test -r /run/lilac/operator-token; then
+  fail "operator token is readable by lilac"
+fi
+docker exec "$container_name" /bin/sh -c \
+  'hash=$(/usr/bin/sha256sum /run/lilac/operator-token | /usr/bin/cut -d " " -f 1); /usr/bin/grep -Fqx "LILAC_OPERATOR_TOKEN_SHA256=\"$hash\"" /run/lilac/container.env' ||
+  fail "operator token hash does not match the Core environment"
+resolved_tools=$(docker exec "$container_name" /bin/sh -c 'command -v tools')
+[[ $resolved_tools == /usr/local/bin/tools ]] || fail "root PATH does not select trusted tools CLI"
+if docker exec --user lilac "$container_name" /usr/bin/test -w \
+  /usr/local/libexec/lilac-tool-bridge/client.js; then
+  fail "tools CLI is writable by lilac"
+fi
+if docker exec --user lilac "$container_name" /usr/bin/test -w /usr/local/bin/bun; then
+  fail "operator/Core Bun executable is writable by lilac"
+fi
+if docker exec --user lilac "$container_name" /usr/bin/test -w /app/apps/core/src/runtime/main.ts; then
+  fail "Core application source is writable by lilac"
+fi
+
 readonly log_marker="lilac-docker-log-probe-${container_name}"
 docker exec "$container_name" \
   /usr/bin/systemd-run \
@@ -134,6 +156,6 @@ docker exec --user lilac "$container_name" /usr/local/bin/verify-workflow-runtim
 docker exec --user lilac \
   --env LILAC_WORKFLOW_SANDBOX_INTEGRATION=1 \
   "$container_name" \
-  /home/lilac/.bun/bin/bun test \
+  /usr/local/bin/bun test \
   ./apps/core/tests/workflow/workflow-sandbox.test.ts \
   ./apps/core/tests/workflow/workflow-integration.test.ts

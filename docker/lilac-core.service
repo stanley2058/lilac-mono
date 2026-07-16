@@ -18,7 +18,7 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@LILAC_UID@/bus
 Environment=LILAC_UID=@LILAC_UID@
 Environment=LILAC_USER=lilac
 EnvironmentFile=/run/lilac/container.env
-ExecStart=/home/lilac/.bun/bin/bun apps/core/src/runtime/main.ts
+ExecStart=/usr/local/bin/bun apps/core/src/runtime/main.ts
 KillMode=mixed
 KillSignal=SIGTERM
 TasksMax=infinity

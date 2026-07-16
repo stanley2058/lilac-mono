@@ -130,7 +130,7 @@ ENV NPM_CONFIG_PREFIX=${DATA_DIR}/.npm-global
 ENV XDG_CONFIG_HOME=${DATA_DIR}/.config
 ENV XDG_RUNTIME_DIR=/run/user/${LILAC_UID}
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=${XDG_RUNTIME_DIR}/bus
-ENV PATH=${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/usr/local/sbin:/usr/local/bin:${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/bin:${HOME}/.local/bin:${HOME}/.bun/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN mkdir -p $DATA_DIR $DATA_DIR/secret
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") $DATA_DIR
@@ -194,8 +194,18 @@ ARG LILAC_BUILD_AT=
 # Generate build metadata late so commit-only changes do not invalidate source build layers.
 RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; then BUILD_AT_FRAGMENT=$(printf ',\n  "builtAt": "%s"' "$LILAC_BUILD_AT"); fi && printf '{\n  "version": "%s",\n  "commit": "%s",\n  "dirty": %s%s\n}\n' "$LILAC_BUILD_VERSION" "$LILAC_BUILD_COMMIT" "$LILAC_BUILD_DIRTY" "$BUILD_AT_FRAGMENT" > /app/build/build-info.json
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app/build
-# Make `tools` available globally
-RUN ln -sf /app/apps/tool-bridge/dist/index.js /usr/local/bin/tools
+# Keep the operator CLI outside the lilac-writable application build tree.
+RUN install -d -o root -g root -m 0755 /usr/local/libexec/lilac-tool-bridge \
+  && install -o root -g root -m 0755 \
+       /home/${LILAC_USER}/.bun/bin/bun \
+       /usr/local/bin/bun \
+  && install -o root -g root -m 0755 \
+       /app/apps/tool-bridge/dist/index.js \
+       /usr/local/libexec/lilac-tool-bridge/index.js \
+  && install -o root -g root -m 0644 \
+       /app/apps/tool-bridge/dist/client.js \
+       /usr/local/libexec/lilac-tool-bridge/client.js \
+  && ln -s /usr/local/libexec/lilac-tool-bridge/index.js /usr/local/bin/tools
 
 # The system manager starts both the per-user manager and Core. UID substitution
 # happens at image build time so startup never generates or mutates unit files.
@@ -204,7 +214,9 @@ COPY docker/user-manager-delegate.conf /etc/systemd/system/user@.service.d/deleg
 COPY --chmod=0755 docker/systemd-entrypoint.sh /usr/local/sbin/lilac-systemd-entrypoint
 COPY docker/write-container-environment.mjs /usr/local/libexec/write-container-environment.mjs
 COPY --chmod=0755 docker/verify-workflow-runtime.sh /usr/local/bin/verify-workflow-runtime
-RUN sed "s/@LILAC_UID@/${LILAC_UID}/g" \
+RUN chown -R root:root /app \
+  && chmod -R go-w /app \
+  && sed "s/@LILAC_UID@/${LILAC_UID}/g" \
       /etc/systemd/system/lilac-core.service.in \
       > /etc/systemd/system/lilac-core.service \
   && rm /etc/systemd/system/lilac-core.service.in \

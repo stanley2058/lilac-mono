@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 
 const quote = (value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
@@ -8,6 +9,7 @@ const protectedKeys = new Set([
   "DBUS_SESSION_BUS_ADDRESS",
   "LILAC_UID",
   "LILAC_USER",
+  "LILAC_OPERATOR_TOKEN_SHA256",
 ]);
 const maxBytes = 1024 * 1024;
 const keyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -29,12 +31,19 @@ for (const [key, value] of Object.entries(process.env).sort(([left], [right]) =>
   lines.push(`${key}=${quote(value)}`);
 }
 
+const operatorToken = randomBytes(32).toString("base64url");
+const operatorTokenSha256 = createHash("sha256").update(operatorToken).digest("hex");
+lines.push(`LILAC_OPERATOR_TOKEN_SHA256=${quote(operatorTokenSha256)}`);
+
 const contents = `${lines.join("\n")}\n`;
 if (Buffer.byteLength(contents) > maxBytes) {
   throw new Error(`Container environment exceeds ${maxBytes} bytes`);
 }
 
 mkdirSync("/run/lilac", { recursive: true, mode: 0o755 });
+const temporaryTokenPath = `/run/lilac/operator-token.${process.pid}`;
+writeFileSync(temporaryTokenPath, operatorToken, { mode: 0o600 });
+renameSync(temporaryTokenPath, "/run/lilac/operator-token");
 const temporaryPath = `/run/lilac/container.env.${process.pid}`;
 writeFileSync(temporaryPath, contents, { mode: 0o600 });
 renameSync(temporaryPath, "/run/lilac/container.env");
