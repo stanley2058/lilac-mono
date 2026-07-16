@@ -23,8 +23,8 @@ KillMode=mixed
 KillSignal=SIGTERM
 TasksMax=infinity
 TimeoutStopSec=20s
-StandardOutput=journal+console
-StandardError=journal+console
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

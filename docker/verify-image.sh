@@ -109,6 +109,27 @@ core_condition=$(docker exec "$container_name" \
   /usr/bin/systemctl show lilac-core.service --property=ConditionResult --value)
 [[ $core_condition == no ]] || fail "Core was not condition-disabled for verify-only boot"
 
+readonly log_marker="lilac-docker-log-probe-${container_name}"
+docker exec "$container_name" \
+  /usr/bin/systemd-run \
+  --collect \
+  --quiet \
+  --unit=lilac-docker-log-probe.service \
+  --wait \
+  /usr/bin/printf '%s\n' "$log_marker" >/dev/null
+
+readonly log_deadline=$((SECONDS + 10))
+log_forwarded=false
+while ((SECONDS < log_deadline)); do
+  container_logs=$(docker logs "$container_name" 2>&1)
+  if [[ $container_logs == *"$log_marker"* ]]; then
+    log_forwarded=true
+    break
+  fi
+  sleep 1
+done
+[[ $log_forwarded == true ]] || fail "systemd journal entries are not visible through Docker logs"
+
 docker exec --user lilac "$container_name" /usr/local/bin/verify-workflow-runtime
 docker exec --user lilac \
   --env LILAC_WORKFLOW_SANDBOX_INTEGRATION=1 \

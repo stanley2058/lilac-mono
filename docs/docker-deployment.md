@@ -46,7 +46,7 @@ bun run docker:build --tag lilac:dev .
 bun run docker:verify-image
 ```
 
-The image smoke creates a uniquely named, network-disabled container with Core condition-disabled, waits for the `lilac` user manager, runs `/usr/local/bin/verify-workflow-runtime` as `lilac`, and then runs the gated workflow-sandbox test with the image's production `/home/lilac/.bun/bin/bun`. Together these checks exercise the loader, bind mounts, helper process, runtime command, namespace boundary, and cgroup enforcement without Redis, Discord, or provider credentials. The verifier inspects every transient unit it creates and fails unless cleanup leaves each unit inactive or absent. The container is removed on success or failure. To verify another tag, run `bun run docker:verify-image my-registry/lilac:tag`.
+The image smoke creates a uniquely named, network-disabled container with Core condition-disabled, waits for the `lilac` user manager, verifies that a service journal entry reaches Docker logs, runs `/usr/local/bin/verify-workflow-runtime` as `lilac`, and then runs the gated workflow-sandbox test with the image's production `/home/lilac/.bun/bin/bun`. Together these checks exercise log forwarding, the loader, bind mounts, helper process, runtime command, namespace boundary, and cgroup enforcement without Redis, Discord, or provider credentials. The verifier inspects every transient unit it creates and fails unless cleanup leaves each unit inactive or absent. The container is removed on success or failure. To verify another tag, run `bun run docker:verify-image my-registry/lilac:tag`.
 
 The regular source-test job does not enable `LILAC_WORKFLOW_SANDBOX_INTEGRATION`; the Docker image job owns the live workflow-sandbox and end-to-end workflow integration coverage because it supplies the production systemd, Bubblewrap, Bun, and cgroup environment.
 
@@ -56,9 +56,10 @@ Start the deployment and verify the same boundary in the running service:
 docker compose up -d
 bun run docker:verify
 docker compose ps
+docker compose logs -f lilac
 ```
 
-Compose readiness is the Core `/readyz` endpoint. A healthy container means Core and its HTTP tool server are ready; workflow startup also fails closed if its sandbox preflight cannot establish the required boundary.
+Compose readiness is the Core `/readyz` endpoint. A healthy container means Core and its HTTP tool server are ready; workflow startup also fails closed if its sandbox preflight cannot establish the required boundary. Systemd journal entries are forwarded to Docker's original output streams, so Core logs remain available both through `docker compose logs lilac` and `docker compose exec -T lilac journalctl -u lilac-core.service --no-pager`.
 
 ## Security Posture
 
