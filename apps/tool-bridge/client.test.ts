@@ -9,6 +9,7 @@ import {
   buildVersionTags,
   isMainModule,
   parseArgs,
+  parseGlobalArgs,
   resolveBuildId,
 } from "./client";
 
@@ -138,6 +139,55 @@ describe("tool-bridge build id", () => {
 });
 
 describe("tool-bridge CLI runtime", () => {
+  it("reads and forwards the operator token only when --operator or --op is explicit", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "tool-bridge-operator-"));
+    const tokenPath = path.join(root, "operator-token");
+    const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH012345678";
+    await fs.writeFile(tokenPath, `${token}\n`, { mode: 0o600 });
+    const requests: Request[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        if (new URL(req.url).pathname === "/list") requests.push(req.clone());
+        return Response.json({ tools: [] });
+      },
+    });
+    try {
+      expect(parseGlobalArgs(["--operator", "--list"])).toEqual({
+        args: ["--list"],
+        operator: true,
+      });
+      expect(parseGlobalArgs(["--op", "--list"])).toEqual({
+        args: ["--list"],
+        operator: true,
+      });
+      expect(parseGlobalArgs(["demo.echo", "--", "--operator"])).toEqual({
+        args: ["demo.echo", "--", "--operator"],
+        operator: false,
+      });
+      expect(parseGlobalArgs(["demo.echo", "--", "--op"])).toEqual({
+        args: ["demo.echo", "--", "--op"],
+        operator: false,
+      });
+      const result = await runToolBridgeCli({
+        args: ["--op", "--list"],
+        backendUrl: `http://127.0.0.1:${server.port}`,
+        env: { LILAC_OPERATOR_TOKEN_FILE: tokenPath },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.headers.get("x-lilac-operator-token")).toBe(token);
+      expect(requests[0]?.headers.get("x-lilac-request-id")).toMatch(/^operator:/u);
+      expect(requests[0]?.headers.get("x-lilac-tool-call-id")).toBe(
+        requests[0]?.headers.get("x-lilac-request-id"),
+      );
+    } finally {
+      server.stop(true);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("forwards authenticated workflow context to list and help requests", async () => {
     const requests: Request[] = [];
     const server = Bun.serve({

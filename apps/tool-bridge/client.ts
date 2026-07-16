@@ -3,7 +3,7 @@
 import { encode } from "@toon-format/toon";
 import { getBuildInfo, type BuildInfo } from "@stanley2058/lilac-utils";
 import { z } from "zod";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
@@ -17,10 +17,13 @@ const DEV_BUILD_ID = "dev";
 const VERSION_FETCH_TIMEOUT_MS = 1_500;
 const CURRENT_FILE = fileURLToPath(import.meta.url);
 const MODULE_DIR = dirname(CURRENT_FILE);
+const DEFAULT_OPERATOR_TOKEN_FILE = "/run/lilac/operator-token";
 
 let buildIdPromise: Promise<string> | undefined;
 let localVersionInfoPromise: Promise<LocalVersionInfo> | undefined;
 let backendVersionInfoPromise: Promise<BackendVersionInfo | null> | undefined;
+let operatorToken: string | undefined;
+let operatorRequestId: string | undefined;
 
 async function fetchNoTimeout(input: string, init?: RequestInit): Promise<Response> {
   // Bun (and Node's undici fetch) can enforce a default request timeout (~5m)
@@ -92,7 +95,22 @@ function lilacRequestHeaders(includeJson = false): Record<string, string> {
   for (const [name, value] of values) {
     if (value) headers[name] = value;
   }
+  if (operatorToken) {
+    headers["x-lilac-operator-token"] = operatorToken;
+    headers["x-lilac-request-id"] = operatorRequestId ?? "operator";
+    headers["x-lilac-tool-call-id"] = operatorRequestId ?? "operator";
+  }
   return headers;
+}
+
+async function enableOperatorMode(): Promise<void> {
+  const tokenPath = process.env.LILAC_OPERATOR_TOKEN_FILE || DEFAULT_OPERATOR_TOKEN_FILE;
+  const token = (await fs.readFile(tokenPath, "utf8")).trim();
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) {
+    throw new Error(`Operator token file is malformed: ${tokenPath}`);
+  }
+  operatorToken = token;
+  operatorRequestId = `operator:${randomUUID()}`;
 }
 
 const objectLikeSchema = z.record(z.string(), z.unknown());
@@ -653,6 +671,7 @@ function formatToolBlock(
 type OutputMode = "compact" | "json";
 
 const commonOptions = [
+  "--operator, --op (authenticate with the root-only container operator token)",
   '--output=<"compact" | "json"> (default: "compact")',
   "--input=@file.json | --input='<json>' | --input=@-",
   "--stdin (alias for --input=@-)",
@@ -690,9 +709,18 @@ function buildUsageLinesForTool(
 }
 
 async function main() {
-  const parsed = parseArgs();
+  const globalArgs = parseGlobalArgs();
+  const parsed = parseArgs(globalArgs.args);
 
   try {
+    if (
+      globalArgs.operator &&
+      (parsed.type === "list" ||
+        parsed.type === "call" ||
+        (parsed.type === "help" && parsed.callableId !== undefined))
+    ) {
+      await enableOperatorMode();
+    }
     switch (parsed.type) {
       case "version": {
         console.log(await versionBanner());
@@ -766,6 +794,7 @@ async function main() {
                 "--list\tList all available tools",
                 "--help\tShow help (optionally for a tool)",
                 "--version\tPrint version",
+                "--operator, --op\tUse root-only container operator access",
               ]),
             ),
             "",
@@ -784,6 +813,7 @@ async function main() {
               "Environment",
               formatBullets([
                 `TOOL_SERVER_BACKEND_URL (default: ${BACKEND_URL})`,
+                `LILAC_OPERATOR_TOKEN_FILE (default: ${DEFAULT_OPERATOR_TOKEN_FILE})`,
                 "NO_COLOR disables ANSI formatting",
               ]),
             ),
@@ -903,6 +933,24 @@ type ParsedArgs =
       usesStdin: boolean;
     }
   | { type: "unknown" };
+
+export function parseGlobalArgs(args = process.argv.slice(2)): {
+  args: string[];
+  operator: boolean;
+} {
+  let operator = false;
+  let optionsEnded = false;
+  const remaining = args.filter((arg) => {
+    if (arg === "--") {
+      optionsEnded = true;
+      return true;
+    }
+    if (optionsEnded || (arg !== "--operator" && arg !== "--op")) return true;
+    operator = true;
+    return false;
+  });
+  return { args: remaining, operator };
+}
 
 export function parseArgs(args = process.argv.slice(2)): ParsedArgs {
   const firstArg = args[0];

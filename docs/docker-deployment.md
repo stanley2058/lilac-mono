@@ -46,7 +46,7 @@ bun run docker:build --tag lilac:dev .
 bun run docker:verify-image
 ```
 
-The image smoke creates a uniquely named, network-disabled container with Core condition-disabled, waits for the `lilac` user manager, verifies that a service journal entry reaches Docker logs, runs `/usr/local/bin/verify-workflow-runtime` as `lilac`, and then runs the gated workflow-sandbox test with the image's production `/home/lilac/.bun/bin/bun`. Together these checks exercise log forwarding, the loader, bind mounts, helper process, runtime command, namespace boundary, and cgroup enforcement without Redis, Discord, or provider credentials. The verifier inspects every transient unit it creates and fails unless cleanup leaves each unit inactive or absent. The container is removed on success or failure. To verify another tag, run `bun run docker:verify-image my-registry/lilac:tag`.
+The image smoke creates a uniquely named, network-disabled container with Core condition-disabled, waits for the `lilac` user manager, verifies that a service journal entry reaches Docker logs, runs `/usr/local/bin/verify-workflow-runtime` as `lilac`, and then runs the gated workflow-sandbox test with the image's production `/usr/local/bin/bun`. Together these checks exercise log forwarding, the loader, bind mounts, helper process, runtime command, namespace boundary, and cgroup enforcement without Redis, Discord, or provider credentials. The verifier inspects every transient unit it creates and fails unless cleanup leaves each unit inactive or absent. The container is removed on success or failure. To verify another tag, run `bun run docker:verify-image my-registry/lilac:tag`.
 
 The regular source-test job does not enable `LILAC_WORKFLOW_SANDBOX_INTEGRATION`; the Docker image job owns the live workflow-sandbox and end-to-end workflow integration coverage because it supplies the production systemd, Bubblewrap, Bun, and cgroup environment.
 
@@ -60,6 +60,19 @@ docker compose logs -f lilac
 ```
 
 Compose readiness is the Core `/readyz` endpoint. A healthy container means Core and its HTTP tool server are ready; workflow startup also fails closed if its sandbox preflight cannot establish the required boundary. Systemd journal entries are forwarded to Docker's original output streams, so Core logs remain available both through `docker compose logs lilac` and `docker compose exec -T lilac journalctl -u lilac-core.service --no-pager`.
+
+## Operator CLI
+
+The entrypoint creates a new root-only operator token on every container boot. Use it explicitly to call Level-2 tools outside an active agent request:
+
+```sh
+docker compose exec -T lilac /usr/local/bin/tools --operator --list
+docker compose exec -T lilac /usr/local/bin/tools --op workflow.run.list --state=running
+```
+
+The token is stored at `/run/lilac/operator-token` as `root:root` mode `0600`; Core receives only its SHA-256 hash. Operator calls have trusted authorization to Level-2 callables, while domain requirements such as workflow review still apply and tool implementations still run as the unprivileged `lilac` service user. Use the absolute CLI path shown above so root never resolves an agent-installed executable from `/data/bin`. Running the command with `--user lilac` intentionally fails because agents and other `lilac` processes cannot read the operator token. The image also keeps `/app`, the installed CLI bundle, and their Bun executable root-owned so `lilac` cannot directly replace either side of the authentication boundary.
+
+External plugins are trusted in-process Core code loaded from `/data/plugins`. The operator token is not a hostile-agent boundary if an agent is allowed to install or modify those plugins; use the Docker topology only with trusted agents, or separately restrict external plugin management to operators.
 
 ## Security Posture
 
