@@ -166,6 +166,18 @@ describe("ProgrammaticWorkflow Level-2 tool", () => {
       expect(
         await tool.call("workflow.run.list", {}, { context: otherPrincipalContext }),
       ).toMatchObject({ runs: [] });
+      const operatorContext = {
+        cwd: workspaceRoot,
+        safetyMode: "trusted" as const,
+        serverOwnedRequest: true,
+        operator: true,
+      };
+      expect(
+        await tool.call("workflow.run.get", { runId: first.runId }, { context: operatorContext }),
+      ).toMatchObject({ run: { runId: first.runId } });
+      expect(await tool.call("workflow.run.list", {}, { context: operatorContext })).toMatchObject({
+        runs: [{ runId: first.runId }],
+      });
       expect(
         new Set([
           first.sourceSha256,

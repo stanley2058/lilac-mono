@@ -146,7 +146,7 @@ function requireWorkflowControlContext(context: RequestContext | undefined): Req
   if (context.safetyMode !== "trusted") {
     throw new Error("Workflow tools require a trusted request context");
   }
-  if (!context.authenticatedPrincipal) {
+  if (!context.authenticatedPrincipal && !context.operator) {
     throw new Error("Workflow tools require an authenticated canonical principal");
   }
   return context;
@@ -172,9 +172,11 @@ function assertPrincipalScope(input: {
   trigger?: WorkflowTrigger | null;
 }): void {
   const principal = input.context.authenticatedPrincipal;
-  if (!principal || input.revision.canonicalProjectId !== input.definitions.canonicalProjectId) {
+  if (input.revision.canonicalProjectId !== input.definitions.canonicalProjectId) {
     throw new Error("Workflow record is outside the authenticated project scope");
   }
+  if (input.context.operator) return;
+  if (!principal) throw new Error("Workflow record is outside the authenticated project scope");
   if (
     input.trigger &&
     (input.trigger.origin.client !== principal.platform ||
@@ -699,8 +701,9 @@ export class ProgrammaticWorkflow implements ServerTool {
           const revision = this.store().getRevision(trigger.revisionId);
           return (
             revision?.canonicalProjectId === definitions.canonicalProjectId &&
-            trigger.origin.client === controlContext.authenticatedPrincipal?.platform &&
-            trigger.origin.userId === controlContext.authenticatedPrincipal?.userId
+            (controlContext.operator === true ||
+              (trigger.origin.client === controlContext.authenticatedPrincipal?.platform &&
+                trigger.origin.userId === controlContext.authenticatedPrincipal?.userId))
           );
         });
       return {
@@ -959,8 +962,9 @@ export class ProgrammaticWorkflow implements ServerTool {
             const revision = this.store().getRevision(run.revisionId);
             return (
               revision?.canonicalProjectId === definitions.canonicalProjectId &&
-              run.origin.client === controlContext.authenticatedPrincipal?.platform &&
-              run.origin.userId === controlContext.authenticatedPrincipal?.userId
+              (controlContext.operator === true ||
+                (run.origin.client === controlContext.authenticatedPrincipal?.platform &&
+                  run.origin.userId === controlContext.authenticatedPrincipal?.userId))
             );
           })
           .map(redactRun),

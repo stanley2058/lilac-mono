@@ -7,6 +7,7 @@ import {
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -202,6 +203,7 @@ export type ToolServerOptions = {
       | undefined;
   };
   canonicalWorkspaceRoot?: string;
+  operatorTokenSha256?: string;
   authorizeWorkflowRequest?: (input: {
     requestId: string;
     token: string;
@@ -266,6 +268,10 @@ function countLoadedExternalPlugins(statuses: readonly unknown[] | undefined): n
 }
 
 export function createToolServer(options: ToolServerOptions) {
+  const operatorTokenSha256 = options.operatorTokenSha256?.trim().toLowerCase();
+  if (operatorTokenSha256 && !/^[0-9a-f]{64}$/u.test(operatorTokenSha256)) {
+    throw new Error("operatorTokenSha256 must be a SHA-256 hex digest");
+  }
   const logger =
     options.logger ??
     createLogger({
@@ -307,6 +313,7 @@ export function createToolServer(options: ToolServerOptions) {
   }
 
   async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
+    if (ctx.operator) return "trusted";
     if (ctx.workflowPolicy)
       return ctx.workflowPolicy.externalTools ? (ctx.safetyMode ?? "trusted") : "trusted";
     if (ctx.controlPolicy) return ctx.safetyMode ?? "restricted";
@@ -396,6 +403,29 @@ export function createToolServer(options: ToolServerOptions) {
     context: RequestContext;
     messages: readonly unknown[] | undefined;
   } {
+    const operatorToken = headerStr(headers["x-lilac-operator-token"]);
+    if (operatorToken) {
+      if (!operatorTokenSha256) throw new Error("Operator access is unavailable");
+      const suppliedHash = createHash("sha256").update(operatorToken).digest();
+      const expectedHash = Buffer.from(operatorTokenSha256, "hex");
+      if (!timingSafeEqual(suppliedHash, expectedHash)) {
+        throw new Error("Operator token is invalid");
+      }
+      if (!options.canonicalWorkspaceRoot) {
+        throw new Error("Operator access requires a canonical workspace root");
+      }
+      return {
+        context: {
+          requestId: headerStr(headers["x-lilac-request-id"]),
+          toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
+          cwd: options.canonicalWorkspaceRoot,
+          safetyMode: "trusted",
+          serverOwnedRequest: true,
+          operator: true,
+        },
+        messages: undefined,
+      };
+    }
     const context = parseRequestContext(headers);
     const messages = authenticateRequestContext(context, options.requestMessageCache);
     if (context.serverOwnedRequest && options.canonicalWorkspaceRoot) {
@@ -631,6 +661,7 @@ export function createToolServer(options: ToolServerOptions) {
         requestId: ctx.requestId,
         sessionId: ctx.sessionId,
         requestClient: ctx.requestClient,
+        operator: ctx.operator === true,
         cwd: ctx.cwd,
         inputBytes,
         timeoutMs,
@@ -644,7 +675,7 @@ export function createToolServer(options: ToolServerOptions) {
       });
 
       try {
-        if (!ctx.requestId || !ctx.sessionId || !ctx.requestClient) {
+        if (!ctx.operator && (!ctx.requestId || !ctx.sessionId || !ctx.requestClient)) {
           logger.warn("tool.call.context_missing", {
             callableId: body.callableId,
             requestId: ctx.requestId,

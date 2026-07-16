@@ -10,6 +10,8 @@ export type RequestContext = {
   safetyMode?: "trusted" | "restricted";
   /** Set only after matching request headers to a server-owned authenticated surface origin. */
   serverOwnedRequest?: boolean;
+  /** Set only after authenticating the root-only container operator token. */
+  operator?: boolean;
   authenticatedPrincipal?: { platform: "discord" | "github"; userId: string };
   toolCallId?: string;
   controlCapability?: string;

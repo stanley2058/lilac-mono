@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -292,6 +293,87 @@ describe("createToolServer", () => {
           )
         ).status,
       ).toBe(500);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("grants full trusted access only to the hashed operator token", async () => {
+    const token = "operator-token-for-focused-test";
+    const contexts: RequestContext[] = [];
+    const tool: ServerTool = {
+      id: "operator-test",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          {
+            callableId: "workflow.operator-test",
+            name: "operator test",
+            description: "operator test",
+            shortInput: [],
+          },
+        ];
+      },
+      async call(_callableId, _input, options) {
+        if (options?.context) contexts.push(options.context);
+        return { ok: true };
+      },
+    };
+    const server = createToolServer({
+      tools: [tool],
+      canonicalWorkspaceRoot: "/canonical-workspace",
+      operatorTokenSha256: createHash("sha256").update(token).digest("hex"),
+      authorizeControlRequest: () => null,
+      resolveServerSafetyMode: async () => "restricted",
+    });
+    await server.init();
+    const headers = {
+      "x-lilac-operator-token": token,
+      "x-lilac-request-id": "operator:request-1",
+      "x-lilac-tool-call-id": "operator:request-1",
+    };
+    try {
+      expect(
+        (
+          await server.app.handle(
+            new Request("http://localhost/list", {
+              headers: { "x-lilac-operator-token": "wrong-token" },
+            }),
+          )
+        ).status,
+      ).toBe(500);
+      expect(
+        await (await server.app.handle(new Request("http://localhost/list", { headers }))).json(),
+      ).toMatchObject({ tools: [{ callableId: "workflow.operator-test" }] });
+      expect(
+        (
+          await server.app.handle(
+            new Request("http://localhost/help/workflow.operator-test", { headers }),
+          )
+        ).status,
+      ).toBe(200);
+      expect(
+        await (
+          await server.app.handle(
+            new Request("http://localhost/call", {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body: JSON.stringify({ callableId: "workflow.operator-test", input: {} }),
+            }),
+          )
+        ).json(),
+      ).toMatchObject({ isError: false, output: { ok: true } });
+      expect(contexts).toEqual([
+        {
+          requestId: "operator:request-1",
+          toolCallId: "operator:request-1",
+          cwd: "/canonical-workspace",
+          safetyMode: "trusted",
+          serverOwnedRequest: true,
+          operator: true,
+        },
+      ]);
     } finally {
       await server.stop();
     }

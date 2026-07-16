@@ -767,6 +767,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           getOrigin: requestMessageCache.getOrigin,
         },
         canonicalWorkspaceRoot,
+        operatorTokenSha256: process.env.LILAC_OPERATOR_TOKEN_SHA256,
         authorizeWorkflowRequest: (input) => durableWorkflowStore.authorizeWorkflowRequest(input),
         authorizeControlRequest: (input) => requestControlAuthority.authorize(input),
         resolveServerSafetyMode: async (context) => {
