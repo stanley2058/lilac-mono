@@ -470,16 +470,30 @@ export class WorkflowLiveParentBridge {
       this.input.dataDir ?? env.dataDir,
       this.input.toolResultArtifacts,
     );
+    if (run.completionTarget.kind !== "live_parent") return;
+    const parentRequestId = run.completionTarget.parentRequestId;
+    // Parent ownership is process-local. With no await before the immediate SQLite transaction,
+    // registerParent cannot interleave with this recheck in this runtime. Cross-runtime ownership
+    // would require a durable parent lease, which this single-runtime bridge does not provide.
+    if (this.parents.has(parentRequestId) || this.protectedParents.has(parentRequestId)) return;
     const updated = this.input.store.activateLiveParentFallback(run.runId, this.now());
     if (!updated) return;
     await this.stopChildActivityForRun(run.runId);
     if (updated.progressTarget) {
-      await this.input.bus.publish(lilacEventTypes.EvtWorkflowProgressRequested, {
-        runId: updated.runId,
-        revisionId: updated.revisionId,
-        reason: "reconcile",
-        ts: this.now(),
-      });
+      await this.input.bus
+        .publish(lilacEventTypes.EvtWorkflowProgressRequested, {
+          runId: updated.runId,
+          revisionId: updated.revisionId,
+          reason: "reconcile",
+          ts: this.now(),
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            "live-parent fallback progress publish failed; projector reconciliation will recover",
+            { runId: updated.runId },
+            error,
+          );
+        });
     }
   }
 

@@ -230,6 +230,16 @@ export class Attachment implements ServerTool {
           field: "paths",
           variadic: true,
         },
+        workflowPathAuthority: {
+          inputs: [
+            {
+              field: "paths",
+              aliases: ["files"],
+              cardinality: "many",
+              target: "read-file",
+            },
+          ],
+        } as const,
       },
       {
         callableId: "attachment.download",
@@ -238,6 +248,16 @@ export class Attachment implements ServerTool {
           "Download inbound user message attachments into the sandbox (from the current request prompt).",
         shortInput: [],
         input: ["--downloadDir=<string>"],
+        workflowPathAuthority: {
+          inputs: [
+            {
+              field: "downloadDir",
+              cardinality: "one",
+              target: "write-directory",
+              default: "cwd",
+            },
+          ],
+        } as const,
       },
     ];
   }

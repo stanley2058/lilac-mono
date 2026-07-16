@@ -106,6 +106,17 @@ class DelayedCapturingRawBus extends IdleRawBus {
   }
 }
 
+class ClaimTrackingWorkflowStore extends DurableWorkflowStore {
+  projectionClaimAttempts = 0;
+
+  override claimSurfaceProjection(
+    input: Parameters<DurableWorkflowStore["claimSurfaceProjection"]>[0],
+  ): boolean {
+    this.projectionClaimAttempts += 1;
+    return super.claimSurfaceProjection(input);
+  }
+}
+
 class ProjectionAdapter implements SurfaceAdapter {
   readonly contents: ContentOpts[] = [];
   readonly messages = new Map<string, SurfaceMessage>();
@@ -359,7 +370,11 @@ class TwoEditBlockingProjectionAdapter extends ProjectionAdapter {
   }
 }
 
-function createInvocation(store: DurableWorkflowStore, platform: "discord" | "github" = "discord") {
+function createInvocation(
+  store: DurableWorkflowStore,
+  platform: "discord" | "github" = "discord",
+  hasProgressTarget = true,
+) {
   return store.createInvocation({
     revision: {
       revisionId: "revision-1",
@@ -385,17 +400,21 @@ function createInvocation(store: DurableWorkflowStore, platform: "discord" | "gi
         agents: {
           profiles: ["explore"],
           models: ["inherit"],
-          editing: false,
-          isolation: "shared",
+          reasoning: ["provider-default"],
+          allowedRoots: ["project"],
+          tools: ["read_file"],
+          executables: "none",
+          editing: [],
+          delegation: false,
           maxConcurrent: 2,
           maxTotal: 8,
         },
+        level2: { callables: [] },
+        surfaces: { origin: [] },
         maxNestingDepth: 4,
         maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
         waits: [],
-        surfaceSends: false,
-        externalTools: false,
         safety: { originatingMode: "trusted", escalation: "none" },
       }),
       limits: {
@@ -432,11 +451,13 @@ function createInvocation(store: DurableWorkflowStore, platform: "discord" | "gi
         projectCwd: "/workspace",
       },
       completionTarget: { kind: "durable_surface" },
-      progressTarget: {
-        platform,
-        channelId: "channel-1",
-        replyToMessageId: "origin-1",
-      },
+      progressTarget: hasProgressTarget
+        ? {
+            platform,
+            channelId: "channel-1",
+            replyToMessageId: "origin-1",
+          }
+        : null,
       terminalDetail: null,
       result: null,
       resultArtifactId: null,
@@ -467,6 +488,24 @@ function createInvocation(store: DurableWorkflowStore, platform: "discord" | "gi
   });
 }
 
+function createProjectionRuns(store: DurableWorkflowStore, count: number): void {
+  createInvocation(store);
+  const template = store.getRun("run-1");
+  if (!template) throw new Error("workflow projection run template was not created");
+  for (let index = 2; index <= count; index += 1) {
+    if (
+      !store.createRun({
+        ...template,
+        runId: `run-${index}`,
+        createdAt: index * 10,
+        updatedAt: index * 10,
+      })
+    ) {
+      throw new Error(`workflow projection run ${index} was not created`);
+    }
+  }
+}
+
 function createUncertainBinding(store: DurableWorkflowStore, platform: "discord" | "github"): void {
   store.upsertSurfaceBinding({
     runId: "run-1",
@@ -486,6 +525,112 @@ function createUncertainBinding(store: DurableWorkflowStore, platform: "discord"
 }
 
 describe("WorkflowProgressProjector", () => {
+  it("periodically reconciles every keyset page while earlier projections succeed or fail", async () => {
+    const dbPath = join(tmpdir(), `workflow-missing-binding-pages-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    let now = 0;
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "missing-binding-pages",
+      now: () => now,
+      coalesceMs: 0,
+      minEditIntervalMs: 0,
+      retryIntervalMs: 5,
+      missingBindingReconcileIntervalMs: 10,
+      missingBindingReconcileBatchSize: 2,
+    });
+    try {
+      createProjectionRuns(store, 5);
+      adapter.failNextSend = true;
+      await projector.start();
+      expect(store.getSurfaceBinding("run-1")).toMatchObject({
+        messageRef: null,
+        lastError: "transient surface failure",
+      });
+      expect(store.getSurfaceBinding("run-2")?.messageRef).toEqual(expect.any(Object));
+
+      now = 2_000;
+      await waitFor(() =>
+        ["run-1", "run-2", "run-3", "run-4"].every((runId) =>
+          Boolean(store.getSurfaceBinding(runId)?.messageRef),
+        ),
+      );
+      now = 4_000;
+      await waitFor(() => Boolean(store.getSurfaceBinding("run-5")?.messageRef));
+      await Bun.sleep(20);
+
+      expect(adapter.sends).toBe(5);
+      expect(adapter.messages.size).toBe(5);
+      expect(store.listSurfaceBindings({ limit: 10 })).toHaveLength(5);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("quietly ignores event-driven projection for a null-target run without claiming it", async () => {
+    const dbPath = join(tmpdir(), `workflow-null-target-event-${crypto.randomUUID()}.sqlite`);
+    const store = new ClaimTrackingWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "null-target-event",
+      coalesceMs: 0,
+      minEditIntervalMs: 0,
+    });
+    try {
+      createInvocation(store, "discord", false);
+      projector.requestProjection("run-1");
+      await Bun.sleep(20);
+
+      expect(store.projectionClaimAttempts).toBe(0);
+      expect(store.getSurfaceBinding("run-1")).toBeNull();
+      expect(adapter.sends).toBe(0);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("rejects explicit initial-card creation for a null-target run without claiming it", async () => {
+    const dbPath = join(tmpdir(), `workflow-null-target-explicit-${crypto.randomUUID()}.sqlite`);
+    const store = new ClaimTrackingWorkflowStore(dbPath);
+    const adapter = new ProjectionAdapter();
+    const bus = createLilacBus(new IdleRawBus());
+    const projector = new WorkflowProgressProjector({
+      bus,
+      store,
+      adapters: new Map([["discord", adapter]]),
+      subscriptionId: "null-target-explicit",
+    });
+    try {
+      createInvocation(store, "discord", false);
+      await expect(projector.ensureInitialCard("run-1")).rejects.toThrow(
+        "has no supported durable progress target",
+      );
+
+      expect(store.projectionClaimAttempts).toBe(0);
+      expect(store.getSurfaceBinding("run-1")).toBeNull();
+      expect(adapter.sends).toBe(0);
+    } finally {
+      await projector.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("heartbeats delayed outbox publication claims to prevent takeover", async () => {
     const dbPath = join(tmpdir(), `workflow-outbox-heartbeat-${crypto.randomUUID()}.sqlite`);
     const storeA = new DurableWorkflowStore(dbPath);
@@ -1885,6 +2030,88 @@ describe("WorkflowProgressProjector", () => {
         ),
       ).toBe(true);
       expect(
+        store.createOperation(
+          {
+            runId: "run-1",
+            operationId: "operation-edit-output",
+            callSiteId: "site-edit-output",
+            parentOperationId: null,
+            phase: null,
+            label: "isolated edit",
+            kind: "agent",
+            input: {},
+            inputSha256: HASH_A,
+            state: "queued",
+            attempt: 0,
+            requestId: null,
+            output: null,
+            resultArtifactId: null,
+            error: null,
+            usage: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 50,
+            startedAt: null,
+            updatedAt: 50,
+            terminalAt: null,
+          },
+          "engine",
+        ),
+      ).toBe(true);
+      expect(
+        store.recordWorktreePrepared({
+          runId: "run-1",
+          operationId: "operation-edit-output",
+          runOwnerId: "engine",
+          worktreePath: "/private/worktree/path",
+          baseCommit: "b".repeat(40),
+          now: 50,
+        }),
+      ).toMatchObject({ state: "prepared" });
+      expect(
+        store.transitionOperation({
+          runId: "run-1",
+          operationId: "operation-edit-output",
+          runOwnerId: "engine",
+          from: "queued",
+          to: "dispatched",
+          now: 50,
+        }),
+      ).toBe(true);
+      const editArtifactId = `workflow-worktree-patch:${HASH_A}`;
+      expect(
+        store.recordWorktreeCaptured({
+          runId: "run-1",
+          operationId: "operation-edit-output",
+          runOwnerId: "engine",
+          artifactId: editArtifactId,
+          patchSha256: HASH_A,
+          bytes: 12,
+          now: 50,
+        }),
+      ).toMatchObject({ state: "captured" });
+      expect(
+        store.transitionOperation({
+          runId: "run-1",
+          operationId: "operation-edit-output",
+          runOwnerId: "engine",
+          from: "dispatched",
+          to: "running",
+          now: 50,
+        }),
+      ).toBe(true);
+      expect(
+        store.transitionOperation({
+          runId: "run-1",
+          operationId: "operation-edit-output",
+          runOwnerId: "engine",
+          from: "running",
+          to: "succeeded",
+          output: "edited",
+          now: 50,
+        }),
+      ).toBe(true);
+      expect(
         store.transitionRun({
           runId: "run-1",
           from: "running",
@@ -1915,6 +2142,9 @@ describe("WorkflowProgressProjector", () => {
       expect(markedGithubTerminal).toContain("State: **succeeded**");
       expect(markedGithubTerminal).toContain('"token": "<redacted>"');
       expect(markedGithubTerminal).not.toContain('"token": "secret"');
+      expect(markedGithubTerminal).toContain("### Isolated edit outputs");
+      expect(markedGithubTerminal).toContain(editArtifactId);
+      expect(markedGithubTerminal).not.toContain("/private/worktree/path");
       expect(isMarkedGithubAgentComment(markedGithubTerminal)).toBe(true);
       await restarted.stop();
     } finally {

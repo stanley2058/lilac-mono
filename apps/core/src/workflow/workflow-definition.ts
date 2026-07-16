@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 import ts from "typescript-codegen";
 import { z } from "zod";
 
@@ -7,6 +8,10 @@ import {
   compareCodeUnits,
   normalizeWorkflowCapabilityProfile,
   workflowAgentProfileSchema,
+  workflowEditingModeSchema,
+  workflowExecutableAuthoritySchema,
+  workflowLevel1ToolSchema,
+  workflowReasoningSchema,
   workflowLimitsSchema,
   workflowMetadataSchema,
   type JsonObject,
@@ -17,7 +22,7 @@ import {
   type WorkflowSafetyMode,
 } from "./workflow-domain";
 
-export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v1";
+export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v2";
 export const MAX_WORKFLOW_SOURCE_BYTES = 256 * 1024;
 export const MAX_WORKFLOW_INPUT_BYTES = 256 * 1024;
 
@@ -27,8 +32,7 @@ const MAX_SCHEMA_DEPTH = 16;
 const MAX_SCHEMA_PROPERTIES = 256;
 const MAX_SCHEMA_ENUM_VALUES = 256;
 const MAX_SCHEMA_STRING_LENGTH = 16_384;
-const WORKFLOW_RUN_CONTEXT_NAMES = new Set([
-  "args",
+const WORKFLOW_HOST_CALL_NAMES = new Set([
   "agent",
   "parallel",
   "pipeline",
@@ -36,6 +40,7 @@ const WORKFLOW_RUN_CONTEXT_NAMES = new Set([
   "waitForReply",
   "sleep",
 ]);
+const WORKFLOW_RUN_CONTEXT_NAMES = new Set(["args", ...WORKFLOW_HOST_CALL_NAMES]);
 
 export const workflowDefinitionNameSchema = z
   .string()
@@ -139,11 +144,25 @@ const sourceCapabilitySchema = z.strictObject({
   agents: z.strictObject({
     profiles: z.array(workflowAgentProfileSchema).min(1).max(3),
     models: z.array(z.string().min(1).max(200)).min(1).max(64),
+    reasoning: z.array(workflowReasoningSchema).min(1).default(["provider-default"]),
+    allowedRoots: z.array(z.string().min(1).max(4_096)).min(1).max(64).default(["project"]),
+    tools: z.array(workflowLevel1ToolSchema).default(["glob", "read_file"]),
+    executables: workflowExecutableAuthoritySchema.default("none"),
     maxConcurrent: z.number().int().min(1).max(64),
     maxTotal: z.number().int().min(1).max(10_000),
-    editing: z.boolean(),
-    isolation: z.enum(["shared", "worktree"]),
+    editing: z.array(workflowEditingModeSchema).max(2).default([]),
+    delegation: z.boolean().default(false),
   }),
+  level2: z
+    .strictObject({
+      callables: z.array(z.string().min(1).max(200)).max(512).default([]),
+    })
+    .default({ callables: [] }),
+  surfaces: z
+    .strictObject({
+      origin: z.array(z.string().min(1).max(200)).max(64).default([]),
+    })
+    .default({ origin: [] }),
   waits: z
     .array(z.enum(["reply", "sleep"]))
     .max(16)
@@ -161,8 +180,6 @@ const sourceCapabilitySchema = z.strictObject({
     .min(1_000)
     .max(24 * 60 * 60 * 1_000)
     .default(10 * 60 * 1_000),
-  surfaceSends: z.boolean().default(false),
-  externalTools: z.boolean().default(false),
   safety: z
     .strictObject({ escalation: z.enum(["none", "trusted_with_review"]).default("none") })
     .default({ escalation: "none" }),
@@ -241,7 +258,11 @@ function propertyName(node: ts.PropertyName): string {
 function literalValue(node: ts.Expression, depth = 0): JsonValue {
   if (depth > MAX_SCHEMA_DEPTH + 4) throw new Error("Workflow metadata exceeds maximum depth");
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isNumericLiteral(node)) return Number(node.text);
+  if (ts.isNumericLiteral(node)) {
+    const value = Number(node.text);
+    if (!Number.isFinite(value)) throw new Error("Workflow numeric literals must be finite");
+    return value;
+  }
   if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
   if (node.kind === ts.SyntaxKind.NullKeyword) return null;
@@ -251,6 +272,7 @@ function literalValue(node: ts.Expression, depth = 0): JsonValue {
     ts.isNumericLiteral(node.operand)
   ) {
     const value = Number(node.operand.text);
+    if (!Number.isFinite(value)) throw new Error("Workflow numeric literals must be finite");
     return node.operator === ts.SyntaxKind.MinusToken ? -value : value;
   }
   if (ts.isArrayLiteralExpression(node)) {
@@ -300,6 +322,9 @@ function assertNoForbiddenSyntax(sourceFile: ts.SourceFile, source: string): voi
   }
 
   const visit = (node: ts.Node): void => {
+    if (ts.isNumericLiteral(node) && !Number.isFinite(Number(node.text))) {
+      throw new Error("Workflow numeric literals must be finite");
+    }
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         throw new Error("Dynamic import is not allowed in workflows");
@@ -323,6 +348,356 @@ function assertNoForbiddenSyntax(sourceFile: ts.SourceFile, source: string): voi
   visit(sourceFile);
 }
 
+function assertHelperParameters(parameters: ts.NodeArray<ts.ParameterDeclaration>): void {
+  const seen = new Set<string>();
+  for (const parameter of parameters) {
+    if (
+      parameter.dotDotDotToken ||
+      parameter.initializer ||
+      parameter.questionToken ||
+      !ts.isIdentifier(parameter.name)
+    ) {
+      throw new Error("Workflow helper parameters must be plain identifiers");
+    }
+    if (seen.has(parameter.name.text)) {
+      throw new Error(`Duplicate workflow helper parameter: ${parameter.name.text}`);
+    }
+    seen.add(parameter.name.text);
+  }
+}
+
+function assertHelperFunction(
+  helper: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): void {
+  if (!helper.body) throw new Error("Workflow helper functions require a body");
+  if (
+    (ts.isFunctionDeclaration(helper) || ts.isFunctionExpression(helper)) &&
+    helper.name &&
+    (helper.name.text === "defineWorkflow" || WORKFLOW_RUN_CONTEXT_NAMES.has(helper.name.text))
+  ) {
+    throw new Error(`Workflow helper cannot use reserved binding: ${helper.name.text}`);
+  }
+  assertHelperParameters(helper.parameters);
+  const parameters = new Set(helper.parameters.map((parameter) => parameter.name.getText()));
+  const assertInstrumentableHostCalls = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      WORKFLOW_HOST_CALL_NAMES.has(node.expression.text) &&
+      !parameters.has(node.expression.text)
+    ) {
+      throw new Error(
+        `Workflow helper must receive host API ${node.expression.text} as a same-named parameter`,
+      );
+    }
+    ts.forEachChild(node, assertInstrumentableHostCalls);
+  };
+  assertInstrumentableHostCalls(helper.body);
+  assertNoShadowedWorkflowBindings(helper.body);
+}
+
+function assertTopLevelHelpers(statements: readonly ts.Statement[]): void {
+  const bindings = new Set<string>(["defineWorkflow"]);
+  for (const statement of statements) {
+    if (ts.isFunctionDeclaration(statement)) {
+      if (!statement.name) throw new Error("Workflow helper function declarations must be named");
+      const name = statement.name.text;
+      if (bindings.has(name) || WORKFLOW_RUN_CONTEXT_NAMES.has(name)) {
+        throw new Error(`Workflow helper cannot use reserved or duplicate binding: ${name}`);
+      }
+      bindings.add(name);
+      assertHelperFunction(statement);
+      continue;
+    }
+    if (
+      !ts.isVariableStatement(statement) ||
+      !(statement.declarationList.flags & ts.NodeFlags.Const)
+    ) {
+      throw new Error(
+        "Workflow top level may contain only pure function declarations and const declarations",
+      );
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+        throw new Error("Workflow top-level constants require an identifier and initializer");
+      }
+      const name = declaration.name.text;
+      if (bindings.has(name) || WORKFLOW_RUN_CONTEXT_NAMES.has(name)) {
+        throw new Error(`Workflow helper cannot use reserved or duplicate binding: ${name}`);
+      }
+      bindings.add(name);
+      if (
+        ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer)
+      ) {
+        assertHelperFunction(declaration.initializer);
+      } else {
+        try {
+          literalValue(declaration.initializer);
+        } catch {
+          throw new Error(
+            `Workflow top-level constant ${name} must be a static JSON literal or function`,
+          );
+        }
+      }
+    }
+  }
+}
+
+type WorkflowHelperInfo = {
+  parameters: readonly string[];
+  body: ts.ConciseBody;
+};
+
+function assertBindingSafeHostCalls(
+  sourceFile: ts.SourceFile,
+  definition: ts.ObjectLiteralExpression,
+): void {
+  const helpers = new Map<string, WorkflowHelperInfo>();
+  for (const statement of sourceFile.statements.slice(1, -1)) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+      helpers.set(statement.name.text, {
+        parameters: statement.parameters.map((parameter) => parameter.name.getText(sourceFile)),
+        body: statement.body,
+      });
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer &&
+          (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+        ) {
+          helpers.set(declaration.name.text, {
+            parameters: declaration.initializer.parameters.map((parameter) =>
+              parameter.name.getText(sourceFile),
+            ),
+            body: declaration.initializer.body,
+          });
+        }
+      }
+    }
+  }
+
+  const run = definition.properties.find(
+    (property): property is ts.MethodDeclaration =>
+      ts.isMethodDeclaration(property) &&
+      property.name !== undefined &&
+      propertyName(property.name) === "run",
+  );
+  if (!run?.body || !run.parameters[0] || !ts.isObjectBindingPattern(run.parameters[0].name))
+    return;
+
+  const assertBody = (body: ts.Node, hostBindings: ReadonlySet<string>): void => {
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          if (WORKFLOW_HOST_CALL_NAMES.has(node.expression.name.text)) {
+            throw new Error(
+              `Workflow host API ${node.expression.name.text} must be called directly`,
+            );
+          }
+        } else if (ts.isElementAccessExpression(node.expression)) {
+          const key = node.expression.argumentExpression;
+          if (
+            (ts.isStringLiteral(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text)) ||
+            (ts.isIdentifier(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text))
+          ) {
+            throw new Error("Workflow host APIs cannot be called through computed members");
+          }
+        }
+
+        const directHost =
+          ts.isIdentifier(node.expression) && WORKFLOW_HOST_CALL_NAMES.has(node.expression.text);
+        if (directHost && !hostBindings.has(node.expression.text)) {
+          throw new Error(`Workflow host API ${node.expression.text} is not bound in this scope`);
+        }
+        if (directHost) {
+          let current: ts.Node = node;
+          while (current.parent && current.parent !== body) {
+            current = current.parent;
+            if (ts.isFunctionLike(current)) {
+              if ("body" in current && current.body === body) break;
+              const parentCall = current.parent;
+              const deterministicallyScoped =
+                ts.isCallExpression(parentCall) &&
+                ts.isIdentifier(parentCall.expression) &&
+                (parentCall.expression.text === "pipeline" ||
+                  parentCall.expression.text === "phase") &&
+                parentCall.arguments.some((argument) => argument === current);
+              if (!deterministicallyScoped) {
+                throw new Error(
+                  `Workflow host API ${node.expression.text} cannot be called from an unscoped callback`,
+                );
+              }
+              break;
+            }
+          }
+        }
+        const helper = ts.isIdentifier(node.expression)
+          ? helpers.get(node.expression.text)
+          : undefined;
+        helper?.parameters.forEach((parameter, index) => {
+          if (!WORKFLOW_HOST_CALL_NAMES.has(parameter)) return;
+          const argument = node.arguments[index];
+          if (
+            !argument ||
+            !ts.isIdentifier(argument) ||
+            argument.text !== parameter ||
+            !hostBindings.has(parameter)
+          ) {
+            throw new Error(
+              `Workflow helper ${node.expression.getText(sourceFile)} requires same-named host binding ${parameter}`,
+            );
+          }
+        });
+        node.arguments.forEach((argument, index) => {
+          if (ts.isIdentifier(argument) && WORKFLOW_HOST_CALL_NAMES.has(argument.text)) {
+            if (!hostBindings.has(argument.text) || helper?.parameters[index] !== argument.text) {
+              throw new Error(
+                `Workflow host API ${argument.text} may only be forwarded to a same-named helper parameter`,
+              );
+            }
+            return;
+          }
+          visit(argument);
+        });
+        if (!directHost) visit(node.expression);
+        return;
+      }
+      if (ts.isIdentifier(node) && WORKFLOW_HOST_CALL_NAMES.has(node.text)) {
+        const parent = node.parent;
+        const isPropertyName =
+          (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+          ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) &&
+            parent.name === node);
+        if (!isPropertyName) {
+          throw new Error(
+            `Workflow host API ${node.text} may only be called directly or forwarded unchanged`,
+          );
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(body);
+  };
+
+  const runBindings = new Set(
+    run.parameters[0].name.elements.flatMap((element) =>
+      ts.isIdentifier(element.name) && WORKFLOW_HOST_CALL_NAMES.has(element.name.text)
+        ? [element.name.text]
+        : [],
+    ),
+  );
+  assertBody(run.body, runBindings);
+  for (const helper of helpers.values()) {
+    assertBody(
+      helper.body,
+      new Set(helper.parameters.filter((parameter) => WORKFLOW_HOST_CALL_NAMES.has(parameter))),
+    );
+  }
+
+  const directlyHostCalling = new Set<string>();
+  const callsByHelper = new Map<string, Set<string>>();
+  for (const [name, helper] of helpers) {
+    const called = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        if (WORKFLOW_HOST_CALL_NAMES.has(node.expression.text)) directlyHostCalling.add(name);
+        if (helpers.has(node.expression.text)) called.add(node.expression.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(helper.body);
+    callsByHelper.set(name, called);
+  }
+  const hostCalling = new Set(directlyHostCalling);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, called] of callsByHelper) {
+      if (!hostCalling.has(name) && [...called].some((callee) => hostCalling.has(callee))) {
+        hostCalling.add(name);
+        changed = true;
+      }
+    }
+  }
+  for (const helperName of hostCalling) {
+    const invocations: ts.CallExpression[] = [];
+    const collect = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === helperName
+      ) {
+        invocations.push(node);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(run.body);
+    for (const helper of helpers.values()) collect(helper.body);
+    if (invocations.length > 1) {
+      throw new Error(
+        `Workflow helper ${helperName} contains host calls and cannot be invoked from multiple call sites`,
+      );
+    }
+    for (const invocation of invocations) {
+      let current: ts.Node = invocation;
+      while (current.parent && !ts.isFunctionLike(current.parent)) {
+        current = current.parent;
+        if (
+          ts.isForStatement(current) ||
+          ts.isForInStatement(current) ||
+          ts.isForOfStatement(current) ||
+          ts.isWhileStatement(current) ||
+          ts.isDoStatement(current)
+        ) {
+          throw new Error(
+            `Workflow helper ${helperName} contains host calls and cannot be invoked from a loop`,
+          );
+        }
+      }
+      const container = current.parent;
+      const containerBody = container && "body" in container ? container.body : undefined;
+      if (
+        container &&
+        ts.isFunctionLike(container) &&
+        !ts.isMethodDeclaration(container) &&
+        ![...helpers.values()].some((helper) => helper.body === containerBody)
+      ) {
+        const parentCall = container.parent;
+        const callbackIsDeterministicallyScoped =
+          ts.isCallExpression(parentCall) &&
+          ts.isIdentifier(parentCall.expression) &&
+          (parentCall.expression.text === "pipeline" || parentCall.expression.text === "phase") &&
+          parentCall.arguments.some((argument) => argument === container);
+        if (!callbackIsDeterministicallyScoped) {
+          throw new Error(
+            `Workflow helper ${helperName} contains host calls and cannot be invoked from an unscoped callback`,
+          );
+        }
+      }
+    }
+    const assertDirectReference = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && node.text === helperName) {
+        const parent = node.parent;
+        const declarationName =
+          (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
+          parent.name === node;
+        const directCall = ts.isCallExpression(parent) && parent.expression === node;
+        if (!declarationName && !directCall) {
+          throw new Error(
+            `Workflow helper ${helperName} contains host calls and must be invoked directly`,
+          );
+        }
+      }
+      ts.forEachChild(node, assertDirectReference);
+    };
+    assertDirectReference(run.body);
+    for (const helper of helpers.values()) assertDirectReference(helper.body);
+  }
+}
+
 function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
   const parseError = syntaxError(source);
   if (parseError) throw new Error(`Invalid workflow JavaScript syntax: ${parseError}`);
@@ -335,10 +710,6 @@ function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
     ts.ScriptKind.JS,
   );
   assertNoForbiddenSyntax(sourceFile, source);
-  if (sourceFile.statements.length !== 2) {
-    throw new Error("Workflow must contain exactly one import and one default export");
-  }
-
   const importStatement = sourceFile.statements[0];
   if (!importStatement || !ts.isImportDeclaration(importStatement)) {
     throw new Error("Workflow first statement must import defineWorkflow");
@@ -373,14 +744,15 @@ function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
     throw new Error("defineWorkflow cannot be aliased or imported as a type");
   }
 
-  const exportStatement = sourceFile.statements[1];
+  const exportStatement = sourceFile.statements[sourceFile.statements.length - 1];
   if (
     !exportStatement ||
     !ts.isExportAssignment(exportStatement) ||
     exportStatement.isExportEquals
   ) {
-    throw new Error("Workflow must have exactly one default export");
+    throw new Error("Workflow last statement must be the default defineWorkflow export");
   }
+  assertTopLevelHelpers(sourceFile.statements.slice(1, -1));
   const call = exportStatement.expression;
   if (
     !ts.isCallExpression(call) ||
@@ -394,6 +766,7 @@ function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
   if (!definition || !ts.isObjectLiteralExpression(definition)) {
     throw new Error("defineWorkflow requires one object literal");
   }
+  assertBindingSafeHostCalls(sourceFile, definition);
   return definition;
 }
 
@@ -437,7 +810,7 @@ function extractStaticMetadata(definition: ts.ObjectLiteralExpression): JsonObje
           );
         }
       }
-      assertNoShadowedWorkflowBindings(property.body, parameter.name);
+      assertNoShadowedWorkflowBindings(property.body);
       hasRun = true;
       continue;
     }
@@ -457,10 +830,7 @@ function bindingNames(name: ts.BindingName): string[] {
   );
 }
 
-function assertNoShadowedWorkflowBindings(
-  body: ts.Block,
-  _runParameter: ts.ObjectBindingPattern,
-): void {
+function assertNoShadowedWorkflowBindings(body: ts.Node): void {
   const reserved = WORKFLOW_RUN_CONTEXT_NAMES;
   const visit = (node: ts.Node): void => {
     const names =
@@ -476,7 +846,7 @@ function assertNoShadowedWorkflowBindings(
           : [];
     for (const name of names) {
       if (reserved.has(name)) {
-        throw new Error(`Workflow run cannot shadow reserved host API binding: ${name}`);
+        throw new Error(`Workflow code cannot shadow reserved host API binding: ${name}`);
       }
     }
     ts.forEachChild(node, visit);
@@ -720,6 +1090,14 @@ export function validateWorkflowSource(params: {
   const normalizedInput = normalizeInputSchema(parsedInput);
   const inputSchema = jsonObjectSchema.parse(normalizedInput);
   const sourceCapabilities = sourceCapabilitySchema.parse(raw.capabilities);
+  for (const root of sourceCapabilities.agents.allowedRoots) {
+    if (root === "project") continue;
+    if (!path.isAbsolute(root) || path.normalize(root) !== root) {
+      throw new Error(
+        `Workflow allowed root must be project or a canonical absolute path: ${root}`,
+      );
+    }
+  }
   const capabilities = normalizeWorkflowCapabilityProfile({
     ...sourceCapabilities,
     safety: {
@@ -739,8 +1117,10 @@ export function validateWorkflowSource(params: {
   const sensitiveFields = collectSensitiveFields(normalizedInput);
   const reviewSummary = [
     `${metadata.name}: ${metadata.description}`,
-    `Agents: profiles=${capabilities.agents.profiles.join(",")}; models=${capabilities.agents.models.join(",")}; max=${capabilities.agents.maxConcurrent}/${capabilities.agents.maxTotal}`,
-    `Editing: ${capabilities.agents.editing ? `yes (${capabilities.agents.isolation})` : "no"}; waits=${capabilities.waits.join(",") || "none"}`,
+    `Agents: profiles=${capabilities.agents.profiles.join(",")}; models=${capabilities.agents.models.join(",")}; reasoning=${capabilities.agents.reasoning.join(",")}; max=${capabilities.agents.maxConcurrent}/${capabilities.agents.maxTotal}`,
+    `Roots: ${capabilities.agents.allowedRoots.join(",")}; tools=${capabilities.agents.tools.join(",")}; executables=${capabilities.agents.executables}`,
+    `Editing: ${capabilities.agents.editing.join(",") || "none"}; delegation=${capabilities.agents.delegation ? "yes" : "no"}; waits=${capabilities.waits.join(",") || "none"}`,
+    `Level-2: ${capabilities.level2.callables.join(",") || "none"}; origin surface=${capabilities.surfaces.origin.join(",") || "none"}`,
     `Limits: wall=${capabilities.maxWallTimeMs}ms; input=${limits.maxInputBytes} bytes`,
     `Sensitive inputs: ${sensitiveFields.join(", ") || "none declared"}`,
   ].join("\n");

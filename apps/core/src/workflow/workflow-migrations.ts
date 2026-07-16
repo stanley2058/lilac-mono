@@ -2,13 +2,36 @@ import type { Database } from "bun:sqlite";
 
 import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
 
-export const WORKFLOW_SCHEMA_VERSION = 14;
+export const WORKFLOW_SCHEMA_VERSION = 19;
 
 type WorkflowMigration = {
   version: number;
   name: string;
   statements: readonly string[];
 };
+
+const PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE = `
+  runtime_version <> 'lilac-workflow-js-v2'
+  OR COALESCE(json_type(capabilities_json, '$.agents'), 'missing') <> 'object'
+  OR COALESCE(json_type(capabilities_json, '$.agents.profiles'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.models'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.reasoning'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.allowedRoots'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.tools'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.executables'), 'missing') <> 'text'
+  OR COALESCE(json_type(capabilities_json, '$.agents.editing'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.agents.delegation'), 'missing') NOT IN ('true', 'false')
+  OR COALESCE(json_type(capabilities_json, '$.agents.maxConcurrent'), 'missing') <> 'integer'
+  OR COALESCE(json_type(capabilities_json, '$.agents.maxTotal'), 'missing') <> 'integer'
+  OR COALESCE(json_type(capabilities_json, '$.level2.callables'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.surfaces.origin'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.maxNestingDepth'), 'missing') <> 'integer'
+  OR COALESCE(json_type(capabilities_json, '$.maxWallTimeMs'), 'missing') <> 'integer'
+  OR COALESCE(json_type(capabilities_json, '$.operationIdleTimeoutMs'), 'missing') <> 'integer'
+  OR COALESCE(json_type(capabilities_json, '$.waits'), 'missing') <> 'array'
+  OR COALESCE(json_type(capabilities_json, '$.safety.originatingMode'), 'missing') <> 'text'
+  OR COALESCE(json_type(capabilities_json, '$.safety.escalation'), 'missing') <> 'text'
+`;
 
 const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
   {
@@ -647,6 +670,187 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
          'Manual reconciliation required: paused request has a cancelled terminal receipt; cancel this run and create a new run',
          'Manual reconciliation required: terminal request lifecycle could not be reconciled with its exact durable receipt; cancel this run and create a new run'
        )`,
+    ],
+  },
+  {
+    version: 15,
+    name: "backfill workflow dispatch origin principal",
+    statements: [
+      `UPDATE workflow_request_dispatches
+       SET policy_json = json_set(
+         policy_json,
+         '$.originUserId',
+         (
+           SELECT workflow_runs.origin_user_id
+           FROM workflow_runs
+           WHERE workflow_runs.run_id = workflow_request_dispatches.run_id
+         )
+       )
+       WHERE active = 1
+         AND json_type(policy_json, '$.originUserId') IS NULL
+         AND EXISTS (
+           SELECT 1 FROM workflow_runs
+           WHERE workflow_runs.run_id = workflow_request_dispatches.run_id
+      )`,
+    ],
+  },
+  {
+    version: 16,
+    name: "bounded missing surface binding reconciliation",
+    statements: [
+      `CREATE TABLE workflow_missing_surface_bindings (
+        run_id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX idx_workflow_missing_surface_bindings_created
+       ON workflow_missing_surface_bindings(created_at, run_id)`,
+      `INSERT INTO workflow_missing_surface_bindings (run_id, created_at)
+       SELECT workflow_runs.run_id, workflow_runs.created_at
+       FROM workflow_runs
+       LEFT JOIN workflow_surface_bindings
+         ON workflow_surface_bindings.run_id = workflow_runs.run_id
+       WHERE workflow_runs.progress_target_json IS NOT NULL
+         AND workflow_surface_bindings.run_id IS NULL`,
+      `CREATE TRIGGER workflow_missing_surface_binding_after_run_insert
+       AFTER INSERT ON workflow_runs
+       WHEN NEW.progress_target_json IS NOT NULL
+       BEGIN
+         INSERT OR IGNORE INTO workflow_missing_surface_bindings (run_id, created_at)
+         VALUES (NEW.run_id, NEW.created_at);
+       END`,
+      `CREATE TRIGGER workflow_missing_surface_binding_after_target_update
+       AFTER UPDATE OF progress_target_json ON workflow_runs
+       BEGIN
+         DELETE FROM workflow_missing_surface_bindings WHERE run_id = NEW.run_id;
+         INSERT OR IGNORE INTO workflow_missing_surface_bindings (run_id, created_at)
+         SELECT NEW.run_id, NEW.created_at
+         WHERE NEW.progress_target_json IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM workflow_surface_bindings WHERE run_id = NEW.run_id
+           );
+       END`,
+      `CREATE TRIGGER workflow_missing_surface_binding_after_run_delete
+       AFTER DELETE ON workflow_runs
+       BEGIN
+         DELETE FROM workflow_missing_surface_bindings WHERE run_id = OLD.run_id;
+       END`,
+      `CREATE TRIGGER workflow_missing_surface_binding_after_binding_insert
+       AFTER INSERT ON workflow_surface_bindings
+       BEGIN
+         DELETE FROM workflow_missing_surface_bindings WHERE run_id = NEW.run_id;
+       END`,
+      `CREATE TRIGGER workflow_missing_surface_binding_after_binding_delete
+       AFTER DELETE ON workflow_surface_bindings
+       BEGIN
+         INSERT OR IGNORE INTO workflow_missing_surface_bindings (run_id, created_at)
+         SELECT workflow_runs.run_id, workflow_runs.created_at
+         FROM workflow_runs
+         WHERE workflow_runs.run_id = OLD.run_id
+           AND workflow_runs.progress_target_json IS NOT NULL;
+       END`,
+      `CREATE TABLE workflow_projection_reconciliation_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        cursor_created_at INTEGER NOT NULL,
+        cursor_run_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    ],
+  },
+  {
+    version: 17,
+    name: "durable isolated editing outputs",
+    statements: [
+      `CREATE TABLE workflow_worktree_outputs (
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('prepared', 'captured', 'cleaned', 'quarantined')),
+        worktree_path TEXT NOT NULL,
+        base_commit TEXT,
+        artifact_id TEXT,
+        patch_sha256 TEXT,
+        bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0),
+        cleanup_error TEXT,
+        prepared_at INTEGER NOT NULL,
+        captured_at INTEGER,
+        cleaned_at INTEGER,
+        PRIMARY KEY (run_id, operation_id),
+        FOREIGN KEY (run_id, operation_id)
+          REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE,
+        CHECK (
+          (state = 'quarantined' AND base_commit IS NULL AND artifact_id IS NULL
+            AND patch_sha256 IS NULL AND bytes IS NULL AND captured_at IS NULL
+            AND cleaned_at IS NULL AND cleanup_error IS NOT NULL) OR
+          (state = 'prepared' AND base_commit IS NOT NULL
+            AND artifact_id IS NULL AND patch_sha256 IS NULL
+            AND bytes IS NULL AND captured_at IS NULL AND cleaned_at IS NULL) OR
+          (state = 'captured' AND base_commit IS NOT NULL
+            AND artifact_id IS NOT NULL AND patch_sha256 IS NOT NULL
+            AND bytes IS NOT NULL AND captured_at IS NOT NULL AND cleaned_at IS NULL) OR
+          (state = 'cleaned' AND base_commit IS NOT NULL
+            AND artifact_id IS NOT NULL AND patch_sha256 IS NOT NULL
+            AND bytes IS NOT NULL AND captured_at IS NOT NULL AND cleaned_at IS NOT NULL)
+        )
+      )`,
+      `CREATE INDEX idx_workflow_worktree_outputs_cleanup
+       ON workflow_worktree_outputs(state, captured_at, run_id, operation_id)`,
+    ],
+  },
+  {
+    version: 18,
+    name: "maximum-envelope capability contract",
+    statements: [
+      `DELETE FROM workflow_triggers
+       WHERE revision_id IN (
+          SELECT revision_id FROM workflow_revisions
+          WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+        )`,
+      `DELETE FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+          WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+       )`,
+      `DELETE FROM workflow_approvals
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+          WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+       )`,
+      `DELETE FROM workflow_revisions
+       WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}`,
+    ],
+  },
+  {
+    version: 19,
+    name: "complete envelope retirement and shared editor leases",
+    statements: [
+      `DELETE FROM workflow_triggers
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+       )`,
+      `DELETE FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+       )`,
+      `DELETE FROM workflow_approvals
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}
+       )`,
+      `DELETE FROM workflow_revisions
+       WHERE ${PRE_MAXIMUM_ENVELOPE_REVISION_PREDICATE}`,
+      `CREATE TABLE workflow_shared_editor_leases (
+        authority_root TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        acquired_at INTEGER NOT NULL,
+        FOREIGN KEY (run_id, operation_id)
+          REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX idx_workflow_shared_editor_leases_heartbeat
+       ON workflow_shared_editor_leases(heartbeat_at)`,
     ],
   },
 ];

@@ -97,6 +97,7 @@ const subagentDelegateDeferredOutputSchema = z.object({
   ok: z.literal(true),
   mode: z.literal("deferred"),
   status: z.literal("accepted"),
+  workflowRunId: z.string().min(1),
   profile: subagentProfileSchema,
   sessionName: subagentSessionNameSchema,
 });
@@ -105,6 +106,7 @@ const subagentDelegateSyncOutputSchema = z.object({
   ok: z.boolean(),
   mode: z.literal("sync"),
   status: subagentTerminalStatusSchema,
+  workflowRunId: z.string().min(1),
   profile: subagentProfileSchema,
   sessionName: subagentSessionNameSchema,
   finalText: z.string(),
@@ -271,6 +273,15 @@ export type SubagentDelegationRegistration = {
   reasoningOverride?: ModelReasoningEffort;
 };
 
+export type TrustedSubagentDelegationRegistration = SubagentDelegationRegistration & {
+  projectRoot: string;
+  fallbackSurface: {
+    platform: "discord" | "github";
+    sessionId: string;
+    userId: string;
+  };
+};
+
 export type SubagentDelegationOutcome = {
   status: SubagentTerminalStatus;
   finalText: string;
@@ -419,6 +430,7 @@ export function subagentTools(params: {
             ok: true,
             mode: "deferred",
             status: "accepted",
+            workflowRunId: handle.runId,
             profile,
             sessionName,
           };
@@ -457,6 +469,7 @@ export function subagentTools(params: {
             ok,
             mode: "sync",
             status,
+            workflowRunId: handle.runId,
             profile,
             sessionName,
             finalText: outcome.finalText,

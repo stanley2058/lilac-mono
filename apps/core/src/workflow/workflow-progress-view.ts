@@ -11,6 +11,10 @@ import type {
   WorkflowUsage,
 } from "./workflow-domain";
 import { jsonObjectSchema } from "./workflow-domain";
+import {
+  publicWorkflowWorktreeOutput,
+  type PublicWorkflowWorktreeOutput,
+} from "./workflow-worktree-artifact";
 
 export type WorkflowProgressPhase = {
   name: string;
@@ -33,6 +37,7 @@ export type WorkflowProgressView = {
   };
   phases: WorkflowProgressPhase[];
   recentOperations: Array<Pick<WorkflowOperation, "label" | "phase" | "kind" | "state">>;
+  worktreeOutputs: PublicWorkflowWorktreeOutput[];
   usage: WorkflowUsage & { agentCount: number; activeAgents: number };
   nextTriggerAt: number | null;
   availableActions: WorkflowSurfaceActionKind[];
@@ -141,6 +146,9 @@ export async function buildWorkflowProgressView(input: {
   const approval = run.approvalId ? input.store.getApproval(run.approvalId) : null;
   const firstRun = approval ? input.store.getRun(approval.firstRunId) : run;
   const operations = input.store.listOperations(run.runId, { limit: 1_000 });
+  const worktreeOutputs = input.store
+    .listWorktreeOutputs(run.runId, { limit: 1_000 })
+    .map(publicWorkflowWorktreeOutput);
   const trigger = input.store.getTriggerByLastRunId(run.runId);
   const usage = operations.reduce(
     (total, operation) => ({
@@ -176,6 +184,7 @@ export async function buildWorkflowProgressView(input: {
       kind,
       state,
     })),
+    worktreeOutputs,
     usage,
     nextTriggerAt: trigger?.nextFireAt ?? null,
     availableActions: availableActions({
@@ -261,6 +270,14 @@ export function renderWorkflowProgressView(input: {
     (operation) =>
       `- ${operation.label ?? operation.kind}: ${operation.state}${operation.phase ? ` (${operation.phase})` : ""}`,
   );
+  const worktreeOutputLines = view.worktreeOutputs.map((output) => {
+    const detail =
+      !view.sensitive && output.reconciliationDetail ? `; ${output.reconciliationDetail}` : "";
+    if (!output.artifactId) {
+      return `- ${output.operationId}: ${output.state}; worktree preserved for reconciliation${detail}`;
+    }
+    return `- ${output.operationId}: ${output.state} patch \`${output.artifactId}\` (${output.bytes ?? 0} bytes); retrieve with \`tools workflow.run.get ${view.run.runId} --worktree-patch-artifact-id=${output.artifactId} --include-sensitive-result=true\`${detail}`;
+  });
   const exactReviewDetails =
     input.platform === "github"
       ? [
@@ -284,8 +301,11 @@ export function renderWorkflowProgressView(input: {
     "",
     "### Capabilities and scale",
     `Profiles: ${view.revision.capabilities.agents.profiles.join(", ")} | Models: ${view.revision.capabilities.agents.models.join(", ")}`,
-    `Agents: ${view.revision.capabilities.agents.maxConcurrent} concurrent / ${view.revision.capabilities.agents.maxTotal} total | Editing: ${view.revision.capabilities.agents.editing ? view.revision.capabilities.agents.isolation : "no"}`,
-    `Waits: ${view.revision.capabilities.waits.join(", ") || "none"} | External tools: ${view.revision.capabilities.externalTools ? "yes" : "no"} | Surface sends: ${view.revision.capabilities.surfaceSends ? "yes" : "no"}`,
+    `Reasoning: ${view.revision.capabilities.agents.reasoning.join(", ")} | Agents: ${view.revision.capabilities.agents.maxConcurrent} concurrent / ${view.revision.capabilities.agents.maxTotal} total`,
+    `Roots: ${view.revision.capabilities.agents.allowedRoots.join(", ")} | Editing: ${view.revision.capabilities.agents.editing.join(", ") || "none"} | Delegation: ${view.revision.capabilities.agents.delegation ? "yes" : "no"}`,
+    `Level-1 tools: ${view.revision.capabilities.agents.tools.join(", ") || "none"} | Executables: ${view.revision.capabilities.agents.executables}`,
+    `Level-2 callables: ${view.revision.capabilities.level2.callables.join(", ") || "none"} | Origin surface: ${view.revision.capabilities.surfaces.origin.join(", ") || "none"}`,
+    `Waits: ${view.revision.capabilities.waits.join(", ") || "none"}`,
     `Limits: wall ${view.revision.capabilities.maxWallTimeMs}ms, idle ${view.revision.capabilities.operationIdleTimeoutMs}ms, nesting ${view.revision.capabilities.maxNestingDepth}, source ${view.revision.limits.maxSourceBytes}B, input ${view.revision.limits.maxInputBytes}B, operation output ${view.revision.limits.maxOperationOutputBytes}B, result ${view.revision.limits.maxResultBytes}B`,
     "",
     "### Hashes",
@@ -297,6 +317,9 @@ export function renderWorkflowProgressView(input: {
     `Source access: \`${view.review.sourceAccess}\``,
     ...(phaseLines.length > 0 ? ["", "### Phases", ...phaseLines] : []),
     ...(operationLines.length > 0 ? ["", "### Recent operations", ...operationLines] : []),
+    ...(worktreeOutputLines.length > 0
+      ? ["", "### Isolated edit outputs", ...worktreeOutputLines]
+      : []),
     "",
     `Usage: ${view.usage.inputTokens} input / ${view.usage.outputTokens} output / ${view.usage.totalTokens} total tokens | Agents: ${view.usage.agentCount} total / ${view.usage.activeAgents} active`,
     ...(view.nextTriggerAt !== null

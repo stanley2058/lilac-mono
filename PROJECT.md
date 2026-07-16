@@ -260,7 +260,7 @@ Programmatic workflows are immutable reviewed JavaScript revisions executed by o
 - Independent progress cards: `workflow-progress-projector.ts`.
 - Level-2 definition, run, approval, and trigger APIs: `tool-server/tools/programmatic-workflow.ts`.
 
-Definitions live in `<workspace>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. Every run is pinned to a content-addressed source snapshot and exact capability approval. `waitForReply` and `sleep` are journaled host operations. Timestamp and cron fires create distinct runs and recheck approval; timestamp triggers become complete only when their created run is terminal. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same operation journal. Live parents receive durable synthetic results in completion order; absent parents fall back to a persisted progress card. Legacy WorkflowDefinitionV2/V3 records and tables are not read.
+Definitions live in `<selected-project-root>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. The selected project root is the authenticated Level-1 shell cwd for each Level-2 workflow invocation, not a process-wide workspace setting. Every run is pinned to a content-addressed source snapshot and exact capability approval. Revision capabilities are a maximum envelope: each `agent()` operation journals a canonical subset covering profile, model, reasoning, approved-root cwd, editing/isolation, exact Level-1 tools, executable authority, and delegation policy before dispatch. Shared editors serialize, read-only operations may overlap one shared editor, and worktree editors use operation-selected approved repository roots. Level-2 callable IDs and origin-surface operations are concrete hash inputs, so plugin reloads cannot expand a grant. `waitForReply` and `sleep` are journaled host operations. Timestamp and cron fires create distinct runs and recheck approval; timestamp triggers become complete only when their created run is terminal. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same operation journal. Live parents receive durable synthetic results in completion order; absent parents fall back to a persisted progress card. Legacy WorkflowDefinitionV2/V3 records and pre-envelope workflow revisions are not read; schema migration 18 removes their durable runs, approvals, triggers, and revisions so source definitions can be reviewed again under the normalized contract.
 
 ### Layered Tools (Progressive Disclosure)
 
@@ -386,7 +386,11 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `SQLITE_URL` (workflow store sqlite path; default: `${DATA_DIR}/data.sqlite3`)
 - `DATA_DIR` (where config/prompt/db live)
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
-- `LILAC_WORKSPACE_DIR` (default working directory for agent tools)
+- `LILAC_WORKSPACE_DIR` (the main agent's default working directory for general tools)
+
+Workflow project scope is selected per invocation. A trusted main agent chooses it by running the
+Level-2 workflow command from the intended Level-1 `bash` cwd; the authenticated tool request carries
+that resolved cwd independently from the main agent's default workspace.
 - `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
 - `TAVILY_API_KEY`, `EXA_API_KEY`, and/or `FIRECRAWL_API_KEY` (enable configured web providers)

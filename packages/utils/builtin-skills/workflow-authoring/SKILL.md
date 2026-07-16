@@ -10,7 +10,7 @@ Use a workflow when orchestration should be readable, reusable, independently re
 ## Authoring Loop
 
 1. Choose a lowercase kebab-case name of at most 64 characters.
-2. Write the exact module contract below. Keep metadata static JSON literals; only `run` contains executable JavaScript.
+2. Write the module contract below. Keep metadata static JSON literals; orchestration may be factored into pure same-file helpers.
 3. Save with `workflow.definition.save`, or edit a project file directly.
 4. Run `workflow.definition.validate` with representative concrete arguments. Validation is complete only when source, schema, capability, and argument checks pass.
 5. Trigger with `workflow.run.trigger`. Record the returned run and revision IDs.
@@ -18,10 +18,14 @@ Use a workflow when orchestration should be readable, reusable, independently re
 
 ## Locations
 
-- Project: `<canonical-workspace-root>/.lilac/workflows/<name>.js`
+- Project: `<selected-project-root>/.lilac/workflows/<name>.js`
 - Personal: `${DATA_DIR}/workflows/<name>.js`
 - `scope: "auto"` resolves project first, then personal.
 - Project, data, and user skills can override this bundled skill because `lilac-builtin` has lowest precedence.
+
+Run every Level-2 workflow command from the intended project directory. The authenticated Level-1
+`bash` cwd selects and canonicalizes that invocation's project root; `LILAC_WORKSPACE_DIR` remains only
+the main agent's default cwd and does not constrain project selection.
 
 Definitions are flat `.js` files. Nested names, traversal, symlinks, non-regular files, other extensions, and names outside strict lowercase kebab-case are rejected.
 
@@ -29,6 +33,12 @@ Definitions are flat `.js` files. Nested names, traversal, symlinks, non-regular
 
 ```js
 import { defineWorkflow } from "@lilac/workflow";
+
+const VERIFY_PHASE = "verify";
+
+async function verifyFindings(pipeline, agent, findings) {
+  return pipeline(findings, (finding) => agent(`Verify this finding:\n${finding}`));
+}
 
 export default defineWorkflow({
   name: "audit-routes",
@@ -44,13 +54,19 @@ export default defineWorkflow({
   },
   capabilities: {
     agents: {
-      profiles: ["explore"],
-      models: ["inherit"],
+      profiles: ["explore", "general"],
+      models: ["deep", "inherit"],
+      reasoning: ["high", "provider-default"],
+      allowedRoots: ["project"],
+      tools: ["apply_patch", "bash", "batch", "glob", "grep", "read_file"],
+      executables: "trusted-container",
       maxConcurrent: 8,
       maxTotal: 40,
-      editing: false,
-      isolation: "shared",
+      editing: ["shared", "worktree"],
+      delegation: false,
     },
+    level2: { callables: ["search"] },
+    surfaces: { origin: [] },
     waits: [],
   },
   limits: {
@@ -67,14 +83,12 @@ export default defineWorkflow({
       (file) => agent(`Audit ${file} for missing authorization.`, { label: file }),
       { concurrency: 8 },
     );
-    return phase("verify", () =>
-      pipeline(findings, (finding) => agent(`Verify this finding:\n${finding}`)),
-    );
+    return phase(VERIFY_PHASE, () => verifyFindings(pipeline, agent, findings));
   },
 });
 ```
 
-The file must have exactly one named import of `defineWorkflow` from `@lilac/workflow`, followed by exactly one default `defineWorkflow({...})` export. No other top-level statements are allowed. Metadata must use literal JSON values without spreads, computed keys, or shorthand. Dynamic import, `require`, `eval`, the `Function` constructor, and source-map indirection are forbidden.
+The file must begin with exactly one named import of `defineWorkflow` from `@lilac/workflow` and end with exactly one default `defineWorkflow({...})` export. Between them, it may contain named function declarations and `const` declarations initialized with static JSON literals or function expressions. Top-level calls, mutable declarations, additional imports/exports, and destructured declarations are forbidden. Pass host APIs such as `agent` and `pipeline` to helpers under their original names so call-site instrumentation remains deterministic. Host APIs cannot be aliased, reassigned, stored in objects, or called through computed/member access. A host-calling top-level helper may have one static invocation site; use `pipeline` for deterministic repeated helper invocation. Metadata must use finite literal JSON values without spreads, computed keys, or shorthand. Dynamic import, `require`, `eval`, the `Function` constructor, source-map indirection, ambient dependencies, and direct filesystem, process, network, time, randomness, or logging effects remain forbidden.
 
 Validation is static. Lilac does not import or execute a definition while saving, validating, listing, or triggering it.
 
@@ -97,24 +111,29 @@ Arguments must be plain JSON, fit `maxInputBytes`, match the schema without coer
 
 ## Capabilities
 
-Declare the least authority the workflow needs:
+Capabilities are the reviewed maximum envelope. Every `agent()` call resolves to a concrete subset before it is journaled or dispatched. Declare only authority that at least one operation needs:
 
 - `agents.profiles`: allowed child-agent profiles.
 - `agents.models`: allowed model aliases or `inherit`.
+- `agents.reasoning`: allowed values from `provider-default`, `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+- `agents.allowedRoots`: `project` and/or canonical absolute directory roots. An operation cwd may be one of these roots or a canonical symlink-free descendant.
+- `agents.tools`: concrete Level-1 tool IDs. Runtime exposure must equal the operation's selected subset and profile constraints.
+- `agents.executables`: `none` or `trusted-container`. Trusted container execution is explicit review authority; restricted origins never gain it.
 - `agents.maxConcurrent`: maximum simultaneous agents.
 - `agents.maxTotal`: maximum agents in the run.
-- `agents.editing`: whether child agents may edit.
-- `agents.isolation`: `shared` or `worktree`. Parallel edit-capable agents require `worktree`; a single edit-capable agent may use `shared`.
+- `agents.editing`: allowed editing modes, any of `shared` and `worktree`. An empty array is read-only. Shared editing operations serialize by approved authority root across runs and workers, while read-only operations may overlap one shared editor and worktree editors may run in parallel.
+- `agents.delegation`: maximum operation-level delegation authority. Dynamic child bounds are not part of this authoring wave; leave false unless the runtime path explicitly supports it.
+- `level2.callables`: concrete callable IDs available through the `tools` CLI. IDs are hashed exactly; plugin reloads cannot add authority, and a granted ID that disappears is unavailable.
+- `surfaces.origin`: concrete `surface.*` operations granted against the authenticated origin destination. Each must also appear in `level2.callables`.
 - `waits`: any of `reply` and `sleep`.
 - `maxNestingDepth`, `maxWallTimeMs`, and `operationIdleTimeoutMs`: optional bounded budgets.
-- `surfaceSends` and `externalTools`: optional booleans, default false.
 - `safety.escalation`: optional `none` or `trusted_with_review`.
 
 The exact normalized capability profile and limits are hashed into review identity. Increasing authority or changing limits creates a new revision that needs review.
 
 ## Orchestration API
 
-- `agent(prompt, options?)`: dispatch one governed child-agent operation.
+- `agent(prompt, options?)`: dispatch one governed child-agent operation. Options may select `profile`, `model`, `reasoning`, canonical absolute `cwd`, `editing`, `isolation`, concrete `tools`, `executables`, `level2Callables`, `surfaceOriginOperations`, `delegation`, and `label`. Any value outside the reviewed envelope is rejected before dispatch. Editing and delegation default to false; executable, Level-2, and origin-surface authority default to none. `isolation` is valid only when editing is true and must be explicit when the envelope approves multiple editing modes. Each origin-surface selection must also be selected in `level2Callables`.
 - `parallel(promises, options?)`: await bounded parallel operations.
 - `pipeline(items, callback, options?)`: map items with bounded concurrency and stable item ordering.
 - `phase(name, callback)`: group operations for review and progress.
@@ -139,9 +158,22 @@ return phase("verify", () =>
 Iterative repair:
 
 ```js
-let report = await agent(`Run the focused checks for ${args.area}.`);
+let report = await agent(`Run the focused checks for ${args.area}.`, {
+  profile: "explore",
+  tools: ["glob", "grep", "read_file"],
+});
 for (let attempt = 1; attempt <= 3 && report.includes("FAIL"); attempt++) {
-  await phase(`repair-${attempt}`, () => agent(`Repair these failures:\n${report}`));
+  await phase(`repair-${attempt}`, () =>
+    agent(`Repair these failures:\n${report}`, {
+      profile: "general",
+      model: "deep",
+      reasoning: "high",
+      editing: true,
+       isolation: "shared",
+       tools: ["apply_patch", "bash", "read_file"],
+       executables: "trusted-container",
+    }),
+  );
   report = await agent(`Re-run the focused checks for ${args.area}.`);
 }
 return report;

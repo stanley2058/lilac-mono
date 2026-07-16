@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
+import fs from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../../src/workflow/workflow-domain";
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
 import { readWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
+import { readWorkflowWorktreePatch } from "../../src/workflow/workflow-worktree-artifact";
 
 const HASH_A = "a".repeat(64);
 
@@ -158,6 +160,8 @@ function createApprovedRun(
   completionTarget: WorkflowCompletionTarget = { kind: "detached" },
   maxWallTimeMs = 10_000,
   editing = false,
+  canonicalWorkspaceRoot = process.cwd(),
+  mixedEditing = false,
 ) {
   const inputSchema = {
     type: "object",
@@ -166,19 +170,25 @@ function createApprovedRun(
   };
   const capabilities = normalizeWorkflowCapabilityProfile({
     agents: {
-      profiles: editing ? ["general"] : ["explore"],
+      profiles: mixedEditing ? ["explore", "general"] : editing ? ["general"] : ["explore"],
       models: ["inherit"],
-      editing,
-      isolation: editing ? "worktree" : "shared",
-      maxConcurrent: editing ? 1 : 2,
+      reasoning: ["provider-default"],
+      allowedRoots: ["project"],
+      tools: editing
+        ? ["apply_patch", "bash", "batch", "glob", "grep", "read_file"]
+        : ["batch", "glob", "grep", "read_file"],
+      executables: editing ? "trusted-container" : "none",
+      editing: mixedEditing ? ["shared", "worktree"] : editing ? ["worktree"] : [],
+      delegation: false,
+      maxConcurrent: mixedEditing ? 3 : editing ? 1 : 2,
       maxTotal: 4,
     },
+    level2: { callables: [] },
+    surfaces: { origin: [] },
     maxNestingDepth: 4,
     maxWallTimeMs,
     operationIdleTimeoutMs: 2_000,
     waits: ["reply", "sleep"],
-    surfaceSends: false,
-    externalTools: false,
     safety: { originatingMode: "trusted", escalation: "none" },
   });
   const limits = {
@@ -191,7 +201,7 @@ function createApprovedRun(
   const revision = {
     revisionId: "revision-1",
     canonicalProjectId: "project-1",
-    canonicalWorkspaceRoot: "/workspace",
+    canonicalWorkspaceRoot,
     scope: "project" as const,
     normalizedPath: "audit.js",
     name: "audit",
@@ -203,7 +213,7 @@ function createApprovedRun(
     inputSchema,
     capabilities,
     limits,
-    runtimeVersion: "lilac-workflow-js-v1",
+    runtimeVersion: "lilac-workflow-js-v2",
     createdAt: 1,
   };
   const invocation = store.createInvocation({
@@ -222,7 +232,7 @@ function createApprovedRun(
         client: "discord",
         userId: "user-1",
         safetyMode: "trusted",
-        projectCwd: "/workspace",
+        projectCwd: canonicalWorkspaceRoot,
       },
       completionTarget,
       progressTarget: null,
@@ -263,6 +273,17 @@ function createApprovedRun(
   return invocation;
 }
 
+async function runGit(cwd: string, args: readonly string[]): Promise<string> {
+  const process = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
+  ]);
+  if (exitCode !== 0) throw new Error(stderr);
+  return stdout.trim();
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3_000;
   while (!predicate()) {
@@ -271,7 +292,191 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
+function persistedAgentInput(prompt: string, editing = false, cwd = process.cwd()) {
+  return {
+    prompt,
+    options: {
+      profile: editing ? "general" : "explore",
+      model: "inherit",
+      reasoning: "provider-default",
+      cwd,
+      authorityRoot: cwd,
+      editing,
+      isolation: editing ? "worktree" : "shared",
+      tools: editing
+        ? ["apply_patch", "bash", "batch", "glob", "grep", "read_file"]
+        : ["batch", "glob", "grep", "read_file"],
+      executables: "none" as const,
+      level2Callables: [],
+      surfaceOriginOperations: [],
+      delegation: false,
+    },
+  };
+}
+
 describe("WorkflowEngine", () => {
+  it("runs read-only exploration beside one shared editor while serializing shared edits", async () => {
+    const dbPath = join(tmpdir(), `workflow-mixed-authority-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      process.cwd(),
+      true,
+    );
+    let active = 0;
+    let activeEditors = 0;
+    let maxActive = 0;
+    let maxEditors = 0;
+    let sawMixedReadAndEdit = false;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "mixed-operation-authority",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => {
+        const calls = [
+          { path: "root:read-a:0", callSiteId: "read-a", profile: "explore", editing: false },
+          { path: "root:edit-a:0", callSiteId: "edit-a", profile: "general", editing: true },
+          { path: "root:read-b:0", callSiteId: "read-b", profile: "explore", editing: false },
+          { path: "root:edit-b:0", callSiteId: "edit-b", profile: "general", editing: true },
+        ] as const;
+        return {
+          cancel: async () => {},
+          result: Promise.all(
+            calls.map((call, index) =>
+              input.onCall({
+                type: "call",
+                id: index + 1,
+                kind: "agent",
+                callSiteId: call.callSiteId,
+                occurrence: 0,
+                path: call.path,
+                parentPath: null,
+                phase: null,
+                depth: 0,
+                input: {
+                  prompt: call.callSiteId,
+                  options: call.editing
+                    ? { profile: call.profile, editing: true, isolation: "shared" }
+                    : { profile: call.profile },
+                },
+              }),
+            ),
+          ),
+        };
+      },
+      dispatchAgentRequest: async ({ policy }) => {
+        active += 1;
+        if (policy.editing) activeEditors += 1;
+        maxActive = Math.max(maxActive, active);
+        maxEditors = Math.max(maxEditors, activeEditors);
+        sawMixedReadAndEdit ||= activeEditors > 0 && active > activeEditors;
+        await Bun.sleep(30);
+        if (policy.editing) activeEditors -= 1;
+        active -= 1;
+        return { state: "resolved", output: policy.operationId, detail: null, usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
+      expect(
+        store.listOperations("run-1").filter((operation) => operation.kind === "agent"),
+      ).toHaveLength(4);
+      expect(maxActive).toBeGreaterThan(1);
+      expect(maxEditors).toBe(1);
+      expect(sawMixedReadAndEdit).toBe(true);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("permits parallel worktree editors without the shared-editor lock", async () => {
+    const dbPath = join(tmpdir(), `workflow-parallel-worktrees-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      process.cwd(),
+      true,
+    );
+    let activeEditors = 0;
+    let maxEditors = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "parallel-worktree-authority",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      prepareWorktree: async (_run, operation) => ({
+        path: `/isolated/${operation.operationId}`,
+        baseCommit: "a".repeat(40),
+      }),
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: Promise.all(
+          ["editor-a", "editor-b"].map((callSiteId, index) =>
+            input.onCall({
+              type: "call",
+              id: index + 1,
+              kind: "agent",
+              callSiteId,
+              occurrence: 0,
+              path: `root:${callSiteId}:0`,
+              parentPath: null,
+              phase: null,
+              depth: 0,
+              input: {
+                prompt: callSiteId,
+                options: { profile: "general", editing: true, isolation: "worktree" },
+              },
+            }),
+          ),
+        ),
+      }),
+      dispatchAgentRequest: async () => {
+        activeEditors += 1;
+        maxEditors = Math.max(maxEditors, activeEditors);
+        await Bun.sleep(30);
+        activeEditors -= 1;
+        return { state: "failed", output: "", detail: "test stop", usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "failed");
+      expect(maxEditors).toBe(2);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("fails closed for every receiptless terminal request outcome", async () => {
     for (const terminalState of ["resolved", "failed", "cancelled"] as const) {
       const dbPath = join(
@@ -1233,6 +1438,536 @@ describe("WorkflowEngine", () => {
     }
   });
 
+  it("recovers a pre-dispatch worktree and captures committed and untracked edits before cleanup", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-durable-worktree-"));
+    const repo = join(root, "repo");
+    const dataDir = join(root, "data");
+    const dbPath = join(root, "workflow.sqlite");
+    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
+    await runGit(repo, ["init"]);
+    await runGit(repo, ["config", "user.name", "Workflow Test"]);
+    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
+    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
+    await runGit(repo, ["add", "tracked.txt"]);
+    await runGit(repo, ["commit", "-m", "base"]);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      repo,
+    );
+    const expectedOperationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
+    const preDispatchWorktree = join(
+      dataDir,
+      "workflow-worktrees",
+      sha256("run-1").slice(0, 20),
+      sha256(expectedOperationId).slice(0, 20),
+    );
+    await fs.mkdir(dirname(preDispatchWorktree), { recursive: true });
+    const expectedBaseCommit = await runGit(repo, ["rev-parse", "HEAD"]);
+    await runGit(repo, ["worktree", "add", "--detach", preDispatchWorktree, expectedBaseCommit]);
+    let cleanupAttempts = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "durable-worktree-success",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      removeWorktree: async (_revision, worktree) => {
+        cleanupAttempts += 1;
+        const operation = store.listOperations("run-1")[0];
+        const output = operation ? store.getWorktreeOutput("run-1", operation.operationId) : null;
+        if (!operation || !output) throw new Error("Missing captured worktree output");
+        expect(operation?.state).toBe("succeeded");
+        expect(output?.state).toBe("captured");
+        expect(worktree).toBe(output.worktreePath);
+        throw new Error("simulated cleanup interruption");
+      },
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "edit files", options: { editing: true, isolation: "worktree" } },
+        }),
+      }),
+      dispatchAgentRequest: async (request) => {
+        await fs.writeFile(join(request.agentCwd, "tracked.txt"), "after\n");
+        await fs.writeFile(join(request.agentCwd, "untracked.txt"), "new file\n");
+        await runGit(request.agentCwd, ["add", "tracked.txt"]);
+        await runGit(request.agentCwd, ["commit", "-m", "agent commit"]);
+        return {
+          state: "resolved",
+          output: "editing complete",
+          detail: null,
+          usage: null,
+        };
+      },
+    });
+    let replacement: WorkflowEngine | null = null;
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
+
+      const operation = store.listOperations("run-1")[0];
+      if (!operation) throw new Error("Missing successful editing operation");
+      const capturedOutput = store.getWorktreeOutput("run-1", operation.operationId);
+      expect(operation).toMatchObject({ state: "succeeded", output: "editing complete" });
+      expect(capturedOutput).toMatchObject({
+        state: "captured",
+        baseCommit: expectedBaseCommit,
+        cleanupError: "simulated cleanup interruption",
+      });
+      if (
+        !capturedOutput ||
+        typeof capturedOutput.artifactId !== "string" ||
+        capturedOutput.bytes === null
+      ) {
+        throw new Error("Missing durable worktree patch metadata");
+      }
+      expect(capturedOutput.artifactId).toMatch(/^workflow-worktree-patch:/u);
+      expect(store.getRun("run-1")?.terminalDetail).toContain(capturedOutput.artifactId);
+      const patch = Buffer.from(
+        await readWorkflowWorktreePatch({
+          dataDir,
+          artifactId: capturedOutput.artifactId,
+          expectedBytes: capturedOutput.bytes,
+        }),
+      ).toString("utf8");
+      expect(patch).toContain("+after");
+      expect(patch).toContain("untracked.txt");
+      expect(patch).toContain("+new file");
+      expect((await fs.lstat(capturedOutput.worktreePath)).isDirectory()).toBe(true);
+      expect(await fs.readFile(join(repo, "tracked.txt"), "utf8")).toBe("before\n");
+
+      await engine.stop();
+      replacement = new WorkflowEngine({
+        bus,
+        store,
+        dataDir,
+        subscriptionId: "durable-worktree-replacement",
+        pollMs: 5,
+        assertSandbox: async () => {},
+        loadSnapshot: async () => "immutable",
+        compileSource: (source) => source,
+      });
+      await replacement.start();
+      await waitFor(
+        () =>
+          operation !== undefined &&
+          store.getWorktreeOutput("run-1", operation.operationId)?.state === "cleaned",
+      );
+      expect(cleanupAttempts).toBe(1);
+      expect(store.getWorktreeOutput("run-1", operation.operationId)).toMatchObject({
+        state: "cleaned",
+        cleanupError: null,
+      });
+      await expect(fs.lstat(capturedOutput.worktreePath)).rejects.toThrow();
+    } finally {
+      await replacement?.stop();
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an ordinary failed editing worktree as a fenced prepared output", async () => {
+    const dbPath = join(tmpdir(), `workflow-failed-worktree-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+    );
+    let removeCalls = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "failed-worktree-preservation",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      prepareWorktree: async () => ({
+        path: "/preserved/failed-worktree",
+        baseCommit: "a".repeat(40),
+      }),
+      removeWorktree: async () => {
+        removeCalls += 1;
+      },
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: {
+            prompt: "edit then fail",
+            options: { editing: true, isolation: "worktree" },
+          },
+        }),
+      }),
+      dispatchAgentRequest: async () => ({
+        state: "failed",
+        output: "",
+        detail: "agent failed after editing",
+        usage: null,
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "failed");
+      const operation = store.listOperations("run-1")[0];
+      expect(operation).toMatchObject({ state: "failed", error: "agent failed after editing" });
+      expect(operation && store.getWorktreeOutput("run-1", operation.operationId)).toMatchObject({
+        state: "prepared",
+        worktreePath: "/preserved/failed-worktree",
+        artifactId: null,
+      });
+      expect(removeCalls).toBe(0);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("fails and preserves a successful edit when ignored bytes are not patch-captured", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-ignored-worktree-"));
+    const repo = join(root, "repo");
+    const dataDir = join(root, "data");
+    const dbPath = join(root, "workflow.sqlite");
+    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
+    await runGit(repo, ["init"]);
+    await runGit(repo, ["config", "user.name", "Workflow Test"]);
+    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
+    await fs.writeFile(join(repo, ".gitignore"), "*.cache\n");
+    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
+    await runGit(repo, ["add", ".gitignore", "tracked.txt"]);
+    await runGit(repo, ["commit", "-m", "base"]);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      repo,
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "ignored-worktree-preservation",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: {
+            prompt: "edit ignored output",
+            options: { editing: true, isolation: "worktree" },
+          },
+        }),
+      }),
+      dispatchAgentRequest: async (request) => {
+        await fs.writeFile(join(request.agentCwd, "tracked.txt"), "after\n");
+        await fs.writeFile(join(request.agentCwd, "only-copy.cache"), "uncaptured bytes\n");
+        return { state: "resolved", output: "editing complete", detail: null, usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "failed");
+      const operation = store.listOperations("run-1")[0];
+      if (!operation) throw new Error("Missing ignored-file operation");
+      const output = store.getWorktreeOutput("run-1", operation.operationId);
+      expect(operation).toMatchObject({
+        state: "failed",
+        error: expect.stringContaining("Ignored worktree content"),
+      });
+      expect(output).toMatchObject({
+        state: "prepared",
+        artifactId: null,
+        cleanupError: expect.stringContaining("worktree preserved for reconciliation"),
+      });
+      if (!output) throw new Error("Missing ignored-file reconciliation metadata");
+      expect(await fs.readFile(join(output.worktreePath, "only-copy.cache"), "utf8")).toBe(
+        "uncaptured bytes\n",
+      );
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines a committed replay worktree when its pre-dispatch base was never persisted", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "workflow-legacy-worktree-"));
+    const repo = join(root, "repo");
+    const dataDir = join(root, "data");
+    const dbPath = join(root, "workflow.sqlite");
+    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
+    await runGit(repo, ["init"]);
+    await runGit(repo, ["config", "user.name", "Workflow Test"]);
+    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
+    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
+    await runGit(repo, ["add", "tracked.txt"]);
+    await runGit(repo, ["commit", "-m", "base"]);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+      repo,
+    );
+    expect(
+      store.tryClaimApprovedRun({ runId: "run-1", claimerId: "legacy-engine", now: 10 }),
+    ).not.toBeNull();
+    const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
+    const requestId = workflowAgentRequestId("run-1", operationId, 0);
+    expect(
+      store.createOperation(
+        {
+          runId: "run-1",
+          operationId,
+          callSiteId: "site-agent",
+          parentOperationId: null,
+          phase: null,
+          label: null,
+          kind: "agent",
+          input: persistedAgentInput("legacy edit", true, repo),
+          inputSha256: canonicalJsonSha256(persistedAgentInput("legacy edit", true, repo)),
+          state: "queued",
+          attempt: 0,
+          requestId: null,
+          output: null,
+          resultArtifactId: null,
+          error: null,
+          usage: null,
+          claimedBy: null,
+          claimedAt: null,
+          createdAt: 10,
+          startedAt: null,
+          updatedAt: 10,
+          terminalAt: null,
+        },
+        "legacy-engine",
+      ),
+    ).toBe(true);
+    expect(
+      store.transitionOperation({
+        runId: "run-1",
+        operationId,
+        runOwnerId: "legacy-engine",
+        from: "queued",
+        to: "dispatched",
+        requestId,
+        now: 11,
+      }),
+    ).toBe(true);
+    const worktree = join(
+      dataDir,
+      "workflow-worktrees",
+      sha256("run-1").slice(0, 20),
+      sha256(operationId).slice(0, 20),
+    );
+    await fs.mkdir(dirname(worktree), { recursive: true });
+    await runGit(repo, ["worktree", "add", "--detach", worktree, "HEAD"]);
+    await fs.writeFile(join(worktree, "tracked.txt"), "legacy committed edit\n");
+    await runGit(worktree, ["add", "tracked.txt"]);
+    await runGit(worktree, ["commit", "-m", "legacy agent edit"]);
+
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir,
+      subscriptionId: "legacy-worktree-quarantine",
+      pollMs: 5,
+      now: () => 100_000,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: { prompt: "legacy edit", options: { editing: true, isolation: "worktree" } },
+        }),
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-1")?.state === "failed");
+      expect(store.getWorktreeOutput("run-1", operationId)).toMatchObject({
+        state: "quarantined",
+        baseCommit: null,
+        artifactId: null,
+        cleanupError: expect.stringContaining("no durable pre-dispatch base"),
+      });
+      expect(await fs.readFile(join(worktree, "tracked.txt"), "utf8")).toBe(
+        "legacy committed edit\n",
+      );
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts a hung patch capture on cancellation and preserves reconciliation metadata", async () => {
+    const dbPath = join(tmpdir(), `workflow-cancel-capture-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-1",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      60_000,
+      true,
+    );
+    let captureStarted = false;
+    let removeCalls = 0;
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: "/unused",
+      subscriptionId: "cancel-hung-capture",
+      pollMs: 5,
+      assertSandbox: async () => {},
+      loadSnapshot: async () => "immutable",
+      compileSource: (source) => source,
+      prepareWorktree: async () => ({
+        path: "/preserved/hung-capture",
+        baseCommit: "a".repeat(40),
+      }),
+      captureWorktreePatch: async ({ signal }) => {
+        captureStarted = true;
+        return await new Promise((_, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("capture aborted")), {
+            once: true,
+          });
+        });
+      },
+      removeWorktree: async () => {
+        removeCalls += 1;
+      },
+      startSandbox: (input) => ({
+        cancel: async () => {},
+        result: input.onCall({
+          type: "call",
+          id: 1,
+          kind: "agent",
+          callSiteId: "site-agent",
+          occurrence: 0,
+          path: "root:site-agent:0",
+          parentPath: null,
+          phase: null,
+          depth: 0,
+          input: {
+            prompt: "edit then capture",
+            options: { editing: true, isolation: "worktree" },
+          },
+        }),
+      }),
+      dispatchAgentRequest: async () => ({
+        state: "resolved",
+        output: "editing complete",
+        detail: null,
+        usage: null,
+      }),
+    });
+    try {
+      await engine.start();
+      await waitFor(() => captureStarted);
+      expect(
+        store.cancelRunAndChildren({ runId: "run-1", now: 20, detail: "cancel capture" })?.state,
+      ).toBe("cancelled");
+      await waitFor(() => {
+        const operation = store.listOperations("run-1")[0];
+        return Boolean(
+          operation && store.getWorktreeOutput("run-1", operation.operationId)?.cleanupError,
+        );
+      });
+      const operation = store.listOperations("run-1")[0];
+      const output = operation ? store.getWorktreeOutput("run-1", operation.operationId) : null;
+      expect(output).toMatchObject({
+        state: "prepared",
+        artifactId: null,
+        cleanupError: expect.stringContaining("capture aborted"),
+      });
+      expect(removeCalls).toBe(0);
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
     const dbPath = join(tmpdir(), `workflow-live-cancelled-handoff-${crypto.randomUUID()}.sqlite`);
     const store = new TerminalReceiptReadStore(dbPath);
@@ -1269,7 +2004,7 @@ describe("WorkflowEngine", () => {
     const prepareWorktree = async () => {
       prepareCalls += 1;
       if (prepareCalls === 2) resolveLiveSelection();
-      return "/preserved/worktree";
+      return { path: "/preserved/worktree", baseCommit: "a".repeat(40) };
     };
     const removeWorktree = async () => {
       removeCalls += 1;
@@ -1290,7 +2025,10 @@ describe("WorkflowEngine", () => {
         parentPath: null,
         phase: null,
         depth: 0,
-        input: { prompt: "apply side effect", options: {} },
+        input: {
+          prompt: "apply side effect",
+          options: { editing: true, isolation: "worktree" },
+        },
       }),
     });
     const first = new WorkflowEngine({
@@ -1774,8 +2512,8 @@ describe("WorkflowEngine", () => {
         phase: null,
         label: null,
         kind: "agent",
-        input: { prompt: "inspect", options: {} },
-        inputSha256: canonicalJsonSha256({ prompt: "inspect", options: {} }),
+        input: persistedAgentInput("inspect"),
+        inputSha256: canonicalJsonSha256(persistedAgentInput("inspect")),
         state: "succeeded",
         attempt: 0,
         requestId: "wfr:completed",

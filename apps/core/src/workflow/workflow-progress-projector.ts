@@ -153,7 +153,8 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   private claimTimer: ReturnType<typeof setInterval> | null = null;
   private actionOutboxDrain: Promise<void> | null = null;
   private readonly projectionClaims = new Map<string, string>();
-  private readonly projectionInFlight = new Map<string, Promise<MsgRef>>();
+  private readonly projectionInFlight = new Map<string, Promise<MsgRef | null>>();
+  private lastMissingBindingReconcileAt = 0;
   private stopping = false;
 
   constructor(
@@ -169,6 +170,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       claimStaleMs?: number;
       claimHeartbeatMs?: number;
       remoteVerificationIntervalMs?: number;
+      retryIntervalMs?: number;
+      missingBindingReconcileIntervalMs?: number;
+      missingBindingReconcileBatchSize?: number;
       afterExternalIo?: (input: {
         runId: string;
         kind: "send" | "edit";
@@ -212,8 +216,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     this.retryTimer = setInterval(() => {
       this.retryDue();
       void this.drainActionOutboxProjections();
-    }, 1_000);
+    }, this.input.retryIntervalMs ?? 1_000);
     this.retryTimer.unref?.();
+    this.lastMissingBindingReconcileAt = this.input.now?.() ?? Date.now();
     this.claimTimer = setInterval(
       () => this.refreshProjectionClaims(),
       this.input.claimHeartbeatMs ?? 10_000,
@@ -277,7 +282,11 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
   }
 
   async ensureInitialCard(runId: string): Promise<MsgRef> {
-    return await this.project(runId, true);
+    const messageRef = await this.project(runId, true);
+    if (!messageRef) {
+      throw new Error(`Workflow run ${runId} has no supported durable progress target`);
+    }
+    return messageRef;
   }
 
   async reconcile(): Promise<void> {
@@ -290,7 +299,10 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
         if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(run.runId);
       });
     }
-    for (const run of this.input.store.listRunsMissingSurfaceBindings(1_000)) {
+    for (const run of this.input.store.takeRunsMissingSurfaceBindingReconciliationPage({
+      limit: this.input.missingBindingReconcileBatchSize ?? 1_000,
+      now: this.input.now?.() ?? Date.now(),
+    })) {
       if (boundRunIds.has(run.runId)) continue;
       await this.project(run.runId).catch((error: unknown) => {
         if (error instanceof ProjectionClaimUnavailableError) this.requestProjection(run.runId);
@@ -315,6 +327,20 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       limit: 1_000,
     })) {
       this.requestProjection(orphan.runId);
+    }
+    if (
+      this.lastMissingBindingReconcileAt +
+        (this.input.missingBindingReconcileIntervalMs ?? 5_000) <=
+      now
+    ) {
+      this.lastMissingBindingReconcileAt = now;
+      const missing = this.input.store.takeRunsMissingSurfaceBindingReconciliationPage({
+        limit: this.input.missingBindingReconcileBatchSize ?? 1_000,
+        now,
+      });
+      for (const run of missing) {
+        this.requestProjection(run.runId);
+      }
     }
   }
 
@@ -386,9 +412,9 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     runId: string,
     requireMessage = false,
     verifyExisting = false,
-  ): Promise<MsgRef> {
+  ): Promise<MsgRef | null> {
     const previous = this.projectionInFlight.get(runId);
-    let projection: Promise<MsgRef>;
+    let projection: Promise<MsgRef | null>;
     projection = (async () => {
       if (previous) await previous.catch(() => undefined);
       return await this.projectWithClaim(runId, requireMessage, verifyExisting);
@@ -413,7 +439,15 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     runId: string,
     requireMessage: boolean,
     verifyExisting: boolean,
-  ): Promise<MsgRef> {
+  ): Promise<MsgRef | null> {
+    const run = this.input.store.getRun(runId);
+    if (run?.progressTarget === null) {
+      this.releaseProjectionClaim(runId);
+      if (requireMessage) {
+        throw new Error(`Workflow run ${runId} has no supported durable progress target`);
+      }
+      return null;
+    }
     const heldClaim = this.projectionClaims.get(runId);
     if (!heldClaim) this.actions.delete(runId);
     const claimToken = heldClaim ?? crypto.randomUUID();
@@ -459,6 +493,19 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  private releaseProjectionClaim(runId: string): void {
+    const claimToken = this.projectionClaims.get(runId);
+    if (claimToken) {
+      this.input.store.releaseSurfaceProjectionClaim({
+        runId,
+        ownerId: this.ownerId,
+        claimToken,
+      });
+    }
+    this.projectionClaims.delete(runId);
+    this.actions.delete(runId);
   }
 
   private refreshProjectionClaims(): void {

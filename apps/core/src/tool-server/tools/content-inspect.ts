@@ -122,6 +122,9 @@ export class ContentInspect implements ServerTool {
           field: "text",
         },
         input: zodObjectToCliLines(contentInspectInputSchema),
+        workflowPathAuthority: {
+          inputs: [{ field: "path", cardinality: "one", target: "read-file" }],
+        } as const,
       },
     ];
   }

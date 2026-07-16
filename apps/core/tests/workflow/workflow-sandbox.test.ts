@@ -11,7 +11,10 @@ import {
   type WorkflowSandboxPreflightProbes,
   type WorkflowSandboxRuntimeProbes,
 } from "../../src/workflow/workflow-sandbox";
-import { compileWorkflowSource } from "../../src/workflow/workflow-source-compiler";
+import {
+  compileWorkflowSource,
+  parseWorkflowCallSiteManifest,
+} from "../../src/workflow/workflow-source-compiler";
 import type { JsonValue } from "../../src/workflow/workflow-domain";
 
 function source(runBody: string): string {
@@ -20,8 +23,23 @@ export default defineWorkflow({
   name: "sandbox-test",
   description: "Sandbox test",
   input: { type: "object", properties: {} },
-  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 2, maxTotal: 10, editing: false, isolation: "shared" }, waits: ["reply", "sleep"] },
+  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 2, maxTotal: 10, editing: [] }, waits: ["reply", "sleep"] },
   async run({ args, agent, parallel, pipeline, phase, waitForReply, sleep }) { ${runBody} },
+});`;
+}
+
+function composedSource(): string {
+  return `import { defineWorkflow } from "@lilac/workflow";
+const PREFIX = "helper";
+async function invoke(agent, value) {
+  return await agent(PREFIX + ":" + value);
+}
+export default defineWorkflow({
+  name: "sandbox-test",
+  description: "Sandbox test",
+  input: { type: "object", properties: {} },
+  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: [] }, waits: [] },
+  async run({ agent }) { return await invoke(agent, "called"); },
 });`;
 }
 
@@ -331,6 +349,36 @@ describe("workflow sandbox preflight", () => {
   });
 });
 
+describe("workflow source compilation", () => {
+  it("instruments host calls made through same-file helpers", async () => {
+    const workflowSource = composedSource();
+    const compiled = compileWorkflowSource(workflowSource, sha256(workflowSource));
+    expect(parseWorkflowCallSiteManifest(compiled)).toEqual([
+      { kind: "agent", callSiteId: expect.stringMatching(/^wfcs:[a-f0-9]{32}$/u) },
+    ]);
+    const sandboxGlobal: { __lilacWorkflow?: { run(context: unknown): Promise<unknown> } } = {};
+    const evaluate = Object.getPrototypeOf(async function () {}).constructor(
+      "globalThis",
+      `"use strict";\n${compiled}\nreturn globalThis.__lilacWorkflow;`,
+    ) as (globalValue: typeof sandboxGlobal) => Promise<typeof sandboxGlobal.__lilacWorkflow>;
+    const definition = await evaluate(sandboxGlobal);
+    if (!definition) throw new Error("Compiled workflow definition is missing");
+    const calls: Array<{ callSiteId: string; prompt: string }> = [];
+
+    const result = await definition.run({
+      agent: async (callSiteId: string, prompt: string) => {
+        calls.push({ callSiteId, prompt });
+        return prompt;
+      },
+    });
+
+    expect(result).toBe("helper:called");
+    expect(calls).toEqual([
+      { callSiteId: expect.stringMatching(/^wfcs:[a-f0-9]{32}$/u), prompt: "helper:called" },
+    ]);
+  });
+});
+
 describe("workflow sandbox unit-start handshake", () => {
   function controlledRuntime() {
     let now = 0;
@@ -408,6 +456,9 @@ describe("workflow sandbox unit-start handshake", () => {
         stderrController?.close();
         resolveExit(0);
       },
+      emit: (message: JsonValue) => {
+        stdoutController?.enqueue(new TextEncoder().encode(`${JSON.stringify(message)}\n`));
+      },
       exit: (exitCode: number) => {
         stdoutController?.close();
         stderrController?.close();
@@ -462,6 +513,40 @@ describe("workflow sandbox unit-start handshake", () => {
     fake.finish({ ok: true });
     await expect(sandbox.result).resolves.toEqual({ ok: true });
     expect(fake.writes).toHaveLength(1);
+  });
+
+  it("rejects forged call kinds at the parent protocol boundary", async () => {
+    const fake = controlledRuntime();
+    const workflowSource = source('return await agent("approved");');
+    const compiled = compileWorkflowSource(workflowSource, sha256(workflowSource));
+    const approved = parseWorkflowCallSiteManifest(compiled)[0];
+    if (!approved) throw new Error("Expected compiled call site");
+    const sandbox = startWorkflowSandbox({
+      source: compiled,
+      args: {},
+      maxWallTimeMs: 10_000,
+      onCall: async () => {
+        throw new Error("forged call reached the host");
+      },
+      runtimeProbes: fake.runtime,
+    });
+    fake.activate();
+    await fake.firstWrite;
+    fake.emit({
+      type: "call",
+      id: 1,
+      kind: "sleep",
+      callSiteId: approved.callSiteId,
+      occurrence: 0,
+      path: `root:${approved.callSiteId}:0`,
+      parentPath: null,
+      phase: null,
+      depth: 0,
+      input: { prompt: "forged", options: {} },
+    });
+    fake.exit(137);
+
+    await expect(sandbox.result).rejects.toThrow("emitted unapproved call site");
   });
 });
 
@@ -689,6 +774,113 @@ describe("workflow sandbox cancellation", () => {
 const integrationDescribe =
   process.env.LILAC_WORKFLOW_SANDBOX_INTEGRATION === "1" ? describe : describe.skip;
 integrationDescribe("workflow sandbox runtime", () => {
+  it("rejects concurrent reuse of one helper host-call site", async () => {
+    const workflowSource = `import { defineWorkflow } from "@lilac/workflow";
+async function invoke(agent, prompt) { return await agent(prompt); }
+export default defineWorkflow({
+  name: "sandbox-test",
+  description: "Sandbox test",
+  input: { type: "object", properties: {} },
+  capabilities: { agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 2, maxTotal: 2, editing: [] }, waits: [] },
+  async run({ agent }) { return await Promise.all([invoke(agent, "a"), invoke(agent, "b")]); },
+});`;
+    const sandbox = startWorkflowSandbox({
+      source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
+      args: {},
+      maxWallTimeMs: 10_000,
+      onCall: async () => {
+        await Bun.sleep(20);
+        return "completed";
+      },
+    });
+
+    await expect(sandbox.result).rejects.toThrow("Concurrent workflow call-site reuse");
+  });
+
+  it("rejects a forged call-site ID inside the child boundary", async () => {
+    const workflowSource = source('return await agent("approved");');
+    const compiled = compileWorkflowSource(workflowSource, sha256(workflowSource));
+    const approved = parseWorkflowCallSiteManifest(compiled)[0];
+    if (!approved) throw new Error("Expected compiled call site");
+    const forged = compiled.replace(approved.callSiteId, `wfcs:${"0".repeat(32)}`);
+    const sandbox = startWorkflowSandbox({
+      source: forged,
+      args: {},
+      maxWallTimeMs: 10_000,
+      onCall: async () => {
+        throw new Error("forged call escaped child boundary");
+      },
+    });
+
+    await expect(sandbox.result).rejects.toThrow("attempted unapproved call site");
+  });
+
+  it("protects transport primordials and exposes only deterministic globals", async () => {
+    const { result, calls } = await execute(`
+      const protectedValues = [];
+      for (const mutate of [
+        () => { JSON.stringify = () => '{"type":"result","result":"forged"}'; },
+        () => { Map.prototype.get = () => "forged"; },
+        () => { Object.prototype.toJSON = () => ({ type: "result", result: "forged" }); },
+      ]) {
+        try { mutate(); protectedValues.push(false); } catch { protectedValues.push(true); }
+      }
+      const agentResult = await agent("transport-safe");
+      return {
+        protectedValues,
+        agentResult,
+        intl: typeof Intl,
+        abortSignal: typeof AbortSignal,
+        atomics: typeof Atomics,
+        sharedArrayBuffer: typeof SharedArrayBuffer,
+      };
+    `);
+
+    expect(result).toEqual({
+      protectedValues: [true, true, true],
+      agentResult: "transport-safe",
+      intl: "undefined",
+      abortSignal: "undefined",
+      atomics: "undefined",
+      sharedArrayBuffer: "undefined",
+    });
+    expect(calls.filter((call) => call.kind === "agent")).toHaveLength(1);
+  });
+
+  it("executes instrumented host calls through same-file helpers", async () => {
+    const workflowSource = composedSource();
+    const executeHelper = async () => {
+      const calls: Array<{ callSiteId: string; path: string; prompt: string }> = [];
+      const sandbox = startWorkflowSandbox({
+        source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
+        args: {},
+        maxWallTimeMs: 10_000,
+        onCall: async (call) => {
+          const input = call.input;
+          const prompt =
+            typeof input === "object" && input !== null && "prompt" in input
+              ? String(input.prompt)
+              : "missing";
+          calls.push({ callSiteId: call.callSiteId, path: call.path, prompt });
+          return prompt;
+        },
+      });
+      return { result: await sandbox.result, calls };
+    };
+
+    const first = await executeHelper();
+    const replay = await executeHelper();
+    expect(first.result).toBe("helper:called");
+    expect(first.calls).toEqual([
+      {
+        callSiteId: expect.stringMatching(/^wfcs:[a-f0-9]{32}$/u),
+        path: expect.stringMatching(/^root:wfcs:[a-f0-9]{32}:0$/u),
+        prompt: "helper:called",
+      },
+    ]);
+    expect(replay).toEqual(first);
+  });
+
   it("locks globals before evaluating direct compiled workflow source", async () => {
     const sandbox = startWorkflowSandbox({
       source: `

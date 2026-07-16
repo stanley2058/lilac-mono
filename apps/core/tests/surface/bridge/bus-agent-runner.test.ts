@@ -20,6 +20,7 @@ import {
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 import type { ModelMessage } from "ai";
+import { buildSyntheticToolCallId } from "@stanley2058/lilac-agent";
 
 import {
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
@@ -36,6 +37,8 @@ import {
   formatUnknownErrorForDisplay,
   buildHeartbeatOverlayForRequest,
   buildAutoInjectedThreadSearchMessages,
+  buildDeferredSubagentResultMessages,
+  hasDeferredSubagentResult,
   maybeBuildAutoInjectedThreadSearchMessages,
   buildPersistedHeartbeatMessages,
   buildSurfaceMetadataOverlay,
@@ -47,6 +50,7 @@ import {
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
   resolveAgentRunModel,
+  resolveSubagentProjectRoot,
   shouldRunAutoInjectedThreadSearch,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
@@ -67,6 +71,116 @@ import {
   shouldForceUrlDownloadForAnthropicFallback,
   withStableAnthropicUpstreamOrder,
 } from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
+
+describe("subagent workflow project roots", () => {
+  it("uses the trusted parent execution cwd for a direct primary subagent", () => {
+    expect(
+      resolveSubagentProjectRoot({
+        parentExecutionCwd: "/tmp/direct-project",
+        workflowPolicy: null,
+      }),
+    ).toBe("/tmp/direct-project");
+  });
+
+  it("uses the approved workflow root instead of a nested operation worktree cwd", () => {
+    expect(
+      resolveSubagentProjectRoot({
+        parentExecutionCwd: "/data/workflow-worktrees/operation-1",
+        workflowPolicy: { canonicalWorkspaceRoot: "/app/nested-workflow-project" },
+      }),
+    ).toBe("/app/nested-workflow-project");
+  });
+});
+
+describe("deferred subagent result", () => {
+  it("exposes the durable workflow run ID without exposing the child request ID", () => {
+    const messages = buildDeferredSubagentResultMessages({
+      runId: "wfrun:subagent:opaque-run",
+      parentToolCallId: "delegate-call",
+      childRequestId: "sub:synthetic-child-request",
+      profile: "explore",
+      sessionName: "audit",
+      status: "resolved",
+      ok: true,
+      finalText: "complete",
+    });
+
+    expect(messages).toMatchObject([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolName: "subagent_result",
+            input: { workflowRunId: "wfrun:subagent:opaque-run" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolName: "subagent_result",
+            output: {
+              type: "json",
+              value: { workflowRunId: "wfrun:subagent:opaque-run" },
+            },
+          },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(messages)).not.toContain("synthetic-child-request");
+  });
+
+  it("deduplicates a recovered legacy child-request result while emitting only the run ID form", () => {
+    const completion = {
+      runId: "wfrun:subagent:recovered-run",
+      parentToolCallId: "delegate-call",
+      childRequestId: "sub:legacy-child-request",
+      profile: "explore" as const,
+      sessionName: "recovered-audit",
+      status: "resolved" as const,
+      ok: true,
+      finalText: "recovered",
+    };
+    const legacyToolCallId = buildSyntheticToolCallId({
+      prefix: "subagent_result",
+      seed: completion.childRequestId,
+    });
+    const checkpointMessages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: legacyToolCallId,
+            toolName: "subagent_result",
+            output: { type: "json", value: { status: "resolved" } },
+          },
+        ],
+      },
+    ];
+
+    expect(hasDeferredSubagentResult(checkpointMessages, completion)).toBe(true);
+
+    const emitted = buildDeferredSubagentResultMessages(completion);
+    const emittedAssistant = emitted[0];
+    if (
+      emittedAssistant?.role !== "assistant" ||
+      !Array.isArray(emittedAssistant.content) ||
+      emittedAssistant.content[0]?.type !== "tool-call"
+    ) {
+      throw new Error("expected a synthetic subagent result tool call");
+    }
+    const emittedToolCallId = emittedAssistant.content[0].toolCallId;
+    expect(emittedToolCallId).toBe(
+      buildSyntheticToolCallId({ prefix: "subagent_result", seed: completion.runId }),
+    );
+    expect(emittedToolCallId).not.toBe(legacyToolCallId);
+    expect(hasDeferredSubagentResult(emitted, completion)).toBe(true);
+  });
+});
 
 describe("subagent model selection", () => {
   it("parses a subagent reasoning override from raw request metadata", () => {

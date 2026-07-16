@@ -9,6 +9,7 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./workflow-domain";
+import { parseWorkflowCallSiteManifest } from "./workflow-source-compiler";
 
 const MAX_PROTOCOL_BYTES = 16 * 1024 * 1024;
 const SANDBOX_MEMORY_BYTES = 256 * 1024 * 1024;
@@ -522,6 +523,9 @@ export function startWorkflowSandbox(input: {
   }
 
   const runtime = input.runtimeProbes ?? defaultRuntimeProbes;
+  const allowedCallSites = new Map(
+    parseWorkflowCallSiteManifest(input.source).map((entry) => [entry.callSiteId, entry.kind]),
+  );
   const helperPath = path.join(import.meta.dir, "workflow-sandbox-child.js");
   const unit = runtime.createUnitName();
   const memoryBytes = Math.min(input.memoryBytes ?? SANDBOX_MEMORY_BYTES, SANDBOX_MEMORY_BYTES);
@@ -807,6 +811,13 @@ export function startWorkflowSandbox(input: {
         if (!line) continue;
         const message = sandboxOutputSchema.parse(JSON.parse(line));
         if (message.type === "call") {
+          if (allowedCallSites.get(message.callSiteId) !== message.kind) {
+            const error = new Error(
+              `Workflow sandbox emitted unapproved call site ${message.kind}:${message.callSiteId}`,
+            );
+            await terminate(error);
+            throw error;
+          }
           void input.onCall(message).then(
             (value) =>
               subprocess.stdin.write(

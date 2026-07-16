@@ -147,6 +147,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
   const redis = new Redis(redisUrl);
 
   await fs.mkdir(cwd, { recursive: true });
+  const canonicalWorkspaceRoot = await fs.realpath(cwd);
 
   try {
     await redis.ping();
@@ -672,7 +673,6 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       workflowSubagentDispatcher = await WorkflowSubagentDispatcher.create({
         store: durableWorkflowStore,
-        workspaceRoot: cwd,
         dataDir: env.dataDir,
         toolResultArtifacts,
         onRunCreated: async (run) => {
@@ -753,7 +753,6 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         dataDir: env.dataDir,
       });
 
-      const canonicalWorkspaceRoot = await fs.realpath(cwd);
       toolServer = createToolServer({
         pluginManager,
         logger: createLogger({
@@ -836,7 +835,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
         pluginManager,
         customCommands,
-        cwd,
+        cwd: canonicalWorkspaceRoot,
         transcriptStore: transcriptStore ?? undefined,
         conversationThreads: conversationThreadToolService,
         toolResultArtifacts,
@@ -857,7 +856,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           ) {
             throw new Error("Cannot issue Level-2 authority for an unauthenticated request origin");
           }
-          return requestControlAuthority.issue({
+          const policy = {
             kind: "primary",
             requestId: input.requestId,
             sessionId: input.sessionId,
@@ -867,7 +866,11 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
             canonicalCwd: input.canonicalCwd,
             safetyMode: input.safetyMode,
             expiresAt: input.expiresAt,
-          });
+          } as const;
+          return {
+            capability: requestControlAuthority.issue(policy),
+            principal: policy.principal,
+          };
         },
         issueHeartbeatCapability: (input) =>
           requestControlAuthority.issue({
@@ -890,7 +893,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
 
       logger.info("Bus agent runner started", {
         subscriptionId: subId(subscriptionPrefix, "agent-runner"),
-        cwd,
+        cwd: canonicalWorkspaceRoot,
       });
 
       const restartLoad = gracefulRestartStore?.loadAndConsumeCompletedSnapshotDetailed() ?? {

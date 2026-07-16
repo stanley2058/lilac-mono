@@ -78,6 +78,12 @@ Default changes from v1:
 - `agent.reasoningDisplay: detailed`
 - `agent.subagents.idleTimeoutMs: 360000`; explicit v1 `defaultTimeoutMs` values are preserved, while omitted values use the new universal default.
 
+## Workflow Schema 18
+
+Workflow capability review now stores a normalized maximum envelope with per-operation narrowing, exact Level-1 tools, concrete Level-2 callable IDs, destination-scoped origin surface operations, allowed roots, bounded reasoning, and explicit trusted executable authority.
+
+Pre-envelope revisions cannot be interpreted without changing their approval meaning. Migration 18 therefore removes their dependent runs, triggers, approvals, and revision rows. Workflow source files remain in place and must be triggered and reviewed again under the new contract.
+
 ## Workflow Runtime Clean Break
 
 The unified programmatic workflow runtime does not read or migrate legacy `WorkflowDefinitionV2`/`WorkflowDefinitionV3` records. Existing `workflows` and `workflow_tasks` SQLite tables may remain on disk but are inert. Recreate scheduled jobs as JavaScript definitions plus `workflow.trigger.create`; existing approvals do not carry forward because approval identity includes the immutable source, schema, capability profile, project path, and runtime version.

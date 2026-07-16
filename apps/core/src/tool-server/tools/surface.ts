@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type";
 import { getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
+import type { ServerToolWorkflowPathAuthority } from "@stanley2058/lilac-plugin-runtime";
 
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
 import { hasCacheBurstProvider, type SurfaceAdapter } from "../../surface/adapter";
@@ -1359,6 +1360,7 @@ type SurfaceCallableEntry = {
     field: string;
   };
   hidden?: boolean;
+  workflowPathAuthority?: ServerToolWorkflowPathAuthority;
   handler: (input: Record<string, unknown>, opts: SurfaceCallOptions) => Promise<unknown>;
 };
 
@@ -1390,6 +1392,9 @@ export class Surface implements ServerTool {
       input: zodObjectToCliLines(entry.inputSchema),
       ...(entry.primaryPositional ? { primaryPositional: entry.primaryPositional } : {}),
       ...(entry.hidden !== undefined ? { hidden: entry.hidden } : {}),
+      ...(entry.workflowPathAuthority
+        ? { workflowPathAuthority: entry.workflowPathAuthority }
+        : {}),
     }));
   }
 
@@ -1459,6 +1464,9 @@ export class Surface implements ServerTool {
         inputSchema: messagesSendInputSchema,
         primaryPositional: {
           field: "text",
+        },
+        workflowPathAuthority: {
+          inputs: [{ field: "paths", cardinality: "many", target: "read-file" }],
         },
         handler: (input, opts) => this.callMessagesSend(input, opts.context),
       },

@@ -10,16 +10,20 @@ const ENV_PROXY = new Proxy(
   },
 );
 
+export const PARAMETER_EXPANSION_MARKER = "__LILAC_BASH_PARAMETER_EXPANSION_";
+
 type ParseEntry = unknown;
 
 type ShellQuoteOperator = { op: string };
 
 export function splitShellCommands(command: string): string[][] {
   if (hasUnclosedQuotes(command)) {
-    return [[command]];
+    throw new Error("Unclosed shell quote");
   }
 
-  const normalizedCommand = command.replace(/\n/g, " ; ");
+  rejectUnsupportedShellConstructs(command);
+
+  const normalizedCommand = normalizeBashParameterExpansions(command).replace(/\n/g, " ; ");
   const tokens = parse(normalizedCommand, ENV_PROXY) as ParseEntry[];
 
   const segments: string[][] = [];
@@ -79,6 +83,291 @@ export function splitShellCommands(command: string): string[][] {
   }
 
   return segments;
+}
+
+export function hasNontrivialParameterExpansion(token: string): boolean {
+  return token.includes(PARAMETER_EXPANSION_MARKER);
+}
+
+/**
+ * shell-quote does not preserve enough context to safely distinguish these
+ * Bash constructs from ordinary words. Fail closed instead of analyzing a
+ * lossy token stream.
+ */
+function rejectUnsupportedShellConstructs(command: string): void {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inComment = false;
+  let escaped = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    const next = command[i + 1];
+
+    if (inComment) {
+      if (char === "\n") inComment = false;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !inSingleQuote) {
+      escaped = true;
+      continue;
+    }
+    if (
+      char === "#" &&
+      !inSingleQuote &&
+      !inDoubleQuote &&
+      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
+    ) {
+      inComment = true;
+      continue;
+    }
+    if (!inDoubleQuote && char === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (!inSingleQuote && char === '"') {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+
+    if (char === "$" && next === "'") {
+      throw new Error("ANSI-C quoting is not safely supported");
+    }
+    if (char === "`") {
+      throw new Error("Backtick command substitution is not safely supported");
+    }
+    if (char === "$" && next === "(") {
+      throw new Error("Command substitution is not safely supported");
+    }
+    if (
+      char === "$" &&
+      isParameterExpansionStart(next) &&
+      expansionIsRedirectionTarget(command, i)
+    ) {
+      throw new Error("Dynamic redirection targets are not safely supported");
+    }
+    if ((char === "<" || char === ">") && next === "(") {
+      throw new Error("Process substitution is not safely supported");
+    }
+    if (!inDoubleQuote && char === "<" && next === "<") {
+      throw new Error("Heredocs are not safely supported");
+    }
+  }
+
+  rejectUnsupportedCommandForms(command);
+}
+
+function isParameterExpansionStart(char: string | undefined): boolean {
+  return char !== undefined && (char === "{" || /[A-Za-z0-9_#?*@!$-]/.test(char));
+}
+
+function expansionIsRedirectionTarget(command: string, expansionStart: number): boolean {
+  let i = expansionStart - 1;
+
+  // Move to the beginning of the shell word containing the expansion. This
+  // covers quoted and partially literal targets such as > "out-${suffix}".
+  while (i >= 0 && !/[\s;&|()<>]/.test(command[i] ?? "")) i--;
+  while (i >= 0 && /\s/.test(command[i] ?? "")) i--;
+
+  return command[i] === ">" || command[i] === "<";
+}
+
+/**
+ * shell-quote only understands a subset of Bash parameter expansion and throws
+ * on valid forms containing patterns with spaces (for example, ${name%% tools*}).
+ * Replace non-trivial expansions with inert variable references so command
+ * structure remains visible to the safety analyzer.
+ */
+function normalizeBashParameterExpansions(command: string): string {
+  let normalized = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inComment = false;
+  let escaped = false;
+  let markerIndex = 0;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+
+    if (inComment) {
+      normalized += char;
+      if (char === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      normalized += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\" && !inSingleQuote) {
+      normalized += char;
+      escaped = true;
+      continue;
+    }
+
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      normalized += char;
+      continue;
+    }
+
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      normalized += char;
+      continue;
+    }
+
+    if (
+      char === "#" &&
+      !inSingleQuote &&
+      !inDoubleQuote &&
+      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
+    ) {
+      inComment = true;
+      normalized += char;
+      continue;
+    }
+
+    if (!inSingleQuote && char === "$" && command[i + 1] === "{") {
+      const endIndex = findParameterExpansionEnd(command, i + 2);
+      if (endIndex === -1) {
+        throw new Error("Unclosed Bash parameter expansion");
+      }
+
+      const expression = command.slice(i + 2, endIndex);
+      if (containsExecutableSubstitution(expression)) {
+        throw new Error("Executable substitution inside Bash parameter expansion");
+      }
+      if (expression.endsWith("@P")) {
+        throw new Error("Bash prompt expansion can execute variable contents");
+      }
+
+      if (isSimpleParameterReference(expression)) {
+        normalized += command.slice(i, endIndex + 1);
+      } else {
+        normalized += `\${${PARAMETER_EXPANSION_MARKER}${markerIndex}}`;
+        markerIndex++;
+      }
+      i = endIndex;
+      continue;
+    }
+
+    normalized += char;
+  }
+
+  return normalized;
+}
+
+function findParameterExpansionEnd(command: string, startIndex: number): number {
+  let depth = 1;
+  let escaped = false;
+
+  for (let i = startIndex; i < command.length; i++) {
+    const char = command[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "$" && command[i + 1] === "{") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (char === "}") {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function containsExecutableSubstitution(expression: string): boolean {
+  return (
+    expression.includes("$(") ||
+    expression.includes("`") ||
+    expression.includes("<(") ||
+    expression.includes(">(")
+  );
+}
+
+function isSimpleParameterReference(expression: string): boolean {
+  return /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?*@!$-])$/.test(expression);
+}
+
+function rejectUnsupportedCommandForms(command: string): void {
+  const syntax = unquotedShellSyntax(command);
+  if (/(?:^|[\s;&|({])function\s+[A-Za-z_][A-Za-z0-9_.:-]*(?:\s*\(\s*\))?\s*[{(]/u.test(syntax)) {
+    throw new Error("Shell function definitions are not safely supported");
+  }
+  if (/(?:^|[\s;&|({])[A-Za-z_][A-Za-z0-9_.:-]*\s*\(\s*\)\s*[{(]/u.test(syntax)) {
+    throw new Error("Shell function definitions are not safely supported");
+  }
+  if (/(?:^|[\s;&|({])coproc(?:\s|$)/u.test(syntax)) {
+    throw new Error("Bash coprocesses are not safely supported");
+  }
+}
+
+function unquotedShellSyntax(command: string): string {
+  const syntax = [...command];
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inComment = false;
+  let escaped = false;
+
+  for (let i = 0; i < syntax.length; i++) {
+    const char = command[i];
+    if (inComment) {
+      syntax[i] = char === "\n" ? "\n" : " ";
+      if (char === "\n") inComment = false;
+      continue;
+    }
+    if (escaped) {
+      syntax[i] = " ";
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !inSingleQuote) {
+      syntax[i] = " ";
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      syntax[i] = " ";
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      syntax[i] = " ";
+      continue;
+    }
+    if (inSingleQuote || inDoubleQuote) {
+      syntax[i] = " ";
+      continue;
+    }
+    if (char === "#" && (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))) {
+      syntax[i] = " ";
+      inComment = true;
+    }
+  }
+
+  return syntax.join("");
 }
 
 function extractBacktickSubstitutions(token: string): string[][] {
@@ -175,15 +464,32 @@ function extractCommandSubstitution(
 function hasUnclosedQuotes(command: string): boolean {
   let inSingle = false;
   let inDouble = false;
+  let inComment = false;
   let escaped = false;
 
-  for (const char of command) {
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (inComment) {
+      if (char === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
     if (escaped) {
       escaped = false;
       continue;
     }
-    if (char === "\\") {
+    if (char === "\\" && !inSingle) {
       escaped = true;
+      continue;
+    }
+    if (
+      char === "#" &&
+      !inSingle &&
+      !inDouble &&
+      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
+    ) {
+      inComment = true;
       continue;
     }
     if (char === "'" && !inDouble) {

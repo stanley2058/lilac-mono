@@ -30,8 +30,7 @@ export default defineWorkflow({
       models: ["inherit"],
       maxConcurrent: 2,
       maxTotal: 8,
-      editing: false,
-      isolation: "shared",
+      editing: [],
     },
     waits: ["sleep", "reply", "sleep"],
   },
@@ -86,6 +85,29 @@ describe("workflow definition validation", () => {
     ).toThrow("expected string");
   });
 
+  it("hashes exact Level-2 and origin-surface callable IDs", () => {
+    const withCallable = (callableId: string) =>
+      source().replace(
+        'waits: ["sleep", "reply", "sleep"],',
+        `level2: { callables: ["${callableId}", "surface.messages.send"] },\n    surfaces: { origin: ["surface.messages.send"] },\n    waits: ["sleep", "reply", "sleep"],`,
+      );
+    const first = validateWorkflowSource({
+      name: "audit-routes",
+      source: withCallable("plugin.alpha.read"),
+    });
+    const second = validateWorkflowSource({
+      name: "audit-routes",
+      source: withCallable("plugin.beta.read"),
+    });
+
+    expect(first.capabilities.level2.callables).toEqual([
+      "plugin.alpha.read",
+      "surface.messages.send",
+    ]);
+    expect(first.capabilities.surfaces.origin).toEqual(["surface.messages.send"]);
+    expect(first.capabilitySha256).not.toBe(second.capabilitySha256);
+  });
+
   it("rejects syntax and AST shapes outside the exact static contract", () => {
     expect(() => validateWorkflowSource({ name: "Audit", source: source("Audit") })).toThrow(
       "strict lowercase kebab-case",
@@ -95,7 +117,7 @@ describe("workflow definition validation", () => {
         name: "audit-routes",
         source: `${source()}\nconsole.log("extra");`,
       }),
-    ).toThrow("exactly one import and one default export");
+    ).toThrow("last statement must be the default defineWorkflow export");
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -137,11 +159,171 @@ describe("workflow definition validation", () => {
     ).toThrow("Invalid workflow JavaScript syntax");
   });
 
-  it("enforces editing isolation and source-declared limits", () => {
-    const editing = source().replace("editing: false", "editing: true");
-    expect(() => validateWorkflowSource({ name: "audit-routes", source: editing })).toThrow(
-      "worktree isolation",
+  it("allows same-file pure function and constant helpers", () => {
+    const composed = source()
+      .replace(
+        "export default defineWorkflow({",
+        `const PROMPT_PREFIX = "Audit";
+
+async function audit(agent, directory) {
+  return await agent(\`${"${PROMPT_PREFIX}"} ${"${directory}"}\`);
+}
+
+const auditAll = async (pipeline, agent, directories) =>
+  await pipeline(directories, (directory) => audit(agent, directory));
+
+export default defineWorkflow({`,
+      )
+      .replace("async run({ args, agent })", "async run({ args, agent, pipeline })")
+      .replace(
+        "return agent(`Audit ${args.directory}`);",
+        "return auditAll(pipeline, agent, [args.directory]);",
+      );
+
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: composed })).not.toThrow();
+
+    const directArrow = source()
+      .replace(
+        "export default defineWorkflow({",
+        "const invoke = (agent, prompt) => agent(prompt);\nexport default defineWorkflow({",
+      )
+      .replace(
+        "return agent(`Audit ${args.directory}`);",
+        "return invoke(agent, `Audit ${args.directory}`);",
+      );
+    expect(() =>
+      validateWorkflowSource({ name: "audit-routes", source: directArrow }),
+    ).not.toThrow();
+  });
+
+  it("rejects executable, mutable, reserved, and module top-level declarations", () => {
+    const beforeExport = (declaration: string) =>
+      source().replace(
+        "export default defineWorkflow({",
+        `${declaration}\nexport default defineWorkflow({`,
+      );
+
+    for (const declaration of [
+      "const now = Date.now();",
+      'const parsed = JSON.parse("{}");',
+      "let mutable = 1;",
+      "const agent = () => null;",
+      'async function implicitHost() { return agent("missing parameter"); }',
+      'async function dynamicModule() { return import("./helper.js"); }',
+      'function ambientModule() { return require("./helper.js"); }',
+      'import helper from "./helper.js";',
+    ]) {
+      expect(() =>
+        validateWorkflowSource({ name: "audit-routes", source: beforeExport(declaration) }),
+      ).toThrow();
+    }
+  });
+
+  it("rejects host API aliases, member calls, writes, and unsafe helper reuse", () => {
+    const withBody = (body: string) =>
+      source().replace("return agent(`Audit ${args.directory}`);", body);
+    for (const body of [
+      "const alias = agent; return alias('forged');",
+      "agent = async () => 'forged'; return agent('forged');",
+      "return agent.call(null, 'forged');",
+      "return ({ agent }).agent('forged');",
+      'return ({ agent })["agent"]("forged");',
+    ]) {
+      expect(() =>
+        validateWorkflowSource({ name: "audit-routes", source: withBody(body) }),
+      ).toThrow();
+    }
+
+    const wrongForwarding = source()
+      .replace(
+        "export default defineWorkflow({",
+        "async function invoke(other, prompt) { return other(prompt); }\nexport default defineWorkflow({",
+      )
+      .replace("return agent(`Audit ${args.directory}`);", "return invoke(agent, 'forged');");
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: wrongForwarding })).toThrow(
+      "same-named helper parameter",
     );
+
+    const fakeForwarding = source()
+      .replace(
+        "export default defineWorkflow({",
+        "async function invoke(agent, prompt) { return agent(prompt); }\nexport default defineWorkflow({",
+      )
+      .replace(
+        "return agent(`Audit ${args.directory}`);",
+        "return invoke(async () => 'forged', 'forged');",
+      );
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: fakeForwarding })).toThrow(
+      "requires same-named host binding agent",
+    );
+
+    const concurrentReuse = source()
+      .replace(
+        "export default defineWorkflow({",
+        "async function invoke(agent, prompt) { return agent(prompt); }\nexport default defineWorkflow({",
+      )
+      .replace("async run({ args, agent })", "async run({ args, agent, parallel })")
+      .replace(
+        "return agent(`Audit ${args.directory}`);",
+        "return parallel([invoke(agent, 'a'), invoke(agent, 'b')]);",
+      );
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: concurrentReuse })).toThrow(
+      "cannot be invoked from multiple call sites",
+    );
+
+    const callbackReuse = concurrentReuse
+      .replace("async run({ args, agent, parallel })", "async run({ args, agent, pipeline })")
+      .replace(
+        "return parallel([invoke(agent, 'a'), invoke(agent, 'b')]);",
+        "return pipeline(['a'], invoke);",
+      );
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: callbackReuse })).toThrow(
+      "must be invoked directly",
+    );
+
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: withBody("return [args.directory].map(async (item) => agent(item));"),
+      }),
+    ).toThrow("cannot be called from an unscoped callback");
+  });
+
+  it("allows pure nested helpers without hiding host bindings", () => {
+    const nested = source().replace(
+      "return agent(`Audit ${args.directory}`);",
+      "function prompt(directory) { return `Audit ${directory}`; } return agent(prompt(args.directory));",
+    );
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: nested })).not.toThrow();
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          "return agent(`Audit ${args.directory}`);",
+          "async function invoke(prompt) { return agent(prompt); } return invoke(`Audit ${args.directory}`);",
+        ),
+      }),
+    ).toThrow("unscoped callback");
+  });
+
+  it("rejects non-finite numeric literals anywhere in workflow code", () => {
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace("minimum: 0", "minimum: 1e999"),
+      }),
+    ).toThrow("numeric literals must be finite");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace("return agent(`Audit ${args.directory}`);", "return 1e999;"),
+      }),
+    ).toThrow("numeric literals must be finite");
+  });
+
+  it("treats editing as a maximum envelope and enforces source-declared limits", () => {
+    const editing = source().replace("editing: []", 'editing: ["shared", "worktree"]');
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: editing })).not.toThrow();
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -159,7 +341,7 @@ describe("workflow definition validation", () => {
           "const agent = async () => 'forged'; return agent();",
         ),
       }),
-    ).toThrow("shadow reserved host API");
+    ).toThrow("only be called directly or forwarded unchanged");
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -174,7 +356,7 @@ describe("workflow definition validation", () => {
           "const helper = function agent() {}; return helper();",
         ),
       }),
-    ).toThrow("shadow reserved host API");
+    ).toThrow("only be called directly or forwarded unchanged");
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
@@ -183,15 +365,13 @@ describe("workflow definition validation", () => {
           "const Helper = class agent {}; return String(Helper);",
         ),
       }),
-    ).toThrow("shadow reserved host API");
+    ).toThrow("only be called directly or forwarded unchanged");
   });
 
-  it("rejects edit-capable explore profiles statically", () => {
-    const editingExplore = source()
-      .replace("editing: false", "editing: true")
-      .replace('isolation: "shared"', 'isolation: "worktree"');
-    expect(() => validateWorkflowSource({ name: "audit-routes", source: editingExplore })).toThrow(
-      "cannot enable the explore profile",
-    );
+  it("permits read-only explore operations in an edit-capable workflow", () => {
+    const editingExplore = source().replace("editing: []", 'editing: ["shared"]');
+    expect(() =>
+      validateWorkflowSource({ name: "audit-routes", source: editingExplore }),
+    ).not.toThrow();
   });
 });

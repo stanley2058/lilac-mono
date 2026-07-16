@@ -12,7 +12,7 @@ export default defineWorkflow({
   description: "${description}",
   input: { type: "object", properties: {} },
   capabilities: {
-    agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: false, isolation: "shared" },
+    agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: [] },
     waits: [],
   },
   async run({ args }) { return args; },

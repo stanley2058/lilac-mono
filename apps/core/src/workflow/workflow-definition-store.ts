@@ -158,6 +158,25 @@ export class WorkflowDefinitionStore {
     return { name, root, candidate };
   }
 
+  private async validateSource(input: {
+    name: string;
+    source: string;
+    safetyMode?: WorkflowSafetyMode;
+  }): Promise<ValidatedWorkflowDefinition> {
+    const validation = validateWorkflowSource(input);
+    for (const configuredRoot of validation.capabilities.agents.allowedRoots) {
+      const root = configuredRoot === "project" ? this.canonicalWorkspaceRoot : configuredRoot;
+      const stats = await fs.lstat(root).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Workflow allowed root does not exist: ${root} (${message})`);
+      });
+      if (stats.isSymbolicLink() || !stats.isDirectory() || (await fs.realpath(root)) !== root) {
+        throw new Error(`Workflow allowed root must be a canonical real directory: ${root}`);
+      }
+    }
+    return validation;
+  }
+
   async get(params: {
     scope: WorkflowDefinitionScope;
     name: string;
@@ -185,7 +204,7 @@ export class WorkflowDefinitionStore {
         normalizedPath: `${location.name}.js`,
         canonicalPath,
         source,
-        validation: validateWorkflowSource({
+        validation: await this.validateSource({
           name: location.name,
           source,
           safetyMode: params.safetyMode,
@@ -204,7 +223,7 @@ export class WorkflowDefinitionStore {
   }): Promise<ResolvedWorkflowDefinition> {
     const scope = workflowScopeSchema.parse(params.scope);
     const location = await this.definitionPath(scope, params.name, true);
-    const validation = validateWorkflowSource({
+    const validation = await this.validateSource({
       name: location.name,
       source: params.source,
       safetyMode: params.safetyMode,

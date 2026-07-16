@@ -24,22 +24,30 @@ function policy(
     operationId: "operation-1",
     dispatchEpoch: "dispatch-epoch-0001",
     profile: editing ? "general" : "explore",
+    model: "inherit",
+    reasoning: "provider-default",
+    tools: editing ? ["apply_patch", "read_file"] : ["read_file"],
+    executables: "none",
     safetyMode: "restricted",
     editing,
     isolation,
-    externalTools: false,
-    surfaceSends: false,
-    subagents: false,
+    delegation: false,
+    level2Callables: [],
+    surfaceOriginOperations: [],
     canonicalWorkspaceRoot: root,
+    canonicalAuthorityRoot: root,
+    canonicalRequestedCwd: root,
     canonicalCwd: root,
     canonicalProjectId: "project-1",
     originSessionId: "channel-1",
     originClient: "discord",
+    originUserId: "user-1",
     revisionId: "revision-1",
     sourceSha256: "a".repeat(64),
     inputSchemaSha256: "b".repeat(64),
     capabilitySha256: "c".repeat(64),
     argsSha256: "d".repeat(64),
+    operationInputSha256: "e".repeat(64),
   };
 }
 
@@ -51,9 +59,20 @@ describe("workflow Level-1 filesystem boundary", () => {
     await fs.mkdir(root);
     await fs.writeFile(path.join(root, "inside.txt"), "inside", "utf8");
     await fs.mkdir(path.join(root, ".git"));
+    await fs.mkdir(path.join(root, ".config", "gh"), { recursive: true });
+    await fs.mkdir(path.join(root, ".config", "project"), { recursive: true });
+    await fs.mkdir(path.join(root, ".local", "project"), { recursive: true });
+    await fs.mkdir(path.join(root, ".claude"), { recursive: true });
     await fs.mkdir(path.join(root, ".secrets"));
     await fs.mkdir(path.join(root, ".env.local"));
     await fs.writeFile(path.join(root, ".git", "index"), "index", "utf8");
+    await fs.writeFile(path.join(root, ".git", "config"), "credential", "utf8");
+    await fs.writeFile(path.join(root, ".config", "gh", "hosts.yml"), "token", "utf8");
+    await fs.writeFile(path.join(root, ".config", "project", "settings.json"), "{}", "utf8");
+    await fs.writeFile(path.join(root, ".local", "project", "cache"), "safe", "utf8");
+    await fs.writeFile(path.join(root, ".claude", "settings.json"), "{}", "utf8");
+    await fs.writeFile(path.join(root, ".claude", ".credentials.json"), "token", "utf8");
+    await fs.writeFile(path.join(root, ".npmrc"), "token", "utf8");
     await fs.writeFile(path.join(root, ".secrets", "token"), "token", "utf8");
     await fs.writeFile(path.join(root, ".envrc"), "TOKEN=1", "utf8");
     await fs.writeFile(path.join(root, ".env.local", "token"), "DESCENDANT=1", "utf8");
@@ -91,10 +110,25 @@ describe("workflow Level-1 filesystem boundary", () => {
       await expect(execute(read, { path: ".env" })).rejects.toThrow("protected");
       await expect(execute(read, { path: ".envrc" })).rejects.toThrow("protected");
       await expect(execute(read, { path: ".env.local/token" })).rejects.toThrow("protected");
-      await expect(execute(read, { path: ".git/index" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".git/config" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".config/gh/hosts.yml" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".npmrc" })).rejects.toThrow("protected");
+      await expect(execute(read, { path: ".claude/.credentials.json" })).rejects.toThrow(
+        "protected",
+      );
       await expect(execute(read, { path: ".secrets/token" })).rejects.toThrow("protected");
       await expect(execute(read, { path: "inside.txt" })).resolves.toMatchObject({ success: true });
-      expect(calls).toHaveLength(1);
+      await expect(execute(read, { path: ".git/index" })).resolves.toMatchObject({ success: true });
+      await expect(execute(read, { path: ".config/project/settings.json" })).resolves.toMatchObject(
+        { success: true },
+      );
+      await expect(execute(read, { path: ".local/project/cache" })).resolves.toMatchObject({
+        success: true,
+      });
+      await expect(execute(read, { path: ".claude/settings.json" })).resolves.toMatchObject({
+        success: true,
+      });
+      expect(calls).toHaveLength(5);
     } finally {
       await fs.rm(temp, { recursive: true, force: true });
     }
@@ -159,7 +193,7 @@ describe("workflow Level-1 filesystem boundary", () => {
     }
   });
 
-  it("allows shared editing only at the canonical workspace root", async () => {
+  it("allows shared editing throughout the canonical authority root", async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-level1-shared-write-"));
     const workspace = path.join(temp, "workspace");
     await fs.mkdir(workspace);
@@ -168,6 +202,8 @@ describe("workflow Level-1 filesystem boundary", () => {
     await fs.writeFile(path.join(workspace, ".env"), "SECRET=1", "utf8");
     await fs.writeFile(path.join(workspace, ".envrc"), "export SECRET=1", "utf8");
     await fs.writeFile(path.join(workspace, ".git", "config"), "[safe]", "utf8");
+    await fs.writeFile(path.join(temp, "outside.txt"), "outside", "utf8");
+    await fs.symlink(path.join(temp, "outside.txt"), path.join(workspace, "grep-link"));
     await fs.link(path.join(workspace, ".env"), path.join(workspace, "env-alias.txt"));
     await fs.link(path.join(workspace, ".git", "config"), path.join(workspace, "git-alias.txt"));
     const original = { execute: async () => ({ success: true }) };
@@ -206,8 +242,19 @@ describe("workflow Level-1 filesystem boundary", () => {
         toolName: "grep",
         policy: policy(workspace, false),
       });
-      await expect(execute(grep, { pattern: "safe" })).rejects.toThrow("Unsupported workflow");
-      expect(grepExecuted).toBe(false);
+      await expect(execute(grep, { pattern: "safe" })).rejects.toThrow("hard-linked");
+      expect(grepExecuted).toBe(true);
+      for (const [file, expected] of [
+        [".env", "protected"],
+        ["grep-link", "symbolic links"],
+      ] as const) {
+        const unsafeGrep = enforceWorkflowLevel1Boundary({
+          tool: { execute: async () => ({ results: [{ file, line: 1, text: "match" }] }) },
+          toolName: "grep",
+          policy: policy(workspace, false),
+        });
+        await expect(execute(unsafeGrep, { pattern: "match" })).rejects.toThrow(expected);
+      }
       const glob = enforceWorkflowLevel1Boundary({
         tool: { execute: async () => ({ paths: ["env-alias.txt"] }) },
         toolName: "glob",
@@ -226,21 +273,23 @@ describe("workflow Level-1 filesystem boundary", () => {
         }),
       ).rejects.toThrow("hard-linked");
 
-      const escapedAuthority = enforceWorkflowLevel1Boundary({
+      const sibling = path.join(temp, "sibling.txt");
+      await fs.writeFile(sibling, "sibling", "utf8");
+      const broaderAuthority = enforceWorkflowLevel1Boundary({
         tool: original,
         toolName: "edit_file",
         policy: {
           ...policy(workspace, true, "shared"),
-          canonicalWorkspaceRoot: temp,
+          canonicalAuthorityRoot: temp,
         },
       });
       await expect(
-        execute(escapedAuthority, {
-          path: "inside.txt",
-          oldText: "inside",
+        execute(broaderAuthority, {
+          path: sibling,
+          oldText: "sibling",
           newText: "changed",
         }),
-      ).rejects.toThrow("canonical workspace root");
+      ).resolves.toMatchObject({ success: true });
     } finally {
       await fs.rm(temp, { recursive: true, force: true });
     }

@@ -60,7 +60,10 @@ import {
   createToolResultOutputNormalizer,
   normalizeSubagentFinalText,
 } from "../../artifacts/tool-result-output-normalizer";
-import type { SubagentDelegationRegistration } from "../../tools/subagent";
+import type {
+  SubagentDelegationRegistration,
+  TrustedSubagentDelegationRegistration,
+} from "../../tools/subagent";
 import type {
   WorkflowLiveParentBridge,
   WorkflowLiveParentCompletion,
@@ -190,6 +193,13 @@ function supportsReadFileDirectAttachments(info: ModelCapabilityInfo | null): bo
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
+}
+
+export function resolveSubagentProjectRoot(input: {
+  parentExecutionCwd: string;
+  workflowPolicy: Pick<WorkflowRequestPolicy, "canonicalWorkspaceRoot"> | null;
+}): string {
+  return input.workflowPolicy?.canonicalWorkspaceRoot ?? input.parentExecutionCwd;
 }
 
 function buildResumePrompt(partialText: string): ModelMessage {
@@ -512,10 +522,10 @@ function isDeferredSubagentAcceptedResult(result: unknown): result is {
   );
 }
 
-function buildSubagentResultToolCallId(childRequestId: string): string {
+function buildSubagentResultToolCallId(seed: string): string {
   return buildSyntheticToolCallId({
     prefix: "subagent_result",
-    seed: childRequestId,
+    seed,
   });
 }
 
@@ -961,14 +971,15 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(params: {
   }
 }
 
-function buildDeferredSubagentResultMessages(
+export function buildDeferredSubagentResultMessages(
   completion: WorkflowLiveParentCompletion,
 ): ModelMessage[] {
-  const toolCallId = buildSubagentResultToolCallId(completion.childRequestId);
+  const toolCallId = buildSubagentResultToolCallId(completion.runId);
   const payload = {
     ok: completion.ok,
     mode: "deferred" as const,
     status: completion.status,
+    workflowRunId: completion.runId,
     profile: completion.profile,
     sessionName: completion.sessionName,
     finalText: completion.finalText,
@@ -987,6 +998,7 @@ function buildDeferredSubagentResultMessages(
             profile: completion.profile,
             sessionName: completion.sessionName,
             status: completion.status,
+            workflowRunId: completion.runId,
           },
         },
       ],
@@ -1017,6 +1029,16 @@ function hasToolResult(messages: readonly ModelMessage[], toolCallId: string): b
     (message) =>
       message.role === "tool" &&
       message.content.some((part) => part.type === "tool-result" && part.toolCallId === toolCallId),
+  );
+}
+
+export function hasDeferredSubagentResult(
+  messages: readonly ModelMessage[],
+  completion: Pick<WorkflowLiveParentCompletion, "runId" | "childRequestId">,
+): boolean {
+  return (
+    hasToolResult(messages, buildSubagentResultToolCallId(completion.runId)) ||
+    hasToolResult(messages, buildSubagentResultToolCallId(completion.childRequestId))
   );
 }
 
@@ -1413,7 +1435,15 @@ export async function startBusAgentRunner(params: {
     canonicalCwd: string;
     safetyMode: SessionSafetyMode;
     expiresAt: number;
-  }) => string | Promise<string>;
+  }) =>
+    | {
+        capability: string;
+        principal: { platform: "discord" | "github"; userId: string };
+      }
+    | Promise<{
+        capability: string;
+        principal: { platform: "discord" | "github"; userId: string };
+      }>;
   issueHeartbeatCapability?: (input: {
     requestId: string;
     sessionId: string;
@@ -2092,6 +2122,8 @@ export async function startBusAgentRunner(params: {
     let workflowClaimTimer: ReturnType<typeof setInterval> | null = null;
     let preserveWorkflowClaim = false;
     let controlCapability: string | null = null;
+    let trustedFallbackSurface: TrustedSubagentDelegationRegistration["fallbackSurface"] | null =
+      null;
     const subagents = cfg.agent.subagents ?? DEFAULT_SUBAGENT_CONFIG;
 
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
@@ -2313,6 +2345,16 @@ export async function startBusAgentRunner(params: {
         }
         workflowRequestClaimed = true;
         workflowPolicy = authorized.policy;
+        trustedFallbackSurface =
+          authorized.policy.originSessionId &&
+          authorized.policy.originClient &&
+          authorized.policy.originUserId
+            ? {
+                platform: authorized.policy.originClient,
+                sessionId: authorized.policy.originSessionId,
+                userId: authorized.policy.originUserId,
+              }
+            : null;
         const cwdStats = await fs.lstat(authorized.policy.canonicalCwd);
         const canonicalCwd = await fs.realpath(authorized.policy.canonicalCwd);
         if (
@@ -2322,18 +2364,32 @@ export async function startBusAgentRunner(params: {
         ) {
           throw new Error("Workflow request cwd is not a canonical real directory");
         }
+        const authorityStats = await fs.lstat(authorized.policy.canonicalAuthorityRoot);
+        const canonicalAuthorityRoot = await fs.realpath(authorized.policy.canonicalAuthorityRoot);
         if (
-          !authorized.policy.editing &&
-          canonicalCwd !== authorized.policy.canonicalWorkspaceRoot
+          authorityStats.isSymbolicLink() ||
+          !authorityStats.isDirectory() ||
+          canonicalAuthorityRoot !== authorized.policy.canonicalAuthorityRoot
         ) {
-          throw new Error("Read-only workflow request cwd escaped the approved workspace");
+          throw new Error("Workflow authority root is not a canonical real directory");
+        }
+        const requestedStats = await fs.lstat(authorized.policy.canonicalRequestedCwd);
+        const canonicalRequestedCwd = await fs.realpath(authorized.policy.canonicalRequestedCwd);
+        const requestedRelative = path.relative(canonicalAuthorityRoot, canonicalRequestedCwd);
+        if (
+          requestedStats.isSymbolicLink() ||
+          !requestedStats.isDirectory() ||
+          canonicalRequestedCwd !== authorized.policy.canonicalRequestedCwd ||
+          requestedRelative === ".." ||
+          requestedRelative.startsWith(`..${path.sep}`)
+        ) {
+          throw new Error("Workflow requested cwd escaped its canonical authority root");
         }
         if (
-          authorized.policy.editing &&
-          authorized.policy.isolation === "shared" &&
-          canonicalCwd !== authorized.policy.canonicalWorkspaceRoot
+          (!authorized.policy.editing || authorized.policy.isolation === "shared") &&
+          canonicalCwd !== canonicalRequestedCwd
         ) {
-          throw new Error("Shared editing workflow request escaped the approved workspace");
+          throw new Error("Workflow request cwd does not match its approved operation cwd");
         }
         if (authorized.policy.editing && authorized.policy.isolation === "worktree") {
           const worktreeRoot = path.resolve(env.dataDir, "workflow-worktrees");
@@ -2357,6 +2413,9 @@ export async function startBusAgentRunner(params: {
       }
       if (workflowPolicy && workflowPolicy.profile !== runProfile) {
         throw new Error("Workflow request profile envelope does not match the runner profile");
+      }
+      if (workflowPolicy && workflowPolicy.reasoning !== subagentMeta.reasoning) {
+        throw new Error("Workflow request reasoning does not match the approved operation policy");
       }
       const maxSubagentDepth = subagents.maxDepth;
       if (subagentMeta.depth > maxSubagentDepth) {
@@ -2560,6 +2619,13 @@ export async function startBusAgentRunner(params: {
         runProfile === "primary"
           ? (next.modelOverride ?? parseRequestModelOverrideFromRaw(next.raw) ?? undefined)
           : next.modelOverride;
+      if (
+        workflowPolicy &&
+        requestModelOverride !==
+          (workflowPolicy.model === "inherit" ? undefined : workflowPolicy.model)
+      ) {
+        throw new Error("Workflow request model does not match the approved operation policy");
+      }
       const resolved = resolveAgentRunModel({
         cfg,
         runProfile,
@@ -2686,18 +2752,23 @@ export async function startBusAgentRunner(params: {
         !workflowPolicy &&
         (next.requestClient === "discord" || next.requestClient === "github")
       ) {
-        controlCapability =
-          (await params.issueControlCapability?.({
-            requestId: next.requestId,
-            sessionId: next.sessionId,
-            requestClient: next.requestClient,
-            canonicalCwd: cwd,
-            safetyMode,
-            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
-          })) ?? null;
-        if (!controlCapability) {
+        const issuedControl = await params.issueControlCapability?.({
+          requestId: next.requestId,
+          sessionId: next.sessionId,
+          requestClient: next.requestClient,
+          canonicalCwd: cwd,
+          safetyMode,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+        });
+        if (!issuedControl) {
           throw new Error("Primary request is missing server-issued Level-2 control authority");
         }
+        controlCapability = issuedControl.capability;
+        trustedFallbackSurface = {
+          platform: issuedControl.principal.platform,
+          sessionId: next.sessionId,
+          userId: issuedControl.principal.userId,
+        };
       }
 
       const additionalSessionPrompts = await waitForPreAgent(
@@ -2820,6 +2891,8 @@ export async function startBusAgentRunner(params: {
         queuedForSession: state.queue.length,
       });
 
+      const fallbackSurfaceForDelegation = trustedFallbackSurface;
+      const approvedWorkflowTools = workflowPolicy?.tools;
       const {
         tools,
         specs: level1ToolSpecs,
@@ -2859,26 +2932,32 @@ export async function startBusAgentRunner(params: {
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
               onActivity: (source: "tool" | "subagent") => markRunActivity(source),
               onSubagentDelegate:
-                workflowSubagentDispatcher && liveParentSession
+                workflowSubagentDispatcher && liveParentSession && fallbackSurfaceForDelegation
                   ? async (registration: SubagentDelegationRegistration) =>
-                      await workflowSubagentDispatcher.delegate(registration, {
-                        editing:
-                          registration.profile !== "explore" && (workflowPolicy?.editing ?? true),
-                        externalTools: workflowPolicy?.externalTools ?? true,
-                      })
+                      await workflowSubagentDispatcher.delegate(
+                        {
+                          ...registration,
+                          projectRoot: resolveSubagentProjectRoot({
+                            parentExecutionCwd: cwd,
+                            workflowPolicy,
+                          }),
+                          fallbackSurface: fallbackSurfaceForDelegation,
+                        },
+                        {
+                          editing:
+                            registration.profile !== "explore" && (workflowPolicy?.editing ?? true),
+                          level2Callables: workflowPolicy?.level2Callables ?? [
+                            "discovery.search",
+                            "search",
+                            "skills.brief",
+                            "skills.list",
+                          ],
+                        },
+                      )
                   : undefined,
             },
           },
-          allowedToolNames: workflowPolicy
-            ? new Set([
-                "bash",
-                "read_file",
-                "glob",
-                "fuzzy_search",
-                ...(workflowPolicy.editing ? ["edit_file", "apply_patch"] : []),
-                ...(workflowPolicy.subagents ? ["subagent_delegate"] : []),
-              ])
-            : undefined,
+          allowedToolNames: approvedWorkflowTools ? new Set(approvedWorkflowTools) : undefined,
           reportToolStatus: (update) => {
             bus
               .publish(lilacEventTypes.EvtAgentOutputToolCall, update, {
@@ -2898,6 +2977,17 @@ export async function startBusAgentRunner(params: {
           },
         }),
       );
+      if (approvedWorkflowTools) {
+        const exposedTools = [...level1ToolSpecs.keys()].sort();
+        if (
+          exposedTools.length !== approvedWorkflowTools.length ||
+          exposedTools.some((tool, index) => tool !== approvedWorkflowTools[index])
+        ) {
+          throw new Error(
+            `Approved workflow Level-1 tools are unavailable for this operation: expected ${approvedWorkflowTools.join(",")}; exposed ${exposedTools.join(",")}`,
+          );
+        }
+      }
 
       let transientRetryOutputStarted = false;
       const transientRetryController = createTransientModelRetryController({
@@ -3687,16 +3777,12 @@ export async function startBusAgentRunner(params: {
               finalText: await normalizeSubagentFinalText({
                 normalize: normalizeToolResultOutput,
                 finalText: completion.finalText,
-                toolCallId: buildSubagentResultToolCallId(completion.childRequestId),
+                toolCallId: buildSubagentResultToolCallId(completion.runId),
               }),
             })),
           );
           const unseen = normalized.filter(
-            (completion) =>
-              !hasToolResult(
-                agent.state.messages,
-                buildSubagentResultToolCallId(completion.childRequestId),
-              ),
+            (completion) => !hasDeferredSubagentResult(agent.state.messages, completion),
           );
           if (unseen.length > 0) {
             agent.appendMessages(unseen.flatMap(buildDeferredSubagentResultMessages));

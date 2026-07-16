@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils";
 
 export const WORKFLOW_MANUAL_RECONCILIATION_DETAIL =
   "Manual reconciliation required: terminal request outcome is ambiguous; cancel this run and create a new run";
@@ -42,6 +43,27 @@ const platformSchema = z.enum([
 
 export const WORKFLOW_AGENT_PROFILES = ["explore", "general", "self"] as const;
 export const workflowAgentProfileSchema = z.enum(WORKFLOW_AGENT_PROFILES);
+export const WORKFLOW_LEVEL1_TOOLS = [
+  "apply_patch",
+  "bash",
+  "batch",
+  "edit_file",
+  "glob",
+  "grep",
+  "read_file",
+  "subagent_delegate",
+] as const;
+export const workflowLevel1ToolSchema = z.enum(WORKFLOW_LEVEL1_TOOLS);
+export const workflowReasoningSchema = z.enum(MODEL_REASONING_EFFORTS);
+export const workflowEditingModeSchema = z.enum(["shared", "worktree"]);
+export const workflowExecutableAuthoritySchema = z.enum(["none", "trusted-container"]);
+
+const workflowCallableIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[a-z0-9]+(?:[._-][A-Za-z0-9]+)*$/u, "invalid callable ID");
+const workflowAllowedRootSchema = z.string().min(1).max(4_096);
 
 export function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -56,12 +78,22 @@ export type WorkflowSafetyMode = z.infer<typeof workflowSafetyModeSchema>;
 const workflowCapabilityProfileInputSchema = z
   .strictObject({
     agents: z.strictObject({
-      profiles: z.array(workflowAgentProfileSchema).max(WORKFLOW_AGENT_PROFILES.length),
-      models: z.array(z.string().min(1).max(200)).max(64),
-      editing: z.boolean(),
-      isolation: z.enum(["shared", "worktree"]),
+      profiles: z.array(workflowAgentProfileSchema).min(1).max(WORKFLOW_AGENT_PROFILES.length),
+      models: z.array(z.string().min(1).max(200)).min(1).max(64),
+      reasoning: z.array(workflowReasoningSchema).min(1).max(MODEL_REASONING_EFFORTS.length),
+      allowedRoots: z.array(workflowAllowedRootSchema).min(1).max(64),
+      tools: z.array(workflowLevel1ToolSchema).max(WORKFLOW_LEVEL1_TOOLS.length),
+      executables: workflowExecutableAuthoritySchema,
+      editing: z.array(workflowEditingModeSchema).max(2),
+      delegation: z.boolean(),
       maxConcurrent: z.number().int().min(1).max(64),
       maxTotal: z.number().int().min(1).max(10_000),
+    }),
+    level2: z.strictObject({
+      callables: z.array(workflowCallableIdSchema).max(512),
+    }),
+    surfaces: z.strictObject({
+      origin: z.array(workflowCallableIdSchema).max(64),
     }),
     maxNestingDepth: z.number().int().min(1).max(64),
     maxWallTimeMs: z
@@ -75,8 +107,6 @@ const workflowCapabilityProfileInputSchema = z
       .min(1_000)
       .max(24 * 60 * 60 * 1_000),
     waits: z.array(z.enum(["reply", "sleep"])).max(16),
-    surfaceSends: z.boolean(),
-    externalTools: z.boolean(),
     safety: z.strictObject({
       originatingMode: workflowSafetyModeSchema,
       escalation: z.enum(["none", "trusted_with_review"]),
@@ -90,23 +120,37 @@ const workflowCapabilityProfileInputSchema = z
         message: "maxConcurrent cannot exceed maxTotal",
       });
     }
-    if (
-      profile.agents.editing &&
-      profile.agents.isolation !== "worktree" &&
-      profile.agents.maxConcurrent > 1
-    ) {
+    if (profile.agents.delegation && !profile.agents.tools.includes("subagent_delegate")) {
       ctx.addIssue({
         code: "custom",
-        path: ["agents", "isolation"],
-        message: "parallel edit-capable agents require worktree isolation",
+        path: ["agents", "tools"],
+        message: "delegation authority requires the subagent_delegate tool",
       });
     }
-    if (profile.agents.editing && profile.agents.profiles.includes("explore")) {
+    if (!profile.agents.delegation && profile.agents.tools.includes("subagent_delegate")) {
       ctx.addIssue({
         code: "custom",
-        path: ["agents", "profiles"],
-        message: "edit-capable workflows cannot enable the explore profile",
+        path: ["agents", "tools"],
+        message: "subagent_delegate requires delegation authority",
       });
+    }
+    for (const operation of profile.surfaces.origin) {
+      if (!operation.startsWith("surface.") || !profile.level2.callables.includes(operation)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["surfaces", "origin"],
+          message: `origin surface operation must be an approved surface callable: ${operation}`,
+        });
+      }
+    }
+    for (const callableId of profile.level2.callables) {
+      if (callableId.startsWith("workflow.")) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["level2", "callables"],
+          message: "workflow control callables cannot be delegated to workflow children",
+        });
+      }
     }
     if (
       profile.safety.originatingMode === "restricted" &&
@@ -116,6 +160,16 @@ const workflowCapabilityProfileInputSchema = z
         code: "custom",
         path: ["safety", "escalation"],
         message: "restricted workflows cannot escalate to trusted mode",
+      });
+    }
+    if (
+      profile.safety.originatingMode === "restricted" &&
+      profile.agents.executables === "trusted-container"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "executables"],
+        message: "restricted workflows cannot request trusted container executables",
       });
     }
   });
@@ -138,6 +192,48 @@ export const workflowCapabilityProfileSchema = workflowCapabilityProfileInputSch
         code: "custom",
         path: ["agents", "models"],
         message: "models must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.agents.reasoning)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "reasoning"],
+        message: "reasoning values must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.agents.allowedRoots)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "allowedRoots"],
+        message: "allowed roots must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.agents.tools)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "tools"],
+        message: "tools must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.agents.editing)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agents", "editing"],
+        message: "editing modes must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.level2.callables)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["level2", "callables"],
+        message: "Level-2 callables must be sorted and unique",
+      });
+    }
+    if (!isSortedUnique(profile.surfaces.origin)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["surfaces", "origin"],
+        message: "origin surface operations must be sorted and unique",
       });
     }
     if (!isSortedUnique(profile.waits)) {
@@ -163,7 +259,13 @@ export function normalizeWorkflowCapabilityProfile(input: unknown): WorkflowCapa
       ...parsed.agents,
       profiles: sortedUnique(parsed.agents.profiles),
       models: sortedUnique(parsed.agents.models),
+      reasoning: sortedUnique(parsed.agents.reasoning),
+      allowedRoots: sortedUnique(parsed.agents.allowedRoots),
+      tools: sortedUnique(parsed.agents.tools),
+      editing: sortedUnique(parsed.agents.editing),
     },
+    level2: { callables: sortedUnique(parsed.level2.callables) },
+    surfaces: { origin: sortedUnique(parsed.surfaces.origin) },
     waits: sortedUnique(parsed.waits),
   });
 }

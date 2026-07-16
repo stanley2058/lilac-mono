@@ -19,6 +19,7 @@ import {
   type WorkflowWait,
 } from "../../src/workflow/workflow-domain";
 import { buildWorkflowProgressView } from "../../src/workflow/workflow-progress-view";
+import type { WorkflowRequestPolicy } from "../../src/workflow/workflow-request-authority";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -45,17 +46,21 @@ function revision(id = "revision-1", sourceHash = HASH_A): WorkflowRevision {
       agents: {
         profiles: ["explore"],
         models: ["inherit"],
-        editing: false,
-        isolation: "shared",
+        reasoning: ["provider-default"],
+        allowedRoots: ["project"],
+        tools: ["glob", "read_file"],
+        executables: "none",
+        editing: [],
+        delegation: false,
         maxConcurrent: 2,
         maxTotal: 8,
       },
+      level2: { callables: [] },
+      surfaces: { origin: [] },
       maxNestingDepth: 4,
       maxWallTimeMs: 60_000,
       operationIdleTimeoutMs: 10_000,
       waits: ["reply", "sleep"],
-      surfaceSends: false,
-      externalTools: false,
       safety: { originatingMode: "trusted", escalation: "none" },
     }),
     limits: {
@@ -65,7 +70,7 @@ function revision(id = "revision-1", sourceHash = HASH_A): WorkflowRevision {
       maxResultBytes: 10_000,
       maxRuntimeMemoryBytes: 256 * 1024 * 1024,
     },
-    runtimeVersion: "runtime-v1",
+    runtimeVersion: "lilac-workflow-js-v2",
     createdAt: 10,
   };
 }
@@ -121,6 +126,41 @@ function run(id: string, revisionId = "revision-1"): WorkflowRun {
   };
 }
 
+function trigger(input: {
+  id: string;
+  revisionId: string;
+  userId: string;
+  nextFireAt: number;
+  createdAt: number;
+}): WorkflowTrigger {
+  return {
+    triggerId: input.id,
+    revisionId: input.revisionId,
+    state: "active",
+    definition: { kind: "timestamp", at: input.nextFireAt },
+    args: {},
+    argsSha256: HASH_A,
+    schedulingPolicy: { skipMissed: true, overlap: "coalesce" },
+    origin: {
+      requestId: `request-${input.id}`,
+      sessionId: "session-1",
+      client: "discord",
+      userId: input.userId,
+      safetyMode: "trusted",
+      projectCwd: "/workspace",
+    },
+    completionTarget: { kind: "durable_surface" },
+    progressTarget: null,
+    nextFireAt: input.nextFireAt,
+    lastFireAt: null,
+    lastRunId: null,
+    claimedBy: null,
+    claimedAt: null,
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+  };
+}
+
 function operation(runId = "run-1", id = "operation-1"): WorkflowOperation {
   return {
     runId,
@@ -130,7 +170,23 @@ function operation(runId = "run-1", id = "operation-1"): WorkflowOperation {
     phase: "audit",
     label: "Inspect",
     kind: "agent",
-    input: { prompt: "inspect" },
+    input: {
+      prompt: "inspect",
+      options: {
+        profile: "explore",
+        model: "inherit",
+        reasoning: "provider-default",
+        cwd: "/workspace",
+        authorityRoot: "/workspace",
+        editing: false,
+        isolation: "shared",
+        tools: ["glob", "read_file"],
+        executables: "none",
+        level2Callables: [],
+        surfaceOriginOperations: [],
+        delegation: false,
+      },
+    },
     inputSha256: HASH_A,
     state: "queued",
     attempt: 0,
@@ -148,7 +204,449 @@ function operation(runId = "run-1", id = "operation-1"): WorkflowOperation {
   };
 }
 
+function requestPolicy(runId: string, dispatchEpoch: string): WorkflowRequestPolicy {
+  return {
+    runId,
+    operationId: "operation-1",
+    dispatchEpoch,
+    profile: "explore",
+    model: "inherit",
+    reasoning: "provider-default",
+    tools: ["glob", "read_file"],
+    executables: "none",
+    safetyMode: "trusted",
+    editing: false,
+    isolation: "shared",
+    delegation: false,
+    level2Callables: [],
+    surfaceOriginOperations: [],
+    canonicalWorkspaceRoot: "/workspace",
+    canonicalAuthorityRoot: "/workspace",
+    canonicalRequestedCwd: "/workspace",
+    canonicalCwd: "/workspace",
+    canonicalProjectId: "project-1",
+    originSessionId: "session-1",
+    originClient: "discord",
+    originUserId: "user-1",
+    revisionId: "revision-1",
+    sourceSha256: HASH_A,
+    inputSchemaSha256: HASH_A,
+    capabilitySha256: HASH_B,
+    argsSha256: HASH_A,
+    operationInputSha256: HASH_A,
+  };
+}
+
 describe("DurableWorkflowStore", () => {
+  it("serializes shared editors by durable authority-root lease", () => {
+    const path = dbPath("shared-editor-lease");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-shared-editor"),
+        pendingApproval: approval("run-shared-editor"),
+      });
+      expect(
+        store.transitionApproval({
+          approvalId: invocation.approval.approvalId,
+          from: "pending",
+          to: "approved",
+          now: 11,
+        }),
+      ).toBe(true);
+      expect(
+        store.tryClaimApprovedRun({
+          runId: invocation.run.runId,
+          claimerId: "engine-a",
+          now: 12,
+        }),
+      ).not.toBeNull();
+      expect(store.createOperation(operation(invocation.run.runId), "engine-a")).toBe(true);
+      expect(
+        store.createOperation(operation(invocation.run.runId, "operation-2"), "engine-a"),
+      ).toBe(true);
+      expect(
+        store.acquireSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          ownerId: "engine-a",
+          now: 13,
+          staleBefore: 0,
+        }),
+      ).toBe(true);
+      expect(
+        store.acquireSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-2",
+          ownerId: "engine-a",
+          now: 14,
+          staleBefore: 0,
+        }),
+      ).toBe(false);
+      expect(
+        store.tryClaimApprovedRun({
+          runId: invocation.run.runId,
+          claimerId: "engine-b",
+          now: 100,
+          staleAfterMs: 1,
+        }),
+      ).not.toBeNull();
+      expect(
+        store.acquireSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-2",
+          ownerId: "engine-b",
+          now: 100,
+          staleBefore: 99,
+        }),
+      ).toBe(true);
+      expect(
+        store.refreshSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-2",
+          ownerId: "engine-b",
+          now: 101,
+        }),
+      ).toBe(true);
+      expect(
+        store.releaseSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-2",
+          ownerId: "engine-a",
+        }),
+      ).toBe(false);
+      expect(
+        store.releaseSharedEditorLease({
+          authorityRoot: "/workspace",
+          runId: invocation.run.runId,
+          operationId: "operation-2",
+          ownerId: "engine-b",
+        }),
+      ).toBe(true);
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("fences prepared worktrees and exposes captured patches for cleanup reconciliation", () => {
+    const path = dbPath("worktree-output-protocol");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-worktree-output"),
+        pendingApproval: approval("run-worktree-output"),
+      });
+      expect(
+        store.transitionApproval({
+          approvalId: invocation.approval.approvalId,
+          from: "pending",
+          to: "approved",
+          now: 11,
+        }),
+      ).toBe(true);
+      expect(
+        store.tryClaimApprovedRun({
+          runId: invocation.run.runId,
+          claimerId: "engine-worktree",
+          now: 12,
+        }),
+      ).not.toBeNull();
+      expect(store.createOperation(operation(invocation.run.runId), "engine-worktree")).toBe(true);
+      expect(
+        store.recordWorktreePrepared({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "wrong-engine",
+          worktreePath: "/data/worktrees/operation-1",
+          baseCommit: "a".repeat(40),
+          now: 13,
+        }),
+      ).toBeNull();
+      expect(
+        store.recordWorktreePrepared({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-worktree",
+          worktreePath: "/data/worktrees/operation-1",
+          baseCommit: "a".repeat(40),
+          now: 13,
+        }),
+      ).toMatchObject({ state: "prepared", artifactId: null });
+      expect(
+        store.transitionOperation({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-worktree",
+          from: "queued",
+          to: "dispatched",
+          now: 14,
+        }),
+      ).toBe(true);
+      const artifactId = `workflow-worktree-patch:${HASH_A}`;
+      expect(
+        store.recordWorktreeCaptured({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-worktree",
+          artifactId,
+          patchSha256: HASH_A,
+          bytes: 123,
+          now: 15,
+        }),
+      ).toMatchObject({ state: "captured", artifactId, bytes: 123 });
+      expect(store.listWorktreeOutputsPendingCleanup()).toEqual([]);
+      expect(
+        store.transitionOperation({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-worktree",
+          from: "dispatched",
+          to: "running",
+          now: 16,
+        }),
+      ).toBe(true);
+      expect(
+        store.transitionOperation({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-worktree",
+          from: "running",
+          to: "succeeded",
+          output: "edited",
+          now: 17,
+        }),
+      ).toBe(true);
+      expect(store.listWorktreeOutputsPendingCleanup()).toMatchObject([
+        { runId: invocation.run.runId, operationId: "operation-1", state: "captured" },
+      ]);
+      expect(
+        store.recordWorktreeCleanupError({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          artifactId,
+          error: "retry cleanup",
+        }),
+      ).toBe(true);
+      expect(store.listWorktreeOutputs(invocation.run.runId)).toMatchObject([
+        { state: "captured", cleanupError: "retry cleanup" },
+      ]);
+      expect(
+        store.markWorktreeOutputCleaned({
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          artifactId,
+          now: 18,
+        }),
+      ).toBe(true);
+      expect(store.getWorktreeOutput(invocation.run.runId, "operation-1")).toMatchObject({
+        state: "cleaned",
+        cleanupError: null,
+        cleanedAt: 18,
+      });
+      expect(store.listWorktreeOutputsPendingCleanup()).toEqual([]);
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("pages missing surface bindings without skips and retries failures after restart", () => {
+    const path = dbPath("missing-binding-keyset");
+    let store = new DurableWorkflowStore(path);
+    try {
+      expect(store.createRevision(revision())).toBe(true);
+      for (let index = 1; index <= 5; index += 1) {
+        expect(
+          store.createRun({
+            ...run(`run-${index}`),
+            createdAt: index * 10,
+            updatedAt: index * 10,
+          }),
+        ).toBe(true);
+      }
+
+      const first = store.takeRunsMissingSurfaceBindingReconciliationPage({ limit: 2, now: 100 });
+      expect(first.map((entry) => entry.runId)).toEqual(["run-1", "run-2"]);
+      store.upsertSurfaceBinding({
+        runId: "run-1",
+        target: { platform: "discord", channelId: "channel-1", replyToMessageId: null },
+        messageRef: { platform: "discord", channelId: "channel-1", messageId: "card-1" },
+        lastRenderedSha256: HASH_A,
+        lastError: null,
+        retryCount: 0,
+        nextAttemptAt: null,
+        repairGeneration: 0,
+        renderedRepairGeneration: 0,
+        sendMayHaveSucceeded: false,
+        discoveryCursor: null,
+        createdAt: 100,
+        updatedAt: 100,
+      });
+      store.close();
+
+      store = new DurableWorkflowStore(path);
+      const second = store.takeRunsMissingSurfaceBindingReconciliationPage({ limit: 2, now: 200 });
+      expect(second.map((entry) => entry.runId)).toEqual(["run-3", "run-4"]);
+      for (const entry of second) {
+        store.upsertSurfaceBinding({
+          runId: entry.runId,
+          target: { platform: "discord", channelId: "channel-1", replyToMessageId: null },
+          messageRef: {
+            platform: "discord",
+            channelId: "channel-1",
+            messageId: `card-${entry.runId}`,
+          },
+          lastRenderedSha256: HASH_A,
+          lastError: null,
+          retryCount: 0,
+          nextAttemptAt: null,
+          repairGeneration: 0,
+          renderedRepairGeneration: 0,
+          sendMayHaveSucceeded: false,
+          discoveryCursor: null,
+          createdAt: 200,
+          updatedAt: 200,
+        });
+      }
+      expect(
+        store
+          .takeRunsMissingSurfaceBindingReconciliationPage({ limit: 2, now: 300 })
+          .map((entry) => entry.runId),
+      ).toEqual(["run-5"]);
+      store.upsertSurfaceBinding({
+        runId: "run-5",
+        target: { platform: "discord", channelId: "channel-1", replyToMessageId: null },
+        messageRef: { platform: "discord", channelId: "channel-1", messageId: "card-5" },
+        lastRenderedSha256: HASH_A,
+        lastError: null,
+        retryCount: 0,
+        nextAttemptAt: null,
+        repairGeneration: 0,
+        renderedRepairGeneration: 0,
+        sendMayHaveSucceeded: false,
+        discoveryCursor: null,
+        createdAt: 300,
+        updatedAt: 300,
+      });
+      expect(
+        store
+          .takeRunsMissingSurfaceBindingReconciliationPage({ limit: 2, now: 400 })
+          .map((entry) => entry.runId),
+      ).toEqual(["run-2"]);
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("applies project and principal scope before run and trigger limits", () => {
+    const path = dbPath("scoped-pagination");
+    const store = new DurableWorkflowStore(path);
+    try {
+      const projectARevision = revision("revision-project-a");
+      const projectAOtherRevision = {
+        ...revision("revision-project-a-other"),
+        normalizedPath: "audit-other.js",
+        createdAt: 20,
+      };
+      const projectBRevision = {
+        ...revision("revision-project-b"),
+        canonicalProjectId: "project-2",
+        canonicalWorkspaceRoot: "/workspace/project-2",
+        createdAt: 30,
+      };
+      expect(store.createRevision(projectARevision)).toBe(true);
+      expect(store.createRevision(projectAOtherRevision)).toBe(true);
+      expect(store.createRevision(projectBRevision)).toBe(true);
+
+      expect(store.createRun(run("run-project-a", projectARevision.revisionId))).toBe(true);
+      expect(
+        store.createRun({
+          ...run("run-project-a-other", projectAOtherRevision.revisionId),
+          origin: {
+            ...run("unused").origin,
+            userId: "user-2",
+          },
+          createdAt: 20,
+          updatedAt: 20,
+        }),
+      ).toBe(true);
+      expect(
+        store.createRun({
+          ...run("run-project-b", projectBRevision.revisionId),
+          createdAt: 30,
+          updatedAt: 30,
+        }),
+      ).toBe(true);
+
+      expect(
+        store.createTrigger(
+          trigger({
+            id: "trigger-project-a",
+            revisionId: projectARevision.revisionId,
+            userId: "user-1",
+            nextFireAt: 300,
+            createdAt: 10,
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        store.createTrigger(
+          trigger({
+            id: "trigger-project-a-other",
+            revisionId: projectAOtherRevision.revisionId,
+            userId: "user-2",
+            nextFireAt: 100,
+            createdAt: 20,
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        store.createTrigger(
+          trigger({
+            id: "trigger-project-b",
+            revisionId: projectBRevision.revisionId,
+            userId: "user-1",
+            nextFireAt: 50,
+            createdAt: 30,
+          }),
+        ),
+      ).toBe(true);
+
+      expect(
+        store
+          .listRuns({
+            canonicalProjectId: "project-1",
+            originClient: "discord",
+            originUserId: "user-1",
+            limit: 1,
+          })
+          .map((entry) => entry.runId),
+      ).toEqual(["run-project-a"]);
+      expect(
+        store
+          .listTriggers({
+            canonicalProjectId: "project-1",
+            originClient: "discord",
+            originUserId: "user-1",
+            limit: 1,
+          })
+          .map((entry) => entry.triggerId),
+      ).toEqual(["trigger-project-a"]);
+    } finally {
+      store.close();
+      rmSync(path, { force: true });
+    }
+  });
+
   it("authorizes dispatch atomically and rejects forged, revoked, or live-owned requests", () => {
     const path = dbPath("dispatch-authority");
     const store = new DurableWorkflowStore(path);
@@ -173,28 +671,22 @@ describe("DurableWorkflowStore", () => {
       ).not.toBeNull();
       expect(store.createOperation(operation(invocation.run.runId), "engine-1")).toBe(true);
       const token = crypto.randomUUID() + crypto.randomUUID();
-      const policy = {
-        runId: invocation.run.runId,
-        operationId: "operation-1",
-        dispatchEpoch: "dispatch-epoch-0001",
-        profile: "explore" as const,
-        safetyMode: "trusted" as const,
-        editing: false,
-        isolation: "shared" as const,
-        externalTools: false,
-        surfaceSends: false,
-        subagents: false,
-        canonicalWorkspaceRoot: "/workspace",
-        canonicalCwd: "/workspace",
-        canonicalProjectId: "project-1",
-        originSessionId: "session-1",
-        originClient: "discord" as const,
-        revisionId: "revision-1",
-        sourceSha256: HASH_A,
-        inputSchemaSha256: HASH_A,
-        capabilitySha256: HASH_B,
-        argsSha256: HASH_A,
-      };
+      const policy = requestPolicy(invocation.run.runId, "dispatch-epoch-0001");
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:request-1",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-1",
+          token,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          policy: { ...policy, originUserId: "payload-forged-user" },
+          now: 13,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).toBeNull();
       expect(
         store.authorizeAgentDispatch({
           requestId: "wfr:request-1",
@@ -277,6 +769,32 @@ describe("DurableWorkflowStore", () => {
           now: 16,
         }),
       ).not.toBeNull();
+      const tamper = new Database(path);
+      tamper
+        .query(
+          `UPDATE workflow_request_dispatches
+           SET policy_json = json_set(policy_json, '$.level2Callables', json(?))
+           WHERE request_id = ?`,
+        )
+        .run(JSON.stringify(["surface.messages.send"]), "wfr:request-1");
+      tamper.close();
+      expect(
+        store.authorizeWorkflowRequest({
+          requestId: "wfr:request-1",
+          token,
+          sessionId: "workflow:run-authority:operation-1",
+          platform: "unknown",
+          now: 16,
+        }),
+      ).toBeNull();
+      expect(() =>
+        store.getWorkflowRequestDispatchHandoff({ requestId: "wfr:request-1", now: 16 }),
+      ).toThrow("invalid durable policy identity");
+      const restore = new Database(path);
+      restore
+        .query("UPDATE workflow_request_dispatches SET policy_json = ? WHERE request_id = ?")
+        .run(JSON.stringify(policy), "wfr:request-1");
+      restore.close();
       const replacementToken = crypto.randomUUID() + crypto.randomUUID();
       const replacementPolicy = { ...policy, dispatchEpoch: "dispatch-epoch-0002" };
       expect(
@@ -347,28 +865,7 @@ describe("DurableWorkflowStore", () => {
       store.tryClaimApprovedRun({ runId: invocation.run.runId, claimerId: "engine", now: 12 });
       store.createOperation(operation(invocation.run.runId), "engine");
       const token = crypto.randomUUID() + crypto.randomUUID();
-      const policy = {
-        runId: invocation.run.runId,
-        operationId: "operation-1",
-        dispatchEpoch: "dispatch-epoch-terminal-rerun",
-        profile: "explore" as const,
-        safetyMode: "trusted" as const,
-        editing: false,
-        isolation: "shared" as const,
-        externalTools: false,
-        surfaceSends: false,
-        subagents: false,
-        canonicalWorkspaceRoot: "/workspace",
-        canonicalCwd: "/workspace",
-        canonicalProjectId: "project-1",
-        originSessionId: "session-1",
-        originClient: "discord" as const,
-        revisionId: "revision-1",
-        sourceSha256: HASH_A,
-        inputSchemaSha256: HASH_A,
-        capabilitySha256: HASH_B,
-        argsSha256: HASH_A,
-      };
+      const policy = requestPolicy(invocation.run.runId, "dispatch-epoch-terminal-rerun");
       const requestId = "wfr:terminal-rerun";
       const dispatchInput = {
         requestId,
@@ -631,12 +1128,37 @@ describe("DurableWorkflowStore", () => {
           name: "round 15 canonical manual reconciliation state",
           appliedAt: expect.any(Number),
         },
+        {
+          version: 15,
+          name: "backfill workflow dispatch origin principal",
+          appliedAt: expect.any(Number),
+        },
+        {
+          version: 16,
+          name: "bounded missing surface binding reconciliation",
+          appliedAt: expect.any(Number),
+        },
+        {
+          version: 17,
+          name: "durable isolated editing outputs",
+          appliedAt: expect.any(Number),
+        },
+        {
+          version: 18,
+          name: "maximum-envelope capability contract",
+          appliedAt: expect.any(Number),
+        },
+        {
+          version: 19,
+          name: "complete envelope retirement and shared editor leases",
+          appliedAt: expect.any(Number),
+        },
       ]);
       expect(first.createRevision(revision())).toBe(true);
       first.close();
 
       const reopened = new DurableWorkflowStore(path);
-      expect(reopened.listMigrations()).toHaveLength(14);
+      expect(reopened.listMigrations()).toHaveLength(19);
       expect(reopened.getRevision("revision-1")?.name).toBe("audit");
       reopened.close();
 
@@ -660,7 +1182,196 @@ describe("DurableWorkflowStore", () => {
       expect(indexes).toContain("idx_workflow_operations_claim");
       expect(indexes).toContain("idx_workflow_waits_match");
       expect(indexes).toContain("idx_workflow_triggers_due");
+      expect(indexes).toContain("idx_workflow_missing_surface_bindings_created");
+      expect(indexes).toContain("idx_workflow_worktree_outputs_cleanup");
       db.close();
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("retires pre-envelope revisions instead of reinterpreting their approvals", () => {
+    const path = dbPath("pre-envelope-retirement");
+    try {
+      const initial = new DurableWorkflowStore(path);
+      initial.close();
+      const old = new Database(path);
+      old.run("DELETE FROM workflow_schema_migrations WHERE version = 18");
+      old.run(
+        `INSERT INTO workflow_revisions (
+           revision_id, canonical_project_id, canonical_workspace_root, scope, normalized_path,
+           name, snapshot_artifact_id, source_sha256, input_schema_sha256, capability_sha256,
+           metadata_json, input_schema_json, capabilities_json, limits_json, runtime_version,
+           created_at
+         ) VALUES (?, ?, ?, 'project', 'old.js', 'old', ?, ?, ?, ?, ?, ?, ?, ?, 'lilac-workflow-js-v2', 1)`,
+        [
+          "old-revision",
+          "old-project",
+          "/workspace",
+          "old-artifact",
+          HASH_A,
+          HASH_A,
+          HASH_B,
+          JSON.stringify({ name: "old", description: "Old contract" }),
+          JSON.stringify({ type: "object", additionalProperties: false }),
+          JSON.stringify({
+            agents: {
+              profiles: ["explore"],
+              models: ["inherit"],
+              allowedRoots: ["project"],
+              editing: false,
+              isolation: "shared",
+              maxConcurrent: 1,
+              maxTotal: 1,
+            },
+            waits: [],
+            externalTools: false,
+            surfaceSends: false,
+          }),
+          JSON.stringify({
+            maxSourceBytes: 1,
+            maxInputBytes: 1,
+            maxOperationOutputBytes: 1,
+            maxResultBytes: 1,
+            maxRuntimeMemoryBytes: 256 * 1024 * 1024,
+          }),
+        ],
+      );
+      old.close();
+
+      const migrated = new DurableWorkflowStore(path);
+      expect(migrated.getRevision("old-revision")).toBeNull();
+      expect(migrated.listMigrations().at(-1)?.version).toBe(19);
+      migrated.close();
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("backfills active prior-schema dispatch principals only from the referenced run", () => {
+    const path = dbPath("dispatch-origin-principal-upgrade");
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    try {
+      const initial = new DurableWorkflowStore(path);
+      const invocation = initial.createInvocation({
+        revision: revision(),
+        run: run("run-principal-upgrade"),
+        pendingApproval: approval("run-principal-upgrade"),
+      });
+      initial.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      initial.tryClaimApprovedRun({
+        runId: invocation.run.runId,
+        claimerId: "engine-upgrade",
+        now: 12,
+      });
+      initial.createOperation(operation(invocation.run.runId), "engine-upgrade");
+      const policy = requestPolicy(invocation.run.runId, "dispatch-epoch-upgrade-1");
+      expect(
+        initial.authorizeAgentDispatch({
+          requestId: "wfr:principal-upgrade",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-upgrade",
+          token,
+          sessionId: "workflow:principal-upgrade",
+          platform: "unknown",
+          policy,
+          now: 13,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).not.toBeNull();
+      initial.close();
+
+      const priorSchema = new Database(path);
+      priorSchema.run(
+        "UPDATE workflow_request_dispatches SET policy_json = json_remove(policy_json, '$.originUserId')",
+      );
+      priorSchema.run("DELETE FROM workflow_schema_migrations WHERE version = 15");
+      priorSchema.close();
+
+      const upgraded = new DurableWorkflowStore(path);
+      try {
+        expect(
+          upgraded.authorizeWorkflowRequest({
+            requestId: "wfr:principal-upgrade",
+            token,
+            sessionId: "workflow:principal-upgrade",
+            platform: "unknown",
+            now: 14,
+          })?.policy.originUserId,
+        ).toBe("user-1");
+        expect(upgraded.listMigrations()).toHaveLength(19);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("rejects a legacy dispatch policy instead of widening it during recovery", () => {
+    const path = dbPath("dispatch-overlapping-legacy-writer");
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    try {
+      const store = new DurableWorkflowStore(path);
+      const invocation = store.createInvocation({
+        revision: revision(),
+        run: run("run-overlapping-legacy-writer"),
+        pendingApproval: approval("run-overlapping-legacy-writer"),
+      });
+      store.transitionApproval({
+        approvalId: invocation.approval.approvalId,
+        from: "pending",
+        to: "approved",
+        now: 11,
+      });
+      store.tryClaimApprovedRun({
+        runId: invocation.run.runId,
+        claimerId: "engine-overlap",
+        now: 12,
+      });
+      store.createOperation(operation(invocation.run.runId), "engine-overlap");
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "wfr:overlapping-legacy-writer",
+          runId: invocation.run.runId,
+          operationId: "operation-1",
+          runOwnerId: "engine-overlap",
+          token,
+          sessionId: "workflow:overlapping-legacy-writer",
+          platform: "unknown",
+          policy: requestPolicy(invocation.run.runId, "dispatch-epoch-overlap-1"),
+          now: 13,
+          expiresAt: 1_000,
+          staleOwnerBefore: 0,
+        }),
+      ).not.toBeNull();
+      expect(store.listMigrations().some((migration) => migration.version === 15)).toBe(true);
+      store.close();
+
+      const legacyWriter = new Database(path);
+      legacyWriter.run(
+        "UPDATE workflow_request_dispatches SET policy_json = json_remove(policy_json, '$.originUserId')",
+      );
+      legacyWriter.close();
+
+      const rejecting = new DurableWorkflowStore(path);
+      expect(() =>
+        rejecting.authorizeWorkflowRequest({
+          requestId: "wfr:overlapping-legacy-writer",
+          token,
+          sessionId: "workflow:overlapping-legacy-writer",
+          platform: "unknown",
+          now: 14,
+        }),
+      ).toThrow();
+      rejecting.close();
     } finally {
       rmSync(path, { force: true });
     }
@@ -710,7 +1421,7 @@ describe("DurableWorkflowStore", () => {
         repairGeneration: 1,
         renderedRepairGeneration: 0,
       });
-      expect(upgraded.listMigrations()).toHaveLength(14);
+      expect(upgraded.listMigrations()).toHaveLength(19);
     } finally {
       upgraded.close();
       rmSync(path, { force: true });
@@ -808,28 +1519,7 @@ describe("DurableWorkflowStore", () => {
           token: "manual-reconciliation-token-123456",
           sessionId: "workflow:run-manual:operation-1",
           platform: "unknown",
-          policy: {
-            runId: "run-manual",
-            operationId: "operation-1",
-            dispatchEpoch: "manual-dispatch-epoch",
-            profile: "explore",
-            safetyMode: "trusted",
-            editing: false,
-            isolation: "shared",
-            externalTools: false,
-            surfaceSends: false,
-            subagents: false,
-            canonicalWorkspaceRoot: "/workspace",
-            canonicalCwd: "/workspace",
-            canonicalProjectId: "project-1",
-            originSessionId: "session-1",
-            originClient: "discord",
-            revisionId: "revision-1",
-            sourceSha256: HASH_A,
-            inputSchemaSha256: HASH_A,
-            capabilitySha256: HASH_B,
-            argsSha256: HASH_A,
-          },
+          policy: requestPolicy("run-manual", "manual-dispatch-epoch"),
           now: 13,
           expiresAt: 1_000,
           staleOwnerBefore: 0,
@@ -1353,28 +2043,7 @@ describe("DurableWorkflowStore", () => {
           token: dispatchToken,
           sessionId: "workflow:run-1:operation-1",
           platform: "unknown",
-          policy: {
-            runId: "run-1",
-            operationId: "operation-1",
-            dispatchEpoch: "dispatch-epoch-pause",
-            profile: "explore",
-            safetyMode: "trusted",
-            editing: false,
-            isolation: "shared",
-            externalTools: false,
-            surfaceSends: false,
-            subagents: false,
-            canonicalWorkspaceRoot: "/workspace",
-            canonicalCwd: "/workspace",
-            canonicalProjectId: "project-1",
-            originSessionId: "session-1",
-            originClient: "discord",
-            revisionId: "revision-1",
-            sourceSha256: HASH_A,
-            inputSchemaSha256: HASH_A,
-            capabilitySha256: HASH_B,
-            argsSha256: HASH_A,
-          },
+          policy: requestPolicy("run-1", "dispatch-epoch-pause"),
           now: 24,
           expiresAt: 1_000,
           staleOwnerBefore: 0,

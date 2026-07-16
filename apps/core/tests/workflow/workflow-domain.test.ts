@@ -24,17 +24,21 @@ function capabilities() {
     agents: {
       profiles: ["self", "explore", "self"],
       models: ["inherit", "fast", "inherit"],
-      editing: false,
-      isolation: "shared" as const,
+      reasoning: ["high", "provider-default", "high"] as const,
+      allowedRoots: ["project", "/srv/project", "project"],
+      tools: ["read_file", "glob", "read_file"] as const,
+      executables: "none" as const,
+      editing: [] as const,
+      delegation: false,
       maxConcurrent: 2,
       maxTotal: 8,
     },
+    level2: { callables: ["search", "content.inspect", "search"] },
+    surfaces: { origin: [] },
     maxNestingDepth: 4,
     maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: ["sleep", "reply", "sleep"] as const,
-    surfaceSends: false,
-    externalTools: false,
     safety: { originatingMode: "trusted" as const, escalation: "none" as const },
   };
 }
@@ -44,6 +48,9 @@ describe("durable workflow domain", () => {
     const normalized = normalizeWorkflowCapabilityProfile(capabilities());
     expect(normalized.agents.profiles).toEqual(["explore", "self"]);
     expect(normalized.agents.models).toEqual(["fast", "inherit"]);
+    expect(normalized.agents.reasoning).toEqual(["high", "provider-default"]);
+    expect(normalized.agents.allowedRoots).toEqual(["/srv/project", "project"]);
+    expect(normalized.level2.callables).toEqual(["content.inspect", "search"]);
     expect(normalized.waits).toEqual(["reply", "sleep"]);
     expect(() =>
       workflowRevisionSchema.parse({
@@ -74,9 +81,12 @@ describe("durable workflow domain", () => {
     expect(() =>
       normalizeWorkflowCapabilityProfile({
         ...capabilities(),
-        agents: { ...capabilities().agents, editing: true },
+        agents: {
+          ...capabilities().agents,
+          delegation: true,
+        },
       }),
-    ).toThrow("worktree isolation");
+    ).toThrow("subagent_delegate");
     expect(() =>
       normalizeWorkflowCapabilityProfile({
         ...capabilities(),

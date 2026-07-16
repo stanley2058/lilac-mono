@@ -96,6 +96,7 @@ async function writePluginServerTool(params: {
 describe("createToolServer", () => {
   it("sources workflow child context from an opaque server capability on list, help, and call", async () => {
     const calls: Array<{ callableId: string; sessionId?: string; cwd?: string }> = [];
+    let searchPresent = true;
     const tool: ServerTool = {
       id: "workflow-child-test",
       async init() {},
@@ -117,7 +118,7 @@ describe("createToolServer", () => {
             shortInput: [],
           },
           { callableId: "generate.image", name: "Generate", description: "write", shortInput: [] },
-        ];
+        ].filter((entry) => searchPresent || entry.callableId !== "search");
       },
       async call(callableId, _input, options) {
         calls.push({
@@ -142,22 +143,30 @@ describe("createToolServer", () => {
                 operationId: "operation-1",
                 dispatchEpoch: "dispatch-epoch-0001",
                 profile: "explore",
+                model: "inherit",
+                reasoning: "provider-default",
+                tools: ["read_file"],
+                executables: "none",
                 safetyMode: "trusted",
                 editing: false,
                 isolation: "shared",
-                externalTools: true,
-                surfaceSends: false,
-                subagents: false,
+                delegation: false,
+                level2Callables: ["search"],
+                surfaceOriginOperations: [],
                 canonicalWorkspaceRoot: "/approved",
+                canonicalAuthorityRoot: "/approved",
+                canonicalRequestedCwd: "/approved",
                 canonicalCwd: "/approved",
                 canonicalProjectId: "project-1",
                 originSessionId: "origin-channel",
                 originClient: "discord",
+                originUserId: "user-1",
                 revisionId: "revision-1",
                 sourceSha256: "a".repeat(64),
                 inputSchemaSha256: "b".repeat(64),
                 capabilitySha256: "c".repeat(64),
                 argsSha256: "d".repeat(64),
+                operationInputSha256: "e".repeat(64),
               },
             }
           : null,
@@ -218,6 +227,26 @@ describe("createToolServer", () => {
       expect(calls).toEqual([
         { callableId: "search", sessionId: "origin-channel", cwd: "/approved" },
       ]);
+
+      searchPresent = false;
+      const afterPluginRemoval = await server.app.handle(
+        new Request("http://localhost/list", { headers }),
+      );
+      expect(await afterPluginRemoval.json()).toEqual({ tools: [] });
+      expect(
+        (await server.app.handle(new Request("http://localhost/help/search", { headers }))).status,
+      ).toBe(404);
+      expect(
+        (
+          await server.app.handle(
+            new Request("http://localhost/call", {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body: JSON.stringify({ callableId: "search", input: { query: "example" } }),
+            }),
+          )
+        ).status,
+      ).toBe(404);
     } finally {
       await server.stop();
     }
@@ -284,6 +313,7 @@ describe("createToolServer", () => {
       ).toMatchObject({ isError: false, output: { ok: true } });
       expect(contexts).toHaveLength(1);
       expect(contexts[0]?.cwd).toBe("/workspace");
+      expect(contexts[0]?.projectRoot).toBe("/attacker-controlled");
       expect(
         (
           await server.app.handle(
@@ -364,11 +394,36 @@ describe("createToolServer", () => {
           )
         ).json(),
       ).toMatchObject({ isError: false, output: { ok: true } });
+      expect(
+        await (
+          await server.app.handle(
+            new Request("http://localhost/call", {
+              method: "POST",
+              headers: {
+                ...headers,
+                "content-type": "application/json",
+                "x-lilac-cwd": "/operator-selected-project",
+              },
+              body: JSON.stringify({ callableId: "workflow.operator-test", input: {} }),
+            }),
+          )
+        ).json(),
+      ).toMatchObject({ isError: false, output: { ok: true } });
       expect(contexts).toEqual([
         {
           requestId: "operator:request-1",
           toolCallId: "operator:request-1",
           cwd: "/canonical-workspace",
+          projectRoot: "/canonical-workspace",
+          safetyMode: "trusted",
+          serverOwnedRequest: true,
+          operator: true,
+        },
+        {
+          requestId: "operator:request-1",
+          toolCallId: "operator:request-1",
+          cwd: "/canonical-workspace",
+          projectRoot: "/operator-selected-project",
           safetyMode: "trusted",
           serverOwnedRequest: true,
           operator: true,
@@ -392,6 +447,9 @@ describe("createToolServer", () => {
             name: "send",
             description: "send",
             shortInput: [],
+            workflowPathAuthority: {
+              inputs: [{ field: "paths", cardinality: "many", target: "read-file" }],
+            },
           },
           { callableId: "workflow.start", name: "start", description: "start", shortInput: [] },
           { callableId: "read_file", name: "read", description: "read", shortInput: [] },
@@ -400,6 +458,7 @@ describe("createToolServer", () => {
       async call(callableId, _input, options) {
         called.push(callableId);
         expect(options?.context?.cwd).toBe("/canonical-workspace");
+        expect(options?.context?.projectRoot).toBeUndefined();
         expect(options?.context?.authenticatedPrincipal).toBeUndefined();
         return { ok: true };
       },
@@ -516,10 +575,19 @@ describe("createToolServer", () => {
             shortInput: [],
           },
           {
+            callableId: "custom.pathless",
+            name: "pathless",
+            description: "pathless plugin callable",
+            shortInput: [],
+          },
+          {
             callableId: "surface.messages.send",
             name: "send",
             description: "send",
             shortInput: [],
+            workflowPathAuthority: {
+              inputs: [{ field: "paths", cardinality: "many", target: "read-file" }],
+            },
           },
           {
             callableId: "surface.messages.edit",
@@ -566,22 +634,30 @@ describe("createToolServer", () => {
                 operationId: "operation-path",
                 dispatchEpoch: "dispatch-epoch-path",
                 profile: "explore",
+                model: "inherit",
+                reasoning: "provider-default",
+                tools: ["read_file"],
+                executables: "none",
                 safetyMode: "trusted",
                 editing: false,
                 isolation: "shared",
-                externalTools: true,
-                surfaceSends: true,
-                subagents: false,
+                delegation: false,
+                level2Callables: ["custom.pathless", "surface.messages.send"],
+                surfaceOriginOperations: ["surface.messages.send"],
                 canonicalWorkspaceRoot: workspace,
+                canonicalAuthorityRoot: workspace,
+                canonicalRequestedCwd: workspace,
                 canonicalCwd: workspace,
                 canonicalProjectId: "project-path",
                 originSessionId: "origin-channel",
                 originClient: "discord",
+                originUserId: "user-1",
                 revisionId: "revision-path",
                 sourceSha256: "a".repeat(64),
                 inputSchemaSha256: "b".repeat(64),
                 capabilitySha256: "c".repeat(64),
                 argsSha256: "d".repeat(64),
+                operationInputSha256: "e".repeat(64),
               },
             }
           : null,
@@ -600,7 +676,26 @@ describe("createToolServer", () => {
         ((await list.json()) as { tools: Array<{ callableId: string }> }).tools.map(
           (item) => item.callableId,
         ),
-      ).toEqual(["surface.messages.send"]);
+      ).toEqual(["custom.pathless", "surface.messages.send"]);
+      const pathless = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ callableId: "custom.pathless", input: { query: "status" } }),
+        }),
+      );
+      expect(await pathless.json()).toMatchObject({ isError: false, output: { ok: true } });
+      const undeclaredPluginPath = await server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            callableId: "custom.pathless",
+            input: { sourcePath: "inside.txt" },
+          }),
+        }),
+      );
+      expect(undeclaredPluginPath.status).toBe(500);
       const inspect = await server.app.handle(
         new Request("http://localhost/call", {
           method: "POST",
@@ -612,12 +707,11 @@ describe("createToolServer", () => {
         }),
       );
       expect(await inspect.json()).toMatchObject({ isError: false, output: "contained" });
-      expect(seen[0]?.paths).toEqual([expect.stringMatching(/^\/proc\/self\/fd\/\d+$/)]);
+      expect(seen[1]?.paths).toEqual([expect.stringMatching(/^\/proc\/self\/fd\/\d+$/)]);
       for (const forbidden of [
         outside,
         "linked.txt",
         "hardlink-alias.txt",
-        ".git/index",
         ".secrets/token",
         ".envrc",
         ".env.local/token",
@@ -640,7 +734,7 @@ describe("createToolServer", () => {
           headers,
           body: JSON.stringify({
             callableId: "surface.messages.send",
-            input: { text: "attached", paths: Array.from({ length: 11 }, () => "inside.txt") },
+            input: { text: "attached", paths: Array.from({ length: 65 }, () => "inside.txt") },
           }),
         }),
       );

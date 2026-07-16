@@ -45,6 +45,11 @@ import {
   type WorkflowRequestPolicy,
 } from "./workflow-request-authority";
 import { sha256 } from "./workflow-definition";
+import { resolvedWorkflowAgentInputSchema } from "./workflow-operation-policy";
+import {
+  workflowWorktreeOutputSchema,
+  type WorkflowWorktreeOutput,
+} from "./workflow-worktree-artifact";
 
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
@@ -117,6 +122,16 @@ const runRowSchema = z.object({
   terminal_at: nullableNumberSchema,
 });
 
+const projectionReconciliationCursorRowSchema = z.object({
+  cursor_created_at: z.number(),
+  cursor_run_id: z.string(),
+});
+
+const projectionReconciliationRunCursorRowSchema = z.object({
+  run_id: z.string(),
+  created_at: z.number(),
+});
+
 const operationRowSchema = z.object({
   run_id: z.string(),
   operation_id: z.string(),
@@ -140,6 +155,21 @@ const operationRowSchema = z.object({
   started_at: nullableNumberSchema,
   updated_at: z.number(),
   terminal_at: nullableNumberSchema,
+});
+
+const worktreeOutputRowSchema = z.object({
+  run_id: z.string(),
+  operation_id: z.string(),
+  state: z.string(),
+  worktree_path: z.string(),
+  base_commit: nullableStringSchema,
+  artifact_id: nullableStringSchema,
+  patch_sha256: nullableStringSchema,
+  bytes: nullableNumberSchema,
+  cleanup_error: nullableStringSchema,
+  prepared_at: z.number(),
+  captured_at: nullableNumberSchema,
+  cleaned_at: nullableNumberSchema,
 });
 
 const waitRowSchema = z.object({
@@ -398,6 +428,24 @@ function parseOperation(value: unknown): WorkflowOperation {
   });
 }
 
+function parseWorktreeOutput(value: unknown): WorkflowWorktreeOutput {
+  const row = worktreeOutputRowSchema.parse(value);
+  return workflowWorktreeOutputSchema.parse({
+    runId: row.run_id,
+    operationId: row.operation_id,
+    state: row.state,
+    worktreePath: row.worktree_path,
+    baseCommit: row.base_commit,
+    artifactId: row.artifact_id,
+    patchSha256: row.patch_sha256,
+    bytes: row.bytes,
+    cleanupError: row.cleanup_error,
+    preparedAt: row.prepared_at,
+    capturedAt: row.captured_at,
+    cleanedAt: row.cleaned_at,
+  });
+}
+
 function parseWait(value: unknown): WorkflowWait {
   const row = waitRowSchema.parse(value);
   return workflowWaitSchema.parse({
@@ -628,7 +676,7 @@ export type WorkflowRequestTerminalReceipt = {
 
 export type WorkflowRequestDispatchHandoff =
   | { status: "receipt"; receipt: WorkflowRequestTerminalReceipt }
-  | { status: "live"; dispatchEpoch: string }
+  | { status: "live"; dispatchEpoch: string; policy: WorkflowRequestPolicy }
   | { status: "fresh" };
 
 export type WorkflowActionOutboxEntry = {
@@ -964,25 +1012,44 @@ export class DurableWorkflowStore {
     revisionId?: string;
     approvalId?: string;
     state?: WorkflowRunState;
+    canonicalProjectId?: string;
+    originClient?: string;
+    originUserId?: string;
     limit?: number;
   }): WorkflowRun[] {
     const clauses: string[] = [];
     const bindings: string[] = [];
     if (options?.revisionId) {
-      clauses.push("revision_id = ?");
+      clauses.push("workflow_runs.revision_id = ?");
       bindings.push(options.revisionId);
     }
     if (options?.approvalId) {
-      clauses.push("approval_id = ?");
+      clauses.push("workflow_runs.approval_id = ?");
       bindings.push(options.approvalId);
     }
     if (options?.state) {
-      clauses.push("state = ?");
+      clauses.push("workflow_runs.state = ?");
       bindings.push(options.state);
+    }
+    if (options?.canonicalProjectId) {
+      clauses.push("workflow_revisions.canonical_project_id = ?");
+      bindings.push(options.canonicalProjectId);
+    }
+    if (options?.originClient) {
+      clauses.push("workflow_runs.origin_client = ?");
+      bindings.push(options.originClient);
+    }
+    if (options?.originUserId) {
+      clauses.push("workflow_runs.origin_user_id = ?");
+      bindings.push(options.originUserId);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
-      .query(`SELECT * FROM workflow_runs ${where} ORDER BY created_at DESC LIMIT ?`)
+      .query(
+        `SELECT workflow_runs.* FROM workflow_runs
+         JOIN workflow_revisions ON workflow_revisions.revision_id = workflow_runs.revision_id
+         ${where} ORDER BY workflow_runs.created_at DESC LIMIT ?`,
+      )
       .all(...bindings, boundedLimit(options?.limit));
     return tolerantRows(rows, parseRun);
   }
@@ -998,18 +1065,70 @@ export class DurableWorkflowStore {
     return tolerantRows(rows, parseRun);
   }
 
-  listRunsMissingSurfaceBindings(limit = 1_000): WorkflowRun[] {
-    const rows = this.db
-      .query(
-        `SELECT workflow_runs.* FROM workflow_runs
-         LEFT JOIN workflow_surface_bindings
-           ON workflow_surface_bindings.run_id = workflow_runs.run_id
-         WHERE workflow_runs.progress_target_json IS NOT NULL
-           AND workflow_surface_bindings.run_id IS NULL
-         ORDER BY workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
-      )
-      .all(boundedLimit(limit));
-    return tolerantRows(rows, parseRun);
+  takeRunsMissingSurfaceBindingReconciliationPage(options?: {
+    limit?: number;
+    now?: number;
+  }): WorkflowRun[] {
+    const limit = boundedLimit(options?.limit ?? 1_000);
+    const takePage = this.db.transaction(() => {
+      let cursor = projectionReconciliationCursorRowSchema.nullable().parse(
+        this.db
+          .query(
+            `SELECT cursor_created_at, cursor_run_id
+               FROM workflow_projection_reconciliation_state WHERE singleton = 1`,
+          )
+          .get(),
+      );
+      const selectPage = () =>
+        cursor
+          ? this.db
+              .query(
+                `SELECT workflow_runs.* FROM workflow_missing_surface_bindings
+                 JOIN workflow_runs
+                   ON workflow_runs.run_id = workflow_missing_surface_bindings.run_id
+                 WHERE (
+                   workflow_missing_surface_bindings.created_at,
+                   workflow_missing_surface_bindings.run_id
+                 ) > (?, ?)
+                 ORDER BY workflow_missing_surface_bindings.created_at,
+                   workflow_missing_surface_bindings.run_id LIMIT ?`,
+              )
+              .all(cursor.cursor_created_at, cursor.cursor_run_id, limit + 1)
+          : this.db
+              .query(
+                `SELECT workflow_runs.* FROM workflow_missing_surface_bindings
+                 JOIN workflow_runs
+                   ON workflow_runs.run_id = workflow_missing_surface_bindings.run_id
+                 ORDER BY workflow_missing_surface_bindings.created_at,
+                   workflow_missing_surface_bindings.run_id LIMIT ?`,
+              )
+              .all(limit + 1);
+
+      let rows = selectPage();
+      if (rows.length === 0 && cursor) {
+        cursor = null;
+        rows = selectPage();
+      }
+
+      const pageRows = rows.slice(0, limit);
+      if (rows.length > limit) {
+        const next = projectionReconciliationRunCursorRowSchema.parse(pageRows.at(-1));
+        this.db.run(
+          `INSERT INTO workflow_projection_reconciliation_state (
+             singleton, cursor_created_at, cursor_run_id, updated_at
+           ) VALUES (1, ?, ?, ?)
+           ON CONFLICT(singleton) DO UPDATE SET
+             cursor_created_at = excluded.cursor_created_at,
+             cursor_run_id = excluded.cursor_run_id,
+             updated_at = excluded.updated_at`,
+          [next.created_at, next.run_id, options?.now ?? Date.now()],
+        );
+      } else {
+        this.db.run("DELETE FROM workflow_projection_reconciliation_state WHERE singleton = 1");
+      }
+      return tolerantRows(pageRows, parseRun);
+    });
+    return takePage.immediate();
   }
 
   createInvocation(input: {
@@ -1835,6 +1954,157 @@ export class DurableWorkflowStore {
     return row === null ? null : parseOperation(row);
   }
 
+  acquireSharedEditorLease(input: {
+    authorityRoot: string;
+    runId: string;
+    operationId: string;
+    ownerId: string;
+    now: number;
+    staleBefore: number;
+  }): boolean {
+    const result = this.db
+      .query(
+        `INSERT INTO workflow_shared_editor_leases (
+           authority_root, run_id, operation_id, owner_id, heartbeat_at, acquired_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM workflow_runs
+           JOIN workflow_operations
+             ON workflow_operations.run_id = workflow_runs.run_id
+           WHERE workflow_runs.run_id = ?
+             AND workflow_runs.state = 'running'
+             AND workflow_runs.claimed_by = ?
+             AND workflow_operations.operation_id = ?
+             AND workflow_operations.state IN ('queued', 'dispatched', 'running')
+         )
+         ON CONFLICT(authority_root) DO UPDATE SET
+           run_id = excluded.run_id,
+           operation_id = excluded.operation_id,
+           owner_id = excluded.owner_id,
+           heartbeat_at = excluded.heartbeat_at,
+           acquired_at = excluded.acquired_at
+         WHERE workflow_shared_editor_leases.heartbeat_at <= ?
+            OR (
+              workflow_shared_editor_leases.run_id = excluded.run_id
+              AND workflow_shared_editor_leases.operation_id = excluded.operation_id
+              AND workflow_shared_editor_leases.owner_id = excluded.owner_id
+            )`,
+      )
+      .run(
+        input.authorityRoot,
+        input.runId,
+        input.operationId,
+        input.ownerId,
+        input.now,
+        input.now,
+        input.runId,
+        input.ownerId,
+        input.operationId,
+        input.staleBefore,
+      );
+    return result.changes === 1;
+  }
+
+  refreshSharedEditorLease(input: {
+    authorityRoot: string;
+    runId: string;
+    operationId: string;
+    ownerId: string;
+    now: number;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_shared_editor_leases SET heartbeat_at = ?
+           WHERE authority_root = ? AND run_id = ? AND operation_id = ? AND owner_id = ?
+             AND EXISTS (
+               SELECT 1 FROM workflow_runs
+               JOIN workflow_operations
+                 ON workflow_operations.run_id = workflow_runs.run_id
+               WHERE workflow_runs.run_id = workflow_shared_editor_leases.run_id
+                 AND workflow_runs.state = 'running'
+                 AND workflow_runs.claimed_by = workflow_shared_editor_leases.owner_id
+                 AND workflow_operations.operation_id = workflow_shared_editor_leases.operation_id
+                 AND workflow_operations.state IN ('queued', 'dispatched', 'running')
+             )`,
+        )
+        .run(input.now, input.authorityRoot, input.runId, input.operationId, input.ownerId)
+        .changes === 1
+    );
+  }
+
+  releaseSharedEditorLease(input: {
+    authorityRoot: string;
+    runId: string;
+    operationId: string;
+    ownerId: string;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `DELETE FROM workflow_shared_editor_leases
+           WHERE authority_root = ? AND run_id = ? AND operation_id = ? AND owner_id = ?`,
+        )
+        .run(input.authorityRoot, input.runId, input.operationId, input.ownerId).changes === 1
+    );
+  }
+
+  private matchesWorkflowRequestPolicyIdentity(input: {
+    policy: WorkflowRequestPolicy;
+    run: WorkflowRun | null;
+    revision: WorkflowRevision | null;
+    approval: WorkflowApproval | null;
+    operation: WorkflowOperation | null;
+  }): boolean {
+    const { policy, run, revision, approval, operation } = input;
+    if (!run || !revision || !operation) return false;
+    const operationInput = resolvedWorkflowAgentInputSchema.safeParse(operation.input);
+    if (!operationInput.success) return false;
+    const options = operationInput.data.options;
+    const expectedOriginClient =
+      run.origin.client === "discord" || run.origin.client === "github" ? run.origin.client : null;
+    const worktree =
+      options.editing && options.isolation === "worktree"
+        ? this.getWorktreeOutput(run.runId, operation.operationId)
+        : null;
+    const expectedCwd = worktree
+      ? path.join(worktree.worktreePath, path.relative(options.authorityRoot, options.cwd))
+      : options.cwd;
+    return (
+      approval?.state === "approved" &&
+      approval.revisionId === revision.revisionId &&
+      policy.runId === run.runId &&
+      policy.operationId === operation.operationId &&
+      policy.revisionId === revision.revisionId &&
+      policy.canonicalProjectId === revision.canonicalProjectId &&
+      policy.canonicalWorkspaceRoot === revision.canonicalWorkspaceRoot &&
+      policy.sourceSha256 === revision.sourceSha256 &&
+      policy.inputSchemaSha256 === revision.inputSchemaSha256 &&
+      policy.capabilitySha256 === revision.capabilitySha256 &&
+      policy.argsSha256 === run.argsSha256 &&
+      policy.safetyMode === run.origin.safetyMode &&
+      policy.originSessionId === run.origin.sessionId &&
+      policy.originClient === expectedOriginClient &&
+      policy.originUserId === run.origin.userId &&
+      policy.operationInputSha256 === operation.inputSha256 &&
+      policy.profile === options.profile &&
+      policy.model === options.model &&
+      policy.reasoning === options.reasoning &&
+      JSON.stringify(policy.tools) === JSON.stringify(options.tools) &&
+      policy.executables === options.executables &&
+      policy.editing === options.editing &&
+      policy.isolation === options.isolation &&
+      policy.delegation === options.delegation &&
+      JSON.stringify(policy.level2Callables) === JSON.stringify(options.level2Callables) &&
+      JSON.stringify(policy.surfaceOriginOperations) ===
+        JSON.stringify(options.surfaceOriginOperations) &&
+      policy.canonicalAuthorityRoot === options.authorityRoot &&
+      policy.canonicalRequestedCwd === options.cwd &&
+      policy.canonicalCwd === expectedCwd
+    );
+  }
+
   authorizeAgentDispatch(input: {
     requestId: string;
     runId: string;
@@ -1884,15 +2154,13 @@ export class DurableWorkflowStore {
         !operation ||
         run.state !== "running" ||
         run.claimedBy !== input.runOwnerId ||
-        approval?.state !== "approved" ||
-        approval.revisionId !== revision.revisionId ||
-        policy.revisionId !== revision.revisionId ||
-        policy.canonicalProjectId !== revision.canonicalProjectId ||
-        policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
-        policy.sourceSha256 !== revision.sourceSha256 ||
-        policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
-        policy.capabilitySha256 !== revision.capabilitySha256 ||
-        policy.argsSha256 !== run.argsSha256 ||
+        !this.matchesWorkflowRequestPolicyIdentity({
+          policy,
+          run,
+          revision,
+          approval,
+          operation,
+        }) ||
         !["queued", "dispatched", "running"].includes(operation.state)
       ) {
         return null;
@@ -1976,33 +2244,28 @@ export class DurableWorkflowStore {
         .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
       if (!raw) return null;
       const row = requestDispatchRowSchema.parse(raw);
-      const policy = workflowRequestPolicySchema.parse(
-        parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
-      );
       const run = this.getRun(row.run_id);
+      if (!run) return null;
+      const rawPolicy = parseJson(row.policy_json, "workflow_request_dispatches.policy_json");
+      const policy = workflowRequestPolicySchema.parse(rawPolicy);
       const operation = this.getOperation(row.run_id, row.operation_id);
       const revision = run ? this.getRevision(run.revisionId) : null;
       const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
       if (
-        !run ||
         !operation ||
         !revision ||
         run.state !== "running" ||
-        approval?.state !== "approved" ||
-        approval.revisionId !== revision.revisionId ||
         operation.requestId !== input.requestId ||
         !["dispatched", "running"].includes(operation.state) ||
         row.dispatch_epoch !== policy.dispatchEpoch ||
         row.canonical_cwd !== policy.canonicalCwd ||
-        policy.runId !== run.runId ||
-        policy.operationId !== operation.operationId ||
-        policy.revisionId !== revision.revisionId ||
-        policy.canonicalProjectId !== revision.canonicalProjectId ||
-        policy.canonicalWorkspaceRoot !== revision.canonicalWorkspaceRoot ||
-        policy.sourceSha256 !== revision.sourceSha256 ||
-        policy.inputSchemaSha256 !== revision.inputSchemaSha256 ||
-        policy.capabilitySha256 !== revision.capabilitySha256 ||
-        policy.argsSha256 !== run.argsSha256
+        !this.matchesWorkflowRequestPolicyIdentity({
+          policy,
+          run,
+          revision,
+          approval,
+          operation,
+        })
       ) {
         return null;
       }
@@ -2113,15 +2376,43 @@ export class DurableWorkflowStore {
       }
       const staleBefore = input.now - (input.staleAfterMs ?? 60_000);
       const dispatch = this.db
-        .query<{ dispatch_epoch: string }, [string, number, number]>(
-          `SELECT dispatch_epoch FROM workflow_request_dispatches
+        .query<
+          { dispatch_epoch: string; policy_json: string; run_id: string; operation_id: string },
+          [string, number, number]
+        >(
+          `SELECT dispatch_epoch, policy_json, run_id, operation_id FROM workflow_request_dispatches
            WHERE request_id = ? AND active = 1 AND expires_at > ?
              AND owner_id IS NOT NULL AND owner_heartbeat_at > ?`,
         )
         .get(input.requestId, input.now, staleBefore);
-      return dispatch
-        ? { status: "live" as const, dispatchEpoch: dispatch.dispatch_epoch }
-        : { status: "fresh" as const };
+      if (!dispatch) return { status: "fresh" as const };
+      const policy = workflowRequestPolicySchema.parse(
+        parseJson(dispatch.policy_json, "workflow_request_dispatches.policy_json"),
+      );
+      const run = this.getRun(dispatch.run_id);
+      const revision = run ? this.getRevision(run.revisionId) : null;
+      const approval = run?.approvalId ? this.getApproval(run.approvalId) : null;
+      const operation = this.getOperation(dispatch.run_id, dispatch.operation_id);
+      if (
+        dispatch.dispatch_epoch !== policy.dispatchEpoch ||
+        run?.state !== "running" ||
+        !operation ||
+        !["dispatched", "running"].includes(operation.state) ||
+        !this.matchesWorkflowRequestPolicyIdentity({
+          policy,
+          run,
+          revision,
+          approval,
+          operation,
+        })
+      ) {
+        throw new Error("Live workflow dispatch has an invalid durable policy identity");
+      }
+      return {
+        status: "live" as const,
+        dispatchEpoch: dispatch.dispatch_epoch,
+        policy,
+      };
     });
     return inspect.immediate();
   }
@@ -2293,6 +2584,309 @@ export class DurableWorkflowStore {
           )
           .get(runId);
     return row?.count ?? 0;
+  }
+
+  getWorktreeOutput(runId: string, operationId: string): WorkflowWorktreeOutput | null {
+    const row = this.db
+      .query("SELECT * FROM workflow_worktree_outputs WHERE run_id = ? AND operation_id = ?")
+      .get(runId, operationId);
+    return row ? parseWorktreeOutput(row) : null;
+  }
+
+  listWorktreeOutputs(
+    runId: string,
+    options?: { state?: WorkflowWorktreeOutput["state"]; limit?: number; offset?: number },
+  ): WorkflowWorktreeOutput[] {
+    const offset = Math.max(0, Math.trunc(options?.offset ?? 0));
+    const rows = options?.state
+      ? this.db
+          .query(
+            `SELECT * FROM workflow_worktree_outputs
+             WHERE run_id = ? AND state = ? ORDER BY prepared_at, operation_id LIMIT ? OFFSET ?`,
+          )
+          .all(runId, options.state, boundedLimit(options.limit), offset)
+      : this.db
+          .query(
+            `SELECT * FROM workflow_worktree_outputs
+             WHERE run_id = ? ORDER BY prepared_at, operation_id LIMIT ? OFFSET ?`,
+          )
+          .all(runId, boundedLimit(options?.limit), offset);
+    return tolerantRows(rows, parseWorktreeOutput);
+  }
+
+  countWorktreeOutputs(runId: string): number {
+    const row = this.db
+      .query<{ count: number }, [string]>(
+        "SELECT COUNT(*) AS count FROM workflow_worktree_outputs WHERE run_id = ?",
+      )
+      .get(runId);
+    return row?.count ?? 0;
+  }
+
+  getWorktreeOutputByArtifact(runId: string, artifactId: string): WorkflowWorktreeOutput | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM workflow_worktree_outputs
+         WHERE run_id = ? AND artifact_id = ? ORDER BY operation_id LIMIT 1`,
+      )
+      .get(runId, artifactId);
+    return row ? parseWorktreeOutput(row) : null;
+  }
+
+  listWorktreeOutputsPendingCleanup(limit = 1_000): WorkflowWorktreeOutput[] {
+    const rows = this.db
+      .query(
+        `SELECT workflow_worktree_outputs.* FROM workflow_worktree_outputs
+         JOIN workflow_operations
+           ON workflow_operations.run_id = workflow_worktree_outputs.run_id
+          AND workflow_operations.operation_id = workflow_worktree_outputs.operation_id
+         WHERE workflow_worktree_outputs.state = 'captured'
+           AND workflow_operations.state = 'succeeded'
+         ORDER BY workflow_worktree_outputs.captured_at,
+           workflow_worktree_outputs.run_id,
+           workflow_worktree_outputs.operation_id LIMIT ?`,
+      )
+      .all(boundedLimit(limit));
+    return tolerantRows(rows, parseWorktreeOutput);
+  }
+
+  recordWorktreePrepared(input: {
+    runId: string;
+    operationId: string;
+    runOwnerId: string;
+    worktreePath: string;
+    baseCommit: string;
+    now: number;
+  }): WorkflowWorktreeOutput | null {
+    const prepared = workflowWorktreeOutputSchema.parse({
+      runId: input.runId,
+      operationId: input.operationId,
+      state: "prepared",
+      worktreePath: input.worktreePath,
+      baseCommit: input.baseCommit,
+      artifactId: null,
+      patchSha256: null,
+      bytes: null,
+      cleanupError: null,
+      preparedAt: input.now,
+      capturedAt: null,
+      cleanedAt: null,
+    });
+    const record = this.db.transaction(() => {
+      const existing = this.getWorktreeOutput(input.runId, input.operationId);
+      if (existing) {
+        if (
+          existing.worktreePath !== prepared.worktreePath ||
+          existing.baseCommit !== prepared.baseCommit
+        ) {
+          throw new Error("Persisted workflow worktree preparation identity mismatch");
+        }
+        return existing;
+      }
+      const result = this.db
+        .query(
+          `INSERT INTO workflow_worktree_outputs (
+             run_id, operation_id, state, worktree_path, base_commit, artifact_id,
+             patch_sha256, bytes, cleanup_error, prepared_at, captured_at, cleaned_at
+           )
+           SELECT ?, ?, 'prepared', ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL
+           WHERE EXISTS (
+             SELECT 1 FROM workflow_operations
+             JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
+             WHERE workflow_operations.run_id = ?
+               AND workflow_operations.operation_id = ?
+               AND workflow_operations.state IN ('queued', 'dispatched', 'running')
+               AND workflow_runs.state = 'running'
+               AND workflow_runs.claimed_by = ?
+           )`,
+        )
+        .run(
+          prepared.runId,
+          prepared.operationId,
+          prepared.worktreePath,
+          prepared.baseCommit,
+          prepared.preparedAt,
+          prepared.runId,
+          prepared.operationId,
+          input.runOwnerId,
+        );
+      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
+    });
+    return record.immediate();
+  }
+
+  recordWorktreeQuarantined(input: {
+    runId: string;
+    operationId: string;
+    runOwnerId: string;
+    worktreePath: string;
+    error: string;
+    now: number;
+  }): WorkflowWorktreeOutput | null {
+    const quarantined = workflowWorktreeOutputSchema.parse({
+      runId: input.runId,
+      operationId: input.operationId,
+      state: "quarantined",
+      worktreePath: input.worktreePath,
+      baseCommit: null,
+      artifactId: null,
+      patchSha256: null,
+      bytes: null,
+      cleanupError: input.error.slice(0, 16_384),
+      preparedAt: input.now,
+      capturedAt: null,
+      cleanedAt: null,
+    });
+    const record = this.db.transaction(() => {
+      const existing = this.getWorktreeOutput(input.runId, input.operationId);
+      if (existing) {
+        if (existing.state !== "quarantined" || existing.worktreePath !== input.worktreePath) {
+          throw new Error("Persisted workflow worktree quarantine identity mismatch");
+        }
+        return existing;
+      }
+      const result = this.db
+        .query(
+          `INSERT INTO workflow_worktree_outputs (
+             run_id, operation_id, state, worktree_path, base_commit, artifact_id,
+             patch_sha256, bytes, cleanup_error, prepared_at, captured_at, cleaned_at
+           )
+           SELECT ?, ?, 'quarantined', ?, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL
+           WHERE EXISTS (
+             SELECT 1 FROM workflow_operations
+             JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
+             WHERE workflow_operations.run_id = ?
+               AND workflow_operations.operation_id = ?
+               AND workflow_operations.state IN ('queued', 'dispatched', 'running')
+               AND workflow_runs.state = 'running'
+               AND workflow_runs.claimed_by = ?
+           )`,
+        )
+        .run(
+          quarantined.runId,
+          quarantined.operationId,
+          quarantined.worktreePath,
+          quarantined.cleanupError,
+          quarantined.preparedAt,
+          quarantined.runId,
+          quarantined.operationId,
+          input.runOwnerId,
+        );
+      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
+    });
+    return record.immediate();
+  }
+
+  recordWorktreeCaptured(input: {
+    runId: string;
+    operationId: string;
+    runOwnerId: string;
+    artifactId: string;
+    patchSha256: string;
+    bytes: number;
+    now: number;
+  }): WorkflowWorktreeOutput | null {
+    const record = this.db.transaction(() => {
+      const existing = this.getWorktreeOutput(input.runId, input.operationId);
+      if (!existing) return null;
+      if (existing.state === "captured" || existing.state === "cleaned") {
+        if (
+          existing.artifactId !== input.artifactId ||
+          existing.patchSha256 !== input.patchSha256 ||
+          existing.bytes !== input.bytes
+        ) {
+          throw new Error("Persisted workflow worktree patch identity mismatch");
+        }
+        return existing;
+      }
+      const captured = workflowWorktreeOutputSchema.parse({
+        ...existing,
+        state: "captured",
+        artifactId: input.artifactId,
+        patchSha256: input.patchSha256,
+        bytes: input.bytes,
+        cleanupError: null,
+        capturedAt: input.now,
+      });
+      const result = this.db
+        .query(
+          `UPDATE workflow_worktree_outputs SET
+             state = 'captured', artifact_id = ?, patch_sha256 = ?, bytes = ?,
+             cleanup_error = NULL, captured_at = ?
+           WHERE run_id = ? AND operation_id = ? AND state = 'prepared'
+             AND EXISTS (
+               SELECT 1 FROM workflow_operations
+               JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
+               WHERE workflow_operations.run_id = workflow_worktree_outputs.run_id
+                 AND workflow_operations.operation_id = workflow_worktree_outputs.operation_id
+                 AND workflow_operations.state IN ('dispatched', 'running')
+                 AND workflow_runs.state = 'running'
+                 AND workflow_runs.claimed_by = ?
+             )`,
+        )
+        .run(
+          captured.artifactId,
+          captured.patchSha256,
+          captured.bytes,
+          captured.capturedAt,
+          captured.runId,
+          captured.operationId,
+          input.runOwnerId,
+        );
+      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
+    });
+    return record.immediate();
+  }
+
+  markWorktreeOutputCleaned(input: {
+    runId: string;
+    operationId: string;
+    artifactId: string;
+    now: number;
+  }): boolean {
+    const existing = this.getWorktreeOutput(input.runId, input.operationId);
+    if (existing?.state === "cleaned") return existing.artifactId === input.artifactId;
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_worktree_outputs SET
+             state = 'cleaned', cleanup_error = NULL, cleaned_at = ?
+           WHERE run_id = ? AND operation_id = ? AND state = 'captured' AND artifact_id = ?`,
+        )
+        .run(input.now, input.runId, input.operationId, input.artifactId).changes === 1
+    );
+  }
+
+  recordWorktreeCleanupError(input: {
+    runId: string;
+    operationId: string;
+    artifactId: string;
+    error: string;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_worktree_outputs SET cleanup_error = ?
+           WHERE run_id = ? AND operation_id = ? AND state = 'captured' AND artifact_id = ?`,
+        )
+        .run(input.error.slice(0, 16_384), input.runId, input.operationId, input.artifactId)
+        .changes === 1
+    );
+  }
+
+  recordWorktreeReconciliationError(input: {
+    runId: string;
+    operationId: string;
+    error: string;
+  }): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_worktree_outputs SET cleanup_error = ?
+           WHERE run_id = ? AND operation_id = ? AND state IN ('prepared', 'quarantined')`,
+        )
+        .run(input.error.slice(0, 16_384), input.runId, input.operationId).changes === 1
+    );
   }
 
   transitionOperation(input: {
@@ -2959,25 +3553,46 @@ export class DurableWorkflowStore {
     revisionId?: string;
     state?: WorkflowTriggerState;
     dueBefore?: number;
+    canonicalProjectId?: string;
+    originClient?: string;
+    originUserId?: string;
     limit?: number;
   }): WorkflowTrigger[] {
     const clauses: string[] = [];
     const bindings: Array<string | number> = [];
     if (options?.revisionId) {
-      clauses.push("revision_id = ?");
+      clauses.push("workflow_triggers.revision_id = ?");
       bindings.push(options.revisionId);
     }
     if (options?.state) {
-      clauses.push("state = ?");
+      clauses.push("workflow_triggers.state = ?");
       bindings.push(options.state);
     }
     if (options?.dueBefore !== undefined) {
-      clauses.push("next_fire_at IS NOT NULL AND next_fire_at <= ?");
+      clauses.push(
+        "workflow_triggers.next_fire_at IS NOT NULL AND workflow_triggers.next_fire_at <= ?",
+      );
       bindings.push(options.dueBefore);
+    }
+    if (options?.canonicalProjectId) {
+      clauses.push("workflow_revisions.canonical_project_id = ?");
+      bindings.push(options.canonicalProjectId);
+    }
+    if (options?.originClient) {
+      clauses.push("json_extract(workflow_triggers.origin_json, '$.client') = ?");
+      bindings.push(options.originClient);
+    }
+    if (options?.originUserId) {
+      clauses.push("json_extract(workflow_triggers.origin_json, '$.userId') = ?");
+      bindings.push(options.originUserId);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
-      .query(`SELECT * FROM workflow_triggers ${where} ORDER BY next_fire_at, created_at LIMIT ?`)
+      .query(
+        `SELECT workflow_triggers.* FROM workflow_triggers
+         JOIN workflow_revisions ON workflow_revisions.revision_id = workflow_triggers.revision_id
+         ${where} ORDER BY workflow_triggers.next_fire_at, workflow_triggers.created_at LIMIT ?`,
+      )
       .all(...bindings, boundedLimit(options?.limit));
     return tolerantRows(rows, parseTrigger);
   }
@@ -3484,7 +4099,7 @@ export class DurableWorkflowStore {
 
   deleteSurfaceBinding(runId: string): boolean {
     return (
-      this.db.query("DELETE FROM workflow_surface_bindings WHERE run_id = ?").run(runId).changes ===
+      this.db.query("DELETE FROM workflow_surface_bindings WHERE run_id = ?").run(runId).changes >=
       1
     );
   }

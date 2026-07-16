@@ -9,7 +9,7 @@ import type { WorkflowRequestPolicy } from "./workflow-request-authority";
 import { isWorkflowProtectedPath } from "./workflow-protected-path";
 
 const toolInputSchema = z.record(z.string(), z.unknown());
-const WORKFLOW_READ_TOOLS = new Set(["read_file", "glob"]);
+const WORKFLOW_READ_TOOLS = new Set(["read_file", "glob", "grep"]);
 const WORKFLOW_WRITE_TOOLS = new Set(["edit_file", "apply_patch"]);
 
 function isContained(root: string, candidate: string): boolean {
@@ -32,12 +32,13 @@ async function assertCanonicalRoot(root: string): Promise<void> {
 
 async function assertContainedPath(input: {
   root: string;
+  baseCwd?: string;
   value: string;
   requireFile: boolean;
   rejectHardLinks?: boolean;
 }): Promise<string> {
   if (input.value.includes("\0")) throw new Error("Workflow Level-1 path contains NUL");
-  const candidate = path.resolve(input.root, input.value);
+  const candidate = path.resolve(input.baseCwd ?? input.root, input.value);
   if (!isContained(input.root, candidate)) {
     throw new Error("Workflow Level-1 path escaped the authoritative root");
   }
@@ -110,15 +111,18 @@ async function authorizeInput(input: {
   ownedWorktreeRoot?: string;
 }): Promise<Record<string, unknown>> {
   assertNoOverrides(input.value);
-  const root = input.policy.canonicalCwd;
-  await assertCanonicalRoot(root);
+  const cwd = input.policy.canonicalCwd;
+  const root = input.policy.isolation === "shared" ? input.policy.canonicalAuthorityRoot : cwd;
+  await assertCanonicalRoot(cwd);
+  if (root !== cwd) await assertCanonicalRoot(root);
+  if (input.policy.isolation === "shared" && !isContained(root, cwd)) {
+    throw new Error("Shared workflow cwd is outside its canonical authority root");
+  }
 
   if (WORKFLOW_WRITE_TOOLS.has(input.toolName)) {
     if (!input.policy.editing) throw new Error("Workflow write tools require editing authority");
     if (input.policy.isolation === "shared") {
-      if (root !== input.policy.canonicalWorkspaceRoot) {
-        throw new Error("Shared workflow writes must use the canonical workspace root");
-      }
+      await assertCanonicalRoot(input.policy.canonicalAuthorityRoot);
     } else {
       if (!input.ownedWorktreeRoot) {
         throw new Error("Worktree workflow writes require an approved owned worktree");
@@ -136,6 +140,7 @@ async function authorizeInput(input: {
     const target = z.string().min(1).parse(input.value["path"]);
     await assertContainedPath({
       root,
+      baseCwd: cwd,
       value: target,
       requireFile: true,
       rejectHardLinks: true,
@@ -144,13 +149,14 @@ async function authorizeInput(input: {
     assertSafeGlobPatterns(input.value);
   } else if (input.toolName === "apply_patch") {
     const patchText = z.string().min(1).parse(input.value["patchText"]);
-    const targets = await collectApplyPatchTouchedPaths({ patchText, cwd: root });
+    const targets = await collectApplyPatchTouchedPaths({ patchText, cwd });
     for (const target of targets) {
       if (!target.startsWith("file://")) {
         throw new Error("Workflow patch target escaped the local authoritative root");
       }
       await assertContainedPath({
         root,
+        baseCwd: cwd,
         value: fileURLToPath(target),
         requireFile: false,
         rejectHardLinks: true,
@@ -165,6 +171,7 @@ async function assertOutputContained(
   toolName: string,
   output: unknown,
   root: string,
+  baseCwd: string,
 ): Promise<void> {
   if (!isRecord(output)) return;
   const paths: string[] = [];
@@ -176,8 +183,10 @@ async function assertOutputContained(
   if (Array.isArray(results)) {
     for (const result of results) {
       if (!isRecord(result)) continue;
-      const value = result["path"];
-      if (typeof value === "string") paths.push(value);
+      const resultPath = result["path"];
+      if (typeof resultPath === "string") paths.push(resultPath);
+      const resultFile = result["file"];
+      if (typeof resultFile === "string") paths.push(resultFile);
     }
   }
   const entries = output["entries"];
@@ -189,6 +198,7 @@ async function assertOutputContained(
   for (const resultPath of paths) {
     await assertContainedPath({
       root,
+      baseCwd,
       value: resultPath,
       requireFile: false,
       rejectHardLinks: true,
@@ -218,7 +228,11 @@ export function enforceWorkflowLevel1Boundary(input: {
         ownedWorktreeRoot: input.ownedWorktreeRoot,
       });
       const output = await Reflect.apply(execute, input.tool, [authorized, options]);
-      await assertOutputContained(input.toolName, output, input.policy!.canonicalCwd);
+      const outputRoot =
+        input.policy!.isolation === "shared"
+          ? input.policy!.canonicalAuthorityRoot
+          : input.policy!.canonicalCwd;
+      await assertOutputContained(input.toolName, output, outputRoot, input.policy!.canonicalCwd);
       return output;
     },
   };

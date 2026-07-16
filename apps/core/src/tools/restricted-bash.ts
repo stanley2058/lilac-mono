@@ -1,4 +1,8 @@
+import { expandTilde } from "@stanley2058/lilac-fs";
+import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { posix as posixPath } from "node:path";
 import { Readable } from "node:stream";
@@ -18,20 +22,34 @@ import {
   type IFileSystem,
 } from "just-bash";
 
-import { withLimitedBashOutput, type BashToolInput, type BashToolOutput } from "./bash-impl";
-import { sanitizeBashOutputText } from "./bash-output-sanitizer";
-import { createLogger, type CoreConfig } from "@stanley2058/lilac-utils";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
-import { expandTilde } from "@stanley2058/lilac-fs";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 import { isWorkflowProtectedPath } from "../workflow/workflow-protected-path";
+import { withLimitedBashOutput, type BashToolInput, type BashToolOutput } from "./bash-impl";
+import {
+  createBashOutputSanitizerTransform,
+  readSanitizedStreamTextCapped,
+  sanitizeBashOutputText,
+} from "./bash-output-sanitizer";
 
 const WORKSPACE_MOUNT = "/workspace";
 const TMP_MOUNT = "/tmp";
 const DEFAULT_RESTRICTED_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_TRUSTED_WORKFLOW_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_RESTRICTED_FILE_READ_BYTES = 10 * 1024 * 1024;
 const TOOL_SERVER_BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
+const BWRAP_PATH = "/usr/bin/bwrap";
+const SYSTEMD_RUN_PATH = "/usr/bin/systemd-run";
+const SYSTEMCTL_PATH = "/usr/bin/systemctl";
+const TIMEOUT_PATH = "/usr/bin/timeout";
+const GETCONF_PATH = "/usr/bin/getconf";
+const TRUSTED_WORKFLOW_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
+const TRUSTED_WORKFLOW_TASKS_MAX = 256;
+const TRUSTED_WORKFLOW_MAX_ENTRIES = 500_000;
+const TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES = 1_000_000;
+const TRUSTED_WORKFLOW_MAX_HARDLINK_INODES = 100_000;
+const TRUSTED_WORKFLOW_MAX_SINGLE_ARG_BYTES = 120 * 1024;
 const logger = createLogger({ module: "restricted-bash" });
 
 type RestrictedBashContext = {
@@ -43,6 +61,90 @@ type RestrictedBashContext = {
   toolCallId?: string;
   workspaceWritable?: boolean;
 };
+
+type TrustedWorkflowBashProcess = {
+  stdout: unknown;
+  stderr: unknown;
+  exited: Promise<number>;
+  kill(signal: "SIGTERM" | "SIGKILL"): unknown;
+};
+
+export type TrustedWorkflowBashRuntime = {
+  spawn(command: readonly string[]): TrustedWorkflowBashProcess;
+  stopUnit(unit: string): Promise<void>;
+  createUnitName(): string;
+};
+
+const defaultTrustedWorkflowBashRuntime: TrustedWorkflowBashRuntime = {
+  spawn: (command) =>
+    Bun.spawn([...command], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  stopUnit: async (unit) => await stopTrustedWorkflowUnit(unit),
+  createUnitName: () => `lilac-workflow-bash-${crypto.randomUUID()}`,
+};
+
+async function runUnitControl(command: readonly string[]): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}> {
+  const child = Bun.spawn([TIMEOUT_PATH, "1s", ...command], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { exitCode, stdout, stderr };
+}
+
+function unitIsAbsent(result: { exitCode: number; stdout: string; stderr: string }): boolean {
+  return (
+    result.exitCode !== 0 &&
+    /(?:not loaded|not found|could not be found)/iu.test(`${result.stdout}\n${result.stderr}`)
+  );
+}
+
+async function stopTrustedWorkflowUnit(unit: string): Promise<void> {
+  await runUnitControl([
+    SYSTEMCTL_PATH,
+    "--user",
+    "kill",
+    "--kill-whom=all",
+    "--signal=SIGKILL",
+    unit,
+  ]).catch(() => undefined);
+  await runUnitControl([SYSTEMCTL_PATH, "--user", "stop", unit]).catch(() => undefined);
+
+  const deadline = Date.now() + 3_000;
+  let lastState = "unknown";
+  while (Date.now() < deadline) {
+    const status = await runUnitControl([
+      SYSTEMCTL_PATH,
+      "--user",
+      "show",
+      unit,
+      "--property=ActiveState",
+      "--value",
+    ]).catch((error: unknown) => ({
+      exitCode: -1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    }));
+    if (unitIsAbsent(status) || (status.exitCode === 0 && status.stdout.trim() === "inactive")) {
+      await runUnitControl([SYSTEMCTL_PATH, "--user", "reset-failed", unit]).catch(() => undefined);
+      return;
+    }
+    lastState = status.stdout.trim() || status.stderr.trim() || `exit ${status.exitCode}`;
+    await Bun.sleep(50);
+  }
+  throw new Error(`transient unit ${unit} did not stop within 3000ms (${lastState})`);
+}
 
 type RestrictedBashFsCacheEntry = {
   bash: Bash;
@@ -78,6 +180,510 @@ function isDeniedWorkspacePath(p: string): boolean {
 function accessDenied(pathName: string): Error {
   const err = new Error(`Access denied in restricted mode: ${pathName}`);
   return Object.assign(err, { code: "EACCES" });
+}
+
+type TrustedWorkflowMask = {
+  target: string;
+  directory: boolean;
+};
+
+type TrustedWorkflowAuthorizedRoot = {
+  root: string;
+  cwd: string;
+  masks: readonly TrustedWorkflowMask[];
+  readOnlyDependencyRoots: readonly string[];
+};
+
+type HardlinkRecord = {
+  key: string;
+  expectedLinks: number;
+  observedLinks: number;
+  protected: boolean;
+  unprotected: boolean;
+  allObservedLinksReadOnly: boolean;
+  examplePath: string;
+};
+
+type TrustedWorkflowAuthorizationControl = {
+  signal?: AbortSignal;
+  deadline: number;
+};
+
+class TrustedWorkflowAuthorizationInterruptedError extends Error {
+  constructor(readonly kind: "aborted" | "timeout") {
+    super(
+      kind === "aborted"
+        ? "Trusted workflow authorization aborted"
+        : "Trusted workflow authorization timed out",
+    );
+  }
+}
+
+function assertTrustedWorkflowAuthorizationActive(
+  control: TrustedWorkflowAuthorizationControl,
+): void {
+  if (control.signal?.aborted) throw new TrustedWorkflowAuthorizationInterruptedError("aborted");
+  if (Date.now() >= control.deadline) {
+    throw new TrustedWorkflowAuthorizationInterruptedError("timeout");
+  }
+}
+
+function isContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
+async function resolveTrustedBunCacheRoot(override?: string): Promise<string> {
+  const configured = override ?? process.env.BUN_INSTALL_CACHE_DIR;
+  const candidate = path.resolve(
+    expandTilde(configured || path.join(homedir(), ".bun/install/cache")),
+  );
+  const stats = await fs.lstat(candidate);
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isDirectory() ||
+    (await fs.realpath(candidate)) !== candidate
+  ) {
+    throw new Error("Trusted workflow Bun cache root must be a canonical real directory");
+  }
+  return candidate;
+}
+
+async function authorizeBunCacheHardlinkSources(input: {
+  records: readonly HardlinkRecord[];
+  cacheRootOverride?: string;
+  control: TrustedWorkflowAuthorizationControl;
+}): Promise<void> {
+  const unresolved = new Map(input.records.map((record) => [record.key, record]));
+  if (unresolved.size === 0) return;
+  assertTrustedWorkflowAuthorizationActive(input.control);
+  const cacheRoot = await resolveTrustedBunCacheRoot(input.cacheRootOverride);
+  let entries = 0;
+
+  const visit = async (directory: string): Promise<void> => {
+    assertTrustedWorkflowAuthorizationActive(input.control);
+    const directoryHandle = await fs.opendir(directory);
+    for await (const entry of directoryHandle) {
+      entries += 1;
+      if (entries > TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES) {
+        throw new Error(
+          `Trusted workflow Bun cache exceeds authorization limit (${TRUSTED_WORKFLOW_MAX_CACHE_ENTRIES})`,
+        );
+      }
+      if (entries % 128 === 0) assertTrustedWorkflowAuthorizationActive(input.control);
+      const candidate = path.join(directory, entry.name);
+      const stats = await fs.lstat(candidate);
+      if (stats.isFile() && stats.nlink > 1) {
+        unresolved.delete(`${stats.dev}:${stats.ino}`);
+        if (unresolved.size === 0) return;
+      }
+      if (stats.isDirectory() && !stats.isSymbolicLink()) await visit(candidate);
+      if (unresolved.size === 0) return;
+    }
+  };
+
+  await visit(cacheRoot);
+  assertTrustedWorkflowAuthorizationActive(input.control);
+  const escaped = unresolved.values().next().value;
+  if (escaped) {
+    throw new Error(
+      `Trusted workflow dependency hardlink has no authorized Bun cache source: ${escaped.examplePath}`,
+    );
+  }
+}
+
+async function inspectTrustedWorkflowRoot(input: {
+  root: string;
+  bunCacheRoot?: string;
+  control: TrustedWorkflowAuthorizationControl;
+}): Promise<{
+  masks: readonly TrustedWorkflowMask[];
+  readOnlyDependencyRoots: readonly string[];
+}> {
+  const root = input.root;
+  const masks: TrustedWorkflowMask[] = [];
+  const readOnlyDependencyRoots: string[] = [];
+  const hardlinks = new Map<string, HardlinkRecord>();
+  let entries = 0;
+
+  const addMask = (target: string, directory: boolean): void => {
+    masks.push({ target, directory });
+  };
+
+  const visit = async (directory: string, insideReadOnlyDependency: boolean): Promise<void> => {
+    assertTrustedWorkflowAuthorizationActive(input.control);
+    const directoryHandle = await fs.opendir(directory);
+    for await (const entry of directoryHandle) {
+      entries += 1;
+      if (entries > TRUSTED_WORKFLOW_MAX_ENTRIES) {
+        throw new Error(
+          `Trusted workflow root exceeds entry authorization limit (${TRUSTED_WORKFLOW_MAX_ENTRIES})`,
+        );
+      }
+      if (entries % 128 === 0) assertTrustedWorkflowAuthorizationActive(input.control);
+      const candidate = path.join(directory, entry.name);
+      const stats = await fs.lstat(candidate);
+      const protectedPath = isWorkflowProtectedPath(root, candidate);
+      const readOnlyDependency =
+        insideReadOnlyDependency || (stats.isDirectory() && entry.name === "node_modules");
+      if (readOnlyDependency && !insideReadOnlyDependency && stats.isDirectory()) {
+        readOnlyDependencyRoots.push(candidate);
+      }
+
+      if (stats.isFile() && stats.nlink > 1) {
+        const key = `${stats.dev}:${stats.ino}`;
+        const record = hardlinks.get(key);
+        if (record) {
+          record.observedLinks += 1;
+          record.protected ||= protectedPath;
+          record.unprotected ||= !protectedPath;
+          record.allObservedLinksReadOnly &&= readOnlyDependency;
+          if (record.expectedLinks !== stats.nlink) {
+            throw new Error(
+              `Trusted workflow hardlink count changed during authorization: ${candidate}`,
+            );
+          }
+        } else {
+          if (hardlinks.size >= TRUSTED_WORKFLOW_MAX_HARDLINK_INODES) {
+            throw new Error(
+              `Trusted workflow root exceeds hardlink authorization limit (${TRUSTED_WORKFLOW_MAX_HARDLINK_INODES})`,
+            );
+          }
+          hardlinks.set(key, {
+            key,
+            expectedLinks: stats.nlink,
+            observedLinks: 1,
+            protected: protectedPath,
+            unprotected: !protectedPath,
+            allObservedLinksReadOnly: readOnlyDependency,
+            examplePath: candidate,
+          });
+        }
+      }
+
+      if (protectedPath) {
+        addMask(candidate, stats.isDirectory() && !stats.isSymbolicLink());
+        continue;
+      }
+
+      if (!stats.isDirectory() && !stats.isFile() && !stats.isSymbolicLink()) {
+        throw new Error(`Trusted workflow root contains unsupported special node: ${candidate}`);
+      }
+      if (stats.isSymbolicLink()) {
+        continue;
+      }
+      if (stats.isDirectory()) await visit(candidate, readOnlyDependency);
+    }
+  };
+
+  await visit(root, false);
+  assertTrustedWorkflowAuthorizationActive(input.control);
+  const externalDependencyRecords: HardlinkRecord[] = [];
+  for (const record of hardlinks.values()) {
+    if (record.protected && record.unprotected) {
+      throw new Error(`Trusted workflow hardlink aliases protected data: ${record.examplePath}`);
+    }
+    if (record.observedLinks !== record.expectedLinks) {
+      if (!record.allObservedLinksReadOnly) {
+        throw new Error(
+          `Trusted workflow hardlink escapes the approved root: ${record.examplePath} (${record.observedLinks}/${record.expectedLinks} links authorized)`,
+        );
+      }
+      externalDependencyRecords.push(record);
+    }
+  }
+  await authorizeBunCacheHardlinkSources({
+    records: externalDependencyRecords,
+    cacheRootOverride: input.bunCacheRoot,
+    control: input.control,
+  });
+  return { masks, readOnlyDependencyRoots };
+}
+
+async function authorizeTrustedWorkflowRoot(input: {
+  workspaceRoot: string;
+  cwd?: string;
+  bunCacheRoot?: string;
+  control: TrustedWorkflowAuthorizationControl;
+}): Promise<TrustedWorkflowAuthorizedRoot> {
+  assertTrustedWorkflowAuthorizationActive(input.control);
+  const root = path.resolve(expandTilde(input.workspaceRoot));
+  if (root === path.parse(root).root || isContained("/usr", root)) {
+    throw new Error("Trusted workflow bash requires a dedicated non-system workspace root");
+  }
+  const stats = await fs.lstat(root);
+  if (stats.isSymbolicLink() || !stats.isDirectory() || (await fs.realpath(root)) !== root) {
+    throw new Error("Trusted workflow bash root must be a canonical real directory");
+  }
+  let cwd = root;
+  if (input.cwd !== undefined) {
+    const parsed = parseSshCwdTarget(input.cwd);
+    if (parsed.kind === "ssh") {
+      throw new Error("Trusted workflow bash does not allow SSH cwd targets");
+    }
+    const requestedValue = parsed.cwd ?? input.cwd;
+    const requested = path.isAbsolute(requestedValue)
+      ? path.resolve(expandTilde(requestedValue))
+      : path.resolve(root, requestedValue);
+    if (!isContained(root, requested)) {
+      throw new Error("Trusted workflow bash cwd is outside the approved root");
+    }
+    if (isWorkflowProtectedPath(root, requested)) {
+      throw new Error("Trusted workflow bash cwd is a protected path");
+    }
+    const requestedStats = await fs.lstat(requested);
+    if (
+      requestedStats.isSymbolicLink() ||
+      !requestedStats.isDirectory() ||
+      (await fs.realpath(requested)) !== requested
+    ) {
+      throw new Error("Trusted workflow bash cwd must be a canonical real directory");
+    }
+    cwd = requested;
+  }
+  const inspection = await inspectTrustedWorkflowRoot({
+    root,
+    bunCacheRoot: input.bunCacheRoot,
+    control: input.control,
+  });
+  return { root, cwd, ...inspection };
+}
+
+function trustedWorkflowRootDirectories(root: string): string[] {
+  const directories: string[] = [];
+  let current = path.dirname(root);
+  while (current !== path.parse(current).root) {
+    directories.unshift(current);
+    current = path.dirname(current);
+  }
+  return directories;
+}
+
+let trustedWorkflowArgvLimitPromise: Promise<number> | null = null;
+
+async function resolveTrustedWorkflowArgvLimit(): Promise<number> {
+  trustedWorkflowArgvLimitPromise ??= (async () => {
+    const child = Bun.spawn([GETCONF_PATH, "ARG_MAX"], { stdout: "pipe", stderr: "pipe" });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const argMax = Number(stdout.trim());
+    if (exitCode !== 0 || !Number.isSafeInteger(argMax) || argMax <= 0) {
+      throw new Error(
+        `Trusted workflow could not resolve ARG_MAX: ${stderr.trim() || stdout.trim() || `exit ${exitCode}`}`,
+      );
+    }
+    const environmentBytes = Object.entries(process.env).reduce(
+      (total, [name, value]) =>
+        total + Buffer.byteLength(name) + Buffer.byteLength(value ?? "") + 2,
+      0,
+    );
+    const available = argMax - environmentBytes - 64 * 1024;
+    if (available <= TRUSTED_WORKFLOW_MAX_SINGLE_ARG_BYTES) {
+      throw new Error("Trusted workflow process environment leaves no safe argv capacity");
+    }
+    return Math.floor(available * 0.75);
+  })();
+  return await trustedWorkflowArgvLimitPromise;
+}
+
+function buildTrustedWorkflowCommand(input: {
+  command: string;
+  root: string;
+  cwd: string;
+  writable: boolean;
+  masks: readonly TrustedWorkflowMask[];
+  readOnlyDependencyRoots: readonly string[];
+  emptyFile: string;
+  emptyDirectory: string;
+  timeoutMs: number;
+  stdinMode: "error" | "eof";
+  unit: string;
+  maxArgvBytes: number;
+  context?: RestrictedBashContext;
+}): string[] {
+  const command = [
+    SYSTEMD_RUN_PATH,
+    "--user",
+    "--pipe",
+    "--wait",
+    "--collect",
+    "--quiet",
+    `--unit=${input.unit}`,
+    "-p",
+    `MemoryMax=${TRUSTED_WORKFLOW_MEMORY_BYTES}`,
+    "-p",
+    "MemorySwapMax=0",
+    "-p",
+    `TasksMax=${TRUSTED_WORKFLOW_TASKS_MAX}`,
+    "-p",
+    `RuntimeMaxSec=${Math.max(1, Math.ceil(input.timeoutMs / 1_000))}s`,
+    BWRAP_PATH,
+    "--unshare-all",
+    "--die-with-parent",
+    "--new-session",
+    "--clearenv",
+    "--cap-drop",
+    "ALL",
+    "--ro-bind",
+    "/usr",
+    "/usr",
+    "--symlink",
+    "usr/bin",
+    "/bin",
+    "--symlink",
+    "usr/sbin",
+    "/sbin",
+    "--symlink",
+    "usr/lib",
+    "/lib",
+    "--symlink",
+    "usr/lib",
+    "/lib64",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
+    "--dir",
+    "/tmp/home",
+    "--dir",
+    "/sandbox",
+    "--dir",
+    "/sandbox/bin",
+    "--ro-bind",
+    process.execPath,
+    "/sandbox/bin/bun",
+  ];
+
+  for (const directory of trustedWorkflowRootDirectories(input.root)) {
+    if (directory !== "/usr" && !directory.startsWith("/usr/")) command.push("--dir", directory);
+  }
+  command.push(input.writable ? "--bind" : "--ro-bind", input.root, input.root);
+
+  for (const dependencyRoot of input.readOnlyDependencyRoots) {
+    command.push("--ro-bind", dependencyRoot, dependencyRoot);
+  }
+
+  for (const mask of input.masks) {
+    command.push("--ro-bind", mask.directory ? input.emptyDirectory : input.emptyFile, mask.target);
+  }
+
+  const environment: Record<string, string | undefined> = {
+    HOME: "/tmp/home",
+    PATH: "/sandbox/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    TMPDIR: "/tmp",
+    XDG_CACHE_HOME: "/tmp/cache",
+    BUN_INSTALL_CACHE_DIR: "/tmp/bun-cache",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    NO_COLOR: "1",
+    LILAC_REQUEST_ID: input.context?.requestId,
+    LILAC_SESSION_ID: input.context?.sessionId,
+    LILAC_REQUEST_CLIENT: input.context?.requestClient,
+    LILAC_CWD: input.root,
+  };
+  for (const [name, value] of Object.entries(environment)) {
+    if (value !== undefined) command.push("--setenv", name, value);
+  }
+
+  command.push("--chdir", input.cwd, "/usr/bin/bash", "-c");
+  command.push(input.stdinMode === "eof" ? input.command : `exec 0>/dev/null; ${input.command}`);
+  const oversizedArgument = command.find(
+    (value) => Buffer.byteLength(value) > TRUSTED_WORKFLOW_MAX_SINGLE_ARG_BYTES,
+  );
+  if (oversizedArgument !== undefined) {
+    throw new Error(
+      `Trusted workflow sandbox argument exceeds transport limit (${Buffer.byteLength(oversizedArgument)}/${TRUSTED_WORKFLOW_MAX_SINGLE_ARG_BYTES} bytes)`,
+    );
+  }
+  const argvBytes = command.reduce((total, value) => total + Buffer.byteLength(value) + 1, 0);
+  if (argvBytes > input.maxArgvBytes) {
+    throw new Error(
+      `Trusted workflow sandbox argv exceeds transport limit (${argvBytes}/${input.maxArgvBytes} bytes)`,
+    );
+  }
+  return command;
+}
+
+async function createTrustedWorkflowSupportDirectory(): Promise<{
+  root: string;
+  emptyFile: string;
+  emptyDirectory: string;
+}> {
+  const root = await fs.mkdtemp(
+    path.join(await fs.realpath("/tmp"), "lilac-trusted-workflow-bash-"),
+  );
+  const emptyFile = path.join(root, "empty-file");
+  const emptyDirectory = path.join(root, "empty-directory");
+  await fs.writeFile(emptyFile, "", { mode: 0o600 });
+  await fs.mkdir(emptyDirectory, { mode: 0o700 });
+  return { root, emptyFile, emptyDirectory };
+}
+
+function trustedWorkflowOverflowPaths(): { stdout: string; stderr: string } {
+  const base = path.join("/tmp", `lilac-trusted-workflow-output-${crypto.randomUUID()}`);
+  return { stdout: `${base}.stdout`, stderr: `${base}.stderr` };
+}
+
+function createTrustedWorkflowArtifactSource(input: {
+  stdout: string;
+  stderr: string;
+  stdoutOverflowPath?: string;
+  stderrOverflowPath?: string;
+}): Readable {
+  async function* content() {
+    yield "--- stdout ---\n";
+    if (input.stdoutOverflowPath) yield* createReadStream(input.stdoutOverflowPath);
+    else yield input.stdout;
+    yield "\n\n--- stderr ---\n";
+    if (input.stderrOverflowPath) yield* createReadStream(input.stderrOverflowPath);
+    else yield input.stderr;
+    yield "\n";
+  }
+  return Readable.from(content()).pipe(createBashOutputSanitizerTransform([]));
+}
+
+async function persistTrustedWorkflowOutput(input: {
+  artifacts?: ToolResultArtifactStore;
+  outputConfig: CoreConfig["tools"]["output"];
+  context?: RestrictedBashContext;
+  toolCallId?: string;
+  stdout: string;
+  stderr: string;
+  stdoutOverflowPath?: string;
+  stderrOverflowPath?: string;
+}): Promise<string | undefined> {
+  if (
+    !input.artifacts ||
+    !input.context?.requestId ||
+    !input.context.sessionId ||
+    !input.toolCallId
+  ) {
+    return undefined;
+  }
+  try {
+    return (
+      await input.artifacts.createFromStream({
+        sessionId: input.context.sessionId,
+        requestId: input.context.requestId,
+        toolCallId: input.toolCallId,
+        toolName: "bash",
+        source: createTrustedWorkflowArtifactSource(input),
+        ttlMs: input.outputConfig.artifactTtlMs,
+        maxBytesPerSession: input.outputConfig.artifactMaxBytesPerSession,
+      })
+    ).uri;
+  } catch (error) {
+    logger.warn("tool.artifact.write_failed", {
+      toolName: "bash",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 class RestrictedReadFs implements IFileSystem {
@@ -526,7 +1132,7 @@ function resolveRestrictedCwd(input: {
   if (input.cwd === WORKSPACE_MOUNT || input.cwd.startsWith(`${WORKSPACE_MOUNT}/`))
     return input.cwd;
 
-  return WORKSPACE_MOUNT;
+  throw new Error("Restricted bash cwd is outside the approved workspace and session temp roots");
 }
 
 async function createRestrictedBash(params: {
@@ -781,5 +1387,307 @@ export async function executeRestrictedBash(
   } finally {
     clearTimeout(timeout);
     options.abortSignal?.removeEventListener("abort", abortListener);
+  }
+}
+
+/**
+ * `executeBash` cannot be used here: it inherits Core's environment and host
+ * filesystem authority. Trusted workflows instead get installed executable
+ * trees plus their approved root inside the existing systemd/bwrap boundary.
+ */
+export async function executeTrustedWorkflowBash(
+  { command, cwd, timeoutMs, stdinMode }: BashToolInput,
+  options: {
+    workspaceRoot: string;
+    workspaceWritable: boolean;
+    context?: RestrictedBashContext;
+    abortSignal?: AbortSignal;
+    toolCallId?: string;
+    artifacts?: ToolResultArtifactStore;
+    outputConfig?: CoreConfig["tools"]["output"];
+    onActivity?: () => void;
+    runtime?: TrustedWorkflowBashRuntime;
+    bunCacheRoot?: string;
+  },
+): Promise<BashToolOutput> {
+  const effectiveTimeoutMs = timeoutMs ?? DEFAULT_TRUSTED_WORKFLOW_TIMEOUT_MS;
+  const authorizationControl: TrustedWorkflowAuthorizationControl = {
+    signal: options.abortSignal,
+    deadline: Date.now() + effectiveTimeoutMs,
+  };
+  if (options.abortSignal?.aborted) {
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      executionError: { type: "aborted", signal: "SIGTERM" },
+    };
+  }
+  let authorized: TrustedWorkflowAuthorizedRoot;
+  try {
+    authorized = await authorizeTrustedWorkflowRoot({
+      workspaceRoot: options.workspaceRoot,
+      cwd,
+      bunCacheRoot: options.bunCacheRoot,
+      control: authorizationControl,
+    });
+  } catch (error) {
+    if (error instanceof TrustedWorkflowAuthorizationInterruptedError) {
+      return {
+        stdout: "",
+        stderr: "",
+        exitCode: -1,
+        executionError:
+          error.kind === "aborted"
+            ? { type: "aborted", signal: "SIGTERM" }
+            : { type: "timeout", timeoutMs: effectiveTimeoutMs, signal: "SIGTERM" },
+      };
+    }
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      exitCode: -1,
+      executionError: { type: "blocked", reason: "trusted_workflow_bash_cwd" },
+    };
+  }
+
+  const runtime = options.runtime ?? defaultTrustedWorkflowBashRuntime;
+  const unit = runtime.createUnitName();
+  const outputConfig = options.outputConfig ?? {
+    maxPreviewBytes: 40 * 1024,
+    artifactTtlMs: 7 * 24 * 60 * 60 * 1000,
+    artifactMaxBytesPerSession: 50 * 1024 * 1024,
+  };
+  let maxArgvBytes: number;
+  try {
+    maxArgvBytes = await resolveTrustedWorkflowArgvLimit();
+    assertTrustedWorkflowAuthorizationActive(authorizationControl);
+  } catch (error) {
+    if (error instanceof TrustedWorkflowAuthorizationInterruptedError) {
+      return {
+        stdout: "",
+        stderr: "",
+        exitCode: -1,
+        executionError:
+          error.kind === "aborted"
+            ? { type: "aborted", signal: "SIGTERM" }
+            : { type: "timeout", timeoutMs: effectiveTimeoutMs, signal: "SIGTERM" },
+      };
+    }
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      executionError: {
+        type: "exception",
+        phase: "spawn",
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+  const remainingTimeoutMs = Math.max(1, authorizationControl.deadline - Date.now());
+  let child: TrustedWorkflowBashProcess | null = null;
+  let timedOut = false;
+  let aborted = false;
+  let stopping: Promise<void> | null = null;
+  let supportRoot: string | null = null;
+  const overflowPaths = trustedWorkflowOverflowPaths();
+  const retainOverflow = Boolean(
+    options.artifacts &&
+    options.context?.requestId &&
+    options.context.sessionId &&
+    options.toolCallId,
+  );
+  const stop = (reason: "timeout" | "abort"): void => {
+    if (reason === "timeout") timedOut = true;
+    else aborted = true;
+    if (!child) return;
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+    stopping ??= runtime.stopUnit(unit);
+  };
+  const abortListener = () => stop("abort");
+  if (options.abortSignal?.aborted) abortListener();
+  else options.abortSignal?.addEventListener("abort", abortListener, { once: true });
+  const timeout = setTimeout(() => stop("timeout"), remainingTimeoutMs);
+  timeout.unref?.();
+
+  try {
+    if (timedOut || aborted) {
+      return {
+        stdout: "",
+        stderr: "",
+        exitCode: -1,
+        executionError: timedOut
+          ? { type: "timeout", timeoutMs: effectiveTimeoutMs, signal: "SIGTERM" }
+          : { type: "aborted", signal: "SIGTERM" },
+      };
+    }
+    const support = await createTrustedWorkflowSupportDirectory();
+    supportRoot = support.root;
+    if (timedOut || aborted) {
+      return {
+        stdout: "",
+        stderr: "",
+        exitCode: -1,
+        executionError: timedOut
+          ? { type: "timeout", timeoutMs: effectiveTimeoutMs, signal: "SIGTERM" }
+          : { type: "aborted", signal: "SIGTERM" },
+      };
+    }
+    child = runtime.spawn(
+      buildTrustedWorkflowCommand({
+        command,
+        root: authorized.root,
+        cwd: authorized.cwd,
+        writable: options.workspaceWritable,
+        masks: authorized.masks,
+        readOnlyDependencyRoots: authorized.readOnlyDependencyRoots,
+        emptyFile: support.emptyFile,
+        emptyDirectory: support.emptyDirectory,
+        timeoutMs: remainingTimeoutMs,
+        stdinMode: stdinMode ?? "error",
+        unit,
+        maxArgvBytes,
+        context: options.context,
+      }),
+    );
+    const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
+      readSanitizedStreamTextCapped(child.stdout, outputConfig.maxPreviewBytes, {
+        overflowFilePath: retainOverflow ? overflowPaths.stdout : undefined,
+        onActivity: options.onActivity,
+      }),
+      readSanitizedStreamTextCapped(child.stderr, outputConfig.maxPreviewBytes, {
+        overflowFilePath: retainOverflow ? overflowPaths.stderr : undefined,
+        onActivity: options.onActivity,
+      }),
+      child.exited,
+    ]);
+
+    const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value.text : "";
+    const stderr = stderrResult.status === "fulfilled" ? stderrResult.value.text : "";
+    const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
+    const truncated =
+      (stdoutResult.status === "fulfilled" && stdoutResult.value.capped) ||
+      (stderrResult.status === "fulfilled" && stderrResult.value.capped);
+    const spillComplete =
+      stdoutResult.status === "fulfilled" &&
+      stderrResult.status === "fulfilled" &&
+      (!stdoutResult.value.capped || stdoutResult.value.overflowFilePath !== undefined) &&
+      (!stderrResult.value.capped || stderrResult.value.overflowFilePath !== undefined);
+    const artifactUri =
+      truncated && spillComplete
+        ? await persistTrustedWorkflowOutput({
+            artifacts: options.artifacts,
+            outputConfig,
+            context: options.context,
+            toolCallId: options.toolCallId,
+            stdout,
+            stderr,
+            stdoutOverflowPath: stdoutResult.value.overflowFilePath,
+            stderrOverflowPath: stderrResult.value.overflowFilePath,
+          })
+        : undefined;
+
+    let cleanupError: unknown;
+    const pendingStop = (() => stopping)();
+    if (pendingStop) {
+      try {
+        await pendingStop;
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    const executionError = cleanupError
+      ? {
+          type: "exception" as const,
+          phase: "unknown" as const,
+          message: `Trusted workflow bash cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        }
+      : timedOut
+        ? {
+            type: "timeout" as const,
+            timeoutMs: effectiveTimeoutMs,
+            signal: "SIGTERM",
+          }
+        : aborted
+          ? { type: "aborted" as const, signal: "SIGTERM" }
+          : stdoutResult.status === "rejected"
+            ? {
+                type: "exception" as const,
+                phase: "stdout" as const,
+                message:
+                  stdoutResult.reason instanceof Error
+                    ? stdoutResult.reason.message
+                    : String(stdoutResult.reason),
+              }
+            : stderrResult.status === "rejected"
+              ? {
+                  type: "exception" as const,
+                  phase: "stderr" as const,
+                  message:
+                    stderrResult.reason instanceof Error
+                      ? stderrResult.reason.message
+                      : String(stderrResult.reason),
+                }
+              : exitResult.status === "rejected"
+                ? {
+                    type: "exception" as const,
+                    phase: "unknown" as const,
+                    message:
+                      exitResult.reason instanceof Error
+                        ? exitResult.reason.message
+                        : String(exitResult.reason),
+                  }
+                : undefined;
+    return withLimitedBashOutput(
+      {
+        stdout,
+        stderr,
+        exitCode: cleanupError ? -1 : exitCode,
+        ...(executionError ? { executionError } : {}),
+      },
+      {
+        maxOutputBytes: outputConfig.maxPreviewBytes,
+        truncated,
+        artifactUri,
+        originalStdoutBytes:
+          stdoutResult.status === "fulfilled" ? stdoutResult.value.totalBytes : 0,
+        originalStderrBytes:
+          stderrResult.status === "fulfilled" ? stderrResult.value.totalBytes : 0,
+      },
+    );
+  } catch (error) {
+    let cleanupError: unknown;
+    if (child) {
+      try {
+        await runtime.stopUnit(unit);
+      } catch (stopError) {
+        cleanupError = stopError;
+      }
+    }
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      executionError: {
+        type: "exception",
+        phase: child ? "unknown" : "spawn",
+        message: cleanupError
+          ? `Trusted workflow bash cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; original error: ${error instanceof Error ? error.message : String(error)}`
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    };
+  } finally {
+    clearTimeout(timeout);
+    options.abortSignal?.removeEventListener("abort", abortListener);
+    await Promise.all([
+      supportRoot ? fs.rm(supportRoot, { recursive: true, force: true }) : undefined,
+      fs.rm(overflowPaths.stdout, { force: true }),
+      fs.rm(overflowPaths.stderr, { force: true }),
+    ]);
   }
 }

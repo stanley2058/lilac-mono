@@ -7,6 +7,8 @@ export type RequestContext = {
   sessionId?: string;
   requestClient?: string;
   cwd?: string;
+  /** Authenticated per-invocation workflow project authority selected by the Level-1 shell cwd. */
+  projectRoot?: string;
   safetyMode?: "trusted" | "restricted";
   /** Set only after matching request headers to a server-owned authenticated surface origin. */
   serverOwnedRequest?: boolean;
@@ -23,19 +25,35 @@ export type RequestContext = {
   workflowPolicy?: {
     runId: string;
     operationId: string;
-    externalTools: boolean;
-    surfaceSends: boolean;
+    level2Callables: readonly string[];
+    surfaceOriginOperations: readonly string[];
     canonicalProjectId: string;
     canonicalWorkspaceRoot: string;
     canonicalCwd: string;
     originSessionId: string | null;
     originClient: "discord" | "github" | null;
+    originUserId: string | null;
   };
 };
 
 export type ServerToolPrimaryPositional = {
   field: string;
   variadic?: boolean;
+};
+
+export type ServerToolWorkflowPathInput = {
+  /** Top-level input field containing one local path or an array of local paths. */
+  field: string;
+  aliases?: readonly string[];
+  cardinality: "one" | "many";
+  target: "read-file" | "write-directory" | "write-file";
+  /** Inject the operation cwd when the field is omitted. */
+  default?: "cwd";
+};
+
+export type ServerToolWorkflowPathAuthority = {
+  /** Every local path accepted by the callable must be declared here. */
+  inputs: readonly ServerToolWorkflowPathInput[];
 };
 
 export type ServerToolHelpEntry = {
@@ -46,6 +64,7 @@ export type ServerToolHelpEntry = {
   input?: string[];
   primaryPositional?: ServerToolPrimaryPositional;
   hidden?: boolean;
+  workflowPathAuthority?: ServerToolWorkflowPathAuthority;
 };
 
 export type ServerToolListResult = ServerToolHelpEntry[];

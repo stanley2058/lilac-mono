@@ -69,7 +69,7 @@ Support both scopes:
 
 | Scope | Root |
 | --- | --- |
-| Project | `<canonical-workspace-root>/.lilac/workflows/` |
+| Project | `<selected-project-root>/.lilac/workflows/` |
 | Personal | `${DATA_DIR}/workflows/` |
 
 Rules:
@@ -80,6 +80,7 @@ Rules:
 - `scope: "auto"` resolves project first, then personal.
 - Every trigger response records the actual resolved scope and canonical path.
 - Personal definitions are still approved per canonical project context.
+- The authenticated Level-1 shell cwd selects the project root independently for each Level-2 workflow invocation. No package/workspace discovery or containment under `LILAC_WORKSPACE_DIR` applies.
 - Reject symlinks, non-regular files, path traversal, and canonical containment escapes.
 - Project files may be authored with normal editing tools or `workflow.definition.save`.
 - Personal files are normally authored through `workflow.definition.save`.
@@ -106,13 +107,19 @@ export default defineWorkflow({
 
   capabilities: {
     agents: {
-      profiles: ["explore"],
+      profiles: ["explore", "general"],
       models: ["inherit"],
+      reasoning: ["provider-default"],
+      allowedRoots: ["project"],
+      tools: ["apply_patch", "bash", "batch", "glob", "grep", "read_file"],
+      executables: "trusted-container",
       maxConcurrent: 8,
       maxTotal: 40,
-      editing: false,
-      isolation: "shared",
+      editing: ["shared"],
+      delegation: false,
     },
+    level2: { callables: [] },
+    surfaces: { origin: [] },
     waits: [],
   },
 

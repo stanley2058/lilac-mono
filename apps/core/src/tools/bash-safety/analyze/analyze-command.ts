@@ -7,6 +7,10 @@ import { analyzeSegment, segmentChangesCwd } from "./segment";
 
 const REASON_STRICT_UNPARSEABLE =
   "Command could not be safely analyzed (strict mode). Verify manually.";
+const REASON_PARSE_FAILURE =
+  "Command could not be safely analyzed because shell parsing failed. Verify manually.";
+const REASON_RECURSION_LIMIT =
+  "Command could not be safely analyzed because nested shell recursion exceeded the safety limit.";
 
 export function analyzeCommandInternal(
   command: string,
@@ -14,10 +18,15 @@ export function analyzeCommandInternal(
   options: AnalyzeOptions,
 ): AnalyzeResult | null {
   if (depth >= MAX_RECURSION_DEPTH) {
-    return null;
+    return { reason: REASON_RECURSION_LIMIT, segment: command };
   }
 
-  const segments = splitShellCommands(command);
+  let segments: string[][];
+  try {
+    segments = splitShellCommands(command);
+  } catch {
+    return { reason: REASON_PARSE_FAILURE, segment: command };
+  }
 
   // Strict mode: block if command couldn't be parsed (unclosed quotes, etc.)
   // Detected when splitShellCommands returns a single segment containing the raw command.

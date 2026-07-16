@@ -165,7 +165,7 @@ export default defineWorkflow({
     },
   },
   capabilities: {
-    agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: false, isolation: "shared" },
+    agents: { profiles: ["explore"], models: ["inherit"], maxConcurrent: 1, maxTotal: 1, editing: [] },
     waits: [],
   },
   async run({ args, phase, agent }) {
@@ -219,7 +219,6 @@ describe("unified workflow integration", () => {
       subscriptionId: "integration-actions",
     });
     const tool = new ProgrammaticWorkflow({
-      workspaceRoot,
       dataDir,
       store,
       bus,
@@ -313,6 +312,7 @@ describe("unified workflow integration", () => {
       sessionId: "channel-1",
       requestClient: "discord",
       cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
       authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
@@ -421,6 +421,7 @@ describe("unified workflow integration", () => {
       sessionId: "channel-1",
       requestClient: "discord",
       cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
       authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
@@ -447,7 +448,6 @@ describe("unified workflow integration", () => {
       minEditIntervalMs: 0,
     });
     const tool = new ProgrammaticWorkflow({
-      workspaceRoot,
       dataDir,
       store,
       bus,

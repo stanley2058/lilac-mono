@@ -178,6 +178,7 @@ describe("subagent_delegate tool", () => {
     const delegate = tools.subagent_delegate as unknown as {
       description?: string;
       inputSchema: unknown;
+      outputSchema: unknown;
     };
     const schema = asSchema(delegate.inputSchema as never).jsonSchema as unknown as {
       properties?: {
@@ -204,6 +205,9 @@ describe("subagent_delegate tool", () => {
     expect(schema.properties?.model?.enum).not.toContain("invalidTarget");
     expect(schema.properties?.reasoning?.enum).toContain("xhigh");
     expect(delegate.description).toContain("Escalate critical reviews to a stronger model.");
+    expect(JSON.stringify(asSchema(delegate.outputSchema as never).jsonSchema)).toContain(
+      "workflowRunId",
+    );
   });
 
   it("omits the model field when no aliases are selectable", async () => {
@@ -401,6 +405,7 @@ describe("subagent_delegate tool", () => {
       ok: true,
       mode: "deferred",
       status: "accepted",
+      workflowRunId: "run:deferred-1",
       profile: "explore",
       sessionName: expect.stringMatching(/^explore-[0-9a-f]{8}$/u),
     });
@@ -596,6 +601,7 @@ describe("subagent_delegate tool", () => {
     if (res.mode !== "sync") throw new Error("expected sync subagent result");
     expect(res.ok).toBe(true);
     expect(res.status).toBe("resolved");
+    expect(res.workflowRunId).toBe("run:sync-result");
     expect(res.profile).toBe("explore");
     expect(res.sessionName).toMatch(/^explore-[0-9a-f]{8}$/u);
     expect(res.finalText).toBe("hello world");

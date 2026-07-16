@@ -1,10 +1,15 @@
+import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { tool } from "ai";
 import { z } from "zod";
-import { executeBash } from "./bash-impl";
-import { executeRestrictedBash } from "./restricted-bash";
-import type { CoreConfig } from "@stanley2058/lilac-utils";
+
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import type { WorkflowRequestPolicy } from "../workflow/workflow-request-authority";
+import { executeBash } from "./bash-impl";
+import {
+  executeRestrictedBash,
+  executeTrustedWorkflowBash,
+  type TrustedWorkflowBashRuntime,
+} from "./restricted-bash";
 
 export const bashInputSchema = z.object({
   command: z.string().describe("Bash command to execute"),
@@ -97,6 +102,7 @@ export function bashToolWithCwd(
     workflowPolicy?: WorkflowRequestPolicy;
     workflowCapability?: string;
     controlCapability?: string;
+    trustedWorkflowRuntime?: TrustedWorkflowBashRuntime;
   },
 ) {
   return {
@@ -114,10 +120,17 @@ export function bashToolWithCwd(
               safetyMode?: "trusted" | "restricted";
             }
           | undefined;
-        const payload = { ...input, cwd: input.cwd ?? defaultCwd };
-        if (typedContext?.safetyMode === "restricted" || opts?.workflowPolicy) {
+        const workflowRequestedCwd =
+          opts?.workflowPolicy?.canonicalRequestedCwd ?? opts?.workflowPolicy?.canonicalCwd;
+        const workflowAuthorityRoot = opts?.workflowPolicy?.canonicalAuthorityRoot;
+        const payload = { ...input, cwd: input.cwd ?? workflowRequestedCwd ?? defaultCwd };
+        if (
+          typedContext?.safetyMode === "restricted" ||
+          opts?.workflowPolicy?.safetyMode === "restricted" ||
+          opts?.workflowPolicy?.executables === "none"
+        ) {
           return executeRestrictedBash(payload, {
-            workspaceRoot: defaultCwd,
+            workspaceRoot: workflowAuthorityRoot ?? defaultCwd,
             context: {
               ...typedContext,
               workflowCapability: opts?.workflowCapability,
@@ -128,6 +141,19 @@ export function bashToolWithCwd(
             toolCallId,
             artifacts: opts?.artifacts,
             outputConfig: opts?.outputConfig,
+          });
+        }
+        if (opts?.workflowPolicy) {
+          return executeTrustedWorkflowBash(payload, {
+            workspaceRoot: opts.workflowPolicy.canonicalAuthorityRoot,
+            workspaceWritable: opts.workflowPolicy.editing,
+            context: typedContext,
+            abortSignal,
+            toolCallId,
+            artifacts: opts.artifacts,
+            outputConfig: opts.outputConfig,
+            onActivity: opts.onActivity,
+            runtime: opts.trustedWorkflowRuntime,
           });
         }
         return executeBash(payload, {

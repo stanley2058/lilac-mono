@@ -1,7 +1,11 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import type {
   SubagentDelegationHandle,
   SubagentDelegationOutcome,
   SubagentDelegationRegistration,
+  TrustedSubagentDelegationRegistration,
 } from "../tools/subagent";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import { DurableWorkflowStore } from "./durable-workflow-store";
@@ -27,14 +31,15 @@ const GENERATED_WORKFLOW_NAME = "subagent-delegate";
 
 export type WorkflowSubagentPolicy = {
   editing: boolean;
-  externalTools: boolean;
+  level2Callables: readonly string[];
 };
 
 function generatedSource(input: {
   profile: SubagentDelegationRegistration["profile"];
   model: string;
+  reasoning: string;
   editing: boolean;
-  externalTools: boolean;
+  level2Callables: readonly string[];
   idleTimeoutMs: number;
 }): string {
   const operationIdleTimeoutMs = Math.min(
@@ -64,17 +69,21 @@ export default defineWorkflow({
     agents: {
       profiles: [${JSON.stringify(input.profile)}],
       models: [${JSON.stringify(input.model)}],
+      reasoning: [${JSON.stringify(input.reasoning)}],
+      allowedRoots: ["project"],
+      tools: ${JSON.stringify(input.profile === "explore" ? ["batch", "glob", "grep", "read_file"] : ["apply_patch", "bash", "batch", "glob", "grep", "read_file"])},
+      executables: ${JSON.stringify(input.profile === "explore" ? "none" : "trusted-container")},
       maxConcurrent: 1,
       maxTotal: 1,
-      editing: ${input.editing},
-      isolation: "shared",
+      editing: ${JSON.stringify(input.editing ? ["shared"] : [])},
+      delegation: false,
     },
+    level2: { callables: ${JSON.stringify(input.level2Callables)} },
+    surfaces: { origin: [] },
     waits: [],
     maxNestingDepth: 1,
     maxWallTimeMs: ${maxWallTimeMs},
     operationIdleTimeoutMs: ${operationIdleTimeoutMs},
-    surfaceSends: false,
-    externalTools: ${input.externalTools},
     safety: { escalation: "none" },
   },
   limits: {
@@ -88,6 +97,12 @@ export default defineWorkflow({
     return agent(args.task, {
       profile: args.profile,
       model: args.model,
+      reasoning: ${JSON.stringify(input.reasoning)},
+      editing: ${input.editing},
+      ${input.editing ? 'isolation: "shared",' : ""}
+      executables: ${JSON.stringify(input.profile === "explore" ? "none" : "trusted-container")},
+      level2Callables: ${JSON.stringify(input.level2Callables)},
+      surfaceOriginOperations: [],
       label: "subagent " + args.profile,
     });
   },
@@ -140,10 +155,11 @@ async function completionStatus(
 }
 
 export class WorkflowSubagentDispatcher {
+  private readonly definitionsStores = new Map<string, Promise<WorkflowDefinitionStore>>();
+
   private constructor(
     private readonly input: {
       store: DurableWorkflowStore;
-      definitions: WorkflowDefinitionStore;
       dataDir: string;
       toolResultArtifacts?: ToolResultArtifactStore;
       now?: () => number;
@@ -153,34 +169,51 @@ export class WorkflowSubagentDispatcher {
     },
   ) {}
 
-  static async create(input: {
+  static create(input: {
     store: DurableWorkflowStore;
-    workspaceRoot: string;
     dataDir: string;
     toolResultArtifacts?: ToolResultArtifactStore;
     now?: () => number;
     pollMs?: number;
     onRunCreated?: (run: WorkflowRun) => Promise<void>;
     onRunCancelled?: (run: WorkflowRun, previousState: WorkflowRun["state"]) => Promise<void>;
-  }): Promise<WorkflowSubagentDispatcher> {
-    const definitions = await WorkflowDefinitionStore.create({
-      workspaceRoot: input.workspaceRoot,
-      dataDir: input.dataDir,
-    });
-    return new WorkflowSubagentDispatcher({ ...input, definitions });
+  }): WorkflowSubagentDispatcher {
+    return new WorkflowSubagentDispatcher(input);
+  }
+
+  private async definitions(projectRoot: string): Promise<WorkflowDefinitionStore> {
+    const requestedRoot = path.resolve(projectRoot);
+    const stats = await fs.lstat(requestedRoot);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error(`Subagent workflow project root must be a real directory: ${requestedRoot}`);
+    }
+    const canonicalRoot = await fs.realpath(requestedRoot);
+    let definitions = this.definitionsStores.get(canonicalRoot);
+    if (!definitions) {
+      definitions = WorkflowDefinitionStore.create({
+        workspaceRoot: canonicalRoot,
+        dataDir: this.input.dataDir,
+      });
+      this.definitionsStores.set(canonicalRoot, definitions);
+      definitions.catch(() => this.definitionsStores.delete(canonicalRoot));
+    }
+    return await definitions;
   }
 
   async delegate(
-    registration: SubagentDelegationRegistration,
+    registration: TrustedSubagentDelegationRegistration,
     policy: WorkflowSubagentPolicy,
   ): Promise<SubagentDelegationHandle> {
+    const definitions = await this.definitions(registration.projectRoot);
     const now = this.input.now?.() ?? Date.now();
     const model = registration.modelOverride ?? "inherit";
+    const reasoning = registration.reasoningOverride ?? "provider-default";
     const source = generatedSource({
       profile: registration.profile,
       model,
+      reasoning,
       editing: policy.editing,
-      externalTools: policy.externalTools,
+      level2Callables: policy.level2Callables,
       idleTimeoutMs: registration.idleTimeoutMs,
     });
     const validation = validateWorkflowSource({
@@ -188,10 +221,10 @@ export class WorkflowSubagentDispatcher {
       source,
       safetyMode: "trusted",
     });
-    const snapshot = await this.input.definitions.createSnapshot(source, validation.sourceSha256);
+    const snapshot = await definitions.createSnapshot(source, validation.sourceSha256);
     const revisionId = `wfrev:subagent:${sha256(
       [
-        this.input.definitions.canonicalProjectId,
+        definitions.canonicalProjectId,
         validation.sourceSha256,
         validation.inputSchemaSha256,
         validation.capabilitySha256,
@@ -200,8 +233,8 @@ export class WorkflowSubagentDispatcher {
     ).slice(0, 48)}`;
     const revision: WorkflowRevision = {
       revisionId,
-      canonicalProjectId: this.input.definitions.canonicalProjectId,
-      canonicalWorkspaceRoot: this.input.definitions.canonicalWorkspaceRoot,
+      canonicalProjectId: definitions.canonicalProjectId,
+      canonicalWorkspaceRoot: definitions.canonicalWorkspaceRoot,
       scope: "project",
       normalizedPath: ".lilac/internal/subagent-delegate.js",
       name: GENERATED_WORKFLOW_NAME,
@@ -222,20 +255,16 @@ export class WorkflowSubagentDispatcher {
       maxInputBytes: revision.limits.maxInputBytes,
     });
     const runId = `wfrun:subagent:${crypto.randomUUID()}`;
-    const fallbackProgressTarget: WorkflowProgressTarget | null =
-      registration.parentRequestClient === "discord" ||
-      registration.parentRequestClient === "github"
-        ? {
-            platform: registration.parentRequestClient,
-            channelId: registration.parentSessionId,
-            replyToMessageId: null,
-          }
-        : null;
+    const fallbackProgressTarget: WorkflowProgressTarget | null = {
+      platform: registration.fallbackSurface.platform,
+      channelId: registration.fallbackSurface.sessionId,
+      replyToMessageId: null,
+    };
     const completionTarget: WorkflowCompletionTarget = {
       kind: "live_parent",
       parentRequestId: registration.parentRequestId,
       parentSessionId: registration.parentSessionId,
-      parentRequestClient: registration.parentHeaders.request_client,
+      parentRequestClient: registration.fallbackSurface.platform,
       parentToolCallId: registration.parentToolCallId,
       childRequestId: registration.childRequestId,
       childSessionId: registration.childSessionId,
@@ -275,11 +304,11 @@ export class WorkflowSubagentDispatcher {
       argsSha256: canonicalJsonSha256(args),
       origin: {
         requestId: registration.parentRequestId,
-        sessionId: registration.parentSessionId,
-        client: registration.parentHeaders.request_client,
-        userId: null,
+        sessionId: registration.fallbackSurface.sessionId,
+        client: registration.fallbackSurface.platform,
+        userId: registration.fallbackSurface.userId,
         safetyMode: "trusted",
-        projectCwd: this.input.definitions.canonicalWorkspaceRoot,
+        projectCwd: definitions.canonicalWorkspaceRoot,
       },
       completionTarget,
       progressTarget: null,

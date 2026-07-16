@@ -6,6 +6,7 @@ import {
   isRecord,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
+import type { ServerToolWorkflowPathAuthority } from "@stanley2058/lilac-plugin-runtime";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
@@ -282,6 +283,7 @@ export function createToolServer(options: ToolServerOptions) {
   const serverStartedAt = Date.now();
 
   let callMapping = new Map<string, ServerTool>();
+  let workflowPathAuthorityMapping = new Map<string, ServerToolWorkflowPathAuthority | undefined>();
   const healthState = createToolServerHealthState({
     logger,
     pluginManager: options.pluginManager,
@@ -300,12 +302,18 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function refreshToolMapping() {
     const nextCallMapping = new Map<string, ServerTool>();
+    const nextWorkflowPathAuthorityMapping = new Map<
+      string,
+      ServerToolWorkflowPathAuthority | undefined
+    >();
     for (const tool of await getActiveTools()) {
-      for (const { callableId } of await tool.list()) {
+      for (const { callableId, workflowPathAuthority } of await tool.list()) {
         nextCallMapping.set(callableId, tool);
+        nextWorkflowPathAuthorityMapping.set(callableId, workflowPathAuthority);
       }
     }
     callMapping = nextCallMapping;
+    workflowPathAuthorityMapping = nextWorkflowPathAuthorityMapping;
   }
 
   async function ensureFreshToolMapping() {
@@ -314,8 +322,7 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
     if (ctx.operator) return "trusted";
-    if (ctx.workflowPolicy)
-      return ctx.workflowPolicy.externalTools ? (ctx.safetyMode ?? "trusted") : "trusted";
+    if (ctx.workflowPolicy) return ctx.safetyMode ?? "trusted";
     if (ctx.controlPolicy) return ctx.safetyMode ?? "restricted";
     if (ctx.safetyMode === "restricted") return "restricted";
     if (options.resolveServerSafetyMode) return await options.resolveServerSafetyMode(ctx);
@@ -367,14 +374,6 @@ export function createToolServer(options: ToolServerOptions) {
     };
   }
 
-  const SURFACE_CREATE_CALLABLES = new Set(["surface.messages.send"]);
-  const WORKFLOW_EXTERNAL_READ_CALLABLES = new Set([
-    "search",
-    "discovery.search",
-    "skills.list",
-    "skills.brief",
-  ]);
-
   function isCallableAllowedForWorkflowChild(
     callableId: string,
     input: unknown,
@@ -383,15 +382,16 @@ export function createToolServer(options: ToolServerOptions) {
     const policy = ctx.workflowPolicy;
     if (!policy) return true;
     if (callableId.startsWith("workflow.")) return false;
+    if (!policy.level2Callables.includes(callableId)) return false;
     if (callableId.startsWith("surface.")) {
-      if (!SURFACE_CREATE_CALLABLES.has(callableId) || !policy.surfaceSends) return false;
+      if (!policy.surfaceOriginOperations.includes(callableId)) return false;
       return isCurrentSessionScopedSurfaceCall({
         callableId,
         input,
         sessionId: ctx.sessionId,
       });
     }
-    return policy.externalTools && WORKFLOW_EXTERNAL_READ_CALLABLES.has(callableId);
+    return true;
   }
 
   function isCallableAllowedForControlCapability(callableId: string, ctx: RequestContext): boolean {
@@ -403,6 +403,7 @@ export function createToolServer(options: ToolServerOptions) {
     context: RequestContext;
     messages: readonly unknown[] | undefined;
   } {
+    const requestedCwd = headerStr(headers["x-lilac-cwd"]);
     const operatorToken = headerStr(headers["x-lilac-operator-token"]);
     if (operatorToken) {
       if (!operatorTokenSha256) throw new Error("Operator access is unavailable");
@@ -419,6 +420,7 @@ export function createToolServer(options: ToolServerOptions) {
           requestId: headerStr(headers["x-lilac-request-id"]),
           toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
           cwd: options.canonicalWorkspaceRoot,
+          projectRoot: requestedCwd ?? options.canonicalWorkspaceRoot,
           safetyMode: "trusted",
           serverOwnedRequest: true,
           operator: true,
@@ -428,9 +430,6 @@ export function createToolServer(options: ToolServerOptions) {
     }
     const context = parseRequestContext(headers);
     const messages = authenticateRequestContext(context, options.requestMessageCache);
-    if (context.serverOwnedRequest && options.canonicalWorkspaceRoot) {
-      context.cwd = options.canonicalWorkspaceRoot;
-    }
     if (context.workflowCapability) {
       if (!context.requestId || !context.sessionId || !context.requestClient) {
         throw new Error("Workflow capability requires complete request context");
@@ -445,6 +444,7 @@ export function createToolServer(options: ToolServerOptions) {
       if (!authorized) throw new Error("Workflow tool capability is invalid or expired");
       context.serverOwnedRequest = false;
       context.cwd = authorized.policy.canonicalCwd;
+      context.projectRoot = authorized.policy.canonicalWorkspaceRoot;
       context.safetyMode = authorized.policy.safetyMode;
       context.workflowPolicy = authorized.policy;
       if (authorized.policy.originSessionId && authorized.policy.originClient) {
@@ -471,6 +471,7 @@ export function createToolServer(options: ToolServerOptions) {
       if (!authorized) throw new Error("Request control capability is invalid or expired");
       context.serverOwnedRequest = true;
       context.cwd = authorized.canonicalCwd;
+      if (authorized.kind === "primary") context.projectRoot = requestedCwd;
       context.safetyMode = authorized.safetyMode;
       context.controlPolicy = {
         kind: authorized.kind,
@@ -641,8 +642,9 @@ export function createToolServer(options: ToolServerOptions) {
             callableId: body.callableId,
             value: body.input,
             policy: ctx.workflowPolicy,
+            authority: workflowPathAuthorityMapping.get(body.callableId),
           })
-        : { value: body.input, close: async () => {} };
+        : { value: body.input, restoreOutput: (value: unknown) => value, close: async () => {} };
       const authorizedInput = pathAuthorization.value;
       const inputBytes = estimateJsonBytes(authorizedInput);
       const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
@@ -762,7 +764,7 @@ export function createToolServer(options: ToolServerOptions) {
           timeoutMs,
           ok: true,
         });
-        return { isError: false, output: result.output };
+        return { isError: false, output: pathAuthorization.restoreOutput(result.output) };
       } catch (e) {
         if (request.signal.aborted) {
           healthState.endToolCall(callToken, {
