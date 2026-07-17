@@ -219,7 +219,7 @@ function buildResumePrompt(partialText: string): ModelMessage {
 // - Track compacted toolCallIds in-memory per session for stability (cache hits).
 const TOOL_OUTPUT_PLACEHOLDER = "[Old tool result content cleared]";
 const TOOL_OUTPUT_CHARS_PER_TOKEN = 4;
-const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill"]);
+const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill", "subagent_result"]);
 
 export function withBlankLineBetweenTextParts(params: {
   accumulatedText: string;
@@ -1028,14 +1028,93 @@ function hasToolResult(messages: readonly ModelMessage[], toolCallId: string): b
   );
 }
 
+function hasDeferredSubagentWorkflowRunId(
+  messages: readonly ModelMessage[],
+  workflowRunId: string,
+): boolean {
+  for (const message of messages) {
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (
+          part.type === "tool-call" &&
+          part.toolName === "subagent_result" &&
+          isRecord(part.input) &&
+          part.input["workflowRunId"] === workflowRunId
+        ) {
+          return true;
+        }
+      }
+    }
+    if (message.role !== "tool") continue;
+    for (const part of message.content) {
+      if (
+        part.type === "tool-result" &&
+        part.toolName === "subagent_result" &&
+        part.output.type === "json" &&
+        isRecord(part.output.value) &&
+        part.output.value["workflowRunId"] === workflowRunId
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasConsumedDeferredSubagentResult(
+  messages: readonly ModelMessage[],
+  completion: Pick<WorkflowLiveParentCompletion, "runId">,
+): boolean {
+  for (const message of messages) {
+    if (message.role !== "tool") continue;
+    for (const part of message.content) {
+      if (part.type !== "tool-result" || part.toolName !== "subagent_result") continue;
+      if (
+        part.output.type === "json" &&
+        isRecord(part.output.value) &&
+        part.output.value["workflowRunId"] === completion.runId
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function hasDeferredSubagentResult(
   messages: readonly ModelMessage[],
   completion: Pick<WorkflowLiveParentCompletion, "runId" | "childRequestId">,
 ): boolean {
   return (
+    hasDeferredSubagentWorkflowRunId(messages, completion.runId) ||
     hasToolResult(messages, buildSubagentResultToolCallId(completion.runId)) ||
     hasToolResult(messages, buildSubagentResultToolCallId(completion.childRequestId))
   );
+}
+
+export function planDeferredSubagentBoundary(input: {
+  canonicalMessages: readonly ModelMessage[];
+  modelInputMessages: readonly ModelMessage[];
+  completions: readonly WorkflowLiveParentCompletion[];
+}): {
+  append: ModelMessage[];
+  consumedRunIds: string[];
+  forceNextTurn: boolean;
+} {
+  const consumedRunIds = input.completions
+    .filter((completion) => hasConsumedDeferredSubagentResult(input.modelInputMessages, completion))
+    .map((completion) => completion.runId);
+  const consumed = new Set(consumedRunIds);
+  const unconsumed = input.completions.filter((completion) => !consumed.has(completion.runId));
+  const unseen = unconsumed.filter(
+    (completion) => !hasDeferredSubagentWorkflowRunId(input.canonicalMessages, completion.runId),
+  );
+
+  return {
+    append: unseen.flatMap(buildDeferredSubagentResultMessages),
+    consumedRunIds,
+    forceNextTurn: unconsumed.length > 0,
+  };
 }
 
 function buildHeartbeatHandoffRequestId(requestId: string, index: number): string {
@@ -1148,6 +1227,8 @@ class PreAgentRunCancelledError extends Error {
 }
 
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
+const LIVE_PARENT_RECONCILE_MS = 1_000;
+const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
 
 export function createAgentRunIdleWatchdog(params: {
   idleTimeoutMs: number;
@@ -2242,19 +2323,44 @@ export async function startBusAgentRunner(params: {
     await liveParentSession?.ready;
     const workflowSubagentDispatcher = params.workflowSubagentDispatcher;
     let continuationSignalVersion = 0;
-    let continuationWaiters: Array<() => void> = [];
+    const continuationWaiters = new Set<() => void>();
     const notifyContinuationWaiters = () => {
       continuationSignalVersion += 1;
-      const current = continuationWaiters;
-      continuationWaiters = [];
+      const current = [...continuationWaiters];
+      continuationWaiters.clear();
       for (const waiter of current) waiter();
     };
-    const waitForContinuationSignalSince = async (version: number) => {
-      if (continuationSignalVersion !== version) return;
+    const waitForContinuationSignalSince = async (version: number, abortSignal?: AbortSignal) => {
+      if (continuationSignalVersion !== version || abortSignal?.aborted) return;
       await new Promise<void>((resolve) => {
-        if (continuationSignalVersion !== version) resolve();
-        else continuationWaiters.push(resolve);
+        const finish = () => {
+          continuationWaiters.delete(finish);
+          abortSignal?.removeEventListener("abort", finish);
+          resolve();
+        };
+        if (continuationSignalVersion !== version || abortSignal?.aborted) {
+          finish();
+          return;
+        }
+        continuationWaiters.add(finish);
+        abortSignal?.addEventListener("abort", finish, { once: true });
       });
+    };
+    const waitForDeferredWake = async (
+      liveParentSignalVersion: number,
+      continuationVersion: number,
+    ) => {
+      if (!liveParentSession) return;
+      const controller = new AbortController();
+      try {
+        await Promise.race([
+          liveParentSession.waitForSignalSince(liveParentSignalVersion, controller.signal),
+          waitForContinuationSignalSince(continuationVersion, controller.signal),
+          Bun.sleep(LIVE_PARENT_RECONCILE_MS),
+        ]);
+      } finally {
+        controller.abort();
+      }
     };
 
     state.activeRun = {
@@ -3158,6 +3264,145 @@ export async function startBusAgentRunner(params: {
         }),
       );
 
+      const publishedDeferredCompletionRunIds = new Set<string>();
+      let lastBoundaryModelInputMessages: readonly ModelMessage[] = [];
+      const drainDeferredCompletions = async (input: {
+        modelInputMessages: readonly ModelMessage[];
+        abortSignal?: AbortSignal;
+      }): Promise<{ append: ModelMessage[]; forceNextTurn: boolean }> => {
+        if (!liveParentSession) {
+          return { append: [], forceNextTurn: false };
+        }
+
+        const pendingIdentities = liveParentSession.listPendingIdentities();
+        const consumedBeforeMaterialization = pendingIdentities
+          .filter((identity) =>
+            hasConsumedDeferredSubagentResult(input.modelInputMessages, identity),
+          )
+          .map((identity) => identity.runId);
+        if (consumedBeforeMaterialization.length > 0) {
+          await liveParentSession.acknowledge(consumedBeforeMaterialization);
+        }
+        if (input.abortSignal?.aborted) return { append: [], forceNextTurn: false };
+
+        let settled: Awaited<ReturnType<typeof liveParentSession.listPendingSettledAsync>>;
+        try {
+          settled = await liveParentSession.listPendingSettledAsync();
+        } catch (error) {
+          logger.warn(
+            "workflow subagent completion query failed; delivery remains pending",
+            { requestId: headers.request_id, sessionId: headers.session_id },
+            error,
+          );
+          return { append: [], forceNextTurn: false };
+        }
+
+        if (input.abortSignal?.aborted) return { append: [], forceNextTurn: false };
+
+        const completions: WorkflowLiveParentCompletion[] = [];
+        for (const result of settled) {
+          let completion: WorkflowLiveParentCompletion | null = null;
+          let materializationError: unknown;
+          if (result.loaded) {
+            try {
+              completion = {
+                ...result.completion,
+                finalText: await normalizeSubagentFinalText({
+                  normalize: normalizeToolResultOutput,
+                  finalText: result.completion.finalText,
+                  toolCallId: buildSubagentResultToolCallId(result.completion.runId),
+                }),
+              };
+            } catch (error) {
+              materializationError = error;
+            }
+          } else {
+            materializationError = result.error;
+          }
+
+          if (completion) {
+            liveParentSession.clearMaterializationFailure(completion.runId);
+            completions.push(completion);
+            continue;
+          }
+
+          const identity = result.loaded ? result.completion : result.identity;
+          const errorMessage =
+            materializationError instanceof Error
+              ? materializationError.message
+              : String(materializationError);
+          const attempts = liveParentSession.recordMaterializationFailure(
+            identity.runId,
+            errorMessage,
+          );
+          logger.warn(
+            "workflow subagent completion materialization failed",
+            {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              runId: identity.runId,
+              attempts,
+              maxAttempts: SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS,
+            },
+            materializationError,
+          );
+          if (attempts === null || attempts < SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS) continue;
+
+          completions.push({
+            ...identity,
+            status: "failed",
+            ok: false,
+            finalText: "",
+            detail: `subagent result delivery failed after ${attempts} attempts: ${errorMessage}`,
+          });
+        }
+
+        const plan = planDeferredSubagentBoundary({
+          canonicalMessages: agent.state.messages,
+          modelInputMessages: input.modelInputMessages,
+          completions,
+        });
+
+        for (const completion of completions) {
+          if (publishedDeferredCompletionRunIds.has(completion.runId)) continue;
+          try {
+            await bus.publish(
+              lilacEventTypes.EvtAgentOutputToolCall,
+              {
+                toolCallId: completion.parentToolCallId,
+                status: "end",
+                display: buildDeferredSubagentDisplay(completion),
+                ok: completion.ok,
+                error: completion.ok
+                  ? undefined
+                  : (completion.detail ?? `subagent ${completion.status}`),
+              },
+              { headers },
+            );
+            publishedDeferredCompletionRunIds.add(completion.runId);
+          } catch (error) {
+            logger.warn(
+              "workflow subagent completion publish failed",
+              { runId: completion.runId },
+              error,
+            );
+          }
+        }
+
+        if (plan.consumedRunIds.length > 0 && !input.abortSignal?.aborted) {
+          await liveParentSession.acknowledge(plan.consumedRunIds);
+        }
+
+        return { append: plan.append, forceNextTurn: plan.forceNextTurn };
+      };
+      agent.setTurnBoundaryHandler(async (context) => {
+        lastBoundaryModelInputMessages = context.modelInputMessages;
+        return await drainDeferredCompletions({
+          modelInputMessages: context.modelInputMessages,
+          abortSignal: context.abortSignal,
+        });
+      });
+
       state.agent = agent;
 
       let finalText = "";
@@ -3696,49 +3941,18 @@ export async function startBusAgentRunner(params: {
         const deferredWaitState = liveParentSession?.snapshot();
 
         if (liveParentSession && deferredWaitState?.hasPendingCompletions) {
-          const completions = await liveParentSession.listPendingAsync();
-          const normalized = await Promise.all(
-            completions.map(async (completion) => ({
-              ...completion,
-              finalText: await normalizeSubagentFinalText({
-                normalize: normalizeToolResultOutput,
-                finalText: completion.finalText,
-                toolCallId: buildSubagentResultToolCallId(completion.runId),
-              }),
-            })),
-          );
-          const unseen = normalized.filter(
-            (completion) => !hasDeferredSubagentResult(agent.state.messages, completion),
-          );
-          if (unseen.length > 0) {
-            agent.appendMessages(unseen.flatMap(buildDeferredSubagentResultMessages));
-          }
-          for (const completion of normalized) {
-            await bus
-              .publish(
-                lilacEventTypes.EvtAgentOutputToolCall,
-                {
-                  toolCallId: completion.parentToolCallId,
-                  status: "end",
-                  display: buildDeferredSubagentDisplay(completion),
-                  ok: completion.ok,
-                  error: completion.ok
-                    ? undefined
-                    : (completion.detail ?? `subagent ${completion.status}`),
-                },
-                { headers },
-              )
-              .catch((error: unknown) => {
-                logger.warn(
-                  "workflow subagent completion publish failed",
-                  { runId: completion.runId },
-                  error,
-                );
-              });
-          }
+          const decision = await drainDeferredCompletions({
+            modelInputMessages: lastBoundaryModelInputMessages,
+          });
+          if (decision.append.length > 0) agent.appendMessages(decision.append);
           if (cancelledByRequestId.has(headers.request_id)) break;
-          if (unseen.length > 0) await waitForRun(agent.continue());
-          await liveParentSession.acknowledge(normalized.map((completion) => completion.runId));
+          if (decision.append.length > 0 || decision.forceNextTurn) {
+            await waitForRun(agent.continue());
+          } else if (liveParentSession.snapshot().hasPendingCompletions) {
+            await waitForRun(
+              waitForDeferredWake(deferredWaitState.signalVersion, continuationWaitVersion),
+            );
+          }
           continue;
         }
 
@@ -3748,10 +3962,7 @@ export async function startBusAgentRunner(params: {
         if (!liveParentSession) break;
 
         await waitForRun(
-          Promise.race([
-            liveParentSession.waitForSignalSince(deferredWaitState.signalVersion),
-            waitForContinuationSignalSince(continuationWaitVersion),
-          ]),
+          waitForDeferredWake(deferredWaitState.signalVersion, continuationWaitVersion),
         );
         if (agent.state.isStreaming) {
           continue;

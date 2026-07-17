@@ -40,6 +40,7 @@ import {
   buildAutoInjectedThreadSearchMessages,
   buildDeferredSubagentResultMessages,
   hasDeferredSubagentResult,
+  planDeferredSubagentBoundary,
   maybeBuildAutoInjectedThreadSearchMessages,
   buildPersistedHeartbeatMessages,
   buildSurfaceMetadataOverlay,
@@ -162,6 +163,111 @@ describe("deferred subagent result", () => {
     );
     expect(emittedToolCallId).not.toBe(legacyToolCallId);
     expect(hasDeferredSubagentResult(emitted, completion)).toBe(true);
+
+    const upgrade = planDeferredSubagentBoundary({
+      canonicalMessages: checkpointMessages,
+      modelInputMessages: [],
+      completions: [completion],
+    });
+    expect(upgrade.append).toEqual(emitted);
+    expect(upgrade.forceNextTurn).toBe(true);
+  });
+
+  it("keeps appended results pending until they appear in a model input", () => {
+    const completion = {
+      runId: "wfrun:subagent:boundary-run",
+      parentToolCallId: "delegate-call",
+      childRequestId: "sub:boundary-child",
+      profile: "explore" as const,
+      sessionName: "boundary-audit",
+      status: "resolved" as const,
+      ok: true,
+      finalText: "boundary result",
+    };
+
+    const admitted = planDeferredSubagentBoundary({
+      canonicalMessages: [],
+      modelInputMessages: [],
+      completions: [completion],
+    });
+    expect(admitted.append).toEqual(buildDeferredSubagentResultMessages(completion));
+    expect(admitted.consumedRunIds).toEqual([]);
+    expect(admitted.forceNextTurn).toBe(true);
+
+    const appendedButUnconsumed = planDeferredSubagentBoundary({
+      canonicalMessages: admitted.append,
+      modelInputMessages: [],
+      completions: [completion],
+    });
+    expect(appendedButUnconsumed.append).toEqual([]);
+    expect(appendedButUnconsumed.consumedRunIds).toEqual([]);
+    expect(appendedButUnconsumed.forceNextTurn).toBe(true);
+
+    const consumed = planDeferredSubagentBoundary({
+      canonicalMessages: admitted.append,
+      modelInputMessages: admitted.append,
+      completions: [completion],
+    });
+    expect(consumed.append).toEqual([]);
+    expect(consumed.consumedRunIds).toEqual([completion.runId]);
+    expect(consumed.forceNextTurn).toBe(false);
+  });
+
+  it("recognizes consumption after provider tool-call ID normalization", () => {
+    const completion = {
+      runId: "wfrun:subagent:normalized-run",
+      parentToolCallId: "delegate-call",
+      childRequestId: "sub:normalized-child",
+      profile: "explore" as const,
+      sessionName: "normalized-audit",
+      status: "resolved" as const,
+      ok: true,
+      finalText: "normalized result",
+    };
+    const normalizedModelInput: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "subagentr",
+            toolName: "subagent_result",
+            input: { workflowRunId: completion.runId, status: "resolved" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "subagentr",
+            toolName: "subagent_result",
+            output: {
+              type: "json",
+              value: { workflowRunId: completion.runId, finalText: "normalized result" },
+            },
+          },
+        ],
+      },
+    ];
+
+    const consumed = planDeferredSubagentBoundary({
+      canonicalMessages: buildDeferredSubagentResultMessages(completion),
+      modelInputMessages: normalizedModelInput,
+      completions: [completion],
+    });
+
+    expect(consumed.consumedRunIds).toEqual([completion.runId]);
+    expect(consumed.forceNextTurn).toBe(false);
+
+    const assistantOnly = planDeferredSubagentBoundary({
+      canonicalMessages: buildDeferredSubagentResultMessages(completion),
+      modelInputMessages: [normalizedModelInput[0]!],
+      completions: [completion],
+    });
+    expect(assistantOnly.consumedRunIds).toEqual([]);
+    expect(assistantOnly.forceNextTurn).toBe(true);
   });
 });
 

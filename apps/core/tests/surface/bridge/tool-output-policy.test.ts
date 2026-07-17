@@ -22,12 +22,13 @@ function toolResult(toolCallId: string, toolName: string, value: string): ModelM
 }
 
 describe("tool output model-view policy", () => {
-  it("uses configured historical pruning thresholds and protects skill output", () => {
+  it("uses configured historical pruning thresholds and protects durable tool output", () => {
     const compacted = new Set<string>();
     const messages: ModelMessage[] = [
       { role: "user", content: "old" },
       toolResult("old", "bash", "x".repeat(100)),
       toolResult("skill", "skill", "x".repeat(100)),
+      toolResult("subagent", "subagent_result", "x".repeat(100)),
       { role: "user", content: "middle" },
       toolResult("middle", "bash", "current"),
       { role: "user", content: "new" },
