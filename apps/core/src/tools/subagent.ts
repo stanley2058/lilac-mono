@@ -209,11 +209,18 @@ function childToolIcon(state: ChildToolState): string {
 export function renderSubagentDisplay(params: {
   profile: SubagentProfile;
   children: ReadonlyMap<string, ChildToolState>;
+  model?: string;
+  reasoning?: ModelReasoningEffort;
 }): string {
   const children = Array.from(params.children.values());
   const total = children.length;
   const done = children.filter((c) => c.status === "done").length;
-  const header = `subagent (${params.profile}; ${done}/${total} done)`;
+  const model = params.model
+    ? `${params.model}${params.reasoning ? ` [${params.reasoning}]` : ""}`
+    : null;
+  const header = `subagent (${[params.profile, model, `${done}/${total} done`]
+    .filter((part): part is string => part !== null)
+    .join("; ")})`;
 
   if (children.length === 0) return header;
 

@@ -98,7 +98,9 @@ function createInMemoryRawBus(control?: {
         msg: message as Message<TData>,
         cursor: message.id,
       })),
+      next: topics.get(topic)?.at(-1)?.id,
     }),
+    watermark: async (topic: string) => topics.get(topic)?.at(-1)?.id ?? null,
     activeSubscriptions: () => subscriptions.size,
     close: async () => {},
   };
@@ -516,6 +518,161 @@ describe("workflow subagent convergence", () => {
       finalText: "audit complete",
     });
     expect(store.listPendingLiveParentCompletions("parent:1", 100, true)).toEqual([]);
+    store.close();
+  });
+
+  it("aggregates distinct child tools without letting non-tool activity erase the tree", async () => {
+    const { store } = await createRun("parent:tool-tree");
+    const bus = createLilacBus(createInMemoryRawBus());
+    const updates: Array<{ toolCallId: string; display: string }> = [];
+    await bus.subscribeTopic(
+      outReqTopic("parent:tool-tree"),
+      { mode: "tail", offset: { type: "begin" } },
+      async (message, context) => {
+        if (message.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          updates.push({ toolCallId: message.data.toolCallId, display: message.data.display });
+        }
+        await context.commit();
+      },
+    );
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent-tool-tree",
+    });
+    await bridge.start();
+    let parentActivity = 0;
+    const parent = bridge.registerParent({
+      parentRequestId: "parent:tool-tree",
+      onActivity: () => {
+        parentActivity += 1;
+      },
+    });
+    await parent.ready;
+
+    const childHeaders = {
+      request_id: "sub:child:1",
+      session_id: "sub:channel:1:named:audit",
+      request_client: "unknown" as const,
+    };
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:grep", status: "start", display: "[grep] auth" },
+      { headers: childHeaders },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:read", status: "start", display: "[read] config" },
+      { headers: childHeaders },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:grep", status: "end", display: "[grep] auth", ok: true },
+      { headers: childHeaders },
+    );
+
+    const expectedTree = [
+      "subagent (explore; 1/2 done)",
+      "|- > [read] config",
+      "`- + [grep] delayed",
+    ].join("\n");
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:grep", status: "update", display: "[grep] delayed" },
+      { headers: childHeaders },
+    );
+    expect(updates.at(-1)).toEqual({ toolCallId: "tool:delegate", display: expectedTree });
+    const updateCount = updates.length;
+    const activityBefore = parentActivity;
+
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaText,
+      { delta: "checking middleware" },
+      { headers: childHeaders },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputDeltaReasoning,
+      { delta: "thinking" },
+      { headers: childHeaders },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputActivity,
+      { source: "model" },
+      { headers: childHeaders },
+    );
+
+    expect(parentActivity).toBe(activityBefore + 3);
+    expect(updates).toHaveLength(updateCount);
+    expect(updates.at(-1)?.display).toBe(expectedTree);
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    store.close();
+  });
+
+  it("reconciles pending terminal child output when the parent registers", async () => {
+    const { store, run } = await createRun("parent:terminal-tree");
+    store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 });
+    store.transitionRun({
+      runId: run.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      result: "done",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const childHeaders = {
+      request_id: "sub:child:1",
+      session_id: "sub:channel:1:named:audit",
+      request_client: "unknown" as const,
+    };
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:trailing", status: "start", display: "[read] trailing output" },
+      { headers: childHeaders },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "child:trailing",
+        status: "end",
+        display: "[read] trailing output",
+        ok: true,
+      },
+      { headers: childHeaders },
+    );
+
+    const updates: Array<{ toolCallId: string; display: string }> = [];
+    await bus.subscribeTopic(
+      outReqTopic("parent:terminal-tree"),
+      { mode: "tail", offset: { type: "begin" } },
+      async (message, context) => {
+        if (message.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          updates.push({ toolCallId: message.data.toolCallId, display: message.data.display });
+        }
+        await context.commit();
+      },
+    );
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store,
+      subscriptionId: "test-live-parent-terminal-tree",
+    });
+    await bridge.start();
+    const parent = bridge.registerParent({ parentRequestId: "parent:terminal-tree" });
+    await parent.ready;
+
+    expect(updates).toEqual([
+      {
+        toolCallId: "tool:delegate",
+        display: "subagent (explore; 1/1 done)\n`- + [read] trailing output",
+      },
+    ]);
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
     store.close();
   });
 
@@ -964,7 +1121,7 @@ describe("workflow subagent convergence", () => {
         previousState: "running",
         ts: 190 + index,
       });
-      expect(raw.activeSubscriptions()).toBe(1);
+      expect(raw.activeSubscriptions()).toBe(2);
       expect(
         setupResult.store.terminalizeRun({
           runId: run.runId,
