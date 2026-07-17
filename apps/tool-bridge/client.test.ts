@@ -188,7 +188,7 @@ describe("tool-bridge CLI runtime", () => {
     }
   });
 
-  it("forwards authenticated workflow context to list and help requests", async () => {
+  it("forwards generic control capability but not workflow capability", async () => {
     const requests: Request[] = [];
     const server = Bun.serve({
       port: 0,
@@ -214,6 +214,7 @@ describe("tool-bridge CLI runtime", () => {
       LILAC_REQUEST_CLIENT: "unknown",
       LILAC_CWD: "/approved",
       LILAC_TOOL_CALL_ID: "tool-call-1",
+      LILAC_CONTROL_CAPABILITY: "control-capability",
       LILAC_WORKFLOW_CAPABILITY: "server-capability",
     };
     try {
@@ -239,7 +240,8 @@ describe("tool-bridge CLI runtime", () => {
       for (const request of requests) {
         expect(request.headers.get("x-lilac-request-id")).toBe("wfr:request");
         expect(request.headers.get("x-lilac-tool-call-id")).toBe("tool-call-1");
-        expect(request.headers.get("x-lilac-workflow-capability")).toBe("server-capability");
+        expect(request.headers.get("x-lilac-control-capability")).toBe("control-capability");
+        expect(request.headers.get("x-lilac-workflow-capability")).toBeNull();
       }
     } finally {
       server.stop(true);

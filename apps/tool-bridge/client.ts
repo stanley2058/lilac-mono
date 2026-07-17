@@ -90,7 +90,6 @@ function lilacRequestHeaders(includeJson = false): Record<string, string> {
     ["x-lilac-cwd", process.env.LILAC_CWD],
     ["x-lilac-tool-call-id", process.env.LILAC_TOOL_CALL_ID],
     ["x-lilac-control-capability", process.env.LILAC_CONTROL_CAPABILITY],
-    ["x-lilac-workflow-capability", process.env.LILAC_WORKFLOW_CAPABILITY],
     ["x-lilac-subagent-profile", process.env.LILAC_SUBAGENT_PROFILE],
   ] as const;
   for (const [name, value] of values) {
