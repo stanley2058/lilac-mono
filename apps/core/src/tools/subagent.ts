@@ -275,7 +275,6 @@ export type SubagentDelegationRegistration = {
 
 export type TrustedSubagentDelegationRegistration = SubagentDelegationRegistration & {
   projectRoot: string;
-  familyScratchRoot?: string;
   fallbackSurface: {
     platform: "discord" | "github";
     sessionId: string;

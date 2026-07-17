@@ -1,6 +1,5 @@
 import type { ServerTool } from "@stanley2058/lilac-plugin-runtime";
 import { resolveNativeSubagentProfile } from "@stanley2058/lilac-utils";
-import path from "node:path";
 
 import { applyPatchTool } from "../../tools/apply-patch";
 import {
@@ -17,35 +16,14 @@ import {
 } from "../../tools/subagent";
 import { BUILTIN_LEVEL1_TOOL_FAILURE_SUMMARIZERS } from "../../surface/bridge/bus-agent-runner/tool-failure-logging";
 import { BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS } from "../../tools/tool-args-display";
-import { workflowScratchTools } from "../../workflow/workflow-scratch";
-import { createWorkflowDeniedRootPolicy } from "../../workflow/workflow-denied-root-policy";
 import { markBoundedBuiltinOutput, type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
 
 type CoreToolBuildContext = Parameters<CoreLevel1ToolSpec["createTool"]>[0];
-type CoreToolRunContext = Parameters<CoreLevel1ToolSpec["isEnabled"]>[0];
 
 const localFsToolsByBuildContext = new WeakMap<CoreToolBuildContext, ReturnType<typeof fsTool>>();
 
-function subagentDeniedPaths(context: CoreToolRunContext): readonly string[] | undefined {
-  if (context.runProfile === "primary") return undefined;
-  return createWorkflowDeniedRootPolicy(context.runtime.dataDir ?? process.env.DATA_DIR ?? "data")
-    .absoluteDeniedRoots.filter((entry) => entry !== path.parse(entry).root);
-}
-
 function getReadFileDirectAttachmentSupported(context: CoreToolBuildContext): boolean {
   return context.requestContext?.metadata?.["readFileDirectAttachmentSupported"] === true;
-}
-
-function workflowPolicy(context: CoreToolRunContext) {
-  const value = context.requestContext?.metadata?.["workflowPolicy"];
-  return value && typeof value === "object"
-    ? (value as import("../../workflow/workflow-request-authority").WorkflowRequestPolicy)
-    : undefined;
-}
-
-function scratchRoot(context: CoreToolRunContext): string | undefined {
-  const value = context.requestContext?.metadata?.["familyScratchRoot"];
-  return typeof value === "string" ? value : workflowPolicy(context)?.canonicalScratchRoot;
 }
 
 function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
@@ -70,8 +48,6 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
         }
       : undefined,
     loadInstructions: true,
-    denyPaths: subagentDeniedPaths(context),
-    enforceDenylist: context.runProfile !== "primary",
   });
   localFsToolsByBuildContext.set(context, tools);
   return tools;
@@ -136,46 +112,17 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       createTool: (context) => {
         const { cwd, runtime, requestContext, runProfile } = context;
         const onActivity = requestContext ? getAgentActivityHandler(requestContext) : undefined;
-        const workflowPolicy = requestContext?.metadata?.["workflowPolicy"];
-        const workflowControlToken = requestContext?.metadata?.["workflowControlToken"];
         const controlCapability = requestContext?.metadata?.["controlCapability"];
         return bashToolWithCwd(cwd, {
           artifacts: runtime.toolResultArtifacts,
           outputConfig: runtime.config?.tools.output,
           onActivity: onActivity ? () => onActivity("tool") : undefined,
-          workflowPolicy:
-            workflowPolicy && typeof workflowPolicy === "object"
-              ? (workflowPolicy as import("../../workflow/workflow-request-authority").WorkflowRequestPolicy)
-              : undefined,
-          workflowControlToken:
-            typeof workflowControlToken === "string" ? workflowControlToken : undefined,
           controlCapability: typeof controlCapability === "string" ? controlCapability : undefined,
           nativeProfile:
             runProfile === "primary" || !runtime.config
               ? undefined
               : resolveNativeSubagentProfile(runtime.config, runProfile),
-          scratchRoot: scratchRoot(context),
         }).bash;
-      },
-    }),
-    withBoundedOutput({
-      name: "scratch_read",
-      supportsBatch: true,
-      isEnabled: (context) => scratchRoot(context) !== undefined,
-      createTool: (context) => {
-        const root = scratchRoot(context);
-        if (!root) throw new Error("scratch_read requires a subagent scratch root");
-        return workflowScratchTools(root).scratch_read;
-      },
-    }),
-    withBoundedOutput({
-      name: "scratch_write",
-      supportsBatch: true,
-      isEnabled: (context) => scratchRoot(context) !== undefined,
-      createTool: (context) => {
-        const root = scratchRoot(context);
-        if (!root) throw new Error("scratch_write requires a subagent scratch root");
-        return workflowScratchTools(root).scratch_write;
       },
     }),
     withBoundedOutput({
@@ -228,7 +175,6 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
       createTool: (context) =>
         applyPatchTool({
           cwd: context.cwd,
-          denyPaths: subagentDeniedPaths(context),
         }).apply_patch,
       editTargets: (args, context) => {
         const record = args as Record<string, unknown>;

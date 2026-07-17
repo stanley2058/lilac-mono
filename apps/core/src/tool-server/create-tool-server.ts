@@ -8,8 +8,8 @@ import {
   profileIncludes,
   resolveNativeSubagentProfile,
   type CoreConfig,
+  type NativeSubagentProfile,
 } from "@stanley2058/lilac-utils";
-import type { ServerToolWorkflowPathAuthority } from "@stanley2058/lilac-plugin-runtime";
 import type { Level2ContributionInfo } from "@stanley2058/lilac-plugin-runtime";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -30,12 +30,6 @@ import {
   type ToolServerHealthSnapshot,
 } from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
-import type { AuthorizedWorkflowRequest } from "../workflow/workflow-request-authority";
-import { authorizeWorkflowPathInput } from "../workflow/workflow-path-authority";
-import {
-  createWorkflowDeniedRootPolicy,
-  type WorkflowDeniedRootPolicy,
-} from "../workflow/workflow-denied-root-policy";
 import { ToolInputValidationError } from "./validation-error-message";
 
 type ToolPluginManagerLike = {
@@ -105,7 +99,6 @@ function parseRequestContext(headers: Record<string, unknown>): RequestContext {
     cwd: headerStr(headers["x-lilac-cwd"]),
     toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
     controlCapability: headerStr(headers["x-lilac-control-capability"]),
-    workflowControlToken: headerStr(headers["x-lilac-workflow-control-token"]),
     subagentProfile: (() => {
       const profile = headerStr(headers["x-lilac-subagent-profile"]);
       return isNativeSubagentProfile(profile) ? profile : undefined;
@@ -217,15 +210,7 @@ export type ToolServerOptions = {
       | undefined;
   };
   canonicalWorkspaceRoot?: string;
-  workflowDataDir?: string;
   operatorTokenSha256?: string;
-  authorizeWorkflowRequest?: (input: {
-    requestId: string;
-    token: string;
-    sessionId: string;
-    platform: string;
-    now: number;
-  }) => AuthorizedWorkflowRequest | null;
   authorizeControlRequest?: (input: {
     requestId: string;
     token: string;
@@ -236,6 +221,7 @@ export type ToolServerOptions = {
     kind: "primary" | "heartbeat";
     principal: { platform: "discord" | "github"; userId: string } | null;
     allowedCallables: readonly string[] | null;
+    profile: "primary" | NativeSubagentProfile;
     canonicalCwd: string;
     safetyMode: SafetyMode;
   } | null;
@@ -283,9 +269,6 @@ function countLoadedExternalPlugins(statuses: readonly unknown[] | undefined): n
 }
 
 export function createToolServer(options: ToolServerOptions) {
-  const workflowDeniedRootPolicy: WorkflowDeniedRootPolicy | undefined = options.workflowDataDir
-    ? createWorkflowDeniedRootPolicy(options.workflowDataDir)
-    : undefined;
   const operatorTokenSha256 = options.operatorTokenSha256?.trim().toLowerCase();
   if (operatorTokenSha256 && !/^[0-9a-f]{64}$/u.test(operatorTokenSha256)) {
     throw new Error("operatorTokenSha256 must be a SHA-256 hex digest");
@@ -300,7 +283,6 @@ export function createToolServer(options: ToolServerOptions) {
   const serverStartedAt = Date.now();
 
   let callMapping = new Map<string, ServerTool>();
-  let workflowPathAuthorityMapping = new Map<string, ServerToolWorkflowPathAuthority | undefined>();
   let level2ContributionMapping = new Map<string, Level2ContributionInfo>();
   const healthState = createToolServerHealthState({
     logger,
@@ -320,23 +302,17 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function refreshToolMapping() {
     const nextCallMapping = new Map<string, ServerTool>();
-    const nextWorkflowPathAuthorityMapping = new Map<
-      string,
-      ServerToolWorkflowPathAuthority | undefined
-    >();
     const nextContributionMapping = new Map<string, Level2ContributionInfo>();
     const activeTools = await getActiveTools();
     const contributionByTool = options.pluginManager?.getLevel2ContributionInfo?.();
     for (const tool of activeTools) {
-      for (const { callableId, workflowPathAuthority } of await tool.list()) {
+      for (const { callableId } of await tool.list()) {
         nextCallMapping.set(callableId, tool);
-        nextWorkflowPathAuthorityMapping.set(callableId, workflowPathAuthority);
         const contribution = contributionByTool?.get(tool);
         if (contribution) nextContributionMapping.set(callableId, contribution);
       }
     }
     callMapping = nextCallMapping;
-    workflowPathAuthorityMapping = nextWorkflowPathAuthorityMapping;
     level2ContributionMapping = nextContributionMapping;
   }
 
@@ -346,7 +322,6 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function resolveSafetyMode(ctx: RequestContext): Promise<SafetyMode> {
     if (ctx.operator) return "trusted";
-    if (ctx.workflowPolicy) return ctx.safetyMode ?? "trusted";
     if (ctx.controlPolicy) return ctx.safetyMode ?? "restricted";
     if (ctx.safetyMode === "restricted") return "restricted";
     if (options.resolveServerSafetyMode) return await options.resolveServerSafetyMode(ctx);
@@ -387,7 +362,6 @@ export function createToolServer(options: ToolServerOptions) {
       for (const entry of entries) {
         if (!isCallableAllowedForControlCapability(entry.callableId, ctx)) continue;
         if (!(await isCallableAllowedForNativeProfile(entry.callableId, ctx))) continue;
-        if (entry.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) continue;
         if (
           safetyMode === "restricted" &&
           !isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })
@@ -431,7 +405,6 @@ export function createToolServer(options: ToolServerOptions) {
     context: RequestContext;
     messages: readonly unknown[] | undefined;
   } {
-    const requestedCwd = headerStr(headers["x-lilac-cwd"]);
     const operatorToken = headerStr(headers["x-lilac-operator-token"]);
     if (operatorToken) {
       if (!operatorTokenSha256) throw new Error("Operator access is unavailable");
@@ -448,7 +421,6 @@ export function createToolServer(options: ToolServerOptions) {
           requestId: headerStr(headers["x-lilac-request-id"]),
           toolCallId: headerStr(headers["x-lilac-tool-call-id"]),
           cwd: options.canonicalWorkspaceRoot,
-          projectRoot: requestedCwd ?? options.canonicalWorkspaceRoot,
           safetyMode: "trusted",
           serverOwnedRequest: true,
           operator: true,
@@ -458,29 +430,7 @@ export function createToolServer(options: ToolServerOptions) {
     }
     const context = parseRequestContext(headers);
     const messages = authenticateRequestContext(context, options.requestMessageCache);
-    if (context.workflowControlToken) {
-      if (!context.requestId || !context.sessionId || !context.requestClient) {
-        throw new Error("Workflow capability requires complete request context");
-      }
-      const authorized = options.authorizeWorkflowRequest?.({
-        requestId: context.requestId,
-        token: context.workflowControlToken,
-        sessionId: context.sessionId,
-        platform: context.requestClient,
-        now: Date.now(),
-      });
-      if (!authorized) throw new Error("Workflow tool capability is invalid or expired");
-      context.serverOwnedRequest = false;
-      context.cwd = authorized.policy.canonicalCwd;
-      context.projectRoot = authorized.policy.canonicalWorkspaceRoot;
-      context.safetyMode = authorized.policy.safetyMode;
-      context.workflowPolicy = authorized.policy;
-      context.subagentProfile = authorized.policy.profile;
-      if (authorized.policy.originSessionId && authorized.policy.originClient) {
-        context.sessionId = authorized.policy.originSessionId;
-        context.requestClient = authorized.policy.originClient;
-      }
-    } else if (options.authorizeControlRequest) {
+    if (options.authorizeControlRequest) {
       if (
         !context.controlCapability ||
         !context.requestId ||
@@ -500,12 +450,12 @@ export function createToolServer(options: ToolServerOptions) {
       if (!authorized) throw new Error("Request control capability is invalid or expired");
       context.serverOwnedRequest = true;
       context.cwd = authorized.canonicalCwd;
-      if (authorized.kind === "primary") context.projectRoot = requestedCwd;
       context.safetyMode = authorized.safetyMode;
       context.controlPolicy = {
         kind: authorized.kind,
         allowedCallables: authorized.allowedCallables,
       };
+      context.subagentProfile = authorized.profile === "primary" ? undefined : authorized.profile;
       if (authorized.principal) context.authenticatedPrincipal = authorized.principal;
     }
     return { context, messages };
@@ -594,7 +544,6 @@ export function createToolServer(options: ToolServerOptions) {
     const safetyMode = await resolveSafetyMode(ctx);
     if (
       !isCallableAllowedForControlCapability(params.callableId, ctx) ||
-      (params.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) ||
       !(await isCallableAllowedForNativeProfile(params.callableId, ctx)) ||
       (safetyMode === "restricted" &&
         !isRestrictedCallableAllowed({ callableId: params.callableId, ctx }))
@@ -645,12 +594,6 @@ export function createToolServer(options: ToolServerOptions) {
           output: `Tool '${body.callableId}' is outside the internal request capability`,
         };
       }
-      if (body.callableId.startsWith("workflow.") && ctx.serverOwnedRequest !== true) {
-        return {
-          isError: true,
-          output: `Tool '${body.callableId}' requires a server-owned active request context`,
-        };
-      }
       if (!(await isCallableAllowedForNativeProfile(body.callableId, ctx))) {
         return {
           isError: true,
@@ -666,17 +609,7 @@ export function createToolServer(options: ToolServerOptions) {
           output: `Tool '${body.callableId}' is not allowed in restricted public-session mode`,
         };
       }
-      const pathAuthorization = ctx.workflowPolicy
-        ? await authorizeWorkflowPathInput({
-            callableId: body.callableId,
-            value: body.input,
-            policy: ctx.workflowPolicy,
-            authority: workflowPathAuthorityMapping.get(body.callableId),
-            deniedRootPolicy: workflowDeniedRootPolicy,
-          })
-        : { value: body.input, restoreOutput: (value: unknown) => value, close: async () => {} };
-      const authorizedInput = pathAuthorization.value;
-      const inputBytes = estimateJsonBytes(authorizedInput);
+      const inputBytes = estimateJsonBytes(body.input);
       const timeoutMs = timeoutForTool(tool, options.toolCallTimeouts);
       const deadlineAt = Date.now() + timeoutMs;
       const timeoutSignal = createDeadlineSignal(timeoutMs);
@@ -721,7 +654,7 @@ export function createToolServer(options: ToolServerOptions) {
 
         const callResult = Promise.resolve()
           .then(() =>
-            tool.call(body.callableId, authorizedInput, {
+            tool.call(body.callableId, body.input, {
               signal: combinedSignal,
               context: ctx,
               messages,
@@ -738,9 +671,6 @@ export function createToolServer(options: ToolServerOptions) {
           })
           .finally(() => {
             timeoutSignal.cancel();
-          })
-          .finally(async () => {
-            await pathAuthorization.close();
           });
 
         const timeoutResult = new Promise<{ kind: "timeout" }>((resolve) => {
@@ -794,7 +724,7 @@ export function createToolServer(options: ToolServerOptions) {
           timeoutMs,
           ok: true,
         });
-        return { isError: false, output: pathAuthorization.restoreOutput(result.output) };
+        return { isError: false, output: result.output };
       } catch (e) {
         if (request.signal.aborted) {
           healthState.endToolCall(callToken, {

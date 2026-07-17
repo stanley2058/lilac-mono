@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { z } from "zod";
 import {
   createLilacBus,
   lilacEventTypes,
@@ -34,7 +34,6 @@ import { WorkflowProgressProjector } from "../../src/workflow/workflow-progress-
 import { WorkflowSubagentDispatcher } from "../../src/workflow/workflow-subagent-dispatcher";
 import { WorkflowEngine } from "../../src/workflow/workflow-engine";
 import { createToolResultArtifactStore } from "../../src/artifacts/tool-result-artifact-store";
-import { ProgrammaticWorkflow } from "../../src/tool-server/tools/programmatic-workflow";
 
 const roots: string[] = [];
 const AUTHENTICATED_PARENT = { platform: "discord", userId: "user-1" } as const;
@@ -204,7 +203,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0, roots.length).map((root) => rm(root, { recursive: true })));
 });
 
-async function setup() {
+async function setup(maxActiveRuns?: number) {
   const root = await mkdtemp(path.join(tmpdir(), "lilac-subagent-workflow-"));
   roots.push(root);
   const workspaceRoot = path.join(root, "workspace");
@@ -221,6 +220,7 @@ async function setup() {
     store,
     dataDir,
     pollMs: 1,
+    getMaxActiveRuns: maxActiveRuns === undefined ? undefined : () => maxActiveRuns,
   });
   return { root, workspaceRoot, projectRoot, dataDir, dbPath, store, dispatcher };
 }
@@ -284,7 +284,20 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("workflow subagent convergence", () => {
-  it("creates a trusted immutable run under the project root when the tool workspace differs", async () => {
+  it("rejects delegation at global capacity without creating partial durable state", async () => {
+    const { projectRoot, store, dispatcher } = await setup(1);
+    const first = await dispatcher.delegate(registration(projectRoot, "parent:first"));
+
+    await expect(dispatcher.delegate(registration(projectRoot, "parent:rejected"))).rejects.toThrow(
+      "global workflow capacity is full (1/1 active runs)",
+    );
+    expect(store.listRuns().map((item) => item.runId)).toEqual([first.runId]);
+    expect(store.listActiveLiveParentRuns("parent:rejected")).toEqual([]);
+    expect(store.listRevisions()).toHaveLength(1);
+    store.close();
+  });
+
+  it("creates an immutable run under the project root when the tool workspace differs", async () => {
     const { workspaceRoot, projectRoot, store, handle, run } = await createRun();
     const revision = store.getRevision(run.revisionId);
 
@@ -333,10 +346,8 @@ describe("workflow subagent convergence", () => {
     const { projectRoot, store, dispatcher } = await setup();
     const syntheticParentSessionId = "sub:channel:1:named:outer";
     const nested = registration(projectRoot, "wfr:nested-parent");
-    const familyScratchRoot = path.join(projectRoot, ".scratch", "family");
     const handle = await dispatcher.delegate({
       ...nested,
-      familyScratchRoot,
       parentSessionId: syntheticParentSessionId,
       parentRequestClient: "unknown",
       parentHeaders: {
@@ -352,7 +363,6 @@ describe("workflow subagent convergence", () => {
       client: "discord",
       userId: "user-1",
     });
-    expect(run?.completionTarget).toMatchObject({ familyScratchRoot });
     expect(run?.completionTarget).toMatchObject({
       kind: "live_parent",
       parentSessionId: syntheticParentSessionId,
@@ -366,103 +376,6 @@ describe("workflow subagent convergence", () => {
       fallbackProgressTarget: { channelId: syntheticParentSessionId },
     });
     store.close();
-  });
-
-  it("allows only the originating principal and project to inspect and cancel a generated run", async () => {
-    const { root, workspaceRoot, projectRoot, dataDir, store, run } = await createRun();
-    const tool = new ProgrammaticWorkflow({ store, dataDir, now: () => 200 });
-    await tool.init();
-    const context = {
-      requestId: "inspect:generated",
-      sessionId: "channel:1",
-      requestClient: "discord",
-      cwd: workspaceRoot,
-      projectRoot,
-      safetyMode: "trusted" as const,
-      serverOwnedRequest: true,
-      authenticatedPrincipal: AUTHENTICATED_PARENT,
-    };
-    const otherPrincipal = {
-      ...context,
-      authenticatedPrincipal: { platform: "discord" as const, userId: "user-2" },
-    };
-    const otherWorkspace = path.join(root, "other-workspace");
-    await mkdir(otherWorkspace, { recursive: true });
-    const otherProjectTool = new ProgrammaticWorkflow({
-      store,
-      dataDir,
-    });
-    await otherProjectTool.init();
-
-    try {
-      await expect(
-        tool.call("workflow.run.get", { runId: run.runId }, { context: otherPrincipal }),
-      ).rejects.toThrow("principal scope");
-      await expect(
-        tool.call("workflow.run.cancel", { runId: run.runId }, { context: otherPrincipal }),
-      ).rejects.toThrow("principal scope");
-      await expect(
-        otherProjectTool.call(
-          "workflow.run.get",
-          { runId: run.runId },
-          { context: { ...context, projectRoot: otherWorkspace } },
-        ),
-      ).rejects.toThrow("project scope");
-
-      expect(await tool.call("workflow.run.get", { runId: run.runId }, { context })).toMatchObject({
-        run: { runId: run.runId, origin: { client: "discord", userId: "user-1" } },
-      });
-      expect(
-        await tool.call(
-          "workflow.run.cancel",
-          { runId: run.runId, reason: "originating principal cancelled" },
-          { context },
-        ),
-      ).toMatchObject({ ok: true, changed: true, run: { state: "cancelled" } });
-    } finally {
-      await otherProjectTool.destroy();
-      await tool.destroy();
-      store.close();
-    }
-  });
-
-  it("keeps legacy ownerless generated runs unavailable to principals and synthetic operators", async () => {
-    const { workspaceRoot, projectRoot, dataDir, dbPath, store, run } = await createRun();
-    const legacy = new Database(dbPath);
-    legacy.run(
-      "UPDATE workflow_runs SET origin_client = NULL, origin_user_id = NULL WHERE run_id = ?",
-      [run.runId],
-    );
-    legacy.close();
-    const tool = new ProgrammaticWorkflow({ store, dataDir });
-    await tool.init();
-    const principalContext = {
-      cwd: workspaceRoot,
-      projectRoot,
-      safetyMode: "trusted" as const,
-      serverOwnedRequest: true,
-      authenticatedPrincipal: AUTHENTICATED_PARENT,
-    };
-    const operatorContext = {
-      cwd: workspaceRoot,
-      projectRoot,
-      safetyMode: "trusted" as const,
-      serverOwnedRequest: true,
-      operator: true,
-    };
-
-    try {
-      // Missing durable ownership is never reconstructed from request or delegation payloads.
-      await expect(
-        tool.call("workflow.run.get", { runId: run.runId }, { context: principalContext }),
-      ).rejects.toThrow("principal scope");
-      await expect(
-        tool.call("workflow.run.get", { runId: run.runId }, { context: operatorContext }),
-      ).rejects.toThrow("authenticated main-agent principal");
-    } finally {
-      await tool.destroy();
-      store.close();
-    }
   });
 
   it("preserves a self profile in the generated workflow", async () => {
@@ -577,7 +490,7 @@ describe("workflow subagent convergence", () => {
     const bus = createLilacBus(createInMemoryRawBus());
     let childSessionId: string | undefined;
     let childRequestId: string | undefined;
-    let hasOpaqueAuthority = false;
+    let hasWorkflowIdentity = false;
     const progress: string[] = [];
     await bus.subscribeTopic(
       outReqTopic("parent:1"),
@@ -604,31 +517,21 @@ describe("workflow subagent convergence", () => {
         if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
           childSessionId = message.headers?.session_id;
           childRequestId = message.headers?.request_id;
-          const workflow = Reflect.get(message.data.raw ?? {}, "workflow");
-          const controlToken =
-            workflow !== null && typeof workflow === "object"
-              ? Reflect.get(workflow, "controlToken")
-              : undefined;
-          const dispatchEpoch =
-            workflow !== null && typeof workflow === "object"
-              ? Reflect.get(workflow, "dispatchEpoch")
-              : undefined;
-          hasOpaqueAuthority =
-            workflow !== null &&
-            typeof workflow === "object" &&
-            typeof controlToken === "string" &&
-            Reflect.get(workflow, "editing") === undefined;
-          if (
-            !childRequestId ||
-            !childSessionId ||
-            typeof controlToken !== "string" ||
-            typeof dispatchEpoch !== "string"
-          ) {
+          const workflow = z
+            .object({
+              workflow: z.strictObject({
+                runId: z.string(),
+                operationId: z.string(),
+                dispatchEpoch: z.string(),
+              }),
+            })
+            .parse(message.data.raw).workflow;
+          hasWorkflowIdentity = true;
+          if (!childRequestId || !childSessionId) {
             throw new Error("generated workflow request authority is incomplete");
           }
           const authorized = store.authorizeWorkflowRequest({
             requestId: childRequestId,
-            token: controlToken,
             sessionId: childSessionId,
             platform: "unknown",
             now: Date.now(),
@@ -642,8 +545,7 @@ describe("workflow subagent convergence", () => {
           expect(
             store.claimWorkflowRequest({
               requestId: childRequestId,
-              token: controlToken,
-              dispatchEpoch,
+              dispatchEpoch: workflow.dispatchEpoch,
               ownerId: "generated-runner",
               now: Date.now(),
             }),
@@ -653,7 +555,7 @@ describe("workflow subagent convergence", () => {
               requestId: childRequestId,
               runId: authorized.policy.runId,
               operationId: authorized.policy.operationId,
-              dispatchEpoch,
+              dispatchEpoch: workflow.dispatchEpoch,
               ownerId: "generated-runner",
               state: "resolved",
               output: "engine result",
@@ -685,26 +587,6 @@ describe("workflow subagent convergence", () => {
       dataDir,
       subscriptionId: "generated-subagent-engine",
       pollMs: 5,
-      assertSandbox: async () => {},
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "generated-agent",
-          occurrence: 0,
-          path: "root:generated-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 1,
-          input: {
-            prompt: "Audit the authentication flow",
-            options: { profile: "explore", label: "subagent explore" },
-          },
-        }),
-      }),
     });
 
     await engine.start();
@@ -713,7 +595,7 @@ describe("workflow subagent convergence", () => {
       progress.some((display) => display.includes("checking authentication middleware")),
     );
     expect(childSessionId).toBe("sub:channel:1:named:audit");
-    expect(hasOpaqueAuthority).toBe(true);
+    expect(hasWorkflowIdentity).toBe(true);
     expect(
       childRequestId ? store.getWorkflowRequestTerminalReceipt(childRequestId) : null,
     ).toMatchObject({ state: "resolved", output: "engine result" });
@@ -909,7 +791,7 @@ describe("workflow subagent convergence", () => {
       const run = setupResult.store.getRun(handle.runId);
       if (!run) throw new Error("sequential child run missing");
       expect(
-        setupResult.store.tryClaimTrustedRun({
+        setupResult.store.tryClaimRun({
           runId: run.runId,
           claimerId: "sequential-engine",
           now: 100 + index,
@@ -1094,7 +976,6 @@ describe("workflow subagent convergence", () => {
       coalesceMs: 0,
       minEditIntervalMs: 0,
       retryIntervalMs: 10,
-      missingBindingReconcileIntervalMs: 10,
     });
     const bridge = new WorkflowLiveParentBridge({
       bus,
@@ -1109,6 +990,7 @@ describe("workflow subagent convergence", () => {
     expect(store.getSurfaceBinding(run.runId)).toBeNull();
 
     publishControl.failProgressRequested = false;
+    await projector.reconcile();
     await waitFor(() => Boolean(store.getSurfaceBinding(run.runId)?.messageRef));
     await Bun.sleep(30);
     expect(adapter.sends).toBe(1);

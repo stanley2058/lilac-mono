@@ -11,8 +11,10 @@ import {
 } from "../../src/workflow/workflow-definition";
 import {
   normalizeWorkflowResourcePolicy,
+  type WorkflowOperation,
   type WorkflowRevision,
   type WorkflowRun,
+  type WorkflowTrigger,
 } from "../../src/workflow/workflow-domain";
 
 function dbPath(label: string): string {
@@ -26,14 +28,12 @@ function revision(id = "revision-1"): WorkflowRevision {
     maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: ["reply", "sleep"],
-    safety: { originatingMode: "trusted", escalation: "none" },
   });
   const limits = {
     maxSourceBytes: 10_000,
     maxInputBytes: 10_000,
     maxOperationOutputBytes: 10_000,
     maxResultBytes: 10_000,
-    maxRuntimeMemoryBytes: 256 * 1024 * 1024,
   };
   return {
     revisionId: id,
@@ -68,7 +68,6 @@ function run(id = "run-1", revisionId = "revision-1"): WorkflowRun {
       sessionId: "session-1",
       client: "discord",
       userId: "user-1",
-      safetyMode: "trusted",
       projectCwd: "/workspace",
     },
     completionTarget: { kind: "detached" },
@@ -85,19 +84,129 @@ function run(id = "run-1", revisionId = "revision-1"): WorkflowRun {
   };
 }
 
-describe("durable workflow store trusted auto-run schema", () => {
-  it("creates and claims trusted queued invocations without approvals or shared-editor leases", () => {
-    const file = dbPath("trusted-auto-run");
+function operation(runId: string, operationId: string): WorkflowOperation {
+  const input = { prompt: "inspect", options: { profile: "general", cwd: "/workspace" } };
+  return {
+    runId,
+    operationId,
+    callSiteId: `call-${operationId}`,
+    parentOperationId: null,
+    phase: null,
+    label: null,
+    kind: "agent",
+    input,
+    inputSha256: canonicalJsonSha256(input),
+    state: "queued",
+    attempt: 0,
+    requestId: null,
+    output: null,
+    resultArtifactId: null,
+    error: null,
+    usage: null,
+    claimedBy: null,
+    claimedAt: null,
+    createdAt: 11,
+    startedAt: null,
+    updatedAt: 11,
+    terminalAt: null,
+  };
+}
+
+function downgradeSchemaToV20(db: Database): void {
+  db.run("PRAGMA foreign_keys = OFF");
+  db.run("DELETE FROM workflow_schema_migrations WHERE version = 21");
+  db.run(`CREATE TABLE workflow_approvals (
+    approval_id TEXT PRIMARY KEY, revision_id TEXT NOT NULL, state TEXT NOT NULL
+  )`);
+  db.run("ALTER TABLE workflow_runs ADD COLUMN approval_id TEXT");
+  db.run("ALTER TABLE workflow_runs ADD COLUMN origin_safety_mode TEXT NOT NULL DEFAULT 'trusted'");
+  db.run("CREATE INDEX idx_workflow_runs_approval_state ON workflow_runs(approval_id, state)");
+  db.run("ALTER TABLE workflow_surface_actions ADD COLUMN approval_id TEXT");
+  db.run("ALTER TABLE workflow_request_dispatches RENAME TO workflow_request_dispatches_v21");
+  db.run(`CREATE TABLE workflow_request_dispatches (
+    request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    canonical_cwd TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    owner_id TEXT,
+    owner_heartbeat_at INTEGER,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompt_published_at INTEGER,
+    dispatch_epoch TEXT,
+    UNIQUE (run_id, operation_id)
+  )`);
+  db.run("DROP TABLE workflow_request_dispatches_v21");
+  db.run(`CREATE TABLE workflow_worktree_outputs (
+    run_id TEXT NOT NULL, operation_id TEXT NOT NULL, state TEXT NOT NULL,
+    worktree_path TEXT NOT NULL, base_commit TEXT, artifact_id TEXT, patch_sha256 TEXT,
+    bytes INTEGER, cleanup_error TEXT, prepared_at INTEGER NOT NULL, captured_at INTEGER,
+    cleaned_at INTEGER, PRIMARY KEY (run_id, operation_id)
+  )`);
+  db.run(`UPDATE workflow_revisions SET
+    capabilities_json = json_set(capabilities_json, '$.safety', json('{"originatingMode":"trusted","escalation":"none"}')),
+    limits_json = json_set(limits_json, '$.maxRuntimeMemoryBytes', 268435456)`);
+}
+
+describe("durable workflow store minimal dispatch schema", () => {
+  it("bounds reconciliation to active runs and terminal runs missing bindings", () => {
+    const file = dbPath("active-progress-targets");
+    const store = new DurableWorkflowStore(file);
+    const progressTarget = {
+      platform: "discord" as const,
+      channelId: "channel-1",
+      replyToMessageId: null,
+    };
+    try {
+      const rev = revision();
+      store.createInvocation({
+        revision: rev,
+        run: { ...run("active-a"), progressTarget, updatedAt: 11 },
+      });
+      store.createRun({ ...run("active-b"), progressTarget, updatedAt: 12 });
+      store.createRun({ ...run("terminal"), progressTarget, updatedAt: 9 });
+      store.createRun({ ...run("without-target"), updatedAt: 8 });
+      expect(
+        store.transitionRun({
+          runId: "terminal",
+          from: "queued",
+          to: "cancelled",
+          now: 13,
+        }),
+      ).toBe(true);
+
+      expect(store.listRunsNeedingProjectionReconciliation(1).map((item) => item.runId)).toEqual([
+        "active-a",
+      ]);
+      expect(store.listRunsNeedingProjectionReconciliation().map((item) => item.runId)).toEqual([
+        "active-a",
+        "active-b",
+        "terminal",
+      ]);
+    } finally {
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("creates and claims queued invocations without approval or safety semantics", () => {
+    const file = dbPath("minimal-dispatch");
     const store = new DurableWorkflowStore(file);
     try {
       const created = store.createInvocation({ revision: revision(), run: run() });
-      expect(created.run.state).toBe("queued");
-      expect(
-        store.tryClaimTrustedRun({ runId: "run-1", claimerId: "worker-1", now: 20 })?.state,
-      ).toBe("running");
+      expect(created).toMatchObject({ status: "accepted", run: { state: "queued" } });
+      expect(store.tryClaimRun({ runId: "run-1", claimerId: "worker-1", now: 20 })?.state).toBe(
+        "running",
+      );
       expect(store.listMigrations().at(-1)).toMatchObject({
-        version: 20,
-        name: "profile-native trusted auto-run clean break",
+        version: 21,
+        name: "minimal durable dispatch contract",
       });
     } finally {
       store.close();
@@ -105,240 +214,449 @@ describe("durable workflow store trusted auto-run schema", () => {
 
     const db = new Database(file);
     try {
-      expect(
-        db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM workflow_approvals").get()
-          ?.count,
-      ).toBe(0);
+      const tables = db
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all()
+        .map((row) => row.name);
+      expect(tables).not.toContain("workflow_approvals");
+      expect(tables).not.toContain("workflow_worktree_outputs");
+      expect(tables).not.toContain("workflow_surface_projection_claims");
+      expect(tables).not.toContain("workflow_surface_projection_orphans");
+      expect(tables).not.toContain("workflow_missing_surface_bindings");
+      expect(tables).not.toContain("workflow_projection_reconciliation_state");
+      const runColumns = db
+        .query<{ name: string }, []>("PRAGMA table_info(workflow_runs)")
+        .all()
+        .map((row) => row.name);
+      expect(runColumns).not.toContain("approval_id");
+      expect(runColumns).not.toContain("origin_safety_mode");
+      const dispatchColumns = db
+        .query<{ name: string }, []>("PRAGMA table_info(workflow_request_dispatches)")
+        .all()
+        .map((row) => row.name);
+      expect(dispatchColumns).not.toContain("token_sha256");
+      expect(dispatchColumns).not.toContain("canonical_cwd");
       expect(
         db
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'workflow_shared_editor_leases'",
-          )
-          .get()?.count,
-      ).toBe(0);
+          .query<{ name: string }, []>("PRAGMA table_info(workflow_surface_bindings)")
+          .all()
+          .map((row) => row.name),
+      ).toEqual([
+        "run_id",
+        "target_json",
+        "message_ref_json",
+        "last_rendered_sha256",
+        "last_error",
+        "retry_count",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+      ]);
+      expect(
+        db
+          .query<{ name: string }, []>("PRAGMA table_info(workflow_action_outbox)")
+          .all()
+          .map((row) => row.name),
+      ).toEqual([
+        "outbox_id",
+        "action_id",
+        "run_id",
+        "event_type",
+        "payload_json",
+        "published_at",
+        "projected_at",
+        "attempt_count",
+        "next_attempt_at",
+        "last_error",
+        "created_at",
+        "updated_at",
+      ]);
     } finally {
       db.close();
       rmSync(file, { force: true });
     }
   });
 
-  it("archives and quarantines incompatible v19 executable state without reconstructing authority", () => {
-    const file = dbPath("v19-clean-break");
-    new DurableWorkflowStore(file).close();
+  it("atomically enforces the global active-run cap and admits after terminalization", () => {
+    const file = dbPath("active-run-cap");
+    const store = new DurableWorkflowStore(file);
+    const rejectedRevision = {
+      ...revision("revision-rejected"),
+      normalizedPath: "rejected.js",
+    };
+    try {
+      expect(
+        store.createInvocation({
+          revision: revision("revision-active"),
+          run: run("run-active", "revision-active"),
+          maxActiveRuns: 1,
+        }),
+      ).toMatchObject({ status: "accepted" });
+      expect(store.countActiveRuns()).toBe(1);
+
+      expect(
+        store.createInvocation({
+          revision: rejectedRevision,
+          run: run("run-rejected", "revision-rejected"),
+          maxActiveRuns: 1,
+        }),
+      ).toEqual({ status: "rejected_capacity", activeRuns: 1, limit: 1 });
+      expect(store.getRun("run-rejected")).toBeNull();
+      expect(store.getRevision("revision-rejected")).toBeNull();
+
+      expect(
+        store.transitionRun({
+          runId: "run-active",
+          from: "queued",
+          to: "cancelled",
+          now: 20,
+        }),
+      ).toBe(true);
+      expect(store.countActiveRuns()).toBe(0);
+      expect(
+        store.createInvocation({
+          revision: rejectedRevision,
+          run: run("run-rejected", "revision-rejected"),
+          maxActiveRuns: 1,
+        }),
+      ).toMatchObject({ status: "accepted", run: { runId: "run-rejected" } });
+    } finally {
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("reuses an idempotent invocation at capacity and rejects a new key without rows", () => {
+    const file = dbPath("active-run-cap-idempotency");
+    const store = new DurableWorkflowStore(file);
+    const fingerprintSha256 = "f".repeat(64);
+    try {
+      const first = store.createInvocation({
+        revision: revision("revision-first"),
+        run: run("run-first", "revision-first"),
+        idempotency: { key: "existing-key", fingerprintSha256 },
+        maxActiveRuns: 1,
+      });
+      expect(first).toMatchObject({ status: "accepted", run: { runId: "run-first" } });
+
+      expect(
+        store.createInvocation({
+          revision: revision("revision-replay"),
+          run: run("run-replay", "revision-replay"),
+          idempotency: { key: "existing-key", fingerprintSha256 },
+          maxActiveRuns: 1,
+        }),
+      ).toMatchObject({ status: "accepted", run: { runId: "run-first" } });
+      expect(
+        store.createInvocation({
+          revision: revision("revision-new"),
+          run: run("run-new", "revision-new"),
+          idempotency: { key: "new-key", fingerprintSha256: "e".repeat(64) },
+          maxActiveRuns: 1,
+        }),
+      ).toEqual({ status: "rejected_capacity", activeRuns: 1, limit: 1 });
+      expect(store.getRun("run-replay")).toBeNull();
+      expect(store.getRun("run-new")).toBeNull();
+      expect(store.getRevision("revision-replay")).toBeNull();
+      expect(store.getRevision("revision-new")).toBeNull();
+    } finally {
+      store.close();
+    }
+
     const db = new Database(file);
-    db.run("PRAGMA foreign_keys = OFF");
-    db.run("DELETE FROM workflow_schema_migrations WHERE version = 20");
-    db.run("DROP TABLE workflow_legacy_audit_records");
-    db.run(`CREATE TABLE workflow_shared_editor_leases (
-      authority_root TEXT PRIMARY KEY, run_id TEXT NOT NULL, operation_id TEXT NOT NULL,
-      owner_id TEXT NOT NULL, heartbeat_at INTEGER NOT NULL, acquired_at INTEGER NOT NULL
-    )`);
-    db.run(
-      `INSERT INTO workflow_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        "old-revision",
-        "project-1",
-        "/workspace",
-        "project",
-        "old.js",
-        "old",
-        "workflow-source:old",
-        "a".repeat(64),
-        "b".repeat(64),
-        "c".repeat(64),
-        JSON.stringify({ name: "old", description: "old" }),
-        JSON.stringify({ type: "object", additionalProperties: false }),
-        JSON.stringify({
-          agents: {
-            profiles: [],
-            models: [],
-            reasoning: [],
-            allowedRoots: [],
-            tools: [],
-            executables: "trusted",
-            editing: [],
-            delegation: false,
-            maxConcurrent: 1,
-            maxTotal: 1,
-          },
-          level2: { callables: [] },
-          surfaces: { origin: [] },
-          maxNestingDepth: 1,
-          maxWallTimeMs: 1000,
-          operationIdleTimeoutMs: 1000,
-          waits: [],
-          safety: { originatingMode: "trusted", escalation: "none" },
-        }),
-        JSON.stringify({
-          maxSourceBytes: 1000,
-          maxInputBytes: 1000,
-          maxOperationOutputBytes: 1000,
-          maxResultBytes: 1000,
-          maxRuntimeMemoryBytes: 268435456,
-        }),
-        "lilac-workflow-js-v2",
-        1,
-      ],
+    try {
+      expect(
+        db
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM workflow_invocation_receipts",
+          )
+          .get()?.count,
+      ).toBe(1);
+    } finally {
+      db.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("atomically terminalizes active v20 state while retaining terminal history", () => {
+    const file = dbPath("v20-minimal-contract");
+    const store = new DurableWorkflowStore(file);
+    const rev = revision();
+    store.createInvocation({ revision: rev, run: run("active-run") });
+    store.tryClaimRun({ runId: "active-run", claimerId: "old-worker", now: 20 });
+    store.createOperation(operation("active-run", "active-operation"), "old-worker");
+
+    store.createInvocation({ revision: rev, run: run("terminal-run") });
+    store.tryClaimRun({ runId: "terminal-run", claimerId: "old-worker", now: 20 });
+    store.createOperation(operation("terminal-run", "terminal-operation"), "old-worker");
+    store.transitionOperation({
+      runId: "terminal-run",
+      operationId: "terminal-operation",
+      from: "queued",
+      to: "dispatched",
+      runOwnerId: "old-worker",
+      now: 21,
+    });
+    store.transitionOperation({
+      runId: "terminal-run",
+      operationId: "terminal-operation",
+      from: "dispatched",
+      to: "running",
+      runOwnerId: "old-worker",
+      now: 22,
+    });
+    store.transitionOperation({
+      runId: "terminal-run",
+      operationId: "terminal-operation",
+      from: "running",
+      to: "succeeded",
+      runOwnerId: "old-worker",
+      now: 23,
+      output: "complete",
+    });
+    store.terminalizeRun({
+      runId: "terminal-run",
+      from: "running",
+      to: "succeeded",
+      ownerId: "old-worker",
+      now: 24,
+      detail: "complete",
+      result: { ok: true },
+      resultArtifactId: null,
+    });
+    store.createInvocation({ revision: rev, run: run("rejected-run") });
+    const trigger: WorkflowTrigger = {
+      triggerId: "active-trigger",
+      revisionId: rev.revisionId,
+      state: "active",
+      definition: { kind: "timestamp", at: 100 },
+      args: {},
+      argsSha256: canonicalJsonSha256({}),
+      schedulingPolicy: { skipMissed: true, overlap: "coalesce" },
+      origin: run().origin,
+      completionTarget: { kind: "detached" },
+      progressTarget: null,
+      nextFireAt: 100,
+      lastFireAt: null,
+      lastRunId: null,
+      claimedBy: null,
+      claimedAt: null,
+      createdAt: 10,
+      updatedAt: 10,
+    };
+    store.createTriggerInvocation({
+      trigger,
+      idempotency: { key: "active-trigger", fingerprintSha256: "c".repeat(64) },
+    });
+    store.close();
+
+    const legacy = new Database(file);
+    downgradeSchemaToV20(legacy);
+    legacy.run(
+      `UPDATE workflow_runs
+       SET state = 'rejected', terminal_detail = 'approval rejected', terminal_at = 25
+       WHERE run_id = 'rejected-run'`,
     );
-    const insertRun = (id: string, state: "running" | "succeeded") =>
-      db.run(
-        `INSERT INTO workflow_runs VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          "old-revision",
-          state,
-          JSON.stringify({ type: "object", additionalProperties: false }),
-          "{}",
-          "d".repeat(64),
-          "request-old",
-          "session-old",
-          "discord",
-          "user-old",
-          "trusted",
-          "/workspace",
-          JSON.stringify({ kind: "detached" }),
-          state === "succeeded" ? "completed" : null,
-          state === "succeeded" ? "{}" : null,
-          state === "running" ? "worker-old" : null,
-          state === "running" ? 2 : null,
-          1,
-          state === "running" ? 2 : 1,
-          2,
-          state === "succeeded" ? 2 : null,
-        ],
-      );
-    insertRun("old-active-run", "running");
-    insertRun("old-terminal-run", "succeeded");
-    db.run(
-      `INSERT INTO workflow_operations (
-        run_id, operation_id, call_site_id, parent_operation_id, phase, label, kind,
-        input_json, input_sha256, state, attempt, request_id, output_json, result_artifact_id,
-        error, usage_json, claimed_by, claimed_at, created_at, started_at, updated_at, terminal_at
-      ) VALUES (?, ?, ?, NULL, NULL, NULL, 'agent', '{}', ?, 'running', 0, ?, NULL, NULL,
-        NULL, NULL, ?, 2, 1, 2, 2, NULL)`,
-      [
-        "old-active-run",
-        "old-operation",
-        "old-call-site",
-        "f".repeat(64),
-        "old-dispatch-request",
-        "worker-old",
-      ],
+    legacy.run(
+      `UPDATE workflow_operations SET state = 'running', request_id = 'active-request',
+       claimed_by = 'old-worker', claimed_at = 20 WHERE run_id = 'active-run'`,
     );
-    db.run(
+    legacy.run(
       `INSERT INTO workflow_request_dispatches (
-        request_id, run_id, operation_id, token_sha256, session_id, platform, canonical_cwd,
-        policy_json, expires_at, owner_id, owner_heartbeat_at, active, created_at, updated_at,
-        prompt_published_at, dispatch_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 10000, ?, 2, 1, 1, 2, 2, ?)`,
+         request_id, run_id, operation_id, token_sha256, session_id, platform,
+         canonical_cwd, policy_json, expires_at, owner_id, owner_heartbeat_at,
+         active, created_at, updated_at, prompt_published_at, dispatch_epoch
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1000, ?, 20, 1, 20, 20, 20, ?)`,
       [
-        "old-dispatch-request",
-        "old-active-run",
-        "old-operation",
+        "active-request",
+        "active-run",
+        "active-operation",
         "0".repeat(64),
-        "workflow:old",
+        "workflow:active",
         "unknown",
         "/workspace",
+        JSON.stringify({
+          profile: "general",
+          model: null,
+          reasoning: null,
+          resolvedModelRequest: {
+            spec: "profile-native:general",
+            provider: "test",
+            modelId: "general",
+            reasoningDisplay: "simple",
+          },
+          canonicalCwd: "/workspace",
+        }),
         "runner-old",
         "old-dispatch-epoch",
       ],
     );
-    db.run(
+    legacy.run(
       `INSERT INTO workflow_request_terminal_receipts (
          request_id, run_id, operation_id, dispatch_epoch, state, detail, created_at,
          output_json, result_artifact_id, usage_json
-       ) VALUES (?, ?, ?, ?, 'failed', 'legacy receipt', 2, NULL, NULL, NULL)`,
-      ["old-terminal-receipt", "old-terminal-run", "standalone-operation", "old-epoch"],
+       ) VALUES ('terminal-request', 'terminal-run', 'terminal-operation', 'terminal-epoch',
+          'resolved', 'complete', 24, '"complete"', NULL, NULL)`,
     );
-    db.run(
-      `INSERT INTO workflow_triggers (
-        trigger_id, revision_id, state, kind, definition_json, args_json, args_sha256,
-        scheduling_policy_json, progress_target_json, next_fire_at, last_fire_at, last_run_id,
-        claimed_by, claimed_at, created_at, updated_at, origin_json, completion_target_json
-      ) VALUES (?, ?, 'active', 'cron', ?, '{}', ?, ?, NULL, 100, NULL, NULL, NULL, NULL, 1, 2, ?, ?)`,
-      [
-        "old-trigger",
-        "old-revision",
-        JSON.stringify({ kind: "cron", expression: "* * * * *", timezone: null }),
-        "e".repeat(64),
-        JSON.stringify({ skipMissed: true, overlap: "coalesce" }),
-        JSON.stringify({
-          requestId: null,
-          sessionId: "session-old",
-          client: "discord",
-          userId: "user-old",
-          safetyMode: "trusted",
-          projectCwd: "/workspace",
-        }),
-        JSON.stringify({ kind: "detached" }),
-      ],
+    legacy.run(
+      `INSERT INTO workflow_request_dispatches (
+         request_id, run_id, operation_id, token_sha256, session_id, platform,
+         canonical_cwd, policy_json, expires_at, active, created_at, updated_at,
+         prompt_published_at, dispatch_epoch
+       ) VALUES ('legacy-terminal-dispatch', 'terminal-run', 'terminal-operation', ?,
+         'workflow:terminal', 'unknown', '/workspace', '{not-json', 24, 0, 20, 24, 20,
+         'legacy-terminal-epoch')`,
+      ["1".repeat(64)],
     );
-    db.close();
+    legacy.close();
 
     const migrated = new DurableWorkflowStore(file);
     try {
-      expect(migrated.getRun("old-active-run")).toBeNull();
-      expect(migrated.getRevision("old-revision")).toBeNull();
-      expect(migrated.getTrigger("old-trigger")).toBeNull();
-      expect(migrated.listMigrations().at(-1)?.version).toBe(20);
+      expect(migrated.getRun("active-run")).toMatchObject({
+        state: "cancelled",
+        terminalDetail: "Cancelled by schema v21 minimal durable dispatch migration",
+      });
+      expect(migrated.getOperation("active-run", "active-operation")).toMatchObject({
+        state: "cancelled",
+      });
+      expect(migrated.getTrigger("active-trigger")).toMatchObject({ state: "cancelled" });
+      expect(migrated.getRun("terminal-run")).toMatchObject({
+        state: "succeeded",
+        result: { ok: true },
+      });
+      expect(migrated.getRun("rejected-run")).toMatchObject({
+        state: "failed",
+        terminalDetail: "approval rejected",
+      });
+      expect(migrated.getOperation("terminal-run", "terminal-operation")).toMatchObject({
+        state: "succeeded",
+        output: "complete",
+      });
+      expect(migrated.getWorkflowRequestTerminalReceipt("terminal-request")).toMatchObject({
+        state: "resolved",
+        output: "complete",
+      });
+      expect(migrated.getWorkflowRequestDispatchPolicy("active-request")).toEqual({
+        runId: "active-run",
+        operationId: "active-operation",
+        dispatchEpoch: "old-dispatch-epoch",
+        profile: "general",
+        model: null,
+        reasoning: null,
+        resolvedModelRequest: {
+          spec: "profile-native:general",
+          provider: "test",
+          modelId: "general",
+          reasoningDisplay: "simple",
+        },
+        cwd: "/workspace",
+        originSession: {
+          requestId: "request-1",
+          sessionId: "session-1",
+          client: "discord",
+          userId: "user-1",
+        },
+      });
+      expect(migrated.getWorkflowRequestDispatchPolicy("legacy-terminal-dispatch")).toBeNull();
     } finally {
       migrated.close();
     }
 
     const inspected = new Database(file);
     try {
-      const reasons = inspected
-        .query<{ record_kind: string; record_id: string; reason: string }, []>(
-          "SELECT record_kind, record_id, reason FROM workflow_quarantine ORDER BY record_kind, record_id",
+      const quarantine = inspected
+        .query<{ record_kind: string; record_id: string }, []>(
+          "SELECT record_kind, record_id FROM workflow_quarantine",
         )
         .all();
-      expect(reasons).toEqual(
+      expect(quarantine).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ record_kind: "run", record_id: "old-active-run" }),
-          expect.objectContaining({
-            record_kind: "operation",
-            record_id: "old-active-run:old-operation",
-          }),
-          expect.objectContaining({ record_kind: "trigger", record_id: "old-trigger" }),
+          { record_kind: "run", record_id: "active-run" },
+          { record_kind: "operation", record_id: "active-run:active-operation" },
+          { record_kind: "trigger", record_id: "active-trigger" },
         ]),
       );
       expect(
         inspected
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM workflow_request_dispatches WHERE request_id = 'old-dispatch-request'",
+          .query<{ active: number }, []>(
+            "SELECT active FROM workflow_request_dispatches WHERE request_id = 'active-request'",
           )
-          .get()?.count,
-      ).toBe(0);
-      expect(
-        inspected
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM workflow_legacy_audit_records",
-          )
-          .get()?.count,
-      ).toBe(5);
-      expect(
-        inspected
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM workflow_request_terminal_receipts WHERE request_id = 'old-terminal-receipt'",
-          )
-          .get()?.count,
-      ).toBe(0);
-      expect(
-        inspected
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM workflow_legacy_audit_records WHERE record_kind = 'terminal_receipt' AND record_id = 'old-terminal-receipt'",
-          )
-          .get()?.count,
-      ).toBe(1);
-      expect(
-        inspected
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'workflow_shared_editor_leases'",
-          )
-          .get()?.count,
+          .get()?.active,
       ).toBe(0);
     } finally {
       inspected.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("pins the exact resolved model request across dispatch epochs", () => {
+    const file = dbPath("resolved-model-pinning");
+    const store = new DurableWorkflowStore(file);
+    try {
+      store.createInvocation({ revision: revision(), run: run() });
+      store.tryClaimRun({ runId: "run-1", claimerId: "worker-1", now: 20 });
+      store.createOperation(operation("run-1", "operation-1"), "worker-1");
+      const policy = {
+        runId: "run-1",
+        operationId: "operation-1",
+        dispatchEpoch: "a".repeat(32),
+        profile: "general" as const,
+        model: null,
+        reasoning: null,
+        resolvedModelRequest: {
+          spec: "provider/model-a",
+          provider: "provider",
+          modelId: "model-a",
+          reasoningDisplay: "simple" as const,
+        },
+        cwd: "/workspace",
+        originSession: {
+          requestId: "request-1",
+          sessionId: "session-1",
+          client: "discord" as const,
+          userId: "user-1",
+        },
+      };
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "agent-request",
+          runId: "run-1",
+          operationId: "operation-1",
+          runOwnerId: "worker-1",
+          sessionId: "workflow:run-1:operation-1",
+          platform: "unknown",
+          policy,
+          now: 21,
+          expiresAt: 1_000,
+          staleOwnerBefore: 21,
+        }),
+      ).toMatchObject({ state: "dispatched" });
+      expect(store.getWorkflowRequestDispatchPolicy("agent-request")).toEqual(policy);
+      expect(
+        store.authorizeAgentDispatch({
+          requestId: "agent-request",
+          runId: "run-1",
+          operationId: "operation-1",
+          runOwnerId: "worker-1",
+          sessionId: "workflow:run-1:operation-1",
+          platform: "unknown",
+          policy: {
+            ...policy,
+            dispatchEpoch: "b".repeat(32),
+            resolvedModelRequest: {
+              ...policy.resolvedModelRequest,
+              spec: "provider/model-b",
+              modelId: "model-b",
+            },
+          },
+          now: 22,
+          expiresAt: 1_000,
+          staleOwnerBefore: 22,
+        }),
+      ).toBeNull();
+      expect(store.getWorkflowRequestDispatchPolicy("agent-request")).toEqual(policy);
+    } finally {
+      store.close();
       rmSync(file, { force: true });
     }
   });

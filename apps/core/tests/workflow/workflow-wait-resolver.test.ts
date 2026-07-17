@@ -154,14 +154,12 @@ function createRunAndWait(
         maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
         waits: ["reply", "sleep"],
-        safety: { originatingMode: "trusted", escalation: "none" },
       }),
       limits: {
         maxSourceBytes: 10_000,
         maxInputBytes: 10_000,
         maxOperationOutputBytes: 10_000,
         maxResultBytes: 10_000,
-        maxRuntimeMemoryBytes: 256 * 1024 * 1024,
       },
       runtimeVersion: "lilac-workflow-js-v3",
       createdAt: 1,
@@ -178,7 +176,6 @@ function createRunAndWait(
         sessionId: "channel-1",
         client: "discord",
         userId: "user-1",
-        safetyMode: "trusted",
         projectCwd: "/workspace",
       },
       completionTarget: { kind: "detached" },
@@ -194,7 +191,7 @@ function createRunAndWait(
       terminalAt: null,
     },
   });
-  store.tryClaimTrustedRun({ runId: input.runId, claimerId: "engine", now: 3 });
+  store.tryClaimRun({ runId: input.runId, claimerId: "engine", now: 3 });
   store.createOperation(
     {
       runId: input.runId,

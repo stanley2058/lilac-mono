@@ -761,6 +761,9 @@ export function parseCoreConfigV1ToUniversal(
         },
       },
     },
+    workflows: {
+      maxActiveRuns: 64,
+    },
     surface: {
       ...parsed.surface,
       discord: {
@@ -782,15 +785,7 @@ export function parseCoreConfigV1ToUniversal(
           explore: {
             ...subagents.profiles.explore,
             level1: {
-              tools: [
-                "read_file",
-                "glob",
-                "grep",
-                "fuzzy_search",
-                "scratch_read",
-                "scratch_write",
-                "batch",
-              ],
+              tools: ["read_file", "glob", "grep", "fuzzy_search", "batch"],
               plugins: ["builtin-local-tools"],
             },
             level2: {

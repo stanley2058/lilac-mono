@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { NativeSubagentProfile } from "@stanley2058/lilac-utils";
 
 type SafetyMode = "trusted" | "restricted";
 
@@ -9,6 +10,7 @@ type RequestControlPolicyBase = {
   canonicalCwd: string;
   safetyMode: SafetyMode;
   expiresAt: number;
+  profile: "primary" | NativeSubagentProfile;
 };
 
 export const HEARTBEAT_LEVEL2_CALLABLES = [
@@ -30,7 +32,7 @@ export type RequestControlPolicy = RequestControlPolicyBase &
   (
     | {
         kind: "primary";
-        principal: { platform: "discord" | "github"; userId: string };
+        principal: { platform: "discord" | "github"; userId: string } | null;
         allowedCallables: null;
       }
     | {

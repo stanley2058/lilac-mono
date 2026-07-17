@@ -659,6 +659,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         bus,
         store: durableWorkflowStore,
         progressCards: workflowProgressProjector,
+        getMaxActiveRuns: async () => (await getCoreConfig()).workflows.maxActiveRuns,
       });
       await workflowTriggerScheduler.start();
 
@@ -675,6 +676,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: durableWorkflowStore,
         dataDir: env.dataDir,
         toolResultArtifacts,
+        getMaxActiveRuns: async () => (await getCoreConfig()).workflows.maxActiveRuns,
         onRunCreated: async (run) => {
           await bus.publish(lilacEventTypes.EvtWorkflowRunChanged, {
             runId: run.runId,
@@ -762,9 +764,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           getOrigin: requestMessageCache.getOrigin,
         },
         canonicalWorkspaceRoot,
-        workflowDataDir: env.dataDir,
         operatorTokenSha256: process.env.LILAC_OPERATOR_TOKEN_SHA256,
-        authorizeWorkflowRequest: (input) => durableWorkflowStore.authorizeWorkflowRequest(input),
         authorizeControlRequest: (input) => requestControlAuthority.authorize(input),
         resolveServerSafetyMode: async (context) => {
           if (context.serverOwnedRequest && context.requestClient === "github") return "trusted";
@@ -845,21 +845,20 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
             await Bun.sleep(5);
             origin = requestMessageCache?.getOrigin(input.requestId);
           }
-          if (
-            !origin?.actorUserId ||
-            origin.sessionId !== input.sessionId ||
-            origin.platform !== input.requestClient ||
-            input.canonicalCwd !== canonicalWorkspaceRoot
-          ) {
-            throw new Error("Cannot issue Level-2 authority for an unauthenticated request origin");
-          }
+          const originPrincipal =
+            origin?.actorUserId &&
+            origin.sessionId === input.sessionId &&
+            origin.platform === input.requestClient
+              ? { platform: origin.platform, userId: origin.actorUserId }
+              : null;
           const policy = {
             kind: "primary",
             requestId: input.requestId,
             sessionId: input.sessionId,
-            platform: origin.platform,
-            principal: { platform: origin.platform, userId: origin.actorUserId },
+            platform: input.requestClient,
+            principal: input.principal ?? originPrincipal,
             allowedCallables: null,
+            profile: input.profile,
             canonicalCwd: input.canonicalCwd,
             safetyMode: input.safetyMode,
             expiresAt: input.expiresAt,
@@ -877,6 +876,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
             platform: input.requestClient,
             principal: null,
             allowedCallables: HEARTBEAT_LEVEL2_CALLABLES,
+            profile: "primary",
             canonicalCwd: input.canonicalCwd,
             safetyMode: "trusted",
             expiresAt: input.expiresAt,

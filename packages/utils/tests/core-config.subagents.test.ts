@@ -13,6 +13,10 @@ describe("coreConfigSchema agent.subagents", () => {
     expect(parsed.agent.subagents.profiles.general.model).toBeUndefined();
     expect(parsed.agent.subagents.profiles.self.model).toBeUndefined();
     expect(parsed.agent.subagents.profiles.explore).toMatchObject({
+      level1: {
+        tools: ["read_file", "glob", "grep", "fuzzy_search", "batch"],
+        plugins: ["builtin-local-tools"],
+      },
       network: true,
       workspaceWrites: false,
       execution: false,

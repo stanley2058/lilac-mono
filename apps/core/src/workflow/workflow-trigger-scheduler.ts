@@ -1,14 +1,13 @@
 import { lilacEventTypes, type LilacBus } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 
-import { DurableWorkflowStore } from "./durable-workflow-store";
+import { DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS, DurableWorkflowStore } from "./durable-workflow-store";
 import { computeNextCronAtMs } from "./cron";
 import { sha256 } from "./workflow-definition";
 import type { WorkflowRun, WorkflowTrigger } from "./workflow-domain";
 import type { WorkflowProgressCardService } from "./workflow-progress-projector";
 
 const TERMINAL_RUN_STATES = new Set(["succeeded", "failed", "cancelled"]);
-const MAX_ACTIVE_SCHEDULED_RUNS = 64;
 
 export class WorkflowTriggerScheduler {
   private readonly logger = createLogger({ module: "workflow-trigger-scheduler" });
@@ -23,6 +22,7 @@ export class WorkflowTriggerScheduler {
       progressCards?: WorkflowProgressCardService;
       now?: () => number;
       pollMs?: number;
+      getMaxActiveRuns?: () => number | Promise<number>;
     },
   ) {}
 
@@ -113,13 +113,15 @@ export class WorkflowTriggerScheduler {
       updatedAt: now,
       terminalAt: null,
     };
+    const maxActiveRuns =
+      (await this.input.getMaxActiveRuns?.()) ?? DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS;
     const fired = this.input.store.fireClaimedTrigger({
       triggerId: trigger.triggerId,
       claimerId: this.workerId,
       expectedFireAt: fireAt,
       nextFireAt,
       run,
-      maxActiveScheduledRuns: MAX_ACTIVE_SCHEDULED_RUNS,
+      maxActiveRuns,
       now,
     });
     if (!fired || fired.status === "skipped") return;

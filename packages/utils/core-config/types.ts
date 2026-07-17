@@ -45,7 +45,9 @@ export type SubagentProfileConfig = {
     callables: string[];
     plugins: string[];
   };
+  /** Network behavior/tool-surface setting; not a trusted-Bash network boundary. */
   network: boolean;
+  /** Write behavior/edit-tool setting; not a trusted-Bash filesystem boundary. */
   workspaceWrites: boolean;
   execution: boolean;
   delegation: boolean;
@@ -156,6 +158,10 @@ export type UniversalCoreConfig = {
         filterCurrentParticipants: boolean;
       };
     };
+  };
+
+  workflows: {
+    maxActiveRuns: number;
   };
 
   surface: {

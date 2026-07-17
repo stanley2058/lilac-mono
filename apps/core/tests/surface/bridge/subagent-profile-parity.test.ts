@@ -24,4 +24,27 @@ describe("native subagent profile prompt parity", () => {
       expect(workflow).not.toContain("Workflow Tool Surface");
     });
   }
+
+  for (const profile of ["explore", "general", "self"] as const) {
+    it(`renders ${profile} network and write settings as behavioral guidance`, () => {
+      const restricted = parseCoreConfigV2ToUniversal({
+        configVersion: 2,
+        agent: {
+          subagents: {
+            profiles: {
+              [profile]: { network: false, workspaceWrites: false },
+            },
+          },
+        },
+      }).agent.subagents.profiles[profile];
+
+      const prompt = buildSystemPromptForProfile({
+        baseSystemPrompt: "base",
+        profile,
+        profileConfig: restricted,
+      });
+      expect(prompt).toContain("Do not use network access or network-backed tools.");
+      expect(prompt).toContain("Do not edit files.");
+    });
+  }
 });

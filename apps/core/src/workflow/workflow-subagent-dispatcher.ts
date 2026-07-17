@@ -8,7 +8,7 @@ import type {
   TrustedSubagentDelegationRegistration,
 } from "../tools/subagent";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
-import { DurableWorkflowStore } from "./durable-workflow-store";
+import { DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS, DurableWorkflowStore } from "./durable-workflow-store";
 import {
   canonicalJsonSha256,
   sha256,
@@ -65,14 +65,12 @@ export default defineWorkflow({
     maxNestingDepth: 1,
     maxWallTimeMs: ${maxWallTimeMs},
     operationIdleTimeoutMs: ${operationIdleTimeoutMs},
-    safety: { escalation: "none" },
   },
   limits: {
     maxSourceBytes: 262144,
     maxInputBytes: 262144,
     maxOperationOutputBytes: 1048576,
     maxResultBytes: 1048576,
-    maxRuntimeMemoryBytes: 268435456,
   },
   async run({ args, agent }) {
     return agent(args.task, {
@@ -140,6 +138,7 @@ export class WorkflowSubagentDispatcher {
       toolResultArtifacts?: ToolResultArtifactStore;
       now?: () => number;
       pollMs?: number;
+      getMaxActiveRuns?: () => number | Promise<number>;
       onRunCreated?: (run: WorkflowRun) => Promise<void>;
       onRunCancelled?: (run: WorkflowRun, previousState: WorkflowRun["state"]) => Promise<void>;
     },
@@ -151,6 +150,7 @@ export class WorkflowSubagentDispatcher {
     toolResultArtifacts?: ToolResultArtifactStore;
     now?: () => number;
     pollMs?: number;
+    getMaxActiveRuns?: () => number | Promise<number>;
     onRunCreated?: (run: WorkflowRun) => Promise<void>;
     onRunCancelled?: (run: WorkflowRun, previousState: WorkflowRun["state"]) => Promise<void>;
   }): WorkflowSubagentDispatcher {
@@ -190,7 +190,6 @@ export class WorkflowSubagentDispatcher {
     const validation = validateWorkflowSource({
       name: GENERATED_WORKFLOW_NAME,
       source,
-      safetyMode: "trusted",
     });
     const snapshot = await definitions.createSnapshot(source, validation.sourceSha256);
     const revisionId = `wfrev:subagent:${sha256(
@@ -246,9 +245,6 @@ export class WorkflowSubagentDispatcher {
       fallbackToSurface: fallbackProgressTarget !== null,
       fallbackProgressTarget,
       deferredDelivery: registration.mode === "deferred",
-      ...(registration.familyScratchRoot
-        ? { familyScratchRoot: registration.familyScratchRoot }
-        : {}),
     };
     const requestedRun: WorkflowRun = {
       runId,
@@ -262,7 +258,6 @@ export class WorkflowSubagentDispatcher {
         sessionId: registration.fallbackSurface.sessionId,
         client: registration.fallbackSurface.platform,
         userId: registration.fallbackSurface.userId,
-        safetyMode: "trusted",
         projectCwd: definitions.canonicalWorkspaceRoot,
       },
       completionTarget,
@@ -277,10 +272,17 @@ export class WorkflowSubagentDispatcher {
       updatedAt: now,
       terminalAt: null,
     };
-    const { run } = this.input.store.createInvocation({
+    const invocation = this.input.store.createInvocation({
       revision,
       run: requestedRun,
+      maxActiveRuns: (await this.input.getMaxActiveRuns?.()) ?? DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS,
     });
+    if (invocation.status === "rejected_capacity") {
+      throw new Error(
+        `Subagent delegation was not created because global workflow capacity is full (${invocation.activeRuns}/${invocation.limit} active runs); wait for a workflow to finish or cancel one, then retry`,
+      );
+    }
+    const { run } = invocation;
     await this.input.onRunCreated?.(run);
     const waitForCompletion = () => this.waitForCompletion(runId, registration.mode === "sync");
 

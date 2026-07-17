@@ -31,7 +31,6 @@ import {
   type WorkflowUsage,
 } from "./workflow-domain";
 import {
-  assertWorkflowSandboxAvailable,
   startWorkflowSandbox,
   type WorkflowSandboxCall,
   type WorkflowSandboxRun,
@@ -43,27 +42,14 @@ import {
   writeWorkflowValueArtifact,
 } from "./workflow-artifact-store";
 import type { WorkflowRequestPolicy } from "./workflow-request-authority";
-import { readWorkflowPathIdentity } from "./workflow-descriptor-path";
 import {
   resolveWorkflowAgentOperationInput,
   resolvedWorkflowAgentInputSchema,
   type ResolvedWorkflowAgentInput,
 } from "./workflow-operation-policy";
-import {
-  assertExistingWorkflowScratch,
-  ensureWorkflowRunScratch,
-  workflowRunScratchPath,
-} from "./workflow-scratch";
-import {
-  captureWorkflowWorktreePatch,
-  readWorkflowWorktreePatch,
-  type CapturedWorkflowWorktreePatch,
-  type WorkflowWorktreeOutput,
-} from "./workflow-worktree-artifact";
 
 const WORKFLOW_LEASE_STALE_MS = 60_000;
 const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
-const WORKFLOW_WORKTREE_EXECUTION_ENABLED = false;
 
 const phaseInputSchema = z.strictObject({ name: z.string().min(1).max(200) });
 const parallelInputSchema = z.strictObject({
@@ -161,44 +147,6 @@ export class WorkflowEngine {
   private wakeSubscription: { stop(): Promise<void> } | null = null;
   private tickPromise: Promise<void> | null = null;
 
-  private async cleanupExpiredScratch(): Promise<void> {
-    const container = path.dirname(workflowRunScratchPath(this.input.dataDir, "cleanup-probe"));
-    const entries = await fs.readdir(container, { withFileTypes: true }).catch((error: unknown) => {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-      throw error;
-    });
-    const retentionCutoff = this.now() - 7 * 24 * 60 * 60 * 1_000;
-    const runsByScratch = new Map<string, WorkflowRun[]>();
-    for (const run of this.input.store.listRuns({ limit: 10_000 })) {
-      const scratchRoot =
-        run.completionTarget.kind === "live_parent" && run.completionTarget.familyScratchRoot
-          ? run.completionTarget.familyScratchRoot
-          : workflowRunScratchPath(this.input.dataDir, run.runId);
-      const family = runsByScratch.get(scratchRoot) ?? [];
-      family.push(run);
-      runsByScratch.set(scratchRoot, family);
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const candidate = path.join(container, entry.name);
-      const stats = await fs.lstat(candidate);
-      if (stats.mtimeMs >= retentionCutoff) continue;
-      const matchingRuns = runsByScratch.get(candidate);
-      if (
-        !matchingRuns ||
-        matchingRuns.some(
-          (run) =>
-            !["succeeded", "failed", "cancelled"].includes(run.state) ||
-            run.terminalAt === null ||
-            run.terminalAt >= retentionCutoff,
-        )
-      ) {
-        continue;
-      }
-      await fs.rm(candidate, { recursive: true, force: true });
-    }
-  }
-
   constructor(
     private readonly input: {
       bus: LilacBus;
@@ -208,32 +156,13 @@ export class WorkflowEngine {
       now?: () => number;
       pollMs?: number;
       receiptPollMs?: number;
-      assertSandbox?: () => Promise<void>;
-      startSandbox?: typeof startWorkflowSandbox;
       loadSnapshot?: (revision: WorkflowRevision) => Promise<string>;
       compileSource?: (source: string, sourceSha256: string) => string;
-      prepareWorktree?: (
-        run: WorkflowRun,
-        operation: WorkflowOperation,
-        revision: WorkflowRevision,
-        requireExisting: boolean,
-        authorityRoot: string,
-        requestedCwd: string,
-      ) => Promise<{ path: string; baseCommit: string }>;
-      captureWorktreePatch?: (input: {
-        dataDir: string;
-        worktreePath: string;
-        baseCommit: string;
-        signal?: AbortSignal;
-        timeoutMs?: number;
-      }) => Promise<CapturedWorkflowWorktreePatch>;
-      removeWorktree?: (revision: WorkflowRevision, worktree: string) => Promise<void>;
       beforePromptPublication?: (input: {
         requestId: string;
         runId: string;
         operationId: string;
         dispatchEpoch: string;
-        controlToken: string;
         runOwnerId: string;
       }) => Promise<void>;
       createDispatchEpoch?: () => string;
@@ -255,7 +184,6 @@ export class WorkflowEngine {
         agentCwd: string;
         signal: AbortSignal;
         reconcile: boolean;
-        controlToken: string | null;
         dispatchEpoch: string;
         sessionId: string;
         publishRequest: boolean;
@@ -264,9 +192,6 @@ export class WorkflowEngine {
   ) {}
 
   async start(): Promise<void> {
-    await (this.input.assertSandbox ?? assertWorkflowSandboxAvailable)();
-    await this.cleanupExpiredScratch();
-    if (WORKFLOW_WORKTREE_EXECUTION_ENABLED) await this.reconcileWorktreeCleanup();
     this.stopping = false;
     this.wakeSubscription = await this.input.bus.subscribeTopic(
       "evt.workflow",
@@ -382,7 +307,7 @@ export class WorkflowEngine {
 
   private async claimAndLaunch(run: WorkflowRun, staleAfterMs?: number): Promise<void> {
     if (this.active.has(run.runId) || this.stopping) return;
-    const claimed = this.input.store.tryClaimTrustedRun({
+    const claimed = this.input.store.tryClaimRun({
       runId: run.runId,
       claimerId: this.workerId,
       now: this.now(),
@@ -392,23 +317,6 @@ export class WorkflowEngine {
     const controller = new AbortController();
     let sandbox: WorkflowSandboxRun;
     try {
-      const familyScratchRoot =
-        claimed.completionTarget.kind === "live_parent"
-          ? claimed.completionTarget.familyScratchRoot
-          : undefined;
-      if (familyScratchRoot) {
-        const parentPolicy = this.input.store.getWorkflowRequestDispatchPolicy(
-          claimed.completionTarget.kind === "live_parent"
-            ? claimed.completionTarget.parentRequestId
-            : "",
-        );
-        if (parentPolicy?.canonicalScratchRoot !== familyScratchRoot) {
-          throw new Error("Generated delegation family scratch does not match its durable parent");
-        }
-        await assertExistingWorkflowScratch(familyScratchRoot);
-      } else {
-        await ensureWorkflowRunScratch({ dataDir: this.input.dataDir, runId: claimed.runId });
-      }
       sandbox = await this.createSandbox(claimed, controller.signal);
     } catch (error) {
       await this.finishRun(claimed, "failed", null, boundedError(error));
@@ -442,25 +350,21 @@ export class WorkflowEngine {
   private async createSandbox(run: WorkflowRun, signal: AbortSignal): Promise<WorkflowSandboxRun> {
     const revision = this.input.store.getRevision(run.revisionId);
     if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
-    this.assertTrustedRun(run, revision);
     this.assertPersistedIntegrity(run, revision);
     if (revision.runtimeVersion !== WORKFLOW_RUNTIME_VERSION) {
       throw new Error(`Unsupported workflow runtime: ${revision.runtimeVersion}`);
     }
     const source = await this.loadSnapshot(revision);
     this.assertPersistedIntegrity(run, revision);
-    this.assertTrustedRun(run, revision);
     const compiled = (this.input.compileSource ?? compileWorkflowSource)(
       source,
       revision.sourceSha256,
     );
     const semaphore = new Semaphore(revision.resources.agents.maxConcurrent);
-    const start = this.input.startSandbox ?? startWorkflowSandbox;
-    return start({
+    return startWorkflowSandbox({
       source: compiled,
       args: run.args,
       maxWallTimeMs: revision.resources.maxWallTimeMs,
-      memoryBytes: revision.limits.maxRuntimeMemoryBytes,
       signal,
       onCall: (call) => this.handleCall(run.runId, revision, call, semaphore, signal),
     });
@@ -513,15 +417,6 @@ export class WorkflowEngine {
     }
   }
 
-  private assertTrustedRun(run: WorkflowRun, revision: WorkflowRevision): void {
-    if (
-      run.origin.safetyMode !== "trusted" ||
-      revision.resources.safety.originatingMode !== "trusted"
-    ) {
-      throw new Error("Restricted workflow sessions are denied");
-    }
-  }
-
   private async runSandbox(
     run: WorkflowRun,
     sandbox: WorkflowSandboxRun,
@@ -555,7 +450,6 @@ export class WorkflowEngine {
     const run = this.input.store.getRun(runId);
     if (!run || run.state !== "running" || run.claimedBy !== this.workerId || signal.aborted)
       throw new Error("Workflow is not running");
-    this.assertTrustedRun(run, revision);
     if (call.depth > revision.resources.maxNestingDepth) {
       throw new Error(`Workflow nesting exceeds ${revision.resources.maxNestingDepth}`);
     }
@@ -566,18 +460,8 @@ export class WorkflowEngine {
         ? await resolveWorkflowAgentOperationInput({
             value: call.input,
             canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
-            dataDir: this.input.dataDir,
           })
         : jsonValueSchema.parse(call.input);
-    if (
-      call.kind === "agent" &&
-      resolvedWorkflowAgentInputSchema.parse(input).options.isolation === "worktree" &&
-      !WORKFLOW_WORKTREE_EXECUTION_ENABLED
-    ) {
-      throw new Error(
-        "Workflow worktree isolation is temporarily unavailable while host Git discovery and creation are being hardened",
-      );
-    }
     const inputSha256 = canonicalJsonSha256(input);
     const persistedKind =
       call.kind === "waitForReply" || call.kind === "sleep" ? "wait" : call.kind;
@@ -889,7 +773,7 @@ export class WorkflowEngine {
     signal: AbortSignal,
     reconcile: boolean,
   ): Promise<JsonValue> {
-    const { profile, model, reasoning, isolation } = input.options;
+    const { profile, model, reasoning } = input.options;
     const expectedRequestId = workflowAgentRequestId(
       run.runId,
       operation.operationId,
@@ -921,7 +805,6 @@ export class WorkflowEngine {
       return await this.adoptTerminalReceipt(receipt, revision);
     };
     let result: AgentRequestResult;
-    let preparedWorktree: { path: string; baseCommit: string } | null = null;
     const handoff = this.input.store.getWorkflowRequestDispatchHandoff({
       requestId: reqId,
       now: this.now(),
@@ -930,58 +813,13 @@ export class WorkflowEngine {
     if (handoff.status === "receipt") {
       result = await adoptReceipt(handoff.receipt);
     } else {
-      const scratchRoot =
-        run.completionTarget.kind === "live_parent" && run.completionTarget.familyScratchRoot
-          ? run.completionTarget.familyScratchRoot
-          : workflowRunScratchPath(this.input.dataDir, run.runId);
-      if (isolation === "worktree") {
-        preparedWorktree = await (this.input.prepareWorktree ?? this.prepareWorktree.bind(this))(
-          run,
-          operation,
-          revision,
-          reconcile,
-          input.options.authorityRoot,
-          input.options.cwd,
-        );
-        const recorded = this.input.store.recordWorktreePrepared({
-          runId: run.runId,
-          operationId: operation.operationId,
-          runOwnerId: this.workerId,
-          worktreePath: preparedWorktree.path,
-          baseCommit: preparedWorktree.baseCommit,
-          now: this.now(),
-        });
-        if (!recorded) throw new Error("Workflow worktree preparation lost its fenced lease");
-        if (!recorded.baseCommit) {
-          throw new Error("Workflow worktree preparation has no durable base commit");
-        }
-        preparedWorktree = { path: recorded.worktreePath, baseCommit: recorded.baseCommit };
-      }
-      const agentCwd = preparedWorktree
-        ? path.join(
-            preparedWorktree.path,
-            path.relative(input.options.authorityRoot, input.options.cwd),
-          )
-        : input.options.cwd;
-      const agentCwdIdentity = preparedWorktree
-        ? await readWorkflowPathIdentity(agentCwd)
-        : input.options.cwdIdentity;
-      if (preparedWorktree && !this.input.prepareWorktree) {
-        const stats = await fs.lstat(agentCwd);
-        if (
-          stats.isSymbolicLink() ||
-          !stats.isDirectory() ||
-          (await fs.realpath(agentCwd)) !== agentCwd
-        ) {
-          throw new Error("Generated workflow worktree cwd is not a canonical real directory");
-        }
-      }
+      const agentCwd = input.options.cwd;
       const liveOwner = reconcile && handoff.status === "live";
       const durableHandoff = handoff.status === "live" || handoff.status === "stale";
       const resolvedSelection = durableHandoff
         ? {
-            model: handoff.policy.resolvedModel,
-            reasoning: handoff.policy.resolvedReasoning,
+            model: handoff.policy.resolvedModelRequest.spec,
+            reasoning: handoff.policy.resolvedModelRequest.reasoning ?? null,
             request: handoff.policy.resolvedModelRequest,
           }
         : await this.input.validateAgentSelection?.({
@@ -1000,7 +838,6 @@ export class WorkflowEngine {
           reasoningDisplay: "simple",
         },
       };
-      let controlToken: string | null = null;
       const dispatchEpoch = liveOwner
         ? handoff.dispatchEpoch
         : (this.input.createDispatchEpoch?.() ?? crypto.randomUUID());
@@ -1011,31 +848,14 @@ export class WorkflowEngine {
         profile,
         model: model ?? null,
         reasoning: reasoning ?? null,
-        resolvedModel: concreteSelection.model,
-        resolvedReasoning: concreteSelection.reasoning,
         resolvedModelRequest: concreteSelection.request,
-        safetyMode: run.origin.safetyMode,
-        isolation,
-        canonicalWorkspaceRoot: revision.canonicalWorkspaceRoot,
-        canonicalAuthorityRoot: input.options.authorityRoot,
-        canonicalAuthorityRootIdentity: input.options.authorityRootIdentity,
-        canonicalRequestedCwd: input.options.cwd,
-        canonicalRequestedCwdIdentity: input.options.cwdIdentity,
-        canonicalCwd: agentCwd,
-        canonicalCwdIdentity: agentCwdIdentity,
-        canonicalScratchRoot: scratchRoot,
-        canonicalProjectId: revision.canonicalProjectId,
-        originSessionId: run.origin.sessionId,
-        originClient:
-          run.origin.client === "discord" || run.origin.client === "github"
-            ? run.origin.client
-            : null,
-        originUserId: run.origin.userId,
-        revisionId: revision.revisionId,
-        sourceSha256: revision.sourceSha256,
-        inputSchemaSha256: revision.inputSchemaSha256,
-        argsSha256: run.argsSha256,
-        operationInputSha256: operation.inputSha256,
+        cwd: agentCwd,
+        originSession: {
+          requestId: run.origin.requestId,
+          sessionId: run.origin.sessionId,
+          client: run.origin.client,
+          userId: run.origin.userId,
+        },
       } satisfies WorkflowRequestPolicy;
       const policy: WorkflowRequestPolicy = durableHandoff
         ? { ...handoff.policy, dispatchEpoch }
@@ -1051,13 +871,11 @@ export class WorkflowEngine {
       }
       let racedReceipt: WorkflowRequestTerminalReceipt | null = null;
       if (!liveOwner) {
-        controlToken = crypto.randomUUID() + crypto.randomUUID();
         const dispatched = this.input.store.authorizeAgentDispatch({
           requestId: reqId,
           runId: run.runId,
           operationId: operation.operationId,
           runOwnerId: this.workerId,
-          token: controlToken,
           sessionId,
           platform: "unknown",
           policy,
@@ -1090,7 +908,6 @@ export class WorkflowEngine {
           agentCwd,
           signal,
           reconcile,
-          controlToken,
           dispatchEpoch,
           sessionId,
           publishRequest: !liveOwner,
@@ -1193,17 +1010,6 @@ export class WorkflowEngine {
             maxBytes: revision.limits.maxOperationOutputBytes,
           })
         : null;
-    let worktreeOutput: WorkflowWorktreeOutput | null = null;
-    if (result.state === "resolved" && isolation === "worktree") {
-      worktreeOutput = await this.captureDurableWorktreeOutput({
-        run,
-        operation,
-        revision,
-        preparedWorktree,
-        agentInput: input,
-        signal,
-      });
-    }
     if (latest.state === "dispatched" && result.state === "resolved") {
       this.input.store.transitionOperation({
         runOwnerId: this.workerId,
@@ -1234,7 +1040,6 @@ export class WorkflowEngine {
     await this.publishOperation(revision, operation, nextState, terminalFrom);
     if (result.usage) await this.publishUsage(run, revision, operation.operationId);
     if (nextState !== "succeeded") throw new Error(result.detail ?? `Agent request ${nextState}`);
-    if (worktreeOutput) await this.cleanupWorktreeOutput(worktreeOutput, revision);
     return result.output;
   }
 
@@ -1296,7 +1101,6 @@ export class WorkflowEngine {
     agentCwd: string;
     signal: AbortSignal;
     reconcile: boolean;
-    controlToken: string | null;
     dispatchEpoch: string;
     sessionId: string;
     publishRequest: boolean;
@@ -1579,13 +1383,11 @@ export class WorkflowEngine {
       } while (!settled);
     }
     if (input.publishRequest && !settled) {
-      if (!input.controlToken) throw new Error("Workflow dispatch control token is missing");
       await this.input.beforePromptPublication?.({
         requestId: input.requestId,
         runId: input.run.runId,
         operationId: input.operation.operationId,
         dispatchEpoch: input.dispatchEpoch,
-        controlToken: input.controlToken,
         runOwnerId: this.workerId,
       });
       const publicationClaimed = this.input.store.claimWorkflowRequestPromptPublication({
@@ -1620,7 +1422,6 @@ export class WorkflowEngine {
               runId: input.run.runId,
               operationId: input.operation.operationId,
               dispatchEpoch: input.dispatchEpoch,
-              controlToken: input.controlToken,
             },
             subagent: {
               profile: input.profile,
@@ -1674,303 +1475,6 @@ export class WorkflowEngine {
       usage: receipt.usage,
       source: "receipt",
     };
-  }
-
-  private async captureDurableWorktreeOutput(input: {
-    run: WorkflowRun;
-    operation: WorkflowOperation;
-    revision: WorkflowRevision;
-    preparedWorktree: { path: string; baseCommit: string } | null;
-    agentInput: ResolvedWorkflowAgentInput;
-    signal: AbortSignal;
-  }): Promise<WorkflowWorktreeOutput> {
-    let output = this.input.store.getWorktreeOutput(input.run.runId, input.operation.operationId);
-    if (output?.state === "captured" || output?.state === "cleaned") {
-      if (!output.artifactId || output.bytes === null) {
-        throw new Error("Captured workflow worktree output is missing artifact metadata");
-      }
-      await readWorkflowWorktreePatch({
-        dataDir: this.input.dataDir,
-        artifactId: output.artifactId,
-        expectedBytes: output.bytes,
-      });
-      return output;
-    }
-
-    const verifiedWorktree = await (this.input.prepareWorktree ?? this.prepareWorktree.bind(this))(
-      input.run,
-      input.operation,
-      input.revision,
-      true,
-      input.agentInput.options.authorityRoot,
-      input.agentInput.options.cwd,
-    );
-    if (
-      input.preparedWorktree &&
-      (input.preparedWorktree.path !== verifiedWorktree.path ||
-        input.preparedWorktree.baseCommit !== verifiedWorktree.baseCommit)
-    ) {
-      throw new Error("Workflow worktree identity changed before durable capture");
-    }
-    const prepared = verifiedWorktree;
-    const durablePreparation =
-      output ??
-      this.input.store.recordWorktreePrepared({
-        runId: input.run.runId,
-        operationId: input.operation.operationId,
-        runOwnerId: this.workerId,
-        worktreePath: prepared.path,
-        baseCommit: prepared.baseCommit,
-        now: this.now(),
-      });
-    if (!durablePreparation || durablePreparation.state !== "prepared") {
-      throw new Error("Workflow worktree preparation is not available for durable capture");
-    }
-    if (
-      durablePreparation.worktreePath !== prepared.path ||
-      durablePreparation.baseCommit !== prepared.baseCommit
-    ) {
-      throw new Error("Workflow worktree preparation changed before durable capture");
-    }
-    if (!durablePreparation.baseCommit) {
-      throw new Error("Workflow worktree has no durable pre-dispatch base commit");
-    }
-    let artifact: CapturedWorkflowWorktreePatch;
-    try {
-      artifact = await (this.input.captureWorktreePatch ?? captureWorkflowWorktreePatch)({
-        dataDir: this.input.dataDir,
-        worktreePath: durablePreparation.worktreePath,
-        baseCommit: durablePreparation.baseCommit,
-        signal: input.signal,
-        timeoutMs: 30_000,
-      });
-    } catch (error) {
-      const detail = `Workflow worktree capture failed; worktree preserved for reconciliation: ${boundedError(error)}`;
-      this.input.store.recordWorktreeReconciliationError({
-        runId: input.run.runId,
-        operationId: input.operation.operationId,
-        error: detail,
-      });
-      throw new Error(detail, { cause: error });
-    }
-    output = this.input.store.recordWorktreeCaptured({
-      runId: input.run.runId,
-      operationId: input.operation.operationId,
-      runOwnerId: this.workerId,
-      artifactId: artifact.artifactId,
-      patchSha256: artifact.patchSha256,
-      bytes: artifact.bytes,
-      now: this.now(),
-    });
-    if (!output || output.state !== "captured") {
-      throw new Error("Workflow worktree patch capture lost its fenced lease");
-    }
-    return output;
-  }
-
-  private async cleanupWorktreeOutput(
-    output: WorkflowWorktreeOutput,
-    revision: WorkflowRevision,
-  ): Promise<void> {
-    if (output.state === "cleaned") return;
-    if (!output.artifactId || !output.patchSha256 || output.bytes === null) return;
-    try {
-      const patch = await readWorkflowWorktreePatch({
-        dataDir: this.input.dataDir,
-        artifactId: output.artifactId,
-        expectedBytes: output.bytes,
-      });
-      if (sha256(patch) !== output.patchSha256) {
-        throw new Error("Workflow worktree patch metadata hash mismatch");
-      }
-      const operation = this.input.store.getOperation(output.runId, output.operationId);
-      if (!operation) throw new Error("Workflow worktree operation disappeared before cleanup");
-      const operationInput = resolvedWorkflowAgentInputSchema.parse(operation.input);
-      if (this.input.removeWorktree) {
-        await this.input.removeWorktree(revision, output.worktreePath);
-      } else {
-        await this.removeWorktree(operationInput.options.authorityRoot, output.worktreePath);
-      }
-      if (
-        !this.input.store.markWorktreeOutputCleaned({
-          runId: output.runId,
-          operationId: output.operationId,
-          artifactId: output.artifactId,
-          now: this.now(),
-        })
-      ) {
-        throw new Error("Workflow worktree cleanup state could not be persisted");
-      }
-    } catch (error) {
-      this.input.store.recordWorktreeCleanupError({
-        runId: output.runId,
-        operationId: output.operationId,
-        artifactId: output.artifactId,
-        error: boundedError(error),
-      });
-      this.logger.warn(
-        "durably captured workflow worktree could not be cleaned; reconciliation will retry",
-        { runId: output.runId, operationId: output.operationId },
-        error,
-      );
-    }
-  }
-
-  private async reconcileWorktreeCleanup(): Promise<void> {
-    for (const output of this.input.store.listWorktreeOutputsPendingCleanup(1_000)) {
-      const run = this.input.store.getRun(output.runId);
-      const revision = run ? this.input.store.getRevision(run.revisionId) : null;
-      if (!revision) continue;
-      await this.cleanupWorktreeOutput(output, revision);
-    }
-  }
-
-  private async prepareWorktree(
-    run: WorkflowRun,
-    operation: WorkflowOperation,
-    _revision: WorkflowRevision,
-    requireExisting: boolean,
-    authorityRoot: string,
-    requestedCwd: string,
-  ): Promise<{ path: string; baseCommit: string }> {
-    const root = path.join(this.input.dataDir, "workflow-worktrees");
-    const worktree = path.join(
-      root,
-      sha256(run.runId).slice(0, 20),
-      sha256(operation.operationId).slice(0, 20),
-    );
-    const existing = await fs.lstat(worktree).catch(() => null);
-    if (existing) {
-      if (existing.isSymbolicLink() || !existing.isDirectory()) {
-        throw new Error("Workflow worktree path is not an owned real directory");
-      }
-      const canonical = await this.verifyWorktreeIdentity(authorityRoot, worktree);
-      const durable = this.input.store.getWorktreeOutput(run.runId, operation.operationId);
-      if (durable && durable.worktreePath !== canonical) {
-        throw new Error("Persisted workflow worktree path identity mismatch");
-      }
-      if (durable?.state === "quarantined" || durable?.baseCommit === null) {
-        throw new Error(
-          durable?.cleanupError ??
-            "Workflow worktree is quarantined because its pre-dispatch base is unknown",
-        );
-      }
-      if (!durable) {
-        const current = this.input.store.getOperation(run.runId, operation.operationId);
-        if (!current || current.state !== "queued" || current.requestId !== null) {
-          const detail =
-            "Workflow worktree is quarantined: replay found no durable pre-dispatch base commit";
-          const quarantined = this.input.store.recordWorktreeQuarantined({
-            runId: run.runId,
-            operationId: operation.operationId,
-            runOwnerId: this.workerId,
-            worktreePath: canonical,
-            error: detail,
-            now: this.now(),
-          });
-          throw new Error(quarantined?.cleanupError ?? detail);
-        }
-      }
-      return {
-        path: canonical,
-        baseCommit: durable?.baseCommit ?? (await this.readGitCommit(canonical, "HEAD")),
-      };
-    }
-    if (requireExisting) {
-      throw new Error("Workflow worktree is missing before durable output capture");
-    }
-    await fs.mkdir(path.dirname(worktree), { recursive: true, mode: 0o700 });
-    const check = Bun.spawn(["git", "-C", authorityRoot, "rev-parse", "--show-toplevel"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const canonicalGitRoot = (await new Response(check.stdout).text()).trim();
-    if ((await check.exited) !== 0 || (await fs.realpath(canonicalGitRoot)) !== authorityRoot) {
-      throw new Error(
-        "Workflow worktree editing requires the selected approved root to be a Git worktree root",
-      );
-    }
-    const relativeCwd = path.relative(authorityRoot, requestedCwd);
-    if (relativeCwd === ".." || relativeCwd.startsWith(`..${path.sep}`)) {
-      throw new Error("Workflow worktree cwd escaped its approved repository root");
-    }
-    const baseCommit = await this.readGitCommit(authorityRoot, "HEAD");
-    const create = Bun.spawn(
-      ["git", "-C", authorityRoot, "worktree", "add", "--detach", worktree, baseCommit],
-      { stdout: "ignore", stderr: "pipe" },
-    );
-    const error = (await new Response(create.stderr).text()).trim();
-    if ((await create.exited) !== 0)
-      throw new Error(`Failed to create workflow worktree: ${error}`);
-    return {
-      path: await this.verifyWorktreeIdentity(authorityRoot, worktree),
-      baseCommit,
-    };
-  }
-
-  private async readGitCommit(worktree: string, revision: string): Promise<string> {
-    const process = Bun.spawn(
-      ["git", "-C", worktree, "rev-parse", "--verify", `${revision}^{commit}`],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [commit, error, exitCode] = await Promise.all([
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-      process.exited,
-    ]);
-    const value = commit.trim();
-    if (exitCode !== 0 || !/^[a-f0-9]{40,64}$/u.test(value)) {
-      throw new Error(`Failed to resolve workflow worktree base commit: ${error.trim()}`);
-    }
-    return value;
-  }
-
-  private async verifyWorktreeIdentity(repositoryRoot: string, worktree: string): Promise<string> {
-    const canonical = await fs.realpath(worktree);
-    const ownedRoot = await fs.realpath(path.join(this.input.dataDir, "workflow-worktrees"));
-    const relative = path.relative(ownedRoot, canonical);
-    if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
-      throw new Error("Workflow worktree escaped its owned root");
-    }
-    const check = Bun.spawn(["git", "-C", canonical, "rev-parse", "--show-toplevel"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const actual = (await new Response(check.stdout).text()).trim();
-    if ((await check.exited) !== 0 || (await fs.realpath(actual)) !== canonical) {
-      throw new Error("Workflow worktree identity verification failed");
-    }
-    const common = Bun.spawn(["git", "-C", canonical, "rev-parse", "--git-common-dir"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const commonPath = (await new Response(common.stdout).text()).trim();
-    const approvedCommon = await fs.realpath(path.join(repositoryRoot, ".git"));
-    const actualCommon = await fs.realpath(path.resolve(canonical, commonPath));
-    if ((await common.exited) !== 0 || actualCommon !== approvedCommon) {
-      throw new Error("Workflow worktree does not belong to the approved repository");
-    }
-    return canonical;
-  }
-
-  private async removeWorktree(repositoryRoot: string, worktree: string): Promise<void> {
-    const existing = await fs.lstat(worktree).catch(() => null);
-    if (!existing) return;
-    await this.verifyWorktreeIdentity(repositoryRoot, worktree);
-    const remove = Bun.spawn(
-      ["git", "-C", repositoryRoot, "worktree", "remove", "--force", worktree],
-      { stdout: "ignore", stderr: "pipe" },
-    );
-    const [error, exitCode] = await Promise.all([
-      new Response(remove.stderr).text(),
-      remove.exited,
-    ]);
-    if (exitCode !== 0) {
-      throw new Error(`Failed to remove captured workflow worktree: ${error.trim()}`);
-    }
   }
 
   private async stopAgentRequests(runId: string): Promise<void> {
@@ -2032,16 +1536,6 @@ export class WorkflowEngine {
       finalState = "failed";
       finalResult = null;
       finalDetail = "Workflow returned with outstanding unawaited host operations";
-    }
-    if (finalState === "succeeded") {
-      const patchArtifacts = this.input.store
-        .listWorktreeOutputs(current.runId, { limit: 1_000 })
-        .flatMap((output) => (output.artifactId ? [output.artifactId] : []));
-      if (patchArtifacts.length > 0) {
-        const visible = patchArtifacts.slice(0, 50);
-        const remainder = patchArtifacts.length - visible.length;
-        finalDetail = `${finalDetail}; durable isolated edit patches: ${visible.join(", ")}${remainder > 0 ? ` (+${remainder} more)` : ""}`;
-      }
     }
     const resultBytes = Buffer.byteLength(canonicalJson(finalResult), "utf8");
     const resultArtifactId =

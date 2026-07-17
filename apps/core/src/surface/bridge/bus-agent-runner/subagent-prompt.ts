@@ -9,6 +9,7 @@ function buildExploreOverlay(config: SubagentProfileConfig, extra?: string): str
     "Prefer high-parallel search/read using glob, grep, read_file, and batch.",
   ];
   if (!config.execution) lines.push("Do not use bash.");
+  if (!config.network) lines.push("Do not use network access or network-backed tools.");
   if (!config.workspaceWrites) lines.push("Do not edit files.");
   if (!config.delegation) lines.push("Do not delegate to another subagent.");
 
@@ -27,6 +28,8 @@ function buildGeneralOverlay(config: SubagentProfileConfig, extra?: string): str
     "Use the configured profile tools directly when needed.",
     "Prefer parallel tool usage when calls are independent.",
   ];
+  if (!config.network) lines.push("Do not use network access or network-backed tools.");
+  if (!config.workspaceWrites) lines.push("Do not edit files.");
   if (!config.delegation) lines.push("Do not delegate to another subagent.");
 
   if (extra && extra.trim().length > 0) {
@@ -36,14 +39,17 @@ function buildGeneralOverlay(config: SubagentProfileConfig, extra?: string): str
   return lines.join("\n");
 }
 
-function buildSelfOverlay(_config: SubagentProfileConfig, extra?: string): string {
+function buildSelfOverlay(config: SubagentProfileConfig, extra?: string): string {
   const lines = [
     "You are running in self subagent mode.",
     "Focus on completing the delegated task in a fresh context window.",
     "Treat the delegated user message as the full task input.",
-    "Use available tools directly, including edits and bash when needed.",
+    "Use the configured profile tools directly when needed.",
     "Prefer parallel tool usage when calls are independent.",
   ];
+  if (!config.network) lines.push("Do not use network access or network-backed tools.");
+  if (!config.workspaceWrites) lines.push("Do not edit files.");
+  if (!config.delegation) lines.push("Do not delegate to another subagent.");
 
   if (extra && extra.trim().length > 0) {
     lines.push(extra.trim());

@@ -40,12 +40,8 @@ import {
   type AuthorizedWorkflowRequest,
   type WorkflowRequestPolicy,
 } from "./workflow-request-authority";
-import { sha256 } from "./workflow-definition";
+import { canonicalJson } from "./workflow-definition";
 import { resolvedWorkflowAgentInputSchema } from "./workflow-operation-policy";
-import {
-  workflowWorktreeOutputSchema,
-  type WorkflowWorktreeOutput,
-} from "./workflow-worktree-artifact";
 
 function resolveWorkflowDbPath(): string {
   return path.resolve(env.sqliteUrl);
@@ -76,7 +72,6 @@ const revisionRowSchema = z.object({
 const runRowSchema = z.object({
   run_id: z.string(),
   revision_id: z.string(),
-  approval_id: nullableStringSchema,
   state: z.string(),
   input_schema_json: z.string(),
   args_json: z.string(),
@@ -85,7 +80,6 @@ const runRowSchema = z.object({
   origin_session_id: nullableStringSchema,
   origin_client: nullableStringSchema,
   origin_user_id: nullableStringSchema,
-  origin_safety_mode: z.string(),
   origin_project_cwd: z.string(),
   completion_target_json: z.string(),
   progress_target_json: nullableStringSchema,
@@ -98,16 +92,6 @@ const runRowSchema = z.object({
   started_at: nullableNumberSchema,
   updated_at: z.number(),
   terminal_at: nullableNumberSchema,
-});
-
-const projectionReconciliationCursorRowSchema = z.object({
-  cursor_created_at: z.number(),
-  cursor_run_id: z.string(),
-});
-
-const projectionReconciliationRunCursorRowSchema = z.object({
-  run_id: z.string(),
-  created_at: z.number(),
 });
 
 const operationRowSchema = z.object({
@@ -133,21 +117,6 @@ const operationRowSchema = z.object({
   started_at: nullableNumberSchema,
   updated_at: z.number(),
   terminal_at: nullableNumberSchema,
-});
-
-const worktreeOutputRowSchema = z.object({
-  run_id: z.string(),
-  operation_id: z.string(),
-  state: z.string(),
-  worktree_path: z.string(),
-  base_commit: nullableStringSchema,
-  artifact_id: nullableStringSchema,
-  patch_sha256: nullableStringSchema,
-  bytes: nullableNumberSchema,
-  cleanup_error: nullableStringSchema,
-  prepared_at: z.number(),
-  captured_at: nullableNumberSchema,
-  cleaned_at: nullableNumberSchema,
 });
 
 const waitRowSchema = z.object({
@@ -196,25 +165,6 @@ const bindingRowSchema = z.object({
   last_error: nullableStringSchema,
   retry_count: z.number(),
   next_attempt_at: nullableNumberSchema,
-  repair_required: z.number().int().min(0).max(1),
-  repair_generation: z.number().int().nonnegative(),
-  rendered_repair_generation: z.number().int().nonnegative(),
-  send_may_have_succeeded: z.number().int().min(0).max(1),
-  discovery_page: z.number().int().positive(),
-  discovery_before_message_id: nullableStringSchema,
-  discovery_scanned_entries: z.number().int().nonnegative(),
-  created_at: z.number(),
-  updated_at: z.number(),
-});
-
-const projectionOrphanRowSchema = z.object({
-  run_id: z.string(),
-  platform: z.enum(["discord", "github"]),
-  channel_id: z.string(),
-  message_id: z.string(),
-  attempt_count: z.number().int().nonnegative(),
-  next_attempt_at: nullableNumberSchema,
-  last_error: nullableStringSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -223,7 +173,6 @@ const actionRowSchema = z.object({
   action_id: z.string(),
   token_sha256: z.string(),
   run_id: z.string(),
-  approval_id: nullableStringSchema,
   kind: z.string(),
   expected_platform: z.string(),
   expected_user_id: z.string(),
@@ -240,10 +189,8 @@ const requestDispatchRowSchema = z.object({
   run_id: z.string(),
   operation_id: z.string(),
   dispatch_epoch: z.string(),
-  token_sha256: z.string(),
   session_id: z.string(),
   platform: z.string(),
-  canonical_cwd: z.string(),
   policy_json: z.string(),
   expires_at: z.number(),
   owner_id: nullableStringSchema,
@@ -277,12 +224,6 @@ const actionOutboxRowSchema = z.object({
   attempt_count: z.number(),
   next_attempt_at: nullableNumberSchema,
   last_error: nullableStringSchema,
-  publish_claim_owner: nullableStringSchema,
-  publish_claim_token: nullableStringSchema,
-  publish_claimed_at: nullableNumberSchema,
-  project_claim_owner: nullableStringSchema,
-  project_claim_token: nullableStringSchema,
-  project_claimed_at: nullableNumberSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -336,7 +277,6 @@ function parseRun(value: unknown): WorkflowRun {
       sessionId: row.origin_session_id,
       client: row.origin_client,
       userId: row.origin_user_id,
-      safetyMode: row.origin_safety_mode,
       projectCwd: row.origin_project_cwd,
     },
     completionTarget: parseJson(row.completion_target_json, "workflow_runs.completion_target_json"),
@@ -381,24 +321,6 @@ function parseOperation(value: unknown): WorkflowOperation {
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     terminalAt: row.terminal_at,
-  });
-}
-
-function parseWorktreeOutput(value: unknown): WorkflowWorktreeOutput {
-  const row = worktreeOutputRowSchema.parse(value);
-  return workflowWorktreeOutputSchema.parse({
-    runId: row.run_id,
-    operationId: row.operation_id,
-    state: row.state,
-    worktreePath: row.worktree_path,
-    baseCommit: row.base_commit,
-    artifactId: row.artifact_id,
-    patchSha256: row.patch_sha256,
-    bytes: row.bytes,
-    cleanupError: row.cleanup_error,
-    preparedAt: row.prepared_at,
-    capturedAt: row.captured_at,
-    cleanedAt: row.cleaned_at,
   });
 }
 
@@ -468,37 +390,9 @@ function parseBinding(value: unknown): WorkflowSurfaceBinding {
     lastError: row.last_error,
     retryCount: row.retry_count,
     nextAttemptAt: row.next_attempt_at,
-    repairGeneration: row.repair_generation,
-    renderedRepairGeneration: row.rendered_repair_generation,
-    sendMayHaveSucceeded: row.send_may_have_succeeded === 1,
-    discoveryCursor:
-      row.send_may_have_succeeded === 1
-        ? {
-            page: row.discovery_page,
-            beforeMessageId: row.discovery_before_message_id,
-            scannedEntries: row.discovery_scanned_entries,
-          }
-        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
-}
-
-function parseProjectionOrphan(value: unknown): WorkflowSurfaceProjectionOrphan {
-  const row = projectionOrphanRowSchema.parse(value);
-  return {
-    runId: row.run_id,
-    messageRef: {
-      platform: row.platform,
-      channelId: row.channel_id,
-      messageId: row.message_id,
-    },
-    attemptCount: row.attempt_count,
-    nextAttemptAt: row.next_attempt_at,
-    lastError: row.last_error,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
 }
 
 function parseAction(value: unknown): WorkflowSurfaceAction {
@@ -561,12 +455,6 @@ function parseActionOutboxEntry(value: unknown): WorkflowActionOutboxEntry {
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at,
     lastError: row.last_error,
-    publishClaimOwner: row.publish_claim_owner,
-    publishClaimToken: row.publish_claim_token,
-    publishClaimedAt: row.publish_claimed_at,
-    projectClaimOwner: row.project_claim_owner,
-    projectClaimToken: row.project_claim_token,
-    projectClaimedAt: row.project_claimed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -599,11 +487,20 @@ function revisionIdentityValues(identity: WorkflowRevisionIdentity): readonly st
   ];
 }
 
-export type CreateWorkflowInvocationResult = {
-  revision: WorkflowRevision;
-  run: WorkflowRun;
-  revisionCreated: boolean;
-};
+export type CreateWorkflowInvocationResult =
+  | {
+      status: "accepted";
+      revision: WorkflowRevision;
+      run: WorkflowRun;
+      revisionCreated: boolean;
+    }
+  | {
+      status: "rejected_capacity";
+      activeRuns: number;
+      limit: number;
+    };
+
+export const DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS = 64;
 
 export type ApplyWorkflowSurfaceActionResult =
   | {
@@ -640,28 +537,6 @@ export type WorkflowActionOutboxEntry = {
   payload: unknown;
   publishedAt: number | null;
   projectedAt: number | null;
-  attemptCount: number;
-  nextAttemptAt: number | null;
-  lastError: string | null;
-  publishClaimOwner: string | null;
-  publishClaimToken: string | null;
-  publishClaimedAt: number | null;
-  projectClaimOwner: string | null;
-  projectClaimToken: string | null;
-  projectClaimedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type WorkflowProjectionMsgRef = {
-  platform: "discord" | "github";
-  channelId: string;
-  messageId: string;
-};
-
-export type WorkflowSurfaceProjectionOrphan = {
-  runId: string;
-  messageRef: WorkflowProjectionMsgRef;
   attemptCount: number;
   nextAttemptAt: number | null;
   lastError: string | null;
@@ -834,19 +709,18 @@ export class DurableWorkflowStore {
     const result = this.db
       .query(
         `INSERT INTO workflow_runs (
-          run_id, revision_id, approval_id, state, input_schema_json, args_json,
+          run_id, revision_id, state, input_schema_json, args_json,
           args_sha256, origin_request_id, origin_session_id, origin_client,
-          origin_user_id, origin_safety_mode, origin_project_cwd,
+          origin_user_id, origin_project_cwd,
           completion_target_json, progress_target_json, terminal_detail, result_json,
           result_artifact_id, claimed_by, claimed_at, created_at, started_at,
           updated_at, terminal_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id) DO NOTHING`,
       )
       .run(
         run.runId,
         run.revisionId,
-        null,
         run.state,
         JSON.stringify(run.inputSchemaSnapshot),
         JSON.stringify(run.args),
@@ -855,7 +729,6 @@ export class DurableWorkflowStore {
         run.origin.sessionId,
         run.origin.client,
         run.origin.userId,
-        run.origin.safetyMode,
         run.origin.projectCwd,
         JSON.stringify(run.completionTarget),
         run.progressTarget === null ? null : JSON.stringify(run.progressTarget),
@@ -930,85 +803,56 @@ export class DurableWorkflowStore {
     return tolerantRows(rows, parseRun);
   }
 
-  takeRunsMissingSurfaceBindingReconciliationPage(options?: {
-    limit?: number;
-    now?: number;
-  }): WorkflowRun[] {
-    const limit = boundedLimit(options?.limit ?? 1_000);
-    const takePage = this.db.transaction(() => {
-      let cursor = projectionReconciliationCursorRowSchema.nullable().parse(
-        this.db
-          .query(
-            `SELECT cursor_created_at, cursor_run_id
-               FROM workflow_projection_reconciliation_state WHERE singleton = 1`,
-          )
-          .get(),
-      );
-      const selectPage = () =>
-        cursor
-          ? this.db
-              .query(
-                `SELECT workflow_runs.* FROM workflow_missing_surface_bindings
-                 JOIN workflow_runs
-                   ON workflow_runs.run_id = workflow_missing_surface_bindings.run_id
-                 WHERE (
-                   workflow_missing_surface_bindings.created_at,
-                   workflow_missing_surface_bindings.run_id
-                 ) > (?, ?)
-                 ORDER BY workflow_missing_surface_bindings.created_at,
-                   workflow_missing_surface_bindings.run_id LIMIT ?`,
-              )
-              .all(cursor.cursor_created_at, cursor.cursor_run_id, limit + 1)
-          : this.db
-              .query(
-                `SELECT workflow_runs.* FROM workflow_missing_surface_bindings
-                 JOIN workflow_runs
-                   ON workflow_runs.run_id = workflow_missing_surface_bindings.run_id
-                 ORDER BY workflow_missing_surface_bindings.created_at,
-                   workflow_missing_surface_bindings.run_id LIMIT ?`,
-              )
-              .all(limit + 1);
+  countActiveRuns(): number {
+    const row = this.db
+      .query<{ count: number }, []>(
+        `SELECT COUNT(*) AS count FROM workflow_runs
+         WHERE state NOT IN ('succeeded', 'failed', 'cancelled')`,
+      )
+      .get();
+    return row?.count ?? 0;
+  }
 
-      let rows = selectPage();
-      if (rows.length === 0 && cursor) {
-        cursor = null;
-        rows = selectPage();
-      }
-
-      const pageRows = rows.slice(0, limit);
-      if (rows.length > limit) {
-        const next = projectionReconciliationRunCursorRowSchema.parse(pageRows.at(-1));
-        this.db.run(
-          `INSERT INTO workflow_projection_reconciliation_state (
-             singleton, cursor_created_at, cursor_run_id, updated_at
-           ) VALUES (1, ?, ?, ?)
-           ON CONFLICT(singleton) DO UPDATE SET
-             cursor_created_at = excluded.cursor_created_at,
-             cursor_run_id = excluded.cursor_run_id,
-             updated_at = excluded.updated_at`,
-          [next.created_at, next.run_id, options?.now ?? Date.now()],
-        );
-      } else {
-        this.db.run("DELETE FROM workflow_projection_reconciliation_state WHERE singleton = 1");
-      }
-      return tolerantRows(pageRows, parseRun);
-    });
-    return takePage.immediate();
+  listRunsNeedingProjectionReconciliation(limit = 1_000): WorkflowRun[] {
+    const rows = this.db
+      .query(
+        `SELECT workflow_runs.* FROM workflow_runs
+         LEFT JOIN workflow_surface_bindings
+           ON workflow_surface_bindings.run_id = workflow_runs.run_id
+         WHERE workflow_runs.progress_target_json IS NOT NULL
+           AND (
+             workflow_runs.state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')
+             OR workflow_surface_bindings.run_id IS NULL
+             OR (
+               workflow_runs.terminal_at IS NOT NULL
+               AND workflow_surface_bindings.updated_at < workflow_runs.terminal_at
+             )
+           )
+         ORDER BY workflow_runs.updated_at, workflow_runs.run_id LIMIT ?`,
+      )
+      .all(boundedLimit(limit));
+    return tolerantRows(rows, parseRun);
   }
 
   createInvocation(input: {
     revision: WorkflowRevision;
     run: WorkflowRun;
     idempotency?: { key: string; fingerprintSha256: string };
+    maxActiveRuns?: number;
   }): CreateWorkflowInvocationResult {
     const revision = workflowRevisionSchema.parse(input.revision);
     const requestedRun = workflowRunSchema.parse(input.run);
     if (requestedRun.revisionId !== revision.revisionId) {
       throw new Error("Run revisionId must match the requested revision");
     }
-    if (requestedRun.origin.safetyMode !== "trusted" || requestedRun.state !== "queued") {
-      throw new Error("Workflow invocations must be trusted and queued");
+    if (requestedRun.state !== "queued") {
+      throw new Error("Workflow invocations must be queued");
     }
+    const maxActiveRuns = z
+      .number()
+      .int()
+      .positive()
+      .parse(input.maxActiveRuns ?? DEFAULT_MAX_ACTIVE_WORKFLOW_RUNS);
 
     const create = this.db.transaction((): CreateWorkflowInvocationResult => {
       if (input.idempotency) {
@@ -1027,11 +871,16 @@ export class DurableWorkflowStore {
             throw new Error("Workflow invocation receipt references missing durable records");
           }
           return {
+            status: "accepted",
             run: existingRun,
             revision: existingRevision,
             revisionCreated: false,
           };
         }
+      }
+      const activeRuns = this.countActiveRuns();
+      if (activeRuns >= maxActiveRuns) {
+        return { status: "rejected_capacity", activeRuns, limit: maxActiveRuns };
       }
       const revisionCreated = this.createRevision(revision);
       const storedRevision = this.findRevisionByIdentity(revision);
@@ -1052,7 +901,7 @@ export class DurableWorkflowStore {
           [input.idempotency.key, run.runId, input.idempotency.fingerprintSha256, run.createdAt],
         );
       }
-      return { revision: storedRevision, run, revisionCreated };
+      return { status: "accepted", revision: storedRevision, run, revisionCreated };
     });
     return create.immediate();
   }
@@ -1553,27 +1402,6 @@ export class DurableWorkflowStore {
     return result.changes === 1 ? this.getRun(input.runId) : null;
   }
 
-  tryClaimTrustedRun(input: {
-    runId: string;
-    claimerId: string;
-    now: number;
-    staleAfterMs?: number;
-  }): WorkflowRun | null {
-    const staleBefore = input.now - (input.staleAfterMs ?? 60_000);
-    const claim = this.db.transaction(() => {
-      const result = this.db
-        .query(
-          `UPDATE workflow_runs SET state = 'running', claimed_by = ?, claimed_at = ?,
-            started_at = COALESCE(started_at, ?), updated_at = ?
-           WHERE run_id = ? AND origin_safety_mode = 'trusted'
-              AND (state = 'queued' OR (state = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ?))`,
-        )
-        .run(input.claimerId, input.now, input.now, input.now, input.runId, staleBefore);
-      return result.changes === 1 ? this.getRun(input.runId) : null;
-    });
-    return claim.immediate();
-  }
-
   refreshRunClaim(runId: string, claimerId: string, now: number): boolean {
     return (
       this.db
@@ -1647,55 +1475,24 @@ export class DurableWorkflowStore {
   private matchesWorkflowRequestPolicyIdentity(input: {
     policy: WorkflowRequestPolicy;
     run: WorkflowRun | null;
-    revision: WorkflowRevision | null;
     operation: WorkflowOperation | null;
   }): boolean {
-    const { policy, run, revision, operation } = input;
-    if (!run || !revision || !operation) return false;
+    const { policy, run, operation } = input;
+    if (!run || !operation) return false;
     const operationInput = resolvedWorkflowAgentInputSchema.safeParse(operation.input);
     if (!operationInput.success) return false;
     const options = operationInput.data.options;
-    const expectedOriginClient =
-      run.origin.client === "discord" || run.origin.client === "github" ? run.origin.client : null;
-    const worktree =
-      options.isolation === "worktree"
-        ? this.getWorktreeOutput(run.runId, operation.operationId)
-        : null;
-    const expectedCwd = worktree
-      ? path.join(worktree.worktreePath, path.relative(options.authorityRoot, options.cwd))
-      : options.cwd;
     return (
       policy.runId === run.runId &&
       policy.operationId === operation.operationId &&
-      policy.revisionId === revision.revisionId &&
-      policy.canonicalProjectId === revision.canonicalProjectId &&
-      policy.canonicalWorkspaceRoot === revision.canonicalWorkspaceRoot &&
-      policy.sourceSha256 === revision.sourceSha256 &&
-      policy.inputSchemaSha256 === revision.inputSchemaSha256 &&
-      policy.argsSha256 === run.argsSha256 &&
-      policy.safetyMode === run.origin.safetyMode &&
-      policy.originSessionId === run.origin.sessionId &&
-      policy.originClient === expectedOriginClient &&
-      policy.originUserId === run.origin.userId &&
-      policy.operationInputSha256 === operation.inputSha256 &&
       policy.profile === options.profile &&
       policy.model === (options.model ?? null) &&
       policy.reasoning === (options.reasoning ?? null) &&
-      policy.resolvedModel.length > 0 &&
-      policy.resolvedModel === policy.resolvedModelRequest.spec &&
-      policy.resolvedReasoning === (policy.resolvedModelRequest.reasoning ?? null) &&
-      policy.isolation === options.isolation &&
-      policy.canonicalAuthorityRoot === options.authorityRoot &&
-      policy.canonicalAuthorityRootIdentity.dev === options.authorityRootIdentity.dev &&
-      policy.canonicalAuthorityRootIdentity.ino === options.authorityRootIdentity.ino &&
-      policy.canonicalRequestedCwd === options.cwd &&
-      policy.canonicalRequestedCwdIdentity.dev === options.cwdIdentity.dev &&
-      policy.canonicalRequestedCwdIdentity.ino === options.cwdIdentity.ino &&
-      policy.canonicalScratchRoot.length > 0 &&
-      policy.canonicalCwd === expectedCwd &&
-      (options.isolation === "worktree" ||
-        (policy.canonicalCwdIdentity.dev === options.cwdIdentity.dev &&
-          policy.canonicalCwdIdentity.ino === options.cwdIdentity.ino))
+      policy.cwd === options.cwd &&
+      policy.originSession.requestId === run.origin.requestId &&
+      policy.originSession.sessionId === run.origin.sessionId &&
+      policy.originSession.client === run.origin.client &&
+      policy.originSession.userId === run.origin.userId
     );
   }
 
@@ -1704,7 +1501,6 @@ export class DurableWorkflowStore {
     runId: string;
     operationId: string;
     runOwnerId: string;
-    token: string;
     sessionId: string;
     platform: string;
     policy: WorkflowRequestPolicy;
@@ -1716,7 +1512,7 @@ export class DurableWorkflowStore {
     if (
       policy.runId !== input.runId ||
       policy.operationId !== input.operationId ||
-      policy.canonicalCwd === "" ||
+      policy.cwd === "" ||
       input.expiresAt <= input.now
     ) {
       return null;
@@ -1739,18 +1535,15 @@ export class DurableWorkflowStore {
         .get(input.requestId, input.runId, input.operationId, policy.dispatchEpoch);
       if (terminalReceipt) return null;
       const run = this.getRun(input.runId);
-      const revision = run ? this.getRevision(run.revisionId) : null;
       const operation = this.getOperation(input.runId, input.operationId);
       if (
         !run ||
-        !revision ||
         !operation ||
         run.state !== "running" ||
         run.claimedBy !== input.runOwnerId ||
         !this.matchesWorkflowRequestPolicyIdentity({
           policy,
           run,
-          revision,
           operation,
         }) ||
         !["queued", "dispatched", "running"].includes(operation.state)
@@ -1770,6 +1563,18 @@ export class DurableWorkflowStore {
       ) {
         return null;
       }
+      if (existing) {
+        const existingPolicy = workflowRequestPolicySchema.safeParse(
+          parseJson(existing.policy_json, "workflow_request_dispatches.policy_json"),
+        );
+        if (
+          !existingPolicy.success ||
+          canonicalJson(existingPolicy.data.resolvedModelRequest) !==
+            canonicalJson(policy.resolvedModelRequest)
+        ) {
+          return null;
+        }
+      }
       if (operation.state === "queued") {
         const changed = this.db
           .query(
@@ -1787,19 +1592,17 @@ export class DurableWorkflowStore {
       ]);
       this.db.run(
         `INSERT INTO workflow_request_dispatches (
-           request_id, run_id, operation_id, dispatch_epoch, token_sha256, session_id, platform,
-           canonical_cwd, policy_json, expires_at, owner_id, owner_heartbeat_at,
+           request_id, run_id, operation_id, dispatch_epoch, session_id, platform,
+           policy_json, expires_at, owner_id, owner_heartbeat_at,
            active, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
         [
           input.requestId,
           input.runId,
           input.operationId,
           policy.dispatchEpoch,
-          sha256(input.token),
           input.sessionId,
           input.platform,
-          policy.canonicalCwd,
           JSON.stringify(policy),
           input.expiresAt,
           input.now,
@@ -1813,16 +1616,15 @@ export class DurableWorkflowStore {
 
   authorizeWorkflowRequest(input: {
     requestId: string;
-    token: string;
     sessionId: string;
     platform: string;
     now: number;
   }): AuthorizedWorkflowRequest | null {
     const authorize = this.db.transaction((): AuthorizedWorkflowRequest | null => {
       const raw = this.db
-        .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, string, number]>(
+        .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, number]>(
           `SELECT * FROM workflow_request_dispatches
-         WHERE request_id = ? AND token_sha256 = ? AND session_id = ? AND platform = ?
+         WHERE request_id = ? AND session_id = ? AND platform = ?
             AND active = 1 AND expires_at > ?
             AND NOT EXISTS (
               SELECT 1 FROM workflow_request_terminal_receipts receipt
@@ -1833,7 +1635,7 @@ export class DurableWorkflowStore {
               )
             )`,
         )
-        .get(input.requestId, sha256(input.token), input.sessionId, input.platform, input.now);
+        .get(input.requestId, input.sessionId, input.platform, input.now);
       if (!raw) return null;
       const row = requestDispatchRowSchema.parse(raw);
       const run = this.getRun(row.run_id);
@@ -1841,19 +1643,15 @@ export class DurableWorkflowStore {
       const rawPolicy = parseJson(row.policy_json, "workflow_request_dispatches.policy_json");
       const policy = workflowRequestPolicySchema.parse(rawPolicy);
       const operation = this.getOperation(row.run_id, row.operation_id);
-      const revision = run ? this.getRevision(run.revisionId) : null;
       if (
         !operation ||
-        !revision ||
         run.state !== "running" ||
         operation.requestId !== input.requestId ||
         !["dispatched", "running"].includes(operation.state) ||
         row.dispatch_epoch !== policy.dispatchEpoch ||
-        row.canonical_cwd !== policy.canonicalCwd ||
         !this.matchesWorkflowRequestPolicyIdentity({
           policy,
           run,
-          revision,
           operation,
         })
       ) {
@@ -1958,11 +1756,11 @@ export class DurableWorkflowStore {
         "SELECT policy_json FROM workflow_request_dispatches WHERE request_id = ?",
       )
       .get(requestId);
-    return row
-      ? workflowRequestPolicySchema.parse(
-          parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
-        )
-      : null;
+    if (!row) return null;
+    const parsed = workflowRequestPolicySchema.safeParse(
+      parseJson(row.policy_json, "workflow_request_dispatches.policy_json"),
+    );
+    return parsed.success ? parsed.data : null;
   }
 
   getWorkflowRequestDispatchHandoff(input: {
@@ -2000,7 +1798,6 @@ export class DurableWorkflowStore {
         parseJson(dispatch.policy_json, "workflow_request_dispatches.policy_json"),
       );
       const run = this.getRun(dispatch.run_id);
-      const revision = run ? this.getRevision(run.revisionId) : null;
       const operation = this.getOperation(dispatch.run_id, dispatch.operation_id);
       if (
         dispatch.dispatch_epoch !== policy.dispatchEpoch ||
@@ -2010,7 +1807,6 @@ export class DurableWorkflowStore {
         !this.matchesWorkflowRequestPolicyIdentity({
           policy,
           run,
-          revision,
           operation,
         })
       ) {
@@ -2063,7 +1859,6 @@ export class DurableWorkflowStore {
 
   claimWorkflowRequest(input: {
     requestId: string;
-    token: string;
     dispatchEpoch: string;
     ownerId: string;
     now: number;
@@ -2075,7 +1870,7 @@ export class DurableWorkflowStore {
         .query(
           `UPDATE workflow_request_dispatches
            SET owner_id = ?, owner_heartbeat_at = ?, updated_at = ?
-           WHERE request_id = ? AND token_sha256 = ? AND dispatch_epoch = ?
+           WHERE request_id = ? AND dispatch_epoch = ?
               AND active = 1 AND expires_at > ?
               AND NOT EXISTS (
                 SELECT 1 FROM workflow_request_terminal_receipts receipt
@@ -2092,7 +1887,6 @@ export class DurableWorkflowStore {
           input.now,
           input.now,
           input.requestId,
-          sha256(input.token),
           input.dispatchEpoch,
           input.now,
           input.ownerId,
@@ -2197,309 +1991,6 @@ export class DurableWorkflowStore {
           )
           .get(runId);
     return row?.count ?? 0;
-  }
-
-  getWorktreeOutput(runId: string, operationId: string): WorkflowWorktreeOutput | null {
-    const row = this.db
-      .query("SELECT * FROM workflow_worktree_outputs WHERE run_id = ? AND operation_id = ?")
-      .get(runId, operationId);
-    return row ? parseWorktreeOutput(row) : null;
-  }
-
-  listWorktreeOutputs(
-    runId: string,
-    options?: { state?: WorkflowWorktreeOutput["state"]; limit?: number; offset?: number },
-  ): WorkflowWorktreeOutput[] {
-    const offset = Math.max(0, Math.trunc(options?.offset ?? 0));
-    const rows = options?.state
-      ? this.db
-          .query(
-            `SELECT * FROM workflow_worktree_outputs
-             WHERE run_id = ? AND state = ? ORDER BY prepared_at, operation_id LIMIT ? OFFSET ?`,
-          )
-          .all(runId, options.state, boundedLimit(options.limit), offset)
-      : this.db
-          .query(
-            `SELECT * FROM workflow_worktree_outputs
-             WHERE run_id = ? ORDER BY prepared_at, operation_id LIMIT ? OFFSET ?`,
-          )
-          .all(runId, boundedLimit(options?.limit), offset);
-    return tolerantRows(rows, parseWorktreeOutput);
-  }
-
-  countWorktreeOutputs(runId: string): number {
-    const row = this.db
-      .query<{ count: number }, [string]>(
-        "SELECT COUNT(*) AS count FROM workflow_worktree_outputs WHERE run_id = ?",
-      )
-      .get(runId);
-    return row?.count ?? 0;
-  }
-
-  getWorktreeOutputByArtifact(runId: string, artifactId: string): WorkflowWorktreeOutput | null {
-    const row = this.db
-      .query(
-        `SELECT * FROM workflow_worktree_outputs
-         WHERE run_id = ? AND artifact_id = ? ORDER BY operation_id LIMIT 1`,
-      )
-      .get(runId, artifactId);
-    return row ? parseWorktreeOutput(row) : null;
-  }
-
-  listWorktreeOutputsPendingCleanup(limit = 1_000): WorkflowWorktreeOutput[] {
-    const rows = this.db
-      .query(
-        `SELECT workflow_worktree_outputs.* FROM workflow_worktree_outputs
-         JOIN workflow_operations
-           ON workflow_operations.run_id = workflow_worktree_outputs.run_id
-          AND workflow_operations.operation_id = workflow_worktree_outputs.operation_id
-         WHERE workflow_worktree_outputs.state = 'captured'
-           AND workflow_operations.state = 'succeeded'
-         ORDER BY workflow_worktree_outputs.captured_at,
-           workflow_worktree_outputs.run_id,
-           workflow_worktree_outputs.operation_id LIMIT ?`,
-      )
-      .all(boundedLimit(limit));
-    return tolerantRows(rows, parseWorktreeOutput);
-  }
-
-  recordWorktreePrepared(input: {
-    runId: string;
-    operationId: string;
-    runOwnerId: string;
-    worktreePath: string;
-    baseCommit: string;
-    now: number;
-  }): WorkflowWorktreeOutput | null {
-    const prepared = workflowWorktreeOutputSchema.parse({
-      runId: input.runId,
-      operationId: input.operationId,
-      state: "prepared",
-      worktreePath: input.worktreePath,
-      baseCommit: input.baseCommit,
-      artifactId: null,
-      patchSha256: null,
-      bytes: null,
-      cleanupError: null,
-      preparedAt: input.now,
-      capturedAt: null,
-      cleanedAt: null,
-    });
-    const record = this.db.transaction(() => {
-      const existing = this.getWorktreeOutput(input.runId, input.operationId);
-      if (existing) {
-        if (
-          existing.worktreePath !== prepared.worktreePath ||
-          existing.baseCommit !== prepared.baseCommit
-        ) {
-          throw new Error("Persisted workflow worktree preparation identity mismatch");
-        }
-        return existing;
-      }
-      const result = this.db
-        .query(
-          `INSERT INTO workflow_worktree_outputs (
-             run_id, operation_id, state, worktree_path, base_commit, artifact_id,
-             patch_sha256, bytes, cleanup_error, prepared_at, captured_at, cleaned_at
-           )
-           SELECT ?, ?, 'prepared', ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL
-           WHERE EXISTS (
-             SELECT 1 FROM workflow_operations
-             JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
-             WHERE workflow_operations.run_id = ?
-               AND workflow_operations.operation_id = ?
-               AND workflow_operations.state IN ('queued', 'dispatched', 'running')
-               AND workflow_runs.state = 'running'
-               AND workflow_runs.claimed_by = ?
-           )`,
-        )
-        .run(
-          prepared.runId,
-          prepared.operationId,
-          prepared.worktreePath,
-          prepared.baseCommit,
-          prepared.preparedAt,
-          prepared.runId,
-          prepared.operationId,
-          input.runOwnerId,
-        );
-      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
-    });
-    return record.immediate();
-  }
-
-  recordWorktreeQuarantined(input: {
-    runId: string;
-    operationId: string;
-    runOwnerId: string;
-    worktreePath: string;
-    error: string;
-    now: number;
-  }): WorkflowWorktreeOutput | null {
-    const quarantined = workflowWorktreeOutputSchema.parse({
-      runId: input.runId,
-      operationId: input.operationId,
-      state: "quarantined",
-      worktreePath: input.worktreePath,
-      baseCommit: null,
-      artifactId: null,
-      patchSha256: null,
-      bytes: null,
-      cleanupError: input.error.slice(0, 16_384),
-      preparedAt: input.now,
-      capturedAt: null,
-      cleanedAt: null,
-    });
-    const record = this.db.transaction(() => {
-      const existing = this.getWorktreeOutput(input.runId, input.operationId);
-      if (existing) {
-        if (existing.state !== "quarantined" || existing.worktreePath !== input.worktreePath) {
-          throw new Error("Persisted workflow worktree quarantine identity mismatch");
-        }
-        return existing;
-      }
-      const result = this.db
-        .query(
-          `INSERT INTO workflow_worktree_outputs (
-             run_id, operation_id, state, worktree_path, base_commit, artifact_id,
-             patch_sha256, bytes, cleanup_error, prepared_at, captured_at, cleaned_at
-           )
-           SELECT ?, ?, 'quarantined', ?, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL
-           WHERE EXISTS (
-             SELECT 1 FROM workflow_operations
-             JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
-             WHERE workflow_operations.run_id = ?
-               AND workflow_operations.operation_id = ?
-               AND workflow_operations.state IN ('queued', 'dispatched', 'running')
-               AND workflow_runs.state = 'running'
-               AND workflow_runs.claimed_by = ?
-           )`,
-        )
-        .run(
-          quarantined.runId,
-          quarantined.operationId,
-          quarantined.worktreePath,
-          quarantined.cleanupError,
-          quarantined.preparedAt,
-          quarantined.runId,
-          quarantined.operationId,
-          input.runOwnerId,
-        );
-      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
-    });
-    return record.immediate();
-  }
-
-  recordWorktreeCaptured(input: {
-    runId: string;
-    operationId: string;
-    runOwnerId: string;
-    artifactId: string;
-    patchSha256: string;
-    bytes: number;
-    now: number;
-  }): WorkflowWorktreeOutput | null {
-    const record = this.db.transaction(() => {
-      const existing = this.getWorktreeOutput(input.runId, input.operationId);
-      if (!existing) return null;
-      if (existing.state === "captured" || existing.state === "cleaned") {
-        if (
-          existing.artifactId !== input.artifactId ||
-          existing.patchSha256 !== input.patchSha256 ||
-          existing.bytes !== input.bytes
-        ) {
-          throw new Error("Persisted workflow worktree patch identity mismatch");
-        }
-        return existing;
-      }
-      const captured = workflowWorktreeOutputSchema.parse({
-        ...existing,
-        state: "captured",
-        artifactId: input.artifactId,
-        patchSha256: input.patchSha256,
-        bytes: input.bytes,
-        cleanupError: null,
-        capturedAt: input.now,
-      });
-      const result = this.db
-        .query(
-          `UPDATE workflow_worktree_outputs SET
-             state = 'captured', artifact_id = ?, patch_sha256 = ?, bytes = ?,
-             cleanup_error = NULL, captured_at = ?
-           WHERE run_id = ? AND operation_id = ? AND state = 'prepared'
-             AND EXISTS (
-               SELECT 1 FROM workflow_operations
-               JOIN workflow_runs ON workflow_runs.run_id = workflow_operations.run_id
-               WHERE workflow_operations.run_id = workflow_worktree_outputs.run_id
-                 AND workflow_operations.operation_id = workflow_worktree_outputs.operation_id
-                 AND workflow_operations.state IN ('dispatched', 'running')
-                 AND workflow_runs.state = 'running'
-                 AND workflow_runs.claimed_by = ?
-             )`,
-        )
-        .run(
-          captured.artifactId,
-          captured.patchSha256,
-          captured.bytes,
-          captured.capturedAt,
-          captured.runId,
-          captured.operationId,
-          input.runOwnerId,
-        );
-      return result.changes === 1 ? this.getWorktreeOutput(input.runId, input.operationId) : null;
-    });
-    return record.immediate();
-  }
-
-  markWorktreeOutputCleaned(input: {
-    runId: string;
-    operationId: string;
-    artifactId: string;
-    now: number;
-  }): boolean {
-    const existing = this.getWorktreeOutput(input.runId, input.operationId);
-    if (existing?.state === "cleaned") return existing.artifactId === input.artifactId;
-    return (
-      this.db
-        .query(
-          `UPDATE workflow_worktree_outputs SET
-             state = 'cleaned', cleanup_error = NULL, cleaned_at = ?
-           WHERE run_id = ? AND operation_id = ? AND state = 'captured' AND artifact_id = ?`,
-        )
-        .run(input.now, input.runId, input.operationId, input.artifactId).changes === 1
-    );
-  }
-
-  recordWorktreeCleanupError(input: {
-    runId: string;
-    operationId: string;
-    artifactId: string;
-    error: string;
-  }): boolean {
-    return (
-      this.db
-        .query(
-          `UPDATE workflow_worktree_outputs SET cleanup_error = ?
-           WHERE run_id = ? AND operation_id = ? AND state = 'captured' AND artifact_id = ?`,
-        )
-        .run(input.error.slice(0, 16_384), input.runId, input.operationId, input.artifactId)
-        .changes === 1
-    );
-  }
-
-  recordWorktreeReconciliationError(input: {
-    runId: string;
-    operationId: string;
-    error: string;
-  }): boolean {
-    return (
-      this.db
-        .query(
-          `UPDATE workflow_worktree_outputs SET cleanup_error = ?
-           WHERE run_id = ? AND operation_id = ? AND state IN ('prepared', 'quarantined')`,
-        )
-        .run(input.error.slice(0, 16_384), input.runId, input.operationId).changes === 1
-    );
   }
 
   transitionOperation(input: {
@@ -3266,13 +2757,14 @@ export class DurableWorkflowStore {
     expectedFireAt: number;
     nextFireAt: number | null;
     run: WorkflowRun;
-    maxActiveScheduledRuns: number;
+    maxActiveRuns: number;
     now: number;
   }):
     | { status: "fired"; trigger: WorkflowTrigger; run: WorkflowRun }
     | { status: "skipped"; trigger: WorkflowTrigger }
     | null {
     const requestedRun = workflowRunSchema.parse(input.run);
+    const maxActiveRuns = z.number().int().positive().parse(input.maxActiveRuns);
     const fire = this.db.transaction(() => {
       const trigger = this.getTrigger(input.triggerId);
       if (
@@ -3281,22 +2773,25 @@ export class DurableWorkflowStore {
         trigger.claimedBy !== input.claimerId ||
         trigger.nextFireAt !== input.expectedFireAt ||
         requestedRun.revisionId !== trigger.revisionId ||
-        requestedRun.origin.safetyMode !== "trusted" ||
         requestedRun.state !== "queued"
       ) {
         return null;
       }
 
-      const activeTriggerRuns = this.countActiveScheduledRuns(trigger.triggerId);
-      const activeScheduledRuns = this.countActiveScheduledRuns();
+      const activeTriggerRuns = this.countActiveTriggerRuns(trigger.triggerId);
+      const activeRuns = this.countActiveRuns();
       if (
         (trigger.schedulingPolicy.overlap === "coalesce" && activeTriggerRuns > 0) ||
-        activeScheduledRuns >= input.maxActiveScheduledRuns
+        activeRuns >= maxActiveRuns
       ) {
         const retryAt =
           trigger.definition.kind === "timestamp" && input.nextFireAt === null
             ? input.expectedFireAt
             : input.nextFireAt;
+        const lastFireAt =
+          trigger.definition.kind === "timestamp" && input.nextFireAt === null
+            ? trigger.lastFireAt
+            : input.expectedFireAt;
         const skipped = this.db
           .query(
             `UPDATE workflow_triggers SET next_fire_at = ?, last_fire_at = ?,
@@ -3305,7 +2800,7 @@ export class DurableWorkflowStore {
           )
           .run(
             retryAt,
-            input.expectedFireAt,
+            lastFireAt,
             input.now,
             trigger.triggerId,
             input.claimerId,
@@ -3358,226 +2853,33 @@ export class DurableWorkflowStore {
     );
   }
 
-  countActiveScheduledRuns(triggerId?: string): number {
-    const row = triggerId
-      ? this.db
-          .query<{ count: number }, [string]>(
-            `SELECT COUNT(*) AS count FROM workflow_trigger_runs
-             JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
-             WHERE workflow_trigger_runs.trigger_id = ?
-                AND workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')`,
-          )
-          .get(triggerId)
-      : this.db
-          .query<{ count: number }, []>(
-            `SELECT COUNT(*) AS count FROM workflow_trigger_runs
-             JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
-              WHERE workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')`,
-          )
-          .get();
+  countActiveTriggerRuns(triggerId: string): number {
+    const row = this.db
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count FROM workflow_trigger_runs
+         JOIN workflow_runs ON workflow_runs.run_id = workflow_trigger_runs.run_id
+         WHERE workflow_trigger_runs.trigger_id = ?
+           AND workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')`,
+      )
+      .get(triggerId);
     return row?.count ?? 0;
-  }
-
-  claimSurfaceProjection(input: {
-    runId: string;
-    ownerId: string;
-    claimToken: string;
-    now: number;
-    staleBefore: number;
-  }): boolean {
-    const claim = this.db.transaction(() => {
-      const previous = this.db
-        .query<{ owner_id: string; claim_token: string }, [string]>(
-          `SELECT owner_id, claim_token FROM workflow_surface_projection_claims
-           WHERE run_id = ?`,
-        )
-        .get(input.runId);
-      const changed = this.db
-        .query(
-          `INSERT INTO workflow_surface_projection_claims (
-             run_id, owner_id, claim_token, claimed_at
-           ) SELECT ?, ?, ?, ? WHERE EXISTS (
-             SELECT 1 FROM workflow_runs WHERE run_id = ?
-           )
-           ON CONFLICT(run_id) DO UPDATE SET
-             owner_id = excluded.owner_id,
-             claim_token = excluded.claim_token,
-             claimed_at = excluded.claimed_at
-           WHERE workflow_surface_projection_claims.claimed_at <= ?`,
-        )
-        .run(
-          input.runId,
-          input.ownerId,
-          input.claimToken,
-          input.now,
-          input.runId,
-          input.staleBefore,
-        ).changes;
-      if (changed !== 1) return false;
-      if (
-        previous &&
-        (previous.owner_id !== input.ownerId || previous.claim_token !== input.claimToken)
-      ) {
-        this.db.run(
-          `UPDATE workflow_surface_bindings
-           SET repair_required = 1, repair_generation = repair_generation + 1,
-             last_rendered_sha256 = NULL,
-             last_error = 'Projection ownership changed after a stale claim',
-             next_attempt_at = CASE
-               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
-               ELSE next_attempt_at
-             END,
-             updated_at = MAX(updated_at, ?)
-           WHERE run_id = ?`,
-          [input.now, input.now, input.now, input.runId],
-        );
-        this.db.run(
-          `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
-           WHERE run_id = ? AND consumed_at IS NULL`,
-          [input.now, input.runId],
-        );
-      }
-      return true;
-    });
-    return claim.immediate();
-  }
-
-  refreshSurfaceProjectionClaim(input: {
-    runId: string;
-    ownerId: string;
-    claimToken: string;
-    now: number;
-  }): boolean {
-    return (
-      this.db
-        .query(
-          `UPDATE workflow_surface_projection_claims SET claimed_at = ?
-           WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
-        )
-        .run(input.now, input.runId, input.ownerId, input.claimToken).changes === 1
-    );
-  }
-
-  releaseSurfaceProjectionClaim(input: {
-    runId: string;
-    ownerId: string;
-    claimToken: string;
-  }): void {
-    this.db.run(
-      `DELETE FROM workflow_surface_projection_claims
-       WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
-      [input.runId, input.ownerId, input.claimToken],
-    );
-  }
-
-  private ownsSurfaceProjectionClaim(input: {
-    runId: string;
-    ownerId: string;
-    claimToken: string;
-  }): boolean {
-    return Boolean(
-      this.db
-        .query(
-          `SELECT 1 FROM workflow_surface_projection_claims
-           WHERE run_id = ? AND owner_id = ? AND claim_token = ?`,
-        )
-        .get(input.runId, input.ownerId, input.claimToken),
-    );
-  }
-
-  upsertSurfaceBindingFenced(
-    bindingInput: WorkflowSurfaceBinding,
-    claim: { ownerId: string; claimToken: string },
-  ): boolean {
-    const binding = workflowSurfaceBindingSchema.parse(bindingInput);
-    const update = this.db.transaction(() => {
-      if (!this.ownsSurfaceProjectionClaim({ runId: binding.runId, ...claim })) return false;
-      this.upsertSurfaceBinding(binding);
-      return true;
-    });
-    return update.immediate();
-  }
-
-  commitSurfaceProjectionFenced(input: {
-    binding: WorkflowSurfaceBinding;
-    actionIds: readonly string[];
-    ownerId: string;
-    claimToken: string;
-    expectedRepairGeneration: number;
-  }): boolean {
-    const binding = workflowSurfaceBindingSchema.parse(input.binding);
-    const commit = this.db.transaction(() => {
-      if (
-        !this.ownsSurfaceProjectionClaim({
-          runId: binding.runId,
-          ownerId: input.ownerId,
-          claimToken: input.claimToken,
-        })
-      ) {
-        return false;
-      }
-      const updated = this.db
-        .query(
-          `UPDATE workflow_surface_bindings
-           SET target_json = ?, message_ref_json = ?, last_rendered_sha256 = ?,
-             last_error = ?, retry_count = ?, next_attempt_at = ?, repair_required = 0,
-              rendered_repair_generation = ?, send_may_have_succeeded = ?,
-              discovery_page = ?, discovery_before_message_id = ?,
-              discovery_scanned_entries = ?, updated_at = ?
-           WHERE run_id = ? AND repair_generation = ?`,
-        )
-        .run(
-          JSON.stringify(binding.target),
-          binding.messageRef === null ? null : JSON.stringify(binding.messageRef),
-          binding.lastRenderedSha256,
-          binding.lastError,
-          binding.retryCount,
-          binding.nextAttemptAt,
-          input.expectedRepairGeneration,
-          binding.sendMayHaveSucceeded ? 1 : 0,
-          binding.discoveryCursor?.page ?? 1,
-          binding.discoveryCursor?.beforeMessageId ?? null,
-          binding.discoveryCursor?.scannedEntries ?? 0,
-          binding.updatedAt,
-          binding.runId,
-          input.expectedRepairGeneration,
-        );
-      if (updated.changes !== 1) return false;
-      if (binding.messageRef) {
-        for (const actionId of input.actionIds) {
-          this.db.run(
-            `UPDATE workflow_surface_actions SET expected_message_ref_json = ?
-             WHERE action_id = ? AND run_id = ? AND consumed_at IS NULL`,
-            [JSON.stringify(binding.messageRef), actionId, binding.runId],
-          );
-        }
-      }
-      return true;
-    });
-    return commit.immediate();
   }
 
   upsertSurfaceBinding(bindingInput: WorkflowSurfaceBinding): void {
     const binding = workflowSurfaceBindingSchema.parse(bindingInput);
     this.db.run(
       `INSERT INTO workflow_surface_bindings (
-        run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
-        retry_count, next_attempt_at, repair_required, repair_generation,
-        rendered_repair_generation, send_may_have_succeeded, discovery_page,
-        discovery_before_message_id, discovery_scanned_entries, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(run_id) DO UPDATE SET
-        target_json = excluded.target_json,
-        message_ref_json = excluded.message_ref_json,
-        last_rendered_sha256 = excluded.last_rendered_sha256,
-        last_error = excluded.last_error,
-        retry_count = excluded.retry_count,
-        next_attempt_at = excluded.next_attempt_at,
-        send_may_have_succeeded = excluded.send_may_have_succeeded,
-        discovery_page = excluded.discovery_page,
-        discovery_before_message_id = excluded.discovery_before_message_id,
-        discovery_scanned_entries = excluded.discovery_scanned_entries,
-        updated_at = excluded.updated_at`,
+         run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
+         retry_count, next_attempt_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(run_id) DO UPDATE SET
+         target_json = excluded.target_json,
+         message_ref_json = excluded.message_ref_json,
+         last_rendered_sha256 = excluded.last_rendered_sha256,
+         last_error = excluded.last_error,
+         retry_count = excluded.retry_count,
+         next_attempt_at = excluded.next_attempt_at,
+         updated_at = excluded.updated_at`,
       [
         binding.runId,
         JSON.stringify(binding.target),
@@ -3586,87 +2888,22 @@ export class DurableWorkflowStore {
         binding.lastError,
         binding.retryCount,
         binding.nextAttemptAt,
-        binding.repairGeneration > binding.renderedRepairGeneration ? 1 : 0,
-        binding.repairGeneration,
-        binding.renderedRepairGeneration,
-        binding.sendMayHaveSucceeded ? 1 : 0,
-        binding.discoveryCursor?.page ?? 1,
-        binding.discoveryCursor?.beforeMessageId ?? null,
-        binding.discoveryCursor?.scannedEntries ?? 0,
         binding.createdAt,
         binding.updatedAt,
       ],
     );
   }
 
-  requestSurfaceBindingRepair(runId: string, now: number): number | null {
-    const mark = this.db.transaction(() => {
-      const binding = this.db
-        .query(
-          `UPDATE workflow_surface_bindings
-           SET repair_required = 1, repair_generation = repair_generation + 1,
-             last_rendered_sha256 = NULL,
-             last_error = 'Projection ownership changed during external I/O',
-             next_attempt_at = CASE
-               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
-               ELSE next_attempt_at
-             END,
-             updated_at = MAX(updated_at, ?)
-           WHERE run_id = ?`,
-        )
-        .run(now, now, now, runId);
-      if (binding.changes !== 1) return null;
-      this.db.run(
-        `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
-         WHERE run_id = ? AND consumed_at IS NULL`,
-        [now, runId],
-      );
-      return (
-        this.db
-          .query<{ repair_generation: number }, [string]>(
-            `SELECT repair_generation FROM workflow_surface_bindings WHERE run_id = ?`,
-          )
-          .get(runId)?.repair_generation ?? null
-      );
+  commitSurfaceProjection(input: {
+    binding: WorkflowSurfaceBinding;
+    actionIds: readonly string[];
+  }): void {
+    const binding = workflowSurfaceBindingSchema.parse(input.binding);
+    const commit = this.db.transaction(() => {
+      this.upsertSurfaceBinding(binding);
+      if (binding.messageRef) this.bindSurfaceActions(input.actionIds, binding.messageRef);
     });
-    return mark.immediate();
-  }
-
-  ensureSurfaceBindingRepair(runId: string, now: number): number | null {
-    const mark = this.db.transaction(() => {
-      const binding = this.db
-        .query(
-          `UPDATE workflow_surface_bindings
-           SET repair_required = 1,
-             repair_generation = CASE
-               WHEN repair_generation = rendered_repair_generation THEN repair_generation + 1
-               ELSE repair_generation
-             END,
-             last_rendered_sha256 = NULL,
-             last_error = 'Remote projection generation does not match durable state',
-             next_attempt_at = CASE
-               WHEN next_attempt_at IS NULL OR next_attempt_at > ? THEN ?
-               ELSE next_attempt_at
-             END,
-             updated_at = MAX(updated_at, ?)
-           WHERE run_id = ?`,
-        )
-        .run(now, now, now, runId);
-      if (binding.changes !== 1) return null;
-      this.db.run(
-        `UPDATE workflow_surface_actions SET expires_at = MIN(expires_at, ?)
-         WHERE run_id = ? AND consumed_at IS NULL`,
-        [now, runId],
-      );
-      return (
-        this.db
-          .query<{ repair_generation: number }, [string]>(
-            `SELECT repair_generation FROM workflow_surface_bindings WHERE run_id = ?`,
-          )
-          .get(runId)?.repair_generation ?? null
-      );
-    });
-    return mark.immediate();
+    commit.immediate();
   }
 
   getSurfaceBinding(runId: string): WorkflowSurfaceBinding | null {
@@ -3702,109 +2939,21 @@ export class DurableWorkflowStore {
     );
   }
 
-  recordSurfaceProjectionOrphan(input: {
-    runId: string;
-    messageRef: WorkflowProjectionMsgRef;
-    now: number;
-  }): void {
-    this.db.run(
-      `INSERT INTO workflow_surface_projection_orphans (
-         run_id, platform, channel_id, message_id, attempt_count, next_attempt_at,
-         last_error, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?)
-       ON CONFLICT(platform, channel_id, message_id) DO UPDATE SET
-         run_id = excluded.run_id,
-         next_attempt_at = CASE
-           WHEN workflow_surface_projection_orphans.next_attempt_at IS NULL
-             OR workflow_surface_projection_orphans.next_attempt_at > excluded.next_attempt_at
-           THEN excluded.next_attempt_at
-           ELSE workflow_surface_projection_orphans.next_attempt_at
-         END,
-         updated_at = MAX(workflow_surface_projection_orphans.updated_at, excluded.updated_at)`,
-      [
-        input.runId,
-        input.messageRef.platform,
-        input.messageRef.channelId,
-        input.messageRef.messageId,
-        input.now,
-        input.now,
-        input.now,
-      ],
-    );
-  }
-
-  listPendingSurfaceProjectionOrphans(options?: {
-    runId?: string;
-    dueBefore?: number;
-    limit?: number;
-  }): WorkflowSurfaceProjectionOrphan[] {
-    const clauses: string[] = [];
-    const bindings: Array<string | number> = [];
-    if (options?.runId) {
-      clauses.push("run_id = ?");
-      bindings.push(options.runId);
-    }
-    if (options?.dueBefore !== undefined) {
-      clauses.push("(next_attempt_at IS NULL OR next_attempt_at <= ?)");
-      bindings.push(options.dueBefore);
-    }
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    return this.db
-      .query(
-        `SELECT * FROM workflow_surface_projection_orphans ${where}
-         ORDER BY updated_at, message_id LIMIT ?`,
-      )
-      .all(...bindings, boundedLimit(options?.limit))
-      .map(parseProjectionOrphan);
-  }
-
-  completeSurfaceProjectionOrphan(messageRef: WorkflowProjectionMsgRef): boolean {
-    return (
-      this.db
-        .query(
-          `DELETE FROM workflow_surface_projection_orphans
-           WHERE platform = ? AND channel_id = ? AND message_id = ?`,
-        )
-        .run(messageRef.platform, messageRef.channelId, messageRef.messageId).changes === 1
-    );
-  }
-
-  recordSurfaceProjectionOrphanFailure(input: {
-    messageRef: WorkflowProjectionMsgRef;
-    error: string;
-    now: number;
-  }): void {
-    this.db.run(
-      `UPDATE workflow_surface_projection_orphans
-       SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
-       WHERE platform = ? AND channel_id = ? AND message_id = ?`,
-      [
-        input.now + 1_000,
-        input.error.slice(0, 16_384),
-        input.now,
-        input.messageRef.platform,
-        input.messageRef.channelId,
-        input.messageRef.messageId,
-      ],
-    );
-  }
-
   createSurfaceAction(actionInput: WorkflowSurfaceAction): boolean {
     const action = workflowSurfaceActionSchema.parse(actionInput);
     const result = this.db
       .query(
         `INSERT INTO workflow_surface_actions (
-          action_id, token_sha256, run_id, approval_id, kind, expected_platform,
+          action_id, token_sha256, run_id, kind, expected_platform,
           expected_user_id, expected_message_ref_json, expires_at, consumed_at,
           consumed_by_platform, consumed_by_user_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(action_id) DO NOTHING`,
       )
       .run(
         action.actionId,
         action.tokenSha256,
         action.runId,
-        null,
         action.kind,
         action.expectedPlatform,
         action.expectedUserId,
@@ -3816,18 +2965,6 @@ export class DurableWorkflowStore {
         action.createdAt,
       );
     return result.changes === 1;
-  }
-
-  createSurfaceActionFenced(
-    actionInput: WorkflowSurfaceAction,
-    claim: { ownerId: string; claimToken: string },
-  ): boolean {
-    const action = workflowSurfaceActionSchema.parse(actionInput);
-    const create = this.db.transaction(() => {
-      if (!this.ownsSurfaceProjectionClaim({ runId: action.runId, ...claim })) return false;
-      return this.createSurfaceAction(action);
-    });
-    return create.immediate();
   }
 
   getSurfaceAction(actionId: string): WorkflowSurfaceAction | null {
@@ -3882,39 +3019,12 @@ export class DurableWorkflowStore {
     bind.immediate();
   }
 
-  bindSurfaceActionsFenced(
-    runId: string,
-    actionIds: readonly string[],
-    messageRef: NonNullable<WorkflowSurfaceAction["expectedMessageRef"]>,
-    claim: { ownerId: string; claimToken: string },
-  ): boolean {
-    const bind = this.db.transaction(() => {
-      if (!this.ownsSurfaceProjectionClaim({ runId, ...claim })) return false;
-      this.bindSurfaceActions(actionIds, messageRef);
-      return true;
-    });
-    return bind.immediate();
-  }
-
   expireActiveSurfaceActions(runId: string, now: number): void {
     this.db.run(
       `UPDATE workflow_surface_actions SET expires_at = ?
        WHERE run_id = ? AND consumed_at IS NULL AND expires_at > ?`,
       [now, runId, now],
     );
-  }
-
-  expireActiveSurfaceActionsFenced(
-    runId: string,
-    now: number,
-    claim: { ownerId: string; claimToken: string },
-  ): boolean {
-    const expire = this.db.transaction(() => {
-      if (!this.ownsSurfaceProjectionClaim({ runId, ...claim })) return false;
-      this.expireActiveSurfaceActions(runId, now);
-      return true;
-    });
-    return expire.immediate();
   }
 
   applySurfaceAction(input: {
@@ -4083,103 +3193,24 @@ export class DurableWorkflowStore {
       .map(parseActionOutboxEntry);
   }
 
-  claimPendingActionOutboxEvents(input: {
-    ownerId: string;
-    claimToken: string;
-    now: number;
-    staleBefore: number;
-    limit?: number;
-  }): WorkflowActionOutboxEntry[] {
-    const claim = this.db.transaction(() => {
-      const candidates = this.db
-        .query<{ outbox_id: string }, [number, number, number]>(
-          `SELECT outbox_id FROM workflow_action_outbox
-           WHERE published_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-             AND (publish_claim_owner IS NULL OR publish_claimed_at <= ?)
-           ORDER BY created_at, outbox_id LIMIT ?`,
-        )
-        .all(input.now, input.staleBefore, boundedLimit(input.limit));
-      const claimed: WorkflowActionOutboxEntry[] = [];
-      for (const candidate of candidates) {
-        const changed = this.db
-          .query(
-            `UPDATE workflow_action_outbox SET publish_claim_owner = ?,
-               publish_claim_token = ?, publish_claimed_at = ?, updated_at = ?
-             WHERE outbox_id = ? AND published_at IS NULL
-               AND (publish_claim_owner IS NULL OR publish_claimed_at <= ?)`,
-          )
-          .run(
-            input.ownerId,
-            input.claimToken,
-            input.now,
-            input.now,
-            candidate.outbox_id,
-            input.staleBefore,
-          );
-        if (changed.changes !== 1) continue;
-        const row = this.db
-          .query("SELECT * FROM workflow_action_outbox WHERE outbox_id = ?")
-          .get(candidate.outbox_id);
-        if (row) claimed.push(parseActionOutboxEntry(row));
-      }
-      return claimed;
-    });
-    return claim.immediate();
-  }
-
-  refreshActionOutboxPublishClaims(input: {
-    ownerId: string;
-    claimToken: string;
-    now: number;
-  }): number {
-    return this.db
-      .query(
-        `UPDATE workflow_action_outbox SET publish_claimed_at = ?
-         WHERE published_at IS NULL AND publish_claim_owner = ? AND publish_claim_token = ?`,
-      )
-      .run(input.now, input.ownerId, input.claimToken).changes;
-  }
-
-  markActionOutboxPublished(input: {
-    outboxId: string;
-    ownerId: string;
-    claimToken: string;
-    now: number;
-  }): boolean {
+  markActionOutboxPublished(input: { outboxId: string; now: number }): boolean {
     return (
       this.db
         .query(
           `UPDATE workflow_action_outbox SET published_at = ?, next_attempt_at = NULL,
-             last_error = NULL, publish_claim_owner = NULL, publish_claim_token = NULL,
-             publish_claimed_at = NULL, updated_at = ?
-           WHERE outbox_id = ? AND published_at IS NULL AND publish_claim_owner = ?
-             AND publish_claim_token = ?`,
+             last_error = NULL, updated_at = ?
+           WHERE outbox_id = ? AND published_at IS NULL`,
         )
-        .run(input.now, input.now, input.outboxId, input.ownerId, input.claimToken).changes === 1
+        .run(input.now, input.now, input.outboxId).changes === 1
     );
   }
 
-  recordActionOutboxFailure(input: {
-    outboxId: string;
-    ownerId: string;
-    claimToken: string;
-    error: string;
-    now: number;
-  }): void {
+  recordActionOutboxFailure(input: { outboxId: string; error: string; now: number }): void {
     this.db.run(
       `UPDATE workflow_action_outbox SET attempt_count = attempt_count + 1,
-         next_attempt_at = ?, last_error = ?, publish_claim_owner = NULL,
-         publish_claim_token = NULL, publish_claimed_at = NULL, updated_at = ?
-       WHERE outbox_id = ? AND published_at IS NULL AND publish_claim_owner = ?
-         AND publish_claim_token = ?`,
-      [
-        input.now + 1_000,
-        input.error.slice(0, 16_384),
-        input.now,
-        input.outboxId,
-        input.ownerId,
-        input.claimToken,
-      ],
+         next_attempt_at = ?, last_error = ?, updated_at = ?
+       WHERE outbox_id = ? AND published_at IS NULL`,
+      [input.now + 1_000, input.error.slice(0, 16_384), input.now, input.outboxId],
     );
   }
 
@@ -4194,92 +3225,14 @@ export class DurableWorkflowStore {
       .map(parseActionOutboxEntry);
   }
 
-  claimPendingActionOutboxProjections(input: {
-    ownerId: string;
-    claimToken: string;
-    now: number;
-    staleBefore: number;
-    limit?: number;
-  }): WorkflowActionOutboxEntry[] {
-    const claim = this.db.transaction(() => {
-      const candidates = this.db
-        .query<{ outbox_id: string }, [number, number]>(
-          `SELECT outbox_id FROM workflow_action_outbox
-           WHERE event_type = 'evt.workflow.progress.requested' AND projected_at IS NULL
-             AND (project_claim_owner IS NULL OR project_claimed_at <= ?)
-           ORDER BY created_at, outbox_id LIMIT ?`,
-        )
-        .all(input.staleBefore, boundedLimit(input.limit));
-      const claimed: WorkflowActionOutboxEntry[] = [];
-      for (const candidate of candidates) {
-        const changed = this.db
-          .query(
-            `UPDATE workflow_action_outbox SET project_claim_owner = ?,
-               project_claim_token = ?, project_claimed_at = ?, updated_at = ?
-             WHERE outbox_id = ? AND projected_at IS NULL
-               AND (project_claim_owner IS NULL OR project_claimed_at <= ?)`,
-          )
-          .run(
-            input.ownerId,
-            input.claimToken,
-            input.now,
-            input.now,
-            candidate.outbox_id,
-            input.staleBefore,
-          );
-        if (changed.changes !== 1) continue;
-        const row = this.db
-          .query("SELECT * FROM workflow_action_outbox WHERE outbox_id = ?")
-          .get(candidate.outbox_id);
-        if (row) claimed.push(parseActionOutboxEntry(row));
-      }
-      return claimed;
-    });
-    return claim.immediate();
-  }
-
-  refreshActionOutboxProjectionClaims(input: {
-    ownerId: string;
-    claimToken: string;
-    now: number;
-  }): number {
-    return this.db
-      .query(
-        `UPDATE workflow_action_outbox SET project_claimed_at = ?
-         WHERE projected_at IS NULL AND project_claim_owner = ? AND project_claim_token = ?`,
-      )
-      .run(input.now, input.ownerId, input.claimToken).changes;
-  }
-
-  markActionOutboxProjected(input: {
-    outboxId: string;
-    ownerId: string;
-    claimToken: string;
-    now: number;
-  }): boolean {
+  markActionOutboxProjected(input: { outboxId: string; now: number }): boolean {
     return (
       this.db
         .query(
-          `UPDATE workflow_action_outbox SET projected_at = ?, project_claim_owner = NULL,
-             project_claim_token = NULL, project_claimed_at = NULL, updated_at = ?
-           WHERE outbox_id = ? AND projected_at IS NULL AND project_claim_owner = ?
-             AND project_claim_token = ?`,
+          `UPDATE workflow_action_outbox SET projected_at = ?, updated_at = ?
+           WHERE outbox_id = ? AND projected_at IS NULL`,
         )
-        .run(input.now, input.now, input.outboxId, input.ownerId, input.claimToken).changes === 1
-    );
-  }
-
-  releaseActionOutboxProjectionClaim(input: {
-    outboxId: string;
-    ownerId: string;
-    claimToken: string;
-  }): void {
-    this.db.run(
-      `UPDATE workflow_action_outbox SET project_claim_owner = NULL,
-         project_claim_token = NULL, project_claimed_at = NULL
-       WHERE outbox_id = ? AND projected_at IS NULL AND project_claim_owner = ?
-         AND project_claim_token = ?`,
-      [input.outboxId, input.ownerId, input.claimToken],
+        .run(input.now, input.now, input.outboxId).changes === 1
     );
   }
 

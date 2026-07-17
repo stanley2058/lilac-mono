@@ -49,14 +49,12 @@ function createRevision(store: DurableWorkflowStore): void {
     maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: [],
-    safety: { originatingMode: "trusted", escalation: "none" },
   });
   const limits = {
     maxSourceBytes: 10_000,
     maxInputBytes: 10_000,
     maxOperationOutputBytes: 10_000,
     maxResultBytes: 10_000,
-    maxRuntimeMemoryBytes: 256 * 1024 * 1024,
   };
   store.createRevision({
     revisionId: "revision-1",
@@ -92,7 +90,6 @@ function trigger(): WorkflowTrigger {
       sessionId: "channel-1",
       client: "discord",
       userId: "owner-1",
-      safetyMode: "trusted",
       projectCwd: "/workspace",
     },
     completionTarget: { kind: "detached" },
@@ -123,11 +120,75 @@ describe("workflow trigger scheduler", () => {
       expect(fired).toMatchObject({
         state: "queued",
         revisionId: "revision-1",
-        origin: { client: "discord", userId: "owner-1", safetyMode: "trusted" },
+        origin: { client: "discord", userId: "owner-1" },
       });
       expect(raw.messages.some((message) => message.type === "evt.workflow.run.changed")).toBe(
         true,
       );
+    } finally {
+      await bus.close();
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("defers a timestamp trigger at global capacity and fires after capacity is released", async () => {
+    const file = join(tmpdir(), `workflow-scheduler-cap-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(file);
+    const raw = new CapturingRawBus();
+    const bus = createLilacBus(raw);
+    try {
+      createRevision(store);
+      store.createRun({
+        runId: "ordinary-active-run",
+        revisionId: "revision-1",
+        state: "queued",
+        inputSchemaSnapshot: { type: "object", additionalProperties: false },
+        args: {},
+        argsSha256: canonicalJsonSha256({}),
+        origin: trigger().origin,
+        completionTarget: { kind: "detached" },
+        progressTarget: null,
+        terminalDetail: null,
+        result: null,
+        resultArtifactId: null,
+        claimedBy: null,
+        claimedAt: null,
+        createdAt: 1,
+        startedAt: null,
+        updatedAt: 1,
+        terminalAt: null,
+      });
+      store.createTrigger(trigger());
+      const scheduler = new WorkflowTriggerScheduler({
+        bus,
+        store,
+        now: () => 100,
+        getMaxActiveRuns: () => 1,
+      });
+
+      await scheduler.tick();
+      expect(store.getTrigger("trigger-1")).toMatchObject({
+        state: "active",
+        nextFireAt: 100,
+        lastFireAt: null,
+        lastRunId: null,
+      });
+      expect(store.listRuns()).toHaveLength(1);
+
+      expect(
+        store.transitionRun({
+          runId: "ordinary-active-run",
+          from: "queued",
+          to: "cancelled",
+          now: 101,
+        }),
+      ).toBe(true);
+      await scheduler.tick();
+      const storedTrigger = store.getTrigger("trigger-1");
+      expect(storedTrigger).toMatchObject({ state: "active", nextFireAt: null });
+      expect(storedTrigger?.lastRunId).toBeTruthy();
+      expect(store.countActiveRuns()).toBe(1);
     } finally {
       await bus.close();
       store.close();

@@ -61,7 +61,7 @@ const profileLevel2Schema = z.object({
 const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfig = {
   modelSlot: "main",
   level1: {
-    tools: ["read_file", "glob", "grep", "fuzzy_search", "scratch_read", "scratch_write", "batch"],
+    tools: ["read_file", "glob", "grep", "fuzzy_search", "batch"],
     plugins: ["builtin-local-tools"],
   },
   level2: {
@@ -451,6 +451,12 @@ const conversationSchemaV2 = z
     },
   });
 
+const workflowsSchemaV2 = z
+  .object({
+    maxActiveRuns: z.number().int().positive().default(64),
+  })
+  .default({ maxActiveRuns: 64 });
+
 const modelsSchemaV2 = z
   .object({
     /** Optional registry of reusable model presets, referenced by alias. */
@@ -532,6 +538,7 @@ export const coreConfigInputSchemaV2 = z.object({
   tools: toolsSchema,
   plugins: pluginsSchemaV2,
   conversation: conversationSchemaV2,
+  workflows: workflowsSchemaV2,
 
   surface: z
     .object({

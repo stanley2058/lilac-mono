@@ -52,9 +52,6 @@ export function compareCodeUnits(left: string, right: string): number {
 export const workflowScopeSchema = z.enum(["project", "personal"]);
 export type WorkflowScope = z.infer<typeof workflowScopeSchema>;
 
-export const workflowSafetyModeSchema = z.enum(["trusted", "restricted"]);
-export type WorkflowSafetyMode = z.infer<typeof workflowSafetyModeSchema>;
-
 const workflowResourcePolicyInputSchema = z
   .strictObject({
     agents: z.strictObject({
@@ -73,10 +70,6 @@ const workflowResourcePolicyInputSchema = z
       .min(1_000)
       .max(24 * 60 * 60 * 1_000),
     waits: z.array(z.enum(["reply", "sleep"])).max(16),
-    safety: z.strictObject({
-      originatingMode: workflowSafetyModeSchema,
-      escalation: z.literal("none"),
-    }),
   })
   .superRefine((profile, ctx) => {
     if (profile.agents.maxConcurrent > profile.agents.maxTotal) {
@@ -122,12 +115,6 @@ export const workflowLimitsSchema = z.strictObject({
   maxInputBytes: z.number().int().positive(),
   maxOperationOutputBytes: z.number().int().positive(),
   maxResultBytes: z.number().int().positive(),
-  maxRuntimeMemoryBytes: z
-    .number()
-    .int()
-    .min(64 * 1024 * 1024)
-    .max(256 * 1024 * 1024)
-    .default(256 * 1024 * 1024),
 });
 export type WorkflowLimits = z.infer<typeof workflowLimitsSchema>;
 
@@ -178,12 +165,15 @@ export const workflowRunStateSchema = z.enum([
 ]);
 export type WorkflowRunState = z.infer<typeof workflowRunStateSchema>;
 
-export const workflowRunOriginSchema = z.strictObject({
+export const workflowOriginSessionSchema = z.strictObject({
   requestId: idSchema.nullable(),
   sessionId: idSchema.nullable(),
   client: platformSchema.nullable(),
   userId: idSchema.nullable(),
-  safetyMode: workflowSafetyModeSchema,
+});
+export type WorkflowOriginSession = z.infer<typeof workflowOriginSessionSchema>;
+
+export const workflowRunOriginSchema = workflowOriginSessionSchema.extend({
   projectCwd: z.string().min(1).max(4_096),
 });
 export type WorkflowRunOrigin = z.infer<typeof workflowRunOriginSchema>;
@@ -215,7 +205,6 @@ export const workflowCompletionTargetSchema = z.discriminatedUnion("kind", [
     fallbackToSurface: z.boolean(),
     fallbackProgressTarget: workflowProgressTargetSchema.nullable(),
     deferredDelivery: z.boolean().default(true),
-    familyScratchRoot: z.string().min(1).max(4_096).optional(),
   }),
   z.strictObject({
     kind: z.literal("new_session_request"),
@@ -396,16 +385,6 @@ export const workflowSurfaceBindingSchema = z.strictObject({
   lastError: boundedTextSchema.nullable(),
   retryCount: z.number().int().nonnegative(),
   nextAttemptAt: nullableTimestampSchema,
-  repairGeneration: z.number().int().nonnegative(),
-  renderedRepairGeneration: z.number().int().nonnegative(),
-  sendMayHaveSucceeded: z.boolean(),
-  discoveryCursor: z
-    .strictObject({
-      page: z.number().int().positive(),
-      beforeMessageId: idSchema.nullable(),
-      scannedEntries: z.number().int().nonnegative(),
-    })
-    .nullable(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });

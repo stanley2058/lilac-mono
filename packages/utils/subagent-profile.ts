@@ -9,10 +9,7 @@ export type ResolvedNativeSubagentProfile = Readonly<SubagentProfileConfig> & {
 };
 
 export function isNativeSubagentProfile(value: unknown): value is NativeSubagentProfile {
-  return (
-    typeof value === "string" &&
-    (SUBAGENT_PROFILE_NAMES as readonly string[]).includes(value)
-  );
+  return typeof value === "string" && (SUBAGENT_PROFILE_NAMES as readonly string[]).includes(value);
 }
 
 export function resolveNativeSubagentProfile(

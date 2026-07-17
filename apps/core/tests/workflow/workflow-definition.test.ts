@@ -110,6 +110,31 @@ describe("workflow definition validation", () => {
     ).toThrow("profiles now own agent tool access");
   });
 
+  it("provides migration guidance for removed safety and memory fields", () => {
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          'waits: ["sleep", "reply", "sleep"],',
+          'waits: ["sleep", "reply", "sleep"],\n    safety: { originatingMode: "trusted" },',
+        ),
+      }),
+    ).toThrow(
+      "Workflow revision field 'resources.safety' was removed; delete it from the workflow definition",
+    );
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          "async run({ args, agent })",
+          "limits: { maxRuntimeMemoryBytes: 268435456 },\n  async run({ args, agent })",
+        ),
+      }),
+    ).toThrow(
+      "Workflow revision field 'limits.maxRuntimeMemoryBytes' was removed; delete it from the workflow definition",
+    );
+  });
+
   it("rejects syntax and AST shapes outside the exact static contract", () => {
     expect(() => validateWorkflowSource({ name: "Audit", source: source("Audit") })).toThrow(
       "strict lowercase kebab-case",

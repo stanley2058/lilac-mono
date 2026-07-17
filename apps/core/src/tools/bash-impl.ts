@@ -1,4 +1,10 @@
-import { createLogger, env, resolveVcsEnv, type CoreConfig } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  env,
+  resolveVcsEnv,
+  type CoreConfig,
+  type NativeSubagentProfile,
+} from "@stanley2058/lilac-utils";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -500,6 +506,7 @@ function buildBashChildEnv(params: {
   resolvedCwd: string;
   toolCallId?: string;
   controlCapability?: string;
+  subagentProfile?: NativeSubagentProfile;
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -512,6 +519,7 @@ function buildBashChildEnv(params: {
     LILAC_CWD: params.resolvedCwd,
     LILAC_TOOL_CALL_ID: params.toolCallId,
     LILAC_CONTROL_CAPABILITY: params.controlCapability,
+    LILAC_SUBAGENT_PROFILE: params.subagentProfile,
   };
 
   delete childEnv.FORCE_COLOR;
@@ -542,6 +550,7 @@ export async function executeBash(
     },
     onActivity,
     controlCapability,
+    subagentProfile,
   }: {
     context?: {
       requestId: string;
@@ -554,6 +563,7 @@ export async function executeBash(
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
     controlCapability?: string;
+    subagentProfile?: NativeSubagentProfile;
   } = {},
 ): Promise<BashToolOutput> {
   const cwdTarget = parseSshCwdTarget(cwd);
@@ -950,6 +960,7 @@ export async function executeBash(
         resolvedCwd,
         toolCallId,
         controlCapability,
+        subagentProfile,
       }),
     });
 

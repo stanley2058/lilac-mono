@@ -866,18 +866,6 @@ export class Generate implements ServerTool {
         primaryPositional: {
           field: "prompt",
         },
-        workflowPathAuthority: {
-          inputs: [
-            {
-              field: "outputDir",
-              cardinality: "one",
-              target: "write-directory",
-              default: "cwd",
-            },
-            { field: "inputImages", cardinality: "many", target: "read-file" },
-            { field: "maskImage", cardinality: "one", target: "read-file" },
-          ],
-        } as const,
       });
     }
 
@@ -892,12 +880,6 @@ export class Generate implements ServerTool {
           mode: "required",
         }),
         input: zodObjectToCliLines(videoGenerateInputSchema),
-        workflowPathAuthority: {
-          inputs: [
-            { field: "path", cardinality: "one", target: "write-file" },
-            { field: "inputImage", cardinality: "one", target: "read-file" },
-          ],
-        } as const,
       });
     }
 
@@ -1025,20 +1007,12 @@ export class Generate implements ServerTool {
     });
 
     const video = res.video;
-    const pinnedWorkflowOutput =
-      opts?.context?.workflowPolicy !== undefined && isWorkflowPinnedDescriptorPath(resolvedTarget);
-    let outPath: string;
-    if (pinnedWorkflowOutput) {
-      await fs.writeFile(resolvedTarget, video.uint8Array);
-      outPath = resolvedTarget;
-    } else {
-      const originalExt = extname(resolvedTarget);
-      const inferredExt = inferExtensionFromMimeType(video.mediaType) || ".mp4";
-      const targetWithExt =
-        originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
-      await fs.mkdir(dirname(targetWithExt), { recursive: true });
-      outPath = await writeFileWithUniqueName(targetWithExt, video.uint8Array);
-    }
+    const originalExt = extname(resolvedTarget);
+    const inferredExt = inferExtensionFromMimeType(video.mediaType) || ".mp4";
+    const targetWithExt =
+      originalExt.length > 0 ? resolvedTarget : `${resolvedTarget}${inferredExt}`;
+    await fs.mkdir(dirname(targetWithExt), { recursive: true });
+    const outPath = await writeFileWithUniqueName(targetWithExt, video.uint8Array);
 
     return {
       ok: true as const,
@@ -1050,8 +1024,4 @@ export class Generate implements ServerTool {
       providerMetadata: res.providerMetadata,
     };
   }
-}
-
-export function isWorkflowPinnedDescriptorPath(candidate: string): boolean {
-  return new RegExp(`^/proc/(?:self|${process.pid})/fd/\\d+$`, "u").test(candidate);
 }

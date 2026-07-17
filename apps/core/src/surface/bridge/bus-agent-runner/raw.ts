@@ -107,8 +107,7 @@ const workflowPolicyRawSchema = z
       .strictObject({
         runId: z.string().min(1).max(200),
         operationId: z.string().min(1).max(200),
-        dispatchEpoch: z.string().min(16).max(200).optional(),
-        controlToken: z.string().min(32).max(500),
+        dispatchEpoch: z.string().min(16).max(200),
       })
       .optional(),
   })

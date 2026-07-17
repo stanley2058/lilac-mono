@@ -190,8 +190,7 @@ describe("unified workflow integration", () => {
     await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
-  it("authors, reviews, approves, sandboxes, dispatches through the request bus, persists, and projects the terminal result", async () => {
-    if (process.env.LILAC_WORKFLOW_SANDBOX_INTEGRATION !== "1") return;
+  it("authors, validates, dispatches through the request bus, persists, and projects the terminal result", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-integration-"));
     roots.push(root);
     const workspaceRoot = path.join(root, "workspace");
@@ -231,21 +230,28 @@ describe("unified workflow integration", () => {
       async (message, context) => {
         if (message.type === lilacEventTypes.CmdRequestMessage && message.data.queue === "prompt") {
           const requestId = message.headers?.request_id;
-          if (!requestId) throw new Error("workflow request missing request_id");
+          const sessionId = message.headers?.session_id;
+          if (!requestId || !sessionId) throw new Error("workflow request missing identity");
           const workflow = z
             .object({
-              workflow: z.object({
+              workflow: z.strictObject({
                 runId: z.string(),
                 operationId: z.string(),
                 dispatchEpoch: z.string(),
-                controlToken: z.string(),
               }),
             })
             .parse(message.data.raw).workflow;
           expect(
+            store.authorizeWorkflowRequest({
+              requestId,
+              sessionId,
+              platform: "unknown",
+              now: 100,
+            })?.policy,
+          ).toMatchObject(workflow);
+          expect(
             store.claimWorkflowRequest({
               requestId,
-              token: workflow.controlToken,
               dispatchEpoch: workflow.dispatchEpoch,
               ownerId: "integration-agent",
               now: 100,
@@ -352,18 +358,19 @@ describe("unified workflow integration", () => {
       );
       const run = store.getRun(runId);
       const operations = store.listOperations(runId);
+      const agentOperation = operations.find((operation) => operation.kind === "agent");
       expect(run).toMatchObject({
         result: "integration result",
         terminalDetail: "Workflow completed",
       });
-      expect(operations.map((operation) => operation.kind)).toEqual(["phase", "agent"]);
-      expect(operations[1]).toMatchObject({
+      expect(operations.map((operation) => operation.kind).sort()).toEqual(["agent", "phase"]);
+      expect(agentOperation).toMatchObject({
         state: "succeeded",
         output: "integration result",
         usage: { totalTokens: 11 },
       });
       expect(requestIds).toHaveLength(1);
-      expect(operations[1]?.requestId).toBe(requestIds[0]);
+      expect(agentOperation?.requestId).toBe(requestIds[0]);
       expect(requestIds[0]).toMatch(/^wfr:/u);
       expect(adapter.contents.at(-1)?.text).not.toContain("integration result");
       expect(adapter.contents.at(-1)?.actions).toEqual([]);
@@ -439,24 +446,6 @@ describe("unified workflow integration", () => {
       subscriptionId: "restart-engine-first",
       pollMs: 5,
       now: () => 100,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (value) => value,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "restart-agent",
-          occurrence: 0,
-          path: "root:restart-agent:0",
-          parentPath: null,
-          phase: "audit",
-          depth: 1,
-          input: { prompt: "restart", options: { profile: "explore", label: "restart agent" } },
-        }),
-      }),
       dispatchAgentRequest: async ({ signal }) => {
         return await new Promise((resolve) => {
           signal.addEventListener(
@@ -467,11 +456,15 @@ describe("unified workflow integration", () => {
         });
       },
     });
+    let restartedEngine: WorkflowEngine | null = null;
+    let restartedProjector: WorkflowProgressProjector | null = null;
 
     try {
       await firstEngine.start();
       await waitFor(() => store.listOperations(runId, { state: "dispatched" }).length === 1);
-      const persistedRequestId = store.listOperations(runId)[0]?.requestId;
+      const persistedRequestId = store
+        .listOperations(runId)
+        .find((operation) => operation.kind === "agent")?.requestId;
       if (!persistedRequestId) throw new Error("active operation did not persist its request ID");
       await firstEngine.stop();
       await firstProjector.stop();
@@ -479,7 +472,7 @@ describe("unified workflow integration", () => {
       store.close();
 
       store = new DurableWorkflowStore(dbPath);
-      const restartedProjector = new WorkflowProgressProjector({
+      restartedProjector = new WorkflowProgressProjector({
         bus,
         store,
         adapters: new Map([["discord", adapter]]),
@@ -492,31 +485,13 @@ describe("unified workflow integration", () => {
       expect(adapter.sends).toBe(1);
 
       let reconciled = false;
-      const restartedEngine = new WorkflowEngine({
+      restartedEngine = new WorkflowEngine({
         bus,
         store,
         dataDir,
         subscriptionId: "restart-engine-second",
         pollMs: 5,
         now: () => 60_101,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (value) => value,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "restart-agent",
-            occurrence: 0,
-            path: "root:restart-agent:0",
-            parentPath: null,
-            phase: "audit",
-            depth: 1,
-            input: { prompt: "restart", options: { profile: "explore", label: "restart agent" } },
-          }),
-        }),
         dispatchAgentRequest: async ({ requestId, reconcile }) => {
           expect(requestId).toBe(persistedRequestId);
           reconciled = reconcile;
@@ -529,12 +504,19 @@ describe("unified workflow integration", () => {
         adapter.contents.some((content) => content.text?.includes("State: **succeeded**")),
       );
       expect(reconciled).toBe(true);
-      expect(store.listOperations(runId)).toHaveLength(1);
+      expect(
+        store
+          .listOperations(runId)
+          .map((operation) => operation.kind)
+          .sort(),
+      ).toEqual(["agent", "phase"]);
       expect(store.getRun(runId)?.result).toBe("recovered result");
       expect(JSON.stringify(adapter.contents)).not.toContain("restart-secret");
       await restartedEngine.stop();
       await restartedProjector.stop();
     } finally {
+      await restartedEngine?.stop();
+      await restartedProjector?.stop();
       await firstEngine.stop();
       await firstProjector.stop();
       await tool.destroy();

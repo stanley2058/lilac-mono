@@ -13,7 +13,6 @@ import {
   type WorkflowResourcePolicy,
   type WorkflowLimits,
   type WorkflowMetadata,
-  type WorkflowSafetyMode,
 } from "./workflow-domain";
 
 export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v3";
@@ -166,9 +165,6 @@ const sourceResourcePolicySchema = z.strictObject({
     .min(1_000)
     .max(24 * 60 * 60 * 1_000)
     .default(10 * 60 * 1_000),
-  safety: z.strictObject({ escalation: z.literal("none").default("none") }).default({
-    escalation: "none",
-  }),
 });
 
 const sourceLimitsSchema = workflowLimitsSchema
@@ -180,7 +176,6 @@ const sourceLimitsSchema = workflowLimitsSchema
       maxInputBytes: limits.maxInputBytes ?? MAX_WORKFLOW_INPUT_BYTES,
       maxOperationOutputBytes: limits.maxOperationOutputBytes ?? 1024 * 1024,
       maxResultBytes: limits.maxResultBytes ?? 1024 * 1024,
-      maxRuntimeMemoryBytes: limits.maxRuntimeMemoryBytes ?? 256 * 1024 * 1024,
     }),
   )
   .pipe(
@@ -197,11 +192,6 @@ const sourceLimitsSchema = workflowLimitsSchema
         .int()
         .positive()
         .max(16 * 1024 * 1024),
-      maxRuntimeMemoryBytes: z
-        .number()
-        .int()
-        .min(64 * 1024 * 1024)
-        .max(256 * 1024 * 1024),
     }),
   );
 
@@ -1062,7 +1052,6 @@ export function validateWorkflowArgs(params: {
 export function validateWorkflowSource(params: {
   name: string;
   source: string;
-  safetyMode?: WorkflowSafetyMode;
 }): ValidatedWorkflowDefinition {
   const name = workflowDefinitionNameSchema.parse(params.name);
   const sourceBytes = Buffer.byteLength(params.source, "utf8");
@@ -1082,6 +1071,11 @@ export function validateWorkflowSource(params: {
   const inputSchema = jsonObjectSchema.parse(normalizedInput);
   const rawResources = jsonObjectSchema.safeParse(raw.resources);
   if (rawResources.success) {
+    if ("safety" in rawResources.data) {
+      throw new Error(
+        "Workflow revision field 'resources.safety' was removed; delete it from the workflow definition",
+      );
+    }
     const rawAgents = jsonObjectSchema.safeParse(rawResources.data["agents"]);
     const removedAgentField = rawAgents.success
       ? REMOVED_REVISION_AGENT_FIELDS.find((field) => field in rawAgents.data)
@@ -1098,14 +1092,15 @@ export function validateWorkflowSource(params: {
       );
     }
   }
-  const sourceResources = sourceResourcePolicySchema.parse(raw.resources);
-  const resources = normalizeWorkflowResourcePolicy({
-    ...sourceResources,
-    safety: {
-      originatingMode: params.safetyMode ?? "trusted",
-      escalation: sourceResources.safety.escalation,
-    },
-  });
+  const rawLimits = jsonObjectSchema.safeParse(raw.limits ?? {});
+  if (rawLimits.success && "maxRuntimeMemoryBytes" in rawLimits.data) {
+    throw new Error(
+      "Workflow revision field 'limits.maxRuntimeMemoryBytes' was removed; delete it from the workflow definition",
+    );
+  }
+  const resources = normalizeWorkflowResourcePolicy(
+    sourceResourcePolicySchema.parse(raw.resources),
+  );
   const limits = sourceLimitsSchema.parse(raw.limits ?? {});
   if (sourceBytes > limits.maxSourceBytes) {
     throw new Error(

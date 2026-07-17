@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 
 import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
 
-export const WORKFLOW_SCHEMA_VERSION = 20;
+export const WORKFLOW_SCHEMA_VERSION = 21;
 
 type WorkflowMigration = {
   version: number;
@@ -1021,6 +1021,184 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       `DELETE FROM workflow_revisions
        WHERE runtime_version <> 'lilac-workflow-js-v3'`,
       `DROP TABLE workflow_shared_editor_leases`,
+    ],
+  },
+  {
+    version: 21,
+    name: "minimal durable dispatch contract",
+    statements: [
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'run', run_id, 'v20_nonterminal_run_cancelled_for_minimal_dispatch_migration',
+         updated_at
+       FROM workflow_runs
+       WHERE state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'operation', run_id || ':' || operation_id,
+         'v20_nonterminal_operation_cancelled_for_minimal_dispatch_migration', updated_at
+       FROM workflow_operations
+       WHERE state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'trigger', trigger_id,
+         'v20_active_trigger_cancelled_for_minimal_dispatch_migration', updated_at
+       FROM workflow_triggers
+       WHERE state IN ('active', 'paused')`,
+      `UPDATE workflow_request_dispatches
+       SET active = 0, expires_at = MIN(expires_at, updated_at), owner_id = NULL,
+         owner_heartbeat_at = NULL
+       WHERE active = 1`,
+      `UPDATE workflow_waits
+       SET state = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+          resolved_at = COALESCE(resolved_at, updated_at)
+       WHERE state IN ('pending', 'claimed')`,
+      `UPDATE workflow_runs
+       SET state = 'failed',
+         terminal_detail = COALESCE(
+           terminal_detail,
+           'Rejected under the pre-v21 workflow approval model'
+         )
+       WHERE state = 'rejected'`,
+      `UPDATE workflow_operations
+       SET state = 'cancelled',
+         error = 'Cancelled by schema v21 minimal durable dispatch migration',
+         claimed_by = NULL, claimed_at = NULL, terminal_at = COALESCE(terminal_at, updated_at)
+       WHERE state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')`,
+      `UPDATE workflow_runs
+       SET state = 'cancelled',
+         terminal_detail = 'Cancelled by schema v21 minimal durable dispatch migration',
+         claimed_by = NULL, claimed_at = NULL, terminal_at = COALESCE(terminal_at, updated_at)
+       WHERE state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')`,
+      `UPDATE workflow_triggers
+       SET state = 'cancelled', next_fire_at = NULL, claimed_by = NULL, claimed_at = NULL
+       WHERE state IN ('active', 'paused')`,
+      `UPDATE workflow_request_dispatches
+       SET policy_json = json_object(
+         'runId', run_id,
+         'operationId', operation_id,
+         'dispatchEpoch', dispatch_epoch,
+         'profile', CASE WHEN json_valid(policy_json)
+           THEN json_extract(policy_json, '$.profile') ELSE NULL END,
+         'model', CASE WHEN json_valid(policy_json)
+           THEN json_extract(policy_json, '$.model') ELSE NULL END,
+         'reasoning', CASE WHEN json_valid(policy_json)
+           THEN json_extract(policy_json, '$.reasoning') ELSE NULL END,
+         'resolvedModelRequest', CASE WHEN json_valid(policy_json)
+           THEN json_extract(policy_json, '$.resolvedModelRequest') ELSE NULL END,
+         'cwd', CASE WHEN json_valid(policy_json)
+           THEN json_extract(policy_json, '$.canonicalCwd') ELSE NULL END,
+         'originSession', json_object(
+           'requestId', (SELECT origin_request_id FROM workflow_runs WHERE run_id = workflow_request_dispatches.run_id),
+           'sessionId', (SELECT origin_session_id FROM workflow_runs WHERE run_id = workflow_request_dispatches.run_id),
+           'client', (SELECT origin_client FROM workflow_runs WHERE run_id = workflow_request_dispatches.run_id),
+           'userId', (SELECT origin_user_id FROM workflow_runs WHERE run_id = workflow_request_dispatches.run_id)
+         )
+       )`,
+      `UPDATE workflow_revisions
+       SET capabilities_json = json_remove(capabilities_json, '$.safety'),
+         limits_json = json_remove(limits_json, '$.maxRuntimeMemoryBytes')`,
+      `UPDATE workflow_triggers SET origin_json = json_remove(origin_json, '$.safetyMode')`,
+      `DROP INDEX idx_workflow_runs_approval_state`,
+      `ALTER TABLE workflow_runs DROP COLUMN approval_id`,
+      `ALTER TABLE workflow_runs DROP COLUMN origin_safety_mode`,
+      `ALTER TABLE workflow_surface_actions DROP COLUMN approval_id`,
+      `DROP TABLE workflow_approvals`,
+      `CREATE TABLE workflow_request_dispatches_v21 (
+         request_id TEXT PRIMARY KEY,
+         run_id TEXT NOT NULL,
+         operation_id TEXT NOT NULL,
+         session_id TEXT NOT NULL,
+         platform TEXT NOT NULL,
+         policy_json TEXT NOT NULL,
+         expires_at INTEGER NOT NULL,
+         owner_id TEXT,
+         owner_heartbeat_at INTEGER,
+         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         prompt_published_at INTEGER,
+         dispatch_epoch TEXT NOT NULL,
+         UNIQUE (run_id, operation_id),
+         FOREIGN KEY (run_id, operation_id)
+           REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE
+       )`,
+      `INSERT INTO workflow_request_dispatches_v21 (
+         request_id, run_id, operation_id, session_id, platform, policy_json,
+         expires_at, owner_id, owner_heartbeat_at, active, created_at, updated_at,
+         prompt_published_at, dispatch_epoch
+       )
+       SELECT request_id, run_id, operation_id, session_id, platform, policy_json,
+         expires_at, owner_id, owner_heartbeat_at, active, created_at, updated_at,
+         prompt_published_at, dispatch_epoch
+       FROM workflow_request_dispatches`,
+      `DROP TABLE workflow_request_dispatches`,
+      `ALTER TABLE workflow_request_dispatches_v21 RENAME TO workflow_request_dispatches`,
+      `CREATE INDEX idx_workflow_request_dispatches_active
+       ON workflow_request_dispatches(active, owner_heartbeat_at, expires_at)`,
+      `DROP TABLE workflow_worktree_outputs`,
+      `DROP TRIGGER IF EXISTS workflow_missing_surface_binding_after_run_insert`,
+      `DROP TRIGGER IF EXISTS workflow_missing_surface_binding_after_target_update`,
+      `DROP TRIGGER IF EXISTS workflow_missing_surface_binding_after_run_delete`,
+      `DROP TRIGGER IF EXISTS workflow_missing_surface_binding_after_binding_insert`,
+      `DROP TRIGGER IF EXISTS workflow_missing_surface_binding_after_binding_delete`,
+      `CREATE TABLE workflow_surface_bindings_v21 (
+         run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+         target_json TEXT NOT NULL,
+         message_ref_json TEXT,
+         last_rendered_sha256 TEXT,
+         last_error TEXT,
+         retry_count INTEGER NOT NULL,
+         next_attempt_at INTEGER,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL
+       )`,
+      `INSERT INTO workflow_surface_bindings_v21 (
+         run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
+         retry_count, next_attempt_at, created_at, updated_at
+       )
+       SELECT run_id, target_json, message_ref_json, last_rendered_sha256, last_error,
+         retry_count, next_attempt_at, created_at, updated_at
+       FROM workflow_surface_bindings`,
+      `DROP TABLE workflow_surface_bindings`,
+      `ALTER TABLE workflow_surface_bindings_v21 RENAME TO workflow_surface_bindings`,
+      `CREATE INDEX idx_workflow_surface_bindings_retry
+       ON workflow_surface_bindings(next_attempt_at)
+       WHERE next_attempt_at IS NOT NULL`,
+      `DROP TABLE IF EXISTS workflow_surface_projection_claims`,
+      `DROP TABLE IF EXISTS workflow_surface_projection_orphans`,
+      `DROP TABLE IF EXISTS workflow_missing_surface_bindings`,
+      `DROP TABLE IF EXISTS workflow_projection_reconciliation_state`,
+      `CREATE TABLE workflow_action_outbox_v21 (
+         outbox_id TEXT PRIMARY KEY,
+         action_id TEXT NOT NULL,
+         run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+         event_type TEXT NOT NULL,
+         payload_json TEXT NOT NULL,
+         published_at INTEGER,
+         projected_at INTEGER,
+         attempt_count INTEGER NOT NULL DEFAULT 0,
+         next_attempt_at INTEGER,
+         last_error TEXT,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL
+       )`,
+      `INSERT INTO workflow_action_outbox_v21 (
+         outbox_id, action_id, run_id, event_type, payload_json, published_at,
+         projected_at, attempt_count, next_attempt_at, last_error, created_at, updated_at
+       )
+       SELECT outbox_id, action_id, run_id, event_type, payload_json, published_at,
+         projected_at, attempt_count, next_attempt_at, last_error, created_at, updated_at
+       FROM workflow_action_outbox`,
+      `DROP TABLE workflow_action_outbox`,
+      `ALTER TABLE workflow_action_outbox_v21 RENAME TO workflow_action_outbox`,
+      `CREATE INDEX idx_workflow_action_outbox_publish
+       ON workflow_action_outbox(published_at, next_attempt_at, created_at)`,
+      `CREATE INDEX idx_workflow_action_outbox_project
+       ON workflow_action_outbox(projected_at, event_type, created_at)`,
     ],
   },
 ];

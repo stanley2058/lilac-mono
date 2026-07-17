@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,7 +24,7 @@ import { buildSyntheticToolCallId } from "@stanley2058/lilac-agent";
 
 import {
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
-  assertAuthorizedWorkflowScratchRoot,
+  assertWorkflowDispatchPolicy,
   appendConfiguredAliasPromptBlock,
   appendAdditionalSessionMemoBlock,
   buildAutoInjectedThreadSearchOverlay,
@@ -52,7 +51,6 @@ import {
   maybeAppendResponseCommentaryPrompt,
   resolveSessionAdditionalPrompts,
   resolveAgentRunModel,
-  resolveSubagentProjectRoot,
   shouldRunAutoInjectedThreadSearch,
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
@@ -67,93 +65,15 @@ import {
 import { createAgentOutputActivityPublisher } from "../../../src/shared/agent-output-activity";
 import { createIdleTimer } from "../../../src/shared/idle-timer";
 import { formatSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
-import { parseSubagentMetaFromRaw } from "../../../src/surface/bridge/bus-agent-runner/raw";
+import {
+  parseSubagentMetaFromRaw,
+  parseWorkflowRequestHintFromRaw,
+} from "../../../src/surface/bridge/bus-agent-runner/raw";
 import {
   buildExperimentalDownloadForAnthropicFallback,
   shouldForceUrlDownloadForAnthropicFallback,
   withStableAnthropicUpstreamOrder,
 } from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
-
-describe("subagent workflow project roots", () => {
-  it("uses the trusted parent execution cwd for a direct primary subagent", () => {
-    expect(
-      resolveSubagentProjectRoot({
-        parentExecutionCwd: "/tmp/direct-project",
-        workflowPolicy: null,
-      }),
-    ).toBe("/tmp/direct-project");
-  });
-
-  it("uses the selected operation root instead of a nested operation worktree cwd", () => {
-    expect(
-      resolveSubagentProjectRoot({
-        parentExecutionCwd: "/data/workflow-worktrees/operation-1",
-        workflowPolicy: { canonicalRequestedCwd: "/app/selected-operation-root" },
-      }),
-    ).toBe("/app/selected-operation-root");
-  });
-});
-
-describe("workflow runner scratch authorization", () => {
-  it("accepts a generated descendant's durable family root and rejects another family", () => {
-    const dataDir = "/tmp/lilac-runner-data";
-    const familyScratchRoot = "/tmp/lilac-runner-data/workflow-runtime/scratch/parent-run";
-    const completionTarget = {
-      kind: "live_parent" as const,
-      parentRequestId: "parent-request",
-      parentSessionId: "parent-session",
-      parentRequestClient: "discord" as const,
-      parentToolCallId: "parent-tool",
-      childRequestId: "child-request",
-      childSessionId: "child-session",
-      profile: "self" as const,
-      sessionName: "nested",
-      depth: 2,
-      reasoning: null,
-      fallbackToSurface: false,
-      fallbackProgressTarget: null,
-      deferredDelivery: true,
-      familyScratchRoot,
-    };
-    const store = { getRun: () => ({ completionTarget }) };
-
-    expect(
-      assertAuthorizedWorkflowScratchRoot({
-        dataDir,
-        store,
-        policy: { runId: "generated-run", canonicalScratchRoot: familyScratchRoot },
-      }),
-    ).toBe(familyScratchRoot);
-    expect(() =>
-      assertAuthorizedWorkflowScratchRoot({
-        dataDir,
-        store,
-        policy: {
-          runId: "generated-run",
-          canonicalScratchRoot: "/tmp/lilac-runner-data/workflow-runtime/scratch/other-family",
-        },
-      }),
-    ).toThrow("durable run family");
-  });
-
-  it("uses the run-derived scratch root for a normal durable run", () => {
-    const dataDir = "/tmp/lilac-runner-data";
-    const runId = "ordinary-run";
-    const expected = path.join(
-      dataDir,
-      "workflow-runtime",
-      "scratch",
-      createHash("sha256").update(runId).digest("hex").slice(0, 48),
-    );
-    expect(
-      assertAuthorizedWorkflowScratchRoot({
-        dataDir,
-        store: { getRun: () => ({ completionTarget: { kind: "detached" as const } }) },
-        policy: { runId, canonicalScratchRoot: expected },
-      }),
-    ).toBe(expected);
-  });
-});
 
 describe("deferred subagent result", () => {
   it("exposes the durable workflow run ID without exposing the child request ID", () => {
@@ -246,6 +166,27 @@ describe("deferred subagent result", () => {
 });
 
 describe("subagent model selection", () => {
+  it("parses the minimal workflow dispatch hint and requires its epoch", () => {
+    expect(
+      parseWorkflowRequestHintFromRaw({
+        workflow: {
+          runId: "run-1",
+          operationId: "operation-1",
+          dispatchEpoch: "dispatch-epoch-0001",
+        },
+      }),
+    ).toEqual({
+      runId: "run-1",
+      operationId: "operation-1",
+      dispatchEpoch: "dispatch-epoch-0001",
+    });
+    expect(
+      parseWorkflowRequestHintFromRaw({
+        workflow: { runId: "run-1", operationId: "operation-1" },
+      }),
+    ).toBeNull();
+  });
+
   it("parses a subagent reasoning override from raw request metadata", () => {
     expect(
       parseSubagentMetaFromRaw({
@@ -360,8 +301,7 @@ describe("subagent model selection", () => {
     const resolved = resolveAgentRunModel({
       cfg,
       runProfile: "general",
-      workflowResolvedModel: "codex/durable-model",
-      workflowResolvedRequest: {
+      resolvedModelRequest: {
         alias: "removed-preset",
         spec: "codex/durable-model",
         provider: "codex",
@@ -384,6 +324,41 @@ describe("subagent model selection", () => {
       responseCommentary: true,
       anthropicPromptCache: true,
     });
+  });
+
+  it("validates workflow reasoning against the operation request, not resolved defaults", () => {
+    const policy = {
+      runId: "run-1",
+      operationId: "operation-1",
+      dispatchEpoch: "dispatch-epoch-0001",
+      profile: "general" as const,
+      model: null,
+      reasoning: null,
+      resolvedModelRequest: {
+        spec: "provider/default-model",
+        provider: "provider",
+        modelId: "default-model",
+        reasoning: "high" as const,
+        reasoningDisplay: "simple" as const,
+      },
+      cwd: "/workspace",
+      originSession: {
+        requestId: null,
+        sessionId: null,
+        client: null,
+        userId: null,
+      },
+    };
+
+    expect(() =>
+      assertWorkflowDispatchPolicy(policy, { profile: "general", depth: 1 }),
+    ).not.toThrow();
+    expect(() =>
+      assertWorkflowDispatchPolicy(
+        { ...policy, reasoning: "medium" },
+        { profile: "general", depth: 1, reasoning: "low" },
+      ),
+    ).toThrow("reasoning does not match the approved operation policy");
   });
 });
 

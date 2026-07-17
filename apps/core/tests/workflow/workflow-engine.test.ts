@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,7 +18,6 @@ import {
 
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { WorkflowEngine, workflowAgentRequestId } from "../../src/workflow/workflow-engine";
-import { ensureWorkflowRunScratch } from "../../src/workflow/workflow-scratch";
 import type { WorkflowRequestPolicy } from "../../src/workflow/workflow-request-authority";
 import { canonicalJsonSha256, sha256 } from "../../src/workflow/workflow-definition";
 import {
@@ -28,7 +27,10 @@ import {
 } from "../../src/workflow/workflow-domain";
 import { WorkflowWaitResolver } from "../../src/workflow/workflow-wait-resolver";
 import { readWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
-import { readWorkflowWorktreePatch } from "../../src/workflow/workflow-worktree-artifact";
+import {
+  compileWorkflowSource,
+  parseWorkflowCallSiteManifest,
+} from "../../src/workflow/workflow-source-compiler";
 
 const HASH_A = "a".repeat(64);
 
@@ -42,20 +44,6 @@ class HandoffInterceptStore extends DurableWorkflowStore {
     this.beforeHandoff = null;
     intercept?.();
     return super.getWorkflowRequestDispatchHandoff(input);
-  }
-}
-
-class TerminalReceiptReadStore extends DurableWorkflowStore {
-  onMissingTerminalReceipt: (() => void) | null = null;
-
-  override getWorkflowRequestTerminalReceipt(requestId: string) {
-    const receipt = super.getWorkflowRequestTerminalReceipt(requestId);
-    if (!receipt) {
-      const observer = this.onMissingTerminalReceipt;
-      this.onMissingTerminalReceipt = null;
-      observer?.();
-    }
-    return receipt;
   }
 }
 
@@ -85,30 +73,6 @@ class CapturingRawBus implements RawBus {
     return this.history.filter((message) => message.topic === topic).at(-1)?.id ?? null;
   }
   async close() {}
-}
-
-class FailingInterruptRawBus extends CapturingRawBus {
-  readonly interruptAttempts: string[] = [];
-  private failNextInterrupt = true;
-
-  override async publish<TData>(
-    message: Omit<Message<TData>, "id" | "ts">,
-    options: PublishOptions,
-  ) {
-    const data = z.object({ queue: z.string() }).safeParse(message.data);
-    if (
-      message.type === lilacEventTypes.CmdRequestMessage &&
-      data.success &&
-      data.data.queue === "interrupt"
-    ) {
-      this.interruptAttempts.push(message.headers?.request_id ?? "missing");
-      if (this.failNextInterrupt) {
-        this.failNextInterrupt = false;
-        throw new Error("injected interrupt failure");
-      }
-    }
-    return await super.publish(message, options);
-  }
 }
 
 class LiveCapturingRawBus implements RawBus {
@@ -180,14 +144,12 @@ function createTrustedRun(
     maxWallTimeMs,
     operationIdleTimeoutMs,
     waits: ["reply", "sleep"],
-    safety: { originatingMode: "trusted", escalation: "none" },
   });
   const limits = {
     maxSourceBytes: 100_000,
     maxInputBytes: 10_000,
     maxOperationOutputBytes: outputLimits.operation,
     maxResultBytes: outputLimits.result,
-    maxRuntimeMemoryBytes: 256 * 1024 * 1024,
   };
   const revision = {
     revisionId: "revision-1",
@@ -221,7 +183,6 @@ function createTrustedRun(
         sessionId: "channel-1",
         client: "discord",
         userId: "user-1",
-        safetyMode: "trusted",
         projectCwd: canonicalWorkspaceRoot,
       },
       completionTarget,
@@ -242,17 +203,6 @@ function createTrustedRun(
 
 const createApprovedRun = createTrustedRun;
 
-async function runGit(cwd: string, args: readonly string[]): Promise<string> {
-  const process = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
-  ]);
-  if (exitCode !== 0) throw new Error(stderr);
-  return stdout.trim();
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3_000;
   while (!predicate()) {
@@ -262,105 +212,40 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 function persistedAgentInput(prompt: string, editing = false, cwd = process.cwd()) {
-  const stats = statSync(cwd, { bigint: true });
-  const identity = { dev: stats.dev.toString(10), ino: stats.ino.toString(10) };
   return {
     prompt,
     options: {
       profile: editing ? "general" : "explore",
       cwd,
-      cwdIdentity: identity,
-      authorityRoot: cwd,
-      authorityRootIdentity: identity,
-      isolation: editing ? "worktree" : "shared",
     },
   };
 }
 
+function workflowSource(bindings: string, body: string): string {
+  return `import { defineWorkflow } from "@lilac/workflow";
+export default defineWorkflow({
+  async run({ ${bindings} }) {
+    ${body}
+  },
+});
+`;
+}
+
+function compileTestWorkflow(source: string): string {
+  return compileWorkflowSource(source, sha256(source));
+}
+
+function agentWorkflowSource(prompt = "inspect", options = '{ profile: "explore" }'): string {
+  return workflowSource("agent", `return await agent(${JSON.stringify(prompt)}, ${options});`);
+}
+
+function firstOperationId(source: string): string {
+  const callSite = parseWorkflowCallSiteManifest(compileTestWorkflow(source))[0];
+  if (!callSite) throw new Error("Test workflow has no host call");
+  return `wfop:${sha256(`root:${callSite.callSiteId}:0`).slice(0, 40)}`;
+}
+
 describe("WorkflowEngine", () => {
-  it("cleans only retained terminal run scratch after the bounded retention window", async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), "workflow-scratch-cleanup-"));
-    const dbPath = join(root, "workflow.sqlite");
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(store, "run-cleanup");
-    expect(
-      store.cancelRunAndChildren({ runId: "run-cleanup", now: 10, detail: "complete" })?.state,
-    ).toBe("cancelled");
-    const scratch = await ensureWorkflowRunScratch({ dataDir: root, runId: "run-cleanup" });
-    await fs.utimes(scratch, new Date(0), new Date(0));
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: root,
-      subscriptionId: "scratch-cleanup",
-      now: () => 8 * 24 * 60 * 60 * 1_000,
-      assertSandbox: async () => {},
-    });
-    try {
-      await engine.start();
-      await expect(fs.lstat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("retains old family scratch while a generated family run is active", async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), "workflow-family-scratch-cleanup-"));
-    const dbPath = join(root, "workflow.sqlite");
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(store, "run-parent");
-    expect(
-      store.cancelRunAndChildren({ runId: "run-parent", now: 10, detail: "complete" })?.state,
-    ).toBe("cancelled");
-    const scratch = await ensureWorkflowRunScratch({ dataDir: root, runId: "run-parent" });
-    createApprovedRun(
-      store,
-      "run-child",
-      {},
-      { operation: 10_000, result: 10_000 },
-      {
-        kind: "live_parent",
-        parentRequestId: "wfr:parent",
-        parentSessionId: "workflow:parent",
-        parentRequestClient: "discord",
-        parentToolCallId: "tool:delegate",
-        childRequestId: "sub:child",
-        childSessionId: "sub:session",
-        profile: "explore",
-        sessionName: "child",
-        depth: 1,
-        reasoning: null,
-        fallbackToSurface: false,
-        fallbackProgressTarget: null,
-        deferredDelivery: true,
-        familyScratchRoot: scratch,
-      },
-    );
-    await fs.utimes(scratch, new Date(0), new Date(0));
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: root,
-      subscriptionId: "family-scratch-cleanup",
-      now: () => 8 * 24 * 60 * 60 * 1_000,
-      assertSandbox: async () => {},
-    });
-    try {
-      await engine.start();
-      expect((await fs.lstat(scratch)).isDirectory()).toBe(true);
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
   it("allows concurrent shared profile-native writers", async () => {
     const dbPath = join(tmpdir(), `workflow-mixed-authority-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -390,41 +275,17 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "mixed-operation-authority",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => {
-        const calls = [
-          { path: "root:edit-a:0", callSiteId: "edit-a", profile: "general", editing: true },
-          { path: "root:edit-b:0", callSiteId: "edit-b", profile: "general", editing: true },
-          { path: "root:read-a:0", callSiteId: "read-a", profile: "explore", editing: false },
-          { path: "root:read-b:0", callSiteId: "read-b", profile: "explore", editing: false },
-        ] as const;
-        return {
-          cancel: async () => {},
-          result: Promise.all(
-            calls.map((call, index) =>
-              input.onCall({
-                type: "call",
-                id: index + 1,
-                kind: "agent",
-                callSiteId: call.callSiteId,
-                occurrence: 0,
-                path: call.path,
-                parentPath: null,
-                phase: null,
-                depth: 0,
-                input: {
-                  prompt: call.callSiteId,
-                  options: call.editing
-                    ? { profile: call.profile, isolation: "shared" }
-                    : { profile: call.profile },
-                },
-              }),
-            ),
-          ),
-        };
-      },
+      loadSnapshot: async () =>
+        workflowSource(
+          "agent",
+          `return await Promise.all([
+            agent("edit-a", { profile: "general" }),
+            agent("edit-b", { profile: "general" }),
+            agent("read-a", { profile: "explore" }),
+            agent("read-b", { profile: "explore" }),
+          ]);`,
+        ),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async ({ policy }) => {
         active += 1;
         if (policy.profile !== "explore") activeEditors += 1;
@@ -462,79 +323,6 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("rejects worktree isolation before preparation or dispatch", async () => {
-    const dbPath = join(tmpdir(), `workflow-parallel-worktrees-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-      process.cwd(),
-      true,
-    );
-    let prepareCalls = 0;
-    let dispatchCalls = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "parallel-worktree-authority",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      prepareWorktree: async () => {
-        prepareCalls += 1;
-        return { path: "/must-not-exist", baseCommit: "a".repeat(40) };
-      },
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: Promise.all(
-          ["editor-a", "editor-b"].map((callSiteId, index) =>
-            input.onCall({
-              type: "call",
-              id: index + 1,
-              kind: "agent",
-              callSiteId,
-              occurrence: 0,
-              path: `root:${callSiteId}:0`,
-              parentPath: null,
-              phase: null,
-              depth: 0,
-              input: {
-                prompt: callSiteId,
-                options: { profile: "general", isolation: "worktree" },
-              },
-            }),
-          ),
-        ),
-      }),
-      dispatchAgentRequest: async () => {
-        dispatchCalls += 1;
-        return { state: "failed", output: "", detail: "test stop", usage: null };
-      },
-    });
-    try {
-      await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "failed");
-      expect(prepareCalls).toBe(0);
-      expect(dispatchCalls).toBe(0);
-      expect(store.getRun("run-1")?.terminalDetail).toContain(
-        "worktree isolation is temporarily unavailable",
-      );
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
   it("uses the engine data directory while resolving cwd before dispatch", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "workflow-engine-data-dir-"));
     const workspace = join(root, "workspace");
@@ -562,27 +350,12 @@ describe("WorkflowEngine", () => {
       dataDir,
       subscriptionId: "actual-data-dir-cwd",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call" as const,
-          id: 1,
-          kind: "agent" as const,
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: {
-            prompt: "work in nested cwd",
-            options: { profile: "general", cwd: requestedCwd },
-          },
-        }),
-      }),
+      loadSnapshot: async () =>
+        workflowSource(
+          "agent",
+          `return await agent("work in nested cwd", { profile: "general", cwd: ${JSON.stringify(requestedCwd)} });`,
+        ),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async (request) => {
         dispatchedCwds.push(request.agentCwd);
         return { state: "failed", output: "", detail: "test complete", usage: null };
@@ -617,25 +390,10 @@ describe("WorkflowEngine", () => {
     let firstDispatched = false;
     let replacementResolutions = 0;
     const recoveredPolicies: WorkflowRequestPolicy[] = [];
-    const startSandbox = (
-      input: Parameters<
-        NonNullable<ConstructorParameters<typeof WorkflowEngine>[0]["startSandbox"]>
-      >[0],
-    ) => ({
-      cancel: async () => {},
-      result: input.onCall({
-        type: "call" as const,
-        id: 1,
-        kind: "agent" as const,
-        callSiteId: "site-agent",
-        occurrence: 0,
-        path: "root:site-agent:0",
-        parentPath: null,
-        phase: null,
-        depth: 0,
-        input: { prompt: "durable request", options: { profile: "general" } },
-      }),
-    });
+    const source = workflowSource(
+      "agent",
+      'return await agent("durable request", { profile: "general" });',
+    );
     const first = new WorkflowEngine({
       bus,
       store,
@@ -643,10 +401,8 @@ describe("WorkflowEngine", () => {
       subscriptionId: "stale-policy-first",
       pollMs: 5,
       now: () => now,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox,
+      loadSnapshot: async () => source,
+      compileSource: compileTestWorkflow,
       validateAgentSelection: () => ({
         model: "provider/model-a",
         reasoning: "high",
@@ -680,10 +436,8 @@ describe("WorkflowEngine", () => {
       subscriptionId: "stale-policy-replacement",
       pollMs: 5,
       now: () => now,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox,
+      loadSnapshot: async () => source,
+      compileSource: compileTestWorkflow,
       validateAgentSelection: () => {
         replacementResolutions += 1;
         return {
@@ -744,7 +498,8 @@ describe("WorkflowEngine", () => {
       const raw = new CapturingRawBus();
       const bus = createLilacBus(raw);
       createApprovedRun(store);
-      const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
+      const source = agentWorkflowSource();
+      const operationId = firstOperationId(source);
       const requestId = workflowAgentRequestId("run-1", operationId, 0);
       const dispatchEpoch = `historical-epoch-${terminalState}`;
       const headers = {
@@ -777,25 +532,9 @@ describe("WorkflowEngine", () => {
         dataDir: dirname(dbPath),
         subscriptionId: `terminal-${terminalState}`,
         pollMs: 5,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
+        loadSnapshot: async () => source,
+        compileSource: compileTestWorkflow,
         createDispatchEpoch: () => dispatchEpoch,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        }),
       });
       try {
         await engine.start();
@@ -854,21 +593,28 @@ describe("WorkflowEngine", () => {
             message.data.queue === "prompt"
           ) {
             const requestId = message.headers?.request_id;
-            if (!requestId) throw new Error("Missing workflow request ID");
+            const sessionId = message.headers?.session_id;
+            if (!requestId || !sessionId) throw new Error("Missing workflow request identity");
             const workflow = z
               .object({
-                workflow: z.object({
+                workflow: z.strictObject({
                   runId: z.string(),
                   operationId: z.string(),
                   dispatchEpoch: z.string(),
-                  controlToken: z.string(),
                 }),
               })
               .parse(message.data.raw).workflow;
             expect(
+              store.authorizeWorkflowRequest({
+                requestId,
+                sessionId,
+                platform: "unknown",
+                now: 10,
+              })?.policy,
+            ).toMatchObject(workflow);
+            expect(
               store.claimWorkflowRequest({
                 requestId,
-                token: workflow.controlToken,
                 dispatchEpoch: workflow.dispatchEpoch,
                 ownerId: "mismatch-runner",
                 now: 10,
@@ -904,24 +650,8 @@ describe("WorkflowEngine", () => {
         pollMs: 5,
         receiptPollMs: 10_000,
         now: () => 10,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        }),
+        loadSnapshot: async () => agentWorkflowSource(),
+        compileSource: compileTestWorkflow,
       });
       try {
         await engine.start();
@@ -969,7 +699,6 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "manual-block",
       pollMs: 5,
-      assertSandbox: async () => {},
     });
     try {
       await engine.start();
@@ -999,15 +728,13 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "terminal-race",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       beforePromptPublication: async ({
         requestId,
         runId,
         operationId,
         dispatchEpoch,
-        controlToken,
         runOwnerId,
       }) => {
         expect(
@@ -1022,7 +749,6 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId,
-            token: controlToken,
             dispatchEpoch,
             ownerId: "runner-race",
             now: 19,
@@ -1040,21 +766,6 @@ describe("WorkflowEngine", () => {
           now: 20,
         });
       },
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
     });
     try {
       await engine.start();
@@ -1116,24 +827,8 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "live-terminal-receipt",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
     });
     try {
       await engine.start();
@@ -1154,7 +849,11 @@ describe("WorkflowEngine", () => {
       const commandData = z
         .object({
           raw: z.object({
-            workflow: z.object({ controlToken: z.string(), dispatchEpoch: z.string() }),
+            workflow: z.strictObject({
+              runId: z.string(),
+              operationId: z.string(),
+              dispatchEpoch: z.string(),
+            }),
           }),
         })
         .parse(command.data);
@@ -1163,7 +862,6 @@ describe("WorkflowEngine", () => {
       if (!requestId || !sessionId) throw new Error("Missing workflow command identity");
       const authorized = store.authorizeWorkflowRequest({
         requestId,
-        token: commandData.raw.workflow.controlToken,
         sessionId,
         platform: "unknown",
         now: Date.now(),
@@ -1172,7 +870,6 @@ describe("WorkflowEngine", () => {
       expect(
         store.claimWorkflowRequest({
           requestId,
-          token: commandData.raw.workflow.controlToken,
           dispatchEpoch: commandData.raw.workflow.dispatchEpoch,
           ownerId: "crashing-runner",
           now: Date.now(),
@@ -1249,27 +946,9 @@ describe("WorkflowEngine", () => {
       subscriptionId: "replacement-receipt-first",
       pollMs: 5,
       now: () => firstNow,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async (request) => {
-        const controlToken = request.controlToken;
-        if (!controlToken) throw new Error("Missing initial dispatch control token");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing initial run owner");
         expect(
@@ -1284,7 +963,6 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId: request.requestId,
-            token: controlToken,
             dispatchEpoch: request.dispatchEpoch,
             ownerId: "runner-before-crash",
             now: firstNow,
@@ -1320,24 +998,8 @@ describe("WorkflowEngine", () => {
       subscriptionId: "replacement-receipt-second",
       pollMs: 5,
       now: () => 100_000,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async () => {
         replacementDispatches += 1;
         throw new Error("Replacement engine must adopt the receipt before dispatch");
@@ -1402,26 +1064,9 @@ describe("WorkflowEngine", () => {
         subscriptionId: `${raceWindow}-receipt-first`,
         pollMs: 5,
         now: () => 10,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        }),
+        loadSnapshot: async () => agentWorkflowSource(),
+        compileSource: compileTestWorkflow,
         dispatchAgentRequest: async (request) => {
-          if (!request.controlToken) throw new Error("Missing initial control token");
           const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
           if (!runOwnerId) throw new Error("Missing initial run owner");
           expect(
@@ -1436,7 +1081,6 @@ describe("WorkflowEngine", () => {
           expect(
             store.claimWorkflowRequest({
               requestId: request.requestId,
-              token: request.controlToken,
               dispatchEpoch: request.dispatchEpoch,
               ownerId: "handoff-runner",
               now: 10,
@@ -1477,9 +1121,8 @@ describe("WorkflowEngine", () => {
         subscriptionId: `${raceWindow}-receipt-second`,
         pollMs: 5,
         now: () => 70_000,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
+        loadSnapshot: async () => agentWorkflowSource(),
+        compileSource: compileTestWorkflow,
         createDispatchEpoch:
           raceWindow === "authorization"
             ? () => {
@@ -1487,21 +1130,6 @@ describe("WorkflowEngine", () => {
                 return "replacement-dispatch-epoch";
               }
             : undefined,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        }),
         dispatchAgentRequest: async () => {
           replacementDispatches += 1;
           throw new Error("Replacement must adopt the raced receipt");
@@ -1553,27 +1181,10 @@ describe("WorkflowEngine", () => {
       subscriptionId: "pause-receipt",
       pollMs: 5,
       now: () => now,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async (request) => {
         dispatches += 1;
-        if (!request.controlToken) throw new Error("Missing dispatch control token");
         const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
         if (!runOwnerId) throw new Error("Missing run owner");
         expect(
@@ -1588,7 +1199,6 @@ describe("WorkflowEngine", () => {
         expect(
           store.claimWorkflowRequest({
             requestId: request.requestId,
-            token: request.controlToken,
             dispatchEpoch: request.dispatchEpoch,
             ownerId: "pause-runner",
             now,
@@ -1695,765 +1305,6 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it.skip("recovers a pre-dispatch worktree and captures committed and untracked edits before cleanup", async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), "workflow-durable-worktree-"));
-    const repo = join(root, "repo");
-    const dataDir = join(root, "data");
-    const dbPath = join(root, "workflow.sqlite");
-    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
-    await runGit(repo, ["init"]);
-    await runGit(repo, ["config", "user.name", "Workflow Test"]);
-    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
-    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
-    await runGit(repo, ["add", "tracked.txt"]);
-    await runGit(repo, ["commit", "-m", "base"]);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new CapturingRawBus();
-    const bus = createLilacBus(raw);
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-      repo,
-    );
-    const expectedOperationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
-    const preDispatchWorktree = join(
-      dataDir,
-      "workflow-worktrees",
-      sha256("run-1").slice(0, 20),
-      sha256(expectedOperationId).slice(0, 20),
-    );
-    await fs.mkdir(dirname(preDispatchWorktree), { recursive: true });
-    const expectedBaseCommit = await runGit(repo, ["rev-parse", "HEAD"]);
-    await runGit(repo, ["worktree", "add", "--detach", preDispatchWorktree, expectedBaseCommit]);
-    let cleanupAttempts = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir,
-      subscriptionId: "durable-worktree-success",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      removeWorktree: async (_revision, worktree) => {
-        cleanupAttempts += 1;
-        const operation = store.listOperations("run-1")[0];
-        const output = operation ? store.getWorktreeOutput("run-1", operation.operationId) : null;
-        if (!operation || !output) throw new Error("Missing captured worktree output");
-        expect(operation?.state).toBe("succeeded");
-        expect(output?.state).toBe("captured");
-        expect(worktree).toBe(output.worktreePath);
-        throw new Error("simulated cleanup interruption");
-      },
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "edit files", options: { profile: "general", isolation: "worktree" } },
-        }),
-      }),
-      dispatchAgentRequest: async (request) => {
-        await fs.writeFile(join(request.agentCwd, "tracked.txt"), "after\n");
-        await fs.writeFile(join(request.agentCwd, "untracked.txt"), "new file\n");
-        await runGit(request.agentCwd, ["add", "tracked.txt"]);
-        await runGit(request.agentCwd, ["commit", "-m", "agent commit"]);
-        return {
-          state: "resolved",
-          output: "editing complete",
-          detail: null,
-          usage: null,
-        };
-      },
-    });
-    let replacement: WorkflowEngine | null = null;
-    try {
-      await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "succeeded");
-
-      const operation = store.listOperations("run-1")[0];
-      if (!operation) throw new Error("Missing successful editing operation");
-      const capturedOutput = store.getWorktreeOutput("run-1", operation.operationId);
-      expect(operation).toMatchObject({ state: "succeeded", output: "editing complete" });
-      expect(capturedOutput).toMatchObject({
-        state: "captured",
-        baseCommit: expectedBaseCommit,
-        cleanupError: "simulated cleanup interruption",
-      });
-      if (
-        !capturedOutput ||
-        typeof capturedOutput.artifactId !== "string" ||
-        capturedOutput.bytes === null
-      ) {
-        throw new Error("Missing durable worktree patch metadata");
-      }
-      expect(capturedOutput.artifactId).toMatch(/^workflow-worktree-patch:/u);
-      expect(store.getRun("run-1")?.terminalDetail).toContain(capturedOutput.artifactId);
-      const patch = Buffer.from(
-        await readWorkflowWorktreePatch({
-          dataDir,
-          artifactId: capturedOutput.artifactId,
-          expectedBytes: capturedOutput.bytes,
-        }),
-      ).toString("utf8");
-      expect(patch).toContain("+after");
-      expect(patch).toContain("untracked.txt");
-      expect(patch).toContain("+new file");
-      expect((await fs.lstat(capturedOutput.worktreePath)).isDirectory()).toBe(true);
-      expect(await fs.readFile(join(repo, "tracked.txt"), "utf8")).toBe("before\n");
-
-      await engine.stop();
-      replacement = new WorkflowEngine({
-        bus,
-        store,
-        dataDir,
-        subscriptionId: "durable-worktree-replacement",
-        pollMs: 5,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
-      });
-      await replacement.start();
-      await waitFor(
-        () =>
-          operation !== undefined &&
-          store.getWorktreeOutput("run-1", operation.operationId)?.state === "cleaned",
-      );
-      expect(cleanupAttempts).toBe(1);
-      expect(store.getWorktreeOutput("run-1", operation.operationId)).toMatchObject({
-        state: "cleaned",
-        cleanupError: null,
-      });
-      await expect(fs.lstat(capturedOutput.worktreePath)).rejects.toThrow();
-    } finally {
-      await replacement?.stop();
-      await engine.stop();
-      await bus.close();
-      store.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it.skip("preserves an ordinary failed editing worktree as a fenced prepared output", async () => {
-    const dbPath = join(tmpdir(), `workflow-failed-worktree-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new CapturingRawBus();
-    const bus = createLilacBus(raw);
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-    );
-    let removeCalls = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "failed-worktree-preservation",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      prepareWorktree: async () => ({
-        path: "/preserved/failed-worktree",
-        baseCommit: "a".repeat(40),
-      }),
-      removeWorktree: async () => {
-        removeCalls += 1;
-      },
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: {
-            prompt: "edit then fail",
-            options: { profile: "general", isolation: "worktree" },
-          },
-        }),
-      }),
-      dispatchAgentRequest: async () => ({
-        state: "failed",
-        output: "",
-        detail: "agent failed after editing",
-        usage: null,
-      }),
-    });
-    try {
-      await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "failed");
-      const operation = store.listOperations("run-1")[0];
-      expect(operation).toMatchObject({ state: "failed", error: "agent failed after editing" });
-      expect(operation && store.getWorktreeOutput("run-1", operation.operationId)).toMatchObject({
-        state: "prepared",
-        worktreePath: "/preserved/failed-worktree",
-        artifactId: null,
-      });
-      expect(removeCalls).toBe(0);
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it.skip("fails and preserves a successful edit when ignored bytes are not patch-captured", async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), "workflow-ignored-worktree-"));
-    const repo = join(root, "repo");
-    const dataDir = join(root, "data");
-    const dbPath = join(root, "workflow.sqlite");
-    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
-    await runGit(repo, ["init"]);
-    await runGit(repo, ["config", "user.name", "Workflow Test"]);
-    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
-    await fs.writeFile(join(repo, ".gitignore"), "*.cache\n");
-    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
-    await runGit(repo, ["add", ".gitignore", "tracked.txt"]);
-    await runGit(repo, ["commit", "-m", "base"]);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-      repo,
-    );
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir,
-      subscriptionId: "ignored-worktree-preservation",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: {
-            prompt: "edit ignored output",
-            options: { profile: "general", isolation: "worktree" },
-          },
-        }),
-      }),
-      dispatchAgentRequest: async (request) => {
-        await fs.writeFile(join(request.agentCwd, "tracked.txt"), "after\n");
-        await fs.writeFile(join(request.agentCwd, "only-copy.cache"), "uncaptured bytes\n");
-        return { state: "resolved", output: "editing complete", detail: null, usage: null };
-      },
-    });
-    try {
-      await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "failed");
-      const operation = store.listOperations("run-1")[0];
-      if (!operation) throw new Error("Missing ignored-file operation");
-      const output = store.getWorktreeOutput("run-1", operation.operationId);
-      expect(operation).toMatchObject({
-        state: "failed",
-        error: expect.stringContaining("Ignored worktree content"),
-      });
-      expect(output).toMatchObject({
-        state: "prepared",
-        artifactId: null,
-        cleanupError: expect.stringContaining("worktree preserved for reconciliation"),
-      });
-      if (!output) throw new Error("Missing ignored-file reconciliation metadata");
-      expect(await fs.readFile(join(output.worktreePath, "only-copy.cache"), "utf8")).toBe(
-        "uncaptured bytes\n",
-      );
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it.skip("quarantines a committed replay worktree when its pre-dispatch base was never persisted", async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), "workflow-legacy-worktree-"));
-    const repo = join(root, "repo");
-    const dataDir = join(root, "data");
-    const dbPath = join(root, "workflow.sqlite");
-    await Promise.all([fs.mkdir(repo), fs.mkdir(dataDir)]);
-    await runGit(repo, ["init"]);
-    await runGit(repo, ["config", "user.name", "Workflow Test"]);
-    await runGit(repo, ["config", "user.email", "workflow@example.test"]);
-    await fs.writeFile(join(repo, "tracked.txt"), "before\n");
-    await runGit(repo, ["add", "tracked.txt"]);
-    await runGit(repo, ["commit", "-m", "base"]);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-      repo,
-    );
-    expect(
-      store.tryClaimTrustedRun({ runId: "run-1", claimerId: "legacy-engine", now: 10 }),
-    ).not.toBeNull();
-    const operationId = `wfop:${sha256("root:site-agent:0").slice(0, 40)}`;
-    const requestId = workflowAgentRequestId("run-1", operationId, 0);
-    expect(
-      store.createOperation(
-        {
-          runId: "run-1",
-          operationId,
-          callSiteId: "site-agent",
-          parentOperationId: null,
-          phase: null,
-          label: null,
-          kind: "agent",
-          input: persistedAgentInput("legacy edit", true, repo),
-          inputSha256: canonicalJsonSha256(persistedAgentInput("legacy edit", true, repo)),
-          state: "queued",
-          attempt: 0,
-          requestId: null,
-          output: null,
-          resultArtifactId: null,
-          error: null,
-          usage: null,
-          claimedBy: null,
-          claimedAt: null,
-          createdAt: 10,
-          startedAt: null,
-          updatedAt: 10,
-          terminalAt: null,
-        },
-        "legacy-engine",
-      ),
-    ).toBe(true);
-    expect(
-      store.transitionOperation({
-        runId: "run-1",
-        operationId,
-        runOwnerId: "legacy-engine",
-        from: "queued",
-        to: "dispatched",
-        requestId,
-        now: 11,
-      }),
-    ).toBe(true);
-    const worktree = join(
-      dataDir,
-      "workflow-worktrees",
-      sha256("run-1").slice(0, 20),
-      sha256(operationId).slice(0, 20),
-    );
-    await fs.mkdir(dirname(worktree), { recursive: true });
-    await runGit(repo, ["worktree", "add", "--detach", worktree, "HEAD"]);
-    await fs.writeFile(join(worktree, "tracked.txt"), "legacy committed edit\n");
-    await runGit(worktree, ["add", "tracked.txt"]);
-    await runGit(worktree, ["commit", "-m", "legacy agent edit"]);
-
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir,
-      subscriptionId: "legacy-worktree-quarantine",
-      pollMs: 5,
-      now: () => 100_000,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: {
-            prompt: "legacy edit",
-            options: { profile: "general", isolation: "worktree" },
-          },
-        }),
-      }),
-    });
-    try {
-      await engine.start();
-      await waitFor(() => store.getRun("run-1")?.state === "failed");
-      expect(store.getWorktreeOutput("run-1", operationId)).toMatchObject({
-        state: "quarantined",
-        baseCommit: null,
-        artifactId: null,
-        cleanupError: expect.stringContaining("no durable pre-dispatch base"),
-      });
-      expect(await fs.readFile(join(worktree, "tracked.txt"), "utf8")).toBe(
-        "legacy committed edit\n",
-      );
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it.skip("aborts a hung patch capture on cancellation and preserves reconciliation metadata", async () => {
-    const dbPath = join(tmpdir(), `workflow-cancel-capture-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-    );
-    let captureStarted = false;
-    let removeCalls = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "cancel-hung-capture",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      prepareWorktree: async () => ({
-        path: "/preserved/hung-capture",
-        baseCommit: "a".repeat(40),
-      }),
-      captureWorktreePatch: async ({ signal }) => {
-        captureStarted = true;
-        return await new Promise((_, reject) => {
-          signal?.addEventListener("abort", () => reject(new Error("capture aborted")), {
-            once: true,
-          });
-        });
-      },
-      removeWorktree: async () => {
-        removeCalls += 1;
-      },
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: {
-            prompt: "edit then capture",
-            options: { profile: "general", isolation: "worktree" },
-          },
-        }),
-      }),
-      dispatchAgentRequest: async () => ({
-        state: "resolved",
-        output: "editing complete",
-        detail: null,
-        usage: null,
-      }),
-    });
-    try {
-      await engine.start();
-      await waitFor(() => captureStarted);
-      expect(
-        store.cancelRunAndChildren({ runId: "run-1", now: 20, detail: "cancel capture" })?.state,
-      ).toBe("cancelled");
-      await waitFor(() => {
-        const operation = store.listOperations("run-1")[0];
-        return Boolean(
-          operation && store.getWorktreeOutput("run-1", operation.operationId)?.cleanupError,
-        );
-      });
-      const operation = store.listOperations("run-1")[0];
-      const output = operation ? store.getWorktreeOutput("run-1", operation.operationId) : null;
-      expect(output).toMatchObject({
-        state: "prepared",
-        artifactId: null,
-        cleanupError: expect.stringContaining("capture aborted"),
-      });
-      expect(removeCalls).toBe(0);
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it.skip("blocks a cancelled receipt observed after live handoff and preserves its editing worktree", async () => {
-    const dbPath = join(tmpdir(), `workflow-live-cancelled-handoff-${crypto.randomUUID()}.sqlite`);
-    const store = new TerminalReceiptReadStore(dbPath);
-    const raw = new LiveCapturingRawBus();
-    const bus = createLilacBus(raw);
-    createApprovedRun(
-      store,
-      "run-1",
-      {},
-      { operation: 10_000, result: 10_000 },
-      { kind: "detached" },
-      60_000,
-      true,
-    );
-    let captured:
-      | {
-          requestId: string;
-          runId: string;
-          operationId: string;
-          dispatchEpoch: string;
-          resolvedModel: string;
-        }
-      | undefined;
-    let sideEffects = 0;
-    let prepareCalls = 0;
-    let removeCalls = 0;
-    let replacementModelResolutions = 0;
-    let resolveLiveSelection: () => void = () => {};
-    const liveSelection = new Promise<void>((resolve) => {
-      resolveLiveSelection = resolve;
-    });
-    let resolveInitialReceiptMiss: () => void = () => {};
-    const initialReceiptMiss = new Promise<void>((resolve) => {
-      resolveInitialReceiptMiss = resolve;
-    });
-    const prepareWorktree = async () => {
-      prepareCalls += 1;
-      if (prepareCalls === 2) resolveLiveSelection();
-      return { path: "/preserved/worktree", baseCommit: "a".repeat(40) };
-    };
-    const removeWorktree = async () => {
-      removeCalls += 1;
-    };
-    const startSandbox = (
-      input: Parameters<
-        NonNullable<ConstructorParameters<typeof WorkflowEngine>[0]["startSandbox"]>
-      >[0],
-    ) => ({
-      cancel: async () => {},
-      result: input.onCall({
-        type: "call" as const,
-        id: 1,
-        kind: "agent" as const,
-        callSiteId: "site-agent",
-        occurrence: 0,
-        path: "root:site-agent:0",
-        parentPath: null,
-        phase: null,
-        depth: 0,
-        input: {
-          prompt: "apply side effect",
-          options: { profile: "general", isolation: "worktree" },
-        },
-      }),
-    });
-    const first = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "live-cancelled-first",
-      pollMs: 5,
-      now: () => 10,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      prepareWorktree,
-      removeWorktree,
-      startSandbox,
-      validateAgentSelection: () => ({
-        model: "provider/model-a",
-        reasoning: "high",
-        request: {
-          spec: "provider/model-a",
-          provider: "provider",
-          modelId: "model-a",
-          reasoning: "high",
-          reasoningDisplay: "simple",
-        },
-      }),
-      dispatchAgentRequest: async (request) => {
-        sideEffects += 1;
-        if (!request.controlToken) throw new Error("Missing live handoff control token");
-        const runOwnerId = store.getRun(request.run.runId)?.claimedBy;
-        if (!runOwnerId) throw new Error("Missing live handoff run owner");
-        expect(
-          store.claimWorkflowRequestPromptPublication({
-            requestId: request.requestId,
-            runId: request.run.runId,
-            operationId: request.operation.operationId,
-            runOwnerId,
-            now: 10,
-          }),
-        ).toBe(true);
-        expect(
-          store.claimWorkflowRequest({
-            requestId: request.requestId,
-            token: request.controlToken,
-            dispatchEpoch: request.dispatchEpoch,
-            ownerId: "live-runner",
-            now: 10,
-          }),
-        ).toBe(true);
-        captured = {
-          requestId: request.requestId,
-          runId: request.run.runId,
-          operationId: request.operation.operationId,
-          dispatchEpoch: request.dispatchEpoch,
-          resolvedModel: request.policy.resolvedModel,
-        };
-        return await new Promise((resolve) => {
-          request.signal.addEventListener(
-            "abort",
-            () => resolve({ state: "cancelled", output: "", detail: "paused", usage: null }),
-            { once: true },
-          );
-        });
-      },
-    });
-    const replacement = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "live-cancelled-replacement",
-      pollMs: 5,
-      receiptPollMs: 10_000,
-      now: () => 12,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      prepareWorktree,
-      removeWorktree,
-      startSandbox,
-      validateAgentSelection: () => {
-        replacementModelResolutions += 1;
-        return {
-          model: "provider/model-b",
-          reasoning: "low",
-          request: {
-            spec: "provider/model-b",
-            provider: "provider",
-            modelId: "model-b",
-            reasoning: "low",
-            reasoningDisplay: "simple",
-          },
-        };
-      },
-    });
-    try {
-      await first.start();
-      await waitFor(() => captured !== undefined);
-      expect(store.pauseRunAndChildren({ runId: "run-1", now: 11, detail: "pause" })?.state).toBe(
-        "paused",
-      );
-      await first.stop();
-      expect(store.transitionRun({ runId: "run-1", from: "paused", to: "queued", now: 12 })).toBe(
-        true,
-      );
-
-      store.onMissingTerminalReceipt = resolveInitialReceiptMiss;
-      await replacement.start();
-      await liveSelection;
-      await initialReceiptMiss;
-      if (!captured) throw new Error("Missing selected live dispatch");
-      expect(captured.resolvedModel).toBe("provider/model-a");
-      expect(replacementModelResolutions).toBe(0);
-      expect(
-        store.recordWorkflowRequestTerminal({
-          ...captured,
-          ownerId: "live-runner",
-          state: "cancelled",
-          detail: "cancelled after side effect",
-          now: 13,
-        }),
-      ).toBe(true);
-      await bus.publish(
-        lilacEventTypes.EvtRequestLifecycleChanged,
-        { state: "cancelled", ts: 13, detail: "cancelled after side effect" },
-        {
-          headers: {
-            request_id: captured.requestId,
-            session_id: `workflow:${captured.runId}:${captured.operationId}`,
-            request_client: "unknown",
-            workflow_dispatch_epoch: captured.dispatchEpoch,
-          },
-        },
-      );
-      await waitFor(() => store.getRun("run-1")?.state === "paused");
-
-      expect(sideEffects).toBe(1);
-      expect(removeCalls).toBe(0);
-      expect(store.getRun("run-1")?.terminalDetail).toBe(WORKFLOW_MANUAL_RECONCILIATION_DETAIL);
-      expect(store.listOperations("run-1")[0]).toMatchObject({
-        state: "blocked",
-        attempt: 0,
-        requestId: captured.requestId,
-        error: WORKFLOW_MANUAL_RECONCILIATION_DETAIL,
-      });
-      expect(
-        raw.messages.filter(
-          (message) =>
-            message.type === lilacEventTypes.CmdRequestMessage &&
-            typeof message.data === "object" &&
-            message.data !== null &&
-            "queue" in message.data &&
-            message.data.queue === "prompt",
-        ),
-      ).toHaveLength(0);
-    } finally {
-      await first.stop();
-      await replacement.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
   it("stops only the local sandbox after lease loss without interrupting successor requests", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-lease-loss-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
@@ -2468,24 +1319,8 @@ describe("WorkflowEngine", () => {
       subscriptionId: "lease-loss-local-only",
       pollMs: 5,
       now: () => now,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async ({ signal }) =>
         await new Promise((resolve) => {
           signal.addEventListener(
@@ -2499,7 +1334,7 @@ describe("WorkflowEngine", () => {
       await engine.start();
       await waitFor(() => store.listOperations("run-1", { state: "dispatched" }).length === 1);
       expect(
-        store.tryClaimTrustedRun({
+        store.tryClaimRun({
           runId: "run-1",
           claimerId: "successor",
           now: 100,
@@ -2527,150 +1362,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("tick attempts every sandbox and agent cancellation when earlier cancellations fail", async () => {
-    const dbPath = join(tmpdir(), `workflow-engine-tick-cancel-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new FailingInterruptRawBus();
-    const bus = createLilacBus(raw);
-    createApprovedRun(store);
-    createApprovedRun(store, "run-2");
-    const sandboxCancellations: number[] = [];
-    let launches = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "tick-cancellation-fanout",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => {
-        const launch = ++launches;
-        return {
-          cancel: async () => {
-            sandboxCancellations.push(launch);
-            if (launch === 1) throw new Error("injected sandbox cancellation failure");
-          },
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        };
-      },
-      dispatchAgentRequest: async ({ signal }) => {
-        if (signal.aborted) {
-          return { state: "cancelled", output: "", detail: "cancelled", usage: null };
-        }
-        return await new Promise((resolve) => {
-          signal.addEventListener(
-            "abort",
-            () => resolve({ state: "cancelled", output: "", detail: "cancelled", usage: null }),
-            { once: true },
-          );
-        });
-      },
-    });
-    try {
-      await engine.start();
-      await waitFor(
-        () =>
-          store.listOperations("run-1", { state: "dispatched" }).length === 1 &&
-          store.listOperations("run-2", { state: "dispatched" }).length === 1,
-      );
-      store.cancelRunAndChildren({ runId: "run-1", now: 10, detail: "cancel one" });
-      store.cancelRunAndChildren({ runId: "run-2", now: 10, detail: "cancel two" });
-      await waitFor(() => sandboxCancellations.length === 2 && raw.interruptAttempts.length === 2);
-      expect(sandboxCancellations.sort()).toEqual([1, 2]);
-      expect(new Set(raw.interruptAttempts).size).toBe(2);
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it("stop aggregates failures after attempting every sandbox and agent cancellation", async () => {
-    const dbPath = join(tmpdir(), `workflow-engine-stop-cancel-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new FailingInterruptRawBus();
-    const bus = createLilacBus(raw);
-    createApprovedRun(store);
-    createApprovedRun(store, "run-2");
-    const sandboxCancellations: number[] = [];
-    let launches = 0;
-    const engine = new WorkflowEngine({
-      bus,
-      store,
-      dataDir: dirname(dbPath),
-      subscriptionId: "stop-cancellation-fanout",
-      pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => {
-        const launch = ++launches;
-        return {
-          cancel: async () => {
-            sandboxCancellations.push(launch);
-            if (launch === 1) throw new Error("injected sandbox cancellation failure");
-          },
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        };
-      },
-      dispatchAgentRequest: async ({ signal }) => {
-        if (signal.aborted) {
-          return { state: "cancelled", output: "", detail: "stopped", usage: null };
-        }
-        return await new Promise((resolve) => {
-          signal.addEventListener(
-            "abort",
-            () => resolve({ state: "cancelled", output: "", detail: "stopped", usage: null }),
-            { once: true },
-          );
-        });
-      },
-    });
-    try {
-      await engine.start();
-      await waitFor(
-        () =>
-          store.listOperations("run-1", { state: "dispatched" }).length === 1 &&
-          store.listOperations("run-2", { state: "dispatched" }).length === 1,
-      );
-      await expect(engine.stop()).rejects.toThrow(/stop failed while cancelling active work/u);
-      expect(sandboxCancellations.sort()).toEqual([1, 2]);
-      expect(raw.interruptAttempts).toHaveLength(2);
-      expect(new Set(raw.interruptAttempts).size).toBe(2);
-    } finally {
-      await engine.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-
-  it("journals deterministic operations, captures usage/output, and caches replayed calls", async () => {
+  it("journals deterministic operations and captures usage and output", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const raw = new CapturingRawBus();
@@ -2684,41 +1376,15 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-engine",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: (async () => {
-          await input.onCall({
-            type: "call",
-            id: 1,
-            kind: "phase",
-            callSiteId: "site-phase",
-            occurrence: 0,
-            path: "root:site-phase:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { name: "audit" },
-          });
-          const call = {
-            type: "call" as const,
-            id: 2,
-            kind: "agent" as const,
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: "audit",
-            depth: 1,
-            input: { prompt: "inspect", options: { profile: "explore", label: "Inspect" } },
-          };
-          const first = await input.onCall(call);
-          const cached = await input.onCall(call);
-          return { first, cached };
-        })(),
-      }),
+      loadSnapshot: async () =>
+        workflowSource(
+          "phase, agent",
+          `return await phase("audit", async () => {
+            const first = await agent("inspect", { profile: "explore", label: "Inspect" });
+            return { first, cached: first };
+          });`,
+        ),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async ({ requestId }) => {
         dispatches += 1;
         expect(requestId).toMatch(/^wfr:[a-f0-9]{20}:[a-f0-9]{20}:0$/u);
@@ -2771,13 +1437,14 @@ describe("WorkflowEngine", () => {
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
     createApprovedRun(store);
-    const claimed = store.tryClaimTrustedRun({ runId: "run-1", claimerId: "dead", now: 3 });
+    const source = agentWorkflowSource();
+    const claimed = store.tryClaimRun({ runId: "run-1", claimerId: "dead", now: 3 });
     expect(claimed?.state).toBe("running");
     store.createOperation(
       {
         runId: "run-1",
-        operationId: `wfop:${sha256("root:site-agent:0").slice(0, 40)}`,
-        callSiteId: "site-agent",
+        operationId: firstOperationId(source),
+        callSiteId: parseWorkflowCallSiteManifest(compileTestWorkflow(source))[0]!.callSiteId,
         parentOperationId: null,
         phase: null,
         label: null,
@@ -2807,24 +1474,8 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-restart",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => source,
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async () => {
         dispatches += 1;
         return { state: "resolved", output: "duplicate", detail: null, usage: null };
@@ -2843,7 +1494,7 @@ describe("WorkflowEngine", () => {
     }
   });
 
-  it("fails operations that exceed approved output limits", async () => {
+  it("fails operations that exceed configured output limits", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-limits-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);
     const bus = createLilacBus(new CapturingRawBus());
@@ -2855,24 +1506,8 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-limits",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 1,
-          input: { prompt: "inspect", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async ({ run }) =>
         run.runId === "run-failure"
           ? {
@@ -2921,24 +1556,8 @@ describe("WorkflowEngine", () => {
       dataDir: root,
       subscriptionId: "test-workflow-artifacts",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "site-agent",
-          occurrence: 0,
-          path: "root:site-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "large", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource("large"),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async () => ({
         state: "resolved",
         output: largeOutput,
@@ -2995,28 +1614,10 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "test-workflow-controls",
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => {
-        launches += 1;
-        return {
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "agent",
-            callSiteId: "site-agent",
-            occurrence: 0,
-            path: "root:site-agent:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { prompt: "inspect", options: { profile: "explore" } },
-          }),
-        };
-      },
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
       dispatchAgentRequest: async ({ run, signal }) => {
+        launches += 1;
         if (run.runId === "run-cancel") {
           return await new Promise((resolve) => {
             signal.addEventListener(
@@ -3104,22 +1705,40 @@ describe("WorkflowEngine", () => {
         options: PublishOptions,
       ) {
         if (message.type === lilacEventTypes.CmdRequestMessage) {
-          const data = message.data as {
-            queue?: string;
-            raw?: {
-              cancel?: boolean;
-              workflow?: { controlToken?: string; dispatchEpoch?: string };
-            };
-          };
+          const data = z
+            .object({
+              queue: z.string().optional(),
+              raw: z
+                .object({
+                  cancel: z.boolean().optional(),
+                  workflow: z
+                    .strictObject({
+                      runId: z.string(),
+                      operationId: z.string(),
+                      dispatchEpoch: z.string(),
+                    })
+                    .optional(),
+                })
+                .optional(),
+            })
+            .parse(message.data);
           const requestId = message.headers?.request_id;
-          if (data.queue === "prompt" && requestId && data.raw?.workflow?.controlToken) {
-            store.claimWorkflowRequest({
+          const sessionId = message.headers?.session_id;
+          if (data.queue === "prompt" && requestId && sessionId && data.raw?.workflow) {
+            const authorized = store.authorizeWorkflowRequest({
               requestId,
-              token: data.raw.workflow.controlToken,
-              dispatchEpoch: data.raw.workflow.dispatchEpoch ?? "",
+              sessionId,
+              platform: "unknown",
+              now: Date.now(),
+            });
+            if (!authorized) throw new Error("Idle workflow request was not authorized");
+            const claimed = store.claimWorkflowRequest({
+              requestId,
+              dispatchEpoch: data.raw.workflow.dispatchEpoch,
               ownerId: "idle-test-runner",
               now: Date.now(),
             });
+            if (!claimed) throw new Error("Idle workflow request was not claimed");
             await super.publish(
               {
                 topic: "evt.request",
@@ -3127,9 +1746,9 @@ describe("WorkflowEngine", () => {
                 data: { state: "running" },
                 headers: {
                   request_id: requestId,
-                  session_id: message.headers?.session_id ?? "",
+                  session_id: sessionId,
                   request_client: "unknown",
-                  workflow_dispatch_epoch: data.raw.workflow.dispatchEpoch ?? "",
+                  workflow_dispatch_epoch: data.raw.workflow.dispatchEpoch,
                 },
               },
               { topic: "evt.request", type: lilacEventTypes.EvtRequestLifecycleChanged },
@@ -3200,24 +1819,8 @@ describe("WorkflowEngine", () => {
       subscriptionId: "idle-receipt",
       pollMs: 5,
       receiptPollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: "agent",
-          callSiteId: "idle-agent",
-          occurrence: 0,
-          path: "root:idle-agent:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: { prompt: "wait forever", options: { profile: "explore" } },
-        }),
-      }),
+      loadSnapshot: async () => agentWorkflowSource("wait forever"),
+      compileSource: compileTestWorkflow,
     });
     try {
       await engine.start();
@@ -3263,24 +1866,13 @@ describe("WorkflowEngine", () => {
       subscriptionId: "test-engine-waits",
       now: () => now,
       pollMs: 5,
-      assertSandbox: async () => {},
-      loadSnapshot: async () => "immutable",
-      compileSource: (source) => source,
-      startSandbox: (input) => ({
-        cancel: async () => {},
-        result: input.onCall({
-          type: "call",
-          id: 1,
-          kind: input.args["timeout"] === true ? "waitForReply" : "sleep",
-          callSiteId: input.args["timeout"] === true ? "site-reply" : "site-sleep",
-          occurrence: 0,
-          path: input.args["timeout"] === true ? "root:site-reply:0" : "root:site-sleep:0",
-          parentPath: null,
-          phase: null,
-          depth: 0,
-          input: input.args["timeout"] === true ? { timeoutMs: 10 } : 10,
-        }),
-      }),
+      loadSnapshot: async () =>
+        workflowSource(
+          "args, waitForReply, sleep",
+          `if (args.timeout === true) return await waitForReply({ timeoutMs: 10 });
+          return await sleep(10);`,
+        ),
+      compileSource: compileTestWorkflow,
     });
     try {
       await resolver.start();
@@ -3334,24 +1926,12 @@ describe("WorkflowEngine", () => {
         subscriptionId: `test-reply-restart-${crypto.randomUUID()}`,
         pollMs: 5,
         now: () => now,
-        assertSandbox: async () => {},
-        loadSnapshot: async () => "immutable",
-        compileSource: (source) => source,
-        startSandbox: (input) => ({
-          cancel: async () => {},
-          result: input.onCall({
-            type: "call",
-            id: 1,
-            kind: "waitForReply",
-            callSiteId: "site-reply",
-            occurrence: 0,
-            path: "root:site-reply:0",
-            parentPath: null,
-            phase: null,
-            depth: 0,
-            input: { messageId: "anchor-1", timeoutMs: 1_000 },
-          }),
-        }),
+        loadSnapshot: async () =>
+          workflowSource(
+            "waitForReply",
+            'return await waitForReply({ messageId: "anchor-1", timeoutMs: 1000 });',
+          ),
+        compileSource: compileTestWorkflow,
       });
     const resolver = new WorkflowWaitResolver({
       bus,

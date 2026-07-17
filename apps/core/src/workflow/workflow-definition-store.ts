@@ -8,12 +8,7 @@ import {
   workflowDefinitionNameSchema,
   type ValidatedWorkflowDefinition,
 } from "./workflow-definition";
-import {
-  compareCodeUnits,
-  workflowScopeSchema,
-  type WorkflowSafetyMode,
-  type WorkflowScope,
-} from "./workflow-domain";
+import { compareCodeUnits, workflowScopeSchema, type WorkflowScope } from "./workflow-domain";
 
 export type WorkflowDefinitionScope = WorkflowScope | "auto";
 
@@ -161,7 +156,6 @@ export class WorkflowDefinitionStore {
   private async validateSource(input: {
     name: string;
     source: string;
-    safetyMode?: WorkflowSafetyMode;
   }): Promise<ValidatedWorkflowDefinition> {
     return validateWorkflowSource(input);
   }
@@ -169,7 +163,6 @@ export class WorkflowDefinitionStore {
   async get(params: {
     scope: WorkflowDefinitionScope;
     name: string;
-    safetyMode?: WorkflowSafetyMode;
   }): Promise<ResolvedWorkflowDefinition> {
     const scopes: readonly WorkflowScope[] =
       params.scope === "auto" ? ["project", "personal"] : [workflowScopeSchema.parse(params.scope)];
@@ -196,7 +189,6 @@ export class WorkflowDefinitionStore {
         validation: await this.validateSource({
           name: location.name,
           source,
-          safetyMode: params.safetyMode,
         }),
       };
     }
@@ -208,14 +200,12 @@ export class WorkflowDefinitionStore {
     name: string;
     source: string;
     expectedSha256?: string;
-    safetyMode?: WorkflowSafetyMode;
   }): Promise<ResolvedWorkflowDefinition> {
     const scope = workflowScopeSchema.parse(params.scope);
     const location = await this.definitionPath(scope, params.name, true);
     const validation = await this.validateSource({
       name: location.name,
       source: params.source,
-      safetyMode: params.safetyMode,
     });
     const lockPath = path.join(location.root, `.${location.name}.save.lock`);
     let lock;
@@ -286,7 +276,7 @@ export class WorkflowDefinitionStore {
     }
   }
 
-  async list(params: { scope: WorkflowDefinitionScope; safetyMode?: WorkflowSafetyMode }): Promise<
+  async list(params: { scope: WorkflowDefinitionScope }): Promise<
     Array<
       | (Omit<ResolvedWorkflowDefinition, "source"> & { valid: true })
       | {
@@ -328,7 +318,7 @@ export class WorkflowDefinitionStore {
         seen.add(name);
         const candidate = path.join(rootCandidate, entry.name);
         try {
-          const resolved = await this.get({ scope, name, safetyMode: params.safetyMode });
+          const resolved = await this.get({ scope, name });
           results.push({
             scope,
             name,

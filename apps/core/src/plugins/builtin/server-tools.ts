@@ -16,10 +16,7 @@ import {
 } from "../../tool-server/tools";
 import type { CoreToolPlugin } from "../types";
 
-function singletonLevel2(
-  pluginId: string,
-  createTool: () => ServerTool,
-): CoreToolPlugin {
+function singletonLevel2(pluginId: string, createTool: () => ServerTool): CoreToolPlugin {
   return {
     meta: {
       id: pluginId,
@@ -128,6 +125,8 @@ export function createBuiltinWorkflowPlugin(): CoreToolPlugin {
       if (!runtime.bus) {
         throw new ToolPluginSkipError("workflow requires bus");
       }
+      const getConfig = runtime.getConfig;
+      const config = runtime.config;
       return {
         level2: [
           new ProgrammaticWorkflow({
@@ -135,6 +134,11 @@ export function createBuiltinWorkflowPlugin(): CoreToolPlugin {
             store: runtime.durableWorkflowStore,
             bus: runtime.bus,
             progressCards: runtime.workflowProgressCards,
+            getMaxActiveRuns: getConfig
+              ? async () => (await getConfig()).workflows.maxActiveRuns
+              : config
+                ? () => config.workflows.maxActiveRuns
+                : undefined,
           }),
         ],
       };

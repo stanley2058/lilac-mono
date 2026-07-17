@@ -56,6 +56,7 @@ describe("core config drift coverage", () => {
       "plugins",
       "surface",
       "tools",
+      "workflows",
     ];
 
     expect(Object.keys(v1).sort()).toEqual(expectedTopLevel);
@@ -111,5 +112,6 @@ describe("core config drift coverage", () => {
     });
     expect(cfg.agent.subagents.idleTimeoutMs).toBe(6 * 60 * 1000);
     expect(cfg.models.capability.forceUnknownProviders).toEqual(["openai-compatible"]);
+    expect(cfg.workflows.maxActiveRuns).toBe(64);
   });
 });

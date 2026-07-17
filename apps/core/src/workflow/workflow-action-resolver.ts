@@ -39,77 +39,52 @@ export async function startWorkflowActionResolver(input: {
   store: DurableWorkflowStore;
   subscriptionId: string;
   now?: () => number;
-  claimStaleMs?: number;
-  claimHeartbeatMs?: number;
 }): Promise<{ stop(): Promise<void> }> {
   const logger = createLogger({ module: "workflow-action-resolver" });
-  const ownerId = `workflow-action-outbox:${process.pid}:${crypto.randomUUID()}`;
   let draining = false;
   const drainOutbox = async (): Promise<void> => {
     if (draining) return;
     draining = true;
     try {
       const now = input.now?.() ?? Date.now();
-      const claimToken = crypto.randomUUID();
-      const entries = input.store.claimPendingActionOutboxEvents({
-        ownerId,
-        claimToken,
-        now,
-        staleBefore: now - (input.claimStaleMs ?? 30_000),
-      });
-      const heartbeat = setInterval(() => {
-        input.store.refreshActionOutboxPublishClaims({
-          ownerId,
-          claimToken,
-          now: input.now?.() ?? Date.now(),
-        });
-      }, input.claimHeartbeatMs ?? 10_000);
-      heartbeat.unref?.();
-      try {
-        for (const entry of entries) {
-          try {
-            if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
-              await input.bus.publish(
-                lilacEventTypes.EvtWorkflowRunChanged,
-                runChangedSchema.parse(entry.payload),
-                { headers: { workflow_outbox_id: entry.outboxId } },
-              );
-            } else if (entry.eventType === lilacEventTypes.EvtWorkflowProgressRequested) {
-              await input.bus.publish(
-                lilacEventTypes.EvtWorkflowProgressRequested,
-                progressRequestedSchema.parse(entry.payload),
-                { headers: { workflow_outbox_id: entry.outboxId } },
-              );
-            } else {
-              throw new Error(`Unsupported workflow action outbox event: ${entry.eventType}`);
-            }
-            if (
-              !input.store.markActionOutboxPublished({
-                outboxId: entry.outboxId,
-                ownerId,
-                claimToken,
-                now: input.now?.() ?? Date.now(),
-              })
-            ) {
-              throw new Error("Workflow action outbox publication lost its fenced claim");
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            input.store.recordActionOutboxFailure({
-              outboxId: entry.outboxId,
-              ownerId,
-              claimToken,
-              error: message,
-              now: input.now?.() ?? Date.now(),
-            });
-            logger.warn("Workflow action outbox publication failed", {
-              outboxId: entry.outboxId,
-              error: message,
-            });
+      const entries = input.store.listPendingActionOutboxEvents(now);
+      for (const entry of entries) {
+        try {
+          if (entry.eventType === lilacEventTypes.EvtWorkflowRunChanged) {
+            await input.bus.publish(
+              lilacEventTypes.EvtWorkflowRunChanged,
+              runChangedSchema.parse(entry.payload),
+              { headers: { workflow_outbox_id: entry.outboxId } },
+            );
+          } else if (entry.eventType === lilacEventTypes.EvtWorkflowProgressRequested) {
+            await input.bus.publish(
+              lilacEventTypes.EvtWorkflowProgressRequested,
+              progressRequestedSchema.parse(entry.payload),
+              { headers: { workflow_outbox_id: entry.outboxId } },
+            );
+          } else {
+            throw new Error(`Unsupported workflow action outbox event: ${entry.eventType}`);
           }
+          if (
+            !input.store.markActionOutboxPublished({
+              outboxId: entry.outboxId,
+              now: input.now?.() ?? Date.now(),
+            })
+          ) {
+            throw new Error("Workflow action outbox publication was already completed");
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          input.store.recordActionOutboxFailure({
+            outboxId: entry.outboxId,
+            error: message,
+            now: input.now?.() ?? Date.now(),
+          });
+          logger.warn("Workflow action outbox publication failed", {
+            outboxId: entry.outboxId,
+            error: message,
+          });
         }
-      } finally {
-        clearInterval(heartbeat);
       }
     } finally {
       draining = false;

@@ -10,10 +10,6 @@ import type {
   WorkflowUsage,
 } from "./workflow-domain";
 import { jsonObjectSchema } from "./workflow-domain";
-import {
-  publicWorkflowWorktreeOutput,
-  type PublicWorkflowWorktreeOutput,
-} from "./workflow-worktree-artifact";
 
 export type WorkflowProgressPhase = {
   name: string;
@@ -35,7 +31,6 @@ export type WorkflowProgressView = {
   };
   phases: WorkflowProgressPhase[];
   recentOperations: Array<Pick<WorkflowOperation, "label" | "phase" | "kind" | "state">>;
-  worktreeOutputs: PublicWorkflowWorktreeOutput[];
   usage: WorkflowUsage & { agentCount: number; activeAgents: number };
   nextTriggerAt: number | null;
   availableActions: WorkflowSurfaceActionKind[];
@@ -133,9 +128,6 @@ export async function buildWorkflowProgressView(input: {
   const revision = input.store.getRevision(run.revisionId);
   if (!revision) throw new Error(`Workflow revision not found: ${run.revisionId}`);
   const operations = input.store.listOperations(run.runId, { limit: 1_000 });
-  const worktreeOutputs = input.store
-    .listWorktreeOutputs(run.runId, { limit: 1_000 })
-    .map(publicWorkflowWorktreeOutput);
   const trigger = input.store.getTriggerByLastRunId(run.runId);
   const usage = operations.reduce(
     (total, operation) => ({
@@ -168,7 +160,6 @@ export async function buildWorkflowProgressView(input: {
       kind,
       state,
     })),
-    worktreeOutputs,
     usage,
     nextTriggerAt: trigger?.nextFireAt ?? null,
     availableActions: availableActions({
@@ -247,14 +238,6 @@ export function renderWorkflowProgressView(input: {
     (operation) =>
       `- ${operation.label ?? operation.kind}: ${operation.state}${operation.phase ? ` (${operation.phase})` : ""}`,
   );
-  const worktreeOutputLines = view.worktreeOutputs.map((output) => {
-    const detail =
-      !view.sensitive && output.reconciliationDetail ? `; ${output.reconciliationDetail}` : "";
-    if (!output.artifactId) {
-      return `- ${output.operationId}: ${output.state}; worktree preserved for reconciliation${detail}`;
-    }
-    return `- ${output.operationId}: ${output.state} patch \`${output.artifactId}\` (${output.bytes ?? 0} bytes); retrieve with \`tools workflow.run.get ${view.run.runId} --worktree-patch-artifact-id=${output.artifactId} --include-sensitive-result=true\`${detail}`;
-  });
   const exactReviewDetails =
     input.platform === "github"
       ? [
@@ -289,9 +272,6 @@ export function renderWorkflowProgressView(input: {
     `Source access: \`${view.review.sourceAccess}\``,
     ...(phaseLines.length > 0 ? ["", "### Phases", ...phaseLines] : []),
     ...(operationLines.length > 0 ? ["", "### Recent operations", ...operationLines] : []),
-    ...(worktreeOutputLines.length > 0
-      ? ["", "### Isolated edit outputs", ...worktreeOutputLines]
-      : []),
     "",
     `Usage: ${view.usage.inputTokens} input / ${view.usage.outputTokens} output / ${view.usage.totalTokens} total tokens | Agents: ${view.usage.agentCount} total / ${view.usage.activeAgents} active`,
     ...(view.nextTriggerAt !== null

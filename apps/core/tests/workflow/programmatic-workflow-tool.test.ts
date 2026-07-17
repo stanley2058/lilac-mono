@@ -60,7 +60,6 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
       sessionId: "channel-1",
       requestClient: "discord",
       cwd: workspaceRoot,
-      projectRoot: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
       authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
@@ -93,7 +92,7 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
     }
   });
 
-  it("fails restricted, unauthenticated, synthetic, and forged contexts before run creation", async () => {
+  it("does not gate workflow calls by safety, principal, operator, or server-owned metadata", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-denied-origin-"));
     const workspaceRoot = path.join(root, "workspace");
     await fs.mkdir(workspaceRoot);
@@ -106,7 +105,6 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
       sessionId: "channel-1",
       requestClient: "discord",
       cwd: workspaceRoot,
-      projectRoot: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
       authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
@@ -119,17 +117,17 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
         { ...trusted, authenticatedPrincipal: undefined },
         { ...trusted, authenticatedPrincipal: undefined, operator: true },
       ]) {
-        await expect(tool.call("workflow.run.list", {}, { context })).rejects.toThrow();
+        expect(await tool.call("workflow.run.list", {}, { context })).toMatchObject({ runs: [] });
       }
-      expect(await tool.call("workflow.run.list", {}, { context: trusted })).toMatchObject({
-        runs: [],
-      });
+      await expect(
+        tool.call("workflow.run.list", { limit: 0 }, { context: trusted }),
+      ).rejects.toThrow();
     } finally {
       await tool.destroy();
     }
   });
 
-  it("pins trigger snapshot and authenticated owner identity", async () => {
+  it("pins the trigger snapshot without using origin identity as an invocation gate", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-trigger-owner-"));
     const workspaceRoot = path.join(root, "workspace");
     await fs.mkdir(workspaceRoot);
@@ -143,7 +141,6 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
       sessionId: "channel-1",
       requestClient: "discord",
       cwd: workspaceRoot,
-      projectRoot: workspaceRoot,
       safetyMode: "trusted" as const,
       serverOwnedRequest: true,
       authenticatedPrincipal: { platform: "discord" as const, userId: "owner-1" },
@@ -161,7 +158,7 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
           trigger: z.object({
             triggerId: z.string(),
             revisionId: z.string(),
-            origin: z.object({ userId: z.literal("owner-1"), safetyMode: z.literal("trusted") }),
+            origin: z.object({ userId: z.literal("owner-1") }),
           }),
           sourceSha256: z.string(),
         })
@@ -179,8 +176,8 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
         );
       expect(created.trigger.revisionId).toBeTruthy();
       expect(created.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
-      await expect(
-        tool.call(
+      expect(
+        await tool.call(
           "workflow.trigger.get",
           { triggerId: created.trigger.triggerId },
           {
@@ -190,7 +187,67 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
             },
           },
         ),
-      ).rejects.toThrow("principal scope");
+      ).toMatchObject({ trigger: { triggerId: created.trigger.triggerId } });
+    } finally {
+      await tool.destroy();
+    }
+  });
+
+  it("lets an ordinary workflow child admit runs up to the global cap and returns capacity as data", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-child-cap-"));
+    const workspaceRoot = path.join(root, "workspace");
+    await fs.mkdir(workspaceRoot);
+    const tool = new ProgrammaticWorkflow({
+      dataDir: path.join(root, "data"),
+      dbPath: path.join(root, "workflow.sqlite"),
+      getMaxActiveRuns: () => 1,
+    });
+    const childContext = {
+      requestId: "workflow-child-request",
+      sessionId: "workflow:parent:operation",
+      requestClient: "unknown",
+      cwd: workspaceRoot,
+      safetyMode: "restricted" as const,
+      serverOwnedRequest: false,
+      subagentProfile: "general" as const,
+      controlCapability: "ordinary-workflow-control-capability",
+      toolCallId: "child-trigger-1",
+    } satisfies RequestContext;
+    await tool.init();
+    try {
+      await tool.call(
+        "workflow.definition.save",
+        { scope: "project", name: "audit-routes", source: source() },
+        { context: childContext },
+      );
+      const accepted = invocationSchema.parse(
+        await tool.call(
+          "workflow.run.trigger",
+          { scope: "project", name: "audit-routes", args: { directory: "src" } },
+          { context: childContext },
+        ),
+      );
+      expect(accepted.state).toBe("queued");
+
+      const rejected = await tool.call(
+        "workflow.run.trigger",
+        { scope: "project", name: "audit-routes", args: { directory: "tests" } },
+        { context: { ...childContext, toolCallId: "child-trigger-2" } },
+      );
+      expect(rejected).toEqual({
+        ok: false,
+        error: {
+          code: "workflow_capacity_exceeded",
+          message:
+            "Global workflow capacity is full (1/1 active runs). Wait for a workflow to finish or cancel one, then retry with the same idempotency key.",
+          activeRuns: 1,
+          limit: 1,
+          retryable: true,
+        },
+      });
+      expect(await tool.call("workflow.run.list", {}, { context: childContext })).toMatchObject({
+        runs: [{ runId: accepted.runId }],
+      });
     } finally {
       await tool.destroy();
     }

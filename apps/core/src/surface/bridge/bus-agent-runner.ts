@@ -72,17 +72,8 @@ import type {
 } from "../../workflow/workflow-live-parent-bridge";
 import type { WorkflowSubagentDispatcher } from "../../workflow/workflow-subagent-dispatcher";
 import type { DurableWorkflowStore } from "../../workflow/durable-workflow-store";
-import type { WorkflowCompletionTarget, WorkflowUsage } from "../../workflow/workflow-domain";
+import type { WorkflowUsage } from "../../workflow/workflow-domain";
 import type { WorkflowRequestPolicy } from "../../workflow/workflow-request-authority";
-import {
-  assertWorkflowPathAllowed,
-  createWorkflowDeniedRootPolicy,
-} from "../../workflow/workflow-denied-root-policy";
-import {
-  ensureWorkflowRunScratch,
-  workflowRunScratchPath,
-} from "../../workflow/workflow-scratch";
-import { assertWorkflowPathIdentity } from "../../workflow/workflow-descriptor-path";
 import { formatToolArgsForDisplayWithSpecs } from "../../tools/tool-args-display";
 import { isHeartbeatAckText, isHeartbeatSessionId } from "../../heartbeat/common";
 
@@ -138,6 +129,7 @@ import {
   parseWorkflowRequestHintFromRaw,
   requestRawReferencesMessage,
   type AgentRunProfile,
+  type ParsedSubagentMeta,
 } from "./bus-agent-runner/raw";
 import { latestUserText, shouldRunAutoInjectedThreadSearch } from "./bus-agent-runner/text-units";
 import {
@@ -204,37 +196,6 @@ function supportsReadFileDirectAttachments(info: ModelCapabilityInfo | null): bo
 
 function consumerId(prefix: string): string {
   return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
-export function resolveSubagentProjectRoot(input: {
-  parentExecutionCwd: string;
-  workflowPolicy: Pick<WorkflowRequestPolicy, "canonicalRequestedCwd"> | null;
-}): string {
-  return input.workflowPolicy?.canonicalRequestedCwd ?? input.parentExecutionCwd;
-}
-
-export function resolveAuthorizedWorkflowScratchRoot(input: {
-  dataDir: string;
-  store: { getRun(runId: string): { completionTarget: WorkflowCompletionTarget } | null };
-  policy: Pick<WorkflowRequestPolicy, "runId">;
-}): string {
-  const run = input.store.getRun(input.policy.runId);
-  if (!run) throw new Error("Workflow request run is no longer durable");
-  return run.completionTarget.kind === "live_parent" && run.completionTarget.familyScratchRoot
-    ? run.completionTarget.familyScratchRoot
-    : workflowRunScratchPath(input.dataDir, input.policy.runId);
-}
-
-export function assertAuthorizedWorkflowScratchRoot(input: {
-  dataDir: string;
-  store: { getRun(runId: string): { completionTarget: WorkflowCompletionTarget } | null };
-  policy: Pick<WorkflowRequestPolicy, "runId" | "canonicalScratchRoot">;
-}): string {
-  const expected = resolveAuthorizedWorkflowScratchRoot(input);
-  if (input.policy.canonicalScratchRoot !== expected) {
-    throw new Error("Workflow scratch root does not match its durable run family");
-  }
-  return expected;
 }
 
 function buildResumePrompt(partialText: string): ModelMessage {
@@ -1358,30 +1319,15 @@ export function resolveAgentRunModel(params: {
   runProfile: AgentRunProfile;
   requestModelOverride?: string;
   reasoningOverride?: ModelReasoningEffort;
-  workflowResolvedModel?: string;
-  workflowResolvedReasoning?: ModelReasoningEffort;
-  workflowResolvedRequest?: WorkflowRequestPolicy["resolvedModelRequest"];
+  resolvedModelRequest?: WorkflowRequestPolicy["resolvedModelRequest"];
 }) {
   const subagentProfileConfig =
     params.runProfile === "primary"
       ? null
       : resolveNativeSubagentProfile(params.cfg, params.runProfile);
 
-  if (params.workflowResolvedRequest) {
-    return fromDurableResolvedModelRequest(params.workflowResolvedRequest);
-  }
-
-  if (params.workflowResolvedModel) {
-    return resolveModelRef(
-      params.cfg,
-      {
-        model: params.workflowResolvedModel,
-        ...(params.workflowResolvedReasoning
-          ? { reasoning: params.workflowResolvedReasoning }
-          : {}),
-      },
-      "workflow.dispatch.resolvedModel",
-    );
+  if (params.resolvedModelRequest) {
+    return fromDurableResolvedModelRequest(params.resolvedModelRequest);
   }
 
   if (params.runProfile !== "primary" && params.requestModelOverride) {
@@ -1424,6 +1370,18 @@ export function resolveAgentRunModel(params: {
   const slotResolved = resolveModelSlot(params.cfg, subagentProfileConfig?.modelSlot ?? "main");
   const reasoning = params.reasoningOverride ?? subagentProfileConfig?.reasoning;
   return reasoning ? { ...slotResolved, reasoning } : slotResolved;
+}
+
+export function assertWorkflowDispatchPolicy(
+  workflowPolicy: WorkflowRequestPolicy,
+  subagentMeta: ParsedSubagentMeta,
+): void {
+  if (workflowPolicy.profile !== subagentMeta.profile) {
+    throw new Error("Workflow request profile envelope does not match the runner profile");
+  }
+  if ((workflowPolicy.reasoning ?? null) !== (subagentMeta.reasoning ?? null)) {
+    throw new Error("Workflow request reasoning does not match the approved operation policy");
+  }
 }
 
 type SessionQueue = {
@@ -1470,17 +1428,19 @@ export async function startBusAgentRunner(params: {
     requestId: string;
     sessionId: string;
     requestClient: AdapterPlatform;
+    profile: AgentRunProfile;
     canonicalCwd: string;
     safetyMode: SessionSafetyMode;
     expiresAt: number;
+    principal?: { platform: "discord" | "github"; userId: string };
   }) =>
     | {
         capability: string;
-        principal: { platform: "discord" | "github"; userId: string };
+        principal: { platform: "discord" | "github"; userId: string } | null;
       }
     | Promise<{
         capability: string;
-        principal: { platform: "discord" | "github"; userId: string };
+        principal: { platform: "discord" | "github"; userId: string } | null;
       }>;
   issueHeartbeatCapability?: (input: {
     requestId: string;
@@ -2354,7 +2314,6 @@ export async function startBusAgentRunner(params: {
         }
         const authorized = params.durableWorkflowStore.authorizeWorkflowRequest({
           requestId: next.requestId,
-          token: workflowHint.controlToken,
           sessionId: next.sessionId,
           platform: next.requestClient,
           now: Date.now(),
@@ -2363,8 +2322,7 @@ export async function startBusAgentRunner(params: {
           !authorized ||
           authorized.policy.runId !== workflowHint.runId ||
           authorized.policy.operationId !== workflowHint.operationId ||
-          (workflowHint.dispatchEpoch !== undefined &&
-            authorized.policy.dispatchEpoch !== workflowHint.dispatchEpoch)
+          authorized.policy.dispatchEpoch !== workflowHint.dispatchEpoch
         ) {
           throw new Error("Workflow request dispatch authority is invalid or inactive");
         }
@@ -2373,7 +2331,6 @@ export async function startBusAgentRunner(params: {
         if (
           !params.durableWorkflowStore.claimWorkflowRequest({
             requestId: next.requestId,
-            token: workflowHint.controlToken,
             dispatchEpoch: authorized.policy.dispatchEpoch,
             ownerId: workflowRunnerOwnerId,
             now: Date.now(),
@@ -2384,92 +2341,16 @@ export async function startBusAgentRunner(params: {
         workflowRequestClaimed = true;
         workflowPolicy = authorized.policy;
         trustedFallbackSurface =
-          authorized.policy.originSessionId &&
-          authorized.policy.originClient &&
-          authorized.policy.originUserId
+          authorized.policy.originSession.sessionId &&
+          (authorized.policy.originSession.client === "discord" ||
+            authorized.policy.originSession.client === "github") &&
+          authorized.policy.originSession.userId
             ? {
-                platform: authorized.policy.originClient,
-                sessionId: authorized.policy.originSessionId,
-                userId: authorized.policy.originUserId,
+                platform: authorized.policy.originSession.client,
+                sessionId: authorized.policy.originSession.sessionId,
+                userId: authorized.policy.originSession.userId,
               }
             : null;
-        await assertWorkflowPathIdentity({
-          candidate: authorized.policy.canonicalCwd,
-          expected: authorized.policy.canonicalCwdIdentity,
-          label: "Workflow request cwd",
-        });
-        await assertWorkflowPathIdentity({
-          candidate: authorized.policy.canonicalRequestedCwd,
-          expected: authorized.policy.canonicalRequestedCwdIdentity,
-          label: "Workflow requested cwd",
-        });
-        await assertWorkflowPathIdentity({
-          candidate: authorized.policy.canonicalAuthorityRoot,
-          expected: authorized.policy.canonicalAuthorityRootIdentity,
-          label: "Workflow authority root",
-        });
-        const cwdStats = await fs.lstat(authorized.policy.canonicalCwd);
-        const canonicalCwd = await fs.realpath(authorized.policy.canonicalCwd);
-        if (
-          cwdStats.isSymbolicLink() ||
-          !cwdStats.isDirectory() ||
-          canonicalCwd !== authorized.policy.canonicalCwd
-        ) {
-          throw new Error("Workflow request cwd is not a canonical real directory");
-        }
-        const authorityStats = await fs.lstat(authorized.policy.canonicalAuthorityRoot);
-        const canonicalAuthorityRoot = await fs.realpath(authorized.policy.canonicalAuthorityRoot);
-        if (
-          authorityStats.isSymbolicLink() ||
-          !authorityStats.isDirectory() ||
-          canonicalAuthorityRoot !== authorized.policy.canonicalAuthorityRoot
-        ) {
-          throw new Error("Workflow authority root is not a canonical real directory");
-        }
-        const scratchStats = await fs.lstat(authorized.policy.canonicalScratchRoot);
-        const canonicalScratchRoot = await fs.realpath(authorized.policy.canonicalScratchRoot);
-        const expectedScratchRoot = assertAuthorizedWorkflowScratchRoot({
-          dataDir: env.dataDir,
-          store: params.durableWorkflowStore,
-          policy: authorized.policy,
-        });
-        if (
-          scratchStats.isSymbolicLink() ||
-          !scratchStats.isDirectory() ||
-          canonicalScratchRoot !== authorized.policy.canonicalScratchRoot ||
-          canonicalScratchRoot !== expectedScratchRoot
-        ) {
-          throw new Error("Workflow scratch root is not a canonical real directory");
-        }
-        const deniedPolicy = createWorkflowDeniedRootPolicy(env.dataDir);
-        assertWorkflowPathAllowed({
-          policy: deniedPolicy,
-          candidate: canonicalAuthorityRoot,
-          scratchRoot: canonicalScratchRoot,
-          label: "Workflow authority root",
-        });
-        const requestedStats = await fs.lstat(authorized.policy.canonicalRequestedCwd);
-        const canonicalRequestedCwd = await fs.realpath(authorized.policy.canonicalRequestedCwd);
-        const requestedRelative = path.relative(canonicalAuthorityRoot, canonicalRequestedCwd);
-        if (
-          requestedStats.isSymbolicLink() ||
-          !requestedStats.isDirectory() ||
-          canonicalRequestedCwd !== authorized.policy.canonicalRequestedCwd ||
-          requestedRelative === ".." ||
-          requestedRelative.startsWith(`..${path.sep}`)
-        ) {
-          throw new Error("Workflow requested cwd escaped its canonical authority root");
-        }
-        if (authorized.policy.isolation === "shared" && canonicalCwd !== canonicalRequestedCwd) {
-          throw new Error("Workflow request cwd does not match its approved operation cwd");
-        }
-        if (authorized.policy.isolation === "worktree") {
-          const worktreeRoot = path.resolve(env.dataDir, "workflow-worktrees");
-          const relative = path.relative(worktreeRoot, canonicalCwd);
-          if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
-            throw new Error("Editing workflow request cwd is not an owned workflow worktree");
-          }
-        }
         workflowClaimTimer = setInterval(() => {
           const refreshed = params.durableWorkflowStore?.refreshWorkflowRequestClaim(
             next.requestId,
@@ -2483,12 +2364,7 @@ export async function startBusAgentRunner(params: {
         }, 5_000);
         workflowClaimTimer.unref?.();
       }
-      if (workflowPolicy && workflowPolicy.profile !== runProfile) {
-        throw new Error("Workflow request profile envelope does not match the runner profile");
-      }
-      if (workflowPolicy && workflowPolicy.reasoning !== (subagentMeta.reasoning ?? null)) {
-        throw new Error("Workflow request reasoning does not match the approved operation policy");
-      }
+      if (workflowPolicy) assertWorkflowDispatchPolicy(workflowPolicy, subagentMeta);
       const maxSubagentDepth = subagents.maxDepth;
       if (subagentMeta.depth > maxSubagentDepth) {
         const detail = `subagent depth ${subagentMeta.depth} exceeds maxDepth=${maxSubagentDepth}`;
@@ -2691,7 +2567,12 @@ export async function startBusAgentRunner(params: {
         runProfile === "primary"
           ? (next.modelOverride ?? parseRequestModelOverrideFromRaw(next.raw) ?? undefined)
           : next.modelOverride;
-      if (workflowPolicy && requestModelOverride !== (workflowPolicy.model ?? undefined)) {
+      if (
+        workflowPolicy &&
+        requestModelOverride !== undefined &&
+        requestModelOverride !== workflowPolicy.resolvedModelRequest.alias &&
+        requestModelOverride !== workflowPolicy.resolvedModelRequest.spec
+      ) {
         throw new Error("Workflow request model does not match the approved operation policy");
       }
       const resolved = resolveAgentRunModel({
@@ -2699,15 +2580,7 @@ export async function startBusAgentRunner(params: {
         runProfile,
         requestModelOverride,
         reasoningOverride: subagentMeta.reasoning,
-        ...(workflowPolicy
-          ? {
-              workflowResolvedModel: workflowPolicy.resolvedModel,
-              workflowResolvedRequest: workflowPolicy.resolvedModelRequest,
-              ...(workflowPolicy.resolvedReasoning
-                ? { workflowResolvedReasoning: workflowPolicy.resolvedReasoning }
-                : {}),
-            }
-          : {}),
+        resolvedModelRequest: workflowPolicy?.resolvedModelRequest,
       });
       resolvedModelLabel = resolved.modelId;
       try {
@@ -2791,9 +2664,7 @@ export async function startBusAgentRunner(params: {
         baseSystemPrompt: cfg.agent.systemPrompt,
         profile: runProfile,
         profileConfig:
-          runProfile === "primary"
-            ? undefined
-            : resolveNativeSubagentProfile(cfg, runProfile),
+          runProfile === "primary" ? undefined : resolveNativeSubagentProfile(cfg, runProfile),
         activeEditingTool: runProfile === "explore" ? null : activeEditingToolMode,
         exploreOverlay: subagents.profiles.explore.promptOverlay,
         generalOverlay: subagents.profiles.general.promptOverlay,
@@ -2814,9 +2685,8 @@ export async function startBusAgentRunner(params: {
       const parentChannelResolution =
         next.requestClient === "discord" ? params.resolveParentChannelId?.(sessionId) : null;
       const parentChannelId = parentChannelResolution ?? undefined;
-      const safetyMode: SessionSafetyMode = workflowPolicy?.safetyMode
-        ? workflowPolicy.safetyMode
-        : next.requestClient === "discord" && parentChannelResolution === undefined
+      const safetyMode: SessionSafetyMode =
+        next.requestClient === "discord" && parentChannelResolution === undefined
           ? "restricted"
           : resolveSessionSafetyMode(cfg, sessionId, parentChannelId);
       if (runProfile === "primary" && !workflowPolicy && isHeartbeatSessionId(next.sessionId)) {
@@ -2832,27 +2702,39 @@ export async function startBusAgentRunner(params: {
           throw new Error("Heartbeat request is missing server-issued Level-2 authority");
         }
       } else if (
-        runProfile === "primary" &&
-        !workflowPolicy &&
-        (next.requestClient === "discord" || next.requestClient === "github")
+        workflowPolicy ||
+        next.requestClient === "discord" ||
+        next.requestClient === "github"
       ) {
+        const capabilityPrincipal = trustedFallbackSurface
+          ? {
+              platform: trustedFallbackSurface.platform,
+              userId: trustedFallbackSurface.userId,
+            }
+          : undefined;
         const issuedControl = await params.issueControlCapability?.({
           requestId: next.requestId,
           sessionId: next.sessionId,
           requestClient: next.requestClient,
-          canonicalCwd: cwd,
+          profile: runProfile,
+          canonicalCwd: workflowPolicy?.cwd ?? cwd,
           safetyMode,
           expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+          ...(capabilityPrincipal ? { principal: capabilityPrincipal } : {}),
         });
         if (!issuedControl) {
-          throw new Error("Primary request is missing server-issued Level-2 control authority");
+          throw new Error(
+            "Native profile request is missing server-issued Level-2 control authority",
+          );
         }
         controlCapability = issuedControl.capability;
-        trustedFallbackSurface = {
-          platform: issuedControl.principal.platform,
-          sessionId: next.sessionId,
-          userId: issuedControl.principal.userId,
-        };
+        if (issuedControl.principal) {
+          trustedFallbackSurface = {
+            platform: issuedControl.principal.platform,
+            sessionId: next.sessionId,
+            userId: issuedControl.principal.userId,
+          };
+        }
       }
 
       const additionalSessionPrompts = await waitForPreAgent(
@@ -2916,7 +2798,7 @@ export async function startBusAgentRunner(params: {
         ? `${systemPromptWithSurfaceMetadataOverlay}\n\n${restrictedSessionOverlay}`
         : systemPromptWithSurfaceMetadataOverlay;
 
-      const systemPromptWithoutWorkflowSurface = maybeAppendResponseCommentaryPrompt({
+      const systemPrompt = maybeAppendResponseCommentaryPrompt({
         baseSystemPrompt: systemPromptWithSafetyOverlay,
         provider: resolved.provider,
         responseCommentary: resolved.responseCommentary,
@@ -2968,20 +2850,14 @@ export async function startBusAgentRunner(params: {
       });
 
       const fallbackSurfaceForDelegation = trustedFallbackSurface;
-      const profileScratchRoot =
-        runProfile === "primary"
-          ? undefined
-          : (workflowPolicy?.canonicalScratchRoot ??
-            (await waitForPreAgent(
-              ensureWorkflowRunScratch({ dataDir: env.dataDir, runId: next.requestId }),
-            )));
+      const executionCwd = workflowPolicy?.cwd ?? cwd;
       const {
         tools,
         specs: level1ToolSpecs,
         genericOutputNormalizerBypassTools,
       } = await waitForPreAgent(
         params.pluginManager.buildLevel1Toolset({
-          cwd: workflowPolicy?.canonicalCwd ?? cwd,
+          cwd: executionCwd,
           runProfile,
           editingToolMode: runProfile === "explore" ? "none" : activeEditingToolMode,
           subagentDepth: subagentMeta.depth,
@@ -2998,13 +2874,6 @@ export async function startBusAgentRunner(params: {
             subagentProfile: runProfile,
             safetyMode,
             metadata: {
-              workflowPolicy: workflowPolicy ?? undefined,
-              workflowControlToken: workflowHint?.controlToken,
-              workflowOwnedWorktreeRoot:
-                workflowPolicy?.isolation === "worktree"
-                  ? path.resolve(env.dataDir, "workflow-worktrees")
-                  : undefined,
-              familyScratchRoot: profileScratchRoot,
               controlCapability: controlCapability ?? undefined,
               readFileDirectAttachmentSupported:
                 supportsReadFileDirectAttachments(modelCapabilityInfo),
@@ -3014,13 +2883,7 @@ export async function startBusAgentRunner(params: {
                   ? async (registration: SubagentDelegationRegistration) =>
                       await workflowSubagentDispatcher.delegate({
                         ...registration,
-                        projectRoot: resolveSubagentProjectRoot({
-                          parentExecutionCwd: cwd,
-                          workflowPolicy,
-                        }),
-                        ...(workflowPolicy
-                          ? { familyScratchRoot: workflowPolicy.canonicalScratchRoot }
-                          : {}),
+                        projectRoot: executionCwd,
                         fallbackSurface: fallbackSurfaceForDelegation,
                       })
                   : undefined,
@@ -3045,7 +2908,6 @@ export async function startBusAgentRunner(params: {
           },
         }),
       );
-      const systemPrompt = systemPromptWithoutWorkflowSurface;
       const agentSystem = anthropicPromptCachingEnabled
         ? {
             role: "system" as const,

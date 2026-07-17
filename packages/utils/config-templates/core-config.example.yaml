@@ -31,6 +31,10 @@ plugins:
   disabled: []
   config: {}
 
+workflows:
+  # Global admission cap across queued, running, blocked, and paused workflow runs.
+  maxActiveRuns: 64
+
 # WARN: This is an experimental feature, use at your own risk. Config, DB schema, and behavior may change.
 conversation:
   thread:
@@ -240,11 +244,12 @@ agent:
         modelSlot: main
         # Profile behavior applies identically to direct and workflow launches.
         level1:
-          tools: [read_file, glob, grep, fuzzy_search, scratch_read, scratch_write, batch]
+          tools: [read_file, glob, grep, fuzzy_search, batch]
           plugins: [builtin-local-tools]
         level2:
           callables: [fetch, search, skills.list, skills.brief, skills.full, content.inspect, discovery.search, conversation.thread.search, surface.help, surface.sessions.listParticipants, surface.messages.list, surface.messages.read, surface.messages.search, surface.reactions.list, surface.reactions.listDetailed]
           plugins: [web, skills, content.inspect, discovery, conversation.thread, surface]
+        # Behavioral/tool-surface settings; these do not sandbox trusted Bash.
         network: true
         workspaceWrites: false
         execution: false

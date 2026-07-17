@@ -27,7 +27,6 @@ function resources() {
     maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: ["sleep", "reply", "sleep"] as const,
-    safety: { originatingMode: "trusted" as const, escalation: "none" as const },
   };
 }
 
@@ -112,7 +111,6 @@ describe("durable workflow domain", () => {
         sessionId: "session-1",
         client: "discord",
         userId: "user-1",
-        safetyMode: "trusted",
         projectCwd: "/workspace",
       },
       completionTarget: { kind: "durable_surface" },
@@ -184,7 +182,6 @@ describe("durable workflow domain", () => {
           sessionId: "session-1",
           client: "discord",
           userId: "user-1",
-          safetyMode: "trusted",
           projectCwd: "/workspace",
         },
         completionTarget: { kind: "detached" },
@@ -207,10 +204,6 @@ describe("durable workflow domain", () => {
         lastError: null,
         retryCount: 0,
         nextAttemptAt: null,
-        repairGeneration: 0,
-        renderedRepairGeneration: 0,
-        sendMayHaveSucceeded: false,
-        discoveryCursor: null,
         createdAt: 1,
         updatedAt: 1,
       }).runId,
