@@ -176,9 +176,16 @@ function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): 
   return out;
 }
 
-function buildReadFileInputZod(hashlineEnabled: boolean) {
+function buildReadFileInputZod(
+  hashlineEnabled: boolean,
+  readFileDirectAttachmentSupported = false,
+) {
   return z.object({
-    path: pathSchema,
+    path: pathSchema.describe(
+      readFileDirectAttachmentSupported
+        ? "Path to a file. Supported images and PDFs are attached to your context for native visual or document analysis. Relative paths are resolved against the tool root; absolute paths are also supported."
+        : "Path to the file. Relative paths are resolved against the tool root; absolute paths are also supported.",
+    ),
     cwd: z
       .string()
       .optional()
@@ -199,21 +206,23 @@ function buildReadFileInputZod(hashlineEnabled: boolean) {
       ])
       .optional()
       .describe(
-        "Start or continuation position for any text resource. Use {type:'offset',offset:N} for an absolute Unicode character position, or {type:'line',line:N,column?:N} for a line position. Lines are 1-based; offsets and columns are 0-based.",
+        "Text files only. Start or continuation position. Use {type:'offset',offset:N} for an absolute Unicode character position, or {type:'line',line:N,column?:N} for a line position. Lines are 1-based; offsets and columns are 0-based.",
       ),
     maxLines: z
       .number()
       .int()
       .positive()
       .optional()
-      .describe("Maximum number of lines to return. Defaults to 2000."),
+      .describe("Text files only. Maximum number of lines to return. Defaults to 2000."),
     maxCharacters: z
       .number()
       .int()
       .positive()
       .max(40 * 1024)
       .optional()
-      .describe("Maximum number of characters to return (max: 40960). Defaults to 10000."),
+      .describe(
+        "Text files only. Maximum number of characters to return (max: 40960). Defaults to 10000.",
+      ),
     format: (hashlineEnabled
       ? z.enum(["raw", "numbered", "hashline"])
       : z.enum(["raw", "numbered"])
@@ -221,8 +230,8 @@ function buildReadFileInputZod(hashlineEnabled: boolean) {
       .optional()
       .describe(
         hashlineEnabled
-          ? "Output format. Default is raw. Use 'hashline' before edit_file when you need stable edit anchors."
-          : "Output format. Default is raw (no line numbers). 'numbered' is for display only.",
+          ? "Text files only. Output format. Default is raw. Use 'hashline' before edit_file when you need stable edit anchors."
+          : "Text files only. Output format. Default is raw (no line numbers). 'numbered' is for display only.",
       ),
     dangerouslyAllow: z
       .boolean()
@@ -1056,7 +1065,7 @@ export function fsTool(
   const readFileDirectAttachmentSupported = opts?.readFileDirectAttachmentSupported === true;
   const maxOutputBytes = opts?.maxOutputBytes ?? 40 * 1024;
   const maxInlineMediaBytesPerPart = opts?.maxInlineMediaBytesPerPart ?? 10 * 1024 * 1024;
-  const readFileSchema = buildReadFileInputZod(hashlineEnabled);
+  const readFileSchema = buildReadFileInputZod(hashlineEnabled, readFileDirectAttachmentSupported);
   const readFileOutputSchema = buildReadFileOutputZod(hashlineEnabled);
   const grepInputSchema = buildGrepInputZod(hashlineEnabled);
   const grepOutputSchema = buildGrepOutputZod(hashlineEnabled);
@@ -1094,14 +1103,20 @@ export function fsTool(
 
   function buildReadFileDescription(): string {
     const parts = [
-      hashlineEnabled
-        ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead."
-        : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
+      readFileDirectAttachmentSupported
+        ? "Reads files from the filesystem. For supported images and PDFs, calling read_file attaches the original file to your context for native visual or document analysis. Always call read_file directly first for an image or PDF path; use shell media processing only if read_file reports that the input is unsupported or oversized."
+        : hashlineEnabled
+          ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead."
+          : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
     ];
 
-    if (readFileDirectAttachmentSupported) {
+    if (readFileDirectAttachmentSupported && hashlineEnabled) {
       parts.push(
-        "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
+        "For text files, default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead.",
+      );
+    } else if (readFileDirectAttachmentSupported) {
+      parts.push(
+        "For text files, default format is raw (no line numbers) to preserve indentation.",
       );
     }
 

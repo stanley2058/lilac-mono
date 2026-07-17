@@ -330,7 +330,7 @@ describe("core tool plugin manager", () => {
     });
 
     expect(getToolDescription(toolset.tools, "read_file")).toContain(
-      "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
+      "calling read_file attaches the original file to your context for native visual or document analysis",
     );
   });
 

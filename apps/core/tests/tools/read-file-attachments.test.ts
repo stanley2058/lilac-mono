@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { asSchema } from "ai";
+
 import { BATCH_CHILD_CONTEXT_FLAG } from "../../src/tools/batch";
 import { fsTool } from "../../src/tools/fs/fs";
 
@@ -52,6 +54,23 @@ describe("read_file attachments", () => {
     return description;
   }
 
+  function getInputPropertyDescriptions(toolValue: unknown): Record<string, string | undefined> {
+    if (!toolValue || typeof toolValue !== "object") {
+      throw new Error("missing tool object");
+    }
+
+    const inputSchema = (toolValue as { inputSchema?: unknown }).inputSchema;
+    const schema = asSchema(inputSchema as never).jsonSchema as {
+      properties?: Record<string, { description?: string }>;
+    };
+    return Object.fromEntries(
+      Object.entries(schema.properties ?? {}).map(([name, property]) => [
+        name,
+        property.description,
+      ]),
+    );
+  }
+
   beforeEach(async () => {
     baseDir = await mkdtemp(path.join(tmpdir(), "lilac-read-file-att-"));
   });
@@ -70,9 +89,30 @@ describe("read_file attachments", () => {
       fsTool(baseDir, { readFileDirectAttachmentSupported: true }).read_file,
     );
     expect(supportedDescription).toContain(
-      "Use this tool to read image files and PDFs directly, prefer this over OCR or other tools.",
+      "calling read_file attaches the original file to your context for native visual or document analysis",
     );
+    expect(supportedDescription).toContain(
+      "Always call read_file directly first for an image or PDF path",
+    );
+    expect(supportedDescription).not.toContain("OCR");
     expect(supportedDescription).not.toContain("upstream provider");
+  });
+
+  it("describes native media paths and text-only options when enabled", () => {
+    const unsupported = getInputPropertyDescriptions(fsTool(baseDir).read_file);
+    expect(unsupported.path).not.toContain("images");
+    expect(unsupported.path).not.toContain("PDFs");
+
+    const supported = getInputPropertyDescriptions(
+      fsTool(baseDir, { readFileDirectAttachmentSupported: true }).read_file,
+    );
+    expect(supported.path).toContain(
+      "Supported images and PDFs are attached to your context for native visual or document analysis.",
+    );
+    expect(supported.start).toStartWith("Text files only.");
+    expect(supported.maxLines).toStartWith("Text files only.");
+    expect(supported.maxCharacters).toStartWith("Text files only.");
+    expect(supported.format).toStartWith("Text files only.");
   });
 
   it("returns images as file tool-result content", async () => {
