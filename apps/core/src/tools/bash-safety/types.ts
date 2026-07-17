@@ -5,8 +5,6 @@ export interface AnalyzeResult {
 
 export interface AnalyzeOptions {
   cwd?: string;
-  /** Fail-closed on unparseable commands (unclosed quotes, etc.) */
-  strict?: boolean;
   /** Block non-temp rm -rf even within cwd */
   paranoidRm?: boolean;
   /** Block interpreter one-liners (python -c, node -e, etc.) */
@@ -17,8 +15,6 @@ export interface AnalyzeOptions {
 
 export const MAX_RECURSION_DEPTH = 5;
 export const MAX_STRIP_ITERATIONS = 20;
-
-export const SHELL_OPERATORS = new Set(["&&", "||", "|&", "|", "&", ";", "\n"]);
 
 export const SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "ksh", "dash", "fish", "csh", "tcsh"]);
 

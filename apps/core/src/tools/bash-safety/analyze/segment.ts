@@ -8,11 +8,15 @@ import {
 import { analyzeGit } from "../rules-git";
 import { analyzeRm, isHomeDirectory } from "../rules-rm";
 import {
+  GLOB_EXPANSION_MARKER,
   getBasename,
-  hasNontrivialParameterExpansion,
+  hasCommandSubstitution,
+  hasDynamicExpansion,
+  hasGlobExpansion,
+  hasNontrivialDynamicExpansion,
   normalizeCommandToken,
+  stripExpansionMarkers,
   stripEnvAssignmentsWithInfo,
-  stripWrappers,
   stripWrappersWithInfo,
 } from "../shell";
 
@@ -20,7 +24,7 @@ import { DISPLAY_COMMANDS } from "./constants";
 import { analyzeFind } from "./find";
 import { containsDangerousCode, extractInterpreterCodeArg } from "./interpreters";
 import { analyzeParallel } from "./parallel";
-import { hasRecursiveForceFlags } from "./rm-flags";
+import { hasRecursiveFlag, hasRecursiveForceFlags } from "./rm-flags";
 import { extractDashCArg } from "./shell-wrappers";
 import { isTmpdirOverriddenToNonTemp } from "./tmpdir";
 import { analyzeXargs } from "./xargs";
@@ -35,6 +39,8 @@ const REASON_DYNAMIC_ARGUMENT =
   "A safety-relevant command argument is determined by a nontrivial shell expansion and cannot be safely analyzed.";
 const REASON_UNPARSEABLE_WRAPPER =
   "Command execution wrapper options could not be safely analyzed.";
+const REASON_DYNAMIC_EVALUATOR =
+  "An evaluator payload is determined by a dynamic shell expansion and cannot be safely analyzed.";
 
 const COMMAND_PREFIX_KEYWORDS = new Set([
   "{",
@@ -47,7 +53,7 @@ const COMMAND_PREFIX_KEYWORDS = new Set([
   "until",
   "!",
 ]);
-const COMMAND_EXECUTION_WRAPPERS = new Set([
+export const COMMAND_EXECUTION_WRAPPERS = new Set([
   "builtin",
   "chrt",
   "exec",
@@ -60,6 +66,13 @@ const COMMAND_EXECUTION_WRAPPERS = new Set([
   "timeout",
 ]);
 const PARAMETER_EXPANSION_VALUE_COMMANDS = new Set(["[", "echo", "printf", "tee", "test"]);
+const COMMAND_SUBSTITUTION_VALUE_COMMANDS = new Set([
+  "basename",
+  "dirname",
+  "echo",
+  "printf",
+  "tesseract",
+]);
 const DYNAMIC_ARGUMENT_SENSITIVE_COMMANDS = new Set([
   ".",
   "bash",
@@ -110,7 +123,7 @@ const SENSITIVE_TOKEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
 
 export type SegmentAnalyzeOptions = AnalyzeOptions & {
   effectiveCwd: string | null | undefined;
-  analyzeNested: (command: string) => string | null;
+  analyzeNested: (command: string, effectiveCwd?: string | null | undefined) => string | null;
 };
 
 function deriveCwdContext(options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiveCwd">): {
@@ -131,8 +144,10 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
 
   const { tokens: strippedEnv, envAssignments: leadingEnvAssignments } =
     stripEnvAssignmentsWithInfo(tokens);
-  const { tokens: stripped, envAssignments: wrapperEnvAssignments } =
-    stripWrappersWithInfo(strippedEnv);
+  const wrapperResult = stripWrappersWithInfo(strippedEnv);
+  const stripped = wrapperResult.tokens;
+  const wrapperEnvAssignments = wrapperResult.envAssignments;
+  const commandEffectiveCwd = wrapperResult.childCwdUnknown ? null : options.effectiveCwd;
 
   const envAssignments = new Map(leadingEnvAssignments);
   for (const [k, v] of wrapperEnvAssignments) {
@@ -152,8 +167,12 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   }
 
   const commandIndex = commandTokenIndex(stripped);
+  const staticTokens = stripped.map(stripExpansionMarkers);
+  const staticCommandIndex = commandTokenIndex(staticTokens);
   const executableTokens = stripped.slice(commandIndex);
-  const normalizedExecutable = normalizeCommandToken(executableTokens[0] ?? "");
+  const normalizedExecutable = normalizeCommandToken(
+    stripExpansionMarkers(executableTokens[0] ?? ""),
+  );
   if (COMMAND_EXECUTION_WRAPPERS.has(normalizedExecutable)) {
     const wrappedCommand = unwrapStaticExecutionWrapper(executableTokens);
     if (!wrappedCommand) {
@@ -162,28 +181,42 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
     if (wrappedCommand.length === 0) {
       return null;
     }
-    return analyzeSegment(wrappedCommand, options);
+    return analyzeSegment(wrappedCommand, { ...options, effectiveCwd: commandEffectiveCwd });
   }
 
-  for (const token of stripped) {
-    if (!token) continue;
-    for (const { re, reason } of SENSITIVE_TOKEN_PATTERNS) {
-      if (re.test(token)) {
-        return reason;
-      }
-    }
-  }
+  const sensitiveReason = analyzeSensitiveTokens(staticTokens);
+  if (sensitiveReason) return sensitiveReason;
 
-  const head = stripped[0];
+  const head = staticTokens[0];
   if (!head) {
     return null;
   }
 
-  const normalizedHead = normalizeCommandToken(stripped[commandIndex] ?? head);
+  const normalizedHead = normalizeCommandToken(staticTokens[staticCommandIndex] ?? head);
   const basename = getBasename(head);
 
   if (
-    stripped.some(hasNontrivialParameterExpansion) &&
+    stripped.slice(commandIndex + 1).some(hasCommandSubstitution) &&
+    !COMMAND_SUBSTITUTION_VALUE_COMMANDS.has(normalizedHead)
+  ) {
+    return REASON_DYNAMIC_ARGUMENT;
+  }
+
+  if (
+    stripped.slice(commandIndex + 1).some(hasGlobExpansion) &&
+    !hasAllowedGlobArguments(
+      normalizedHead,
+      stripped,
+      staticTokens,
+      commandIndex,
+      commandEffectiveCwd,
+    )
+  ) {
+    return REASON_DYNAMIC_ARGUMENT;
+  }
+
+  if (
+    stripped.some(hasNontrivialDynamicExpansion) &&
     !PARAMETER_EXPANSION_VALUE_COMMANDS.has(normalizedHead)
   ) {
     return REASON_DYNAMIC_ARGUMENT;
@@ -192,38 +225,50 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   if (
     (DYNAMIC_ARGUMENT_SENSITIVE_COMMANDS.has(normalizedHead) ||
       COMMAND_EXECUTION_WRAPPERS.has(normalizedHead)) &&
-    stripped.slice(commandIndex + 1).some((token) => token.includes("$"))
+    stripped
+      .slice(commandIndex + 1)
+      .some((token) => hasDynamicExpansion(token.replaceAll(GLOB_EXPANSION_MARKER, "")))
   ) {
     return REASON_DYNAMIC_ARGUMENT;
   }
 
-  const { cwdForRm, originalCwd } = deriveCwdContext(options);
+  const { cwdForRm, originalCwd } = deriveCwdContext({
+    cwd: options.cwd,
+    effectiveCwd: commandEffectiveCwd,
+  });
 
   const allowTmpdirVar =
     (options.allowTmpdirVar ?? true) && !isTmpdirOverriddenToNonTemp(envAssignments);
 
   if (SHELL_WRAPPERS.has(normalizedHead)) {
-    const dashCArg = extractDashCArg(stripped);
+    const dashCArg = extractDashCArg(staticTokens);
     if (dashCArg) {
-      return options.analyzeNested(dashCArg);
+      return options.analyzeNested(dashCArg, commandEffectiveCwd);
     }
   }
 
   if (normalizedHead === "eval") {
-    const payload = stripped.slice(commandIndex + 1).join(" ");
-    return payload ? options.analyzeNested(payload) : null;
+    const payload = staticTokens.slice(staticCommandIndex + 1).join(" ");
+    return payload ? options.analyzeNested(payload, commandEffectiveCwd) : null;
+  }
+
+  if (normalizedHead === "trap") {
+    const action = extractTrapAction(stripped.slice(commandIndex + 1));
+    if (action?.dynamic) return REASON_DYNAMIC_EVALUATOR;
+    if (action?.payload) return options.analyzeNested(action.payload, commandEffectiveCwd);
+  }
+
+  if (normalizedHead === "mapfile" || normalizedHead === "readarray") {
+    const callback = extractMapfileCallback(stripped.slice(commandIndex + 1));
+    if (callback?.dynamic) return REASON_DYNAMIC_EVALUATOR;
+    if (callback?.payload) return options.analyzeNested(callback.payload, commandEffectiveCwd);
   }
 
   if (INTERPRETERS.has(normalizedHead)) {
-    const codeArg = extractInterpreterCodeArg(stripped);
+    const codeArg = extractInterpreterCodeArg(staticTokens);
     if (codeArg) {
       if (options.paranoidInterpreters) {
         return REASON_INTERPRETER_BLOCKED + PARANOID_INTERPRETERS_SUFFIX;
-      }
-
-      const innerReason = options.analyzeNested(codeArg);
-      if (innerReason) {
-        return innerReason;
       }
 
       if (containsDangerousCode(codeArg)) {
@@ -233,7 +278,7 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   }
 
   if (normalizedHead === "busybox" && stripped.length > 1) {
-    return analyzeSegment(stripped.slice(1), options);
+    return analyzeSegment(stripped.slice(1), { ...options, effectiveCwd: commandEffectiveCwd });
   }
 
   const isGit = basename.toLowerCase() === "git";
@@ -243,7 +288,7 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   const isParallel = basename === "parallel";
 
   if (isGit) {
-    const gitResult = analyzeGit(stripped);
+    const gitResult = analyzeGit(staticTokens);
     if (gitResult) {
       return gitResult;
     }
@@ -251,12 +296,12 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
 
   if (isRm) {
     if (cwdForRm && isHomeDirectory(cwdForRm)) {
-      if (hasRecursiveForceFlags(stripped)) {
+      if (hasRecursiveForceFlags(staticTokens)) {
         return REASON_RM_HOME_CWD;
       }
     }
 
-    const rmResult = analyzeRm(stripped, {
+    const rmResult = analyzeRm(staticTokens, {
       cwd: cwdForRm,
       originalCwd,
       paranoid: options.paranoidRm,
@@ -269,14 +314,20 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   }
 
   if (isFind) {
-    const findResult = analyzeFind(stripped);
+    const findResult = analyzeFind(staticTokens, {
+      analyzeCommand: (command, cwdUnknown) =>
+        analyzeSegment(command, {
+          ...options,
+          effectiveCwd: cwdUnknown ? null : commandEffectiveCwd,
+        }),
+    });
     if (findResult) {
       return findResult;
     }
   }
 
   if (isXargs) {
-    const xargsResult = analyzeXargs(stripped, {
+    const xargsResult = analyzeXargs(staticTokens, {
       cwd: cwdForRm,
       originalCwd,
       paranoidRm: options.paranoidRm,
@@ -289,7 +340,7 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
   }
 
   if (isParallel) {
-    const parallelResult = analyzeParallel(stripped, {
+    const parallelResult = analyzeParallel(staticTokens, {
       cwd: cwdForRm,
       originalCwd,
       paranoidRm: options.paranoidRm,
@@ -308,13 +359,13 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
     // Fallback: scan tokens for embedded git/rm/find commands.
     // Skip for display-only commands that don't execute their arguments.
     if (!DISPLAY_COMMANDS.has(normalizedHead)) {
-      for (let i = 1; i < stripped.length; i++) {
-        const token = stripped[i];
+      for (let i = 1; i < staticTokens.length; i++) {
+        const token = staticTokens[i];
         if (!token) continue;
 
         const cmd = normalizeCommandToken(token);
         if (cmd === "rm") {
-          const rmTokens = ["rm", ...stripped.slice(i + 1)];
+          const rmTokens = ["rm", ...staticTokens.slice(i + 1)];
           const reason = analyzeRm(rmTokens, {
             cwd: cwdForRm,
             originalCwd,
@@ -327,7 +378,7 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
         }
 
         if (cmd === "git") {
-          const gitTokens = ["git", ...stripped.slice(i + 1)];
+          const gitTokens = ["git", ...staticTokens.slice(i + 1)];
           const reason = analyzeGit(gitTokens);
           if (reason) {
             return reason;
@@ -335,7 +386,7 @@ export function analyzeSegment(tokens: string[], options: SegmentAnalyzeOptions)
         }
 
         if (cmd === "find") {
-          const findTokens = ["find", ...stripped.slice(i + 1)];
+          const findTokens = ["find", ...staticTokens.slice(i + 1)];
           const reason = analyzeFind(findTokens);
           if (reason) {
             return reason;
@@ -366,7 +417,7 @@ function hasDynamicCommandHead(tokens: readonly string[]): boolean {
     wrapper = commandToken ? normalizeCommandToken(commandToken) : "";
   }
 
-  return commandToken?.includes("$") ?? false;
+  return commandToken ? hasDynamicExpansion(commandToken) : false;
 }
 
 function commandTokenIndex(tokens: readonly string[]): number {
@@ -382,34 +433,120 @@ function hasDynamicNestedExecutable(tokens: readonly string[]): boolean {
   if (COMMAND_EXECUTION_WRAPPERS.has(head)) {
     // Wrapper option grammars differ and can themselves consume values. Once a
     // wrapper contains expansion, conservatively assume it can select a command.
-    return executableTokens.slice(1).some((token) => token.includes("$"));
+    return executableTokens.slice(1).some(hasDynamicExpansion);
   }
 
   if (head === "xargs" || head === "parallel") {
-    return tokens.slice(1).some((token) => token.includes("$"));
+    return tokens.slice(1).some(hasDynamicExpansion);
   }
 
   if (head === "find") {
     for (let i = 1; i < tokens.length; i++) {
-      if (tokens[i] === "-exec" || tokens[i] === "-execdir") {
-        return tokens[i + 1]?.includes("$") ?? false;
+      if (["-exec", "-execdir", "-ok", "-okdir"].includes(tokens[i] ?? "")) {
+        const executable = tokens[i + 1];
+        return executable ? hasDynamicExpansion(executable) : false;
       }
     }
   }
 
   if (head === "case") {
     const inIndex = tokens.indexOf("in");
-    return inIndex >= 0 && tokens.slice(inIndex + 1).some((token) => token.includes("$"));
+    return inIndex >= 0 && tokens.slice(inIndex + 1).some(hasDynamicExpansion);
   }
 
   if (head === "eval" || head === "source" || head === ".") {
-    return tokens.slice(1).some((token) => token.includes("$"));
+    return tokens.slice(1).some(hasDynamicExpansion);
   }
 
   return false;
 }
 
-function unwrapStaticExecutionWrapper(tokens: readonly string[]): string[] | null {
+function isProjectLocalGlob(token: string): boolean {
+  if (token.startsWith("/") || token.startsWith("~") || token.startsWith("-")) return false;
+  const components = token.split("/");
+  return (
+    !components.includes("..") && components.every((part) => part === "." || !part.startsWith("."))
+  );
+}
+
+function hasAllowedGlobArguments(
+  command: string,
+  tokens: readonly string[],
+  staticTokens: readonly string[],
+  commandIndex: number,
+  effectiveCwd: string | null | undefined,
+): boolean {
+  const globIndexes: number[] = [];
+  for (let i = commandIndex + 1; i < tokens.length; i++) {
+    if (hasGlobExpansion(tokens[i] ?? "")) globIndexes.push(i);
+  }
+  const allProjectLocal = globIndexes.every((index) =>
+    isProjectLocalGlob(staticTokens[index] ?? ""),
+  );
+  if (!allProjectLocal) return false;
+
+  if (command === "cat") return true;
+
+  if (command === "git") {
+    return (
+      staticTokens[commandIndex + 1] === "add" &&
+      globIndexes.every((index) => index > commandIndex + 1)
+    );
+  }
+
+  if (command === "rm") {
+    if (!hasRecursiveFlag(staticTokens.slice(commandIndex + 1))) return true;
+    return effectiveCwd != null && globIndexes.every((index) => staticTokens[index] === "*");
+  }
+
+  return !DYNAMIC_ARGUMENT_SENSITIVE_COMMANDS.has(command);
+}
+
+interface EvaluatorPayload {
+  payload: string;
+  dynamic: boolean;
+}
+
+function extractTrapAction(tokens: readonly string[]): EvaluatorPayload | null {
+  let i = 0;
+  while (tokens[i] === "-l" || tokens[i] === "-p") i++;
+  if (tokens[i] === "--") i++;
+  const action = tokens[i];
+  if (!action || action === "-") return null;
+  return {
+    payload: stripExpansionMarkers(action),
+    dynamic: hasDynamicExpansion(action),
+  };
+}
+
+function extractMapfileCallback(tokens: readonly string[]): EvaluatorPayload | null {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-C" || token === "--callback") {
+      const callback = tokens[i + 1];
+      if (!callback) return { payload: "", dynamic: true };
+      return {
+        payload: stripExpansionMarkers(callback),
+        dynamic: hasDynamicExpansion(callback),
+      };
+    }
+    if (token?.startsWith("-C") && token.length > 2) {
+      return {
+        payload: stripExpansionMarkers(token.slice(2)),
+        dynamic: hasDynamicExpansion(token),
+      };
+    }
+    if (token?.startsWith("--callback=")) {
+      return {
+        payload: stripExpansionMarkers(token.slice("--callback=".length)),
+        dynamic: hasDynamicExpansion(token),
+      };
+    }
+  }
+  return null;
+}
+
+export function unwrapStaticExecutionWrapper(tokens: readonly string[]): string[] | null {
   const wrapper = normalizeCommandToken(tokens[0] ?? "");
 
   if (wrapper === "builtin") {
@@ -686,39 +823,12 @@ function unwrapChrt(tokens: readonly string[]): string[] | null {
   return tokens.slice(i + 1);
 }
 
-const CWD_CHANGE_REGEX =
-  /^\s*(?:\$\(\s*)?[({]*\s*(?:command\s+|builtin\s+)?(?:cd|pushd|popd)(?:\s|$)/;
-
-export function segmentChangesCwd(segment: readonly string[]): boolean {
-  const stripped = stripLeadingGrouping(segment);
-  const unwrapped = stripWrappers([...stripped]);
-
-  if (unwrapped.length === 0) {
-    return false;
-  }
-
-  let head = unwrapped[0] ?? "";
-  if (head === "builtin" && unwrapped.length > 1) {
-    head = unwrapped[1] ?? "";
-  }
-
-  if (head === "cd" || head === "pushd" || head === "popd") {
-    return true;
-  }
-
-  const joined = segment.join(" ");
-  return CWD_CHANGE_REGEX.test(joined);
-}
-
-function stripLeadingGrouping(tokens: readonly string[]): readonly string[] {
-  let i = 0;
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (token === "{" || token === "(" || token === "$(") {
-      i++;
-    } else {
-      break;
+export function analyzeSensitiveTokens(tokens: readonly string[]): string | null {
+  for (const token of tokens) {
+    if (!token) continue;
+    for (const { re, reason } of SENSITIVE_TOKEN_PATTERNS) {
+      if (re.test(token)) return reason;
     }
   }
-  return tokens.slice(i);
+  return null;
 }

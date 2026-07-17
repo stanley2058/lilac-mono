@@ -1,505 +1,43 @@
-import { parse } from "shell-quote";
+import { MAX_STRIP_ITERATIONS } from "./types";
 
-import { MAX_STRIP_ITERATIONS, SHELL_OPERATORS } from "./types";
+export const DYNAMIC_EXPANSION_MARKER = "__LILAC_DYNAMIC_SHELL_EXPANSION__";
+export const NONTRIVIAL_DYNAMIC_EXPANSION_MARKER = `${DYNAMIC_EXPANSION_MARKER}NONTRIVIAL__`;
+export const PARAMETER_EXPANSION_MARKER = `${DYNAMIC_EXPANSION_MARKER}PARAMETER__`;
+export const COMMAND_SUBSTITUTION_MARKER = `${DYNAMIC_EXPANSION_MARKER}COMMAND_SUBSTITUTION__`;
+export const ARITHMETIC_EXPANSION_MARKER = `${DYNAMIC_EXPANSION_MARKER}ARITHMETIC__`;
+export const BRACE_EXPANSION_MARKER = `${DYNAMIC_EXPANSION_MARKER}BRACE__`;
+export const GLOB_EXPANSION_MARKER = `${DYNAMIC_EXPANSION_MARKER}GLOB__`;
 
-// Proxy that preserves variable references as $VAR strings instead of expanding them.
-const ENV_PROXY = new Proxy(
-  {},
-  {
-    get: (_, name) => `$${String(name)}`,
-  },
-);
+const EXPANSION_MARKERS = [
+  NONTRIVIAL_DYNAMIC_EXPANSION_MARKER,
+  PARAMETER_EXPANSION_MARKER,
+  COMMAND_SUBSTITUTION_MARKER,
+  ARITHMETIC_EXPANSION_MARKER,
+  BRACE_EXPANSION_MARKER,
+  GLOB_EXPANSION_MARKER,
+  DYNAMIC_EXPANSION_MARKER,
+];
 
-export const PARAMETER_EXPANSION_MARKER = "__LILAC_BASH_PARAMETER_EXPANSION_";
-
-type ParseEntry = unknown;
-
-type ShellQuoteOperator = { op: string };
-
-export function splitShellCommands(command: string): string[][] {
-  if (hasUnclosedQuotes(command)) {
-    throw new Error("Unclosed shell quote");
-  }
-
-  rejectUnsupportedShellConstructs(command);
-
-  const normalizedCommand = normalizeBashParameterExpansions(command).replace(/\n/g, " ; ");
-  const tokens = parse(normalizedCommand, ENV_PROXY) as ParseEntry[];
-
-  const segments: string[][] = [];
-  let current: string[] = [];
-  let i = 0;
-
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (token === undefined) {
-      i++;
-      continue;
-    }
-
-    if (isOperator(token)) {
-      if (current.length > 0) {
-        segments.push(current);
-        current = [];
-      }
-      i++;
-      continue;
-    }
-
-    if (typeof token !== "string") {
-      i++;
-      continue;
-    }
-
-    // Handle command substitutions like $(...).
-    const nextToken = tokens[i + 1];
-    if (token === "$" && nextToken && isParenOpen(nextToken)) {
-      if (current.length > 0) {
-        segments.push(current);
-        current = [];
-      }
-
-      const { innerSegments, endIndex } = extractCommandSubstitution(tokens, i + 2);
-      for (const seg of innerSegments) {
-        segments.push(seg);
-      }
-      i = endIndex + 1;
-      continue;
-    }
-
-    const backtickSegments = extractBacktickSubstitutions(token);
-    if (backtickSegments.length > 0) {
-      for (const seg of backtickSegments) {
-        segments.push(seg);
-      }
-    }
-
-    current.push(token);
-    i++;
-  }
-
-  if (current.length > 0) {
-    segments.push(current);
-  }
-
-  return segments;
+export function hasDynamicExpansion(token: string): boolean {
+  return token.includes(DYNAMIC_EXPANSION_MARKER);
 }
 
-export function hasNontrivialParameterExpansion(token: string): boolean {
-  return token.includes(PARAMETER_EXPANSION_MARKER);
+export function hasNontrivialDynamicExpansion(token: string): boolean {
+  return token.includes(NONTRIVIAL_DYNAMIC_EXPANSION_MARKER);
 }
 
-/**
- * shell-quote does not preserve enough context to safely distinguish these
- * Bash constructs from ordinary words. Fail closed instead of analyzing a
- * lossy token stream.
- */
-function rejectUnsupportedShellConstructs(command: string): void {
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  let inComment = false;
-  let escaped = false;
-
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-    const next = command[i + 1];
-
-    if (inComment) {
-      if (char === "\n") inComment = false;
-      continue;
-    }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && !inSingleQuote) {
-      escaped = true;
-      continue;
-    }
-    if (
-      char === "#" &&
-      !inSingleQuote &&
-      !inDoubleQuote &&
-      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
-    ) {
-      inComment = true;
-      continue;
-    }
-    if (!inDoubleQuote && char === "'") {
-      inSingleQuote = !inSingleQuote;
-      continue;
-    }
-    if (!inSingleQuote && char === '"') {
-      inDoubleQuote = !inDoubleQuote;
-      continue;
-    }
-    if (inSingleQuote) continue;
-
-    if (char === "$" && next === "'") {
-      throw new Error("ANSI-C quoting is not safely supported");
-    }
-    if (char === "`") {
-      throw new Error("Backtick command substitution is not safely supported");
-    }
-    if (char === "$" && next === "(") {
-      throw new Error("Command substitution is not safely supported");
-    }
-    if (
-      char === "$" &&
-      isParameterExpansionStart(next) &&
-      expansionIsRedirectionTarget(command, i)
-    ) {
-      throw new Error("Dynamic redirection targets are not safely supported");
-    }
-    if ((char === "<" || char === ">") && next === "(") {
-      throw new Error("Process substitution is not safely supported");
-    }
-    if (!inDoubleQuote && char === "<" && next === "<") {
-      throw new Error("Heredocs are not safely supported");
-    }
-  }
-
-  rejectUnsupportedCommandForms(command);
+export function hasCommandSubstitution(token: string): boolean {
+  return token.includes(COMMAND_SUBSTITUTION_MARKER);
 }
 
-function isParameterExpansionStart(char: string | undefined): boolean {
-  return char !== undefined && (char === "{" || /[A-Za-z0-9_#?*@!$-]/.test(char));
+export function hasGlobExpansion(token: string): boolean {
+  return token.includes(GLOB_EXPANSION_MARKER);
 }
 
-function expansionIsRedirectionTarget(command: string, expansionStart: number): boolean {
-  let i = expansionStart - 1;
-
-  // Move to the beginning of the shell word containing the expansion. This
-  // covers quoted and partially literal targets such as > "out-${suffix}".
-  while (i >= 0 && !/[\s;&|()<>]/.test(command[i] ?? "")) i--;
-  while (i >= 0 && /\s/.test(command[i] ?? "")) i--;
-
-  return command[i] === ">" || command[i] === "<";
-}
-
-/**
- * shell-quote only understands a subset of Bash parameter expansion and throws
- * on valid forms containing patterns with spaces (for example, ${name%% tools*}).
- * Replace non-trivial expansions with inert variable references so command
- * structure remains visible to the safety analyzer.
- */
-function normalizeBashParameterExpansions(command: string): string {
-  let normalized = "";
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  let inComment = false;
-  let escaped = false;
-  let markerIndex = 0;
-
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-
-    if (inComment) {
-      normalized += char;
-      if (char === "\n") {
-        inComment = false;
-      }
-      continue;
-    }
-
-    if (escaped) {
-      normalized += char;
-      escaped = false;
-      continue;
-    }
-
-    if (char === "\\" && !inSingleQuote) {
-      normalized += char;
-      escaped = true;
-      continue;
-    }
-
-    if (char === "'" && !inDoubleQuote) {
-      inSingleQuote = !inSingleQuote;
-      normalized += char;
-      continue;
-    }
-
-    if (char === '"' && !inSingleQuote) {
-      inDoubleQuote = !inDoubleQuote;
-      normalized += char;
-      continue;
-    }
-
-    if (
-      char === "#" &&
-      !inSingleQuote &&
-      !inDoubleQuote &&
-      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
-    ) {
-      inComment = true;
-      normalized += char;
-      continue;
-    }
-
-    if (!inSingleQuote && char === "$" && command[i + 1] === "{") {
-      const endIndex = findParameterExpansionEnd(command, i + 2);
-      if (endIndex === -1) {
-        throw new Error("Unclosed Bash parameter expansion");
-      }
-
-      const expression = command.slice(i + 2, endIndex);
-      if (containsExecutableSubstitution(expression)) {
-        throw new Error("Executable substitution inside Bash parameter expansion");
-      }
-      if (expression.endsWith("@P")) {
-        throw new Error("Bash prompt expansion can execute variable contents");
-      }
-
-      if (isSimpleParameterReference(expression)) {
-        normalized += command.slice(i, endIndex + 1);
-      } else {
-        normalized += `\${${PARAMETER_EXPANSION_MARKER}${markerIndex}}`;
-        markerIndex++;
-      }
-      i = endIndex;
-      continue;
-    }
-
-    normalized += char;
-  }
-
-  return normalized;
-}
-
-function findParameterExpansionEnd(command: string, startIndex: number): number {
-  let depth = 1;
-  let escaped = false;
-
-  for (let i = startIndex; i < command.length; i++) {
-    const char = command[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === "$" && command[i + 1] === "{") {
-      depth++;
-      i++;
-      continue;
-    }
-    if (char === "}") {
-      depth--;
-      if (depth === 0) {
-        return i;
-      }
-    }
-  }
-
-  return -1;
-}
-
-function containsExecutableSubstitution(expression: string): boolean {
-  return (
-    expression.includes("$(") ||
-    expression.includes("`") ||
-    expression.includes("<(") ||
-    expression.includes(">(")
-  );
-}
-
-function isSimpleParameterReference(expression: string): boolean {
-  return /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?*@!$-])$/.test(expression);
-}
-
-function rejectUnsupportedCommandForms(command: string): void {
-  const syntax = unquotedShellSyntax(command);
-  if (/(?:^|[\s;&|({])function\s+[A-Za-z_][A-Za-z0-9_.:-]*(?:\s*\(\s*\))?\s*[{(]/u.test(syntax)) {
-    throw new Error("Shell function definitions are not safely supported");
-  }
-  if (/(?:^|[\s;&|({])[A-Za-z_][A-Za-z0-9_.:-]*\s*\(\s*\)\s*[{(]/u.test(syntax)) {
-    throw new Error("Shell function definitions are not safely supported");
-  }
-  if (/(?:^|[\s;&|({])coproc(?:\s|$)/u.test(syntax)) {
-    throw new Error("Bash coprocesses are not safely supported");
-  }
-}
-
-function unquotedShellSyntax(command: string): string {
-  const syntax = [...command];
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  let inComment = false;
-  let escaped = false;
-
-  for (let i = 0; i < syntax.length; i++) {
-    const char = command[i];
-    if (inComment) {
-      syntax[i] = char === "\n" ? "\n" : " ";
-      if (char === "\n") inComment = false;
-      continue;
-    }
-    if (escaped) {
-      syntax[i] = " ";
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && !inSingleQuote) {
-      syntax[i] = " ";
-      escaped = true;
-      continue;
-    }
-    if (char === "'" && !inDoubleQuote) {
-      inSingleQuote = !inSingleQuote;
-      syntax[i] = " ";
-      continue;
-    }
-    if (char === '"' && !inSingleQuote) {
-      inDoubleQuote = !inDoubleQuote;
-      syntax[i] = " ";
-      continue;
-    }
-    if (inSingleQuote || inDoubleQuote) {
-      syntax[i] = " ";
-      continue;
-    }
-    if (char === "#" && (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))) {
-      syntax[i] = " ";
-      inComment = true;
-    }
-  }
-
-  return syntax.join("");
-}
-
-function extractBacktickSubstitutions(token: string): string[][] {
-  const segments: string[][] = [];
-  let i = 0;
-
-  while (i < token.length) {
-    const backtickStart = token.indexOf("`", i);
-    if (backtickStart === -1) break;
-
-    const backtickEnd = token.indexOf("`", backtickStart + 1);
-    if (backtickEnd === -1) break;
-
-    const innerCommand = token.slice(backtickStart + 1, backtickEnd);
-    if (innerCommand.trim()) {
-      const innerSegments = splitShellCommands(innerCommand);
-      for (const seg of innerSegments) {
-        segments.push(seg);
-      }
-    }
-
-    i = backtickEnd + 1;
-  }
-
-  return segments;
-}
-
-function isParenOpen(token: ParseEntry | undefined): boolean {
-  return (
-    typeof token === "object" &&
-    token !== null &&
-    "op" in token &&
-    (token as ShellQuoteOperator).op === "("
-  );
-}
-
-function isParenClose(token: ParseEntry | undefined): boolean {
-  return (
-    typeof token === "object" &&
-    token !== null &&
-    "op" in token &&
-    (token as ShellQuoteOperator).op === ")"
-  );
-}
-
-function extractCommandSubstitution(
-  tokens: ParseEntry[],
-  startIndex: number,
-): { innerSegments: string[][]; endIndex: number } {
-  const innerSegments: string[][] = [];
-  let currentSegment: string[] = [];
-  let depth = 1;
-  let i = startIndex;
-
-  while (i < tokens.length && depth > 0) {
-    const token = tokens[i];
-
-    if (isParenOpen(token)) {
-      depth++;
-      i++;
-      continue;
-    }
-
-    if (isParenClose(token)) {
-      depth--;
-      if (depth === 0) break;
-      i++;
-      continue;
-    }
-
-    if (depth === 1 && token && isOperator(token)) {
-      if (currentSegment.length > 0) {
-        innerSegments.push(currentSegment);
-        currentSegment = [];
-      }
-      i++;
-      continue;
-    }
-
-    if (typeof token === "string") {
-      currentSegment.push(token);
-    }
-
-    i++;
-  }
-
-  if (currentSegment.length > 0) {
-    innerSegments.push(currentSegment);
-  }
-
-  return { innerSegments, endIndex: i };
-}
-
-function hasUnclosedQuotes(command: string): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let inComment = false;
-  let escaped = false;
-
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-    if (inComment) {
-      if (char === "\n") {
-        inComment = false;
-      }
-      continue;
-    }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && !inSingle) {
-      escaped = true;
-      continue;
-    }
-    if (
-      char === "#" &&
-      !inSingle &&
-      !inDouble &&
-      (i === 0 || /[\s;&|()]/.test(command[i - 1] ?? ""))
-    ) {
-      inComment = true;
-      continue;
-    }
-    if (char === "'" && !inDouble) {
-      inSingle = !inSingle;
-    } else if (char === '"' && !inSingle) {
-      inDouble = !inDouble;
-    }
-  }
-
-  return inSingle || inDouble;
+export function stripExpansionMarkers(token: string): string {
+  let result = token;
+  for (const marker of EXPANSION_MARKERS) result = result.replaceAll(marker, "");
+  return result;
 }
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -544,6 +82,7 @@ export function stripEnvAssignmentsWithInfo(tokens: string[]): EnvStrippingResul
 export interface WrapperStrippingResult {
   tokens: string[];
   envAssignments: Map<string, string>;
+  childCwdUnknown: boolean;
 }
 
 export function stripWrappers(tokens: string[]): string[] {
@@ -553,6 +92,7 @@ export function stripWrappers(tokens: string[]): string[] {
 export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult {
   let result = [...tokens];
   const allEnvAssignments = new Map<string, string>();
+  let childCwdUnknown = false;
 
   for (let iteration = 0; iteration < MAX_STRIP_ITERATIONS; iteration++) {
     const before = result.join(" ");
@@ -569,28 +109,26 @@ export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult 
       result[0]?.includes("=") &&
       !ENV_ASSIGNMENT_RE.test(result[0] ?? "")
     ) {
-      // Conservative parsing: only strict NAME=value is treated as an env assignment.
-      // Other leading tokens that contain '=' (e.g. NAME+=value) are dropped to reach
-      // the actual executable token.
       result = result.slice(1);
     }
 
     if (result.length === 0) break;
 
     const head = result[0]?.toLowerCase();
-
-    // Guard: unknown wrapper type, exit loop.
     if (head !== "sudo" && head !== "env" && head !== "command") {
       break;
     }
 
     if (head === "sudo") {
-      result = stripSudo(result);
+      const sudoResult = stripSudo(result);
+      result = sudoResult.tokens;
+      childCwdUnknown ||= sudoResult.childCwdUnknown;
     }
 
     if (head === "env") {
       const envResult = stripEnvWithInfo(result);
       result = envResult.tokens;
+      childCwdUnknown ||= envResult.childCwdUnknown;
       for (const [k, v] of envResult.envAssignments) {
         allEnvAssignments.set(k, v);
       }
@@ -610,35 +148,65 @@ export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult 
     allEnvAssignments.set(k, v);
   }
 
-  return { tokens: finalTokens, envAssignments: allEnvAssignments };
+  return { tokens: finalTokens, envAssignments: allEnvAssignments, childCwdUnknown };
 }
 
-const SUDO_OPTS_WITH_VALUE = new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U"]);
+const SUDO_OPTS_WITH_VALUE = new Set([
+  "-u",
+  "-g",
+  "-C",
+  "-D",
+  "-h",
+  "-p",
+  "-r",
+  "-t",
+  "-T",
+  "-U",
+  "--chdir",
+]);
 
-function stripSudo(tokens: string[]): string[] {
+interface ChildCwdStrippingResult {
+  tokens: string[];
+  childCwdUnknown: boolean;
+}
+
+function stripSudo(tokens: string[]): ChildCwdStrippingResult {
   let i = 1;
+  let childCwdUnknown = false;
   while (i < tokens.length) {
     const token = tokens[i];
     if (!token) break;
 
     if (token === "--") {
-      return tokens.slice(i + 1);
+      return { tokens: tokens.slice(i + 1), childCwdUnknown };
     }
 
-    // Guard: not an option, exit loop.
     if (!token.startsWith("-")) {
       break;
     }
 
     if (SUDO_OPTS_WITH_VALUE.has(token)) {
+      if (token === "-D" || token === "--chdir") childCwdUnknown = true;
       i += 2;
+      continue;
+    }
+
+    if (token.startsWith("--chdir=")) {
+      childCwdUnknown = true;
+      i++;
+      continue;
+    }
+
+    if (token.startsWith("-D") && token.length > 2) {
+      childCwdUnknown = true;
+      i++;
       continue;
     }
 
     i++;
   }
 
-  return tokens.slice(i);
+  return { tokens: tokens.slice(i), childCwdUnknown };
 }
 
 const ENV_OPTS_NO_VALUE = new Set(["-i", "-0", "--null"]);
@@ -652,8 +220,9 @@ const ENV_OPTS_WITH_VALUE = new Set([
   "-P",
 ]);
 
-function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
+function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnknown: boolean } {
   const envAssignments = new Map<string, string>();
+  let childCwdUnknown = false;
   let i = 1;
 
   while (i < tokens.length) {
@@ -661,7 +230,7 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
     if (!token) break;
 
     if (token === "--") {
-      return { tokens: tokens.slice(i + 1), envAssignments };
+      return { tokens: tokens.slice(i + 1), envAssignments, childCwdUnknown };
     }
 
     if (ENV_OPTS_NO_VALUE.has(token)) {
@@ -670,6 +239,7 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
     }
 
     if (ENV_OPTS_WITH_VALUE.has(token)) {
+      if (token === "-C" || token === "--chdir") childCwdUnknown = true;
       i += 2;
       continue;
     }
@@ -680,6 +250,7 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
     }
 
     if (token.startsWith("-C=") || token.startsWith("--chdir=")) {
+      childCwdUnknown = true;
       i++;
       continue;
     }
@@ -694,7 +265,6 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
       continue;
     }
 
-    // Not an option - try to parse as env assignment.
     const assignment = parseEnvAssignment(token);
     if (!assignment) {
       break;
@@ -704,7 +274,7 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult {
     i++;
   }
 
-  return { tokens: tokens.slice(i), envAssignments };
+  return { tokens: tokens.slice(i), envAssignments, childCwdUnknown };
 }
 
 function stripCommand(tokens: string[]): string[] {
@@ -723,7 +293,6 @@ function stripCommand(tokens: string[]): string[] {
       return tokens.slice(i + 1);
     }
 
-    // Check for combined short opts like -pv.
     if (token.startsWith("-") && !token.startsWith("--") && token.length > 1) {
       const chars = token.slice(1);
       if (!/^[pvV]+$/.test(chars)) {
@@ -739,7 +308,7 @@ function stripCommand(tokens: string[]): string[] {
   return tokens.slice(i);
 }
 
-export function extractShortOpts(tokens: string[]): Set<string> {
+export function extractShortOpts(tokens: readonly string[]): Set<string> {
   const opts = new Set<string>();
   let pastDoubleDash = false;
 
@@ -772,13 +341,4 @@ export function normalizeCommandToken(token: string): string {
 
 export function getBasename(token: string): string {
   return token.includes("/") ? (token.split("/").pop() ?? token) : token;
-}
-
-function isOperator(token: ParseEntry): boolean {
-  return (
-    typeof token === "object" &&
-    token !== null &&
-    "op" in token &&
-    SHELL_OPERATORS.has((token as ShellQuoteOperator).op)
-  );
 }
