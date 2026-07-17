@@ -206,11 +206,6 @@ describe("unified workflow integration", () => {
       subscriptionId: "integration-projector",
       coalesceMs: 5,
       minEditIntervalMs: 0,
-      loadSource: async (revision) =>
-        await fs.readFile(
-          path.join(dataDir, "workflow-snapshots", `${revision.sourceSha256}.js`),
-          "utf8",
-        ),
     });
     const actionResolver = await startWorkflowActionResolver({
       bus,
@@ -354,7 +349,7 @@ describe("unified workflow integration", () => {
 
       await waitFor(() => store.getRun(runId)?.state === "succeeded");
       await waitFor(() =>
-        adapter.contents.some((content) => content.text?.includes("State: **succeeded**")),
+        adapter.contents.some((content) => content.text?.includes("**Succeeded**")),
       );
       const run = store.getRun(runId);
       const operations = store.listOperations(runId);
@@ -501,7 +496,7 @@ describe("unified workflow integration", () => {
       await restartedEngine.start();
       await waitFor(() => store.getRun(runId)?.state === "succeeded");
       await waitFor(() =>
-        adapter.contents.some((content) => content.text?.includes("State: **succeeded**")),
+        adapter.contents.some((content) => content.text?.includes("**Succeeded**")),
       );
       expect(reconciled).toBe(true);
       expect(

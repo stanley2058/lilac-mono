@@ -7,7 +7,7 @@ import { GithubMessageCreatedError } from "../surface/github/github-adapter";
 import type { ContentOpts, MsgRef, SessionRef } from "../surface/types";
 import { DurableWorkflowStore } from "./durable-workflow-store";
 import { sha256 } from "./workflow-definition";
-import type { WorkflowRevision, WorkflowSurfaceActionKind } from "./workflow-domain";
+import type { WorkflowSurfaceActionKind } from "./workflow-domain";
 import {
   buildWorkflowProgressView,
   renderWorkflowProgressView,
@@ -84,7 +84,6 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       store: DurableWorkflowStore;
       adapters: ReadonlyMap<"discord" | "github", SurfaceAdapter>;
       subscriptionId: string;
-      loadSource?: (revision: WorkflowRevision) => Promise<string | null>;
       now?: () => number;
       coalesceMs?: number;
       minEditIntervalMs?: number;
@@ -348,7 +347,6 @@ export class WorkflowProgressProjector implements WorkflowProgressCardService {
       store: this.input.store,
       runId,
       now,
-      loadSource: this.input.loadSource,
     });
     const target = view.run.progressTarget;
     if (!target || (target.platform !== "discord" && target.platform !== "github")) {

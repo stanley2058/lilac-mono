@@ -57,7 +57,6 @@ import { startHeartbeatService } from "../heartbeat/heartbeat-service";
 import { DurableWorkflowStore } from "../workflow/durable-workflow-store";
 import { startWorkflowActionResolver } from "../workflow/workflow-action-resolver";
 import { WorkflowProgressProjector } from "../workflow/workflow-progress-projector";
-import { sha256 } from "../workflow/workflow-definition";
 import { WorkflowEngine } from "../workflow/workflow-engine";
 import { WorkflowWaitResolver } from "../workflow/workflow-wait-resolver";
 import { WorkflowTriggerScheduler } from "../workflow/workflow-trigger-scheduler";
@@ -636,22 +635,6 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
         store: durableWorkflowStore,
         adapters: workflowAdapters,
         subscriptionId: subId(subscriptionPrefix, "workflow-progress"),
-        loadSource: async (revision) => {
-          const snapshotPath = path.join(
-            env.dataDir,
-            "workflow-snapshots",
-            `${revision.sourceSha256}.js`,
-          );
-          const stats = await fs.lstat(snapshotPath);
-          if (!stats.isFile() || stats.isSymbolicLink()) {
-            throw new Error(`Invalid workflow source snapshot: ${snapshotPath}`);
-          }
-          const source = await fs.readFile(snapshotPath, "utf8");
-          if (sha256(source) !== revision.sourceSha256) {
-            throw new Error(`Workflow source snapshot hash mismatch: ${revision.revisionId}`);
-          }
-          return source;
-        },
       });
       await workflowProgressProjector.start();
 

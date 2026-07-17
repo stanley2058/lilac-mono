@@ -10,7 +10,9 @@ import {
   canTransitionWorkflowTrigger,
   canTransitionWorkflowWait,
   jsonValueSchema,
+  workflowOperationKindSchema,
   workflowOperationSchema,
+  workflowOperationStateSchema,
   workflowRevisionSchema,
   workflowRunSchema,
   workflowSchemaMigrationSchema,
@@ -482,6 +484,18 @@ function tolerantRows<T>(rows: readonly unknown[], parse: (row: unknown) => T): 
 function boundedLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(1_000, limit ?? 100));
 }
+
+const workflowOperationProgressSummarySchema = z.object({
+  phase: z.string().nullable(),
+  kind: workflowOperationKindSchema,
+  state: workflowOperationStateSchema,
+  count: z.number().int().nonnegative(),
+  startedCount: z.number().int().nonnegative(),
+});
+
+export type WorkflowOperationProgressSummary = z.infer<
+  typeof workflowOperationProgressSummarySchema
+>;
 
 function revisionIdentityValues(identity: WorkflowRevisionIdentity): readonly string[] {
   return [
@@ -2053,6 +2067,31 @@ export class DurableWorkflowStore {
       : this.db
           .query("SELECT * FROM workflow_operations WHERE run_id = ? ORDER BY created_at LIMIT ?")
           .all(runId, boundedLimit(options?.limit));
+    return tolerantRows(rows, parseOperation);
+  }
+
+  summarizeMeaningfulOperations(runId: string): WorkflowOperationProgressSummary[] {
+    const rows = this.db
+      .query(
+        `SELECT phase, kind, state, COUNT(*) AS count,
+           SUM(CASE WHEN started_at IS NOT NULL THEN 1 ELSE 0 END) AS startedCount
+         FROM workflow_operations
+         WHERE run_id = ? AND kind IN ('agent', 'wait')
+         GROUP BY phase, kind, state
+         ORDER BY MIN(created_at), phase, kind, state`,
+      )
+      .all(runId);
+    return tolerantRows(rows, (row) => workflowOperationProgressSummarySchema.parse(row));
+  }
+
+  listRecentMeaningfulOperations(runId: string, limit = 5): WorkflowOperation[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM workflow_operations
+         WHERE run_id = ? AND kind IN ('agent', 'wait')
+         ORDER BY created_at DESC, operation_id DESC LIMIT ?`,
+      )
+      .all(runId, boundedLimit(limit));
     return tolerantRows(rows, parseOperation);
   }
 

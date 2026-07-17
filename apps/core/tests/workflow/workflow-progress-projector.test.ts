@@ -312,7 +312,24 @@ describe("WorkflowProgressProjector", () => {
       const binding = store.getSurfaceBinding("run-1");
       expect(binding?.messageRef).toEqual(first);
       expect(binding?.lastRenderedSha256).toHaveLength(64);
-      expect(adapter.contents[0]?.text).not.toContain("lilac-workflow-card");
+      const content = adapter.contents[0];
+      expect(content?.text).toContain("## audit\nAudit routes\n\n**Queued**");
+      expect(content?.attachments).toEqual([]);
+      for (const internalValue of [
+        "run-1",
+        "revision-1",
+        "project-1",
+        "/workspace",
+        "audit.js",
+        HASH_A,
+        HASH_B,
+        "Resources and durability",
+        "Hashes",
+        "Source access",
+        "tokens",
+      ]) {
+        expect(content?.text).not.toContain(internalValue);
+      }
       await projector.ensureInitialCard("run-1");
       expect(adapter.sends).toBe(1);
       expect(adapter.edits).toBe(0);
@@ -349,7 +366,7 @@ describe("WorkflowProgressProjector", () => {
       projector.requestProjection("run-1");
       await Bun.sleep(30);
       expect(adapter.edits).toBe(1);
-      expect(adapter.contents.at(-1)?.text).toContain("State: **running**");
+      expect(adapter.contents.at(-1)?.text).toContain("**Running**");
     } finally {
       await projector.stop();
       await bus.close();
@@ -431,7 +448,7 @@ describe("WorkflowProgressProjector", () => {
       now = 40;
       await projector.reconcile();
       expect(adapter.reads).toBe(1);
-      expect(adapter.contents.at(-1)?.text).toContain("State: **cancelled**");
+      expect(adapter.contents.at(-1)?.text).toContain("**Cancelled**");
       await projector.reconcile();
       expect(adapter.reads).toBe(1);
 
@@ -568,7 +585,7 @@ describe("WorkflowProgressProjector", () => {
       ).toBe("applied");
       await projector.ensureInitialCard("run-1");
       expect(adapter.contents.at(-1)?.actions).toEqual([]);
-      expect(adapter.contents.at(-1)?.text).toContain("State: **cancelled**");
+      expect(adapter.contents.at(-1)?.text).toContain("**Cancelled**");
     } finally {
       await projector.stop();
       await bus.close();
