@@ -20,6 +20,7 @@ import type {
   SurfaceToolStatusUpdate,
 } from "../../adapter";
 import type { ContentOpts, MsgRef, SessionRef, SurfaceAttachment } from "../../types";
+import { isSubagentToolDisplay, mergeSubagentToolStatus } from "../../subagent-tool-status";
 import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-renderer";
 
 // Attachments are buffered during streaming and finalized on the terminal message.
@@ -65,6 +66,13 @@ const THINKING_SPINNER_FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽"
 const THINKING_SPINNER_TICK_MS = 250;
 const PREVIEW_TEXT_TAIL_CHARS = 2000;
 const DISCORD_CONTENT_MAX_CHARS = 2000;
+const PROGRESS_MAX_LINES = 5;
+const SUBAGENT_MODEL_MAX_CHARS = 12;
+const SUBAGENT_MODEL_HEAD_CHARS = 2;
+const SUBAGENT_MODEL_TAIL_CHARS = 7;
+const SUBAGENT_CHILD_DISPLAY_MAX_CHARS = 48;
+const SUBAGENT_CURRENT_TOOL_MAX_CHARS = 16;
+const PROGRESS_LINE_MAX_CHARS = 90;
 
 type DiscordOutputMode = "inline" | "preview";
 type DiscordPreviewFinalOutputStyle = "embed" | "plain";
@@ -115,12 +123,6 @@ function isBatchToolDisplay(display: string): boolean {
   return trimmed.startsWith("batch") || trimmed.startsWith("[batch]");
 }
 
-function isSubagentToolDisplay(display: string): boolean {
-  const trimmed = display.trimStart();
-  // Back-compat: older displays may include a bracketed prefix.
-  return trimmed.startsWith("subagent") || trimmed.startsWith("[subagent]");
-}
-
 function normalizeToolDisplayForDiscord(display: string): string {
   if (isBatchToolDisplay(display) || isSubagentToolDisplay(display)) return display;
   return display
@@ -148,9 +150,242 @@ function buildToolLine(update: SurfaceToolStatusUpdate): string {
   return `✗ ${escapedDisplay}`;
 }
 
-function clampLast<T>(arr: readonly T[], n: number): T[] {
-  if (arr.length <= n) return [...arr];
-  return arr.slice(arr.length - n);
+export type DiscordProgressEntry = {
+  toolCallId: string;
+  update: SurfaceToolStatusUpdate;
+  updatedSeq: number;
+};
+
+type ParsedSubagentChild = {
+  icon: ">" | "+" | "x";
+  display: string;
+};
+
+type ParsedSubagentDisplay = {
+  profile: string;
+  model?: string;
+  effort?: string;
+  done?: number;
+  total?: number;
+  state?: string;
+  children: ParsedSubagentChild[];
+};
+
+const SUBAGENT_STATES = new Set([
+  "starting",
+  "queued",
+  "running",
+  "blocked",
+  "resolved",
+  "failed",
+  "cancelled",
+  "timeout",
+]);
+
+const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: "no",
+  minimal: "mi",
+  low: "lo",
+  medium: "md",
+  high: "hi",
+  xhigh: "xh",
+};
+
+function truncateMiddle(
+  input: string,
+  maxChars: number,
+  headChars: number,
+  tailChars: number,
+): string {
+  if (input.length <= maxChars) return input;
+  return `${input.slice(0, headChars)}...${input.slice(-tailChars)}`;
+}
+
+function parseSubagentDisplay(display: string): ParsedSubagentDisplay | null {
+  const [rawHeader = "", ...rawChildren] = display.trim().split("\n");
+  const header = rawHeader.trim();
+  const delegateMatch = /^subagent_delegate\s+\((explore|general|self)\)/u.exec(header);
+  if (delegateMatch?.[1]) {
+    return { profile: delegateMatch[1], state: "starting", children: [] };
+  }
+  const match = /^(?:subagent|\[subagent\])\s*\((.*)\)$/u.exec(header);
+  if (!match) return null;
+
+  const segments = (match[1] ?? "")
+    .split(";")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const profile = segments.shift() ?? "agent";
+  let model: string | undefined;
+  let effort: string | undefined;
+  let done: number | undefined;
+  let total: number | undefined;
+  let state: string | undefined;
+
+  for (const segment of segments) {
+    const countMatch = /^(\d+)\/(\d+)(?:\s+done)?$/u.exec(segment);
+    if (countMatch) {
+      done = Number(countMatch[1]);
+      total = Number(countMatch[2]);
+      continue;
+    }
+    if (SUBAGENT_STATES.has(segment)) {
+      state = segment;
+      continue;
+    }
+    if (!model && !state) {
+      const modelMatch = /^(.*?)(?:\s+\[([^\]]+)\])?$/u.exec(segment);
+      const candidate = modelMatch?.[1]?.trim();
+      if (candidate) {
+        model = candidate;
+        effort = modelMatch?.[2]?.trim() || undefined;
+      }
+    }
+  }
+
+  const children = rawChildren.flatMap((line): ParsedSubagentChild[] => {
+    const childMatch = /^(?:\|-|`-)\s+([>+x])\s+(.+)$/u.exec(line.trim());
+    if (!childMatch) return [];
+    const icon = childMatch[1];
+    const childDisplay = childMatch[2]?.trim();
+    if ((icon !== ">" && icon !== "+" && icon !== "x") || !childDisplay) return [];
+    return [{ icon, display: childDisplay }];
+  });
+
+  return {
+    profile,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    ...(done !== undefined ? { done } : {}),
+    ...(total !== undefined ? { total } : {}),
+    ...(state ? { state } : {}),
+    children,
+  };
+}
+
+function statusIcon(update: SurfaceToolStatusUpdate): "▶" | "…" | "✓" | "✗" {
+  if (update.status === "start") return "▶";
+  if (update.status === "update") return "…";
+  return update.ok ? "✓" : "✗";
+}
+
+function currentToolName(parsed: ParsedSubagentDisplay): string | null {
+  const child = [...parsed.children].reverse().find((candidate) => candidate.icon === ">") ?? null;
+  if (!child) return null;
+  const bracketed = /^\[([^\]]+)\]/u.exec(child.display)?.[1];
+  const tool = bracketed ?? child.display.split(/[\s(]/u, 1)[0];
+  if (!tool) return null;
+  return clampWithEllipsis(tool, SUBAGENT_CURRENT_TOOL_MAX_CHARS);
+}
+
+function buildSubagentHeader(
+  entry: DiscordProgressEntry,
+  parsed: ParsedSubagentDisplay | null,
+  includeCurrentTool: boolean,
+): string {
+  if (!parsed) return `${statusIcon(entry.update)} agent (starting)`;
+
+  const details: string[] = [];
+  if (parsed.model) {
+    const model = truncateMiddle(
+      parsed.model,
+      SUBAGENT_MODEL_MAX_CHARS,
+      SUBAGENT_MODEL_HEAD_CHARS,
+      SUBAGENT_MODEL_TAIL_CHARS,
+    );
+    const effort = parsed.effort ? EFFORT_LABELS[parsed.effort] : undefined;
+    details.push(`${model}${effort ? ` [${effort}]` : ""}`);
+  }
+  if (parsed.done !== undefined && parsed.total !== undefined) {
+    details.push(`${parsed.done}/${parsed.total}`);
+  } else if (parsed.state) {
+    details.push(
+      parsed.state === "running" || parsed.state === "queued" ? "starting" : parsed.state,
+    );
+  }
+  if (includeCurrentTool) {
+    const currentTool = currentToolName(parsed);
+    if (currentTool) details.push(currentTool);
+  }
+  if (details.length === 0) details.push("starting");
+
+  return `${statusIcon(entry.update)} ${escapeDiscordMarkdown(
+    `${parsed.profile} (${details.join("; ")})`,
+  )}`;
+}
+
+function buildSubagentChildLines(parsed: ParsedSubagentDisplay, maxChildren: number): string[] {
+  const children = parsed.children.slice(-maxChildren);
+  return children.map((child, index) => {
+    const branch = index === children.length - 1 ? "`-" : "|-";
+    const display = clampWithEllipsis(
+      child.display.replace(/\s+/gu, " ").trim(),
+      SUBAGENT_CHILD_DISPLAY_MAX_CHARS,
+    );
+    return escapeDiscordMarkdown(`${branch} ${child.icon} ${display}`);
+  });
+}
+
+export function buildDiscordProgressLines(input: {
+  tools: readonly DiscordProgressEntry[];
+  subagents: readonly DiscordProgressEntry[];
+}): string[] {
+  const rankedSubagents = [...input.subagents].sort((a, b) => {
+    const activeDelta = Number(b.update.status !== "end") - Number(a.update.status !== "end");
+    return activeDelta || b.updatedSeq - a.updatedSeq;
+  });
+  const visibleSubagents = rankedSubagents.slice(0, 3);
+  const overflow = Math.max(0, rankedSubagents.length - visibleSubagents.length);
+  const agentLines: string[] = [];
+
+  if (rankedSubagents.length === 1) {
+    const entry = visibleSubagents[0];
+    if (entry) {
+      const parsed = parseSubagentDisplay(entry.update.display);
+      agentLines.push(buildSubagentHeader(entry, parsed, false));
+      if (entry.update.status !== "end" && parsed) {
+        agentLines.push(...buildSubagentChildLines(parsed, 2));
+      }
+    }
+  } else if (rankedSubagents.length === 2) {
+    for (const entry of visibleSubagents) {
+      const parsed = parseSubagentDisplay(entry.update.display);
+      agentLines.push(buildSubagentHeader(entry, parsed, false));
+      if (entry.update.status !== "end" && parsed) {
+        agentLines.push(...buildSubagentChildLines(parsed, 1));
+      }
+    }
+  } else {
+    for (const entry of visibleSubagents) {
+      const parsed = parseSubagentDisplay(entry.update.display);
+      agentLines.push(buildSubagentHeader(entry, parsed, true));
+    }
+  }
+
+  if (overflow > 0 && agentLines.length > 0) {
+    const lastIndex = agentLines.length - 1;
+    agentLines[lastIndex] = `${agentLines[lastIndex]} · +${overflow} more`;
+  }
+
+  let remainingToolLines = Math.max(0, PROGRESS_MAX_LINES - agentLines.length);
+  const toolChunks: string[][] = [];
+  const toolsByRecency = [...input.tools].sort((a, b) => b.updatedSeq - a.updatedSeq);
+  for (const entry of toolsByRecency) {
+    if (remainingToolLines === 0) break;
+    const rows = buildToolLine(entry.update).split("\n");
+    const selectedRows =
+      rows.length <= remainingToolLines
+        ? rows
+        : remainingToolLines === 1
+          ? rows.slice(0, 1)
+          : [rows[0]!, ...rows.slice(-(remainingToolLines - 1))];
+    toolChunks.unshift(selectedRows);
+    remainingToolLines -= selectedRows.length;
+  }
+
+  return [...toolChunks.flat(), ...agentLines]
+    .slice(-PROGRESS_MAX_LINES)
+    .map((line) => clampWithEllipsis(line, PROGRESS_LINE_MAX_CHARS));
 }
 
 export function toPreviewTail(text: string, maxChars = PREVIEW_TEXT_TAIL_CHARS): string {
@@ -278,7 +513,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private readonly created: MsgRef[] = [];
   private readonly transientPreviewRefs: MsgRef[] = [];
   private readonly transientPreviewRefKeys = new Set<string>();
-  private readonly toolLines: Array<{ toolCallId: string; line: string }> = [];
+  private readonly toolLines: DiscordProgressEntry[] = [];
+  private readonly subagentLines: DiscordProgressEntry[] = [];
+  private progressUpdateSeq = 0;
   private readonly requestStartedAtMs: number;
   private readonly workingIndicators: readonly string[];
   private readonly workingIndicatorQueue: string[];
@@ -431,7 +668,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   }
 
   private shouldShowProgressTitle(): boolean {
-    if (this.toolLines.length > 0) return true;
+    if (this.toolLines.length > 0 || this.subagentLines.length > 0) return true;
     return this.deps.reasoningDisplayMode !== "none" && this.hasReasoningStatus;
   }
 
@@ -608,6 +845,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (
       this.textAcc.length === 0 &&
       this.toolLines.length === 0 &&
+      this.subagentLines.length === 0 &&
       !this.hasReasoningStatus &&
       this.statsForNerdsLine === null
     ) {
@@ -660,10 +898,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         getReasoningValue: () => this.getReasoningValue(),
         shouldHeartbeatProgress: () => this.isProgressTimerLive(),
         getActionsLines: () =>
-          clampLast(
-            this.toolLines.map((t) => t.line),
-            4,
-          ),
+          buildDiscordProgressLines({ tools: this.toolLines, subagents: this.subagentLines }),
         getStatsLine: () => this.statsForNerdsLine,
         getMaxLength,
         streamDone: this.done.promise,
@@ -731,15 +966,32 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         return;
       }
       case "tool.status": {
-        const line = buildToolLine(part.update);
         if (part.update.status === "start" || part.update.status === "update") {
           this.markTaskProgress(`tool:${part.update.toolCallId}`);
         }
-        const idx = this.toolLines.findIndex((t) => t.toolCallId === part.update.toolCallId);
+        const subagentIdx = this.subagentLines.findIndex(
+          (entry) => entry.toolCallId === part.update.toolCallId,
+        );
+        const isSubagent = subagentIdx >= 0 || isSubagentToolDisplay(part.update.display);
+        const entries = isSubagent ? this.subagentLines : this.toolLines;
+        const idx = entries.findIndex((entry) => entry.toolCallId === part.update.toolCallId);
+        const previous = idx >= 0 ? entries[idx]?.update : undefined;
+        const update = isSubagent ? mergeSubagentToolStatus(previous, part.update) : part.update;
+        const entry = {
+          toolCallId: update.toolCallId,
+          update,
+          updatedSeq: ++this.progressUpdateSeq,
+        } satisfies DiscordProgressEntry;
         if (idx >= 0) {
-          this.toolLines[idx] = { toolCallId: part.update.toolCallId, line };
+          entries[idx] = entry;
         } else {
-          this.toolLines.push({ toolCallId: part.update.toolCallId, line });
+          entries.push(entry);
+        }
+        if (isSubagent) {
+          const ordinaryIdx = this.toolLines.findIndex(
+            (candidate) => candidate.toolCallId === update.toolCallId,
+          );
+          if (ordinaryIdx >= 0) this.toolLines.splice(ordinaryIdx, 1);
         }
         // Only start once we have something to show.
         await this.ensureStarted();

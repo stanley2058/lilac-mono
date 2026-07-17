@@ -122,13 +122,13 @@ describe("formatToolArgsForDisplay", () => {
     ).toBe(" agent @SS:/repo/apps/core");
   });
 
-  it("formats subagent_delegate task regardless of profile", () => {
+  it("formats subagent_delegate profile and task", () => {
     const display = formatToolArgsForDisplay("subagent_delegate", {
       profile: "general",
       task: "Investigate flaky tests in apps/core and propose a fix",
     });
 
-    expect(display.startsWith(" Investigate flaky tests in")).toBe(true);
+    expect(display.startsWith(" (general) Investigate flaky")).toBe(true);
     expect(display.length).toBeLessThanOrEqual(31);
   });
 

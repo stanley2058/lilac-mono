@@ -16,6 +16,7 @@ const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
 
 const PROGRESS_FIELD_MAX_CHARS = 500;
 const PROGRESS_FIELD_TITLE_MAX_CHARS = 256;
+const PROGRESS_FIELD_MAX_LINES = 5;
 
 function clampWithEllipsis(text: string, maxChars: number): string {
   if (maxChars <= 0) return "";
@@ -25,35 +26,31 @@ function clampWithEllipsis(text: string, maxChars: number): string {
 }
 
 function buildActionsValue(lines: readonly string[]): string {
-  const max = 4;
+  const max = 5;
   const clamped = lines.slice(-max);
   return clampWithEllipsis(clamped.join("\n"), PROGRESS_FIELD_MAX_CHARS);
 }
 
-function buildProgressFieldValue(input: {
+export function buildProgressFieldValue(input: {
   reasoningValue?: string | null;
   actionsValue?: string | null;
 }): string {
-  const reasoning = input.reasoningValue
-    ? clampWithEllipsis(input.reasoningValue, PROGRESS_FIELD_MAX_CHARS)
-    : "";
-  const actions = input.actionsValue
-    ? clampWithEllipsis(input.actionsValue, PROGRESS_FIELD_MAX_CHARS)
-    : "";
-
-  if (reasoning && actions) {
-    return `${reasoning}\n\n${actions}`;
-  }
-
-  if (reasoning) {
-    return reasoning;
-  }
-
-  if (actions) {
-    return actions;
-  }
-
-  return "\u200b";
+  const actionRows = input.actionsValue
+    ? input.actionsValue.split("\n").slice(-PROGRESS_FIELD_MAX_LINES)
+    : [];
+  const reasoningRows = input.reasoningValue ? input.reasoningValue.split("\n") : [];
+  const reasoningLimit =
+    actionRows.length === 0
+      ? PROGRESS_FIELD_MAX_LINES
+      : Math.max(0, PROGRESS_FIELD_MAX_LINES - actionRows.length - 1);
+  const visibleReasoning = reasoningRows.slice(0, reasoningLimit);
+  const rows =
+    visibleReasoning.length > 0 && actionRows.length > 0
+      ? [...visibleReasoning, "", ...actionRows]
+      : visibleReasoning.length > 0
+        ? visibleReasoning
+        : actionRows;
+  return rows.length > 0 ? clampWithEllipsis(rows.join("\n"), PROGRESS_FIELD_MAX_CHARS) : "\u200b";
 }
 
 function buildStatsValue(line: string): string {

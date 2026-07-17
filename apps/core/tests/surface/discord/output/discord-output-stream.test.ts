@@ -4,6 +4,7 @@ import type { SurfaceAttachment } from "../../../../src/surface/types";
 
 import {
   DiscordOutputStream,
+  buildDiscordProgressLines,
   buildOutputAllowedMentions,
   buildWorkingTitle,
   clampReasoningDetail,
@@ -11,6 +12,8 @@ import {
   formatReasoningAsBlockquote,
   toPreviewTail,
 } from "../../../../src/surface/discord/output/discord-output-stream";
+import type { SurfaceToolStatusUpdate } from "../../../../src/surface/adapter";
+import { buildProgressFieldValue } from "../../../../src/surface/discord/output/embed-pusher";
 
 describe("escapeDiscordMarkdown", () => {
   it("escapes emphasis markers in glob-like patterns", () => {
@@ -21,6 +24,200 @@ describe("escapeDiscordMarkdown", () => {
     expect(escapeDiscordMarkdown("[x](y) _z_ `k` ~u~")).toBe(
       "\\[x\\]\\(y\\) \\_z\\_ \\`k\\` \\~u\\~",
     );
+  });
+});
+
+describe("compact subagent progress", () => {
+  function entry(
+    toolCallId: string,
+    updatedSeq: number,
+    update: Omit<SurfaceToolStatusUpdate, "toolCallId">,
+  ) {
+    return { toolCallId, updatedSeq, update: { toolCallId, ...update } };
+  }
+
+  function visible(lines: readonly string[]): string[] {
+    return lines.map((line) => line.replaceAll("\\", ""));
+  }
+
+  it("keeps detailed reasoning and progress within the shared five-line body", () => {
+    const value = buildProgressFieldValue({
+      reasoningValue: "> reason one\n> reason two\n> reason three",
+      actionsValue: "action one\naction two\nagent one",
+    });
+
+    expect(value.split("\n")).toEqual([
+      "> reason one",
+      "",
+      "action one",
+      "action two",
+      "agent one",
+    ]);
+  });
+
+  it("reserves three rows for one active agent and two for recent main actions", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [
+          entry("tool-1", 1, { status: "end", display: "glob src", ok: true }),
+          entry("tool-2", 2, { status: "end", display: "grep auth", ok: true }),
+          entry("tool-3", 3, { status: "start", display: "bash bun test" }),
+          entry("tool-4", 4, { status: "start", display: "read_file failing.test.ts" }),
+        ],
+        subagents: [
+          entry("agent-1", 5, {
+            status: "update",
+            display: [
+              "subagent (general; claude-fable-5 [high]; 1/2 done)",
+              "|- + read_file package.json",
+              "`- > bash bunx tsc --noEmit",
+            ].join("\n"),
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toEqual([
+      "▶ bash bun test",
+      "▶ read_file failing.test.ts",
+      "… general (cl...fable-5 [hi]; 1/2)",
+      "|- + read_file package.json",
+      "`- > bash bunx tsc --noEmit",
+    ]);
+  });
+
+  it("shows one child row per active agent when two are visible", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [],
+        subagents: [
+          entry("agent-1", 1, {
+            status: "update",
+            display: "subagent (general; gpt-5.6-sol [low]; 1/2 done)\n`- > bash bun test",
+          }),
+          entry("agent-2", 2, {
+            status: "update",
+            display: "subagent (explore; claude-fable-5 [medium]; 14/20 done)\n`- > batch (2/6)",
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toEqual([
+      "… explore (cl...fable-5 [md]; 14/20)",
+      "`- > batch (2/6)",
+      "… general (gpt-5.6-sol [lo]; 1/2)",
+      "`- > bash bun test",
+    ]);
+  });
+
+  it("compacts three agents, abbreviates effort, and folds overflow into the last row", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [],
+        subagents: [
+          entry("agent-1", 1, {
+            status: "update",
+            display:
+              "subagent (general; claude-fable-5 [high]; 12/13 done)\n`- > read_file src/a.ts",
+          }),
+          entry("agent-2", 2, {
+            status: "update",
+            display: "subagent (self; gpt-5.6-sol [medium]; 1/2 done)\n`- > apply_patch src/b.ts",
+          }),
+          entry("agent-3", 3, {
+            status: "update",
+            display: "subagent (explore; grok-4.5 [xhigh]; 8/10 done)\n`- > batch (2/6)",
+          }),
+          entry("agent-4", 4, {
+            status: "end",
+            display: "subagent (explore; 3/3 done)",
+            ok: true,
+          }),
+          entry("agent-5", 5, {
+            status: "end",
+            display: "subagent (general; 4/4 done)",
+            ok: true,
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toEqual([
+      "… explore (grok-4.5 [xh]; 8/10; batch)",
+      "… self (gpt-5.6-sol [md]; 1/2; apply_patch)",
+      "… general (cl...fable-5 [hi]; 12/13; read_file) · +2 more",
+    ]);
+  });
+
+  it("collapses a completed agent and omits unresolved effort", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [],
+        subagents: [
+          entry("agent-1", 1, {
+            status: "end",
+            display:
+              "subagent (explore; gpt-5.6-sol [provider-default]; 3/3 done)\n`- + bash bun test",
+            ok: true,
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toEqual(["✓ explore (gpt-5.6-sol; 3/3)"]);
+  });
+
+  it("uses the delegated profile while an agent is starting", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [],
+        subagents: [
+          entry("agent-1", 1, {
+            status: "start",
+            display: "subagent_delegate (general) Investigate flaky tests",
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toEqual(["▶ general (starting)"]);
+  });
+
+  it("counts multiline batch rows within the five-line budget", () => {
+    const lines = visible(
+      buildDiscordProgressLines({
+        tools: [
+          entry("batch-1", 1, {
+            status: "update",
+            display: [
+              "batch (3 tools; 2/3 done)",
+              "|- ✓ read_file a.ts",
+              "|- ✓ grep auth",
+              "`- ▶ bash bun test",
+            ].join("\n"),
+          }),
+        ],
+        subagents: [
+          entry("agent-1", 2, {
+            status: "update",
+            display: "subagent (general; gpt-5.6-sol [high]; 1/2 done)",
+          }),
+          entry("agent-2", 3, {
+            status: "update",
+            display: "subagent (self; gpt-5.6-sol [medium]; 1/2 done)",
+          }),
+          entry("agent-3", 4, {
+            status: "update",
+            display: "subagent (explore; gpt-5.6-sol [low]; 1/2 done)",
+          }),
+        ],
+      }),
+    );
+
+    expect(lines).toHaveLength(5);
+    expect(lines.slice(0, 2)).toEqual(["… batch (3 tools; 2/3 done)", "`- ▶ bash bun test"]);
+    expect(lines.slice(2).every((line) => line.includes("gpt-5.6-sol"))).toBe(true);
   });
 });
 
@@ -257,6 +454,61 @@ function makeAttachment(index: number): SurfaceAttachment {
     bytes: new Uint8Array([index]),
   };
 }
+
+describe("Discord compact progress integration", () => {
+  it("keeps agents in the Working field and removes progress on completion", async () => {
+    const { client, operations } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    for (let index = 1; index <= 4; index++) {
+      await out.push({
+        type: "tool.status",
+        update: {
+          toolCallId: `tool-${index}`,
+          status: "start",
+          display: `bash command-${index}`,
+        },
+      });
+    }
+    await out.push({
+      type: "tool.status",
+      update: {
+        toolCallId: "agent-1",
+        status: "update",
+        display: [
+          "subagent (general; claude-fable-5 [high]; 1/2 done)",
+          "|- + read_file package.json",
+          "`- > bash bun test",
+        ].join("\n"),
+      },
+    });
+
+    await Bun.sleep(300);
+    const streamingEdit = operations.filter((operation) => operation.kind === "edit").at(-1);
+    const streamingValues = embedFieldValuesFromOptions(streamingEdit?.options).map((value) =>
+      value.replaceAll("\\", ""),
+    );
+    expect(streamingValues).toHaveLength(1);
+    expect(streamingValues[0]?.split("\n")).toEqual([
+      "▶ bash command-3",
+      "▶ bash command-4",
+      "… general (cl...fable-5 [hi]; 1/2)",
+      "|- + read_file package.json",
+      "`- > bash bun test",
+    ]);
+
+    await out.finish();
+    const finalEdit = operations.filter((operation) => operation.kind === "edit").at(-1);
+    expect(embedFieldValuesFromOptions(finalEdit?.options)).toEqual([]);
+  });
+});
 
 describe("preview reanchor behavior", () => {
   it("keeps frozen placeholder lane messages on reanchor", async () => {

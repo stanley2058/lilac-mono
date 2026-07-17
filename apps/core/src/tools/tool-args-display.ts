@@ -253,11 +253,14 @@ export const BUILTIN_LEVEL1_TOOL_ARGS_FORMATTERS: Record<string, ToolArgsFormatt
   },
 
   subagent_delegate: (args) => {
-    const parsed = safeValidateSync<{ task: string }>(subagentDelegateArgsSchema, args);
+    const parsed = safeValidateSync<{ profile?: "explore" | "general" | "self"; task: string }>(
+      subagentDelegateArgsSchema,
+      args,
+    );
     if (!parsed) return "";
     const task = parsed.task.replace(/\s+/g, " ").trim();
     if (!task) return "";
-    return " " + truncateEnd(task, DISPLAY_MAX_LEN);
+    return " " + truncateEnd(`(${parsed.profile ?? "explore"}) ${task}`, DISPLAY_MAX_LEN);
   },
 
   apply_patch: (args) => {
