@@ -447,6 +447,42 @@ describe("DiscordAdapter.editMsg", () => {
     expect(edited?.footer).toEqual({ text: "keep-footer" });
   });
 
+  it("clears existing attachments when an edit supplies an empty attachment list", async () => {
+    const editCalls: Array<Record<string, unknown>> = [];
+    const message = {
+      author: { id: "bot" },
+      embeds: [
+        {
+          toJSON: () => ({ description: "old-description" }),
+        },
+      ],
+      edit: async (options: Record<string, unknown>) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+
+    const adapter = new DiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => message,
+          },
+        }),
+      },
+    };
+
+    await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "new-description", attachments: [] },
+    );
+
+    expect(editCalls).toHaveLength(1);
+    expect(editCalls[0]?.attachments).toEqual([]);
+    expect(editCalls[0]?.files).toEqual([]);
+  });
+
   it("fails for non-bot-authored messages", async () => {
     const message = {
       author: { id: "user" },

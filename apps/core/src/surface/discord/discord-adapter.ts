@@ -924,9 +924,19 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const components =
       content.actions === undefined ? undefined : buildDiscordActionComponents(content.actions);
+    const attachmentEdit =
+      content.attachments === undefined
+        ? {}
+        : {
+            attachments: [],
+            files: content.attachments.map((attachment) => ({
+              attachment: Buffer.from(attachment.bytes),
+              name: attachment.filename,
+            })),
+          };
 
     if (editTarget === "content") {
-      await msg.edit({ content: rewritten, components });
+      await msg.edit({ content: rewritten, components, ...attachmentEdit });
       return;
     }
 
@@ -937,7 +947,7 @@ export class DiscordAdapter implements SurfaceAdapter {
 
     const embed = new EmbedBuilder(existingEmbed.toJSON());
     embed.setDescription(rewritten);
-    await msg.edit({ embeds: [embed], components });
+    await msg.edit({ embeds: [embed], components, ...attachmentEdit });
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<void> {
