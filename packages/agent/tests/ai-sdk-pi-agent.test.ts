@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { jsonSchema, tool, type LanguageModel, type ToolModelMessage } from "ai";
+import { jsonSchema, tool, type LanguageModel, type ModelMessage, type ToolModelMessage } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 
 import { AiSdkPiAgent, extractToolCallsFromMessages } from "../ai-sdk-pi-agent";
@@ -22,6 +22,33 @@ function zeroUsage() {
       reasoning: 0,
     },
   };
+}
+
+function syntheticResultMessages(toolCallId: string): ModelMessage[] {
+  return [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId,
+          toolName: "subagent_result",
+          input: { status: "resolved" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId,
+          toolName: "subagent_result",
+          output: { type: "text", value: "child result" },
+        },
+      ],
+    },
+  ];
 }
 
 describe("AiSdkPiAgent model spec tracking", () => {
@@ -426,5 +453,261 @@ describe("AiSdkPiAgent model spec tracking", () => {
       toolMessage?.content[0]?.type === "tool-result" ? toolMessage.content[0].output : undefined;
 
     expect(output).toEqual({ type: "json", value: null });
+  });
+});
+
+describe("AiSdkPiAgent turn boundaries", () => {
+  it("injects boundary messages after tool results and before the next model turn", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "lookup-1",
+                toolName: "lookup",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-1" },
+              { type: "text-delta", id: "text-1", delta: "done" },
+              { type: "text-end", id: "text-1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const sequence: string[] = [];
+    const modelInputs: Array<readonly ModelMessage[]> = [];
+    let boundaryCount = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        lookup: tool({
+          description: "lookup",
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => "lookup result",
+        }),
+      },
+      turnBoundaryHandler: (context) => {
+        boundaryCount += 1;
+        sequence.push(`boundary:${context.executedToolCallCount}`);
+        modelInputs.push(context.modelInputMessages);
+        return boundaryCount === 1 ? { append: syntheticResultMessages("subagent-result-1") } : {};
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "tool") {
+        const part = event.message.content[0];
+        sequence.push(`tool:${part?.type === "tool-result" ? part.toolName : "unknown"}`);
+      }
+      if (event.type === "agent_end") sequence.push("agent_end");
+    });
+
+    await agent.prompt("start");
+
+    expect(sequence.indexOf("tool:lookup")).toBeLessThan(sequence.indexOf("boundary:1"));
+    expect(sequence.indexOf("boundary:1")).toBeLessThan(sequence.indexOf("tool:subagent_result"));
+    expect(sequence.indexOf("tool:subagent_result")).toBeLessThan(
+      sequence.lastIndexOf("boundary:0"),
+    );
+    expect(sequence.at(-1)).toBe("agent_end");
+    expect(modelInputs).toHaveLength(2);
+    expect(
+      modelInputs[1]?.some(
+        (message) =>
+          message.role === "tool" &&
+          message.content.some(
+            (part) => part.type === "tool-result" && part.toolCallId === "subagent-result-1",
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("forces another model turn when a stop boundary injects a result", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-2" },
+              { type: "text-delta", id: "text-2", delta: "used child result" },
+              { type: "text-end", id: "text-2" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    let boundaries = 0;
+    let agentEnds = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnBoundaryHandler: () => {
+        boundaries += 1;
+        return boundaries === 1 ? { append: syntheticResultMessages("subagent-result-stop") } : {};
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "agent_end") agentEnds += 1;
+    });
+
+    await agent.prompt("start");
+
+    expect(boundaries).toBe(2);
+    expect(agentEnds).toBe(1);
+    expect(agent.state.messages.at(-1)?.role).toBe("assistant");
+  });
+
+  it("waits for every parallel tool result before invoking the boundary", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "tool-call", toolCallId: "read-1", toolName: "read_file", input: "{}" },
+              { type: "tool-call", toolCallId: "glob-1", toolName: "glob", input: "{}" },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    let appendedToolResults = 0;
+    const firstBoundary: { executed: number; appended: number }[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        read_file: tool({
+          description: "read",
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: async () => {
+            await Bun.sleep(5);
+            return "read";
+          },
+        }),
+        glob: tool({
+          description: "glob",
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => "glob",
+        }),
+      },
+      turnBoundaryHandler: (context) => {
+        if (context.executedToolCallCount > 0) {
+          firstBoundary.push({
+            executed: context.executedToolCallCount,
+            appended: appendedToolResults,
+          });
+        }
+        return {};
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "tool") {
+        appendedToolResults += 1;
+      }
+    });
+
+    await agent.prompt("start");
+
+    expect(firstBoundary).toEqual([{ executed: 2, appended: 2 }]);
+  });
+
+  it("does not append a boundary decision after the run is aborted", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    let enterBoundary = () => {};
+    const boundaryEntered = new Promise<void>((resolve) => {
+      enterBoundary = resolve;
+    });
+    let releaseBoundary = () => {};
+    const boundaryReleased = new Promise<void>((resolve) => {
+      releaseBoundary = resolve;
+    });
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnBoundaryHandler: async () => {
+        enterBoundary();
+        await boundaryReleased;
+        return { append: syntheticResultMessages("subagent-result-aborted") };
+      },
+    });
+
+    const run = agent.prompt("start");
+    await boundaryEntered;
+    agent.abort();
+    releaseBoundary();
+    await run;
+
+    expect(
+      agent.state.messages.some(
+        (message) =>
+          message.role === "tool" &&
+          message.content.some(
+            (part) => part.type === "tool-result" && part.toolCallId === "subagent-result-aborted",
+          ),
+      ),
+    ).toBe(false);
   });
 });

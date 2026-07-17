@@ -283,6 +283,25 @@ export type TurnErrorHandler = (
   },
 ) => TurnErrorHandlerDecision | Promise<TurnErrorHandlerDecision>;
 
+export type TurnBoundaryContext = {
+  finishReason: FinishReason;
+  /** Exact transformed messages used by the model call that just completed. */
+  modelInputMessages: readonly ModelMessage[];
+  /** Number of local tool calls completed before this boundary. */
+  executedToolCallCount: number;
+  abortSignal?: AbortSignal;
+};
+
+export type TurnBoundaryDecision = {
+  append?: readonly ModelMessage[];
+  /** Continue even when the messages were already present, such as after recovery. */
+  forceNextTurn?: boolean;
+};
+
+export type TurnBoundaryHandler = (
+  context: TurnBoundaryContext,
+) => TurnBoundaryDecision | Promise<TurnBoundaryDecision>;
+
 export type ToolResultOutput = Extract<
   ToolModelMessage["content"][number],
   { type: "tool-result" }
@@ -317,6 +336,8 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   transformMessages?: TransformMessagesFn;
   /** Optional hook to recover from turn errors (e.g. context overflow). */
   turnErrorHandler?: TurnErrorHandler;
+  /** Inject messages after tools finish and before the next model turn. */
+  turnBoundaryHandler?: TurnBoundaryHandler;
   /** Normalize model-facing tool output before it enters the canonical transcript. */
   normalizeToolResultOutput?: NormalizeToolResultOutputFn;
   /** Tool names whose specs guarantee already-bounded model output. */
@@ -668,6 +689,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
   private transformMessages: TransformMessagesFn | undefined;
   private turnErrorHandler: TurnErrorHandler | undefined;
+  private turnBoundaryHandler: TurnBoundaryHandler | undefined;
   private experimentalDownload: DownloadFunction | undefined;
   private normalizeToolResultOutput: NormalizeToolResultOutputFn | undefined;
   private genericOutputNormalizerBypassTools: ReadonlySet<string>;
@@ -681,6 +703,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     this.transformMessages = options.transformMessages;
     this.turnErrorHandler = options.turnErrorHandler;
+    this.turnBoundaryHandler = options.turnBoundaryHandler;
     this.experimentalDownload = options.experimentalDownload;
     this.normalizeToolResultOutput = options.normalizeToolResultOutput;
     this.genericOutputNormalizerBypassTools =
@@ -752,6 +775,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /** Replace the turn-error recovery hook. */
   setTurnErrorHandler(turnErrorHandler: TurnErrorHandler | undefined) {
     this.turnErrorHandler = turnErrorHandler;
+  }
+
+  /** Replace the post-tool, pre-model turn-boundary hook. */
+  setTurnBoundaryHandler(turnBoundaryHandler: TurnBoundaryHandler | undefined) {
+    this.turnBoundaryHandler = turnBoundaryHandler;
   }
 
   /** Replace the entire transcript. Use with care. */
@@ -988,18 +1016,20 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               totalUsage: turn.totalUsage,
             });
 
-            if (turn.finishReason === "tool-calls" && turn.toolCalls.length > 0) {
-              const steeringInjected = await this.executeToolCallsAndMaybeSteer(turn.toolCalls);
-              if (steeringInjected) {
-                // continue immediately to respond to steering message(s)
-                continue;
-              }
-              // otherwise continue normally (LLM responds to tool results)
-              continue;
+            const hasLocalToolCalls =
+              turn.finishReason === "tool-calls" && turn.toolCalls.length > 0;
+            if (hasLocalToolCalls) {
+              await this.executeToolCalls(turn.toolCalls);
             }
 
-            // No tools: inject steering/follow-ups if present, otherwise stop.
-            // Steering should pick up any buffered follow-ups.
+            const boundaryDecision = await this.applyTurnBoundary({
+              finishReason: turn.finishReason,
+              modelInputMessages: turn.modelInputMessages,
+              executedToolCallCount: hasLocalToolCalls ? turn.toolCalls.length : 0,
+            });
+
+            // Steering should pick up any buffered follow-ups and remains ahead of
+            // the normal tool-result continuation decision.
             const steeringNow = takeQueued(this.steeringMode, this.steeringQueue);
             if (steeringNow.length > 0) {
               const followUpsAll = takeAll(this.followUpQueue);
@@ -1010,12 +1040,18 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               continue;
             }
 
-            const followUps = takeQueued(this.followUpMode, this.followUpQueue);
-            if (followUps.length > 0) {
-              const merged = mergeUserMessages(followUps);
-              for (const msg of merged) {
-                this.appendMessage(msg);
+            if (!hasLocalToolCalls) {
+              const followUps = takeQueued(this.followUpMode, this.followUpQueue);
+              if (followUps.length > 0) {
+                const merged = mergeUserMessages(followUps);
+                for (const msg of merged) {
+                  this.appendMessage(msg);
+                }
+                continue;
               }
+            }
+
+            if (hasLocalToolCalls || boundaryDecision.requiresNextTurn) {
               continue;
             }
 
@@ -1102,6 +1138,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     }>;
     usage: LanguageModelUsage;
     totalUsage: LanguageModelUsage;
+    modelInputMessages: ModelMessage[];
   }> {
     this.emit({ type: "turn_start" });
 
@@ -1431,10 +1468,42 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       toolCalls,
       usage,
       totalUsage,
+      modelInputMessages: messagesForModel.map(cloneMessage),
     };
   }
 
-  private async executeToolCallsAndMaybeSteer(
+  private async applyTurnBoundary(input: {
+    finishReason: FinishReason;
+    modelInputMessages: readonly ModelMessage[];
+    executedToolCallCount: number;
+  }): Promise<{ requiresNextTurn: boolean }> {
+    if (!this.turnBoundaryHandler) return { requiresNextTurn: false };
+
+    const getAbortReason = (): TurnAbortReason =>
+      this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
+    const assertNotAborted = () => {
+      if (this.abortController?.signal.aborted) {
+        throw new TurnAbortedError({ reason: getAbortReason(), phase: "tools" });
+      }
+    };
+
+    assertNotAborted();
+    const decision = await this.turnBoundaryHandler({
+      finishReason: input.finishReason,
+      modelInputMessages: input.modelInputMessages.map(cloneMessage),
+      executedToolCallCount: input.executedToolCallCount,
+      abortSignal: this.abortController?.signal,
+    });
+    assertNotAborted();
+
+    const appended = decision.append ?? [];
+    for (const message of appended) this.appendMessage(message);
+    return {
+      requiresNextTurn: appended.length > 0 || decision.forceNextTurn === true,
+    };
+  }
+
+  private async executeToolCalls(
     toolCalls: Array<{
       toolCallId: string;
       toolName: string;
@@ -1442,7 +1511,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       invalid?: boolean;
       error?: unknown;
     }>,
-  ): Promise<boolean> {
+  ): Promise<void> {
     type ToolCall = (typeof toolCalls)[number];
     type ToolExecutionOutcome = {
       result: unknown;
@@ -1704,20 +1773,6 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     if (isAborted()) {
       throw new TurnAbortedError({ reason: getAbortReason(), phase: "tools" });
     }
-
-    const steering = takeQueued(this.steeringMode, this.steeringQueue);
-    if (steering.length > 0) {
-      // Steering should include any buffered follow-ups.
-      const followUpsAll = takeAll(this.followUpQueue);
-      const merged = mergeUserMessages([...followUpsAll, ...steering]);
-      for (const msg of merged) {
-        this.appendMessage(msg);
-      }
-
-      return true;
-    }
-
-    return false;
   }
 }
 
