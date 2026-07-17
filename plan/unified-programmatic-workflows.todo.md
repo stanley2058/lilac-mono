@@ -1,6 +1,7 @@
 # Unified Programmatic Workflows Implementation Todo
 
-> Historical tracker only. `plan/workflow-agent-autonomy.todo.md` is the live tracker and supersedes approval-era states and APIs below.
+> Historical tracker only. `plan/workflow-runtime-simplification.todo.md` is
+> the live tracker and supersedes the states and APIs below.
 
 This file is the shared implementation ledger for `plan/unified-programmatic-workflows.md`.
 

@@ -1,5 +1,8 @@
 # Workflow Agent Autonomy
 
+> Historical design only. `plan/workflow-runtime-simplification.md` supersedes
+> this transitional autonomy and workflow-security model.
+
 ## Status
 
 This document replaces the earlier capability-envelope direction as of the clean baseline after commit `78c065c` and incorporates the 2026-07-17 direction change below.

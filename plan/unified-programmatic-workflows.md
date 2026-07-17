@@ -1,6 +1,8 @@
 # Unified Programmatic Workflows
 
-> Historical design only. `plan/workflow-agent-autonomy.md` supersedes the approval and capability-envelope model with profile-native trusted auto-run; see the live tracker for current behavior.
+> Historical design only. `plan/workflow-runtime-simplification.md` supersedes
+> this approval and capability-envelope model. See
+> `plan/workflow-runtime-simplification.todo.md` for current implementation.
 
 ## Status
 

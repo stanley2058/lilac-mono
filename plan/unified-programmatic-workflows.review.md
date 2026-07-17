@@ -1,5 +1,9 @@
 # Unified Programmatic Workflows Review
 
+> Historical review only. Its approval, capability, systemd, and Bubblewrap
+> findings describe a superseded architecture. See
+> `plan/workflow-runtime-simplification.md` for the current contract.
+
 ## Round 1
 
 Status: implementation and repository validation complete.

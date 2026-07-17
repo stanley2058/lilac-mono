@@ -1,8 +1,11 @@
 # Workflow Agent Autonomy Todo
 
+> Historical tracker only. `plan/workflow-runtime-simplification.todo.md` is
+> the live implementation tracker.
+
 Source: `plan/workflow-agent-autonomy.md`
 
-This is the main live implementation tracker. Workflow is runtime and durability, not guardrails. Native profile behavior must be identical for direct and workflow-launched subagents.
+This records the superseded autonomy implementation.
 
 Status key: `[ ]` pending, `[~]` in progress, `[x]` factually complete and still aligned, `[-]` explicitly deferred.
 
