@@ -71,9 +71,8 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Root harness that runs workspace tests: `__tests__/workspaces.test.ts`.
 
 - `compose.yaml` and `Dockerfile`
-  - A systemd-PID1 container that starts the `lilac` user manager and Core; Compose includes Redis.
+  - A container that starts Core; Compose includes Redis.
   - The docker build installs Bun, system tools (git, rg, browser dependencies, python, etc.), builds tool-bridge, and symlinks `tools` into PATH.
-  - On Linux with Docker 28+ and cgroup v2, the Compose cgroup/security contract supports the fail-closed Bubblewrap workflow runtime without privileged mode or a host cgroup bind.
   - `bun run docker:verify-image` boots a credential-free verify-only container; `bun run docker:verify` checks a running Compose service.
   - Docker compose persists extra home directories for agent ergonomics:
     - `./home/agents:/home/lilac/.agents`
@@ -250,17 +249,17 @@ Important detail: `request_id` sometimes encodes “reply-to” behavior.
 
 ### Workflow
 
-Programmatic workflows are immutable JavaScript revisions executed by one durable engine. Workflows own deterministic orchestration; deployed subagent profiles own agent tool access, editing, executable access, and delegation behavior.
+Programmatic workflows are immutable JavaScript revisions executed by one durable engine. Workflows orchestrate; profiles authorize: workflows own deterministic orchestration and durability, while deployed subagent profiles own Level-1 tool/plugin exposure, Level-2 callable/plugin exposure, execution, and delegation. `network` and `workspaceWrites` are behavioral/tool-surface settings, not trusted-Bash security boundaries. The workflow layer adds no path, network, tool, prompt, cwd, or invocation security policy of its own.
 
 - Domain and SQLite authority: `apps/core/src/workflow/workflow-domain.ts` and `durable-workflow-store.ts`.
-- Sandboxed replay runtime: `workflow-engine.ts`, `workflow-sandbox.ts`, and `workflow-sandbox-child.js`.
+- Deterministic replay runtime: `workflow-engine.ts`, `workflow-sandbox.ts`, and `workflow-sandbox-child.js`.
 - Durable reply/timer matching: `workflow-wait-resolver.ts`.
 - Timestamp/cron run creation: `workflow-trigger-scheduler.ts`.
 - Generated one-agent subagent runs and live-parent delivery: `workflow-subagent-dispatcher.ts` and `workflow-live-parent-bridge.ts`.
 - Independent progress cards: `workflow-progress-projector.ts`.
 - Level-2 definition, run, and trigger APIs: `tool-server/tools/programmatic-workflow.ts`.
 
-Definitions live in `<selected-project-root>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. The selected project root is the authenticated Level-1 shell cwd for each Level-2 workflow invocation, not a process-wide workspace setting. Every run is pinned to content-addressed source and input-schema snapshots plus a normalized resource-policy hash. Authenticated trusted main-agent calls create `queued` runs immediately; restricted, public, unauthenticated, synthetic, stale, and forged origins fail before run creation. Durable triggers pin the immutable revision and authenticated owner when created, then fire without a human recheck. `agent()` selects a server-owned native profile plus optional cwd/model/reasoning/label/isolation; workflow carries that identity and durable request context but does not construct a behavioral envelope. Cwd may be any canonical service-UID-accessible directory outside exact deployment authority roots, with symlink spellings canonicalized to their real target. Shared operations may race, one workflow family shares durable scratch, Bash network follows the selected profile, and explicit worktrees remain the next implementation stage. `waitForReply` and `sleep` are journaled host operations. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same journal. Dispatch epochs, terminal receipts, ownership, cancellation, cgroups, waits, and Redis correlation remain durable.
+Definitions live in `<selected-project-root>/.lilac/workflows/*.js` or `${DATA_DIR}/workflows/*.js`. The selected project root is the Level-1 shell cwd for each Level-2 workflow invocation, not a process-wide workspace setting. Every run is pinned to content-addressed source and input-schema snapshots plus a normalized resource-policy hash. Workflow admission has no caller-specific or principal gate: primary requests, ordinary workflow children, durable triggers, and generated subagents share the principal-blind `workflows.maxActiveRuns` global cap. Durable triggers pin the immutable revision and origin snapshot when created, then fire without a human recheck. `agent()` selects a server-owned native profile plus optional `cwd`, `model`, `reasoning`, and `label`; a workflow launch uses the same profile assembly, tools, Bash behavior, and profile-bound request capability as a direct launch, and carries only durable request context rather than a second behavioral envelope. Cwd is free-form: any service-UID-accessible directory, absolute or relative to the invocation project, and not required to stay inside it. Shared operations may race; trusted Bash runs with service-user authority when execution is enabled. `waitForReply` and `sleep` are journaled host operations. Deferred and synchronous `subagent_delegate` calls use generated one-agent runs through the same journal. The deterministic program child is a plain Bun subprocess that keeps its determinism lockdown and NDJSON protocol; the host retains wall-time, cancellation, output-size, and protocol limits. Deterministic request IDs, dispatch epochs, terminal receipts, ownership fencing, pinned resolved-model identity, cancellation, waits, and Redis correlation remain durable.
 
 ### Layered Tools (Progressive Disclosure)
 
@@ -296,7 +295,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Tool definitions live in `apps/core/src/tool-server/tools/*`.
    - Registration now goes through the same shared plugin runtime used by Level 1 (`apps/core/src/plugins/manager.ts`).
    - Built-in Level 2 plugins live in `apps/core/src/plugins/builtin/*`; external plugins are discovered from `DATA_DIR/plugins/*`.
-    - The tool server uses request context headers (`x-lilac-request-id`, etc.) and a request-message cache (`apps/core/src/tool-server/request-message-cache.ts`) for request-scoped behavior. Every privileged `workflow.*` call additionally requires the request ID to match server-owned cached request state; headers alone are not authority.
+    - The tool server uses request context headers (`x-lilac-request-id`, etc.) and generic server-issued request capabilities for request-scoped behavior. Capabilities bind cwd and native profile identity; profile headers are context only and cannot expand Level-2 access.
    - `apps/tool-bridge/client.ts` provides a human-friendly `tools` CLI that calls the tool server; the agent can also invoke it through Level-1 `bash`.
    - Capability-bound plugins skip cleanly in dev mode when required services are absent.
 
@@ -313,7 +312,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
 - It can pass correlation headers via env vars:
   - `LILAC_REQUEST_ID`, `LILAC_SESSION_ID`, `LILAC_REQUEST_CLIENT`, `LILAC_CWD`
 - It can point at a non-default tool server via `TOOL_SERVER_BACKEND_URL`.
-- The core tool server has no general HTTP authentication layer. Keep it on a trusted host/network boundary; workflow callables add server-owned active-request enforcement but this does not authenticate unrelated Level-2 APIs.
+- The core tool server has no general public HTTP authentication layer. Keep it on a trusted host/network boundary; generic request capabilities constrain agent calls but are not a reason to expose the server publicly.
 - It supports `--input=@file.json` and `--stdin` for whole-JSON payloads, plus `--field:value` flags.
 
 ---
@@ -369,8 +368,8 @@ Key sections:
 - `tools.web.fetch.mode`: default fetch strategy (`auto`, `fetch`, `browser`, `extract`, or `provider-only`).
 - `agent.idleTimeoutMs`: primary agent inactivity timeout; active runs have no total runtime cap.
 - `agent.subagents`: subagent enablement/depth/timeout/profile config.
-  - Built-in defaults: `explore` (read/search and durable scratch, no workspace writes/Bash/delegation), `general` (full useful tools/plugins, workspace writes, Bash, and network, without delegation), and `self` (the same plus delegation).
-  - Each profile may configure Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation. `resolveNativeSubagentProfile` is authoritative for every launch path.
+  - Built-in defaults: `explore` (read/search, no workspace writes/Bash/delegation), `general` (full useful tools/plugins, workspace writes, Bash, and network, without delegation), and `self` (the same plus delegation).
+  - Each profile may configure Level-1 tools/plugins, Level-2 callables/plugins, network behavior, workspace-write behavior/tool exposure, execution, and delegation. `network` and `workspaceWrites` do not sandbox ordinary trusted Bash when execution is enabled. `resolveNativeSubagentProfile` is authoritative for every launch path, direct or workflow-launched.
   - `delegatePromptOverlay` appends free-form routing policy to the parent-visible `subagent_delegate` description.
 - `models.def`: reusable model aliases. `comment` documents an alias to the orchestrating agent, while `agentCanSelect: true` explicitly opts it into dynamic subagent selection without changing explicit static or human selection.
   - Delegation policy: `explore`/`general` cannot delegate; `self` may delegate but cannot delegate to `self`.
@@ -389,9 +388,9 @@ Parsed in `packages/utils/env.ts`. The important ones:
 - `LL_TOOL_SERVER_PORT` (tool server port; default 8080)
 - `LILAC_WORKSPACE_DIR` (the main agent's default working directory for general tools)
 
-Workflow project scope is selected per invocation. A trusted main agent chooses it by running the
-Level-2 workflow command from the intended Level-1 `bash` cwd; the authenticated tool request carries
-that resolved cwd independently from the main agent's default workspace.
+Workflow project scope is selected per invocation. Run the Level-2 workflow command from the intended
+Level-1 `bash` cwd; the generic request capability carries that resolved cwd independently from the main
+agent's default workspace.
 - `GITHUB_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH` (enable GitHub webhook ingress)
 - Provider keys/base URLs (`OPENAI_*`, `OPENROUTER_*`, `ANTHROPIC_*`, `GEMINI_*`, `AI_GATEWAY_*`, etc.)
 - `TAVILY_API_KEY`, `EXA_API_KEY`, and/or `FIRECRAWL_API_KEY` (enable configured web providers)
@@ -476,6 +475,6 @@ Shutdown happens in reverse (best-effort).
   - `sub:<parent_request_id>:<uuid>` identifies delegated subagent runs.
   - `req:<uuid>` is used for router-gated “start a request without a direct mention/reply”.
 - The tool server is not the AI SDK tool runner; it’s a separate HTTP API that can be used by humans and by the agent (typically via the `tools` CLI).
-- Workflow execution requires Linux user namespaces, Bubblewrap, cgroup v2, and a reachable user systemd manager with memory/PID delegation. Startup fails closed with no plain-subprocess fallback. The systemd-PID1 Docker image provides this boundary under the exact Compose contract documented in `docs/docker-deployment.md`: Linux Docker 28+, private writable cgroups, and unconfined seccomp/AppArmor/system paths, without privileged mode or a host cgroup mount.
+- The deterministic workflow program child is a plain Bun subprocess (`bun --smol workflow-sandbox-child.js`); the child keeps its determinism lockdown and NDJSON protocol, and the host enforces wall-time, cancellation, output-size, and protocol limits. Workflow execution no longer requires Linux user namespaces, Bubblewrap, cgroup v2, or a user systemd manager, and there is no runtime memory-limit contract.
 - Prompts/config are designed to be editable without code changes (seeded into `DATA_DIR`).
 - The bus spec is compile-time only (no runtime validation), so producers/consumers must be disciplined about payload shapes.

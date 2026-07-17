@@ -7,6 +7,8 @@ description: Author and inspect reusable Lilac JavaScript workflows when a task 
 
 Use a workflow when orchestration should be readable, reusable, or durable beyond the current request. Keep a one-off linear task in the current agent request.
 
+A workflow is a deterministic, replayable program that orchestrates ordinary agent requests. Workflows orchestrate; profiles authorize. The workflow runtime owns durable operation identity, dispatch epochs, single-owner claims, terminal receipts, waits, triggers, replay, and progress delivery. It adds no path, network, tool, prompt, cwd, or invocation security policy. Every capability an agent has comes entirely from the selected deployed profile.
+
 ## Authoring Loop
 
 1. Choose a lowercase kebab-case name of at most 64 characters.
@@ -23,9 +25,9 @@ Use a workflow when orchestration should be readable, reusable, or durable beyon
 - `scope: "auto"` resolves project first, then personal.
 - Project, data, and user skills can override this bundled skill because `lilac-builtin` has lowest precedence.
 
-Run every Level-2 workflow command from the intended project directory. The authenticated Level-1
-`bash` cwd selects and canonicalizes that invocation's project root; `LILAC_WORKSPACE_DIR` remains only
-the main agent's default cwd and does not constrain project selection.
+Run every Level-2 workflow command from the intended project directory. The Level-1 `bash` cwd selects
+that invocation's project root; `LILAC_WORKSPACE_DIR` remains only the main agent's default cwd and does
+not constrain project selection.
 
 Definitions are flat `.js` files. Nested names, traversal, symlinks, non-regular files, other extensions, and names outside strict lowercase kebab-case are rejected.
 
@@ -104,32 +106,29 @@ Arguments must be plain JSON, fit `maxInputBytes`, match the schema without coer
 
 ## Resources
 
-Workflows orchestrate agents; deployed profiles own tool access, editing, executable access, and delegation. The `resources` object contains only engine resource and durability controls:
+Workflows orchestrate agents; deployed profiles own Level-1 tools/plugins, Level-2 callables/plugins, execution, and delegation. `network` and `workspaceWrites` describe profile behavior and tool-surface exposure; they are not trusted-Bash security boundaries. If a profile enables execution, ordinary trusted Bash runs with the service user's host access. The `resources` object contains only engine resource and durability controls:
 
 - `agents.maxConcurrent`: maximum simultaneous agents.
 - `agents.maxTotal`: maximum agents in the run.
 - `waits`: any of `reply` and `sleep`.
 - `maxNestingDepth`, `maxWallTimeMs`, and `operationIdleTimeoutMs`: optional bounded budgets.
-- `safety.escalation`: optional and currently only `none`.
 
 The normalized resource profile and limits remain part of revision identity. Profiles are server-owned and are not reconstructed or narrowed by workflow source.
 
 ## Orchestration API
 
-- `agent(prompt, options)`: dispatch one profile-native child-agent operation. `profile` is required and accepts `explore`, `general`, or `self`. Optional fields are `cwd`, `model`, `reasoning`, `label`, and `isolation`. Isolation accepts `shared` or `worktree` and defaults to `shared`, but worktree execution is the next implementation stage and currently fails before operation dispatch. Omit model or reasoning to preserve that profile's normal deployed defaults. Tools, plugins, editing mode, Level-2 callables, Bash, network, and delegation are exactly the selected deployed profile's native behavior; workflow runtime adds no second policy or prompt overlay.
+- `agent(prompt, options)`: dispatch one profile-native child-agent operation. `profile` is required and accepts `explore`, `general`, or `self`. Optional fields are `cwd`, `model`, `reasoning`, and `label`. Omit model or reasoning to preserve that profile's normal deployed defaults. Tools, plugins, Level-2 callables, execution, and delegation are exactly the selected deployed profile's native behavior; a workflow launch uses the same profile assembly and profile-bound request capability as a direct launch. `network` and `workspaceWrites` guide behavior and tool exposure rather than confining trusted Bash. The workflow runtime adds no second policy or prompt overlay.
 - `parallel(promises, options?)`: await bounded parallel operations.
 - `pipeline(items, callback, options?)`: map items with bounded concurrency and stable item ordering.
 - `phase(name, callback)`: group operations for progress.
-- `waitForReply(options)`: create a durable reply wait; declare `waits: ["reply"]`. Options are `prompt?`, `platform?`, `channelId?`, `messageId?`, `fromUserId?`, and `timeoutMs?`. Platform, channel, and user default to the authenticated run origin. When `messageId` is present, only a direct reply to that anchor matches.
+- `waitForReply(options)`: create a durable reply wait; declare `waits: ["reply"]`. Options are `prompt?`, `platform?`, `channelId?`, `messageId?`, `fromUserId?`, and `timeoutMs?`. Platform, channel, and user default to the persisted run origin. When `messageId` is present, only a direct reply to that anchor matches.
 - `sleep(durationOrTimestamp)`: create a durable timer wait; declare `waits: ["sleep"]`. A number below `100000000000` is a duration in milliseconds; larger numbers are epoch milliseconds. ISO timestamp strings are also accepted.
 
-Shared execution is intentionally concurrent: multiple `general` or `self` operations may edit the same cwd at once. Serialize dependent work in the workflow or choose distinct directories. Do not request `isolation: "worktree"` until the temporary hardening gate is removed.
+Agent execution is intentionally concurrent: multiple `general` or `self` operations may edit the same cwd at once. Serialize dependent work in the workflow or choose distinct directories.
 
-`cwd` may be an absolute service-UID-accessible local directory or a path relative to the invocation project. Lilac persists its canonical real target, including when the authored spelling is a symlink alias, and rejects only exact deployment-owned Core state, credential, service-control, or configured credential roots plus missing or inaccessible directories. Ordinary project `.env*`, Git metadata, broad project/home ancestors, and directories containing a protected descendant are not workflow blacklists. The selected cwd is the normal shared filesystem authority root; it is not required to remain inside the invocation project.
+`cwd` is free-form. It may be an absolute service-UID-accessible local directory or a path relative to the invocation project, and it is not required to remain inside the invocation project. The selected cwd is the normal shared filesystem authority root, identical to what the same profile would use on a direct launch.
 
-Every workflow family also has one durable shared scratch directory inherited by generated nested delegations. The default profiles receive `scratch_read` and `scratch_write`; these native tools accept flat filenames only, so use names such as `audit-result.md` rather than subdirectories. Trusted subagent Bash exposes the same pinned directory as `$LILAC_SCRATCH_DIR` at `/run/lilac/scratch` and can use directories inside the OS sandbox. Scratch is reused after restart and redispatch, contains no injected secrets, and is retained while a family is active, paused, or ambiguous.
-
-Ordinary JavaScript conditionals, loops, arrays, and object manipulation are allowed inside `run`. Workflow scripts receive no filesystem, shell, network, environment, event-bus, MCP, or plugin access. Side effects occur only through journaled host operations.
+Ordinary JavaScript conditionals, loops, arrays, and object manipulation are allowed inside `run`. Workflow scripts themselves receive no filesystem, shell, network, environment, event-bus, MCP, or plugin access. Side effects occur only through journaled host operations; the child agents those operations dispatch have whatever their profile grants.
 
 ## Patterns
 
@@ -156,7 +155,6 @@ for (let attempt = 1; attempt <= 3 && report.includes("FAIL"); attempt++) {
       profile: "general",
       model: "deep",
       reasoning: "high",
-      isolation: "shared",
     }),
   );
   report = await agent(`Re-run the focused checks for ${args.area}.`, { profile: "explore" });
@@ -179,7 +177,7 @@ await sleep(args.runAt);
 return agent("Run the scheduled audit now.", { profile: "explore" });
 ```
 
-Timestamp and cron schedules use `workflow.trigger.create`. Creation requires an authenticated trusted main-agent request and pins the immutable revision plus owner principal. Every fire creates a distinct queued run without a later human recheck. Cron expressions have five fields and default to UTC.
+Timestamp and cron schedules use `workflow.trigger.create`. Creation pins the immutable revision and persisted origin snapshot. Every fire creates a distinct queued run without a later human recheck. Cron expressions have five fields and default to UTC.
 
 ## Commands
 
@@ -206,10 +204,12 @@ tools workflow.trigger.cancel <trigger-id>
 
 An existing definition can be replaced only with its current `expectedSha256`. This is optimistic concurrency, not a force flag.
 
-## Revisions And Trust
+## Revisions And Replay
 
-Triggering creates an immutable content-addressed source snapshot and stores source, input-schema, normalized resource-policy, and argument hashes. Authenticated trusted main-agent invocations enter `queued` immediately. Restricted, public, unauthenticated, synthetic, stale, and forged origins fail before run creation.
+Triggering creates an immutable content-addressed source snapshot and stores source, input-schema, normalized resource-policy, and argument hashes. Valid invocations enter `queued` when the principal-blind global workflow capacity allows admission. The workflow subsystem adds no caller, principal, safety-mode, or origin gate.
 
-Concrete arguments are schema-validated and persisted. Progress cards expose state-appropriate pause, resume, and cancel controls; each action token is owner-bound, card-bound, expiring, and one-use. Durable progress projection, sandboxed execution, waits, and schedules remain available. Deployment requires Linux user namespaces, Bubblewrap, a user systemd manager, and delegated cgroup-v2 memory/PID controls; execution fails closed when that boundary is unavailable.
+Concrete arguments are schema-validated and persisted. Each `agent()` operation has a deterministic request ID stable for a run, operation, and attempt; a dispatch has one active owner and one terminal receipt per dispatch epoch, and stale owners or epochs cannot publish terminal outcomes. The resolved model request is pinned in the durable dispatch and reused during replay. Waits, triggers, completion deliveries, and restart recovery are durable, and terminal journal history stays readable across schema migration.
 
-All `workflow.*` Level-2 calls require a trusted active agent request recognized by the core server's request cache. Supplying `x-lilac-*` headers to the HTTP endpoint is not sufficient. The broader Level-2 server is still an internal trusted-network service and must not be exposed as a public unauthenticated API.
+The deterministic program child runs directly under Bun with its determinism lockdown and NDJSON protocol intact. The host enforces wall-time, cancellation, output-size, and protocol limits, and forcibly terminates the child on timeout or cancellation. There is no runtime memory-limit contract.
+
+Progress cards expose state-appropriate pause, resume, and cancel controls. `workflow.*` access follows the selected profile's Level-2 callable/plugin configuration and the tool server's generic request capability; there is no workflow-specific invocation gate. The broader Level-2 server remains an internal service and must not be exposed as a public unauthenticated API.

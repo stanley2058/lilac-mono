@@ -44,6 +44,7 @@ Removed v2 fields:
 
 New v2 fields:
 
+- `workflows.maxActiveRuns`: principal-blind global admission cap across all nonterminal workflow runs, including scheduled and generated subagent runs; defaults to `64`. Frozen v1 configs receive the same universal fallback but cannot override it.
 - `agent.idleTimeoutMs`: primary agent inactivity timeout; defaults to `900000` (15 minutes). Active runs have no total runtime cap. Frozen v1 configs receive the same universal fallback but cannot override it.
 - `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
 - `models.capability.overrides.<provider/model>.attachment`: optional manual override for model attachment input support.
@@ -90,9 +91,9 @@ The unified programmatic workflow runtime does not read or migrate legacy `Workf
 
 Deferred subagents now persist as generated unified workflow runs. Graceful-restart snapshots no longer contain runner-local deferred child handles, output cursors, timers, or buffered completions. Active generated runs and pending live-parent deliveries recover from the durable workflow database; terminal results fall back to a durable progress card when the parent cannot be restored.
 
-Workflow JavaScript has no unsandboxed fallback. The Docker image is workflow-ready when run with the repository's systemd-PID1 Compose contract: Linux, Docker 28+, cgroup v2, a private writable cgroup namespace, and the documented unconfined seccomp/AppArmor/system-path options. It does not require privileged mode or a host cgroup bind. The image provisions Bubblewrap and a reachable `lilac` user systemd manager with delegated memory/PID controls; `bun run docker:verify-image` verifies the built image without credentials, and missing dependencies still fail workflow-engine startup closed with an actionable error. See `docs/docker-deployment.md`.
+At the time of this clean break, workflow JavaScript ran inside a fail-closed OS sandbox that required a systemd-PID1 Docker image with Bubblewrap, cgroup v2, and a reachable `lilac` user systemd manager. That deployment requirement is historical and is superseded by Schema 21, which runs the deterministic program child as a plain Bun subprocess. See the Schema 21 section below.
 
-The Level-2 HTTP server remains an internal trusted-network service rather than a generally authenticated public API. Unified `workflow.*` callables additionally require an active request ID found in the server-owned request cache and a trusted safety resolution; caller-provided headers alone cannot authorize workflow control.
+The Level-2 HTTP server remains an internal trusted-network service rather than a generally authenticated public API. Workflow admission adds no caller-specific or principal gate beyond ordinary Level-2 callable routing; every caller and trigger competes against the same global active-run cap.
 
 ## Workflow Schema 20
 
@@ -112,3 +113,25 @@ Migration from schema 19 does not translate old authority:
 After migration, source files remain on disk and are statically revalidated into a new v3 snapshot on their first trusted invocation. Removed `capabilities` metadata fails validation with migration guidance; rename resource bounds to `resources` and use only profile-native `agent()` options.
 
 The unshipped workflow-only `plugins.workflowExternal`, plugin `workflowExposure`, and Level-1 effect metadata were removed rather than migrated. Config v2 now owns Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation under each `agent.subagents.profiles.*` entry. Config v1 remains frozen and receives the useful built-in profile defaults during universal parsing. These native profiles apply identically to direct and workflow-launched subagents and are not serialized into workflow revisions or operation guardrail envelopes.
+
+## Workflow Schema 21
+
+Schema 21 is the workflow-runtime-simplification clean break. The guiding rule is that workflows orchestrate and profiles authorize: the workflow layer keeps durable operation identity, dispatch epochs, single-owner claims, terminal receipts, waits, triggers, replay, and progress, and drops every workflow-specific security concept. This is an atomic migration that shrinks the persisted dispatch policy while still reading persisted v20 dispatches.
+
+Resolved `agent()` input is reduced to `profile`, `cwd`, `model`, `reasoning`, and `label`. `cwd` is free-form and no longer canonicalized against protected roots. Agent authority comes entirely from the selected native profile: profiles own tools, Bash, Level-2 callables, network, and delegation, identically for direct and workflow launches. The former `isolation`, `editing`, `tools`, `executables`, `level2Callables`, `surfaceOriginOperations`, and `delegation` agent options are removed and fail validation with migration guidance.
+
+The deterministic program child is spawned directly with `bun --smol workflow-sandbox-child.js`. The child keeps its determinism lockdown and NDJSON protocol, and the host retains wall-time, cancellation, output-size, and protocol limits with forced termination. `maxRuntimeMemoryBytes` is removed because a plain Bun subprocess does not enforce that contract; it is stripped from persisted revision limits. Workflow execution no longer requires systemd, Bubblewrap, cgroup v2, or user namespaces, and there is no plain-subprocess fallback to fail closed against.
+
+The persisted state migration is a clean break rather than a reinterpretation:
+
+- The minimal durable dispatch policy is `{ runId, operationId, dispatchEpoch, profile, model, reasoning, resolvedModelRequest, cwd, originSession }`. Old `policy_json` is rewritten into this envelope; the former `canonicalCwd` becomes `cwd`, and canonical-root, inode, safety-mode, isolation, scratch-root, and control-token identity are dropped.
+- Terminal runs, operations, journals, results, and receipts stay readable. Pinned resolved-model identity and dispatch fencing are preserved.
+- Nonterminal v20 runs and operations are quarantined with explicit reasons, then terminalized as `cancelled` with an explicit migration reason; their pending waits are cancelled.
+- Active and paused triggers are quarantined and cancelled; they must be recreated from current source by an authenticated trusted principal.
+- All active request dispatches are deactivated so no old dispatch can be adopted or redispatched under the current defaults.
+- `maxRuntimeMemoryBytes` and revision `safety` metadata are removed from revision rows, and `safetyMode` is removed from trigger origins.
+- Approval residue is dropped: the `workflow_approvals` table, the `approval_id` columns on `workflow_runs` and `workflow_surface_actions`, the `origin_safety_mode` column, and the approval-state index.
+- Worktree residue is dropped: `workflow_worktree_outputs` and its cleanup index.
+- Single-process projector residue is dropped: projection claims, orphans, missing-binding tables and triggers, and reconciliation state. One durable surface binding per run, the action outbox, edit-on-change, startup reconciliation, retry state, controls, and terminal cards are retained.
+
+The workflow-only security modules removed in this break (Level-1 boundary, path authority, protected-path, denied-root policy, network policy, descriptor path, scratch, and worktree artifact) are deleted rather than migrated. The dead tool-bridge `x-lilac-workflow-capability` header and plugin `workflowPathAuthority` guidance are removed. Level-2 `workflow.*` access follows native profile configuration and the generic profile-bound request capability; there is no workflow-specific active-request or principal gate.

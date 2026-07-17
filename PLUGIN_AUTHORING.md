@@ -104,7 +104,7 @@ export default plugin;
 
 Native subagent availability is deployment-owned under `agent.subagents.profiles`. Level-1 tools are selected by both plugin id and tool name; Level-2 tools are selected by both plugin id and callable id. The same resolved profile is used for direct, generated-delegation, and user-authored workflow launches. A `"*"` entry includes every globally enabled contribution at that level.
 
-Plugins should keep `isEnabled` for runtime prerequisites, not caller classification. Path-bearing Level-2 callables should declare `workflowPathAuthority` so secret-free subagent execution can pin local file or output-directory descriptors at exact deployment-root boundaries without changing callable availability.
+Plugins should keep `isEnabled` for runtime prerequisites, not caller classification.
 
 ## Lifecycle
 
