@@ -13,6 +13,7 @@ import type {
   TypingIndicatorSubscription,
 } from "../adapter";
 import type { MsgRef, SessionRef, SurfaceAttachment } from "../types";
+import { mergeSubagentToolStatus } from "../subagent-tool-status";
 
 import { deleteIssueCommentReactionById, deleteIssueReactionById } from "../../github/github-api";
 import { parseGithubRequestId, parseGithubSessionId } from "../../github/github-ids";
@@ -596,7 +597,9 @@ export async function bridgeBusToAdapter(params: {
     const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
     if (input.restore) {
       for (const update of input.restore.toolStatus) {
-        toolStatusById.set(update.toolCallId, update);
+        const merged = mergeSubagentToolStatus(toolStatusById.get(update.toolCallId), update);
+        toolStatusById.delete(update.toolCallId);
+        toolStatusById.set(update.toolCallId, merged);
       }
     }
     const createdOutputRefs: MsgRef[] = [];
@@ -976,14 +979,19 @@ export async function bridgeBusToAdapter(params: {
               }
 
               case lilacEventTypes.EvtAgentOutputToolCall: {
-                const update = {
+                const incoming = {
                   toolCallId: outMsg.data.toolCallId,
                   display: outMsg.data.display,
                   status: outMsg.data.status,
                   ok: outMsg.data.ok,
                   error: outMsg.data.error,
                 } satisfies SurfaceToolStatusUpdate;
+                const update = mergeSubagentToolStatus(
+                  toolStatusById.get(incoming.toolCallId),
+                  incoming,
+                );
 
+                toolStatusById.delete(update.toolCallId);
                 toolStatusById.set(update.toolCallId, update);
 
                 part = {

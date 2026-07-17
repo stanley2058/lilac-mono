@@ -505,6 +505,107 @@ describe("bridgeBusToAdapter", () => {
     await bridge.stop();
   });
 
+  it("preserves rich subagent trees and terminal status across delayed updates and reanchor", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const adapter = new FakeAdapter();
+    const requestId = "discord:chan:msg_subagent_tree";
+    const headers = {
+      request_id: requestId,
+      session_id: "chan",
+      request_client: "discord" as const,
+    };
+    const bridge = await bridgeBusToAdapter({
+      adapter,
+      bus,
+      platform: "discord",
+      subscriptionId: "discord-adapter",
+      idleTimeoutMs: 10_000,
+    });
+
+    await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "agent-2",
+        status: "update",
+        display: "subagent (general; 0/1 done)\n`- > bash bun test",
+      },
+      { headers },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "agent-1",
+        status: "update",
+        display:
+          "subagent (explore; gpt-5.6-sol [high]; 1/2 done)\n|- > read_file a.ts\n`- + grep auth",
+      },
+      { headers },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "agent-1",
+        status: "end",
+        display: "subagent (explore; resolved)",
+        ok: true,
+      },
+      { headers },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      {
+        toolCallId: "agent-1",
+        status: "update",
+        display:
+          "subagent (explore; gpt-5.6-sol [high]; 2/2 done)\n|- + read_file a.ts\n`- + grep auth",
+      },
+      { headers },
+    );
+
+    const snapshot = bridge.snapshotRelays()[0];
+    expect(snapshot?.toolStatus).toEqual([
+      {
+        toolCallId: "agent-2",
+        status: "update",
+        display: "subagent (general; 0/1 done)\n`- > bash bun test",
+        ok: undefined,
+        error: undefined,
+      },
+      {
+        toolCallId: "agent-1",
+        status: "end",
+        display:
+          "subagent (explore; gpt-5.6-sol [high]; 2/2 done)\n|- + read_file a.ts\n`- + grep auth",
+        ok: true,
+        error: undefined,
+      },
+    ]);
+
+    await bus.publish(
+      lilacEventTypes.CmdSurfaceOutputReanchor,
+      { inheritReplyTo: true },
+      { headers },
+    );
+    const canonical = snapshot?.toolStatus[0];
+    const canonicalAgentOne = snapshot?.toolStatus[1];
+    if (!canonical || !canonicalAgentOne) {
+      throw new Error("expected canonical subagent tool statuses");
+    }
+    expect(adapter.streams).toHaveLength(2);
+    expect(adapter.streams[1]?.parts[0]).toEqual({
+      type: "tool.status",
+      update: canonical,
+    });
+    expect(adapter.streams[1]?.parts[1]).toEqual({
+      type: "tool.status",
+      update: canonicalAgentOne,
+    });
+
+    await bridge.stop();
+  });
+
   it("forwards final stats metadata before final text", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
