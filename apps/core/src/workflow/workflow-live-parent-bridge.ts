@@ -20,18 +20,18 @@ export type WorkflowLiveParentCompletion = {
   detail?: string;
 };
 
+export type WorkflowLiveParentCompletionIdentity = Omit<WorkflowLiveParentCompletion, "finalText">;
+
 type ParentSignal = {
   version: number;
-  waiters: Array<() => void>;
+  waiters: Set<() => void>;
   onActivity?: () => void;
 };
 
-async function toCompletion(
+function toCompletionIdentity(
   run: WorkflowRun,
   store: DurableWorkflowStore,
-  dataDir: string,
-  toolResultArtifacts?: ToolResultArtifactStore,
-): Promise<WorkflowLiveParentCompletion> {
+): WorkflowLiveParentCompletionIdentity {
   if (run.completionTarget.kind !== "live_parent") {
     throw new Error(`Workflow run ${run.runId} has no live-parent completion target`);
   }
@@ -46,6 +46,28 @@ async function toCompletion(
         : timedOut
           ? "timeout"
           : "failed";
+  return {
+    runId: run.runId,
+    parentToolCallId: run.completionTarget.parentToolCallId,
+    childRequestId: run.completionTarget.childRequestId,
+    profile: run.completionTarget.profile,
+    sessionName: run.completionTarget.sessionName,
+    status,
+    ok: status === "resolved",
+    ...(run.terminalDetail ? { detail: run.terminalDetail } : {}),
+  };
+}
+
+async function toCompletion(
+  run: WorkflowRun,
+  store: DurableWorkflowStore,
+  dataDir: string,
+  toolResultArtifacts?: ToolResultArtifactStore,
+): Promise<WorkflowLiveParentCompletion> {
+  const identity = toCompletionIdentity(run, store);
+  if (run.completionTarget.kind !== "live_parent") {
+    throw new Error(`Workflow run ${run.runId} has no live-parent completion target`);
+  }
   const revision = store.getRevision(run.revisionId);
   const result =
     run.state === "succeeded" && run.resultArtifactId && revision
@@ -63,15 +85,8 @@ async function toCompletion(
     artifacts: toolResultArtifacts,
   });
   return {
-    runId: run.runId,
-    parentToolCallId: run.completionTarget.parentToolCallId,
-    childRequestId: run.completionTarget.childRequestId,
-    profile: run.completionTarget.profile,
-    sessionName: run.completionTarget.sessionName,
-    status,
-    ok: status === "resolved",
+    ...identity,
     finalText,
-    ...(run.terminalDetail ? { detail: run.terminalDetail } : {}),
   };
 }
 
@@ -169,7 +184,7 @@ export class WorkflowLiveParentBridge {
     const protection = this.protectedParents.get(input.parentRequestId);
     if (protection) clearTimeout(protection);
     this.protectedParents.delete(input.parentRequestId);
-    const signal: ParentSignal = { version: 0, waiters: [], onActivity: input.onActivity };
+    const signal: ParentSignal = { version: 0, waiters: new Set(), onActivity: input.onActivity };
     this.parents.set(input.parentRequestId, signal);
     this.notify(signal);
     const ready = Promise.all(
@@ -181,17 +196,17 @@ export class WorkflowLiveParentBridge {
 
     return {
       ready,
-      snapshot: () => ({
-        signalVersion: signal.version,
-        hasPendingCompletions:
-          this.input.store.listPendingLiveParentCompletions(
-            input.parentRequestId,
-            1,
-            input.recoverSynchronousDeliveries,
-          ).length > 0,
-        hasOutstandingRuns:
-          this.input.store.listActiveLiveParentRuns(input.parentRequestId, 1).length > 0,
-      }),
+      snapshot: () => {
+        const durable = this.input.store.getLiveParentDeliverySnapshot(
+          input.parentRequestId,
+          input.recoverSynchronousDeliveries,
+        );
+        return {
+          signalVersion: signal.version,
+          hasPendingCompletions: durable.pendingCompletionCount > 0,
+          hasOutstandingRuns: durable.outstandingRunCount > 0,
+        };
+      },
       listPending: (): WorkflowLiveParentCompletion[] =>
         this.input.store
           .listPendingLiveParentCompletions(
@@ -253,6 +268,44 @@ export class WorkflowLiveParentBridge {
                 ),
             ),
         ),
+      listPendingIdentities: (): WorkflowLiveParentCompletionIdentity[] =>
+        this.input.store
+          .listPendingLiveParentCompletions(
+            input.parentRequestId,
+            1_000,
+            input.recoverSynchronousDeliveries,
+          )
+          .map((run) => toCompletionIdentity(run, this.input.store)),
+      listPendingSettledAsync: async (): Promise<
+        Array<
+          | { loaded: true; completion: WorkflowLiveParentCompletion }
+          | { loaded: false; identity: WorkflowLiveParentCompletionIdentity; error: unknown }
+        >
+      > =>
+        await Promise.all(
+          this.input.store
+            .listPendingLiveParentCompletions(
+              input.parentRequestId,
+              1_000,
+              input.recoverSynchronousDeliveries,
+            )
+            .map(async (run) => {
+              const identity = toCompletionIdentity(run, this.input.store);
+              try {
+                return {
+                  loaded: true as const,
+                  completion: await toCompletion(
+                    run,
+                    this.input.store,
+                    this.input.dataDir ?? env.dataDir,
+                    this.input.toolResultArtifacts,
+                  ),
+                };
+              } catch (error) {
+                return { loaded: false as const, identity, error };
+              }
+            }),
+        ),
       acknowledge: async (runIds: readonly string[]) => {
         const now = this.now();
         for (const runId of runIds) {
@@ -260,11 +313,28 @@ export class WorkflowLiveParentBridge {
           await this.stopChildActivityForRun(runId);
         }
       },
-      waitForSignalSince: async (version: number) => {
-        if (closed || signal.version !== version) return;
+      recordMaterializationFailure: (runId: string, error: string): number | null =>
+        this.input.store.recordLiveParentCompletionMaterializationFailure({
+          runId,
+          error,
+          now: this.now(),
+        }),
+      clearMaterializationFailure: (runId: string): boolean =>
+        this.input.store.clearLiveParentCompletionMaterializationFailure(runId, this.now()),
+      waitForSignalSince: async (version: number, abortSignal?: AbortSignal) => {
+        if (closed || signal.version !== version || abortSignal?.aborted) return;
         await new Promise<void>((resolve) => {
-          if (closed || signal.version !== version) resolve();
-          else signal.waiters.push(resolve);
+          const finish = () => {
+            signal.waiters.delete(finish);
+            abortSignal?.removeEventListener("abort", finish);
+            resolve();
+          };
+          if (closed || signal.version !== version || abortSignal?.aborted) {
+            finish();
+            return;
+          }
+          signal.waiters.add(finish);
+          abortSignal?.addEventListener("abort", finish, { once: true });
         });
       },
       cancelAll: async (detail: string) => {
@@ -299,7 +369,8 @@ export class WorkflowLiveParentBridge {
   private notify(signal: ParentSignal): void {
     signal.version += 1;
     signal.onActivity?.();
-    const waiters = signal.waiters.splice(0, signal.waiters.length);
+    const waiters = [...signal.waiters];
+    signal.waiters.clear();
     for (const waiter of waiters) waiter();
   }
 

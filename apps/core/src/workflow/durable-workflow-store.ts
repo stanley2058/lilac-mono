@@ -94,6 +94,15 @@ const runRowSchema = z.object({
   terminal_at: nullableNumberSchema,
 });
 
+const liveParentDeliverySnapshotRowSchema = z.object({
+  pending_completion_count: z.number(),
+  outstanding_run_count: z.number(),
+});
+
+const materializationAttemptRowSchema = z.object({
+  materialization_attempt_count: z.number(),
+});
+
 const operationRowSchema = z.object({
   run_id: z.string(),
   operation_id: z.string(),
@@ -918,7 +927,37 @@ export class DurableWorkflowStore {
          ORDER BY workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(parentRequestId, boundedLimit(limit));
-    return tolerantRows(rows, parseRun);
+    return rows.map(parseRun);
+  }
+
+  getLiveParentDeliverySnapshot(
+    parentRequestId: string,
+    includeSynchronous = false,
+  ): { pendingCompletionCount: number; outstandingRunCount: number } {
+    const raw = this.db
+      .query(
+        `SELECT
+           COALESCE(SUM(CASE
+             WHEN workflow_runs.state IN ('succeeded', 'failed', 'cancelled')
+              AND (? = 1 OR COALESCE(
+                json_extract(workflow_runs.completion_target_json, '$.deferredDelivery'), 1
+              ) = 1)
+             THEN 1 ELSE 0 END), 0) AS pending_completion_count,
+           COALESCE(SUM(CASE
+             WHEN workflow_runs.state NOT IN ('succeeded', 'failed', 'cancelled')
+             THEN 1 ELSE 0 END), 0) AS outstanding_run_count
+         FROM workflow_runs
+         JOIN workflow_completion_deliveries
+           ON workflow_completion_deliveries.run_id = workflow_runs.run_id
+         WHERE workflow_completion_deliveries.parent_request_id = ?
+           AND workflow_completion_deliveries.state = 'pending'`,
+      )
+      .get(includeSynchronous ? 1 : 0, parentRequestId);
+    const row = liveParentDeliverySnapshotRowSchema.parse(raw);
+    return {
+      pendingCompletionCount: row.pending_completion_count,
+      outstandingRunCount: row.outstanding_run_count,
+    };
   }
 
   listPendingLiveParentCompletions(
@@ -940,7 +979,7 @@ export class DurableWorkflowStore {
          ORDER BY workflow_runs.terminal_at, workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(parentRequestId, includeSynchronous ? 1 : 0, boundedLimit(limit));
-    return tolerantRows(rows, parseRun);
+    return rows.map(parseRun);
   }
 
   listOrphanedLiveParentCompletions(limit = 1_000): WorkflowRun[] {
@@ -954,7 +993,7 @@ export class DurableWorkflowStore {
          ORDER BY workflow_runs.terminal_at, workflow_runs.created_at, workflow_runs.run_id LIMIT ?`,
       )
       .all(boundedLimit(limit));
-    return tolerantRows(rows, parseRun);
+    return rows.map(parseRun);
   }
 
   markLiveParentCompletionDelivered(runId: string, now: number): boolean {
@@ -966,6 +1005,45 @@ export class DurableWorkflowStore {
            WHERE run_id = ? AND state = 'pending'`,
         )
         .run(now, now, runId).changes === 1
+    );
+  }
+
+  recordLiveParentCompletionMaterializationFailure(input: {
+    runId: string;
+    error: string;
+    now: number;
+  }): number | null {
+    const record = this.db.transaction(() => {
+      const updated = this.db
+        .query(
+          `UPDATE workflow_completion_deliveries
+           SET materialization_attempt_count = materialization_attempt_count + 1,
+               materialization_error = ?, updated_at = ?
+           WHERE run_id = ? AND state = 'pending'`,
+        )
+        .run(input.error.slice(0, 2_000), input.now, input.runId);
+      if (updated.changes !== 1) return null;
+      const raw = this.db
+        .query(
+          `SELECT materialization_attempt_count
+           FROM workflow_completion_deliveries WHERE run_id = ?`,
+        )
+        .get(input.runId);
+      return materializationAttemptRowSchema.parse(raw).materialization_attempt_count;
+    });
+    return record.immediate();
+  }
+
+  clearLiveParentCompletionMaterializationFailure(runId: string, now: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE workflow_completion_deliveries
+           SET materialization_attempt_count = 0, materialization_error = NULL, updated_at = ?
+           WHERE run_id = ? AND state = 'pending'
+             AND (materialization_attempt_count <> 0 OR materialization_error IS NOT NULL)`,
+        )
+        .run(now, runId).changes === 1
     );
   }
 

@@ -112,8 +112,45 @@ function operation(runId: string, operationId: string): WorkflowOperation {
   };
 }
 
-function downgradeSchemaToV20(db: Database): void {
+function downgradeSchemaToV21(db: Database): void {
   db.run("PRAGMA foreign_keys = OFF");
+  db.run("DROP TRIGGER workflow_completion_delivery_after_run_insert");
+  db.run("ALTER TABLE workflow_completion_deliveries RENAME TO workflow_completion_deliveries_v22");
+  db.run(`CREATE TABLE workflow_completion_deliveries (
+    run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+    parent_request_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'fallback')),
+    delivered_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  db.run(`INSERT INTO workflow_completion_deliveries (
+    run_id, parent_request_id, state, delivered_at, created_at, updated_at
+  ) SELECT run_id, parent_request_id, state, delivered_at, created_at, updated_at
+    FROM workflow_completion_deliveries_v22`);
+  db.run("DROP TABLE workflow_completion_deliveries_v22");
+  db.run(`CREATE INDEX idx_workflow_completion_deliveries_parent_state
+    ON workflow_completion_deliveries(parent_request_id, state, created_at, run_id)`);
+  db.run(`CREATE TRIGGER workflow_completion_delivery_after_run_insert
+    AFTER INSERT ON workflow_runs
+    WHEN json_extract(NEW.completion_target_json, '$.kind') = 'live_parent'
+    BEGIN
+      INSERT INTO workflow_completion_deliveries (
+        run_id, parent_request_id, state, delivered_at, created_at, updated_at
+      ) VALUES (
+        NEW.run_id,
+        json_extract(NEW.completion_target_json, '$.parentRequestId'),
+        'pending',
+        NULL,
+        NEW.created_at,
+        NEW.created_at
+      );
+    END`);
+  db.run("DELETE FROM workflow_schema_migrations WHERE version = 22");
+}
+
+function downgradeSchemaToV20(db: Database): void {
+  downgradeSchemaToV21(db);
   db.run("DELETE FROM workflow_schema_migrations WHERE version = 21");
   db.run(`CREATE TABLE workflow_approvals (
     approval_id TEXT PRIMARY KEY, revision_id TEXT NOT NULL, state TEXT NOT NULL
@@ -205,8 +242,8 @@ describe("durable workflow store minimal dispatch schema", () => {
         "running",
       );
       expect(store.listMigrations().at(-1)).toMatchObject({
-        version: 21,
-        name: "minimal durable dispatch contract",
+        version: 22,
+        name: "durable live-parent materialization retries",
       });
     } finally {
       store.close();

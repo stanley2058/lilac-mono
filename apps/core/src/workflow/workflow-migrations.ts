@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 
 import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
 
-export const WORKFLOW_SCHEMA_VERSION = 21;
+export const WORKFLOW_SCHEMA_VERSION = 22;
 
 type WorkflowMigration = {
   version: number;
@@ -1198,7 +1198,17 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       `CREATE INDEX idx_workflow_action_outbox_publish
        ON workflow_action_outbox(published_at, next_attempt_at, created_at)`,
       `CREATE INDEX idx_workflow_action_outbox_project
-       ON workflow_action_outbox(projected_at, event_type, created_at)`,
+        ON workflow_action_outbox(projected_at, event_type, created_at)`,
+    ],
+  },
+  {
+    version: 22,
+    name: "durable live-parent materialization retries",
+    statements: [
+      `ALTER TABLE workflow_completion_deliveries
+       ADD COLUMN materialization_attempt_count INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE workflow_completion_deliveries
+       ADD COLUMN materialization_error TEXT`,
     ],
   },
 ];

@@ -321,7 +321,41 @@ describe("workflow subagent convergence", () => {
     expect(store.listActiveLiveParentRuns("parent:1").map((item) => item.runId)).toEqual([
       handle.runId,
     ]);
+    expect(store.getLiveParentDeliverySnapshot("parent:1")).toEqual({
+      pendingCompletionCount: 0,
+      outstandingRunCount: 1,
+    });
     store.close();
+  });
+
+  it("persists completion materialization failures across store restarts", async () => {
+    const { store, dbPath, run } = await createRun("parent:materialization-retry");
+    expect(
+      store.recordLiveParentCompletionMaterializationFailure({
+        runId: run.runId,
+        error: "temporary read failure",
+        now: 20,
+      }),
+    ).toBe(1);
+    store.close();
+
+    const reopened = new DurableWorkflowStore(dbPath);
+    expect(
+      reopened.recordLiveParentCompletionMaterializationFailure({
+        runId: run.runId,
+        error: "temporary read failure",
+        now: 21,
+      }),
+    ).toBe(2);
+    expect(reopened.clearLiveParentCompletionMaterializationFailure(run.runId, 22)).toBe(true);
+    expect(
+      reopened.recordLiveParentCompletionMaterializationFailure({
+        runId: run.runId,
+        error: "temporary read failure",
+        now: 23,
+      }),
+    ).toBe(1);
+    reopened.close();
   });
 
   it("creates and caches generated definitions independently for multiple project roots", async () => {
@@ -640,6 +674,10 @@ describe("workflow subagent convergence", () => {
       hasPendingCompletions: true,
       hasOutstandingRuns: false,
     });
+    expect(store.getLiveParentDeliverySnapshot("parent:1")).toEqual({
+      pendingCompletionCount: 1,
+      outstandingRunCount: 0,
+    });
     const pending = parent.listPending();
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({
@@ -649,6 +687,10 @@ describe("workflow subagent convergence", () => {
     });
     parent.acknowledge([run.runId]);
     expect(parent.snapshot().hasPendingCompletions).toBe(false);
+    expect(store.getLiveParentDeliverySnapshot("parent:1")).toEqual({
+      pendingCompletionCount: 0,
+      outstandingRunCount: 0,
+    });
 
     await parent.close();
     await bridge.stop();
@@ -684,6 +726,72 @@ describe("workflow subagent convergence", () => {
     await bridge.stop();
     await bus.close();
     store.close();
+  });
+
+  it("materializes independent completions when one result artifact is unreadable", async () => {
+    const setupResult = await setup();
+    const first = await setupResult.dispatcher.delegate(
+      registration(setupResult.projectRoot, "parent:partial-materialization"),
+    );
+    const second = await setupResult.dispatcher.delegate({
+      ...registration(setupResult.projectRoot, "parent:partial-materialization"),
+      childRequestId: "sub:child:materialized",
+      childSessionId: "sub:channel:1:named:materialized",
+      sessionName: "materialized",
+      parentToolCallId: "tool:delegate:materialized",
+    });
+    const firstRun = setupResult.store.getRun(first.runId);
+    const secondRun = setupResult.store.getRun(second.runId);
+    if (!firstRun || !secondRun) throw new Error("generated subagent run not found");
+    setupResult.store.transitionRun({
+      runId: first.runId,
+      from: "queued",
+      to: "running",
+      now: 10,
+    });
+    setupResult.store.transitionRun({
+      runId: first.runId,
+      from: "running",
+      to: "succeeded",
+      now: 20,
+      resultArtifactId: `workflow-value:${"f".repeat(64)}`,
+    });
+    setupResult.store.transitionRun({
+      runId: second.runId,
+      from: "queued",
+      to: "running",
+      now: 11,
+    });
+    setupResult.store.transitionRun({
+      runId: second.runId,
+      from: "running",
+      to: "succeeded",
+      now: 21,
+      result: "available result",
+    });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      store: setupResult.store,
+      dataDir: setupResult.dataDir,
+      subscriptionId: "partial-materialization",
+    });
+    const parent = bridge.registerParent({ parentRequestId: "parent:partial-materialization" });
+
+    const settled = await parent.listPendingSettledAsync();
+    expect(settled).toHaveLength(2);
+    expect(settled.find((item) => !item.loaded)?.loaded).toBe(false);
+    expect(
+      settled.find((item) => item.loaded && item.completion.runId === second.runId),
+    ).toMatchObject({
+      loaded: true,
+      completion: { finalText: "available result" },
+    });
+
+    await parent.close();
+    await bridge.stop();
+    await bus.close();
+    setupResult.store.close();
   });
 
   it("orders out-of-order child completions by durable terminal time", async () => {
