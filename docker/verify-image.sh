@@ -1,58 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly MIN_DOCKER_MAJOR=28
-
 fail() {
-  printf 'image workflow runtime verification failed: %s\n' "$1" >&2
+  printf 'image verification failed: %s\n' "$1" >&2
   exit 1
 }
 
-check_host() {
-  command -v docker >/dev/null 2>&1 || fail "docker is unavailable"
-
-  local server_version major cgroup_version max_user_namespaces os_type userns_clone
-  server_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) ||
-    fail "cannot reach the Docker daemon"
-  major=${server_version%%.*}
-  [[ $major =~ ^[0-9]+$ ]] || fail "cannot parse Docker server version: $server_version"
-  ((major >= MIN_DOCKER_MAJOR)) ||
-    fail "Docker server 28 or newer is required (found $server_version)"
-
-  os_type=$(docker info --format '{{.OSType}}' 2>/dev/null) || fail "cannot inspect Docker"
-  [[ $os_type == linux ]] || fail "a Linux Docker daemon is required (found $os_type)"
-
-  cgroup_version=$(docker info --format '{{.CgroupVersion}}' 2>/dev/null) ||
-    fail "cannot inspect Docker cgroups"
-  [[ $cgroup_version == 2 ]] || fail "cgroup v2 is required (found v$cgroup_version)"
-
-  if [[ -r /proc/sys/kernel/unprivileged_userns_clone ]]; then
-    read -r userns_clone </proc/sys/kernel/unprivileged_userns_clone
-    [[ $userns_clone == 1 ]] ||
-      fail "unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=$userns_clone)"
-  fi
-  read -r max_user_namespaces </proc/sys/user/max_user_namespaces
-  [[ $max_user_namespaces =~ ^[0-9]+$ ]] ||
-    fail "cannot parse user.max_user_namespaces: $max_user_namespaces"
-  ((max_user_namespaces > 0)) || fail "unprivileged user namespaces are disabled (user.max_user_namespaces=0)"
-  if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-    read -r userns_clone </proc/sys/kernel/apparmor_restrict_unprivileged_userns
-    [[ $userns_clone == 0 ]] ||
-      fail "AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=$userns_clone)"
-  fi
-}
-
-check_host
-if [[ ${1:-} == --check-host ]]; then
-  [[ $# -eq 1 ]] || fail "usage: $0 [--check-host|IMAGE]"
-  printf 'Docker host supports image workflow runtime verification\n'
-  exit 0
-fi
-[[ $# -le 1 ]] || fail "usage: $0 [--check-host|IMAGE]"
+command -v docker >/dev/null 2>&1 || fail "docker is unavailable"
+docker info >/dev/null 2>&1 || fail "cannot reach the Docker daemon"
+[[ $# -le 1 ]] || fail "usage: $0 [IMAGE]"
 
 readonly image=${1:-lilac:dev}
 container_name="lilac-image-verify-$(date +%s)-$$-${RANDOM}"
 readonly container_name
+readonly log_marker="lilac-direct-output-${container_name}"
 
 cleanup() {
   docker rm --force "$container_name" >/dev/null 2>&1 || true
@@ -66,48 +27,46 @@ docker image inspect "$image" >/dev/null 2>&1 || fail "image does not exist: $im
 docker run --detach \
   --name "$container_name" \
   --network none \
-  --cgroupns private \
   --tmpfs /run:rw,nosuid,nodev,mode=755,size=64m \
-  --tmpfs /run/lock:rw,nosuid,nodev,mode=755,size=16m \
   --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=1g \
-  --security-opt seccomp=unconfined \
-  --security-opt apparmor=unconfined \
-  --security-opt writable-cgroups=true \
-  --security-opt systempaths=unconfined \
   --memory 4g \
   --pids-limit 1024 \
-  --stop-signal SIGRTMIN+3 \
   --stop-timeout 30 \
   --no-healthcheck \
-  --env container=docker \
-  --env LILAC_VERIFY_ONLY=1 \
-  "$image" >/dev/null
+  --env LILAC_VERIFY_LOG_MARKER="$log_marker" \
+  "$image" \
+  /bin/sh -c '(/bin/sleep 0.1 &); /bin/sleep 1; printf "%s\n" "$LILAC_VERIFY_LOG_MARKER"; printf "%s" "$LILAC_OPERATOR_TOKEN_SHA256" >/tmp/lilac-service-token-hash; exec /bin/sleep infinity' \
+  >/dev/null
 
-readonly wait_deadline=$((SECONDS + 45))
-manager_ready=false
+readonly wait_deadline=$((SECONDS + 30))
+ready=false
 while ((SECONDS < wait_deadline)); do
   running=$(docker inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null || true)
   if [[ $running != true ]]; then
     exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_name" 2>/dev/null || true)
-    fail "verify-only container exited before the lilac user manager was ready (exit ${exit_code:-unknown})"
+    fail "smoke container exited early (exit ${exit_code:-unknown})"
   fi
-  if docker exec --user lilac "$container_name" \
-    /usr/bin/systemctl --user show --property=ControlGroup --value >/dev/null 2>&1; then
-    manager_ready=true
+  if docker exec "$container_name" /usr/bin/test -s /tmp/lilac-service-token-hash; then
+    ready=true
     break
   fi
   sleep 1
 done
-[[ $manager_ready == true ]] || fail "timed out waiting for the lilac user manager"
+[[ $ready == true ]] || fail "timed out waiting for the entrypoint"
 
-pid1=$(docker exec "$container_name" /usr/bin/cat /proc/1/comm)
-[[ $pid1 == systemd ]] || fail "container PID 1 is not systemd (found $pid1)"
-if docker exec "$container_name" /usr/bin/systemctl is-active --quiet lilac-core.service; then
-  fail "Core started during verify-only boot"
-fi
-core_condition=$(docker exec "$container_name" \
-  /usr/bin/systemctl show lilac-core.service --property=ConditionResult --value)
-[[ $core_condition == no ]] || fail "Core was not condition-disabled for verify-only boot"
+lilac_uid=$(docker exec "$container_name" /usr/bin/id -u lilac)
+pid1_uid=$(docker exec "$container_name" /usr/bin/stat --format='%u' /proc/1)
+[[ $pid1_uid == 0 ]] || fail "PID 1 does not run as root"
+pid1_name=$(docker exec "$container_name" /usr/bin/cat /proc/1/comm)
+[[ $pid1_name == tini ]] || fail "PID 1 is not tini (found $pid1_name)"
+service_pids=$(docker exec "$container_name" /usr/bin/cat /proc/1/task/1/children)
+[[ $service_pids =~ ^[[:space:]]*([0-9]+)[[:space:]]*$ ]] ||
+  fail "tini did not reap the orphan probe (children: $service_pids)"
+service_pid=${BASH_REMATCH[1]}
+service_uid=$(docker exec "$container_name" /usr/bin/stat --format='%u' "/proc/$service_pid")
+[[ $service_uid == "$lilac_uid" ]] || fail "service process does not run as lilac"
+service_name=$(docker exec "$container_name" /bin/sh -c "tr '\0' ' ' </proc/$service_pid/cmdline")
+[[ $service_name == "/bin/sleep infinity " ]] || fail "unexpected service command: $service_name"
 
 token_metadata=$(docker exec "$container_name" /usr/bin/stat --format='%a:%u:%g' \
   /run/lilac/operator-token)
@@ -116,46 +75,41 @@ if docker exec --user lilac "$container_name" /usr/bin/test -r /run/lilac/operat
   fail "operator token is readable by lilac"
 fi
 docker exec "$container_name" /bin/sh -c \
-  'hash=$(/usr/bin/sha256sum /run/lilac/operator-token | /usr/bin/cut -d " " -f 1); /usr/bin/grep -Fqx "LILAC_OPERATOR_TOKEN_SHA256=\"$hash\"" /run/lilac/container.env' ||
-  fail "operator token hash does not match the Core environment"
+  'hash=$(/usr/bin/sha256sum /run/lilac/operator-token | /usr/bin/cut -d " " -f 1); test "$(/usr/bin/cat /tmp/lilac-service-token-hash)" = "$hash"' ||
+  fail "operator token hash was not propagated to the service process"
+
 resolved_tools=$(docker exec "$container_name" /bin/sh -c 'command -v tools')
 [[ $resolved_tools == /usr/local/bin/tools ]] || fail "root PATH does not select trusted tools CLI"
-if docker exec --user lilac "$container_name" /usr/bin/test -w \
-  /usr/local/libexec/lilac-tool-bridge/client.js; then
-  fail "tools CLI is writable by lilac"
-fi
-if docker exec --user lilac "$container_name" /usr/bin/test -w /usr/local/bin/bun; then
-  fail "operator/Core Bun executable is writable by lilac"
-fi
-if docker exec --user lilac "$container_name" /usr/bin/test -w /app/apps/core/src/runtime/main.ts; then
-  fail "Core application source is writable by lilac"
-fi
+docker exec "$container_name" /usr/local/bin/tools --help >/dev/null || fail "tools CLI smoke failed"
+operator_status=0
+operator_output=$(docker exec \
+  --env TOOL_SERVER_BACKEND_URL=http://127.0.0.1:1 \
+  "$container_name" /usr/local/bin/tools --operator --list 2>&1) || operator_status=$?
+[[ $operator_status -ne 0 && $operator_output == *"Unable to connect"* ]] ||
+  fail "operator CLI did not load its token before the expected connection failure"
+docker exec --user lilac "$container_name" /usr/local/bin/bun --version >/dev/null ||
+  fail "Bun smoke failed"
 
-readonly log_marker="lilac-docker-log-probe-${container_name}"
-docker exec "$container_name" \
-  /usr/bin/systemd-run \
-  --collect \
-  --quiet \
-  --unit=lilac-docker-log-probe.service \
-  --wait \
-  /usr/bin/printf '%s\n' "$log_marker" >/dev/null
-
-readonly log_deadline=$((SECONDS + 10))
-log_forwarded=false
-while ((SECONDS < log_deadline)); do
-  container_logs=$(docker logs "$container_name" 2>&1)
-  if [[ $container_logs == *"$log_marker"* ]]; then
-    log_forwarded=true
-    break
+for path in /app /usr/local/bin/bun /usr/local/libexec/lilac-tool-bridge; do
+  if docker exec --user lilac "$container_name" /usr/bin/test -w "$path"; then
+    fail "$path is writable by lilac"
   fi
+done
+docker exec --user lilac "$container_name" /usr/bin/test -w /data ||
+  fail "/data is not writable by lilac"
+
+container_logs=$(docker logs "$container_name" 2>&1)
+[[ $container_logs == *"$log_marker"* ]] || fail "direct process output is absent from Docker logs"
+
+docker kill --signal TERM "$container_name" >/dev/null
+readonly stop_deadline=$((SECONDS + 10))
+while ((SECONDS < stop_deadline)); do
+  running=$(docker inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null || true)
+  [[ $running == false ]] && break
   sleep 1
 done
-[[ $log_forwarded == true ]] || fail "systemd journal entries are not visible through Docker logs"
+[[ $running == false ]] || fail "container did not stop after SIGTERM"
+exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_name")
+[[ $exit_code == 143 ]] || fail "unexpected exit code after SIGTERM: $exit_code"
 
-docker exec --user lilac "$container_name" /usr/local/bin/verify-workflow-runtime
-docker exec --user lilac \
-  --env LILAC_WORKFLOW_SANDBOX_INTEGRATION=1 \
-  "$container_name" \
-  /usr/local/bin/bun test \
-  ./apps/core/tests/workflow/workflow-sandbox.test.ts \
-  ./apps/core/tests/workflow/workflow-integration.test.ts
+printf 'image verification passed\n'

@@ -32,31 +32,17 @@ services:
       BUN_INSTALL_CACHE_DIR: ${BUN_INSTALL_CACHE_DIR:-/data/.bun/install/cache}
       NPM_CONFIG_PREFIX: ${NPM_CONFIG_PREFIX:-/data/.npm-global}
       XDG_CONFIG_HOME: ${LILAC_XDG_CONFIG_HOME:-/data/.config}
-      container: docker
     ports:
       - "8080:8080"
     volumes:
       - ./data:/data
       - ./home/agents:/home/lilac/.agents
       - ./home/.ssh:/home/lilac/.ssh
-    # Docker 28+ provides a writable view of only this container's private
-    # cgroup namespace. No host cgroup bind or privileged mode is needed.
-    cgroup: private
     tmpfs:
       - /run:rw,nosuid,nodev,mode=755,size=64m
-      - /run/lock:rw,nosuid,nodev,mode=755,size=16m
       - /tmp:rw,nosuid,nodev,mode=1777,size=1g
-    security_opt:
-      # Nested bwrap needs unshare/clone, and systemd needs its private cgroup
-      # hierarchy writable so it can delegate workflow memory/PID controllers.
-      - seccomp=unconfined
-      - apparmor=unconfined
-      - writable-cgroups=true
-      # Required while the workflow bwrap command mounts a private /proc.
-      - systempaths=unconfined
     mem_limit: ${LILAC_CONTAINER_MEMORY_LIMIT:-4g}
     pids_limit: ${LILAC_CONTAINER_PIDS_LIMIT:-1024}
-    stop_signal: SIGRTMIN+3
     stop_grace_period: 30s
     healthcheck:
       test:

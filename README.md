@@ -44,9 +44,9 @@ This monorepo uses Bun workspaces. Install dependencies in the workspace(s) you 
 
 Most commands below are long-running.
 
-- Docker/Compose (includes Redis; requires Linux, Docker 28+, and cgroup v2): `docker compose up --build -d`
-- Verify a running Compose deployment: `bun run docker:verify`
-- Credential-free built-image and live production workflow-sandbox smoke: `bun run docker:build --tag lilac:dev . && bun run docker:verify-image`
+- Docker/Compose (includes Redis): `docker compose up --build -d`
+- Verify a running deployment with the operator CLI: `bun run docker:verify`
+- Credential-free image smoke: `bun run docker:build --tag lilac:dev . && bun run docker:verify-image`
 - Docker deployment contract and diagnostics: `docs/docker-deployment.md`
 - Core runtime (needs `REDIS_URL` + Discord config): `bun apps/core/src/runtime/main.ts`
   - Important: with default `core-config.yaml`, both Discord allowlists are empty, so the bot ignores all Discord traffic until you set at least one of `surface.discord.allowedChannelIds` or `surface.discord.allowedGuildIds`.
