@@ -740,6 +740,7 @@ export async function createCoreRuntime(opts: CoreRuntimeOptions = {}): Promise<
           module: "tool-server",
         }),
         healthProvider: getRuntimeHealthReport,
+        activeLevel1WorkProvider: () => stopAgentRunner?.getActiveLevel1Work() ?? [],
         onUnhealthy: opts.onUnhealthy,
         getConfig: () => getCoreConfig(),
         requestMessageCache: {

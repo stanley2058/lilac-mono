@@ -1,4 +1,10 @@
 import type { Logger } from "@stanley2058/simple-module-logger";
+import { performance } from "node:perf_hooks";
+
+import {
+  createRuntimeDiagnosticSampler,
+  type RuntimeDiagnosticSample,
+} from "./runtime-diagnostics";
 
 export type ToolServerHealthImpact = "live" | "ready";
 
@@ -15,6 +21,38 @@ export type ToolServerHealthProviderResult = {
   info?: Record<string, unknown>;
 };
 
+export type ToolServerActiveLevel1Work = {
+  requestId: string;
+  requestClient: string;
+  runProfile: string;
+  phase: "preparing" | "model" | "tool";
+  runAgeMs: number;
+  tools: readonly {
+    toolCallId: string;
+    toolName: string;
+    ageMs: number;
+  }[];
+};
+
+export type ToolServerLagIncidentObservation = {
+  at: number;
+  lagMs: number;
+  streak: number;
+  runtime?: RuntimeDiagnosticSample;
+  activeLevel1Work: readonly ToolServerActiveLevel1Work[];
+};
+
+export type ToolServerLagIncident = {
+  status: "active" | "recovered";
+  enteredAt: number;
+  recoveredAt?: number;
+  durationMs?: number;
+  maxHighLagStreak: number;
+  entry: ToolServerLagIncidentObservation;
+  peak: ToolServerLagIncidentObservation;
+  recovery?: ToolServerLagIncidentObservation;
+};
+
 export type ToolServerHealthSnapshot = {
   ok: boolean;
   live: boolean;
@@ -27,6 +65,7 @@ export type ToolServerHealthSnapshot = {
       uptimeMs: number;
       eventLoopLagMs: number;
       highLagStreak: number;
+      lastLagIncident?: ToolServerLagIncident;
       memory: {
         rss: number;
         heapUsed: number;
@@ -89,6 +128,8 @@ type ToolServerHealthStateOptions = ToolServerHealthConfig & {
   externalHealthProvider?: () =>
     | ToolServerHealthProviderResult
     | Promise<ToolServerHealthProviderResult>;
+  activeLevel1WorkProvider?: () => readonly ToolServerActiveLevel1Work[];
+  runtimeDiagnosticSampler?: (options?: { includeLinux?: boolean }) => RuntimeDiagnosticSample;
   onUnhealthy?: (snapshot: ToolServerHealthSnapshot) => void | Promise<void>;
 };
 
@@ -140,11 +181,112 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let lagHighStreak = 0;
   let lastEventLoopLagMs = 0;
+  let activeLagIncident: ToolServerLagIncident | null = null;
+  let lastLagIncident: ToolServerLagIncident | null = null;
   let unhealthyStreak = 0;
   let watchdogTriggered = false;
   let toolTokenSeq = 0;
-  let expectedTickAt = Date.now() + eventLoopSampleIntervalMs;
+  let expectedTickAt = performance.now() + eventLoopSampleIntervalMs;
   const activeCalls = new Map<string, ToolCallEntry>();
+  const ownedRuntimeDiagnosticSampler = createRuntimeDiagnosticSampler();
+  const sampleRuntimeDiagnostics =
+    options.runtimeDiagnosticSampler ?? ownedRuntimeDiagnosticSampler.sample;
+
+  function captureRuntimeDiagnostics(includeLinux: boolean): RuntimeDiagnosticSample | undefined {
+    try {
+      return sampleRuntimeDiagnostics({ includeLinux });
+    } catch {
+      return undefined;
+    }
+  }
+
+  function captureActiveLevel1Work(): readonly ToolServerActiveLevel1Work[] {
+    try {
+      return (options.activeLevel1WorkProvider?.() ?? []).map((work) => ({
+        requestId: work.requestId,
+        requestClient: work.requestClient,
+        runProfile: work.runProfile,
+        phase: work.phase,
+        runAgeMs: work.runAgeMs,
+        tools: work.tools.map((tool) => ({
+          toolCallId: tool.toolCallId,
+          toolName: tool.toolName,
+          ageMs: tool.ageMs,
+        })),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  function createLagObservation(
+    lagMs: number,
+    runtime: RuntimeDiagnosticSample | undefined,
+  ): ToolServerLagIncidentObservation {
+    return {
+      at: Date.now(),
+      lagMs,
+      streak: lagHighStreak,
+      runtime,
+      activeLevel1Work: captureActiveLevel1Work(),
+    };
+  }
+
+  function recordEventLoopLagSample(lagMs: number) {
+    lastEventLoopLagMs = lagMs;
+    const high = lagMs >= eventLoopLagFailMs;
+    lagHighStreak = high ? lagHighStreak + 1 : 0;
+
+    const entering = high && lagHighStreak >= eventLoopLagFailStreak && !activeLagIncident;
+    const recovering = !high && activeLagIncident !== null;
+    const runtime = captureRuntimeDiagnostics(entering || recovering);
+
+    if (entering) {
+      const entry = createLagObservation(lagMs, runtime);
+      activeLagIncident = {
+        status: "active",
+        enteredAt: entry.at,
+        maxHighLagStreak: lagHighStreak,
+        entry,
+        peak: entry,
+      };
+      lastLagIncident = activeLagIncident;
+      options.logger.warn("event loop lag degraded runtime", {
+        incident: activeLagIncident,
+      });
+      return;
+    }
+
+    if (high && activeLagIncident) {
+      const nextPeak =
+        lagMs > activeLagIncident.peak.lagMs
+          ? createLagObservation(lagMs, runtime)
+          : activeLagIncident.peak;
+      activeLagIncident = {
+        ...activeLagIncident,
+        maxHighLagStreak: Math.max(activeLagIncident.maxHighLagStreak, lagHighStreak),
+        peak: nextPeak,
+      };
+      lastLagIncident = activeLagIncident;
+      return;
+    }
+
+    if (recovering && activeLagIncident) {
+      const recovery = createLagObservation(lagMs, runtime);
+      const recovered: ToolServerLagIncident = {
+        ...activeLagIncident,
+        status: "recovered",
+        recoveredAt: recovery.at,
+        durationMs: recovery.at - activeLagIncident.enteredAt,
+        recovery,
+      };
+      activeLagIncident = null;
+      lastLagIncident = recovered;
+      options.logger.info("event loop lag recovered", {
+        incident: recovered,
+      });
+    }
+  }
 
   function markInitialized(value: boolean) {
     initialized = value;
@@ -215,7 +357,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
       {
         name: "event-loop.lag",
         ok: lagHighStreak < eventLoopLagFailStreak,
-        impact: "live",
+        impact: "ready",
         reason:
           lagHighStreak < eventLoopLagFailStreak
             ? undefined
@@ -312,6 +454,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
           uptimeMs: Math.round(process.uptime() * 1000),
           eventLoopLagMs: lastEventLoopLagMs,
           highLagStreak: lagHighStreak,
+          ...(lastLagIncident ? { lastLagIncident } : {}),
           memory: {
             rss: memory.rss,
             heapUsed: memory.heapUsed,
@@ -370,17 +513,13 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
 
   function startMonitoring() {
     if (!lagTimer) {
-      expectedTickAt = Date.now() + eventLoopSampleIntervalMs;
+      if (!options.runtimeDiagnosticSampler) ownedRuntimeDiagnosticSampler.start();
+      expectedTickAt = performance.now() + eventLoopSampleIntervalMs;
       lagTimer = setInterval(() => {
-        const now = Date.now();
+        const now = performance.now();
         const lagMs = Math.max(0, now - expectedTickAt);
         expectedTickAt = now + eventLoopSampleIntervalMs;
-        lastEventLoopLagMs = lagMs;
-        if (lagMs >= eventLoopLagFailMs) {
-          lagHighStreak += 1;
-        } else {
-          lagHighStreak = 0;
-        }
+        recordEventLoopLagSample(lagMs);
       }, eventLoopSampleIntervalMs);
       lagTimer.unref?.();
     }
@@ -396,6 +535,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   }
 
   function stopMonitoring() {
+    if (!options.runtimeDiagnosticSampler) ownedRuntimeDiagnosticSampler.stop();
     if (lagTimer) {
       clearInterval(lagTimer);
       lagTimer = null;
@@ -406,6 +546,10 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     }
     unhealthyStreak = 0;
     watchdogTriggered = false;
+    lagHighStreak = 0;
+    lastEventLoopLagMs = 0;
+    activeLagIncident = null;
+    lastLagIncident = null;
   }
 
   return {
@@ -414,6 +558,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     recordUnhandledRejection,
     beginToolCall,
     endToolCall,
+    recordEventLoopLagSample,
     getSnapshot,
     startMonitoring,
     stopMonitoring,

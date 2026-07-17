@@ -24,10 +24,12 @@ import {
 } from "./schema";
 import {
   createToolServerHealthState,
+  type ToolServerActiveLevel1Work,
   type ToolServerHealthCheck,
   type ToolServerHealthConfig,
   type ToolServerHealthProviderResult,
   type ToolServerHealthSnapshot,
+  type ToolServerLagIncident,
 } from "./health-state";
 import type { RequestContext, ServerTool } from "./types";
 import { ToolInputValidationError } from "./validation-error-message";
@@ -196,6 +198,7 @@ export type ToolServerOptions = {
   toolCallTimeouts?: ToolCallTimeoutOptions;
   healthConfig?: ToolServerHealthConfig;
   healthProvider?: () => ToolServerHealthProviderResult | Promise<ToolServerHealthProviderResult>;
+  activeLevel1WorkProvider?: () => readonly ToolServerActiveLevel1Work[];
   onUnhealthy?: (snapshot: ToolServerHealthSnapshot) => void | Promise<void>;
   getConfig?: () => Promise<CoreConfig>;
   /** Optional cache to provide request-scoped messages to tools. */
@@ -288,6 +291,7 @@ export function createToolServer(options: ToolServerOptions) {
     logger,
     pluginManager: options.pluginManager,
     externalHealthProvider: options.healthProvider,
+    activeLevel1WorkProvider: options.activeLevel1WorkProvider,
     onUnhealthy: options.onUnhealthy,
     ...options.healthConfig,
   });
@@ -825,8 +829,10 @@ export function createToolServer(options: ToolServerOptions) {
 }
 
 export type {
+  ToolServerActiveLevel1Work,
   ToolServerHealthCheck,
   ToolServerHealthConfig,
   ToolServerHealthProviderResult,
   ToolServerHealthSnapshot,
+  ToolServerLagIncident,
 };

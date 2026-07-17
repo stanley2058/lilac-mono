@@ -1474,6 +1474,7 @@ type SessionQueue = {
     requestId: string;
     sessionId: string;
     requestClient: AdapterPlatform;
+    runProfile: AgentRunProfile;
     queue: RequestQueueMode;
     runPolicy: RequestRunPolicy;
     origin?: RequestOrigin;
@@ -1485,9 +1486,24 @@ type SessionQueue = {
     notifyWaiters: () => void;
     cancel: () => void;
     started: boolean;
+    startedAt: number;
+    activeTools: Map<string, { toolName: string; startedAt: number }>;
   } | null;
   /** Track toolCallIds whose outputs are compacted in the model-facing view. */
   compactedToolCallIds: Set<string>;
+};
+
+export type AgentRunnerActiveWork = {
+  requestId: string;
+  requestClient: AdapterPlatform;
+  runProfile: AgentRunProfile;
+  phase: "preparing" | "model" | "tool";
+  runAgeMs: number;
+  tools: readonly {
+    toolCallId: string;
+    toolName: string;
+    ageMs: number;
+  }[];
 };
 
 export async function startBusAgentRunner(params: {
@@ -2367,6 +2383,7 @@ export async function startBusAgentRunner(params: {
       requestId: next.requestId,
       sessionId: next.sessionId,
       requestClient: next.requestClient,
+      runProfile,
       queue: next.queue,
       runPolicy: next.runPolicy,
       origin: next.origin,
@@ -2383,6 +2400,8 @@ export async function startBusAgentRunner(params: {
         rejectPreAgentCancellation = null;
       },
       started: false,
+      startedAt: runStartedAt,
+      activeTools: new Map(),
     };
 
     let initialMessages: ModelMessage[] = [];
@@ -3679,7 +3698,12 @@ export async function startBusAgentRunner(params: {
         }
 
         if (event.type === "tool_execution_start") {
-          toolStartMs.set(event.toolCallId, Date.now());
+          const startedAt = Date.now();
+          toolStartMs.set(event.toolCallId, startedAt);
+          state.activeRun?.activeTools.set(event.toolCallId, {
+            toolName: event.toolName,
+            startedAt,
+          });
 
           bus
             .publish(
@@ -3706,6 +3730,7 @@ export async function startBusAgentRunner(params: {
         }
 
         if (event.type === "tool_execution_end") {
+          state.activeRun?.activeTools.delete(event.toolCallId);
           const started = toolStartMs.get(event.toolCallId);
           const toolDurationMs = started ? Date.now() - started : undefined;
           const toolFailure = summarizeToolFailure({
@@ -4374,8 +4399,32 @@ export async function startBusAgentRunner(params: {
     }
   }
 
+  function getActiveLevel1Work(): readonly AgentRunnerActiveWork[] {
+    const now = Date.now();
+    const active: AgentRunnerActiveWork[] = [];
+    for (const state of bySession.values()) {
+      const run = state.activeRun;
+      if (!run) continue;
+      const tools = [...run.activeTools.entries()].map(([toolCallId, tool]) => ({
+        toolCallId,
+        toolName: tool.toolName,
+        ageMs: Math.max(0, now - tool.startedAt),
+      }));
+      active.push({
+        requestId: run.requestId,
+        requestClient: run.requestClient,
+        runProfile: run.runProfile,
+        phase: tools.length > 0 ? "tool" : run.started ? "model" : "preparing",
+        runAgeMs: Math.max(0, now - run.startedAt),
+        tools,
+      });
+    }
+    return active;
+  }
+
   return {
     beginDrain,
+    getActiveLevel1Work,
     snapshotRecoverables,
     restoreRecoverables,
     stop: async () => {

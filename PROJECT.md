@@ -287,7 +287,8 @@ There are three tool “levels”. They all serve the agent; higher levels are u
 2. Level 2: tool server tools + the `tools` CLI
    - Served by Elysia from `apps/core/src/tool-server/create-tool-server.ts`.
    - Exposes endpoints:
-     - `GET /health` health check
+     - `GET /health` and `GET /healthz` liveness checks
+     - `GET /readyz` readiness check
      - `GET /list` tool catalog
      - `GET /help/:callableId` tool help
      - `POST /call` invoke by `callableId`
@@ -295,9 +296,15 @@ There are three tool “levels”. They all serve the agent; higher levels are u
    - Tool definitions live in `apps/core/src/tool-server/tools/*`.
    - Registration now goes through the same shared plugin runtime used by Level 1 (`apps/core/src/plugins/manager.ts`).
    - Built-in Level 2 plugins live in `apps/core/src/plugins/builtin/*`; external plugins are discovered from `DATA_DIR/plugins/*`.
-    - The tool server uses request context headers (`x-lilac-request-id`, etc.) and generic server-issued request capabilities for request-scoped behavior. Capabilities bind cwd and native profile identity; profile headers are context only and cannot expand Level-2 access.
+   - The tool server uses request context headers (`x-lilac-request-id`, etc.) and generic server-issued request capabilities for request-scoped behavior. Capabilities bind cwd and native profile identity; profile headers are context only and cannot expand Level-2 access.
    - `apps/tool-bridge/client.ts` provides a human-friendly `tools` CLI that calls the tool server; the agent can also invoke it through Level-1 `bash`.
    - Capability-bound plugins skip cleanly in dev mode when required services are absent.
+   - Health distinguishes fatal liveness failures from readiness degradation. Sustained event-loop
+     lag is readiness-only: it is retained as a diagnostic incident and can make `/readyz` return
+     503, but lag alone never invokes the process watchdog. Incident diagnostics contain process
+     CPU/event-loop/resource/memory data, best-effort Linux pressure/cgroup data, and active-work
+     metadata without tool arguments or command text. Runtime-specific metrics such as event-loop
+     utilization explicitly report when they are unsupported.
 
 3. Level 3: skills
    - Skills are on-disk bundles: a directory containing a required `SKILL.md` (YAML frontmatter + instructions) and optional helpers/resources.
