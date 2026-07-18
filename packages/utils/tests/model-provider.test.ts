@@ -25,6 +25,24 @@ describe("normalizeCodexResponsesRequestRecord", () => {
     expect(normalized.store).toBe(false);
   });
 
+  it("defaults function tools to non-strict without overriding explicit strictness", () => {
+    const normalized = normalizeCodexResponsesRequestRecord({
+      tools: [
+        { type: "function", name: "implicit", parameters: { type: "object" } },
+        { type: "function", name: "strict", strict: true, parameters: { type: "object" } },
+        { type: "function", name: "non-strict", strict: false, parameters: { type: "object" } },
+        { type: "web_search_preview" },
+      ],
+    });
+
+    expect(normalized.tools).toEqual([
+      { type: "function", name: "implicit", strict: false, parameters: { type: "object" } },
+      { type: "function", name: "strict", strict: true, parameters: { type: "object" } },
+      { type: "function", name: "non-strict", strict: false, parameters: { type: "object" } },
+      { type: "web_search_preview" },
+    ]);
+  });
+
   it("removes previous_response_id but keeps required item ids", () => {
     const normalized = normalizeCodexResponsesRequestRecord({
       previous_response_id: "resp_123",

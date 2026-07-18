@@ -6,6 +6,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
 import { createGateway } from "ai";
+
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import { env } from "./env";
 import {
@@ -17,6 +18,7 @@ import {
 import { createLogger } from "./logging";
 import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
 import { withLlmWireDebugFetch } from "./llm-wire-debug";
+import { isRecord } from "./runtime-utils";
 
 export type Providers =
   | "openai"
@@ -47,6 +49,17 @@ export function normalizeCodexResponsesRequestRecord(
   const instructions = normalized.instructions;
   if (typeof instructions !== "string" || instructions.trim().length === 0) {
     normalized.instructions = CODEX_BASE_INSTRUCTIONS;
+  }
+
+  // The Codex backend defaults omitted function-tool strictness to true and
+  // makes every declared property required, changing omission-based schemas.
+  const tools = normalized.tools;
+  if (Array.isArray(tools)) {
+    normalized.tools = tools.map((tool) =>
+      isRecord(tool) && tool.type === "function" && !("strict" in tool)
+        ? { ...tool, strict: false }
+        : tool,
+    );
   }
 
   // Codex does not persist response items when store=false.
