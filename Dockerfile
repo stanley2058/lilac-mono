@@ -129,6 +129,10 @@ COPY package.json /tmp/lilac-package.json
 RUN BUN_VERSION="$(node -e 'const pm = require("/tmp/lilac-package.json").packageManager; const match = /^bun@(.+)$/.exec(pm ?? ""); if (!match) throw new Error(`packageManager must be bun@<version>, got ${pm}`); process.stdout.write(match[1]);')" \
   && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
 USER root
+# Keep the runtime Bun executable in a stable, root-owned tools layer.
+RUN install -o root -g root -m 0755 \
+     /home/${LILAC_USER}/.bun/bin/bun \
+     /usr/local/bin/bun
 
 ############################
 # Stage 2: deps
@@ -147,12 +151,11 @@ COPY packages/fs/package.json packages/fs/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
 COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.json
 COPY packages/utils/package.json packages/utils/package.json
-RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app
-USER ${LILAC_USER}
 
-# Bun workspace install (single install at repo root)
-RUN bun install --frozen-lockfile
-USER root
+# Install dependencies as root and normalize Bun package modes in the same
+# stable layer so source changes cannot trigger a dependency-sized rewrite.
+RUN bun install --frozen-lockfile \
+  && find /app ! -type l -perm /022 -exec chmod go-w {} +
 
 ############################
 # Stage 3: build + runtime entry
@@ -163,27 +166,14 @@ WORKDIR /app
 COPY bunfig.toml tsconfig.json ./
 COPY apps ./apps
 COPY packages ./packages
-RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app
-USER ${LILAC_USER}
 
 # Build client bundles
 RUN (cd apps/tool-bridge && bun run build)
 RUN (cd apps/core && bun run build:remote-runner)
 RUN (cd packages/remote-fs-runner && bun run build)
 
-USER root
-ARG LILAC_BUILD_VERSION=dev
-ARG LILAC_BUILD_COMMIT=dev
-ARG LILAC_BUILD_DIRTY=false
-ARG LILAC_BUILD_AT=
-# Generate build metadata late so commit-only changes do not invalidate source build layers.
-RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; then BUILD_AT_FRAGMENT=$(printf ',\n  "builtAt": "%s"' "$LILAC_BUILD_AT"); fi && printf '{\n  "version": "%s",\n  "commit": "%s",\n  "dirty": %s%s\n}\n' "$LILAC_BUILD_VERSION" "$LILAC_BUILD_COMMIT" "$LILAC_BUILD_DIRTY" "$BUILD_AT_FRAGMENT" > /app/build/build-info.json
-RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") /app/build
 # Keep the operator CLI outside the lilac-writable application build tree.
 RUN install -d -o root -g root -m 0755 /usr/local/libexec/lilac-tool-bridge \
-  && install -o root -g root -m 0755 \
-       /home/${LILAC_USER}/.bun/bin/bun \
-       /usr/local/bin/bun \
   && install -o root -g root -m 0755 \
        /app/apps/tool-bridge/dist/index.js \
        /usr/local/libexec/lilac-tool-bridge/index.js \
@@ -194,8 +184,20 @@ RUN install -d -o root -g root -m 0755 /usr/local/libexec/lilac-tool-bridge \
 
 COPY --chmod=0755 docker/direct-entrypoint.sh /usr/local/sbin/lilac-entrypoint
 COPY docker/create-operator-token.mjs /usr/local/libexec/create-operator-token.mjs
-RUN chown -R root:root /app \
-  && chmod -R go-w /app
+# Build steps run as root, so hardening only needs to verify source permissions.
+# Avoid recursively rewriting dependencies in a source-invalidated layer.
+RUN writable_path="$(find /app ! -type l -perm /022 -print -quit)" \
+  && if [ -n "$writable_path" ]; then \
+       ls -ld "$writable_path" >&2; \
+       exit 1; \
+     fi
+
+ARG LILAC_BUILD_VERSION=dev
+ARG LILAC_BUILD_COMMIT=dev
+ARG LILAC_BUILD_DIRTY=false
+ARG LILAC_BUILD_AT=
+# Generate build metadata last so metadata-only changes create one tiny layer.
+RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; then BUILD_AT_FRAGMENT=$(printf ',\n  "builtAt": "%s"' "$LILAC_BUILD_AT"); fi && printf '{\n  "version": "%s",\n  "commit": "%s",\n  "dirty": %s%s\n}\n' "$LILAC_BUILD_VERSION" "$LILAC_BUILD_COMMIT" "$LILAC_BUILD_DIRTY" "$BUILD_AT_FRAGMENT" > /app/build/build-info.json
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/sbin/lilac-entrypoint"]
