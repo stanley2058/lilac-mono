@@ -114,6 +114,16 @@ describe("extractAiErrorLogDetails", () => {
     expect(JSON.stringify(details)).not.toContain("secret-key");
   });
 
+  it("extracts Codex backend rejection details", () => {
+    const details = extractAiErrorLogDetails(
+      createApiCallError({
+        responseBody: JSON.stringify({ detail: "Stream must be set to true" }),
+      }),
+    );
+
+    expect(details?.providerMessage).toBe("Stream must be set to true");
+  });
+
   it("ignores unrelated errors", () => {
     expect(extractAiErrorLogDetails(new Error("local failure"))).toBeUndefined();
   });

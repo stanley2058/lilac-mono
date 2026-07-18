@@ -79,7 +79,7 @@ function parseProviderErrorDetails(value: unknown): ProviderErrorDetails {
   const providerParam = readString(nested.param);
 
   return {
-    providerMessage: readString(nested.message),
+    providerMessage: readString(nested.message) ?? readString(nested.detail),
     providerCode: readStringOrNumber(nested.code),
     providerType,
     providerParam,
