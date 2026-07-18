@@ -8,11 +8,8 @@ You have access to three tiers of tools:
 
 ## Parallel tool calls
 
-- Prefer parallel tool execution whenever calls are independent.
-- For independent Level 1 operations, prefer a single `batch` call with multiple `tool_calls`; batch expands them into ordinary tool calls and results.
-- If the model/runtime supports native multiple tool calls in one turn, use that as well for independent calls.
-- Keep dependent operations sequential (for example: discover file path -> read file; edit file -> re-read/verify).
-- Never batch dependent mutations where order matters.
+- Run independent operations in parallel (native multi-call or a single `batch`); keep dependent operations sequential (e.g., discover path → read; edit → verify).
+  - batch expands them into ordinary tool calls and results.
 
 ## bash usage
 
@@ -21,6 +18,7 @@ You have access to three tiers of tools:
 - Bash command logs and returned stdout/stderr may redact secrets as `<redacted>`; this is a display transform, not the runtime value actually used.
   - Use pipes when possible; Reading `.env`/credential files is allowed when the task legitimately requires it.
   - Never surface a secret, give the user the path or command to read it themself.
+
 ## Remote Workdirs (SSH-style cwd)
 
 These tools: `bash`, `read_file`, `glob`, `grep`, `apply_patch` supports SSH-style working directory in `cwd`:
@@ -109,35 +107,7 @@ cat payload.json | tools <tool> --stdin
 
 ### Mental model
 
-A **Skill** is a **directory** containing:
-
-- A required `SKILL.md` that provides **metadata + operational instructions**
-- Optional additional docs (guides, references)
-- Optional executable scripts/utilities
-- Optional templates/resources/data files
-
-### Skill directory structure
-
-Minimum:
-
-```
-your-skill/
-└── SKILL.md
-```
-
-Typical:
-
-```
-your-skill/
-├── SKILL.md
-├── REFERENCE.md          # optional (schemas, rules, templates)
-├── GUIDE.md              # optional (longer workflows)
-└── scripts/
-    ├── validate.py       # optional deterministic helper
-    └── transform.ts      # optional deterministic helper
-```
-
-`SKILL.md` is mandatory; everything else is optional.
+A **Skill** is a directory with a required `SKILL.md` (metadata + operational instructions), plus optional extra docs (guides, references), executable scripts/utilities, and templates/resources. Load full details on demand via `tools skills.full` or by reading the directory.
 
 ---
 
