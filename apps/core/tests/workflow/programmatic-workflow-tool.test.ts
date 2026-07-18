@@ -6,6 +6,8 @@ import { z } from "zod";
 
 import type { RequestContext } from "../../src/tool-server/types";
 import { ProgrammaticWorkflow } from "../../src/tool-server/tools/programmatic-workflow";
+import { writeWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-store";
+import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 
 const invocationSchema = z.object({
   runId: z.string(),
@@ -123,6 +125,139 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
         tool.call("workflow.run.list", { limit: 0 }, { context: trusted }),
       ).rejects.toThrow();
     } finally {
+      await tool.destroy();
+    }
+  });
+
+  it("returns sensitive-workflow results while redacting sensitive inputs", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-result-access-"));
+    const workspaceRoot = path.join(root, "workspace");
+    const dataDir = path.join(root, "data");
+    const dbPath = path.join(root, "workflow.sqlite");
+    await fs.mkdir(workspaceRoot);
+    const tool = new ProgrammaticWorkflow({
+      dataDir,
+      dbPath,
+      now: () => 100,
+      progressCards: {
+        ensureInitialCard: async (runId) => ({
+          platform: "discord",
+          channelId: "channel-1",
+          messageId: `card-${runId}`,
+        }),
+        requestProjection: () => {},
+      },
+    });
+    const context = {
+      requestId: "request-1",
+      sessionId: "channel-1",
+      requestClient: "discord",
+      cwd: workspaceRoot,
+      safetyMode: "trusted" as const,
+      serverOwnedRequest: true,
+      authenticatedPrincipal: { platform: "discord" as const, userId: "user-1" },
+    } satisfies RequestContext;
+    const sensitiveSource = source()
+      .replace('required: ["directory"]', 'required: ["directory", "token"]')
+      .replace(
+        'properties: { directory: { type: "string" } }',
+        'properties: { directory: { type: "string" }, token: { type: "string", sensitive: true } }',
+      );
+    await tool.init();
+    const store = new DurableWorkflowStore(dbPath);
+    try {
+      await tool.call(
+        "workflow.definition.save",
+        { scope: "project", name: "audit-routes", source: sensitiveSource },
+        { context },
+      );
+      const invocation = invocationSchema.parse(
+        await tool.call(
+          "workflow.run.trigger",
+          {
+            scope: "project",
+            name: "audit-routes",
+            args: { directory: "src", token: "super-secret" },
+          },
+          { context },
+        ),
+      );
+      expect(
+        store.tryClaimRun({ runId: invocation.runId, claimerId: "worker-1", now: 101 }),
+      ).not.toBeNull();
+      const artifactId = await writeWorkflowValueArtifact({
+        dataDir,
+        value: "unrestricted result",
+        maxBytes: 1_048_576,
+      });
+      expect(
+        store.terminalizeRun({
+          runId: invocation.runId,
+          from: "running",
+          to: "succeeded",
+          ownerId: "worker-1",
+          now: 102,
+          detail: "unrestricted detail",
+          result: null,
+          resultArtifactId: artifactId,
+        }),
+      ).toBe(true);
+
+      const fetched = await tool.call(
+        "workflow.run.get",
+        { runId: invocation.runId, includeResultArtifact: true },
+        { context },
+      );
+      expect(fetched).toMatchObject({
+        run: {
+          args: { directory: "src", token: "<redacted>" },
+          terminalDetail: "unrestricted detail",
+        },
+        resultArtifact: "unrestricted result",
+      });
+      expect(JSON.stringify(fetched)).not.toContain("super-secret");
+
+      const inlineInvocation = invocationSchema.parse(
+        await tool.call(
+          "workflow.run.trigger",
+          {
+            scope: "project",
+            name: "audit-routes",
+            args: { directory: "src", token: "another-secret" },
+          },
+          { context },
+        ),
+      );
+      expect(
+        store.tryClaimRun({ runId: inlineInvocation.runId, claimerId: "worker-2", now: 103 }),
+      ).not.toBeNull();
+      expect(
+        store.terminalizeRun({
+          runId: inlineInvocation.runId,
+          from: "running",
+          to: "succeeded",
+          ownerId: "worker-2",
+          now: 104,
+          detail: "inline detail",
+          result: "inline unrestricted result",
+          resultArtifactId: null,
+        }),
+      ).toBe(true);
+      const inlineFetched = await tool.call(
+        "workflow.run.get",
+        { runId: inlineInvocation.runId },
+        { context },
+      );
+      expect(inlineFetched).toMatchObject({
+        run: {
+          args: { directory: "src", token: "<redacted>" },
+          result: "inline unrestricted result",
+          terminalDetail: "inline detail",
+        },
+      });
+      expect(JSON.stringify(inlineFetched)).not.toContain("another-secret");
+    } finally {
+      store.close();
       await tool.destroy();
     }
   });

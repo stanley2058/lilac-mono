@@ -121,7 +121,6 @@ const runGetInputSchema = z.strictObject({
   runId: z.string().min(1).max(200),
   includeSource: z.coerce.boolean().default(false),
   includeResultArtifact: z.coerce.boolean().default(false),
-  includeSensitiveResult: z.coerce.boolean().default(false),
 });
 const runListInputSchema = z.strictObject({
   state: workflowRunStateSchema.optional(),
@@ -174,14 +173,6 @@ function redactRun(run: WorkflowRun) {
     ...safeRun,
     ...(sensitive ? {} : { argsSha256 }),
     args: jsonObjectSchema.parse(redactWorkflowValue(run.args, run.inputSchemaSnapshot)),
-    result:
-      run.result === null
-        ? null
-        : sensitive
-          ? "<redacted; owner may request explicit full inspection>"
-          : run.result,
-    terminalDetail:
-      sensitive && run.terminalDetail ? "<redacted terminal detail>" : run.terminalDetail,
   };
 }
 
@@ -872,10 +863,9 @@ export class ProgrammaticWorkflow implements ServerTool {
         canonicalProjectId: projectScope.canonicalProjectId,
         revision,
       });
-      const fullResultAllowed = input.includeSensitiveResult;
       return {
         ok: true as const,
-        run: fullResultAllowed ? run : redactRun(run),
+        run: redactRun(run),
         revision,
         source:
           input.includeSource && revision
@@ -884,7 +874,7 @@ export class ProgrammaticWorkflow implements ServerTool {
               ).readSnapshot(revision.sourceSha256)
             : undefined,
         resultArtifact:
-          input.includeResultArtifact && fullResultAllowed && run.resultArtifactId
+          input.includeResultArtifact && run.resultArtifactId
             ? await readWorkflowValueArtifact({
                 dataDir: this.params.dataDir ?? env.dataDir,
                 artifactId: run.resultArtifactId,
