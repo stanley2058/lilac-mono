@@ -342,6 +342,10 @@ export function buildNoAssistantTextError(params: {
 
   const warningSuffix = params.warningSummary ? ` Provider warnings: ${params.warningSummary}` : "";
 
+  if (params.finishReason === "tool-calls") {
+    return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} The model ended on a tool-call turn, but the provider output contained neither an executable tool call nor a completed tool result.${warningSuffix}`;
+  }
+
   return `No assistant text was produced by provider '${params.provider}' model '${params.modelId}'.${finishReason} This often means the model is unavailable or unsupported by the upstream backend (for example, model_not_found).${warningSuffix}`;
 }
 

@@ -303,6 +303,94 @@ describe("AiSdkPiAgent model spec tracking", () => {
     expect(part.input).toEqual({ path: "note.txt" });
   });
 
+  it("continues after the SDK produces a tool result for invalid input", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "read-invalid",
+                toolName: "read_file",
+                input: '{"start":{"line":1390}}',
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-1" },
+              { type: "text-delta", id: "text-1", delta: "recovered" },
+              { type: "text-end", id: "text-1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    let executions = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        read_file: tool({
+          inputSchema: jsonSchema(
+            {
+              type: "object",
+              properties: {
+                start: {
+                  type: "object",
+                  properties: {
+                    type: { const: "line" },
+                    line: { type: "number" },
+                  },
+                  required: ["type", "line"],
+                },
+              },
+              required: ["start"],
+              additionalProperties: false,
+            },
+            {
+              validate: () => ({
+                success: false,
+                error: new Error("start.type is required"),
+              }),
+            },
+          ),
+          execute: () => {
+            executions += 1;
+            return "unexpected";
+          },
+        }),
+      },
+    });
+
+    await agent.prompt("read from line 1390");
+
+    expect(executions).toBe(0);
+    expect(agent.state.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+    expect(agent.state.messages.at(-1)).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "recovered" }],
+    });
+  });
+
   it("bounds JSON normalization failures without marking successful execution failed", async () => {
     const model = new MockLanguageModelV4({
       doStream: [
