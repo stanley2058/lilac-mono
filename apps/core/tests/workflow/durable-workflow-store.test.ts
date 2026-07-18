@@ -25,7 +25,6 @@ function revision(id = "revision-1"): WorkflowRevision {
   const resources = normalizeWorkflowResourcePolicy({
     agents: { maxConcurrent: 2, maxTotal: 8 },
     maxNestingDepth: 4,
-    maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: ["reply", "sleep"],
   });
@@ -114,6 +113,34 @@ function operation(runId: string, operationId: string): WorkflowOperation {
 
 function downgradeSchemaToV21(db: Database): void {
   db.run("PRAGMA foreign_keys = OFF");
+  db.run("ALTER TABLE workflow_request_dispatches RENAME TO workflow_request_dispatches_v23");
+  db.run(`CREATE TABLE workflow_request_dispatches (
+    request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    owner_id TEXT,
+    owner_heartbeat_at INTEGER,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    prompt_published_at INTEGER,
+    dispatch_epoch TEXT NOT NULL,
+    UNIQUE (run_id, operation_id)
+  )`);
+  db.run(`INSERT INTO workflow_request_dispatches (
+    request_id, run_id, operation_id, session_id, platform, policy_json, expires_at,
+    owner_id, owner_heartbeat_at, active, created_at, updated_at, prompt_published_at,
+    dispatch_epoch
+  ) SELECT request_id, run_id, operation_id, session_id, platform, policy_json,
+    9007199254740991, owner_id, owner_heartbeat_at, active, created_at, updated_at,
+    prompt_published_at, dispatch_epoch FROM workflow_request_dispatches_v23`);
+  db.run("DROP TABLE workflow_request_dispatches_v23");
+  db.run(`CREATE INDEX idx_workflow_request_dispatches_active
+    ON workflow_request_dispatches(active, owner_heartbeat_at, expires_at)`);
   db.run("DROP TRIGGER workflow_completion_delivery_after_run_insert");
   db.run("ALTER TABLE workflow_completion_deliveries RENAME TO workflow_completion_deliveries_v22");
   db.run(`CREATE TABLE workflow_completion_deliveries (
@@ -146,7 +173,7 @@ function downgradeSchemaToV21(db: Database): void {
         NEW.created_at
       );
     END`);
-  db.run("DELETE FROM workflow_schema_migrations WHERE version = 22");
+  db.run("DELETE FROM workflow_schema_migrations WHERE version >= 22");
 }
 
 function downgradeSchemaToV20(db: Database): void {
@@ -188,7 +215,8 @@ function downgradeSchemaToV20(db: Database): void {
   )`);
   db.run(`UPDATE workflow_revisions SET
     capabilities_json = json_set(capabilities_json, '$.safety', json('{"originatingMode":"trusted","escalation":"none"}')),
-    limits_json = json_set(limits_json, '$.maxRuntimeMemoryBytes', 268435456)`);
+    limits_json = json_set(limits_json, '$.maxRuntimeMemoryBytes', 268435456),
+    runtime_version = 'lilac-workflow-js-v3'`);
 }
 
 describe("durable workflow store minimal dispatch schema", () => {
@@ -242,8 +270,8 @@ describe("durable workflow store minimal dispatch schema", () => {
         "running",
       );
       expect(store.listMigrations().at(-1)).toMatchObject({
-        version: 22,
-        name: "durable live-parent materialization retries",
+        version: 23,
+        name: "unbounded workflow v4 contract",
       });
     } finally {
       store.close();
@@ -415,7 +443,7 @@ describe("durable workflow store minimal dispatch schema", () => {
     }
   });
 
-  it("atomically terminalizes active v20 state while retaining terminal history", () => {
+  it("migrates v20 through v4 and archives the incompatible execution history", () => {
     const file = dbPath("v20-minimal-contract");
     const store = new DurableWorkflowStore(file);
     const rev = revision();
@@ -549,51 +577,13 @@ describe("durable workflow store minimal dispatch schema", () => {
 
     const migrated = new DurableWorkflowStore(file);
     try {
-      expect(migrated.getRun("active-run")).toMatchObject({
-        state: "cancelled",
-        terminalDetail: "Cancelled by schema v21 minimal durable dispatch migration",
-      });
-      expect(migrated.getOperation("active-run", "active-operation")).toMatchObject({
-        state: "cancelled",
-      });
-      expect(migrated.getTrigger("active-trigger")).toMatchObject({ state: "cancelled" });
-      expect(migrated.getRun("terminal-run")).toMatchObject({
-        state: "succeeded",
-        result: { ok: true },
-      });
-      expect(migrated.getRun("rejected-run")).toMatchObject({
-        state: "failed",
-        terminalDetail: "approval rejected",
-      });
-      expect(migrated.getOperation("terminal-run", "terminal-operation")).toMatchObject({
-        state: "succeeded",
-        output: "complete",
-      });
-      expect(migrated.getWorkflowRequestTerminalReceipt("terminal-request")).toMatchObject({
-        state: "resolved",
-        output: "complete",
-      });
-      expect(migrated.getWorkflowRequestDispatchPolicy("active-request")).toEqual({
-        runId: "active-run",
-        operationId: "active-operation",
-        dispatchEpoch: "old-dispatch-epoch",
-        profile: "general",
-        model: null,
-        reasoning: null,
-        resolvedModelRequest: {
-          spec: "profile-native:general",
-          provider: "test",
-          modelId: "general",
-          reasoningDisplay: "simple",
-        },
-        cwd: "/workspace",
-        originSession: {
-          requestId: "request-1",
-          sessionId: "session-1",
-          client: "discord",
-          userId: "user-1",
-        },
-      });
+      expect(migrated.getRun("active-run")).toBeNull();
+      expect(migrated.getOperation("active-run", "active-operation")).toBeNull();
+      expect(migrated.getTrigger("active-trigger")).toBeNull();
+      expect(migrated.getRun("terminal-run")).toBeNull();
+      expect(migrated.getRun("rejected-run")).toBeNull();
+      expect(migrated.getWorkflowRequestTerminalReceipt("terminal-request")).toBeNull();
+      expect(migrated.getWorkflowRequestDispatchPolicy("active-request")).toBeNull();
       expect(migrated.getWorkflowRequestDispatchPolicy("legacy-terminal-dispatch")).toBeNull();
     } finally {
       migrated.close();
@@ -613,13 +603,33 @@ describe("durable workflow store minimal dispatch schema", () => {
           { record_kind: "trigger", record_id: "active-trigger" },
         ]),
       );
+      const audit = inspected
+        .query<{ record_kind: string; record_id: string }, []>(
+          "SELECT record_kind, record_id FROM workflow_legacy_audit_records",
+        )
+        .all();
+      expect(audit).toEqual(
+        expect.arrayContaining([
+          { record_kind: "revision", record_id: "revision-1" },
+          { record_kind: "run", record_id: "active-run" },
+          { record_kind: "run", record_id: "terminal-run" },
+          { record_kind: "trigger", record_id: "active-trigger" },
+          { record_kind: "terminal_receipt", record_id: "terminal-request" },
+        ]),
+      );
       expect(
         inspected
           .query<{ active: number }, []>(
             "SELECT active FROM workflow_request_dispatches WHERE request_id = 'active-request'",
           )
           .get()?.active,
-      ).toBe(0);
+      ).toBeUndefined();
+      expect(
+        inspected
+          .query<{ name: string }, []>("PRAGMA table_info(workflow_request_dispatches)")
+          .all()
+          .map((column) => column.name),
+      ).not.toContain("expires_at");
     } finally {
       inspected.close();
       rmSync(file, { force: true });
@@ -664,7 +674,6 @@ describe("durable workflow store minimal dispatch schema", () => {
           platform: "unknown",
           policy,
           now: 21,
-          expiresAt: 1_000,
           staleOwnerBefore: 21,
         }),
       ).toMatchObject({ state: "dispatched" });
@@ -687,7 +696,6 @@ describe("durable workflow store minimal dispatch schema", () => {
             },
           },
           now: 22,
-          expiresAt: 1_000,
           staleOwnerBefore: 22,
         }),
       ).toBeNull();

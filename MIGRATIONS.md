@@ -138,3 +138,13 @@ The persisted state migration is a clean break rather than a reinterpretation:
 The workflow-only security modules removed in this break (Level-1 boundary, path authority, protected-path, denied-root policy, network policy, descriptor path, scratch, and worktree artifact) are deleted rather than migrated. The dead tool-bridge `x-lilac-workflow-capability` header and plugin `workflowPathAuthority` guidance are removed. Level-2 `workflow.*` access follows native profile configuration and the generic profile-bound request capability; there is no workflow-specific active-request or principal gate.
 
 Schema 22 adds durable materialization attempt/error state to live-parent completion deliveries. Deferred subagent results retry artifact loading and output normalization across process restarts before Core inserts an explicit failed synthetic result, preventing transient delivery failures from either losing successful child output or waiting forever.
+
+## Workflow Schema 23
+
+Schema 23 and runtime `lilac-workflow-js-v4` remove the workflow-wide wall-time contract. Workflow programs, sleeps, reply waits, pauses, and recovery have no total elapsed-time limit. Individual child-agent operations retain `operationIdleTimeoutMs`, and explicit cancellation still forcibly terminates the workflow subprocess.
+
+The v4 API also removes the unused public `parallel(..., { concurrency })` option; `parallel(promises)` joins already-created promises, while `pipeline(..., { concurrency })` provides bounded fan-out. Reply waits are explicitly limited to the authenticated originating Discord session. Literal host-call option objects receive static validation before a definition is saved or triggered.
+
+Terminal results, terminal detail, and requested result artifacts are returned without sensitivity gating. Sensitive input fields, argument hashes, and progress values remain redacted. The obsolete `includeSensitiveResult` run-inspection option is removed.
+
+This is a clean break for persisted v3 execution identity. Migration 23 archives bounded summaries for old revisions, runs, triggers, and terminal receipts; quarantines nonterminal runs and active triggers; deactivates dispatches; and removes v3 executable rows. Source definition files remain on disk and can be corrected and saved as v4 definitions. The request-dispatch table no longer has a hard expiry column; active state, run and operation state, dispatch epochs, owner heartbeats, idle cancellation, and exact terminal receipts govern its lifecycle.

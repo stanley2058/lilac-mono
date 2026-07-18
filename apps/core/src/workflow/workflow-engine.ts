@@ -45,6 +45,8 @@ import type { WorkflowRequestPolicy } from "./workflow-request-authority";
 import {
   resolveWorkflowAgentOperationInput,
   resolvedWorkflowAgentInputSchema,
+  workflowPipelineOptionsSchema,
+  workflowWaitForReplyOptionsSchema,
   type ResolvedWorkflowAgentInput,
 } from "./workflow-operation-policy";
 
@@ -54,26 +56,10 @@ const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
 const phaseInputSchema = z.strictObject({ name: z.string().min(1).max(200) });
 const parallelInputSchema = z.strictObject({
   count: z.number().int().nonnegative(),
-  options: z.strictObject({ concurrency: z.number().int().positive().max(64).optional() }),
 });
 const pipelineInputSchema = z.strictObject({
   items: z.array(jsonValueSchema).max(10_000),
-  options: z.strictObject({ concurrency: z.number().int().positive().max(64).optional() }),
-});
-const waitForReplyInputSchema = z.strictObject({
-  prompt: z.string().min(1).max(2_000).optional(),
-  platform: z
-    .enum(["discord", "github", "whatsapp", "slack", "telegram", "web", "unknown"])
-    .optional(),
-  channelId: z.string().min(1).max(200).optional(),
-  messageId: z.string().min(1).max(200).optional(),
-  fromUserId: z.string().min(1).max(200).optional(),
-  timeoutMs: z
-    .number()
-    .int()
-    .positive()
-    .max(7 * 24 * 60 * 60 * 1_000)
-    .optional(),
+  options: workflowPipelineOptionsSchema,
 });
 const sleepInputSchema = z.union([z.number().finite().nonnegative(), z.string().min(1).max(100)]);
 
@@ -364,7 +350,6 @@ export class WorkflowEngine {
     return startWorkflowSandbox({
       source: compiled,
       args: run.args,
-      maxWallTimeMs: revision.resources.maxWallTimeMs,
       signal,
       onCall: (call) => this.handleCall(run.runId, revision, call, semaphore, signal),
     });
@@ -515,7 +500,7 @@ export class WorkflowEngine {
       call.kind === "agent"
         ? (resolvedWorkflowAgentInputSchema.parse(input).options.label ?? null)
         : call.kind === "waitForReply"
-          ? (waitForReplyInputSchema.parse(input).prompt ?? "Waiting for reply")
+          ? (workflowWaitForReplyOptionsSchema.parse(input).prompt ?? "Waiting for reply")
           : call.kind === "sleep"
             ? "Sleeping"
             : null;
@@ -567,7 +552,7 @@ export class WorkflowEngine {
     else if (kind === "phase") phaseInputSchema.parse(input);
     else if (kind === "parallel") parallelInputSchema.parse(input);
     else if (kind === "pipeline") pipelineInputSchema.parse(input);
-    else if (kind === "waitForReply") waitForReplyInputSchema.parse(input);
+    else if (kind === "waitForReply") workflowWaitForReplyOptionsSchema.parse(input);
     else sleepInputSchema.parse(input);
   }
 
@@ -588,7 +573,7 @@ export class WorkflowEngine {
     let wait = this.input.store.getWait(run.runId, operation.operationId);
     if (!wait) {
       if (kind === "waitForReply") {
-        const options = waitForReplyInputSchema.parse(input);
+        const options = workflowWaitForReplyOptionsSchema.parse(input);
         const platform = options.platform ?? run.origin.client;
         const channelId = options.channelId ?? run.origin.sessionId;
         if (!platform || !channelId) {
@@ -600,6 +585,7 @@ export class WorkflowEngine {
           platform !== "discord" ||
           platform !== run.origin.client ||
           channelId !== run.origin.sessionId ||
+          !run.origin.userId ||
           (options.fromUserId !== undefined && options.fromUserId !== run.origin.userId)
         ) {
           throw new Error(
@@ -880,7 +866,6 @@ export class WorkflowEngine {
           platform: "unknown",
           policy,
           now: this.now(),
-          expiresAt: (run.startedAt ?? run.createdAt) + revision.resources.maxWallTimeMs,
           staleOwnerBefore: this.now() - WORKFLOW_REQUEST_LEASE_STALE_MS,
         });
         if (!dispatched) {

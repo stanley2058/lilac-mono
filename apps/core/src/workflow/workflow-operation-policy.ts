@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { workflowAgentProfileSchema, workflowReasoningSchema } from "./workflow-domain";
 
-const requestedAgentOptionsSchema = z.strictObject({
+export const workflowRequestedAgentOptionsSchema = z.strictObject({
   profile: workflowAgentProfileSchema,
   model: z.string().min(1).max(200).optional(),
   reasoning: workflowReasoningSchema.optional(),
@@ -14,7 +14,7 @@ const requestedAgentOptionsSchema = z.strictObject({
 
 const requestedAgentInputSchema = z.strictObject({
   prompt: z.string().min(1).max(1_000_000),
-  options: requestedAgentOptionsSchema,
+  options: workflowRequestedAgentOptionsSchema,
 });
 
 export const resolvedWorkflowAgentOptionsSchema = z.strictObject({
@@ -32,7 +32,7 @@ export const resolvedWorkflowAgentInputSchema = z.strictObject({
 
 export type ResolvedWorkflowAgentInput = z.infer<typeof resolvedWorkflowAgentInputSchema>;
 
-const REMOVED_AGENT_OPTIONS = [
+export const REMOVED_AGENT_OPTIONS = [
   "editing",
   "tools",
   "executables",
@@ -41,6 +41,24 @@ const REMOVED_AGENT_OPTIONS = [
   "delegation",
   "isolation",
 ] as const;
+
+export const workflowPipelineOptionsSchema = z.strictObject({
+  concurrency: z.number().int().positive().max(64).optional(),
+});
+
+export const workflowWaitForReplyOptionsSchema = z.strictObject({
+  prompt: z.string().min(1).max(2_000).optional(),
+  platform: z.literal("discord").optional(),
+  channelId: z.string().min(1).max(200).optional(),
+  messageId: z.string().min(1).max(200).optional(),
+  fromUserId: z.string().min(1).max(200).optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(7 * 24 * 60 * 60 * 1_000)
+    .optional(),
+});
 
 export async function resolveWorkflowAgentOperationInput(input: {
   value: unknown;

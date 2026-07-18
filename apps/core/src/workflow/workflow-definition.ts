@@ -14,8 +14,14 @@ import {
   type WorkflowLimits,
   type WorkflowMetadata,
 } from "./workflow-domain";
+import {
+  REMOVED_AGENT_OPTIONS,
+  workflowPipelineOptionsSchema,
+  workflowRequestedAgentOptionsSchema,
+  workflowWaitForReplyOptionsSchema,
+} from "./workflow-operation-policy";
 
-export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v3";
+export const WORKFLOW_RUNTIME_VERSION = "lilac-workflow-js-v4";
 export const MAX_WORKFLOW_SOURCE_BYTES = 256 * 1024;
 export const MAX_WORKFLOW_INPUT_BYTES = 256 * 1024;
 
@@ -153,12 +159,6 @@ const sourceResourcePolicySchema = z.strictObject({
     .max(16)
     .default([]),
   maxNestingDepth: z.number().int().min(1).max(64).default(8),
-  maxWallTimeMs: z
-    .number()
-    .int()
-    .min(1_000)
-    .max(7 * 24 * 60 * 60 * 1_000)
-    .default(60 * 60 * 1_000),
   operationIdleTimeoutMs: z
     .number()
     .int()
@@ -674,6 +674,151 @@ function assertBindingSafeHostCalls(
   }
 }
 
+function assertStaticHostCallArguments(sourceFile: ts.SourceFile): void {
+  const agentOptionKeys = new Set(["profile", "model", "reasoning", "cwd", "label"]);
+
+  const assertStaticObject = (input: {
+    node: ts.Expression;
+    label: string;
+    allowedKeys: ReadonlySet<string>;
+    schema: z.ZodType;
+    partialSchema: z.ZodType;
+    requiredKeys?: ReadonlySet<string>;
+    removedKeys?: ReadonlySet<string>;
+  }): void => {
+    if (!ts.isObjectLiteralExpression(input.node)) return;
+    let hasDynamicShape = false;
+    let hasDynamicValue = false;
+    const keys = new Set<string>();
+    const staticValues: Record<string, JsonValue> = {};
+    for (const property of input.node.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        hasDynamicShape = true;
+        continue;
+      }
+      let name: string;
+      if (ts.isShorthandPropertyAssignment(property)) {
+        name = property.name.text;
+        hasDynamicValue = true;
+      } else if (ts.isPropertyAssignment(property)) {
+        if (
+          ts.isComputedPropertyName(property.name) &&
+          (ts.isStringLiteral(property.name.expression) ||
+            ts.isNumericLiteral(property.name.expression))
+        ) {
+          name = property.name.expression.text;
+        } else {
+          try {
+            name = propertyName(property.name);
+          } catch {
+            hasDynamicShape = true;
+            continue;
+          }
+        }
+        try {
+          staticValues[name] = literalValue(property.initializer);
+        } catch {
+          hasDynamicValue = true;
+        }
+      } else {
+        hasDynamicShape = true;
+        continue;
+      }
+      if (input.removedKeys?.has(name)) {
+        throw new Error(
+          `Workflow agent option '${name}' was removed; migrate to profile-native agent() options`,
+        );
+      }
+      if (!input.allowedKeys.has(name)) {
+        throw new Error(`Unknown workflow ${input.label} option: ${name}`);
+      }
+      keys.add(name);
+    }
+    if (!hasDynamicShape) {
+      for (const required of input.requiredKeys ?? []) {
+        if (!keys.has(required)) {
+          throw new Error(`Workflow ${input.label} options require '${required}'`);
+        }
+      }
+    }
+    const parsed = (
+      hasDynamicShape || hasDynamicValue ? input.partialSchema : input.schema
+    ).safeParse(staticValues);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const path = issue?.path.length ? ` at ${issue.path.join(".")}` : "";
+      throw new Error(`Invalid workflow ${input.label} options${path}: ${issue?.message}`);
+    }
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const name = node.expression.text;
+      if (name === "agent") {
+        if (node.arguments.length < 2) {
+          throw new Error("Workflow agent() requires options with a profile");
+        }
+        if (node.arguments.length > 2) {
+          throw new Error("Workflow agent() accepts exactly a prompt and options");
+        }
+        const options = node.arguments[1];
+        if (options) {
+          assertStaticObject({
+            node: options,
+            label: "agent",
+            allowedKeys: agentOptionKeys,
+            requiredKeys: new Set(["profile"]),
+            removedKeys: new Set(REMOVED_AGENT_OPTIONS),
+            schema: workflowRequestedAgentOptionsSchema,
+            partialSchema: workflowRequestedAgentOptionsSchema.partial(),
+          });
+        }
+      } else if (name === "parallel") {
+        if (node.arguments.length !== 1) {
+          throw new Error("Workflow parallel() accepts only an array of promises");
+        }
+      } else if (name === "pipeline") {
+        if (node.arguments.length > 3) {
+          throw new Error("Workflow pipeline() accepts items, a callback, and optional options");
+        }
+        const options = node.arguments[2];
+        if (options) {
+          assertStaticObject({
+            node: options,
+            label: "pipeline",
+            allowedKeys: new Set(["concurrency"]),
+            schema: workflowPipelineOptionsSchema,
+            partialSchema: workflowPipelineOptionsSchema,
+          });
+        }
+      } else if (name === "waitForReply") {
+        if (node.arguments.length > 1) {
+          throw new Error("Workflow waitForReply() accepts one optional options object");
+        }
+        const options = node.arguments[0];
+        if (options) {
+          assertStaticObject({
+            node: options,
+            label: "waitForReply",
+            allowedKeys: new Set([
+              "prompt",
+              "platform",
+              "channelId",
+              "messageId",
+              "fromUserId",
+              "timeoutMs",
+            ]),
+            schema: workflowWaitForReplyOptionsSchema,
+            partialSchema: workflowWaitForReplyOptionsSchema,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
 function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
   const parseError = syntaxError(source);
   if (parseError) throw new Error(`Invalid workflow JavaScript syntax: ${parseError}`);
@@ -743,6 +888,7 @@ function extractDefinitionObject(source: string): ts.ObjectLiteralExpression {
     throw new Error("defineWorkflow requires one object literal");
   }
   assertBindingSafeHostCalls(sourceFile, definition);
+  assertStaticHostCallArguments(sourceFile);
   return definition;
 }
 
@@ -1071,6 +1217,11 @@ export function validateWorkflowSource(params: {
   const inputSchema = jsonObjectSchema.parse(normalizedInput);
   const rawResources = jsonObjectSchema.safeParse(raw.resources);
   if (rawResources.success) {
+    if ("maxWallTimeMs" in rawResources.data) {
+      throw new Error(
+        "Workflow revision field 'resources.maxWallTimeMs' was removed; workflows no longer have a wall-time limit",
+      );
+    }
     if ("safety" in rawResources.data) {
       throw new Error(
         "Workflow revision field 'resources.safety' was removed; delete it from the workflow definition",
@@ -1115,7 +1266,7 @@ export function validateWorkflowSource(params: {
     `${metadata.name}: ${metadata.description}`,
     `Agents: max=${resources.agents.maxConcurrent}/${resources.agents.maxTotal}`,
     `Waits: ${resources.waits.join(",") || "none"}`,
-    `Limits: wall=${resources.maxWallTimeMs}ms; input=${limits.maxInputBytes} bytes`,
+    `Limits: input=${limits.maxInputBytes} bytes`,
     `Sensitive inputs: ${sensitiveFields.join(", ") || "none declared"}`,
   ].join("\n");
 

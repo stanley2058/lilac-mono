@@ -2440,7 +2440,6 @@ export async function startBusAgentRunner(params: {
           requestId: next.requestId,
           sessionId: next.sessionId,
           platform: next.requestClient,
-          now: Date.now(),
         });
         if (
           !authorized ||

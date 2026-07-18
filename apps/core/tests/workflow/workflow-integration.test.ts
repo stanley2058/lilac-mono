@@ -241,7 +241,6 @@ describe("unified workflow integration", () => {
               requestId,
               sessionId,
               platform: "unknown",
-              now: 100,
             })?.policy,
           ).toMatchObject(workflow);
           expect(

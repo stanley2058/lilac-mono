@@ -6,6 +6,8 @@ import {
   validateWorkflowSource,
 } from "../../src/workflow/workflow-definition";
 
+const BASE_AGENT_CALL = 'return agent(`Audit ${args.directory}`, { profile: "explore" });';
+
 function source(name = "audit-routes", properties = "") {
   return `import { defineWorkflow } from "@lilac/workflow";
 
@@ -33,7 +35,7 @@ export default defineWorkflow({
   },
   ${properties}
   async run({ args, agent }) {
-    return agent(\`Audit \${args.directory}\`);
+    ${BASE_AGENT_CALL}
   },
 });
 `;
@@ -148,10 +150,7 @@ describe("workflow definition validation", () => {
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
-        source: source().replace(
-          "return agent(`Audit ${args.directory}`);",
-          'return eval("unsafe");',
-        ),
+        source: source().replace(BASE_AGENT_CALL, 'return eval("unsafe");'),
       }),
     ).toThrow("eval is not allowed");
     expect(() =>
@@ -193,7 +192,7 @@ describe("workflow definition validation", () => {
         `const PROMPT_PREFIX = "Audit";
 
 async function audit(agent, directory) {
-  return await agent(\`${"${PROMPT_PREFIX}"} ${"${directory}"}\`);
+  return await agent(\`${"${PROMPT_PREFIX}"} ${"${directory}"}\`, { profile: "explore" });
 }
 
 const auditAll = async (pipeline, agent, directories) =>
@@ -202,22 +201,16 @@ const auditAll = async (pipeline, agent, directories) =>
 export default defineWorkflow({`,
       )
       .replace("async run({ args, agent })", "async run({ args, agent, pipeline })")
-      .replace(
-        "return agent(`Audit ${args.directory}`);",
-        "return auditAll(pipeline, agent, [args.directory]);",
-      );
+      .replace(BASE_AGENT_CALL, "return auditAll(pipeline, agent, [args.directory]);");
 
     expect(() => validateWorkflowSource({ name: "audit-routes", source: composed })).not.toThrow();
 
     const directArrow = source()
       .replace(
         "export default defineWorkflow({",
-        "const invoke = (agent, prompt) => agent(prompt);\nexport default defineWorkflow({",
+        'const invoke = (agent, prompt) => agent(prompt, { profile: "explore" });\nexport default defineWorkflow({',
       )
-      .replace(
-        "return agent(`Audit ${args.directory}`);",
-        "return invoke(agent, `Audit ${args.directory}`);",
-      );
+      .replace(BASE_AGENT_CALL, "return invoke(agent, `Audit ${args.directory}`);");
     expect(() =>
       validateWorkflowSource({ name: "audit-routes", source: directArrow }),
     ).not.toThrow();
@@ -247,8 +240,7 @@ export default defineWorkflow({`,
   });
 
   it("rejects host API aliases, member calls, writes, and unsafe helper reuse", () => {
-    const withBody = (body: string) =>
-      source().replace("return agent(`Audit ${args.directory}`);", body);
+    const withBody = (body: string) => source().replace(BASE_AGENT_CALL, body);
     for (const body of [
       "const alias = agent; return alias('forged');",
       "agent = async () => 'forged'; return agent('forged');",
@@ -266,7 +258,7 @@ export default defineWorkflow({`,
         "export default defineWorkflow({",
         "async function invoke(other, prompt) { return other(prompt); }\nexport default defineWorkflow({",
       )
-      .replace("return agent(`Audit ${args.directory}`);", "return invoke(agent, 'forged');");
+      .replace(BASE_AGENT_CALL, "return invoke(agent, 'forged');");
     expect(() => validateWorkflowSource({ name: "audit-routes", source: wrongForwarding })).toThrow(
       "same-named helper parameter",
     );
@@ -274,12 +266,9 @@ export default defineWorkflow({`,
     const fakeForwarding = source()
       .replace(
         "export default defineWorkflow({",
-        "async function invoke(agent, prompt) { return agent(prompt); }\nexport default defineWorkflow({",
+        'async function invoke(agent, prompt) { return agent(prompt, { profile: "explore" }); }\nexport default defineWorkflow({',
       )
-      .replace(
-        "return agent(`Audit ${args.directory}`);",
-        "return invoke(async () => 'forged', 'forged');",
-      );
+      .replace(BASE_AGENT_CALL, "return invoke(async () => 'forged', 'forged');");
     expect(() => validateWorkflowSource({ name: "audit-routes", source: fakeForwarding })).toThrow(
       "requires same-named host binding agent",
     );
@@ -287,13 +276,10 @@ export default defineWorkflow({`,
     const concurrentReuse = source()
       .replace(
         "export default defineWorkflow({",
-        "async function invoke(agent, prompt) { return agent(prompt); }\nexport default defineWorkflow({",
+        'async function invoke(agent, prompt) { return agent(prompt, { profile: "explore" }); }\nexport default defineWorkflow({',
       )
       .replace("async run({ args, agent })", "async run({ args, agent, parallel })")
-      .replace(
-        "return agent(`Audit ${args.directory}`);",
-        "return parallel([invoke(agent, 'a'), invoke(agent, 'b')]);",
-      );
+      .replace(BASE_AGENT_CALL, "return parallel([invoke(agent, 'a'), invoke(agent, 'b')]);");
     expect(() => validateWorkflowSource({ name: "audit-routes", source: concurrentReuse })).toThrow(
       "cannot be invoked from multiple call sites",
     );
@@ -318,15 +304,15 @@ export default defineWorkflow({`,
 
   it("allows pure nested helpers without hiding host bindings", () => {
     const nested = source().replace(
-      "return agent(`Audit ${args.directory}`);",
-      "function prompt(directory) { return `Audit ${directory}`; } return agent(prompt(args.directory));",
+      BASE_AGENT_CALL,
+      'function prompt(directory) { return `Audit ${directory}`; } return agent(prompt(args.directory), { profile: "explore" });',
     );
     expect(() => validateWorkflowSource({ name: "audit-routes", source: nested })).not.toThrow();
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
         source: source().replace(
-          "return agent(`Audit ${args.directory}`);",
+          BASE_AGENT_CALL,
           "async function invoke(prompt) { return agent(prompt); } return invoke(`Audit ${args.directory}`);",
         ),
       }),
@@ -343,7 +329,7 @@ export default defineWorkflow({`,
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
-        source: source().replace("return agent(`Audit ${args.directory}`);", "return 1e999;"),
+        source: source().replace(BASE_AGENT_CALL, "return 1e999;"),
       }),
     ).toThrow("numeric literals must be finite");
   });
@@ -362,7 +348,7 @@ export default defineWorkflow({`,
       validateWorkflowSource({
         name: "audit-routes",
         source: source().replace(
-          "return agent(`Audit ${args.directory}`);",
+          BASE_AGENT_CALL,
           "const agent = async () => 'forged'; return agent();",
         ),
       }),
@@ -377,7 +363,7 @@ export default defineWorkflow({`,
       validateWorkflowSource({
         name: "audit-routes",
         source: source().replace(
-          "return agent(`Audit ${args.directory}`);",
+          BASE_AGENT_CALL,
           "const helper = function agent() {}; return helper();",
         ),
       }),
@@ -386,20 +372,81 @@ export default defineWorkflow({`,
       validateWorkflowSource({
         name: "audit-routes",
         source: source().replace(
-          "return agent(`Audit ${args.directory}`);",
+          BASE_AGENT_CALL,
           "const Helper = class agent {}; return String(Helper);",
         ),
       }),
     ).toThrow("only be called directly or forwarded unchanged");
   });
 
-  it("permits profile-native agent options without revision authority declarations", () => {
+  it("rejects removed profile-native agent options statically", () => {
     const profileNative = source().replace(
-      "return agent(`Audit ${args.directory}`);",
+      BASE_AGENT_CALL,
       'return agent(`Audit ${args.directory}`, { profile: "general", isolation: "shared" });',
     );
+    expect(() => validateWorkflowSource({ name: "audit-routes", source: profileNative })).toThrow(
+      "Workflow agent option 'isolation' was removed",
+    );
+  });
+
+  it("validates statically known host-call options", () => {
     expect(() =>
-      validateWorkflowSource({ name: "audit-routes", source: profileNative }),
-    ).not.toThrow();
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(BASE_AGENT_CALL, "return agent('missing');"),
+      }),
+    ).toThrow("requires options with a profile");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(BASE_AGENT_CALL, 'return agent("bad", { profile: "invalid" });'),
+      }),
+    ).toThrow("Invalid workflow agent options");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'const profile = "explore"; const isolation = true; return agent("bad", { profile, isolation });',
+        ),
+      }),
+    ).toThrow("Workflow agent option 'isolation' was removed");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'return agent("bad", { profile: "explore", ["isolation"]: true });',
+        ),
+      }),
+    ).toThrow("Workflow agent option 'isolation' was removed");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'return agent("bad", { profile: "invalid", label: args.directory });',
+        ),
+      }),
+    ).toThrow("Invalid workflow agent options");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source()
+          .replace("async run({ args, agent })", "async run({ args, agent, parallel })")
+          .replace(
+            BASE_AGENT_CALL,
+            "return parallel([agent('ok', { profile: 'explore' })], { concurrency: 1 });",
+          ),
+      }),
+    ).toThrow("parallel() accepts only an array of promises");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source()
+          .replace("async run({ args, agent })", "async run({ args, waitForReply })")
+          .replace(BASE_AGENT_CALL, 'return waitForReply({ platform: "github" });'),
+      }),
+    ).toThrow("Invalid workflow waitForReply options");
   });
 });

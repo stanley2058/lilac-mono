@@ -124,11 +124,11 @@ function createTrustedRun(
   args: Record<string, boolean> = {},
   outputLimits: { operation: number; result: number } = { operation: 10_000, result: 10_000 },
   completionTarget: WorkflowCompletionTarget = { kind: "detached" },
-  maxWallTimeMs = 10_000,
   editing = false,
   canonicalWorkspaceRoot = process.cwd(),
   mixedEditing = false,
   operationIdleTimeoutMs = 2_000,
+  originUserId: string | null = "user-1",
 ) {
   const inputSchema = {
     type: "object",
@@ -141,7 +141,6 @@ function createTrustedRun(
       maxTotal: 4,
     },
     maxNestingDepth: 4,
-    maxWallTimeMs,
     operationIdleTimeoutMs,
     waits: ["reply", "sleep"],
   });
@@ -166,7 +165,7 @@ function createTrustedRun(
     inputSchema,
     resources,
     limits,
-    runtimeVersion: "lilac-workflow-js-v3",
+    runtimeVersion: "lilac-workflow-js-v4",
     createdAt: 1,
   };
   const invocation = store.createInvocation({
@@ -182,7 +181,7 @@ function createTrustedRun(
         requestId: "origin-1",
         sessionId: "channel-1",
         client: "discord",
-        userId: "user-1",
+        userId: originUserId,
         projectCwd: canonicalWorkspaceRoot,
       },
       completionTarget,
@@ -256,7 +255,6 @@ describe("WorkflowEngine", () => {
       {},
       { operation: 10_000, result: 10_000 },
       { kind: "detached" },
-      60_000,
       true,
       process.cwd(),
       true,
@@ -339,7 +337,6 @@ describe("WorkflowEngine", () => {
       {},
       { operation: 10_000, result: 10_000 },
       { kind: "detached" },
-      60_000,
       true,
       workspace,
     );
@@ -383,7 +380,6 @@ describe("WorkflowEngine", () => {
       {},
       { operation: 10_000, result: 10_000 },
       { kind: "detached" },
-      60_000,
       true,
     );
     let now = 10;
@@ -609,7 +605,6 @@ describe("WorkflowEngine", () => {
                 requestId,
                 sessionId,
                 platform: "unknown",
-                now: 10,
               })?.policy,
             ).toMatchObject(workflow);
             expect(
@@ -864,7 +859,6 @@ describe("WorkflowEngine", () => {
         requestId,
         sessionId,
         platform: "unknown",
-        now: Date.now(),
       });
       if (!authorized) throw new Error("Workflow command was not authorized");
       expect(
@@ -1047,7 +1041,6 @@ describe("WorkflowEngine", () => {
         {},
         { operation: 10_000, result: 10_000 },
         { kind: "detached" },
-        120_000,
       );
       let captured:
         | {
@@ -1729,7 +1722,6 @@ describe("WorkflowEngine", () => {
               requestId,
               sessionId,
               platform: "unknown",
-              now: Date.now(),
             });
             if (!authorized) throw new Error("Idle workflow request was not authorized");
             const claimed = store.claimWorkflowRequest({
@@ -1806,7 +1798,6 @@ describe("WorkflowEngine", () => {
       {},
       { operation: 10_000, result: 10_000 },
       { kind: "detached" },
-      10_000,
       false,
       process.cwd(),
       false,
@@ -1969,6 +1960,49 @@ describe("WorkflowEngine", () => {
     } finally {
       await engine.stop();
       await resolver.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("rejects reply waits without an authenticated Discord origin user", async () => {
+    const dbPath = join(
+      tmpdir(),
+      `workflow-engine-unauthenticated-reply-${crypto.randomUUID()}.sqlite`,
+    );
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(
+      store,
+      "run-unauthenticated-reply",
+      {},
+      { operation: 10_000, result: 10_000 },
+      { kind: "detached" },
+      false,
+      process.cwd(),
+      false,
+      2_000,
+      null,
+    );
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      dataDir: dirname(dbPath),
+      subscriptionId: "test-unauthenticated-reply",
+      pollMs: 5,
+      loadSnapshot: async () =>
+        workflowSource("waitForReply", "return await waitForReply({ timeoutMs: 1000 });"),
+      compileSource: compileTestWorkflow,
+    });
+    try {
+      await engine.start();
+      await waitFor(() => store.getRun("run-unauthenticated-reply")?.state === "failed");
+      expect(store.getRun("run-unauthenticated-reply")?.terminalDetail).toContain(
+        "authenticated originating Discord session and user",
+      );
+    } finally {
+      await engine.stop();
       await bus.close();
       store.close();
       rmSync(dbPath, { force: true });

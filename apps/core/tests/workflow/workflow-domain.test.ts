@@ -24,7 +24,6 @@ function resources() {
       maxTotal: 8,
     },
     maxNestingDepth: 4,
-    maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: ["sleep", "reply", "sleep"] as const,
   };

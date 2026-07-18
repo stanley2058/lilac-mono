@@ -59,11 +59,6 @@ const workflowResourcePolicyInputSchema = z
       maxTotal: z.number().int().min(1).max(10_000),
     }),
     maxNestingDepth: z.number().int().min(1).max(64),
-    maxWallTimeMs: z
-      .number()
-      .int()
-      .min(1_000)
-      .max(7 * 24 * 60 * 60 * 1_000),
     operationIdleTimeoutMs: z
       .number()
       .int()
@@ -293,7 +288,7 @@ export type WorkflowOperation = z.infer<typeof workflowOperationSchema>;
 export const workflowWaitMatchSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("reply"),
-    platform: platformSchema,
+    platform: z.literal("discord"),
     channelId: idSchema,
     messageId: idSchema.nullable(),
     fromUserId: idSchema.nullable(),

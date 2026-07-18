@@ -31,7 +31,7 @@ function revision(): WorkflowRevision {
     sourceSha256: SOURCE_HASH,
     inputSchemaSha256: SCHEMA_HASH,
     resourcePolicySha256: RESOURCE_HASH,
-    runtimeVersion: "lilac-workflow-js-v3",
+    runtimeVersion: "lilac-workflow-js-v4",
     name: "audit-routes",
     snapshotArtifactId: `workflow-source:${SOURCE_HASH}`,
     metadata: {
@@ -42,7 +42,6 @@ function revision(): WorkflowRevision {
     resources: normalizeWorkflowResourcePolicy({
       agents: { maxConcurrent: 2, maxTotal: 8 },
       maxNestingDepth: 4,
-      maxWallTimeMs: 60_000,
       operationIdleTimeoutMs: 10_000,
       waits: ["reply", "sleep"],
     }),

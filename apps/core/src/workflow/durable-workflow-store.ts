@@ -203,7 +203,6 @@ const requestDispatchRowSchema = z.object({
   session_id: z.string(),
   platform: z.string(),
   policy_json: z.string(),
-  expires_at: z.number(),
   owner_id: nullableStringSchema,
   owner_heartbeat_at: nullableNumberSchema,
   active: z.number(),
@@ -613,13 +612,13 @@ export class DurableWorkflowStore {
       );
       this.db.run(
         `UPDATE workflow_request_dispatches
-         SET active = 0, expires_at = MIN(expires_at, ?), updated_at = ?
+         SET active = 0, updated_at = ?
          WHERE active = 1 AND EXISTS (
            SELECT 1 FROM workflow_request_terminal_receipt_quarantine quarantine
            WHERE quarantine.run_id = workflow_request_dispatches.run_id
              AND quarantine.operation_id = workflow_request_dispatches.operation_id
          )`,
-        [now, now],
+        [now],
       );
       this.db.run(
         `UPDATE workflow_runs
@@ -1181,9 +1180,9 @@ export class DurableWorkflowStore {
         [input.now, input.now, input.runId],
       );
       this.db.run(
-        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-         updated_at = ? WHERE run_id = ? AND active = 1`,
-        [input.now, input.now, input.runId],
+        `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+         WHERE run_id = ? AND active = 1`,
+        [input.now, input.runId],
       );
       const result = this.db
         .query(
@@ -1224,9 +1223,9 @@ export class DurableWorkflowStore {
         [input.now, input.now, input.runId],
       );
       this.db.run(
-        `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-         updated_at = ? WHERE run_id = ? AND active = 1`,
-        [input.now, input.now, input.runId],
+        `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+         WHERE run_id = ? AND active = 1`,
+        [input.now, input.runId],
       );
       const changed = this.db
         .query(
@@ -1360,12 +1359,12 @@ export class DurableWorkflowStore {
          )
          AND NOT EXISTS (
            SELECT 1 FROM workflow_request_dispatches dispatch
-           WHERE dispatch.request_id = workflow_operations.request_id
-             AND dispatch.run_id = workflow_operations.run_id
-             AND dispatch.operation_id = workflow_operations.operation_id
-             AND dispatch.active = 1 AND dispatch.expires_at > ?
-         )`,
-      [now, runId, now],
+            WHERE dispatch.request_id = workflow_operations.request_id
+              AND dispatch.run_id = workflow_operations.run_id
+              AND dispatch.operation_id = workflow_operations.operation_id
+              AND dispatch.active = 1
+          )`,
+      [now, runId],
     );
     return true;
   }
@@ -1597,15 +1596,13 @@ export class DurableWorkflowStore {
     platform: string;
     policy: WorkflowRequestPolicy;
     now: number;
-    expiresAt: number;
     staleOwnerBefore: number;
   }): WorkflowOperation | null {
     const policy = workflowRequestPolicySchema.parse(input.policy);
     if (
       policy.runId !== input.runId ||
       policy.operationId !== input.operationId ||
-      policy.cwd === "" ||
-      input.expiresAt <= input.now
+      policy.cwd === ""
     ) {
       return null;
     }
@@ -1684,10 +1681,10 @@ export class DurableWorkflowStore {
       ]);
       this.db.run(
         `INSERT INTO workflow_request_dispatches (
-           request_id, run_id, operation_id, dispatch_epoch, session_id, platform,
-           policy_json, expires_at, owner_id, owner_heartbeat_at,
-           active, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+            request_id, run_id, operation_id, dispatch_epoch, session_id, platform,
+            policy_json, owner_id, owner_heartbeat_at,
+            active, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
         [
           input.requestId,
           input.runId,
@@ -1696,7 +1693,6 @@ export class DurableWorkflowStore {
           input.sessionId,
           input.platform,
           JSON.stringify(policy),
-          input.expiresAt,
           input.now,
           input.now,
         ],
@@ -1710,14 +1706,13 @@ export class DurableWorkflowStore {
     requestId: string;
     sessionId: string;
     platform: string;
-    now: number;
   }): AuthorizedWorkflowRequest | null {
     const authorize = this.db.transaction((): AuthorizedWorkflowRequest | null => {
       const raw = this.db
-        .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string, number]>(
+        .query<z.infer<typeof requestDispatchRowSchema>, [string, string, string]>(
           `SELECT * FROM workflow_request_dispatches
-         WHERE request_id = ? AND session_id = ? AND platform = ?
-            AND active = 1 AND expires_at > ?
+          WHERE request_id = ? AND session_id = ? AND platform = ?
+             AND active = 1
             AND NOT EXISTS (
               SELECT 1 FROM workflow_request_terminal_receipts receipt
               WHERE receipt.request_id = workflow_request_dispatches.request_id OR (
@@ -1727,7 +1722,7 @@ export class DurableWorkflowStore {
               )
             )`,
         )
-        .get(input.requestId, input.sessionId, input.platform, input.now);
+        .get(input.requestId, input.sessionId, input.platform);
       if (!raw) return null;
       const row = requestDispatchRowSchema.parse(raw);
       const run = this.getRun(row.run_id);
@@ -1754,7 +1749,6 @@ export class DurableWorkflowStore {
         sessionId: row.session_id,
         platform: row.platform,
         policy,
-        expiresAt: row.expires_at,
       };
     });
     return authorize.immediate();
@@ -1813,13 +1807,12 @@ export class DurableWorkflowStore {
       const deactivated = this.db
         .query(
           `UPDATE workflow_request_dispatches
-           SET active = 0, expires_at = MIN(expires_at, ?), updated_at = ?
+           SET active = 0, updated_at = ?
            WHERE request_id = ? AND run_id = ? AND operation_id = ?
              AND dispatch_epoch = ? AND owner_id = ? AND active = 1
              AND prompt_published_at IS NOT NULL`,
         )
         .run(
-          input.now,
           input.now,
           input.requestId,
           input.runId,
@@ -1878,13 +1871,13 @@ export class DurableWorkflowStore {
             owner_id: string | null;
             owner_heartbeat_at: number | null;
           },
-          [string, number]
+          [string]
         >(
           `SELECT dispatch_epoch, policy_json, run_id, operation_id, owner_id,
              owner_heartbeat_at FROM workflow_request_dispatches
-           WHERE request_id = ? AND active = 1 AND expires_at > ?`,
+           WHERE request_id = ? AND active = 1`,
         )
-        .get(input.requestId, input.now);
+        .get(input.requestId);
       if (!dispatch) return { status: "fresh" as const };
       const policy = workflowRequestPolicySchema.parse(
         parseJson(dispatch.policy_json, "workflow_request_dispatches.policy_json"),
@@ -1963,7 +1956,7 @@ export class DurableWorkflowStore {
           `UPDATE workflow_request_dispatches
            SET owner_id = ?, owner_heartbeat_at = ?, updated_at = ?
            WHERE request_id = ? AND dispatch_epoch = ?
-              AND active = 1 AND expires_at > ?
+              AND active = 1
               AND NOT EXISTS (
                 SELECT 1 FROM workflow_request_terminal_receipts receipt
                 WHERE receipt.request_id = workflow_request_dispatches.request_id OR (
@@ -1980,7 +1973,6 @@ export class DurableWorkflowStore {
           input.now,
           input.requestId,
           input.dispatchEpoch,
-          input.now,
           input.ownerId,
           staleBefore,
         ).changes === 1
@@ -1992,9 +1984,9 @@ export class DurableWorkflowStore {
       this.db
         .query(
           `UPDATE workflow_request_dispatches SET owner_heartbeat_at = ?, updated_at = ?
-           WHERE request_id = ? AND owner_id = ? AND active = 1 AND expires_at > ?`,
+           WHERE request_id = ? AND owner_id = ? AND active = 1`,
         )
-        .run(now, now, requestId, ownerId, now).changes === 1
+        .run(now, now, requestId, ownerId).changes === 1
     );
   }
 
@@ -2004,53 +1996,53 @@ export class DurableWorkflowStore {
         .query(
           `UPDATE workflow_request_dispatches
            SET owner_id = NULL, owner_heartbeat_at = NULL, updated_at = ?
-           WHERE request_id = ? AND owner_id = ? AND active = 1 AND expires_at > ?`,
+           WHERE request_id = ? AND owner_id = ? AND active = 1`,
         )
-        .run(now, requestId, ownerId, now).changes === 1
+        .run(now, requestId, ownerId).changes === 1
     );
   }
 
   hasLiveWorkflowRequestOwner(requestId: string, now: number, staleAfterMs = 60_000): boolean {
     const row = this.db
-      .query<{ present: number }, [string, number, number]>(
+      .query<{ present: number }, [string, number]>(
         `SELECT 1 AS present FROM workflow_request_dispatches
-         WHERE request_id = ? AND active = 1 AND expires_at > ?
+         WHERE request_id = ? AND active = 1
            AND owner_id IS NOT NULL AND owner_heartbeat_at > ?`,
       )
-      .get(requestId, now, now - staleAfterMs);
+      .get(requestId, now - staleAfterMs);
     return row?.present === 1;
   }
 
-  getActiveWorkflowRequestDispatchEpoch(requestId: string, now: number): string | null {
+  getActiveWorkflowRequestDispatchEpoch(requestId: string): string | null {
     const row = this.db
-      .query<{ dispatch_epoch: string }, [string, number]>(
+      .query<{ dispatch_epoch: string }, [string]>(
         `SELECT dispatch_epoch FROM workflow_request_dispatches
-         WHERE request_id = ? AND active = 1 AND expires_at > ?`,
+         WHERE request_id = ? AND active = 1`,
       )
-      .get(requestId, now);
+      .get(requestId);
     return row?.dispatch_epoch ?? null;
   }
 
   expireWorkflowRequest(requestId: string, now: number, ownerId?: string): boolean {
     const result = ownerId
       ? this.db.run(
-          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-           updated_at = ? WHERE request_id = ? AND owner_id = ? AND active = 1`,
-          [now, now, requestId, ownerId],
+          `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+           WHERE request_id = ? AND owner_id = ? AND active = 1`,
+          [now, requestId, ownerId],
         )
       : this.db.run(
-          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-           updated_at = ? WHERE request_id = ? AND active = 1`,
-          [now, now, requestId],
+          `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+           WHERE request_id = ? AND active = 1`,
+          [now, requestId],
         );
     return result.changes === 1;
   }
 
   expireWorkflowRequestsForRun(runId: string, now: number): void {
     this.db.run(
-      `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-       updated_at = ? WHERE run_id = ? AND active = 1`,
-      [now, now, runId],
+      `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+       WHERE run_id = ? AND active = 1`,
+      [now, runId],
     );
   }
 
@@ -2196,10 +2188,10 @@ export class DurableWorkflowStore {
       if (!changed) return false;
       this.db
         .query(
-          `UPDATE workflow_request_dispatches SET active = 0, expires_at = MIN(expires_at, ?),
-           updated_at = ? WHERE request_id = ? AND run_id = ? AND operation_id = ? AND active = 1`,
+          `UPDATE workflow_request_dispatches SET active = 0, updated_at = ?
+           WHERE request_id = ? AND run_id = ? AND operation_id = ? AND active = 1`,
         )
-        .run(input.now, input.now, input.requestId, input.runId, input.operationId);
+        .run(input.now, input.requestId, input.runId, input.operationId);
       return true;
     });
     return terminalize.immediate();
@@ -3223,9 +3215,9 @@ export class DurableWorkflowStore {
         );
         this.db.run(
           `UPDATE workflow_request_dispatches SET active = 0,
-           expires_at = MIN(expires_at, ?), updated_at = ?
+           updated_at = ?
            WHERE run_id = ? AND active = 1`,
-          [input.now, input.now, run.runId],
+          [input.now, run.runId],
         );
       }
       runIds = [run.runId];

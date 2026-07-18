@@ -46,7 +46,6 @@ async function execute(runBody: string) {
   const sandbox = startWorkflowSandbox({
     source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
     args: {},
-    maxWallTimeMs: 10_000,
     onCall: async (call) => {
       calls.push(call);
       if (call.kind !== "agent") return null;
@@ -167,7 +166,6 @@ describe("workflow sandbox process protocol", () => {
     const sandbox = startWorkflowSandbox({
       source: "compiled source",
       args: { value: 7 },
-      maxWallTimeMs: 10_000,
       onCall: async () => null,
       runtimeProbes: fake.runtime,
     });
@@ -199,7 +197,6 @@ describe("workflow sandbox process protocol", () => {
     const sandbox = startWorkflowSandbox({
       source: compiled,
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => {
         throw new Error("forged call reached the host");
       },
@@ -227,7 +224,6 @@ describe("workflow sandbox process protocol", () => {
     const sandbox = startWorkflowSandbox({
       source: "unused",
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => null,
       runtimeProbes: fake.runtime,
     });
@@ -241,7 +237,6 @@ describe("workflow sandbox process protocol", () => {
     const sandbox = startWorkflowSandbox({
       source: "unused",
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => null,
       runtimeProbes: fake.runtime,
     });
@@ -259,7 +254,6 @@ describe("workflow sandbox cancellation", () => {
     const sandbox = startWorkflowSandbox({
       source: "unused",
       args: {},
-      maxWallTimeMs: 10_000,
       signal: controller.signal,
       onCall: async () => null,
       runtimeProbes: fake.runtime,
@@ -279,7 +273,6 @@ describe("workflow sandbox cancellation", () => {
     const sandbox = startWorkflowSandbox({
       source: "while (true) {}",
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => null,
       runtimeProbes: fake.runtime,
     });
@@ -298,7 +291,6 @@ describe("workflow sandbox cancellation", () => {
     const sandbox = startWorkflowSandbox({
       source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
       args: {},
-      maxWallTimeMs: 10_000,
       signal: controller.signal,
       onCall: async () => null,
     });
@@ -323,7 +315,6 @@ export default defineWorkflow({
     const sandbox = startWorkflowSandbox({
       source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => {
         await Bun.sleep(20);
         return "completed";
@@ -342,7 +333,6 @@ export default defineWorkflow({
     const sandbox = startWorkflowSandbox({
       source: forged,
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => {
         throw new Error("forged call escaped child boundary");
       },
@@ -390,7 +380,6 @@ export default defineWorkflow({
       const sandbox = startWorkflowSandbox({
         source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
         args: {},
-        maxWallTimeMs: 10_000,
         onCall: async (call) => {
           const input = call.input;
           const prompt =
@@ -446,7 +435,6 @@ export default defineWorkflow({
         };
       `,
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async () => null,
     });
 
@@ -517,7 +505,6 @@ export default defineWorkflow({
     const sandbox = startWorkflowSandbox({
       source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
       args: {},
-      maxWallTimeMs: 10_000,
       onCall: async (call): Promise<JsonValue> => {
         calls.push(call.kind);
         if (call.kind === "waitForReply") return { text: "continue" };
@@ -559,15 +546,17 @@ export default defineWorkflow({
     });
   });
 
-  it("kills non-terminating JavaScript at the host wall-time limit", async () => {
+  it("kills non-terminating JavaScript when cancelled", async () => {
     const workflowSource = source("while (true) {} ");
+    const controller = new AbortController();
     const sandbox = startWorkflowSandbox({
       source: compileWorkflowSource(workflowSource, sha256(workflowSource)),
       args: {},
-      maxWallTimeMs: 250,
+      signal: controller.signal,
       onCall: async () => null,
     });
 
-    await expect(sandbox.result).rejects.toThrow("timed out after 250ms");
+    controller.abort();
+    await expect(sandbox.result).rejects.toThrow("cancelled");
   }, 5_000);
 });

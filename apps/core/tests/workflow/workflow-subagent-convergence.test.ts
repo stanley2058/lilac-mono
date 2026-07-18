@@ -725,7 +725,6 @@ describe("workflow subagent convergence", () => {
             requestId: childRequestId,
             sessionId: childSessionId,
             platform: "unknown",
-            now: Date.now(),
           });
           if (!authorized) throw new Error("generated workflow request was not authorized");
           expect(authorized.policy).toMatchObject({

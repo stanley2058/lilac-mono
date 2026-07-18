@@ -151,7 +151,6 @@ function createRunAndWait(
           maxTotal: 1,
         },
         maxNestingDepth: 2,
-        maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
         waits: ["reply", "sleep"],
       }),
@@ -161,7 +160,7 @@ function createRunAndWait(
         maxOperationOutputBytes: 10_000,
         maxResultBytes: 10_000,
       },
-      runtimeVersion: "lilac-workflow-js-v3",
+      runtimeVersion: "lilac-workflow-js-v4",
       createdAt: 1,
     },
     run: {

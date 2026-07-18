@@ -203,7 +203,6 @@ function createInvocation(store: DurableWorkflowStore, hasProgressTarget = true)
       resources: normalizeWorkflowResourcePolicy({
         agents: { maxConcurrent: 2, maxTotal: 8 },
         maxNestingDepth: 4,
-        maxWallTimeMs: 60_000,
         operationIdleTimeoutMs: 10_000,
         waits: [],
       }),
@@ -213,7 +212,7 @@ function createInvocation(store: DurableWorkflowStore, hasProgressTarget = true)
         maxOperationOutputBytes: 10_000,
         maxResultBytes: 10_000,
       },
-      runtimeVersion: "lilac-workflow-js-v3",
+      runtimeVersion: "lilac-workflow-js-v4",
       createdAt: 10,
     },
     run: {

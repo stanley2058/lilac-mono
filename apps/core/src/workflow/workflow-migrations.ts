@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 
 import { WORKFLOW_MANUAL_RECONCILIATION_DETAIL } from "./workflow-domain";
 
-export const WORKFLOW_SCHEMA_VERSION = 22;
+export const WORKFLOW_SCHEMA_VERSION = 23;
 
 type WorkflowMigration = {
   version: number;
@@ -1209,6 +1209,178 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        ADD COLUMN materialization_attempt_count INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE workflow_completion_deliveries
        ADD COLUMN materialization_error TEXT`,
+    ],
+  },
+  {
+    version: 23,
+    name: "unbounded workflow v4 contract",
+    statements: [
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'revision', revision_id, 'v3_revision_retired_for_unbounded_v4_contract',
+         json_object(
+           'revisionId', revision_id,
+           'runtimeVersion', runtime_version,
+           'sourceSha256', source_sha256,
+           'inputSchemaSha256', input_schema_sha256,
+           'capabilitySha256', capability_sha256,
+           'snapshotArtifactId', snapshot_artifact_id,
+           'createdAt', created_at
+         ), created_at
+       FROM workflow_revisions
+       WHERE runtime_version <> 'lilac-workflow-js-v4'`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'run', run_id,
+         CASE WHEN state IN ('succeeded', 'failed', 'rejected', 'cancelled')
+           THEN 'v3_terminal_run_retired_for_unbounded_v4_contract'
+           ELSE 'v3_nonterminal_run_cancelled_for_unbounded_v4_contract'
+         END,
+         json_object(
+           'runId', run_id,
+           'revisionId', revision_id,
+           'state', state,
+           'argsSha256', args_sha256,
+           'originRequestId', origin_request_id,
+           'originClient', origin_client,
+           'originUserId', origin_user_id,
+           'terminalDetail', terminal_detail,
+           'createdAt', created_at,
+           'terminalAt', terminal_at
+         ), COALESCE(terminal_at, updated_at)
+       FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v4'
+       )`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'terminal_receipt', request_id,
+         'v3_terminal_receipt_retired_for_unbounded_v4_contract',
+         json_object(
+           'requestId', request_id,
+           'runId', run_id,
+           'operationId', operation_id,
+           'dispatchEpoch', dispatch_epoch,
+           'state', state,
+           'detail', detail,
+           'resultArtifactId', result_artifact_id,
+           'createdAt', created_at
+         ), created_at
+       FROM workflow_request_terminal_receipts
+       WHERE run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v4'
+         )
+       )`,
+      `INSERT OR IGNORE INTO workflow_legacy_audit_records (
+         record_kind, record_id, reason, payload_json, archived_at
+       )
+       SELECT 'trigger', trigger_id,
+         CASE WHEN state IN ('active', 'paused')
+           THEN 'v3_active_trigger_cancelled_for_unbounded_v4_contract'
+           ELSE 'v3_terminal_trigger_retired_for_unbounded_v4_contract'
+         END,
+         json_object(
+           'triggerId', trigger_id,
+           'revisionId', revision_id,
+           'state', state,
+           'argsSha256', args_sha256,
+           'nextFireAt', next_fire_at,
+           'lastRunId', last_run_id,
+           'createdAt', created_at
+         ), updated_at
+       FROM workflow_triggers
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v4'
+       )`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'run', run_id, 'v3_nonterminal_run_cancelled_for_unbounded_v4_contract', updated_at
+       FROM workflow_runs
+       WHERE state NOT IN ('succeeded', 'failed', 'rejected', 'cancelled')
+         AND revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v4'
+         )`,
+      `INSERT OR IGNORE INTO workflow_quarantine (
+         record_kind, record_id, reason, quarantined_at
+       )
+       SELECT 'trigger', trigger_id, 'v3_active_trigger_cancelled_for_unbounded_v4_contract',
+         updated_at
+       FROM workflow_triggers
+       WHERE state IN ('active', 'paused')
+         AND revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v4'
+         )`,
+      `UPDATE workflow_request_dispatches
+       SET active = 0, owner_id = NULL, owner_heartbeat_at = NULL
+       WHERE active = 1 AND run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v4'
+         )
+       )`,
+      `DELETE FROM workflow_triggers
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v4'
+       )`,
+      `DELETE FROM workflow_request_terminal_receipts
+       WHERE run_id IN (
+         SELECT run_id FROM workflow_runs
+         WHERE revision_id IN (
+           SELECT revision_id FROM workflow_revisions
+           WHERE runtime_version <> 'lilac-workflow-js-v4'
+         )
+       )`,
+      `DELETE FROM workflow_runs
+       WHERE revision_id IN (
+         SELECT revision_id FROM workflow_revisions
+         WHERE runtime_version <> 'lilac-workflow-js-v4'
+       )`,
+      `DELETE FROM workflow_revisions
+       WHERE runtime_version <> 'lilac-workflow-js-v4'`,
+      `CREATE TABLE workflow_request_dispatches_v23 (
+         request_id TEXT PRIMARY KEY,
+         run_id TEXT NOT NULL,
+         operation_id TEXT NOT NULL,
+         session_id TEXT NOT NULL,
+         platform TEXT NOT NULL,
+         policy_json TEXT NOT NULL,
+         owner_id TEXT,
+         owner_heartbeat_at INTEGER,
+         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         prompt_published_at INTEGER,
+         dispatch_epoch TEXT NOT NULL,
+         UNIQUE (run_id, operation_id),
+         FOREIGN KEY (run_id, operation_id)
+           REFERENCES workflow_operations(run_id, operation_id) ON DELETE CASCADE
+       )`,
+      `INSERT INTO workflow_request_dispatches_v23 (
+         request_id, run_id, operation_id, session_id, platform, policy_json,
+         owner_id, owner_heartbeat_at, active, created_at, updated_at,
+         prompt_published_at, dispatch_epoch
+       )
+       SELECT request_id, run_id, operation_id, session_id, platform, policy_json,
+         owner_id, owner_heartbeat_at, active, created_at, updated_at,
+         prompt_published_at, dispatch_epoch
+       FROM workflow_request_dispatches`,
+      `DROP TABLE workflow_request_dispatches`,
+      `ALTER TABLE workflow_request_dispatches_v23 RENAME TO workflow_request_dispatches`,
+      `CREATE INDEX idx_workflow_request_dispatches_active
+       ON workflow_request_dispatches(active, owner_heartbeat_at)`,
     ],
   },
 ];

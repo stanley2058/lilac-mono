@@ -38,10 +38,6 @@ function generatedSource(input: {
     24 * 60 * 60 * 1_000,
     Math.max(1_000, Math.trunc(input.idleTimeoutMs)),
   );
-  const maxWallTimeMs = Math.min(
-    7 * 24 * 60 * 60 * 1_000,
-    Math.max(60_000, operationIdleTimeoutMs * 12),
-  );
   return `import { defineWorkflow } from "@lilac/workflow";
 
 export default defineWorkflow({
@@ -63,7 +59,6 @@ export default defineWorkflow({
     },
     waits: [],
     maxNestingDepth: 1,
-    maxWallTimeMs: ${maxWallTimeMs},
     operationIdleTimeoutMs: ${operationIdleTimeoutMs},
   },
   limits: {

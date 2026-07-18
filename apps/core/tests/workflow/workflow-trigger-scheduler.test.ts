@@ -46,7 +46,6 @@ function createRevision(store: DurableWorkflowStore): void {
   const resources = normalizeWorkflowResourcePolicy({
     agents: { maxConcurrent: 1, maxTotal: 1 },
     maxNestingDepth: 2,
-    maxWallTimeMs: 60_000,
     operationIdleTimeoutMs: 10_000,
     waits: [],
   });

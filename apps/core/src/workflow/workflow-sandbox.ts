@@ -80,7 +80,6 @@ function errorFrom(value: unknown): Error {
 export function startWorkflowSandbox(input: {
   source: string;
   args: JsonObject;
-  maxWallTimeMs: number;
   signal?: AbortSignal;
   onCall(call: WorkflowSandboxCall): Promise<JsonValue>;
   runtimeProbes?: WorkflowSandboxRuntimeProbes;
@@ -91,10 +90,6 @@ export function startWorkflowSandbox(input: {
     const cancelPromise = Promise.resolve();
     return { result, cancel: () => cancelPromise };
   }
-  if (!Number.isFinite(input.maxWallTimeMs) || input.maxWallTimeMs <= 0) {
-    throw new Error("Workflow sandbox maxWallTimeMs must be positive and finite");
-  }
-
   const allowedCallSites = new Map(
     parseWorkflowCallSiteManifest(input.source).map((entry) => [entry.callSiteId, entry.kind]),
   );
@@ -170,13 +165,6 @@ export function startWorkflowSandbox(input: {
   };
   input.signal?.addEventListener("abort", abort, { once: true });
   if (input.signal?.aborted) abort();
-
-  const wallTimer = setTimeout(() => {
-    void terminate(new Error(`Workflow sandbox timed out after ${input.maxWallTimeMs}ms`)).catch(
-      () => undefined,
-    );
-  }, input.maxWallTimeMs);
-  wallTimer.unref?.();
 
   const executionResult = (async (): Promise<JsonValue> => {
     const stderrPromise = (async (): Promise<string> => {
@@ -296,7 +284,6 @@ export function startWorkflowSandbox(input: {
   })();
 
   const result = Promise.race([executionResult, terminationResult]).finally(() => {
-    clearTimeout(wallTimer);
     input.signal?.removeEventListener("abort", abort);
   });
   void result.catch(() => undefined);

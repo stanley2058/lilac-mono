@@ -38,5 +38,4 @@ export type AuthorizedWorkflowRequest = {
   sessionId: string;
   platform: string;
   policy: WorkflowRequestPolicy;
-  expiresAt: number;
 };

@@ -127,15 +127,9 @@ function hostCall(
 function createHostApis(allowedCallSites) {
   const agent = async (callSiteId, prompt, options = {}) =>
     await hostCall("agent", callSiteId, { prompt, options }, allowedCallSites);
-  const parallel = async (callSiteId, promises, options = {}) => {
+  const parallel = async (callSiteId, promises) => {
     const identity = operationIdentity(callSiteId);
-    await hostCall(
-      "parallel",
-      callSiteId,
-      { count: promises.length, options },
-      allowedCallSites,
-      identity,
-    );
+    await hostCall("parallel", callSiteId, { count: promises.length }, allowedCallSites, identity);
     return await promiseAll(promises);
   };
   const pipeline = async (callSiteId, items, callback, options = {}) => {
