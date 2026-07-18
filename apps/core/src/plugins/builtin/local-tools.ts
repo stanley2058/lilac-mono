@@ -107,7 +107,6 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
   return [
     withBoundedOutput({
       name: "bash",
-      supportsBatch: true,
       isEnabled: () => true,
       createTool: (context) => {
         const { cwd, runtime, requestContext, runProfile } = context;
@@ -127,25 +126,21 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     }),
     withBoundedOutput({
       name: "read_file",
-      supportsBatch: true,
       isEnabled: () => true,
       createTool: (context) => getFsReadOnlyTool("read_file", context),
     }),
     withBoundedOutput({
       name: "glob",
-      supportsBatch: true,
       isEnabled: (context) => context.requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("glob", context),
     }),
     withBoundedOutput({
       name: "grep",
-      supportsBatch: true,
       isEnabled: (context) => context.requestContext?.safetyMode !== "restricted",
       createTool: (context) => getFsReadOnlyTool("grep", context),
     }),
     withBoundedOutput({
       name: "fuzzy_search",
-      supportsBatch: true,
       isEnabled: (context) =>
         context.runtime.config?.tools.fsBackend === "fff" &&
         context.requestContext?.safetyMode !== "restricted",
@@ -153,7 +148,6 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     }),
     withBoundedOutput({
       name: "edit_file",
-      supportsBatch: true,
       isEnabled: (context) =>
         context.editingToolMode === "edit_file" &&
         context.requestContext?.safetyMode !== "restricted",
@@ -168,7 +162,6 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     }),
     withBoundedOutput({
       name: "apply_patch",
-      supportsBatch: true,
       isEnabled: (context) =>
         context.editingToolMode === "apply_patch" &&
         context.requestContext?.safetyMode !== "restricted",
@@ -209,21 +202,14 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
     }),
     withBoundedOutput({
       name: "batch",
+      supportsBatch: false,
       isEnabled: () => true,
-      createTool: ({
-        cwd,
-        editingToolMode,
-        getTools,
-        getLevel1ToolSpecs,
-        reportToolStatus,
-        runtime,
-      }) =>
+      createTool: ({ cwd, editingToolMode, getTools, getLevel1ToolSpecs, runtime }) =>
         batchTool({
           defaultCwd: cwd,
           getTools,
           getToolSpecs: getLevel1ToolSpecs,
           editingMode: editingToolMode,
-          reportToolStatus,
           maxCalls: runtime.config?.tools.batch.maxCalls ?? 8,
         }).batch,
     }),

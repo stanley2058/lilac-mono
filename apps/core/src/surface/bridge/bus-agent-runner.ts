@@ -94,7 +94,6 @@ import { buildSafeRecoveryCheckpoint } from "./recovery-checkpoint";
 import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { buildSystemPromptForProfile } from "./bus-agent-runner/subagent-prompt";
 import {
-  extractBatchChildFailureEntries,
   formatToolLogPreview,
   summarizeToolFailure,
 } from "./bus-agent-runner/tool-failure-logging";
@@ -3705,28 +3704,30 @@ export async function startBusAgentRunner(params: {
             startedAt,
           });
 
-          bus
-            .publish(
-              lilacEventTypes.EvtAgentOutputToolCall,
-              {
-                toolCallId: event.toolCallId,
-                status: "start",
-                display: `${event.toolName}${formatToolArgsForDisplayWithSpecs(event.toolName, event.args, level1ToolSpecs)}`,
-              },
-              { headers },
-            )
-            .catch((e: unknown) => {
-              logger.error(
-                "failed to publish tool start",
+          if (event.toolName !== "batch") {
+            bus
+              .publish(
+                lilacEventTypes.EvtAgentOutputToolCall,
                 {
-                  requestId: headers.request_id,
-                  sessionId: headers.session_id,
                   toolCallId: event.toolCallId,
-                  toolName: event.toolName,
+                  status: "start",
+                  display: `${event.toolName}${formatToolArgsForDisplayWithSpecs(event.toolName, event.args, level1ToolSpecs)}`,
                 },
-                e,
-              );
-            });
+                { headers },
+              )
+              .catch((e: unknown) => {
+                logger.error(
+                  "failed to publish tool start",
+                  {
+                    requestId: headers.request_id,
+                    sessionId: headers.session_id,
+                    toolCallId: event.toolCallId,
+                    toolName: event.toolName,
+                  },
+                  e,
+                );
+              });
+          }
         }
 
         if (event.type === "tool_execution_end") {
@@ -3770,37 +3771,6 @@ export async function startBusAgentRunner(params: {
                 value: event.result,
               }),
             });
-
-            if (event.toolName === "batch") {
-              const childFailures = extractBatchChildFailureEntries({
-                args: event.args,
-                result: event.result,
-              });
-
-              for (const child of childFailures) {
-                logger.warn("tool call failed (batch child)", {
-                  requestId: headers.request_id,
-                  sessionId: headers.session_id,
-                  parentToolCallId: event.toolCallId,
-                  parentToolName: event.toolName,
-                  childIndex: child.index,
-                  childToolCallId: child.toolCallId,
-                  childToolName: child.toolName,
-                  durationMs: toolDurationMs,
-                  error: child.error,
-                  childArgsPreview: formatToolLogPreview({
-                    toolName: event.toolName,
-                    value: child.args,
-                    untruncated: true,
-                  }),
-                  childResultPreview: formatToolLogPreview({
-                    toolName: event.toolName,
-                    value: child.result,
-                    untruncated: true,
-                  }),
-                });
-              }
-            }
           }
 
           logger.debug("tool finished", {
@@ -3814,7 +3784,7 @@ export async function startBusAgentRunner(params: {
             failureKind: ok ? undefined : (toolFailure.failureKind ?? "soft"),
           });
 
-          if (deferredAccepted) {
+          if (event.toolName === "batch" || deferredAccepted) {
             return;
           }
 

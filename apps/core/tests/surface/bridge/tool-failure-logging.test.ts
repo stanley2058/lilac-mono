@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 
 import {
-  extractBatchChildFailureEntries,
   formatToolLogPreview,
   summarizeToolFailure,
 } from "../../../src/surface/bridge/bus-agent-runner/tool-failure-logging";
@@ -80,7 +79,7 @@ describe("summarizeToolFailure", () => {
 });
 
 describe("formatToolLogPreview", () => {
-  it("redacts secrets and truncates non-batch previews", () => {
+  it("redacts secrets and truncates previews", () => {
     const long = "x".repeat(6_000);
     const preview = formatToolLogPreview({
       toolName: "bash",
@@ -94,7 +93,7 @@ describe("formatToolLogPreview", () => {
     expect(preview.length).toBeLessThanOrEqual(4_003);
   });
 
-  it("does not truncate batch previews", () => {
+  it("truncates batch previews", () => {
     const big = "x".repeat(6_000);
     const preview = formatToolLogPreview({
       toolName: "batch",
@@ -103,35 +102,7 @@ describe("formatToolLogPreview", () => {
       },
     });
 
-    expect(preview.length).toBeGreaterThan(4_100);
-    expect(preview.endsWith("...")).toBe(false);
-  });
-});
-
-describe("extractBatchChildFailureEntries", () => {
-  it("extracts failed child calls with arguments and errors", () => {
-    const entries = extractBatchChildFailureEntries({
-      args: {
-        tool_calls: [
-          { tool: "glob", parameters: { pattern: "*.ts" } },
-          { tool: "bash", parameters: { command: "bad-command" } },
-        ],
-      },
-      result: {
-        ok: false,
-        total: 2,
-        failed: 1,
-        results: [
-          { toolCallId: "p:1", tool: "glob", ok: true, output: { paths: [] } },
-          { toolCallId: "p:2", tool: "bash", ok: false, error: "exit code 127" },
-        ],
-      },
-    });
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.index).toBe(1);
-    expect(entries[0]?.toolName).toBe("bash");
-    expect(entries[0]?.error).toBe("exit code 127");
-    expect(entries[0]?.args).toEqual({ command: "bad-command" });
+    expect(preview.length).toBeLessThanOrEqual(4_003);
+    expect(preview.endsWith("...")).toBe(true);
   });
 });

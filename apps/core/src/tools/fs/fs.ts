@@ -25,7 +25,6 @@ import {
 } from "../../artifacts/tool-result-artifact-store";
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
-import { BATCH_CHILD_CONTEXT_FLAG } from "../batch";
 import {
   remoteFuzzySearch,
   remoteGrep,
@@ -1104,7 +1103,7 @@ export function fsTool(
   function buildReadFileDescription(): string {
     const parts = [
       readFileDirectAttachmentSupported
-        ? "Reads files from the filesystem. For supported images and PDFs, calling read_file attaches the original file to your context for native visual or document analysis. Always call read_file directly first for an image or PDF path; use shell media processing only if read_file reports that the input is unsupported or oversized."
+        ? "Reads files from the filesystem. For supported images and PDFs, calling read_file attaches the original file to your context for native visual or document analysis. Call read_file first for an image or PDF path, either directly or as an independent batch child; use shell media processing only if read_file reports that the input is unsupported or oversized."
         : hashlineEnabled
           ? "Reads a file from the filesystem. Default format is raw to preserve indentation. Use format='hashline' before edit_file when you need stable edit anchors. Very long lines may downgrade the response back to raw with a warning that tells you to use bash instead."
           : "Reads a file from the filesystem. Default format is raw (no line numbers) to preserve indentation.",
@@ -1332,23 +1331,6 @@ export function fsTool(
 
         const ext = path.extname(input.path).toLowerCase();
         const wantsAttachment = attachmentExts.has(ext);
-
-        if (
-          wantsAttachment &&
-          options.context &&
-          typeof options.context === "object" &&
-          BATCH_CHILD_CONTEXT_FLAG in options.context
-        ) {
-          return {
-            success: false as const,
-            resolvedPath: input.path,
-            error: {
-              code: "UNKNOWN" as const,
-              message:
-                "Media files cannot be read through batch. Call read_file directly so the attachment can be sent safely.",
-            },
-          };
-        }
 
         const res = wantsAttachment
           ? await (async () => {

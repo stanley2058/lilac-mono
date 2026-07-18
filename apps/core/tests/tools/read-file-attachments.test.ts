@@ -3,9 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { asSchema } from "ai";
+import { asSchema, type ToolModelMessage, type ToolSet } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
+import { AiSdkPiAgent } from "@stanley2058/lilac-agent";
 
-import { BATCH_CHILD_CONTEXT_FLAG } from "../../src/tools/batch";
+import { batchTool } from "../../src/tools/batch";
 import { fsTool } from "../../src/tools/fs/fs";
 
 describe("read_file attachments", () => {
@@ -71,6 +73,22 @@ describe("read_file attachments", () => {
     );
   }
 
+  function zeroUsage() {
+    return {
+      inputTokens: {
+        total: 0,
+        noCache: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      outputTokens: {
+        total: 0,
+        text: 0,
+        reasoning: 0,
+      },
+    };
+  }
+
   beforeEach(async () => {
     baseDir = await mkdtemp(path.join(tmpdir(), "lilac-read-file-att-"));
   });
@@ -92,7 +110,7 @@ describe("read_file attachments", () => {
       "calling read_file attaches the original file to your context for native visual or document analysis",
     );
     expect(supportedDescription).toContain(
-      "Always call read_file directly first for an image or PDF path",
+      "Call read_file first for an image or PDF path, either directly or as an independent batch child",
     );
     expect(supportedDescription).not.toContain("OCR");
     expect(supportedDescription).not.toContain("upstream provider");
@@ -192,25 +210,80 @@ describe("read_file attachments", () => {
     expect(parts[1]!.data).toEqual({ type: "data", data: pdf.toString("base64") });
   });
 
-  it("rejects media reads from batch children before caching bytes", async () => {
-    await writeFile(path.join(baseDir, "batched.png"), Buffer.alloc(32));
-    const readFile = fsTool(baseDir).read_file;
-
-    const output = await resolveExecuteResult(
-      readFile.execute!(
-        { path: "batched.png" },
-        {
-          toolCallId: "batch:1",
-          messages: [],
-          context: { [BATCH_CHILD_CONTEXT_FLAG]: true },
-        },
-      ),
+  it("returns image content through an expanded batch child result", async () => {
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axh8h0AAAAASUVORK5CYII=";
+    await writeFile(path.join(baseDir, "batched.png"), Buffer.from(pngBase64, "base64"));
+    const tools: ToolSet = {} as ToolSet;
+    Object.assign(tools, fsTool(baseDir));
+    Object.assign(
+      tools,
+      batchTool({ defaultCwd: baseDir, getTools: () => tools, editingMode: "none" }),
     );
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "batch-media",
+                toolName: "batch",
+                input: JSON.stringify({
+                  tool_calls: [{ tool: "read_file", parameters: { path: "batched.png" } }],
+                }),
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const agent = new AiSdkPiAgent({ system: "test", model, tools });
 
-    expect(output).toMatchObject({ success: false });
-    if (!("error" in output)) return;
-    expect(output.error.message).toContain("cannot be read through batch");
-    expect(output.error.message).toContain("read_file directly");
+    await agent.prompt("read the image in a batch");
+
+    const childResult = agent.state.messages.find(
+      (message): message is ToolModelMessage =>
+        message.role === "tool" &&
+        message.content.some(
+          (part) => part.type === "tool-result" && part.toolName === "read_file",
+        ),
+    );
+    expect(childResult).toBeDefined();
+    if (!childResult) return;
+    const part = childResult.content.find(
+      (candidate) => candidate.type === "tool-result" && candidate.toolName === "read_file",
+    );
+    expect(part?.type).toBe("tool-result");
+    if (part?.type !== "tool-result") return;
+    expect(part.output.type).toBe("content");
+    if (part.output.type !== "content") return;
+    expect(part.output.value).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "file",
+          mediaType: "image/png",
+          filename: "batched.png",
+          data: { type: "data", data: pngBase64 },
+        }),
+      ]),
+    );
   });
 
   it("rejects oversized images before attachment caching with resize guidance", async () => {

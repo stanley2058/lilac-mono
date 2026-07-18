@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { asSchema, type ToolSet } from "ai";
+import { asSchema, tool, type ToolSet } from "ai";
+import { isToolExpansion, type ToolExpansion } from "@stanley2058/lilac-agent";
 import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
+import { z } from "zod";
 
 import { applyPatchTool } from "../../src/tools/apply-patch";
 import { bashToolWithCwd } from "../../src/tools/bash";
-import { batchTool } from "../../src/tools/batch";
+import { batchTool, collectApplyPatchTouchedPaths } from "../../src/tools/batch";
 import { fsTool } from "../../src/tools/fs/fs";
 
 type ExecTool = {
@@ -23,75 +25,53 @@ type ExecTool = {
   ) => Promise<unknown> | unknown;
 };
 
+function getTool(tools: ToolSet, name: string): ExecTool {
+  const candidate = (tools as unknown as Record<string, unknown>)[name];
+  if (!candidate || typeof candidate !== "object") throw new Error(`missing tool: ${name}`);
+  const execute = (candidate as Record<string, unknown>)["execute"];
+  if (typeof execute !== "function") throw new Error(`tool not executable: ${name}`);
+  return candidate as ExecTool;
+}
+
+function requireExpansion(value: unknown): ToolExpansion {
+  if (!isToolExpansion(value)) throw new Error("expected ToolExpansion");
+  return value;
+}
+
 function makeTools(
   cwd: string,
-  opts?: {
+  options?: {
     editingMode?: "apply_patch" | "edit_file" | "none";
-    includeApplyPatch?: boolean;
-    includeEditFile?: boolean;
     maxCalls?: number;
+    specs?: ReadonlyMap<string, Level1ToolSpec<unknown>>;
   },
 ): ToolSet {
-  const editingMode = opts?.editingMode ?? "apply_patch";
-  const includeApplyPatch = opts?.includeApplyPatch ?? editingMode === "apply_patch";
-  const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
-
+  const editingMode = options?.editingMode ?? "apply_patch";
   const tools: ToolSet = {} as ToolSet;
-  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd, { includeEditFile }));
-  if (includeApplyPatch) {
-    Object.assign(tools, applyPatchTool({ cwd }));
-  }
+  Object.assign(
+    tools,
+    bashToolWithCwd(cwd),
+    fsTool(cwd, { includeEditFile: editingMode === "edit_file" }),
+  );
+  if (editingMode === "apply_patch") Object.assign(tools, applyPatchTool({ cwd }));
   Object.assign(
     tools,
     batchTool({
       defaultCwd: cwd,
       getTools: () => tools,
+      getToolSpecs: options?.specs ? () => options.specs! : undefined,
       editingMode,
-      maxCalls: opts?.maxCalls,
+      maxCalls: options?.maxCalls,
     }),
   );
   return tools;
 }
 
-function makeToolsWithBatchReporter(
-  cwd: string,
-  reportToolStatus: Parameters<typeof batchTool>[0]["reportToolStatus"],
-  opts?: {
-    editingMode?: "apply_patch" | "edit_file" | "none";
-    includeApplyPatch?: boolean;
-    includeEditFile?: boolean;
-  },
-): ToolSet {
-  const editingMode = opts?.editingMode ?? "apply_patch";
-  const includeApplyPatch = opts?.includeApplyPatch ?? editingMode === "apply_patch";
-  const includeEditFile = opts?.includeEditFile ?? editingMode === "edit_file";
-
-  const tools: ToolSet = {} as ToolSet;
-  Object.assign(tools, bashToolWithCwd(cwd), fsTool(cwd, { includeEditFile }));
-  if (includeApplyPatch) {
-    Object.assign(tools, applyPatchTool({ cwd }));
-  }
-  Object.assign(
-    tools,
-    batchTool({
-      defaultCwd: cwd,
-      getTools: () => tools,
-      editingMode,
-      reportToolStatus,
-    }),
-  );
-  return tools;
+function batchOptions(toolCallId: string) {
+  return { toolCallId, messages: [], context: {} };
 }
 
-function getTool(tools: ToolSet, name: string): ExecTool {
-  const t = (tools as unknown as Record<string, unknown>)[name];
-  if (!t || typeof t !== "object") throw new Error(`missing tool: ${name}`);
-  const exec = (t as Record<string, unknown>)["execute"];
-  if (typeof exec !== "function") throw new Error(`tool not executable: ${name}`);
-  return t as unknown as ExecTool;
-}
-
-describe("batch tool", () => {
+describe("batch expansion tool", () => {
   let baseDir: string;
 
   beforeEach(async () => {
@@ -102,28 +82,26 @@ describe("batch tool", () => {
     await rm(baseDir, { recursive: true, force: true });
   });
 
-  it("accepts eight calls and rejects a ninth", async () => {
+  it("accepts eight child calls and rejects a ninth", async () => {
     const tools = makeTools(baseDir, { editingMode: "none" });
     const batch = getTool(tools, "batch");
-    expect((batch as ExecTool & { description?: string }).description).toContain(
-      "Supports independent read_file, glob, grep, and bash operations.",
-    );
-    const toolCall = { tool: "glob", parameters: { patterns: ["*.missing"] } };
-    const options = {
-      toolCallId: "batch-limit",
-      messages: [],
-      abortSignal: undefined,
-      context: undefined,
-    };
+    const call = { tool: "glob", parameters: { patterns: ["*.missing"] } };
 
-    const accepted = (await batch.execute(
-      { tool_calls: Array.from({ length: 8 }, () => toolCall) },
-      options,
-    )) as { total: number };
-    expect(accepted.total).toBe(8);
+    const expansion = requireExpansion(
+      await batch.execute(
+        { tool_calls: Array.from({ length: 8 }, () => call) },
+        batchOptions("batch-limit"),
+      ),
+    );
+    expect(expansion.result).toMatchObject({ ok: true, total: 8 });
+    expect(expansion.children).toHaveLength(8);
+
     await expect(
       Promise.resolve(
-        batch.execute({ tool_calls: Array.from({ length: 9 }, () => toolCall) }, options),
+        batch.execute(
+          { tool_calls: Array.from({ length: 9 }, () => call) },
+          batchOptions("batch-over-limit"),
+        ),
       ),
     ).rejects.toThrow("at most 8");
   });
@@ -131,491 +109,287 @@ describe("batch tool", () => {
   it("defensively caps configured maxCalls above eight", async () => {
     const tools = makeTools(baseDir, { editingMode: "none", maxCalls: 100 });
     const batch = getTool(tools, "batch");
-    const toolCall = { tool: "glob", parameters: { patterns: ["*.missing"] } };
+    const call = { tool: "glob", parameters: { patterns: ["*.missing"] } };
 
     await expect(
       Promise.resolve(
         batch.execute(
-          { tool_calls: Array.from({ length: 9 }, () => toolCall) },
-          { toolCallId: "batch-hard-limit", messages: [] },
+          { tool_calls: Array.from({ length: 9 }, () => call) },
+          batchOptions("batch-hard-limit"),
         ),
       ),
     ).rejects.toThrow("at most 8");
   });
 
-  it("rejects a batch when apply_patch calls touch the same file", async () => {
+  it("rejects overlapping apply_patch calls before expansion", async () => {
     const tools = makeTools(baseDir);
     const batch = getTool(tools, "batch");
-
     await writeFile(join(baseDir, "a.txt"), "hello\n");
-
-    const patch1 = [
-      "*** Begin Patch",
-      "*** Update File: a.txt",
-      "@@",
-      "-hello",
-      "+hello1",
-      "*** End Patch",
-    ].join("\n");
-
-    const patch2 = [
-      "*** Begin Patch",
-      "*** Update File: a.txt",
-      "@@",
-      "-hello",
-      "+hello2",
-      "*** End Patch",
-    ].join("\n");
+    const patch = (replacement: string) =>
+      [
+        "*** Begin Patch",
+        "*** Update File: a.txt",
+        "@@",
+        "-hello",
+        `+${replacement}`,
+        "*** End Patch",
+      ].join("\n");
 
     await expect(
       Promise.resolve(
         batch.execute(
           {
             tool_calls: [
-              {
-                tool: "apply_patch",
-                parameters: { patchText: patch1, cwd: baseDir },
-              },
-              {
-                tool: "apply_patch",
-                parameters: { patchText: patch2, cwd: baseDir },
-              },
+              { tool: "apply_patch", parameters: { patchText: patch("one") } },
+              { tool: "apply_patch", parameters: { patchText: patch("two") } },
             ],
           },
-          {
-            toolCallId: "batch-1",
-            messages: [],
-            abortSignal: undefined,
-            context: undefined,
-          },
+          batchOptions("batch-overlap"),
         ),
       ),
     ).rejects.toThrow(/overlapping paths/i);
-
-    expect(await readFile(join(baseDir, "a.txt"), "utf-8")).toBe("hello\n");
+    expect(await readFile(join(baseDir, "a.txt"), "utf8")).toBe("hello\n");
   });
 
-  it("rejects overlapping remote apply_patch calls in a batch", async () => {
+  it("expands disjoint edits without executing them in the parent", async () => {
     const tools = makeTools(baseDir);
     const batch = getTool(tools, "batch");
-
-    const patch1 = [
-      "*** Begin Patch",
-      "*** Update File: a.txt",
-      "@@",
-      "-hello",
-      "+hello1",
-      "*** End Patch",
-    ].join("\n");
-
-    const patch2 = [
-      "*** Begin Patch",
-      "*** Update File: a.txt",
-      "@@",
-      "-hello",
-      "+hello2",
-      "*** End Patch",
-    ].join("\n");
-
-    await expect(
-      Promise.resolve(
-        batch.execute(
-          {
-            tool_calls: [
-              {
-                tool: "apply_patch",
-                parameters: { patchText: patch1, cwd: "myhost:/repo" },
-              },
-              {
-                tool: "apply_patch",
-                parameters: { patchText: patch2, cwd: "myhost:/repo" },
-              },
-            ],
-          },
-          {
-            toolCallId: "batch-remote-1",
-            messages: [],
-            abortSignal: undefined,
-            context: undefined,
-          },
-        ),
-      ),
-    ).rejects.toThrow(/overlapping paths/i);
-  });
-
-  it("executes disjoint apply_patch calls in one batch", async () => {
-    const tools = makeTools(baseDir);
-    const batch = getTool(tools, "batch");
-
     await writeFile(join(baseDir, "a.txt"), "one\n");
     await writeFile(join(baseDir, "b.txt"), "two\n");
+    const patch = (file: string, oldText: string, newText: string) =>
+      [
+        "*** Begin Patch",
+        `*** Update File: ${file}`,
+        "@@",
+        `-${oldText}`,
+        `+${newText}`,
+        "*** End Patch",
+      ].join("\n");
 
-    const patchA = [
-      "*** Begin Patch",
-      "*** Update File: a.txt",
-      "@@",
-      "-one",
-      "+ONE",
-      "*** End Patch",
-    ].join("\n");
-
-    const patchB = [
-      "*** Begin Patch",
-      "*** Update File: b.txt",
-      "@@",
-      "-two",
-      "+TWO",
-      "*** End Patch",
-    ].join("\n");
-
-    const res = await batch.execute(
-      {
-        tool_calls: [
-          {
-            tool: "apply_patch",
-            parameters: { patchText: patchA, cwd: baseDir },
-          },
-          {
-            tool: "apply_patch",
-            parameters: { patchText: patchB, cwd: baseDir },
-          },
-        ],
-      },
-      {
-        toolCallId: "batch-2",
-        messages: [],
-        abortSignal: undefined,
-        context: undefined,
-      },
+    const expansion = requireExpansion(
+      await batch.execute(
+        {
+          tool_calls: [
+            { tool: "apply_patch", parameters: { patchText: patch("a.txt", "one", "ONE") } },
+            { tool: "apply_patch", parameters: { patchText: patch("b.txt", "two", "TWO") } },
+          ],
+        },
+        batchOptions("batch-disjoint"),
+      ),
     );
 
-    const out = res as { total: number };
-    expect(out.total).toBe(2);
-    expect(await readFile(join(baseDir, "a.txt"), "utf-8")).toBe("ONE\n");
-    expect(await readFile(join(baseDir, "b.txt"), "utf-8")).toBe("TWO\n");
+    expect(expansion.children.map((child) => child.toolName)).toEqual([
+      "apply_patch",
+      "apply_patch",
+    ]);
+    expect(await readFile(join(baseDir, "a.txt"), "utf8")).toBe("one\n");
+    expect(await readFile(join(baseDir, "b.txt"), "utf8")).toBe("two\n");
   });
 
-  it("runs bash + read_file in parallel and returns both results", async () => {
-    const tools = makeTools(baseDir);
+  it("validates child inputs and preserves invalid calls as child errors", async () => {
+    const tools = makeTools(baseDir, { editingMode: "none" });
     const batch = getTool(tools, "batch");
-
-    await writeFile(join(baseDir, "c.txt"), "x\ny\n");
-
-    const res = await batch.execute(
-      {
-        tool_calls: [
-          { tool: "bash", parameters: { command: "echo hi", cwd: baseDir } },
-          { tool: "read_file", parameters: { path: "c.txt" } },
-        ],
-      },
-      {
-        toolCallId: "batch-3",
-        messages: [],
-        abortSignal: undefined,
-        context: undefined,
-      },
+    const expansion = requireExpansion(
+      await batch.execute(
+        {
+          tool_calls: [
+            { tool: "bash", parameters: {} },
+            { tool: "glob", parameters: { patterns: ["*.ts"] } },
+          ],
+        },
+        batchOptions("batch-validation"),
+      ),
     );
 
-    const out = res as { results: Array<{ tool: string; ok: boolean; output?: any }> };
-    expect(out.results.length).toBe(2);
-    expect(out.results.some((r) => r.tool === "bash" && r.ok)).toBe(true);
-    expect(out.results.some((r) => r.tool === "read_file" && r.ok)).toBe(true);
-  });
-
-  it("runs glob + grep in parallel and returns both results", async () => {
-    const tools = makeTools(baseDir);
-    const batch = getTool(tools, "batch");
-
-    await writeFile(join(baseDir, "src.ts"), "const marker = 1;\n");
-
-    const res = await batch.execute(
-      {
-        tool_calls: [
-          { tool: "glob", parameters: { patterns: ["**/*.ts"] } },
-          {
-            tool: "grep",
-            parameters: {
-              pattern: "marker",
-              fileExtensions: ["ts"],
-            },
-          },
-        ],
-      },
-      {
-        toolCallId: "batch-3b",
-        messages: [],
-        abortSignal: undefined,
-        context: undefined,
-      },
-    );
-
-    const out = res as { results: Array<{ tool: string; ok: boolean }> };
-    expect(out.results.length).toBe(2);
-    expect(out.results.some((r) => r.tool === "glob" && r.ok)).toBe(true);
-    expect(out.results.some((r) => r.tool === "grep" && r.ok)).toBe(true);
-  });
-
-  it("reports batch progress and shows newest 3 child updates", async () => {
-    const updates: Array<{ status: string; display: string }> = [];
-    const tools = makeToolsWithBatchReporter(baseDir, (u) => {
-      updates.push({ status: u.status, display: u.display });
+    expect(expansion.result).toMatchObject({ ok: true, total: 2 });
+    expect(expansion.children[0]).toMatchObject({ toolName: "bash", invalid: true });
+    expect(String(expansion.children[0]?.error)).toContain("batch child #1 (bash)");
+    expect(expansion.children[1]).toMatchObject({
+      toolName: "glob",
+      input: { patterns: ["*.ts"] },
     });
-    const batch = getTool(tools, "batch");
-
-    await batch.execute(
-      {
-        tool_calls: [
-          { tool: "bash", parameters: { command: "echo tool-1", cwd: baseDir } },
-          { tool: "bash", parameters: { command: "echo tool-2", cwd: baseDir } },
-          { tool: "bash", parameters: { command: "echo tool-3", cwd: baseDir } },
-          { tool: "bash", parameters: { command: "echo tool-4", cwd: baseDir } },
-          { tool: "bash", parameters: { command: "echo tool-5", cwd: baseDir } },
-        ],
-      },
-      {
-        toolCallId: "batch-4",
-        messages: [],
-        abortSignal: undefined,
-        context: undefined,
-      },
-    );
-
-    // Last in-progress update while done=0 should show the newest 3 started.
-    const lastStart = [...updates]
-      .reverse()
-      .find((u) => u.status !== "end" && u.display.includes("0/5 done"));
-    expect(lastStart).toBeTruthy();
-    expect(lastStart!.display).toContain("batch (5 tools;");
-
-    const lines = lastStart!.display.split("\n");
-    expect(lines.length).toBe(4);
-    expect(lines[1]!).toContain("bash echo tool-3");
-    expect(lines[2]!).toContain("bash echo tool-4");
-    expect(lines[3]!).toContain("bash echo tool-5");
-
-    const lastEnd = [...updates].reverse().find((u) => u.status === "end");
-    expect(lastEnd).toBeTruthy();
-    expect(lastEnd!.display).toBe("batch (5 tools)");
   });
 
-  it("returns guided child validation errors for empty parameters", async () => {
-    const tools = makeTools(baseDir, {
-      editingMode: "none",
-      includeApplyPatch: false,
-      includeEditFile: false,
-    });
+  it("generates deterministic unique child tool-call IDs", async () => {
+    const tools = makeTools(baseDir, { editingMode: "none" });
     const batch = getTool(tools, "batch");
-
-    const res = await batch.execute(
-      {
-        tool_calls: [{ tool: "bash", parameters: {} }],
-      },
-      {
-        toolCallId: "batch-empty-params-1",
-        messages: [],
-        abortSignal: undefined,
-        context: undefined,
-      },
-    );
-
-    const out = res as {
-      ok: boolean;
-      failed: number;
-      results: Array<{ error?: string; ok: boolean }>;
+    const input = {
+      tool_calls: [
+        { tool: "glob", parameters: { patterns: ["*.ts"] } },
+        { tool: "glob", parameters: { patterns: ["*.js"] } },
+      ],
     };
-    expect(out.ok).toBe(false);
-    expect(out.failed).toBe(1);
-    expect(out.results[0]?.ok).toBe(false);
-    expect(out.results[0]?.error).toContain("batch child #1 (bash)");
-    expect(out.results[0]?.error).toContain("command");
-    expect(out.results[0]?.error).toContain("Hint: parameters object is empty");
-    expect(out.results[0]?.error).toContain("retry this batch call");
+
+    const first = requireExpansion(await batch.execute(input, batchOptions("batch-ids")));
+    const second = requireExpansion(await batch.execute(input, batchOptions("batch-ids")));
+    const firstIds = first.children.map((child) => child.toolCallId);
+    expect(firstIds).toEqual(second.children.map((child) => child.toolCallId));
+    expect(new Set(firstIds).size).toBe(2);
+    expect(firstIds.every((id) => id.length <= 64)).toBe(true);
   });
 
-  it("exposes only edit_file in batch schema for non-openai mode", async () => {
-    const tools = makeTools(baseDir, {
-      editingMode: "edit_file",
-      includeEditFile: true,
-      includeApplyPatch: false,
+  it("includes enabled Level-1 tools by default while honoring explicit opt-out", () => {
+    const noop = tool({
+      inputSchema: z.object({ value: z.string() }),
+      execute: ({ value }) => ({ value }),
     });
+    const tools = {
+      custom_default: noop,
+      custom_opt_out: noop,
+      subagent_delegate: noop,
+      batch: noop,
+    } as unknown as ToolSet;
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      ["custom_default", { name: "custom_default", createTool: () => noop, isEnabled: () => true }],
+      [
+        "custom_opt_out",
+        {
+          name: "custom_opt_out",
+          supportsBatch: false,
+          createTool: () => noop,
+          isEnabled: () => true,
+        },
+      ],
+      [
+        "subagent_delegate",
+        { name: "subagent_delegate", createTool: () => noop, isEnabled: () => true },
+      ],
+      ["batch", { name: "batch", createTool: () => noop, isEnabled: () => true }],
+    ]);
+    Object.assign(
+      tools,
+      batchTool({ defaultCwd: baseDir, getTools: () => tools, getToolSpecs: () => specs }),
+    );
+
     const batch = tools.batch as unknown as { inputSchema: unknown };
-    const schema = asSchema(batch.inputSchema as never).jsonSchema as unknown as {
+    const schema = asSchema(batch.inputSchema as never).jsonSchema as {
       properties?: {
-        tool_calls?: {
-          items?: {
-            properties?: { tool?: { enum?: string[] } };
-          };
-        };
+        tool_calls?: { items?: { properties?: { tool?: { enum?: string[] } } } };
       };
     };
-
-    const enumValues = schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
-    expect(enumValues).toContain("edit_file");
-    expect(enumValues).not.toContain("apply_patch");
+    const names = schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
+    expect(names).toContain("custom_default");
+    expect(names).toContain("subagent_delegate");
+    expect(names).not.toContain("custom_opt_out");
+    expect(names).not.toContain("batch");
   });
 
-  it("rejects a batch when edit_file calls touch the same path", async () => {
-    const tools = makeTools(baseDir, {
-      editingMode: "edit_file",
-      includeEditFile: true,
-      includeApplyPatch: false,
+  it("does not fall back to legacy names when every enabled tool opts out", () => {
+    const noop = tool({
+      inputSchema: z.object({ value: z.string() }),
+      execute: ({ value }) => ({ value }),
     });
-    const batch = getTool(tools, "batch");
-
-    await writeFile(join(baseDir, "same.txt"), "alpha\n");
-
-    await expect(
-      Promise.resolve(
-        batch.execute(
-          {
-            tool_calls: [
-              {
-                tool: "edit_file",
-                parameters: {
-                  path: "same.txt",
-                  oldText: "alpha",
-                  newText: "bravo",
-                  cwd: baseDir,
-                },
-              },
-              {
-                tool: "edit_file",
-                parameters: {
-                  path: "same.txt",
-                  oldText: "alpha",
-                  newText: "charlie",
-                  cwd: baseDir,
-                },
-              },
-            ],
-          },
-          {
-            toolCallId: "batch-edit-overlap",
-            messages: [],
-            abortSignal: undefined,
-            context: undefined,
-          },
-        ),
-      ),
-    ).rejects.toThrow(/overlapping paths/i);
-  });
-
-  it("uses plugin metadata to decide batch-allowed tool names", async () => {
-    const tools = {
-      custom_read: {
-        execute: () => ({ ok: true }),
-      } as ExecTool,
-      custom_write: {
-        execute: () => ({ ok: true }),
-      } as ExecTool,
-      custom_default: {
-        execute: () => ({ ok: true }),
-      } as ExecTool,
-    } as unknown as ToolSet;
-
+    const tools = { opted_out: noop } as unknown as ToolSet;
     const specs = new Map<string, Level1ToolSpec<unknown>>([
       [
-        "custom_read",
+        "opted_out",
         {
-          name: "custom_read",
-          supportsBatch: true,
-          createTool: () => tools.custom_read,
-          isEnabled: () => true,
-        },
-      ],
-      [
-        "custom_default",
-        {
-          name: "custom_default",
-          createTool: () => tools.custom_default,
-          isEnabled: () => true,
-        },
-      ],
-      [
-        "custom_write",
-        {
-          name: "custom_write",
+          name: "opted_out",
           supportsBatch: false,
-          createTool: () => tools.custom_write,
+          createTool: () => noop,
           isEnabled: () => true,
         },
       ],
     ]);
 
-    Object.assign(
-      tools,
-      batchTool({
-        defaultCwd: baseDir,
-        getTools: () => tools,
-        getToolSpecs: () => specs,
-        editingMode: "none",
-      }),
-    );
-
-    const batch = getTool(tools, "batch") as { inputSchema: unknown } & ExecTool;
-    const schema = asSchema(batch.inputSchema as never) as {
-      jsonSchema: {
-        properties?: { tool_calls?: { items?: { properties?: { tool?: { enum?: string[] } } } } };
-      };
-    };
-    const enumValues =
-      schema.jsonSchema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
-
-    expect(enumValues).toContain("custom_read");
-    expect(enumValues).not.toContain("custom_write");
-    expect(enumValues).not.toContain("custom_default");
+    expect(() =>
+      batchTool({ defaultCwd: baseDir, getTools: () => tools, getToolSpecs: () => specs }),
+    ).toThrow("requires at least one enabled Level-1 tool");
   });
 
-  it("uses plugin-provided editTargets to reject overlapping custom edits", async () => {
-    const customEdit = {
+  it("preflights edit targets from schema-transformed child input", async () => {
+    let preflightPath: string | undefined;
+    const customEdit = tool({
+      inputSchema: z
+        .object({ path: z.string() })
+        .transform(async (input) => ({ ...input, path: `normalized/${input.path}` })),
       execute: () => ({ ok: true }),
-    } as ExecTool;
-    const tools = {
-      custom_edit: customEdit as unknown,
-    } as unknown as ToolSet;
-
+    });
+    const tools = { custom_edit: customEdit } as unknown as ToolSet;
     const specs = new Map<string, Level1ToolSpec<unknown>>([
       [
         "custom_edit",
         {
           name: "custom_edit",
-          supportsBatch: true,
           createTool: () => customEdit,
           isEnabled: () => true,
-          editTargets: () => ["file:///same.txt"],
+          editTargets: (args) => {
+            const path = (args as Record<string, unknown>)["path"];
+            if (typeof path !== "string") throw new Error("missing transformed path");
+            preflightPath = path;
+            return [`file:///${path}`];
+          },
         },
       ],
     ]);
-
     Object.assign(
       tools,
-      batchTool({
-        defaultCwd: baseDir,
-        getTools: () => tools,
-        getToolSpecs: () => specs,
-        editingMode: "none",
-      }),
+      batchTool({ defaultCwd: baseDir, getTools: () => tools, getToolSpecs: () => specs }),
     );
 
-    const batch = getTool(tools, "batch");
+    const expansion = requireExpansion(
+      await getTool(tools, "batch").execute(
+        { tool_calls: [{ tool: "custom_edit", parameters: { path: "a.txt" } }] },
+        batchOptions("batch-transformed-target"),
+      ),
+    );
+
+    expect(preflightPath).toBe("normalized/a.txt");
+    expect(expansion.children[0]?.input).toEqual({ path: "normalized/a.txt" });
+  });
+
+  it("fails closed when plugin edit targets cannot be resolved", async () => {
+    const customEdit = tool({
+      inputSchema: z.object({ path: z.string() }),
+      execute: () => ({ ok: true }),
+    });
+    const tools = { custom_edit: customEdit } as unknown as ToolSet;
+    const specs = new Map<string, Level1ToolSpec<unknown>>([
+      [
+        "custom_edit",
+        {
+          name: "custom_edit",
+          createTool: () => customEdit,
+          isEnabled: () => true,
+          editTargets: () => {
+            throw new Error("target unavailable");
+          },
+        },
+      ],
+    ]);
+    Object.assign(
+      tools,
+      batchTool({ defaultCwd: baseDir, getTools: () => tools, getToolSpecs: () => specs }),
+    );
 
     await expect(
       Promise.resolve(
-        batch.execute(
-          {
-            tool_calls: [
-              { tool: "custom_edit", parameters: { target: "a" } },
-              { tool: "custom_edit", parameters: { target: "b" } },
-            ],
-          },
-          {
-            toolCallId: "batch-custom-edit",
-            messages: [],
-            abortSignal: undefined,
-            context: undefined,
-          },
+        getTool(tools, "batch").execute(
+          { tool_calls: [{ tool: "custom_edit", parameters: { path: "a.txt" } }] },
+          batchOptions("batch-target-error"),
         ),
       ),
-    ).rejects.toThrow(/overlapping paths/i);
+    ).rejects.toThrow("target unavailable");
+  });
+
+  it("normalizes local and remote patch target keys", () => {
+    const patchText = [
+      "*** Begin Patch",
+      "*** Update File: src/a.ts",
+      "*** Move to: src/b.ts",
+      "@@",
+      "-a",
+      "+b",
+      "*** End Patch",
+    ].join("\n");
+
+    expect([...collectApplyPatchTouchedPaths({ patchText, cwd: baseDir })]).toEqual([
+      `file://${join(baseDir, "src/a.ts")}`,
+      `file://${join(baseDir, "src/b.ts")}`,
+    ]);
+    expect([...collectApplyPatchTouchedPaths({ patchText, cwd: "host:/repo" })]).toEqual([
+      "ssh://host/repo/src/a.ts",
+      "ssh://host/repo/src/b.ts",
+    ]);
   });
 });

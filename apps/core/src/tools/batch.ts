@@ -1,7 +1,8 @@
 import path from "node:path";
 
-import { tool, type ToolSet } from "ai";
+import { asSchema, tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { buildSyntheticToolCallId, ToolExpansion } from "@stanley2058/lilac-agent";
 import type { EditingToolMode } from "@stanley2058/lilac-utils";
 import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
 import { expandTilde } from "@stanley2058/lilac-fs";
@@ -10,7 +11,6 @@ import {
   formatBatchChildValidationError,
   formatBatchPreflightMissingFieldError,
 } from "./batch-error-message";
-import { formatToolArgsForDisplayWithSpecs } from "./tool-args-display";
 
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
 
@@ -21,7 +21,6 @@ const ALLOWED_TOOL_NAMES_BY_MODE = {
 } as const;
 
 const ABSOLUTE_MAX_CALLS = 8;
-export const BATCH_CHILD_CONTEXT_FLAG = Symbol("lilac.batch-child");
 
 function makeToolCallSchema(allowedToolNames: readonly [string, ...string[]]) {
   return z.object({
@@ -44,38 +43,28 @@ function makeBatchInputSchema(allowedToolNames: readonly [string, ...string[]], 
   });
 }
 
-const batchOutputSchema = z.object({
-  ok: z.boolean(),
-  total: z.number(),
-  succeeded: z.number(),
-  failed: z.number(),
-  results: z.array(
-    z.object({
-      toolCallId: z.string(),
-      tool: z.string(),
-      ok: z.boolean(),
-      output: z.unknown().optional(),
-      error: z.string().optional(),
-    }),
-  ),
-});
-
 type ToolLike = {
   inputSchema?: unknown;
-  execute?: (
-    args: unknown,
-    options: {
-      toolCallId: string;
-      messages: readonly unknown[];
-      abortSignal?: AbortSignal;
-      context?: unknown;
-    },
-  ) => unknown;
 };
 
-function hasParse(schema: unknown): schema is { parse: (v: unknown) => unknown } {
-  if (!schema || typeof schema !== "object") return false;
-  return "parse" in schema && typeof (schema as { parse?: unknown }).parse === "function";
+function hasParseAsync(schema: unknown): schema is {
+  parseAsync: (value: unknown) => Promise<unknown>;
+} {
+  return (
+    typeof schema === "object" &&
+    schema !== null &&
+    "parseAsync" in schema &&
+    typeof schema.parseAsync === "function"
+  );
+}
+
+function hasParse(schema: unknown): schema is { parse: (value: unknown) => unknown } {
+  return (
+    typeof schema === "object" &&
+    schema !== null &&
+    "parse" in schema &&
+    typeof schema.parse === "function"
+  );
 }
 
 function resolveAgainstCwd(cwd: string, p: string): string {
@@ -187,9 +176,11 @@ function resolveAllowedToolNamesFromSpecs(
   if (!normalized) return null;
 
   const names = [...normalized.values()]
-    .filter((spec) => spec.supportsBatch === true)
+    .filter((spec) => spec.name !== "batch" && spec.supportsBatch !== false)
     .map((spec) => spec.name) as string[];
-  if (names.length === 0) return null;
+  if (names.length === 0) {
+    throw new Error("batch requires at least one enabled Level-1 tool that has not opted out");
+  }
   return names as [string, ...string[]];
 }
 
@@ -205,15 +196,8 @@ export function batchTool(params: {
   getToolSpecs?: () => ReadonlyMap<string, Level1ToolSpec<unknown>>;
   editingMode?: EditingToolMode | "none";
   maxCalls?: number;
-  reportToolStatus?: (update: {
-    toolCallId: string;
-    status: "start" | "update" | "end";
-    display: string;
-    ok?: boolean;
-    error?: string;
-  }) => void | Promise<void>;
 }) {
-  const { defaultCwd, getTools, reportToolStatus } = params;
+  const { defaultCwd, getTools } = params;
   const editingMode = params.editingMode ?? "apply_patch";
   const maxCalls = Math.min(params.maxCalls ?? ABSOLUTE_MAX_CALLS, ABSOLUTE_MAX_CALLS);
   const toolSpecs = normalizeToolSpecs(params.getToolSpecs?.());
@@ -221,90 +205,78 @@ export function batchTool(params: {
     resolveAllowedToolNamesFromSpecs(toolSpecs) ??
     (ALLOWED_TOOL_NAMES_BY_MODE[editingMode] as unknown as [string, ...string[]]);
   const batchInputSchema = makeBatchInputSchema(allowedToolNames, maxCalls);
-  const editCallDescription =
-    editingMode === "none"
-      ? "Supports independent read_file, glob, grep, and bash operations."
-      : `Supports independent read_file, glob, grep, bash, and ${editingMode} operations.`;
-
-  const reportSafe = (update: {
-    toolCallId: string;
-    status: "start" | "update" | "end";
-    display: string;
-    ok?: boolean;
-    error?: string;
-  }) => {
-    if (!reportToolStatus) return;
-    Promise.resolve(reportToolStatus(update)).catch(() => {
-      // ignore (tool progress is best-effort)
-    });
-  };
-
-  type ChildStatus = "pending" | "running" | "done";
-  type ChildState = {
-    tool: string;
-    args: unknown;
-    status: ChildStatus;
-    ok: boolean | null;
-    updatedSeq: number;
-  };
-
-  function iconForChild(s: ChildState): string {
-    if (s.status === "running") return "▶";
-    if (s.status === "done") return s.ok ? "✓" : "✗";
-    return "…";
-  }
-
-  function renderBatchDisplay(params: {
-    total: number;
-    done: number;
-    children: readonly ChildState[];
-    collapsed: boolean;
-  }): string {
-    const header = params.collapsed
-      ? `batch (${params.total} tools)`
-      : `batch (${params.total} tools; ${params.done}/${params.total} done)`;
-
-    if (params.collapsed) return header;
-
-    const recent = params.children
-      .filter((c) => c.updatedSeq > 0)
-      .sort((a, b) => b.updatedSeq - a.updatedSeq)
-      .slice(0, 3)
-      .sort((a, b) => a.updatedSeq - b.updatedSeq);
-
-    if (recent.length === 0) return header;
-
-    const lines = recent.map((c, idx) => {
-      const args = formatToolArgsForDisplayWithSpecs(c.tool, c.args, toolSpecs);
-      const branch = idx === recent.length - 1 ? "└─" : "├─";
-      return `${branch} ${iconForChild(c)} ${c.tool}${args}`;
-    });
-
-    return [header, ...lines].join("\n");
-  }
-
   return {
     batch: tool({
       description: [
-        "Execute multiple tool calls in parallel. Prefer this tool when your following operations are independent.",
-        editCallDescription,
+        "Expand multiple independent operations into ordinary tool calls that execute after this batch call.",
+        "Supports every enabled Level-1 tool except batch; tools may explicitly opt out of batching.",
+        "The batch result only confirms expansion. Each child returns its own normal tool result.",
         "Notes:",
-        "- All calls start in parallel; ordering is not guaranteed.",
-        "- Partial failures do not stop other tool calls.",
+        "- Child calls use the same parallel scheduler as provider-emitted tool calls.",
+        "- Child failures do not stop sibling calls or change the accepted batch result.",
         "- Every child call must include all required parameters for its tool.",
         "- Do not emit empty parameters objects for tools with required fields.",
-        "- If multiple edit calls touch the same file path, the entire batch is rejected.",
+        "- If multiple edit calls with declared edit targets touch the same file path, the entire batch is rejected.",
         'Bad example: {"tool_calls":[{"tool":"read_file","parameters":{}},{"tool":"bash","parameters":{}}]}',
         'Good example: {"tool_calls":[{"tool":"read_file","parameters":{"path":"src/index.ts"}},{"tool":"bash","parameters":{"command":"bun test"}}]}',
       ].join("\n"),
       inputSchema: batchInputSchema,
-      outputSchema: batchOutputSchema,
       execute: async (input, options) => {
         const calls = input.tool_calls;
         if (calls.length > ABSOLUTE_MAX_CALLS || calls.length > maxCalls) {
           throw new Error(`Batch accepts at most ${maxCalls} tool calls.`);
         }
         const tools = getTools();
+
+        const children = await Promise.all(
+          calls.map(async (call, index) => {
+            const toolCallId = buildSyntheticToolCallId({
+              prefix: "batch_child",
+              seed: `${options.toolCallId}:${index + 1}:${call.tool}`,
+            });
+            const child = {
+              toolCallId,
+              toolName: call.tool,
+              input: call.parameters,
+            };
+            const childTool = toolSetLookup(tools, call.tool);
+            if (!childTool) {
+              return {
+                ...child,
+                invalid: true,
+                error: `Tool not available: ${call.tool}`,
+              };
+            }
+
+            try {
+              if (hasParseAsync(childTool.inputSchema)) {
+                return {
+                  ...child,
+                  input: await childTool.inputSchema.parseAsync(call.parameters),
+                };
+              }
+              if (hasParse(childTool.inputSchema)) {
+                return { ...child, input: childTool.inputSchema.parse(call.parameters) };
+              }
+              const schema = asSchema(childTool.inputSchema as never);
+              const validation = await schema.validate?.(call.parameters);
+              if (!validation) return child;
+              if (!validation.success) throw validation.error;
+              return { ...child, input: validation.value };
+            } catch (error: unknown) {
+              return {
+                ...child,
+                invalid: true,
+                error: formatBatchChildValidationError({
+                  childIndex: index + 1,
+                  toolName: call.tool,
+                  parameters: call.parameters,
+                  error,
+                }),
+              };
+            }
+          }),
+        );
 
         const activeEditTool = editingMode === "none" ? null : editingMode;
 
@@ -313,20 +285,28 @@ export function batchTool(params: {
         const conflicts: string[] = [];
         for (let i = 0; i < calls.length; i++) {
           const call = calls[i]!;
+          const child = children[i]!;
+          if ("invalid" in child && child.invalid) continue;
           const spec = toolSpecs?.get(call.tool);
           const shouldPreflight =
             Boolean(spec?.editTargets) || (activeEditTool !== null && call.tool === activeEditTool);
           if (!shouldPreflight) continue;
-          const raw = call.parameters as Record<string, unknown>;
+          const raw =
+            child.input && typeof child.input === "object" && !Array.isArray(child.input)
+              ? (child.input as Record<string, unknown>)
+              : {};
           const cwd = typeof raw["cwd"] === "string" ? raw["cwd"] : defaultCwd;
 
           let touched: Set<string>;
 
           if (spec?.editTargets) {
             try {
-              touched = new Set(await spec.editTargets(raw, { cwd }));
-            } catch {
-              continue;
+              touched = new Set(await spec.editTargets(child.input, { cwd }));
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `batch rejected: could not resolve edit targets for child #${i + 1} (${call.tool}): ${message}`,
+              );
             }
           } else if (activeEditTool === "apply_patch") {
             if (typeof raw["patchText"] !== "string") {
@@ -346,8 +326,11 @@ export function batchTool(params: {
                 patchText: String(raw["patchText"]),
                 cwd,
               });
-            } catch {
-              continue;
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `batch rejected: could not parse edit targets for child #${i + 1} (${call.tool}): ${message}`,
+              );
             }
           } else {
             if (typeof raw["path"] !== "string") {
@@ -391,150 +374,15 @@ export function batchTool(params: {
           );
         }
 
-        const parentId = options.toolCallId;
-
-        const children: ChildState[] = calls.map((c) => ({
-          tool: c.tool,
-          args: c.parameters,
-          status: "pending",
-          ok: null,
-          updatedSeq: 0,
-        }));
-        let updateSeq = 0;
-
-        let hasPublishedProgress = false;
-        const publishProgress = () => {
-          const done = children.filter((c) => c.status === "done").length;
-          reportSafe({
-            toolCallId: parentId,
-            status: hasPublishedProgress ? "update" : "start",
-            display: renderBatchDisplay({
-              total: children.length,
-              done,
-              children,
-              collapsed: false,
-            }),
-          });
-          hasPublishedProgress = true;
+        const result = {
+          ok: true as const,
+          total: children.length,
+          children: children.map((child) => ({
+            toolCallId: child.toolCallId,
+            tool: child.toolName,
+          })),
         };
-
-        // Best-effort: establish an initial progress line.
-        publishProgress();
-        const results = await Promise.all(
-          calls.map(async (call, idx) => {
-            const toolCallId = `${parentId}:${idx + 1}`;
-
-            const child = children[idx]!;
-
-            const t = toolSetLookup(tools, call.tool);
-            if (!t?.execute) {
-              child.status = "done";
-              child.ok = false;
-              child.updatedSeq = ++updateSeq;
-              publishProgress();
-              return {
-                toolCallId,
-                tool: call.tool,
-                ok: false as const,
-                error: `Tool not available or not executable: ${call.tool}`,
-              };
-            }
-
-            const parameters = call.parameters;
-            let validatedArgs: unknown = parameters;
-            try {
-              if (hasParse(t.inputSchema)) {
-                validatedArgs = t.inputSchema.parse(parameters);
-              }
-            } catch (e: unknown) {
-              child.status = "done";
-              child.ok = false;
-              child.args = parameters;
-              child.updatedSeq = ++updateSeq;
-              publishProgress();
-              return {
-                toolCallId,
-                tool: call.tool,
-                ok: false as const,
-                error: formatBatchChildValidationError({
-                  childIndex: idx + 1,
-                  toolName: call.tool,
-                  parameters,
-                  error: e,
-                }),
-              };
-            }
-
-            child.status = "running";
-            child.ok = null;
-            child.args = validatedArgs;
-            child.updatedSeq = ++updateSeq;
-            publishProgress();
-
-            try {
-              const parentContext =
-                options.context && typeof options.context === "object"
-                  ? options.context
-                  : undefined;
-              const out = await t.execute(validatedArgs, {
-                toolCallId,
-                messages: options.messages,
-                abortSignal: options.abortSignal,
-                context: {
-                  ...parentContext,
-                  [BATCH_CHILD_CONTEXT_FLAG]: true,
-                },
-              });
-
-              child.status = "done";
-              child.ok = true;
-              child.updatedSeq = ++updateSeq;
-              publishProgress();
-              return {
-                toolCallId,
-                tool: call.tool,
-                ok: true as const,
-                output: out,
-              };
-            } catch (e: unknown) {
-              child.status = "done";
-              child.ok = false;
-              child.updatedSeq = ++updateSeq;
-              publishProgress();
-              return {
-                toolCallId,
-                tool: call.tool,
-                ok: false as const,
-                error: e instanceof Error ? e.message : String(e),
-              };
-            }
-          }),
-        );
-
-        const succeeded = results.filter((r) => r.ok).length;
-        const failed = results.length - succeeded;
-
-        // Collapse the batch tool line once everything is done.
-        reportSafe({
-          toolCallId: parentId,
-          status: "end",
-          ok: failed === 0,
-          error: failed === 0 ? undefined : "one or more tool calls failed",
-          display: renderBatchDisplay({
-            total: children.length,
-            done: children.length,
-            children,
-            collapsed: true,
-          }),
-        });
-
-        return {
-          ok: failed === 0,
-          total: results.length,
-          succeeded,
-          failed,
-          results,
-        };
+        return new ToolExpansion(result, children);
       },
     }),
   };

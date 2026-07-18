@@ -33,6 +33,7 @@ import {
 } from "@stanley2058/lilac-utils";
 
 import { normalizeModelMessagesToolCallIds } from "./tool-call-id-normalization";
+import { isToolExpansion, type ExpandedToolCall, type ToolExpansion } from "./tool-call-expansion";
 
 const logger = createLogger({ module: "ai-sdk-pi-agent" });
 const UNSERIALIZABLE_TOOL_RESULT = "[tool result is not JSON-serializable]";
@@ -1018,14 +1019,14 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
             const hasLocalToolCalls =
               turn.finishReason === "tool-calls" && turn.toolCalls.length > 0;
-            if (hasLocalToolCalls) {
-              await this.executeToolCalls(turn.toolCalls);
-            }
+            const executedToolCallCount = hasLocalToolCalls
+              ? await this.executeToolCalls(turn.toolCalls)
+              : 0;
 
             const boundaryDecision = await this.applyTurnBoundary({
               finishReason: turn.finishReason,
               modelInputMessages: turn.modelInputMessages,
-              executedToolCallCount: hasLocalToolCalls ? turn.toolCalls.length : 0,
+              executedToolCallCount,
             });
 
             // Steering should pick up any buffered follow-ups and remains ahead of
@@ -1504,35 +1505,23 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   }
 
   private async executeToolCalls(
-    toolCalls: Array<{
-      toolCallId: string;
-      toolName: string;
-      input: unknown;
-      invalid?: boolean;
-      error?: unknown;
-    }>,
-  ): Promise<void> {
+    toolCalls: ExpandedToolCall[],
+    expansionDepth = 0,
+  ): Promise<number> {
     type ToolCall = (typeof toolCalls)[number];
     type ToolExecutionOutcome = {
       result: unknown;
       isError: boolean;
       toolOutput: ToolResultOutput;
-    };
-    type IndexedToolCall = {
-      index: number;
-      call: ToolCall;
+      expansion?: ToolExpansion;
     };
 
-    const PARALLEL_SAFE_TOOL_NAMES = new Set<string>(["read_file", "glob", "grep"]);
-    const MAX_PARALLEL_TOOLS = 4;
+    const MAX_PARALLEL_TOOLS = 8;
 
     const getAbortReason = (): TurnAbortReason =>
       this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
     const isAborted = (): boolean => this.abortController?.signal.aborted === true;
-
-    const canRunInParallel = (call: ToolCall): boolean =>
-      PARALLEL_SAFE_TOOL_NAMES.has(call.toolName);
 
     const executeOne = async (call: ToolCall): Promise<ToolExecutionOutcome> => {
       const tool = this.state.tools[call.toolName] as Tool | undefined;
@@ -1548,6 +1537,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       let result: unknown;
       let isError = false;
       let toolOutput: ToolResultOutput;
+      let expansion: ToolExpansion | undefined;
 
       try {
         if (call.invalid) {
@@ -1598,6 +1588,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               context: this.context,
             });
 
+            let rawResult: unknown;
             if (isAsyncIterable(raw)) {
               let last: unknown = undefined;
               for await (const chunk of raw) {
@@ -1610,18 +1601,28 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                   partialResult: chunk,
                 });
               }
-              result = last;
+              rawResult = last;
             } else {
-              result = await raw;
+              rawResult = await raw;
             }
 
-            toolOutput = tool.toModelOutput
-              ? await tool.toModelOutput({
-                  toolCallId: call.toolCallId,
-                  input: call.input,
-                  output: result,
-                })
-              : { type: "json", value: toJsonToolOutputValue(result) };
+            if (isToolExpansion(rawResult)) {
+              if (expansionDepth > 0) {
+                throw new Error("Nested tool-call expansions are not supported.");
+              }
+              expansion = rawResult;
+              result = rawResult.result;
+              toolOutput = { type: "json", value: toJsonToolOutputValue(result) };
+            } else {
+              result = rawResult;
+              toolOutput = tool.toModelOutput
+                ? await tool.toModelOutput({
+                    toolCallId: call.toolCallId,
+                    input: call.input,
+                    output: result,
+                  })
+                : { type: "json", value: toJsonToolOutputValue(result) };
+            }
           }
         }
       } catch (e) {
@@ -1670,6 +1671,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         result,
         isError,
         toolOutput,
+        ...(expansion ? { expansion } : {}),
       };
     };
 
@@ -1704,66 +1706,23 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       }
     };
 
-    let parallelBucket: IndexedToolCall[] = [];
     let stoppedDueToAbort = false;
+    let next = 0;
+    const workers = Array.from({ length: Math.min(MAX_PARALLEL_TOOLS, toolCalls.length) }, () =>
+      (async () => {
+        while (true) {
+          if (isAborted()) return;
+          const index = next;
+          if (index >= toolCalls.length) return;
+          next += 1;
 
-    const flushParallelBucket = async () => {
-      if (parallelBucket.length === 0) return;
-      const pending = parallelBucket;
-      parallelBucket = [];
-
-      let next = 0;
-      const workers = Array.from({ length: Math.min(MAX_PARALLEL_TOOLS, pending.length) }, () =>
-        (async () => {
-          while (true) {
-            if (isAborted()) return;
-            const current = next;
-            if (current >= pending.length) return;
-            next += 1;
-
-            const { index, call } = pending[current]!;
-            if (isAborted()) return;
-
-            outcomes[index] = await executeOne(call);
-            appendReadyOutcomes();
-          }
-        })(),
-      );
-
-      await Promise.all(workers);
-    };
-
-    // Execute parallel-safe calls concurrently. Keep apply_patch and other
-    // non-safe tools sequential in model-emitted order.
-    for (let i = 0; i < toolCalls.length; i++) {
-      if (isAborted()) {
-        stoppedDueToAbort = true;
-        break;
-      }
-
-      const call = toolCalls[i]!;
-
-      if (!canRunInParallel(call)) {
-        await flushParallelBucket();
-        if (isAborted()) {
-          stoppedDueToAbort = true;
-          break;
+          outcomes[index] = await executeOne(toolCalls[index]!);
+          appendReadyOutcomes();
         }
-
-        outcomes[i] = await executeOne(call);
-        appendReadyOutcomes();
-        continue;
-      }
-
-      parallelBucket.push({ index: i, call });
-    }
-
-    if (!stoppedDueToAbort) {
-      await flushParallelBucket();
-      if (isAborted()) {
-        stoppedDueToAbort = true;
-      }
-    }
+      })(),
+    );
+    await Promise.all(workers);
+    if (isAborted()) stoppedDueToAbort = true;
 
     if (!stoppedDueToAbort && nextAppendIndex !== toolCalls.length) {
       const missing = toolCalls[nextAppendIndex]!;
@@ -1773,6 +1732,26 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     if (isAborted()) {
       throw new TurnAbortedError({ reason: getAbortReason(), phase: "tools" });
     }
+
+    let executed = toolCalls.length;
+    for (const outcome of outcomes) {
+      const expansion = outcome?.expansion;
+      if (!expansion || expansion.children.length === 0) continue;
+
+      const syntheticAssistant: AssistantModelMessage = {
+        role: "assistant",
+        content: expansion.children.map((child) => ({
+          type: "tool-call" as const,
+          toolCallId: child.toolCallId,
+          toolName: child.toolName,
+          input: normalizeToolCallInputValue(child.input),
+        })),
+      };
+      this.appendMessage(syntheticAssistant);
+      executed += await this.executeToolCalls([...expansion.children], expansionDepth + 1);
+    }
+
+    return executed;
   }
 }
 

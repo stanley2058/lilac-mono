@@ -53,7 +53,7 @@ The current repo has three different extension shapes: Level 1 tools are assembl
 4. Preserve current built-in behavior exactly:
    - `explore` still gets read/search-only tools
    - edit mode still chooses `edit_file` vs `apply_patch`
-   - `batch` still only permits tools marked `supportsBatch`
+   - `batch` permits enabled Level 1 tools by default, excludes itself, and honors `supportsBatch: false`
    - `subagent_delegate` still obeys current depth/profile rules
 
 **Level 2 Refactor**

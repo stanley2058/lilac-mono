@@ -106,7 +106,7 @@ export type Level1ToolBuildContext<TRuntimeContext> = Level1ToolRunContext<TRunt
 
 export interface Level1ToolSpec<TRuntimeContext> {
   name: string;
-  /** Batch is opt-in. Omitted and false values are not batch-callable. */
+  /** Enabled tools are batch-callable by default. Set false to opt out. */
   supportsBatch?: boolean;
   createTool(buildContext: Level1ToolBuildContext<TRuntimeContext>): unknown;
   isEnabled(runContext: Level1ToolRunContext<TRuntimeContext>): boolean;

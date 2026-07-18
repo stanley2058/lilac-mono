@@ -24,15 +24,6 @@ const DEFAULT_PREVIEW_MAX_CHARS = 4_000;
 
 export type ToolFailureSummary = Level1ToolFailureSummary;
 
-export type BatchChildFailureEntry = {
-  index: number;
-  toolCallId?: string;
-  toolName: string;
-  error: string;
-  args: unknown;
-  result: unknown;
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -242,50 +233,7 @@ export function formatToolLogPreview(params: {
   value: unknown;
   untruncated?: boolean;
 }): string {
-  const { toolName, value, untruncated } = params;
-  const maxChars = untruncated || toolName === "batch" ? undefined : DEFAULT_PREVIEW_MAX_CHARS;
+  const { value, untruncated } = params;
+  const maxChars = untruncated ? undefined : DEFAULT_PREVIEW_MAX_CHARS;
   return toSerializablePreview(value, maxChars);
-}
-
-export function extractBatchChildFailureEntries(params: {
-  args: unknown;
-  result: unknown;
-}): BatchChildFailureEntry[] {
-  if (!isRecord(params.result)) return [];
-
-  const rawResults = params.result["results"];
-  if (!Array.isArray(rawResults)) return [];
-
-  const rawCalls = isRecord(params.args) ? params.args["tool_calls"] : undefined;
-  const calls = Array.isArray(rawCalls) ? rawCalls : [];
-
-  const out: BatchChildFailureEntry[] = [];
-  for (let i = 0; i < rawResults.length; i++) {
-    const resultItem = rawResults[i];
-    const itemOk = getBooleanField(resultItem, "ok");
-    if (itemOk !== false) continue;
-
-    const call = calls[i];
-    const toolFromResult = getStringField(resultItem, "tool");
-    const toolFromCall = getStringField(call, "tool");
-    const toolName = toolFromResult ?? toolFromCall ?? "unknown";
-
-    const error =
-      getStringField(resultItem, "error") ??
-      getStringField(resultItem, "output") ??
-      "batch child failed";
-
-    const args = isRecord(call) && "parameters" in call ? call["parameters"] : call;
-
-    out.push({
-      index: i,
-      toolCallId: getStringField(resultItem, "toolCallId"),
-      toolName,
-      error,
-      args,
-      result: resultItem,
-    });
-  }
-
-  return out;
 }

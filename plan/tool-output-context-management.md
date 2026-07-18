@@ -28,7 +28,7 @@ This follows the useful part of Codex's approach: context items are bounded at i
 - Preserve complete oversized Bash, plugin, subagent, and custom-command output as transient artifacts.
 - Reuse `read_file` to inspect `tool-result://<id>` resources.
 - Keep `read_file`, search, and media behavior tool-specific rather than forcing every result through one generic artifact abstraction.
-- Limit batch calls to eight and keep batch eligibility explicit.
+- Limit batch calls to eight and allow explicit batch opt-out.
 - Raise inline media limits enough for explicitly requested images to reach providers that resize them.
 - Make historical tool-result pruning default off under `tools.*` configuration.
 - Preserve the existing hierarchical compaction strategy and remove reliance on emergency tool-output omission.
@@ -65,7 +65,7 @@ These retain specialized behavior:
 
 - `read_file`: return a bounded source-backed window and continuation metadata; do not create a duplicate artifact.
 - `glob`, `grep`, and `fuzzy_search`: retain count limits and add a serialized-size backstop without artifacts.
-- `batch`: rely on bounded eligible children and a maximum of eight calls.
+- `batch`: expand up to eight children through the ordinary Level 1 execution path.
 - image and other media results: retain inline media within configured limits; do not turn media into textual artifacts.
 - editing tools: retain their existing bounded semantic responses.
 
@@ -279,7 +279,7 @@ For explicitly requested images and PDFs, do not apply text artifact behavior.
 
 ## Plugin Level-1 Tools
 
-Plugin tools default to `supportsBatch: false`.
+Plugin tools are batch-callable by default and may opt out with `supportsBatch: false`.
 
 After a plugin's `toModelOutput` conversion, apply the generic direct-output policy:
 
@@ -289,7 +289,7 @@ After a plugin's `toModelOutput` conversion, apply the generic direct-output pol
 - artifact write failure returns a preview with an availability warning;
 - tool execution status is not changed by truncation.
 
-Plugins that explicitly opt into batch execution are responsible for returning intrinsically bounded raw `execute` results because batch currently invokes child `execute` directly.
+Batch expands children into ordinary Level 1 calls, so plugin `toModelOutput` conversion and the generic direct-output policy apply normally.
 
 ## Subagents
 
@@ -340,12 +340,7 @@ Supports independent read_file, glob, grep, and bash operations.
 
 Do not add a long negative list to the prompt.
 
-Batch does not receive a second aggregate artifact layer. It relies on:
-
-- child tools with intrinsically bounded results;
-- explicit `supportsBatch` eligibility;
-- plugin tools defaulting to `supportsBatch: false`;
-- the eight-call maximum.
+Batch returns only a small expansion acknowledgement. Child calls and results are represented as ordinary synthetic assistant/tool message pairs and use each child's normal output policy. Tools may opt out with `supportsBatch: false`, and one expansion remains limited to eight calls.
 
 ## Media
 
@@ -445,7 +440,7 @@ Implementation is complete when:
 - an artifact larger than the quota becomes the sole session artifact;
 - a later artifact can evict that oversized artifact under normal quota enforcement;
 - batch accepts at most eight calls and its prompt reflects supported independent operations;
-- plugin tools default to non-batchable;
+- plugin tools default to batchable and can explicitly opt out;
 - subagent and custom-command bypasses are covered;
 - search output has a non-artifact size backstop;
 - images up to configured limits reach the model-facing request;

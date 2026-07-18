@@ -146,4 +146,6 @@ plugins:
 - Oversized text and JSON are preserved as transient, session-owned `tool-result://` artifacts when storage succeeds. The preview tells the model how to inspect the artifact with `read_file`.
 - Media and provider-reference content parts are not converted into text artifacts.
 - Truncation does not change whether the tool execution succeeded or failed.
-- `supportsBatch` defaults to false when omitted. Set it to true only when the raw `execute` result is intrinsically bounded, because batch invokes child `execute` directly rather than applying `toModelOutput` or an aggregate artifact layer.
+- Level 1 tools are batch-callable by default. Set `supportsBatch: false` when a tool must not be expanded into a batch child.
+- Batch children execute as ordinary Level 1 calls, so approval checks, streaming, `toModelOutput`, output normalization, media parts, and tool lifecycle events behave the same as direct calls.
+- Writer tools should implement `editTargets` so batch can reject children that would concurrently edit the same resource. Set `supportsBatch: false` when targets cannot be determined safely.

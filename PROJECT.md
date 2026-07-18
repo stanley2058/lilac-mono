@@ -281,7 +281,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
           - This allows command-level override to app auth when needed (for example: `GH_TOKEN="$LILAC_GITHUB_APP_TOKEN" gh ...`).
       - `read_file`, `glob`, `grep` (`apps/core/src/tools/fs/fs.ts`) (denylists include `DATA_DIR/secret`, `~/.ssh`, `~/.aws`, `~/.gnupg` unless `dangerouslyAllow=true`).
       - `apply_patch` (`apps/core/src/tools/apply-patch/index.ts`) (format docs: `apps/core/src/tools/apply-patch/README.md`; remote denylist can be bypassed with `dangerouslyAllow=true`).
-      - `batch` (`apps/core/src/tools/batch.ts`) for concurrent tool execution.
+      - `batch` (`apps/core/src/tools/batch.ts`) expands one call into ordinary synthetic Level 1 tool-call/result pairs.
       - `subagent_delegate` (`apps/core/src/tools/subagent.ts`) when `agent.subagents` is enabled and depth limits allow delegation. Its model argument is generated from agent-selectable `models.def` aliases, with optional per-call reasoning overrides and config-authored routing guidance.
 
 2. Level 2: tool server tools + the `tools` CLI

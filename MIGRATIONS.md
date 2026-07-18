@@ -60,6 +60,7 @@ New v2 fields:
 - `tools.output`: direct-result preview and transient artifact policy. Defaults to `40KiB`, `7d`, and `50MiB` per session.
 - `tools.historicalResultPruning`: compatibility policy for rewriting old tool results. It defaults to disabled with the prior `40000`/`20000` token thresholds retained when enabled.
 - `tools.batch.maxCalls`: maximum calls accepted by one batch; defaults to `8`.
+- Batch now expands children into ordinary Level 1 tool calls. Enabled tools are batchable by default; plugin authors can set `supportsBatch: false` to opt out.
 - `tools.media`: model-view inline binary limits. Defaults to `10MiB` per part and `20MiB` in total.
 - `agent.subagents.delegatePromptOverlay`: optional free-form guidance appended to the parent-visible `subagent_delegate` tool description.
 - `models.def.<alias>.comment`: optional guidance shown when an agent selects a model for a subagent.

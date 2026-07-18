@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { asSchema } from "ai";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 
@@ -54,6 +55,18 @@ function getToolDescription(tools: Record<string, unknown>, name: string): strin
   }
 
   return description;
+}
+
+function getBatchToolNames(tools: Record<string, unknown>): string[] {
+  const batch = tools["batch"];
+  if (!batch || typeof batch !== "object") throw new Error("missing batch tool");
+  const inputSchema = (batch as { inputSchema?: unknown }).inputSchema;
+  const schema = asSchema(inputSchema as never).jsonSchema as {
+    properties?: {
+      tool_calls?: { items?: { properties?: { tool?: { enum?: string[] } } } };
+    };
+  };
+  return schema.properties?.tool_calls?.items?.properties?.tool?.enum ?? [];
 }
 
 const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
@@ -593,7 +606,6 @@ describe("core tool plugin manager", () => {
     return {
       level1: [{
         name: "fixture_level1",
-        supportsBatch: true,
         bypassGenericOutputNormalizer: true,
         createTool() { return { execute() { return { ok: true }; } }; },
         isEnabled() { return true; },
@@ -632,6 +644,8 @@ describe("core tool plugin manager", () => {
     });
     expect(level1.specs.has("fixture_level1")).toBe(true);
     expect(level1.genericOutputNormalizerBypassTools.has("fixture_level1")).toBe(false);
+    expect(getBatchToolNames(level1.tools)).toContain("fixture_level1");
+    expect(getBatchToolNames(level1.tools)).not.toContain("batch");
 
     const callableIds = (
       await Promise.all(

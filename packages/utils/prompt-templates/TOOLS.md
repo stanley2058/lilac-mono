@@ -9,7 +9,7 @@ You have access to three tiers of tools:
 ## Parallel tool calls
 
 - Prefer parallel tool execution whenever calls are independent.
-- For independent filesystem/search operations (`read_file`, `glob`, `grep`, `bash`), prefer a single `batch` call with multiple `tool_calls`.
+- For independent Level 1 operations, prefer a single `batch` call with multiple `tool_calls`; batch expands them into ordinary tool calls and results.
 - If the model/runtime supports native multiple tool calls in one turn, use that as well for independent calls.
 - Keep dependent operations sequential (for example: discover file path -> read file; edit file -> re-read/verify).
 - Never batch dependent mutations where order matters.
