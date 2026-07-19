@@ -3,9 +3,7 @@ import { parse, type ScriptNode } from "just-bash";
 import { type AnalyzeOptions, type AnalyzeResult, MAX_RECURSION_DEPTH } from "../types";
 
 import { analyzeScript } from "./ast-walker";
-
-const REASON_RECURSION_LIMIT =
-  "Command could not be safely analyzed because nested shell recursion exceeded the safety limit.";
+import { dangerousReasonInText } from "./dangerous-text";
 
 export function analyzeCommandInternal(
   command: string,
@@ -22,17 +20,15 @@ function analyzeCommandAtCwd(
   effectiveCwd: string | null | undefined,
 ): AnalyzeResult | null {
   if (depth >= MAX_RECURSION_DEPTH) {
-    return { reason: REASON_RECURSION_LIMIT, segment: command };
+    return null;
   }
 
   let script: ScriptNode;
   try {
     script = parse(command);
-  } catch (error) {
-    return {
-      reason: `Command could not be safely analyzed because shell parsing failed: ${parserErrorDetail(error)}.`,
-      segment: command,
-    };
+  } catch {
+    const reason = dangerousReasonInText(command);
+    return reason ? { reason, segment: command } : null;
   }
 
   return analyzeScript(
@@ -46,16 +42,4 @@ function analyzeCommandAtCwd(
     },
     { cwd: effectiveCwd },
   );
-}
-
-function parserErrorDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  const withoutQuotedContent = raw
-    .replace(/`[^`]*`/g, "<token>")
-    .replace(/'[^']*'/g, "<token>")
-    .replace(/"[^"]*"/g, "<token>");
-  return withoutQuotedContent
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[^a-zA-Z0-9 _.:()<>/-]/g, "?")
-    .slice(0, 200);
 }

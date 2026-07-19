@@ -1,24 +1,8 @@
-import { SHELL_WRAPPERS } from "../types";
-
-import { analyzeGit } from "../rules-git";
-import { analyzeRm } from "../rules-rm";
-import { getBasename, stripWrappers } from "../shell";
-
-import { analyzeFind } from "./find";
-import { hasRecursiveForceFlags } from "./rm-flags";
-import { extractDashCArg } from "./shell-wrappers";
-
-const REASON_PARALLEL_RM =
-  "parallel rm -rf with dynamic input is dangerous. Use explicit file list instead.";
-const REASON_PARALLEL_SHELL =
-  "parallel with shell -c can execute arbitrary commands from dynamic input.";
+import { DYNAMIC_EXPANSION_MARKER } from "../shell";
 
 export interface ParallelAnalyzeContext {
-  cwd: string | undefined;
-  originalCwd: string | undefined;
-  paranoidRm: boolean | undefined;
-  allowTmpdirVar: boolean;
   analyzeNested: (command: string) => string | null;
+  analyzeCommand: (tokens: string[]) => string | null;
 }
 
 export function analyzeParallel(
@@ -26,141 +10,77 @@ export function analyzeParallel(
   context: ParallelAnalyzeContext,
 ): string | null {
   const parseResult = parseParallelCommand(tokens);
+  if (!parseResult) return null;
 
-  if (!parseResult) {
-    return null;
-  }
-
-  const { template, args, hasPlaceholder } = parseResult;
-
+  const { template, argSources } = parseResult;
   if (template.length === 0) {
-    for (const arg of args) {
-      const reason = context.analyzeNested(arg);
-      if (reason) {
-        return reason;
+    for (const source of argSources) {
+      for (const arg of source) {
+        const reason = context.analyzeNested(arg);
+        if (reason) return reason;
       }
     }
     return null;
   }
 
-  let childTokens = stripWrappers([...template]);
-  let head = getBasename(childTokens[0] ?? "").toLowerCase();
-
-  if (head === "busybox" && childTokens.length > 1) {
-    childTokens = childTokens.slice(1);
-    head = getBasename(childTokens[0] ?? "").toLowerCase();
+  const combinations = buildParallelCombinations(argSources);
+  if (combinations.length === 0) {
+    const dynamicTemplate = template.some(hasParallelPlaceholder)
+      ? template.map((token) => expandParallelToken(token, [DYNAMIC_EXPANSION_MARKER]))
+      : [...template, DYNAMIC_EXPANSION_MARKER];
+    return analyzeExpandedParallelCommand(dynamicTemplate, context);
   }
 
-  if (SHELL_WRAPPERS.has(head)) {
-    const dashCArg = extractDashCArg(childTokens);
-    if (dashCArg) {
-      if (dashCArg === "{}" || dashCArg === "{1}") {
-        return REASON_PARALLEL_SHELL;
-      }
-
-      if (dashCArg.includes("{}")) {
-        if (args.length > 0) {
-          for (const arg of args) {
-            const expandedScript = dashCArg.replace(/{}/g, arg);
-            const reason = context.analyzeNested(expandedScript);
-            if (reason) {
-              return reason;
-            }
-          }
-
-          return null;
-        }
-
-        const reason = context.analyzeNested(dashCArg);
-        if (reason) {
-          return reason;
-        }
-
-        return null;
-      }
-
-      const reason = context.analyzeNested(dashCArg);
-      if (reason) {
-        return reason;
-      }
-
-      if (hasPlaceholder) {
-        return REASON_PARALLEL_SHELL;
-      }
-
-      return null;
-    }
-
-    if (args.length > 0) {
-      return REASON_PARALLEL_SHELL;
-    }
-
-    if (hasPlaceholder) {
-      return REASON_PARALLEL_SHELL;
-    }
-
-    return null;
+  for (const combination of combinations) {
+    const expanded = template.some(hasParallelPlaceholder)
+      ? template.map((token) => expandParallelToken(token, combination))
+      : [...template, ...combination];
+    const reason = analyzeExpandedParallelCommand(expanded, context);
+    if (reason) return reason;
   }
-
-  if (head === "rm" && hasRecursiveForceFlags(childTokens)) {
-    if (hasPlaceholder && args.length > 0) {
-      for (const arg of args) {
-        const expandedTokens = childTokens.map((t) => t.replace(/{}/g, arg));
-        const rmResult = analyzeRm(expandedTokens, {
-          cwd: context.cwd,
-          originalCwd: context.originalCwd,
-          paranoid: context.paranoidRm,
-          allowTmpdirVar: context.allowTmpdirVar,
-        });
-
-        if (rmResult) {
-          return rmResult;
-        }
-      }
-
-      return null;
-    }
-
-    if (args.length > 0) {
-      const expandedTokens = [...childTokens, args[0] ?? ""];
-      const rmResult = analyzeRm(expandedTokens, {
-        cwd: context.cwd,
-        originalCwd: context.originalCwd,
-        paranoid: context.paranoidRm,
-        allowTmpdirVar: context.allowTmpdirVar,
-      });
-
-      if (rmResult) {
-        return rmResult;
-      }
-
-      return null;
-    }
-
-    return REASON_PARALLEL_RM;
-  }
-
-  if (head === "find") {
-    const findResult = analyzeFind(childTokens);
-    if (findResult) {
-      return findResult;
-    }
-  }
-
-  if (head === "git") {
-    const gitResult = analyzeGit(childTokens);
-    if (gitResult) {
-      return gitResult;
-    }
-  }
-
   return null;
+}
+
+function analyzeExpandedParallelCommand(
+  tokens: string[],
+  context: ParallelAnalyzeContext,
+): string | null {
+  return context.analyzeCommand(tokens) ?? context.analyzeNested(tokens.join(" "));
+}
+
+function buildParallelCombinations(argSources: readonly (readonly string[])[]): string[][] {
+  if (argSources.length === 0 || argSources.some((source) => source.length === 0)) return [];
+  let combinations: string[][] = [[]];
+  for (const source of argSources) {
+    const next: string[][] = [];
+    for (const combination of combinations) {
+      for (const arg of source) {
+        next.push([...combination, arg]);
+        if (next.length >= 256) return [[DYNAMIC_EXPANSION_MARKER]];
+      }
+    }
+    combinations = next;
+  }
+  return combinations;
+}
+
+function hasParallelPlaceholder(token: string): boolean {
+  return token.includes("{}") || /\{(?:\d+)?(?:\.|\/|\/\.)?\}/u.test(token);
+}
+
+function expandParallelToken(token: string, args: readonly string[]): string {
+  return token
+    .replace(/\{(?:\d+)?(?:\.|\/|\/\.)\}/gu, DYNAMIC_EXPANSION_MARKER)
+    .replaceAll("{}", args.join(" "))
+    .replace(/\{(\d+)\}/gu, (_match, indexText: string) => {
+      const index = Number.parseInt(indexText, 10) - 1;
+      return args[index] ?? DYNAMIC_EXPANSION_MARKER;
+    });
 }
 
 interface ParallelParseResult {
   template: string[];
-  args: string[];
-  hasPlaceholder: boolean;
+  argSources: string[][];
 }
 
 function parseParallelCommand(tokens: readonly string[]): ParallelParseResult | null {
@@ -195,72 +115,53 @@ function parseParallelCommand(tokens: readonly string[]): ParallelParseResult | 
     if (token === "--") {
       i++;
       while (i < tokens.length) {
-        const token = tokens[i];
-        if (token === undefined || token === ":::") break;
-        templateTokens.push(token);
+        const next = tokens[i];
+        if (next === undefined || next === ":::") break;
+        templateTokens.push(next);
         i++;
       }
-
-      if (i < tokens.length && tokens[i] === ":::") {
-        markerIndex = i;
-      }
+      if (tokens[i] === ":::") markerIndex = i;
       break;
     }
 
     if (token.startsWith("-")) {
-      if (token.startsWith("-j") && token.length > 2 && /^\d+$/.test(token.slice(2))) {
+      if (token.startsWith("-j") && token.length > 2 && /^\d+$/u.test(token.slice(2))) {
         i++;
-        continue;
-      }
-
-      if (token.startsWith("--") && token.includes("=")) {
+      } else if (token.startsWith("--") && token.includes("=")) {
         i++;
-        continue;
-      }
-
-      if (parallelOptsWithValue.has(token)) {
+      } else if (parallelOptsWithValue.has(token) || token === "-j" || token === "--jobs") {
         i += 2;
-        continue;
-      }
-
-      if (token === "-j" || token === "--jobs") {
-        i += 2;
-        continue;
-      }
-
-      i++;
-    } else {
-      while (i < tokens.length) {
-        const token = tokens[i];
-        if (token === undefined || token === ":::") break;
-        templateTokens.push(token);
+      } else {
         i++;
       }
-
-      if (i < tokens.length && tokens[i] === ":::") {
-        markerIndex = i;
-      }
-      break;
+      continue;
     }
+
+    while (i < tokens.length) {
+      const next = tokens[i];
+      if (next === undefined || next === ":::") break;
+      templateTokens.push(next);
+      i++;
+    }
+    if (tokens[i] === ":::") markerIndex = i;
+    break;
   }
 
-  const args: string[] = [];
+  const argSources: string[][] = [];
   if (markerIndex !== -1) {
+    let source: string[] = [];
     for (let j = markerIndex + 1; j < tokens.length; j++) {
       const token = tokens[j];
-      if (token && token !== ":::") {
-        args.push(token);
+      if (token === ":::") {
+        argSources.push(source);
+        source = [];
+      } else if (token) {
+        source.push(token);
       }
     }
+    argSources.push(source);
   }
 
-  const hasPlaceholder = templateTokens.some(
-    (t) => t.includes("{}") || t.includes("{1}") || t.includes("{.}"),
-  );
-
-  if (templateTokens.length === 0 && markerIndex === -1) {
-    return null;
-  }
-
-  return { template: templateTokens, args, hasPlaceholder };
+  if (templateTokens.length === 0 && markerIndex === -1) return null;
+  return { template: templateTokens, argSources };
 }

@@ -20,16 +20,5 @@ export const SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "ksh", "dash", "fish
 
 export const INTERPRETERS = new Set(["python", "python3", "python2", "node", "ruby", "perl"]);
 
-export const DANGEROUS_PATTERNS = [
-  /\brm\s+.*-[rR].*-f\b/,
-  /\brm\s+.*-f.*-[rR]\b/,
-  /\brm\s+-rf\b/,
-  /\brm\s+-fr\b/,
-  /\bgit\s+reset\s+--hard\b/,
-  /\bgit\s+checkout\s+--\b/,
-  /\bgit\s+clean\s+-f\b/,
-  /\bfind\b.*\s-delete\b/,
-];
-
 export const PARANOID_INTERPRETERS_SUFFIX =
   "\n\n(Paranoid mode: interpreter one-liners are blocked.)";

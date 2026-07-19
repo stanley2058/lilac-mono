@@ -792,7 +792,7 @@ done`;
     expect(result?.reason).toContain("git reset --hard");
   });
 
-  it("blocks destructive commands selected through parameter expansions", () => {
+  it("allows commands whose destructive behavior depends on runtime expansion", () => {
     const commands = [
       "${command:-rm} -rf /",
       "git ${x:-reset} --hard",
@@ -804,20 +804,17 @@ done`;
       "python ${x:-dangerous.py}",
       "echo ok > ${x:-/etc/passwd}",
     ];
-    const assigned = analyzeBashCommand('command=git; "$command" reset --hard');
-    const assignedArgument = analyzeBashCommand('operation=${x:-reset}; git "$operation" --hard');
-    const loop = analyzeBashCommand('for command in rm; do "$command" -rf /; done');
-    const wrapped = analyzeBashCommand('exec "$command" -rf /');
-    const grouped = analyzeBashCommand('{ "$command" -rf /; }');
+    commands.push(
+      'command=git; "$command" reset --hard',
+      'operation=${x:-reset}; git "$operation" --hard',
+      'for command in rm; do "$command" -rf /; done',
+      'exec "$command" -rf /',
+      '{ "$command" -rf /; }',
+    );
 
     for (const command of commands) {
-      expect(analyzeBashCommand(command), command).not.toBeNull();
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
-    expect(assigned?.reason).toContain("dynamic shell expansion");
-    expect(assignedArgument?.reason).toContain("safety-relevant command argument");
-    expect(loop?.reason).toContain("dynamic shell expansion");
-    expect(wrapped?.reason).toContain("dynamic shell expansion");
-    expect(grouped?.reason).toContain("dynamic shell expansion");
   });
 
   it("allows exact benign expansions in assignment and display-value positions", () => {
@@ -829,7 +826,7 @@ done`;
     expect(analyzeBashCommand('printf ok | tee "${output:-result.txt}"')).toBeNull();
   });
 
-  it("blocks dynamic executables in shell control flow and execution wrappers", () => {
+  it("allows dynamic executables in shell control flow and execution wrappers", () => {
     const commands = [
       '! "$command" -rf /',
       '( "$command" -rf / )',
@@ -844,8 +841,32 @@ done`;
     ];
 
     for (const command of commands) {
-      expect(analyzeBashCommand(command), command).not.toBeNull();
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
+  });
+
+  it("treats command lookup operands as data", () => {
+    const diagnostic = `for x in bwrap fuse-overlayfs fusermount3 unshare mount nsenter git gh; do
+  printf '%-16s' "$x"
+  command -v "$x" || true
+done`;
+    const allowed = [
+      diagnostic,
+      'command -V "$tool"',
+      'command -pv -- "$tool"',
+      'env MODE=probe command -V "$tool"',
+      'builtin command -v "$tool"',
+      "command -v git reset --hard",
+    ];
+
+    for (const command of allowed) {
+      expect(analyzeBashCommand(command), command).toBeNull();
+    }
+
+    expect(analyzeBashCommand('command "$tool" -rf /')).toBeNull();
+    expect(analyzeBashCommand('command -p "$tool" -rf /')).toBeNull();
+    expect(analyzeBashCommand("command rm -rf /")).not.toBeNull();
+    expect(analyzeBashCommand("command -p rm -rf /")).not.toBeNull();
   });
 
   it("blocks static destructive commands behind execution wrappers", () => {
@@ -886,10 +907,36 @@ done`;
     }
   });
 
-  it("recursively analyzes static eval payloads and rejects dynamic payloads", () => {
+  it("allows dynamic data arguments behind static execution wrappers", () => {
+    const commands = [
+      `builtin printf '%s\n' "$value"`,
+      `exec printf '%s\n' "$value"`,
+      `timeout 2 printf '%s\n' "$value"`,
+      `nice -n 2 printf '%s\n' "$value"`,
+      `nohup printf '%s\n' "$value"`,
+      `setsid --wait printf '%s\n' "$value"`,
+      `stdbuf -oL printf '%s\n' "$value"`,
+      `ionice -c2 printf '%s\n' "$value"`,
+      `chrt -f 1 printf '%s\n' "$value"`,
+    ];
+
+    for (const command of commands) {
+      expect(analyzeBashCommand(command), command).toBeNull();
+    }
+  });
+
+  it("supports chrt's optional priority without hiding its child", () => {
+    expect(analyzeBashCommand("chrt -o rm -rf /")).not.toBeNull();
+    expect(analyzeBashCommand("chrt --other git reset --hard")).not.toBeNull();
+    expect(analyzeBashCommand("chrt -oR rm -rf /")).not.toBeNull();
+    expect(analyzeBashCommand("chrt -RoT10 rm -rf /")).not.toBeNull();
+    expect(analyzeBashCommand("chrt --ext printf ok")).toBeNull();
+  });
+
+  it("recursively analyzes static eval payloads and allows dynamic payloads", () => {
     expect(analyzeBashCommand("eval 'git reset --hard'")?.reason).toContain("git reset --hard");
     expect(analyzeBashCommand("eval 'rm -rf /'")).not.toBeNull();
-    expect(analyzeBashCommand('eval "$command"')?.reason).toContain("dynamic shell expansion");
+    expect(analyzeBashCommand('eval "$command"')).toBeNull();
   });
 
   it("recursively analyzes shell scripts supplied through stdin redirections", () => {
@@ -898,18 +945,18 @@ done`;
       "bash -s <<< 'rm -rf /'",
       "sh -eu <<'EOF'\ngit clean -f\nEOF",
       "bash 3<<'EOF' <&3\ngit reset --hard\nEOF",
-      'bash <<< "$payload"',
-      'bash -s <<< "$(printf dangerous)"',
     ];
 
     for (const command of blocked) {
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
     expect(analyzeBashCommand("bash -eu <<'EOF'\nprintf '%s\\n' hi\nEOF")).toBeNull();
+    expect(analyzeBashCommand('bash <<< "$payload"')).toBeNull();
+    expect(analyzeBashCommand('bash -s <<< "$(printf dangerous)"')).toBeNull();
   });
 
-  it("fails closed for uninspectable shell pipeline stdin", () => {
-    const blocked = [
+  it("allows uninspectable shell pipeline stdin", () => {
+    const commands = [
       `echo "$(printf 'git reset --hard')" | bash`,
       "printf $'git reset --hard\\n' | bash",
       "printf 'rm -rf /\\n' | sh -eu",
@@ -917,8 +964,8 @@ done`;
       "printf 'git reset --hard\\n' | (bash)",
     ];
 
-    for (const command of blocked) {
-      expect(analyzeBashCommand(command), command).not.toBeNull();
+    for (const command of commands) {
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
     expect(analyzeBashCommand("printf 'git reset --hard\\n' | bash </dev/null")).toBeNull();
   });
@@ -947,8 +994,6 @@ done`;
       "bash -c 'bash' <<'EOF'\ngit reset --hard\nEOF",
       "bash </dev/null <<'EOF'\ngit reset --hard\nEOF",
       "bash 3<<'EOF' <&3\ngit reset --hard\nEOF",
-      "bash < script.sh",
-      "printf safe | bash < script.sh",
     ];
 
     for (const command of blocked) {
@@ -959,6 +1004,8 @@ done`;
     expect(analyzeBashCommand("bash 3<<'EOF'\ngit reset --hard\nEOF")).toBeNull();
     expect(analyzeBashCommand("bash </dev/null")).toBeNull();
     expect(analyzeBashCommand("bash <&-")).toBeNull();
+    expect(analyzeBashCommand("bash < script.sh")).toBeNull();
+    expect(analyzeBashCommand("printf safe | bash < script.sh")).toBeNull();
   });
 
   it("resolves compound-command stdin before walking nested statements", () => {
@@ -977,36 +1024,32 @@ done`;
     expect(analyzeBashCommand("{ bash; } 3<<'EOF'\ngit reset --hard\nEOF")).toBeNull();
   });
 
-  it("threads command stdin into command substitution bodies", () => {
-    expect(analyzeBashCommand(`printf 'git reset --hard\\n' | echo "$(bash)"`)).not.toBeNull();
-    expect(
-      analyzeBashCommand(`printf $'git reset --hard\\n' | printf '%s' "$(bash)"`),
-    ).not.toBeNull();
+  it("allows uninspectable stdin in command substitution bodies", () => {
+    expect(analyzeBashCommand(`printf 'git reset --hard\\n' | echo "$(bash)"`)).toBeNull();
+    expect(analyzeBashCommand(`printf $'git reset --hard\\n' | printf '%s' "$(bash)"`)).toBeNull();
     expect(analyzeBashCommand("output=$(bash)")).toBeNull();
     expect(analyzeBashCommand(`printf 'safe\\n' | echo "$(bash </dev/null)"`)).toBeNull();
   });
 
-  it("fails closed for dynamic simple redirection targets without changing tee arguments", () => {
-    expect(analyzeBashCommand("printf ok > $out")).not.toBeNull();
-    expect(analyzeBashCommand('printf ok > "$out"')).not.toBeNull();
-    expect(analyzeBashCommand('printf ok > "$(printf output.txt)"')).not.toBeNull();
+  it("allows dynamic redirection targets and tee arguments", () => {
+    expect(analyzeBashCommand("printf ok > $out")).toBeNull();
+    expect(analyzeBashCommand('printf ok > "$out"')).toBeNull();
+    expect(analyzeBashCommand('printf ok > "$(printf output.txt)"')).toBeNull();
     expect(analyzeBashCommand('printf ok | tee "$out"')).toBeNull();
   });
 
-  it("fails closed for Bash prompt expansion that can execute variable contents", () => {
+  it("allows Bash prompt expansion with runtime-dependent contents", () => {
     const commands = [
       'printf "%s\\n" "${parameter@P}"',
       `parameter='$(git reset --hard)'; printf '%s\\n' "\${parameter@P}"`,
     ];
 
     for (const command of commands) {
-      expect(analyzeBashCommand(command), command).toMatchObject({
-        reason: expect.stringContaining("prompt expansion"),
-      });
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
   });
 
-  it("walks function definitions and coprocesses", () => {
+  it("allows runtime-dependent function and coprocess bodies", () => {
     const commands = [
       'remove_all() { "$command" -rf /; }',
       'function remove_all { "$command" -rf /; }',
@@ -1015,14 +1058,14 @@ done`;
     ];
 
     for (const command of commands) {
-      expect(analyzeBashCommand(command), command).not.toBeNull();
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
     expect(analyzeBashCommand("status() { git status; }")).toBeNull();
   });
 
-  it("analyzes function bodies with arbitrary future stdin", () => {
-    expect(analyzeBashCommand("f() { bash; }; printf 'git reset --hard\\n' | f")).not.toBeNull();
-    expect(analyzeBashCommand('f() { echo "$(bash)"; }')).not.toBeNull();
+  it("allows function bodies with arbitrary future stdin", () => {
+    expect(analyzeBashCommand("f() { bash; }; printf 'git reset --hard\\n' | f")).toBeNull();
+    expect(analyzeBashCommand('f() { echo "$(bash)"; }')).toBeNull();
     expect(analyzeBashCommand("f() { bash </dev/null; }")).toBeNull();
     expect(analyzeBashCommand("status() { git status; }")).toBeNull();
   });
@@ -1058,26 +1101,34 @@ done`;
     }
   });
 
-  it("recursively blocks dangerous and executable command substitutions", () => {
-    const commands = [
-      "$(printf rm) -rf /",
-      "`printf rm` -rf /",
-      "g$(printf it) reset --hard",
+  it("blocks proven danger inside command substitutions", () => {
+    const blocked = [
       'echo "$(git reset --hard)"',
-      `bash -c "$(printf 'git status')"`,
       "cat <<EOF\n$(git reset --hard)\nEOF",
       "(( value = $(git reset --hard) ))",
     ];
 
-    for (const command of commands) {
+    for (const command of blocked) {
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
+    expect(analyzeBashCommand("$(printf rm) -rf /")).toBeNull();
+    expect(analyzeBashCommand("`printf rm` -rf /")).toBeNull();
+    expect(analyzeBashCommand("g$(printf it) reset --hard")).toBeNull();
+    expect(analyzeBashCommand(`bash -c "$(printf 'git status')"`)).toBeNull();
   });
 
-  it("fails closed with parser detail when just-bash cannot represent process substitution", () => {
-    expect(analyzeBashCommand("cat <(git reset --hard)")).toMatchObject({
-      reason: expect.stringContaining("Expected redirection target"),
-    });
+  it("uses destructive-text fallback for unsupported shell syntax", () => {
+    expect(analyzeBashCommand("cat <(git reset --hard)")?.reason).toContain("git reset --hard");
+    expect(analyzeBashCommand("cat <(git -C repo reset --hard)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git restore .)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git push --force origin main)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git push -fu origin main)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git restore --staged --worktree .)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git worktree remove --force ../tree)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git branch -aD old)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(git checkout --pathspec-from-file=list)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(rm -r --no-preserve-root -f /)")).not.toBeNull();
+    expect(analyzeBashCommand("cat <(printf safe)")).toBeNull();
   });
 
   it("matches policy against decoded ANSI-C quoted content", () => {
@@ -1093,25 +1144,25 @@ done`;
     }
   });
 
-  it("fails closed for dynamic arithmetic and inspects raw braced expansion operations", () => {
+  it("inspects nested arithmetic commands but allows runtime-dependent values", () => {
     const blocked = [
       "echo $(( $(git reset --hard) ))",
       "echo $(( ${x:-$(git reset --hard)} ))",
       "(( result = ${x:-$(git reset --hard)} ))",
-      "echo $(( $(printf 1) ))",
-      "echo $(( value ))",
-      "echo $(( ${value:-1} ))",
     ];
 
     for (const command of blocked) {
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
+    expect(analyzeBashCommand("echo $(( $(printf 1) ))")).toBeNull();
+    expect(analyzeBashCommand("echo $(( value ))")).toBeNull();
+    expect(analyzeBashCommand("echo $(( ${value:-1} ))")).toBeNull();
     expect(analyzeBashCommand("echo $(( 1 + 2 ))")).toBeNull();
   });
 
-  it("preserves globs for destructive and sensitive-path policy matching", () => {
+  it("allows glob-dependent behavior but retains exact destructive and sensitive matches", () => {
     const cwd = "/tmp/lilac-project";
-    const blocked = [
+    const allowed = [
       "g* reset --hard",
       "git r* --hard",
       "rm -r? /",
@@ -1121,8 +1172,8 @@ done`;
       "printf ok > output*",
     ];
 
-    for (const command of blocked) {
-      expect(analyzeBashCommand(command, { cwd }), command).not.toBeNull();
+    for (const command of allowed) {
+      expect(analyzeBashCommand(command, { cwd }), command).toBeNull();
     }
     expect(analyzeBashCommand("rm -rf /*", { cwd })).not.toBeNull();
     expect(analyzeBashCommand("rm -rf ../*", { cwd })).not.toBeNull();
@@ -1132,16 +1183,16 @@ done`;
     expect(analyzeBashCommand("cat /data/secret/gnupg/*", { cwd })).not.toBeNull();
   });
 
-  it("allows command-specific project-local glob operands", () => {
+  it("allows runtime-dependent glob operands", () => {
     const options = { cwd: "/tmp/lilac-project" };
     expect(analyzeBashCommand("cat *.txt", options)).toBeNull();
     expect(analyzeBashCommand("git add src/*.ts", options)).toBeNull();
     expect(analyzeBashCommand("rm -f *.tmp", options)).toBeNull();
 
-    expect(analyzeBashCommand("cat ../*.txt", options)).not.toBeNull();
-    expect(analyzeBashCommand("git add ~/.s*", options)).not.toBeNull();
-    expect(analyzeBashCommand("rm -f ../*.tmp", options)).not.toBeNull();
-    expect(analyzeBashCommand("git r* --hard", options)).not.toBeNull();
+    expect(analyzeBashCommand("cat ../*.txt", options)).toBeNull();
+    expect(analyzeBashCommand("git add ~/.s*", options)).toBeNull();
+    expect(analyzeBashCommand("rm -f ../*.tmp", options)).toBeNull();
+    expect(analyzeBashCommand("git r* --hard", options)).toBeNull();
   });
 
   it("recognizes abbreviated GNU rm recursive and force options", () => {
@@ -1169,27 +1220,32 @@ done`;
     expect(analyzeBashCommand("location=$(cd ..); rm -rf build", options)).toBeNull();
   });
 
-  it("makes cwd unknown when cd or wrappers have ambiguous destination semantics", () => {
+  it("distinguishes static and ambiguous cwd changes", () => {
     const options = { cwd: "/tmp/lilac-project" };
-    const commands = [
+    const allowed = [
       "cd -P ..; bash -c 'rm -rf build'",
-      "cd -- ..; bash -c 'rm -rf build'",
       "cd ~; bash -c 'rm -rf build'",
       "CDPATH=/tmp cd project; bash -c 'rm -rf build'",
       "cd /tmp/lilac-project/symlink; bash -c 'rm -rf build'",
       "pushd /tmp/lilac-project/other; sh -c 'rm -rf build'",
       "popd; eval 'rm -rf build'",
+      'env -C "$target" rm -rf build',
+      'sudo -D "$target" rm -rf build',
+    ];
+    const blocked = [
+      "cd -- ..; bash -c 'rm -rf build'",
       "env -C .. bash -c 'rm -rf build'",
       "env --chdir=.. sh -c 'rm -rf build'",
-      'env -C "$target" rm -rf build',
       "env -C .. rm -rf build",
       "sudo -D .. bash -c 'rm -rf build'",
       "sudo --chdir .. sh -c 'rm -rf build'",
-      'sudo -D "$target" rm -rf build',
       "sudo -D .. rm -rf build",
     ];
 
-    for (const command of commands) {
+    for (const command of allowed) {
+      expect(analyzeBashCommand(command, options), command).toBeNull();
+    }
+    for (const command of blocked) {
       expect(analyzeBashCommand(command, options), command).not.toBeNull();
     }
   });
@@ -1200,13 +1256,16 @@ done`;
       "find . -execdir git clean -f \\;",
       "find . -ok bash -c 'git reset --hard' \\;",
       "find . -okdir sh -c 'rm -rf /' \\;",
-      "find . -execdir rm -rf build \\;",
     ];
 
     for (const command of commands) {
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
     expect(analyzeBashCommand("find . -exec printf '%s\\n' {} \\;")).toBeNull();
+    expect(analyzeBashCommand("find . -execdir rm -rf build \\;")).toBeNull();
+    expect(analyzeBashCommand("find . -exec rm -rf {} \\;")).not.toBeNull();
+    expect(analyzeBashCommand("find . -exec sh -c 'rm -rf \"{}\"' \\;")).not.toBeNull();
+    expect(analyzeBashCommand("find . -exec sh -c 'eval \"rm -rf {}\"' \\;")).not.toBeNull();
   });
 
   it("treats find execution payload tokens as flat until the first terminator", () => {
@@ -1217,31 +1276,43 @@ done`;
     ).not.toBeNull();
   });
 
-  it("recursively analyzes trap actions and mapfile callbacks", () => {
+  it("recursively analyzes static callbacks and allows dynamic callbacks", () => {
     const blocked = [
       "trap 'git reset --hard' EXIT",
-      'trap "$action" EXIT',
       "mapfile -C 'git clean -f' -c 1 lines",
       "readarray --callback='rm -rf /' lines",
-      'readarray -C "$callback" lines',
     ];
 
     for (const command of blocked) {
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
+    expect(analyzeBashCommand('trap "$action" EXIT')).toBeNull();
+    expect(analyzeBashCommand('readarray -C "$callback" lines')).toBeNull();
     expect(analyzeBashCommand("trap 'printf done' EXIT")).toBeNull();
     expect(analyzeBashCommand("mapfile -C 'printf row' -c 1 lines")).toBeNull();
   });
 
-  it("allows command-substitution values only for explicit value consumers", () => {
-    const blocked = [
+  it("recursively analyzes static compgen command generators", () => {
+    expect(analyzeBashCommand("compgen -C 'git reset --hard' word")).not.toBeNull();
+    expect(analyzeBashCommand("compgen -aC 'git reset --hard' word")).not.toBeNull();
+    expect(
+      analyzeBashCommand("compgen -C 'printf safe' -C 'git reset --hard' word"),
+    ).not.toBeNull();
+    expect(analyzeBashCommand("compgen -C 'printf completion' word")).toBeNull();
+    expect(analyzeBashCommand('compgen -C "$generator" word')).toBeNull();
+    expect(analyzeBashCommand("compgen word -C 'git reset --hard'")).toBeNull();
+    expect(analyzeBashCommand("compgen -- -C 'git reset --hard'")).toBeNull();
+  });
+
+  it("allows command-substitution values after inspecting their bodies", () => {
+    const commands = [
       'cp "$(printf "$path")" /tmp/copied',
       'head "$(printf "$path")"',
       'file "$(printf "$path")"',
     ];
 
-    for (const command of blocked) {
-      expect(analyzeBashCommand(command), command).not.toBeNull();
+    for (const command of commands) {
+      expect(analyzeBashCommand(command), command).toBeNull();
     }
     expect(analyzeBashCommand('echo "$(printf hi)"')).toBeNull();
     expect(analyzeBashCommand('basename "$(printf "$path")"')).toBeNull();
@@ -1249,30 +1320,21 @@ done`;
     expect(analyzeBashCommand("output=$(printf value)")).toBeNull();
   });
 
-  it("fails closed when nested shell analysis reaches its recursion limit", () => {
+  it("allows commands when nested analysis reaches its recursion limit", () => {
     let command = "git status";
     for (let i = 0; i < 6; i++) {
       command = `bash -c ${JSON.stringify(command)}`;
     }
 
-    expect(analyzeBashCommand(command)).toMatchObject({
-      reason: expect.stringContaining("recursion exceeded"),
-    });
+    expect(analyzeBashCommand(command)).toBeNull();
   });
 
-  it("returns a blocked safety result for parser failures", () => {
-    const result = analyzeBashCommand('echo "unterminated');
-
-    expect(result).toMatchObject({
-      reason: expect.stringContaining("unexpected EOF"),
-      segment: 'echo "unterminated',
-    });
+  it("allows parser failures without proven destructive text", () => {
+    expect(analyzeBashCommand('echo "unterminated')).toBeNull();
   });
 
-  it("fails closed for deferred parser errors with useful detail", () => {
-    expect(analyzeBashCommand("echo ok\n}")).toMatchObject({
-      reason: expect.stringContaining("deferred a syntax error"),
-    });
+  it("allows deferred parser errors", () => {
+    expect(analyzeBashCommand("echo ok\n}")).toBeNull();
   });
 
   it("blocks destructive git commands", () => {
@@ -1287,6 +1349,14 @@ done`;
     expect(result?.reason).toContain("root");
   });
 
+  it("keeps dynamic rm -rf targets as an explicit fail-closed exception", () => {
+    expect(analyzeBashCommand('rm -rf "$target"')?.reason).toContain("dynamic target");
+    expect(analyzeBashCommand('timeout 2 rm -rf "$target"')?.reason).toContain("dynamic target");
+    expect(analyzeBashCommand('rm -f "$target"')).toBeNull();
+    expect(analyzeBashCommand('rm -rf --preserve-root="$mode" build', { cwd: "/tmp" })).toBeNull();
+    expect(analyzeBashCommand('rm -rf "${prefix}--cache"')).not.toBeNull();
+  });
+
   it("allows rm -rf against temp paths", () => {
     const result = analyzeBashCommand("rm -rf /tmp/cache");
     expect(result).toBeNull();
@@ -1298,10 +1368,9 @@ done`;
     expect(result?.reason).toContain("git reset --hard");
   });
 
-  it("blocks interpreter one-liners that contain dangerous commands", () => {
+  it("allows opaque interpreter code by default", () => {
     const result = analyzeBashCommand("python -c 'import os; os.system(\"rm -rf /\")'");
-    expect(result).not.toBeNull();
-    expect(result?.reason).toContain("interpreter");
+    expect(result).toBeNull();
   });
 
   it("blocks find -delete", () => {
@@ -1314,15 +1383,63 @@ done`;
     expect(analyzeBashCommand("cat /data/secret/tool-env.jsonc")).toBeNull();
   });
 
-  it("blocks xargs rm -rf even with temp targets", () => {
-    const result = analyzeBashCommand("xargs rm -rf /tmp/cache");
-    expect(result).not.toBeNull();
-    expect(result?.reason).toContain("xargs");
+  it("matches sensitive paths only in access contexts", () => {
+    expect(analyzeBashCommand("echo ~/.ssh/id_rsa")).toBeNull();
+    expect(analyzeBashCommand("cat ~/.ssh/id_rsa")).not.toBeNull();
+    expect(analyzeBashCommand("ls ~/.ssh")).not.toBeNull();
+    expect(analyzeBashCommand("find ~/.ssh -type f -print")).not.toBeNull();
+    expect(analyzeBashCommand("ssh -i ~/.ssh/id_rsa host")).not.toBeNull();
+    expect(analyzeBashCommand("ssh-add ~/.ssh/id_rsa")).not.toBeNull();
+    expect(analyzeBashCommand("ssh-keygen -y -f ~/.ssh/id_rsa")).not.toBeNull();
+    expect(analyzeBashCommand("sftp -i ~/.ssh/id_rsa host")).not.toBeNull();
+    expect(analyzeBashCommand("gpg --import ~/.ssh/id_rsa")).not.toBeNull();
+    expect(analyzeBashCommand("openssl pkey -in ~/.ssh/id_rsa")).not.toBeNull();
+    expect(analyzeBashCommand("printf ok > ~/.ssh/config")).not.toBeNull();
   });
 
-  it("blocks parallel shell -c", () => {
-    const result = analyzeBashCommand("parallel bash -c '{}' ::: 'echo hi'");
-    expect(result).not.toBeNull();
-    expect(result?.reason).toContain("parallel");
+  it("does not let uncertainty mask a later proven destructive command", () => {
+    const commands = [
+      'echo "$value"; git reset --hard',
+      "echo $(( value )); find . -delete",
+      '"$command"; rm -rf /',
+    ];
+    for (const command of commands) {
+      expect(analyzeBashCommand(command), command).not.toBeNull();
+    }
+  });
+
+  it("recursively analyzes static xargs children", () => {
+    expect(analyzeBashCommand("xargs rm -rf /tmp/cache")).not.toBeNull();
+    expect(analyzeBashCommand("xargs -I{} rm -rf {}")).not.toBeNull();
+    expect(analyzeBashCommand("xargs -I{} sh -c 'rm -rf \"{}\"'")).not.toBeNull();
+    expect(analyzeBashCommand("xargs -I{} bash -c 'eval \"rm -rf {}\"'")).not.toBeNull();
+    expect(analyzeBashCommand("xargs timeout 1 rm -rf /")).not.toBeNull();
+    expect(analyzeBashCommand("xargs nice -n 1 git reset --hard")).not.toBeNull();
+  });
+
+  it("analyzes finite static GNU Parallel expansions", () => {
+    expect(analyzeBashCommand("parallel bash -c '{}' ::: 'echo hi'")).toBeNull();
+    expect(analyzeBashCommand("parallel bash -c '{}' ::: 'git reset --hard'")).not.toBeNull();
+    expect(analyzeBashCommand("parallel timeout 1 rm -rf {} ::: /")).not.toBeNull();
+    expect(analyzeBashCommand("parallel {} -rf / ::: rm")).not.toBeNull();
+    expect(analyzeBashCommand("parallel rm -rf {}")).not.toBeNull();
+    expect(analyzeBashCommand("parallel sh -c 'rm -rf \"{}\"'")).not.toBeNull();
+    expect(analyzeBashCommand("parallel sh -c 'eval \"rm -rf {}\"'")).not.toBeNull();
+    expect(analyzeBashCommand("parallel 'git reset --hard' ::: HEAD")).not.toBeNull();
+    expect(
+      analyzeBashCommand(`parallel 'bash -c "rm -rf {2}"' ::: safe ::: /var/lib/lilac.txt`),
+    ).not.toBeNull();
+    expect(
+      analyzeBashCommand(`parallel 'bash -c "rm -rf {.}"' ::: /var/lib/lilac.txt`),
+    ).not.toBeNull();
+  });
+
+  it("uses the original cwd for the failure branch of cd", () => {
+    const options = { cwd: "/tmp/lilac-project" };
+    expect(analyzeBashCommand("cd .. || rm -rf build", options)).toBeNull();
+    expect(analyzeBashCommand("cd .. && rm -rf build", options)).not.toBeNull();
+    expect(analyzeBashCommand("cd .. && false || rm -rf build", options)).not.toBeNull();
+    expect(analyzeBashCommand("cd .. || false && rm -rf build", options)).not.toBeNull();
+    expect(analyzeBashCommand("false || cd .. && rm -rf build", options)).not.toBeNull();
   });
 });

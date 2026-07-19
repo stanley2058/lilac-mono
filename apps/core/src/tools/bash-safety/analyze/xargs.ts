@@ -1,76 +1,24 @@
-import { SHELL_WRAPPERS } from "../types";
-
-import { analyzeGit } from "../rules-git";
-import { analyzeRm } from "../rules-rm";
-import { getBasename, stripWrappers } from "../shell";
-
-import { analyzeFind } from "./find";
-import { hasRecursiveForceFlags } from "./rm-flags";
-
-const REASON_XARGS_RM =
-  "xargs rm -rf with dynamic input is dangerous. Use explicit file list instead.";
-const REASON_XARGS_SHELL = "xargs with shell -c can execute arbitrary commands from dynamic input.";
+import { DYNAMIC_EXPANSION_MARKER } from "../shell";
 
 export interface XargsAnalyzeContext {
-  cwd: string | undefined;
-  originalCwd: string | undefined;
-  paranoidRm: boolean | undefined;
-  allowTmpdirVar: boolean;
+  analyzeCommand: (tokens: string[]) => string | null;
 }
 
 export function analyzeXargs(
   tokens: readonly string[],
   context: XargsAnalyzeContext,
 ): string | null {
-  const { childTokens: rawChildTokens } = extractXargsChildCommandWithInfo(tokens);
+  const { childTokens, replacementToken } = extractXargsChildCommandWithInfo(tokens);
+  if (childTokens.length === 0) return null;
 
-  let childTokens = stripWrappers(rawChildTokens);
-
-  if (childTokens.length === 0) {
-    return null;
+  if (replacementToken) {
+    const expanded = childTokens.map((token, index) =>
+      index === 0 ? token : token.replaceAll(replacementToken, DYNAMIC_EXPANSION_MARKER),
+    );
+    return context.analyzeCommand(expanded);
   }
 
-  let head = getBasename(childTokens[0] ?? "").toLowerCase();
-
-  if (head === "busybox" && childTokens.length > 1) {
-    childTokens = childTokens.slice(1);
-    head = getBasename(childTokens[0] ?? "").toLowerCase();
-  }
-
-  if (SHELL_WRAPPERS.has(head)) {
-    return REASON_XARGS_SHELL;
-  }
-
-  if (head === "rm" && hasRecursiveForceFlags(childTokens)) {
-    const rmResult = analyzeRm(childTokens, {
-      cwd: context.cwd,
-      originalCwd: context.originalCwd,
-      paranoid: context.paranoidRm,
-      allowTmpdirVar: context.allowTmpdirVar,
-    });
-
-    if (rmResult) {
-      return rmResult;
-    }
-
-    return REASON_XARGS_RM;
-  }
-
-  if (head === "find") {
-    const findResult = analyzeFind(childTokens);
-    if (findResult) {
-      return findResult;
-    }
-  }
-
-  if (head === "git") {
-    const gitResult = analyzeGit(childTokens);
-    if (gitResult) {
-      return gitResult;
-    }
-  }
-
-  return null;
+  return context.analyzeCommand([...childTokens, DYNAMIC_EXPANSION_MARKER]);
 }
 
 interface XargsParseResult {

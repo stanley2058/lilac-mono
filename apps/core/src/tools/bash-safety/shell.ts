@@ -83,6 +83,8 @@ export interface WrapperStrippingResult {
   tokens: string[];
   envAssignments: Map<string, string>;
   childCwdUnknown: boolean;
+  childCwd: string | undefined;
+  commandLookupOnly: boolean;
 }
 
 export function stripWrappers(tokens: string[]): string[] {
@@ -93,6 +95,8 @@ export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult 
   let result = [...tokens];
   const allEnvAssignments = new Map<string, string>();
   let childCwdUnknown = false;
+  let childCwd: string | undefined;
+  let commandLookupOnly = false;
 
   for (let iteration = 0; iteration < MAX_STRIP_ITERATIONS; iteration++) {
     const before = result.join(" ");
@@ -123,19 +127,32 @@ export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult 
       const sudoResult = stripSudo(result);
       result = sudoResult.tokens;
       childCwdUnknown ||= sudoResult.childCwdUnknown;
+      if (sudoResult.childCwd !== undefined) {
+        if (childCwd !== undefined) childCwdUnknown = true;
+        childCwd = sudoResult.childCwd;
+      }
     }
 
     if (head === "env") {
       const envResult = stripEnvWithInfo(result);
       result = envResult.tokens;
       childCwdUnknown ||= envResult.childCwdUnknown;
+      if (envResult.childCwd !== undefined) {
+        if (childCwd !== undefined) childCwdUnknown = true;
+        childCwd = envResult.childCwd;
+      }
       for (const [k, v] of envResult.envAssignments) {
         allEnvAssignments.set(k, v);
       }
     }
 
     if (head === "command") {
-      result = stripCommand(result);
+      const commandResult = stripCommand(result, result[0] === "command");
+      if (commandResult.lookupOnly) {
+        commandLookupOnly = true;
+        break;
+      }
+      result = commandResult.tokens;
     }
 
     if (result.join(" ") === before) break;
@@ -148,7 +165,13 @@ export function stripWrappersWithInfo(tokens: string[]): WrapperStrippingResult 
     allEnvAssignments.set(k, v);
   }
 
-  return { tokens: finalTokens, envAssignments: allEnvAssignments, childCwdUnknown };
+  return {
+    tokens: finalTokens,
+    envAssignments: allEnvAssignments,
+    childCwdUnknown,
+    childCwd,
+    commandLookupOnly,
+  };
 }
 
 const SUDO_OPTS_WITH_VALUE = new Set([
@@ -168,17 +191,19 @@ const SUDO_OPTS_WITH_VALUE = new Set([
 interface ChildCwdStrippingResult {
   tokens: string[];
   childCwdUnknown: boolean;
+  childCwd: string | undefined;
 }
 
 function stripSudo(tokens: string[]): ChildCwdStrippingResult {
   let i = 1;
   let childCwdUnknown = false;
+  let childCwd: string | undefined;
   while (i < tokens.length) {
     const token = tokens[i];
     if (!token) break;
 
     if (token === "--") {
-      return { tokens: tokens.slice(i + 1), childCwdUnknown };
+      return { tokens: tokens.slice(i + 1), childCwdUnknown, childCwd };
     }
 
     if (!token.startsWith("-")) {
@@ -186,19 +211,27 @@ function stripSudo(tokens: string[]): ChildCwdStrippingResult {
     }
 
     if (SUDO_OPTS_WITH_VALUE.has(token)) {
-      if (token === "-D" || token === "--chdir") childCwdUnknown = true;
+      if (token === "-D" || token === "--chdir") {
+        const value = tokens[i + 1];
+        if (!value || hasDynamicExpansion(value)) childCwdUnknown = true;
+        else childCwd = value;
+      }
       i += 2;
       continue;
     }
 
     if (token.startsWith("--chdir=")) {
-      childCwdUnknown = true;
+      const value = token.slice("--chdir=".length);
+      if (!value || hasDynamicExpansion(value)) childCwdUnknown = true;
+      else childCwd = value;
       i++;
       continue;
     }
 
     if (token.startsWith("-D") && token.length > 2) {
-      childCwdUnknown = true;
+      const value = token.slice(2);
+      if (hasDynamicExpansion(value)) childCwdUnknown = true;
+      else childCwd = value;
       i++;
       continue;
     }
@@ -206,7 +239,7 @@ function stripSudo(tokens: string[]): ChildCwdStrippingResult {
     i++;
   }
 
-  return { tokens: tokens.slice(i), childCwdUnknown };
+  return { tokens: tokens.slice(i), childCwdUnknown, childCwd };
 }
 
 const ENV_OPTS_NO_VALUE = new Set(["-i", "-0", "--null"]);
@@ -220,9 +253,13 @@ const ENV_OPTS_WITH_VALUE = new Set([
   "-P",
 ]);
 
-function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnknown: boolean } {
+function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & {
+  childCwdUnknown: boolean;
+  childCwd: string | undefined;
+} {
   const envAssignments = new Map<string, string>();
   let childCwdUnknown = false;
+  let childCwd: string | undefined;
   let i = 1;
 
   while (i < tokens.length) {
@@ -230,7 +267,7 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnkn
     if (!token) break;
 
     if (token === "--") {
-      return { tokens: tokens.slice(i + 1), envAssignments, childCwdUnknown };
+      return { tokens: tokens.slice(i + 1), envAssignments, childCwdUnknown, childCwd };
     }
 
     if (ENV_OPTS_NO_VALUE.has(token)) {
@@ -239,7 +276,11 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnkn
     }
 
     if (ENV_OPTS_WITH_VALUE.has(token)) {
-      if (token === "-C" || token === "--chdir") childCwdUnknown = true;
+      if (token === "-C" || token === "--chdir") {
+        const value = tokens[i + 1];
+        if (!value || hasDynamicExpansion(value)) childCwdUnknown = true;
+        else childCwd = value;
+      }
       i += 2;
       continue;
     }
@@ -250,7 +291,9 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnkn
     }
 
     if (token.startsWith("-C=") || token.startsWith("--chdir=")) {
-      childCwdUnknown = true;
+      const value = token.slice(token.indexOf("=") + 1);
+      if (!value || hasDynamicExpansion(value)) childCwdUnknown = true;
+      else childCwd = value;
       i++;
       continue;
     }
@@ -274,30 +317,31 @@ function stripEnvWithInfo(tokens: string[]): EnvStrippingResult & { childCwdUnkn
     i++;
   }
 
-  return { tokens: tokens.slice(i), envAssignments, childCwdUnknown };
+  return { tokens: tokens.slice(i), envAssignments, childCwdUnknown, childCwd };
 }
 
-function stripCommand(tokens: string[]): string[] {
+interface CommandStrippingResult {
+  tokens: string[];
+  lookupOnly: boolean;
+}
+
+function stripCommand(tokens: string[], detectLookup: boolean): CommandStrippingResult {
   let i = 1;
+  let lookupOnly = false;
 
   while (i < tokens.length) {
     const token = tokens[i];
     if (!token) break;
 
-    if (token === "-p" || token === "-v" || token === "-V") {
-      i++;
-      continue;
-    }
-
     if (token === "--") {
-      return tokens.slice(i + 1);
+      if (lookupOnly) return { tokens, lookupOnly: true };
+      return { tokens: tokens.slice(i + 1), lookupOnly: false };
     }
 
     if (token.startsWith("-") && !token.startsWith("--") && token.length > 1) {
       const chars = token.slice(1);
-      if (!/^[pvV]+$/.test(chars)) {
-        break;
-      }
+      if (!/^[pvV]+$/.test(chars)) break;
+      if (detectLookup && /[vV]/.test(chars)) lookupOnly = true;
       i++;
       continue;
     }
@@ -305,7 +349,7 @@ function stripCommand(tokens: string[]): string[] {
     break;
   }
 
-  return tokens.slice(i);
+  return lookupOnly ? { tokens, lookupOnly: true } : { tokens: tokens.slice(i), lookupOnly: false };
 }
 
 export function extractShortOpts(tokens: readonly string[]): Set<string> {

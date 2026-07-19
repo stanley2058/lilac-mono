@@ -30,7 +30,8 @@ type TargetClassification =
   | { kind: "cwd_self_target" }
   | { kind: "temp_target" }
   | { kind: "within_anchored_cwd" }
-  | { kind: "outside_anchored_cwd" };
+  | { kind: "outside_anchored_cwd" }
+  | { kind: "unknown" };
 
 export function analyzeRm(tokens: string[], options: AnalyzeRmOptions = {}): string | null {
   const {
@@ -122,6 +123,10 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
     }
   }
 
+  if (!anchoredCwd && !target.startsWith("/")) {
+    return { kind: "unknown" };
+  }
+
   return { kind: "outside_anchored_cwd" };
 }
 
@@ -143,6 +148,8 @@ function reasonForClassification(
       return null;
     case "outside_anchored_cwd":
       return REASON_RM_RF;
+    case "unknown":
+      return null;
   }
 }
 

@@ -1,4 +1,5 @@
 import type { CommandNode, ScriptNode, StatementNode, WordNode } from "just-bash";
+import { isAbsolute, resolve } from "node:path";
 
 import type { AnalyzeOptions, AnalyzeResult } from "../types";
 import { MAX_RECURSION_DEPTH, SHELL_WRAPPERS } from "../types";
@@ -60,17 +61,6 @@ type WordAnalysis =
   | { readonly blocked: AnalyzeResult }
   | { readonly blocked: null; readonly value: WordValue };
 
-const REASON_DYNAMIC_REDIRECTION =
-  "A redirection target is determined by a dynamic shell expansion and cannot be safely analyzed.";
-const REASON_PROMPT_EXPANSION =
-  "Bash prompt expansion can execute variable contents and cannot be safely analyzed.";
-const REASON_RECURSION_LIMIT =
-  "Command could not be safely analyzed because nested shell recursion exceeded the safety limit.";
-const REASON_DYNAMIC_SHELL_STDIN =
-  "Shell stdin contains dynamic executable content and cannot be safely analyzed.";
-const REASON_DYNAMIC_ARITHMETIC =
-  "Arithmetic evaluation depends on runtime-controlled content and cannot be safely analyzed.";
-const STATEMENT_OPERATORS = new Set(["&&", "||", ";"]);
 const REDIRECTION_OPERATORS = new Set([
   "<",
   ">",
@@ -94,7 +84,7 @@ export function analyzeScript(
 ): AnalyzeResult | null {
   const scriptType: string = script.type;
   if (scriptType !== "Script") {
-    return unsupportedResult("script node", scriptType, "script");
+    return null;
   }
 
   for (const statement of script.statements) {
@@ -113,47 +103,90 @@ function analyzeStatement(
   const segment = statement.sourceText?.trim() || `line ${statement.line ?? "unknown"}`;
   const statementType: string = statement.type;
   if (statementType !== "Statement") {
-    return unsupportedResult("statement node", statementType, segment);
-  }
-  const unsupportedOperator = statement.operators.find(
-    (operator) => !STATEMENT_OPERATORS.has(operator),
-  );
-  if (unsupportedOperator) {
-    return unsupportedResult("statement operator", unsupportedOperator, segment);
-  }
-  if (statement.deferredError) {
-    return {
-      reason: `Command could not be safely analyzed because the parser deferred a syntax error: ${sanitizeDetail(statement.deferredError.message)}.`,
-      segment,
-    };
+    return null;
   }
 
-  const initialCwd = state.cwd;
-  let conditionallyChangedCwd = false;
+  let branches: CwdBranch[] = [{ cwd: state.cwd, status: "success" }];
   for (let i = 0; i < statement.pipelines.length; i++) {
-    const beforePipelineCwd = state.cwd;
     const pipeline = statement.pipelines[i];
     if (!pipeline) continue;
-
-    const result = analyzePipeline(pipeline, context, state, segment, stdinSource);
-    if (result) return result;
-
     const precedingOperator = statement.operators[i - 1];
-    if (
-      i > 0 &&
-      (precedingOperator === "&&" || precedingOperator === "||") &&
-      state.cwd !== beforePipelineCwd
-    ) {
-      conditionallyChangedCwd = true;
+    const nextBranches: CwdBranch[] = [];
+    for (const branch of branches) {
+      const shouldRun =
+        i === 0 ||
+        precedingOperator === ";" ||
+        (precedingOperator === "&&" && branch.status === "success") ||
+        (precedingOperator === "||" && branch.status === "failure");
+      if (!shouldRun) {
+        nextBranches.push(branch);
+        continue;
+      }
+
+      const pipelineState: CwdState = { cwd: branch.cwd };
+      const result = analyzePipeline(pipeline, context, pipelineState, segment, stdinSource);
+      if (result) return result;
+
+      const knownStatus = staticallyKnownPipelineStatus(pipeline);
+      if (knownStatus !== "failure") {
+        nextBranches.push({ cwd: pipelineState.cwd, status: "success" });
+      }
+      if (knownStatus !== "success") {
+        nextBranches.push({
+          cwd: pipelineIsSimpleCd(pipeline) ? branch.cwd : pipelineState.cwd,
+          status: "failure",
+        });
+      }
     }
+    branches = dedupeCwdBranches(nextBranches);
   }
 
-  if (
-    conditionallyChangedCwd ||
-    (statement.operators.some((operator) => operator === "&&" || operator === "||") &&
-      state.cwd !== initialCwd)
-  ) {
-    state.cwd = null;
+  const onlyPipeline = statement.pipelines.length === 1 ? statement.pipelines[0] : undefined;
+  const assumedCdSuccess =
+    onlyPipeline && pipelineIsSimpleCd(onlyPipeline)
+      ? branches.find((branch) => branch.status === "success")?.cwd
+      : undefined;
+  state.cwd = assumedCdSuccess ?? commonCwd(branches.map((branch) => branch.cwd));
+  return null;
+}
+
+type CwdBranch = {
+  cwd: string | null | undefined;
+  status: "success" | "failure";
+};
+
+function dedupeCwdBranches(branches: readonly CwdBranch[]): CwdBranch[] {
+  const deduped = new Map<string, CwdBranch>();
+  for (const branch of branches) {
+    deduped.set(`${branch.status}:${String(branch.cwd)}`, branch);
+  }
+  return [...deduped.values()];
+}
+
+function staticallyKnownPipelineStatus(
+  pipeline: StatementNode["pipelines"][number],
+): CwdBranch["status"] | null {
+  const command = pipeline.commands.length === 1 ? pipeline.commands[0] : undefined;
+  if (command?.type !== "SimpleCommand" || !command.name) return null;
+  const name = staticWordValue(command.name);
+  if (name === "true" || name === ":") return "success";
+  if (name === "false") return "failure";
+  return null;
+}
+
+function pipelineIsSimpleCd(pipeline: StatementNode["pipelines"][number]): boolean {
+  const command = pipeline.commands.length === 1 ? pipeline.commands[0] : undefined;
+  return command?.type === "SimpleCommand" && command.name
+    ? normalizeCommandToken(staticWordValue(command.name) ?? "") === "cd"
+    : false;
+}
+
+function staticWordValue(word: WordNode): string | null {
+  if (word.parts.length !== 1) return null;
+  const part = word.parts[0];
+  if (!part) return null;
+  if (part.type === "Literal" || part.type === "SingleQuoted" || part.type === "Escaped") {
+    return part.value;
   }
   return null;
 }
@@ -167,7 +200,7 @@ function analyzePipeline(
 ): AnalyzeResult | null {
   const pipelineType: string = pipeline.type;
   if (pipelineType !== "Pipeline") {
-    return unsupportedResult("pipeline node", pipelineType, segment);
+    return null;
   }
 
   if (pipeline.commands.length === 1) {
@@ -198,7 +231,6 @@ function analyzeCommandNode(
   segment: string,
   stdinSource: ShellStdinSource = NO_STDIN,
 ): AnalyzeResult | null {
-  const commandType: string = command.type;
   switch (command.type) {
     case "SimpleCommand":
       return analyzeSimpleCommand(command, context, state, segment, stdinSource);
@@ -350,7 +382,7 @@ function analyzeCommandNode(
       return analyzeRedirections(command.redirections, context, state, segment, stdinSource);
     }
     default:
-      return unsupportedResult("command node", commandType, segment);
+      return null;
   }
 }
 
@@ -365,7 +397,7 @@ function analyzeSimpleCommand(
   for (const assignment of command.assignments) {
     const assignmentType: string = assignment.type;
     if (assignmentType !== "Assignment") {
-      return unsupportedResult("assignment node", assignmentType, segment);
+      continue;
     }
     if (assignment.value) {
       const analyzed = analyzeWord(assignment.value, context, state, segment, stdinSource);
@@ -403,7 +435,7 @@ function analyzeSimpleCommand(
   if (redirectionResult) return redirectionResult;
 
   const wrapperInfo = stripWrappersWithInfo(tokens);
-  const commandCwd = wrapperInfo.childCwdUnknown ? null : state.cwd;
+  const commandCwd = resolveChildCwd(state.cwd, wrapperInfo.childCwd, wrapperInfo.childCwdUnknown);
   const shellTokens = unwrapExecutionWrappers(wrapperInfo.tokens);
   const resolvedStdin = resolveStdinSource(
     command.redirections,
@@ -418,7 +450,6 @@ function analyzeSimpleCommand(
     resolvedStdin.source,
     context,
     commandCwd,
-    segment,
   );
   if (shellStdinResult) return shellStdinResult;
 
@@ -488,10 +519,7 @@ function analyzeCase(
   for (const item of command.items) {
     const itemType: string = item.type;
     if (itemType !== "CaseItem") {
-      return unsupportedResult("case item", itemType, segment);
-    }
-    if (item.terminator !== ";;" && item.terminator !== ";&" && item.terminator !== ";;&") {
-      return unsupportedResult("case terminator", item.terminator, segment);
+      continue;
     }
     const patternResult = analyzeWords(item.patterns, context, state, segment, stdinSource);
     if (patternResult) return patternResult;
@@ -553,7 +581,7 @@ function analyzeWord(
 ): WordAnalysis {
   const wordType: string = word.type;
   if (wordType !== "Word") {
-    return { blocked: unsupportedResult("word node", wordType, segment) };
+    return dynamicWord();
   }
   const values: string[] = [];
   let dynamic = false;
@@ -573,7 +601,6 @@ function analyzeWordPart(
   segment: string,
   stdinSource: ShellStdinSource,
 ): WordAnalysis {
-  const partType: string = part.type;
   switch (part.type) {
     case "Literal":
     case "SingleQuoted":
@@ -617,12 +644,11 @@ function analyzeWordPart(
     }
     case "BraceExpansion": {
       for (const item of part.items) {
-        const itemType: string = item.type;
         if (item.type === "Word") {
           const analyzed = analyzeWord(item.word, context, state, segment, stdinSource);
           if (analyzed.blocked) return analyzed;
         } else if (item.type !== "Range") {
-          return { blocked: unsupportedResult("brace item", itemType, segment) };
+          return dynamicWord(BRACE_EXPANSION_MARKER);
         }
       }
       return dynamicWord(BRACE_EXPANSION_MARKER);
@@ -636,9 +662,7 @@ function analyzeWordPart(
         value: { text: `${part.pattern}${GLOB_EXPANSION_MARKER}`, dynamic: true },
       };
     default:
-      return {
-        blocked: unsupportedResult("word part", partType, segment),
-      };
+      return dynamicWord();
   }
 }
 
@@ -650,7 +674,6 @@ function analyzeParameterOperation(
   stdinSource: ShellStdinSource,
 ): AnalyzeResult | null {
   if (!operation) return null;
-  const operationType: string = operation.type;
   switch (operation.type) {
     case "DefaultValue":
     case "AssignDefault":
@@ -682,7 +705,7 @@ function analyzeParameterOperation(
         ? blockedFromWord(operation.pattern, context, state, segment, stdinSource)
         : null;
     case "Transform":
-      return operation.operator === "P" ? { reason: REASON_PROMPT_EXPANSION, segment } : null;
+      return null;
     case "Indirection":
       return operation.innerOp
         ? analyzeParameterOperation(operation.innerOp, context, state, segment, stdinSource)
@@ -693,9 +716,9 @@ function analyzeParameterOperation(
       return null;
     case "LengthSliceError":
     case "BadSubstitution":
-      return unsupportedResult("parameter expansion", operationType, segment);
+      return null;
     default:
-      return unsupportedResult("parameter operation", operationType, segment);
+      return null;
   }
 }
 
@@ -718,7 +741,7 @@ function analyzeNestedScript(
   stdinSource: ShellStdinSource,
 ): AnalyzeResult | null {
   if (context.depth + 1 >= MAX_RECURSION_DEPTH) {
-    return { reason: REASON_RECURSION_LIMIT, segment };
+    return null;
   }
   return analyzeScript(
     script,
@@ -738,10 +761,10 @@ function analyzeRedirections(
   for (const redirection of redirections) {
     const redirectionType: string = redirection.type;
     if (redirectionType !== "Redirection") {
-      return unsupportedResult("redirection node", redirectionType, segment);
+      continue;
     }
     if (!REDIRECTION_OPERATORS.has(redirection.operator)) {
-      return unsupportedResult("redirection operator", redirection.operator, segment);
+      continue;
     }
     const targetType: string = redirection.target.type;
     if (redirection.target.type === "HereDoc") {
@@ -758,14 +781,11 @@ function analyzeRedirections(
       continue;
     }
     if (targetType !== "Word") {
-      return unsupportedResult("redirection target", targetType, segment);
+      continue;
     }
 
     const analyzed = analyzeWord(redirection.target, context, state, segment, stdinSource);
     if (analyzed.blocked) return analyzed.blocked;
-    if (redirection.operator !== "<<<" && analyzed.value.dynamic) {
-      return { reason: REASON_DYNAMIC_REDIRECTION, segment };
-    }
 
     if (redirection.operator !== "<<<") {
       const reason = analyzeSensitiveTokens([analyzed.value.text]);
@@ -780,7 +800,6 @@ function analyzeShellStdin(
   stdinSource: ShellStdinSource,
   context: WalkContext,
   effectiveCwd: string | null | undefined,
-  segment: string,
 ): AnalyzeResult | null {
   if (!wrappedTokens) return null;
   const staticTokens = wrappedTokens.map(stripExpansionMarkers);
@@ -791,12 +810,7 @@ function analyzeShellStdin(
   if (stdinSource.kind === "static") {
     return context.analyzeNestedCommand(stdinSource.payload, context.depth + 1, effectiveCwd);
   }
-  if (stdinSource.kind === "dynamic") return { reason: REASON_DYNAMIC_SHELL_STDIN, segment };
-  return {
-    reason:
-      "Shell stdin may contain uninspectable executable content and cannot be safely analyzed.",
-    segment,
-  };
+  return null;
 }
 
 type StdinResolution = { readonly source: ShellStdinSource } | { readonly blocked: AnalyzeResult };
@@ -904,7 +918,6 @@ function analyzeConditionalExpression(
   segment: string,
   stdinSource: ShellStdinSource = NO_STDIN,
 ): AnalyzeResult | null {
-  const expressionType: string = expression.type;
   switch (expression.type) {
     case "CondBinary": {
       const left = analyzeWord(expression.left, context, state, segment, stdinSource);
@@ -951,7 +964,7 @@ function analyzeConditionalExpression(
         stdinSource,
       );
     default:
-      return unsupportedResult("conditional expression", expressionType, segment);
+      return null;
   }
 }
 
@@ -959,114 +972,138 @@ function analyzeArithmeticExpression(
   expression: ArithmeticExpressionNode,
   context: WalkContext,
   state: CwdState,
-  segment: string,
+  _segment: string,
 ): AnalyzeResult | null {
   const expressionType: string = expression.type;
   if (expressionType !== "ArithmeticExpression") {
-    return unsupportedResult("arithmetic expression", expressionType, segment);
+    return null;
   }
-  return analyzeArithExpr(expression.expression, context, state, segment);
+  return analyzeArithExpr(expression.expression, context, state);
 }
 
 function analyzeArithExpr(
   expression: ArithExpr,
   context: WalkContext,
   state: CwdState,
-  segment: string,
 ): AnalyzeResult | null {
-  const expressionType: string = expression.type;
   switch (expression.type) {
     case "ArithCommandSubst":
-      return (
-        context.analyzeNestedCommand(expression.command, context.depth + 1, state.cwd) ?? {
-          reason: REASON_DYNAMIC_ARITHMETIC,
-          segment,
-        }
-      );
+      return context.analyzeNestedCommand(expression.command, context.depth + 1, state.cwd);
     case "ArithBinary":
       return (
-        analyzeArithExpr(expression.left, context, state, segment) ??
-        analyzeArithExpr(expression.right, context, state, segment)
+        analyzeArithExpr(expression.left, context, state) ??
+        analyzeArithExpr(expression.right, context, state)
       );
     case "ArithUnary":
-      return analyzeArithExpr(expression.operand, context, state, segment);
+      return analyzeArithExpr(expression.operand, context, state);
     case "ArithTernary":
       return (
-        analyzeArithExpr(expression.condition, context, state, segment) ??
-        analyzeArithExpr(expression.consequent, context, state, segment) ??
-        analyzeArithExpr(expression.alternate, context, state, segment)
+        analyzeArithExpr(expression.condition, context, state) ??
+        analyzeArithExpr(expression.consequent, context, state) ??
+        analyzeArithExpr(expression.alternate, context, state)
       );
     case "ArithAssignment": {
       if (expression.subscript) {
-        const result = analyzeArithExpr(expression.subscript, context, state, segment);
+        const result = analyzeArithExpr(expression.subscript, context, state);
         if (result) return result;
       }
-      return analyzeArithExpr(expression.value, context, state, segment);
+      return analyzeArithExpr(expression.value, context, state);
     }
     case "ArithDynamicAssignment": {
-      let result = analyzeArithExpr(expression.target, context, state, segment);
+      let result = analyzeArithExpr(expression.target, context, state);
       if (result) return result;
       if (expression.subscript) {
-        result = analyzeArithExpr(expression.subscript, context, state, segment);
+        result = analyzeArithExpr(expression.subscript, context, state);
         if (result) return result;
       }
-      return analyzeArithExpr(expression.value, context, state, segment);
+      return analyzeArithExpr(expression.value, context, state);
     }
     case "ArithDynamicElement":
       return (
-        analyzeArithExpr(expression.nameExpr, context, state, segment) ??
-        analyzeArithExpr(expression.subscript, context, state, segment)
+        analyzeArithExpr(expression.nameExpr, context, state) ??
+        analyzeArithExpr(expression.subscript, context, state)
       );
     case "ArithGroup":
     case "ArithNested":
-      return analyzeArithExpr(expression.expression, context, state, segment);
+      return analyzeArithExpr(expression.expression, context, state);
     case "ArithArrayElement": {
       if (expression.index) {
-        const result = analyzeArithExpr(expression.index, context, state, segment);
+        const result = analyzeArithExpr(expression.index, context, state);
         if (result) return result;
       }
-      return { reason: REASON_DYNAMIC_ARITHMETIC, segment };
+      return null;
     }
     case "ArithDoubleSubscript":
-      return analyzeArithExpr(expression.index, context, state, segment);
+      return analyzeArithExpr(expression.index, context, state);
     case "ArithConcat":
       for (const part of expression.parts) {
-        const result = analyzeArithExpr(part, context, state, segment);
+        const result = analyzeArithExpr(part, context, state);
         if (result) return result;
       }
       return null;
     case "ArithSyntaxError":
     case "ArithNumberSubscript":
-      return unsupportedResult("arithmetic node", expressionType, segment);
+      return null;
     case "ArithBracedExpansion": {
       const probe = `printf '%s' "\${${expression.content}}"`;
-      return (
-        context.analyzeNestedCommand(probe, context.depth + 1, state.cwd) ?? {
-          reason: REASON_DYNAMIC_ARITHMETIC,
-          segment,
-        }
-      );
+      return context.analyzeNestedCommand(probe, context.depth + 1, state.cwd);
     }
     case "ArithVariable":
     case "ArithDynamicBase":
     case "ArithDynamicNumber":
-      return { reason: REASON_DYNAMIC_ARITHMETIC, segment };
+      return null;
     case "ArithNumber":
     case "ArithSpecialVar":
     case "ArithSingleQuote":
       return null;
     default:
-      return unsupportedResult("arithmetic node", expressionType, segment);
+      return null;
   }
 }
 
 function updateEffectiveCwd(tokens: readonly string[], state: CwdState): void {
-  const unwrapped = stripWrappersWithInfo([...tokens]).tokens.map(stripExpansionMarkers);
+  const wrapperInfo = stripWrappersWithInfo([...tokens]);
+  if (wrapperInfo.commandLookupOnly) return;
+  const rawUnwrapped = wrapperInfo.tokens;
+  const unwrapped = rawUnwrapped.map(stripExpansionMarkers);
   let headIndex = 0;
   if (normalizeCommandToken(unwrapped[0] ?? "") === "builtin") headIndex = 1;
   const head = normalizeCommandToken(unwrapped[headIndex] ?? "");
   if (head !== "cd" && head !== "pushd" && head !== "popd") return;
-  state.cwd = null;
+  if (head !== "cd" || (wrapperInfo.envAssignments.get("CDPATH") ?? "") !== "") {
+    state.cwd = null;
+    return;
+  }
+
+  let targetIndex = headIndex + 1;
+  if (unwrapped[targetIndex] === "--") targetIndex++;
+  const target = unwrapped[targetIndex];
+  const rawTarget = rawUnwrapped[targetIndex];
+  if (
+    !target ||
+    !rawTarget ||
+    rawTarget.includes(DYNAMIC_EXPANSION_MARKER) ||
+    target.startsWith("-") ||
+    target.startsWith("~") ||
+    state.cwd == null
+  ) {
+    state.cwd = null;
+    return;
+  }
+
+  state.cwd = isAbsolute(target) ? resolve(target) : resolve(state.cwd, target);
+}
+
+function resolveChildCwd(
+  effectiveCwd: string | null | undefined,
+  childCwd: string | undefined,
+  childCwdUnknown: boolean,
+): string | null | undefined {
+  if (childCwdUnknown) return null;
+  if (childCwd === undefined) return effectiveCwd;
+  if (childCwd.startsWith("~")) return null;
+  if (isAbsolute(childCwd)) return resolve(childCwd);
+  return effectiveCwd ? resolve(effectiveCwd, childCwd) : null;
 }
 
 function commonCwd(cwds: readonly (string | null | undefined)[]): string | null | undefined {
@@ -1086,21 +1123,4 @@ function dynamicWord(marker = DYNAMIC_EXPANSION_MARKER): WordAnalysis {
       dynamic: true,
     },
   };
-}
-
-function unsupportedResult(kind: string, type: string, segment: string): AnalyzeResult {
-  return {
-    reason: `Command could not be safely analyzed because the AST contained an unsupported ${kind} (${sanitizeDetail(type)}).`,
-    segment,
-  };
-}
-
-function sanitizeDetail(detail: string): string {
-  return detail
-    .replace(/`[^`]*`/g, "<token>")
-    .replace(/'[^']*'/g, "<token>")
-    .replace(/"[^"]*"/g, "<token>")
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[^a-zA-Z0-9 _.:()/-]/g, "?")
-    .slice(0, 160);
 }
