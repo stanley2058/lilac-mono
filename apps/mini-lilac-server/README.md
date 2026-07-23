@@ -19,6 +19,14 @@ cp auth.example.json "$state_dir/auth.json"
 chmod 600 "$state_dir/auth.json"
 ```
 
+The server caches the validated models.dev registry at `models-dev.json` in this state directory.
+Startup uses the cache immediately and refreshes it in the background; a cold cache never prevents
+the HTTP server from listening.
+
+Serving also holds a non-blocking `flock` lock beside the selected SQLite file. A second Mini Lilac
+server targeting the same database exits before opening it; the `flock` executable is therefore a
+runtime prerequisite.
+
 The example config points to the copied `providers.yaml` and `auth.json`. Loopback listeners do not
 require HTTP authentication. For a non-loopback listener, set `server.authTokenEnv` and export that
 exact environment variable; every API endpoint except `/api/mini-lilac/healthz` then requires
@@ -121,6 +129,7 @@ To preserve destination pinning, `webfetch` refuses to run when inherited `HTTP_
 - `POST /api/mini-lilac/chat`
 - `GET /api/mini-lilac/chat/:sessionId/stream`
 - `GET /api/mini-lilac/sessions/:sessionId`
+- `GET /api/mini-lilac/sessions/:sessionId/resume`
 - `GET /api/mini-lilac/sessions?cwd=<directory>`
 - `GET /api/mini-lilac/sessions/:sessionId/messages`
 - `GET /api/mini-lilac/sessions/:sessionId/todos`
@@ -137,7 +146,9 @@ To preserve destination pinning, `webfetch` refuses to run when inherited `HTTP_
 
 Chat and reconnect endpoints return the AI SDK UI message SSE protocol. A network disconnect only
 removes that stream subscriber; use the cancel endpoint to cancel a run explicitly. Reconnect with
-`?after=<sequence>` to resume after the latest received `data-streamCursor` sequence. Completed
+`?runId=<run>&after=<sequence>` to resume that exact run after the latest received
+`data-streamCursor` sequence. The resume endpoint returns a chronological message prefix and its
+matching run cursor atomically for active sessions. Completed
 runs return `204`; their canonical model and UI transcripts are stored on the session and finalized
 run chunks are removed. Active SSE responses emit comment keepalives while quiet so long-running
 deferred subagents do not lose their parent connection to intermediary idle timeouts.

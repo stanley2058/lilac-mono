@@ -398,7 +398,7 @@ describe("createMiniLilacServer", () => {
     expect(reconnected.status).toBe("ready");
     expect(reconnected.messages).toEqual([chat.messages[0]!]);
     expect(reconnectUrls).toEqual([
-      `http://localhost${MINI_LILAC_API_PREFIX}/chat/${chat.id}/stream?after=0`,
+      `http://localhost${MINI_LILAC_API_PREFIX}/chat/${chat.id}/stream`,
     ]);
     expect(model.doStreamCalls).toHaveLength(1);
     service.close();
@@ -541,6 +541,17 @@ describe("createMiniLilacServer", () => {
     expect(response.status).toBe(200);
     expect(await responseJson(response)).toEqual({ revision: 0, todos: [] });
 
+    const resume = await app.handle(
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/sessions/${session.id}/resume`),
+    );
+    expect(resume.status).toBe(200);
+    expect(await responseJson(resume)).toEqual({
+      snapshot: expect.objectContaining({ id: session.id, activeRunId: null, status: "idle" }),
+      messages: [],
+      todos: { revision: 0, todos: [] },
+      replayCursor: null,
+    });
+
     const unknown = await app.handle(
       jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/sessions/unknown/todos`),
     );
@@ -548,6 +559,10 @@ describe("createMiniLilacServer", () => {
     expect(await responseJson(unknown)).toEqual({
       error: { code: "not_found", message: "Session 'unknown' was not found" },
     });
+    const unknownResume = await app.handle(
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/sessions/unknown/resume`),
+    );
+    expect(unknownResume.status).toBe(404);
     service.close();
   });
 
@@ -986,11 +1001,15 @@ describe("createMiniLilacServer", () => {
     );
     const prefix = await readStreamPrefix(initial, 3);
     expect(prefix.after).toBe(3);
+    const runId = miniLilacStreamCursorChunkSchema.parse(prefix.chunks[0]).data.runId;
     expect(service.getSnapshot("session-1").status).toBe("streaming");
-    expect(service.getSnapshot("session-1").activeRunId).not.toBeNull();
+    expect(service.getSnapshot("session-1").activeRunId).toBe(runId);
 
     const activeReconnect = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=${prefix.after}`),
+      jsonRequest(
+        "GET",
+        `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${runId}&after=${prefix.after}`,
+      ),
     );
     expect(activeReconnect.status).toBe(200);
     const activeTail = parseSseChunks(await activeReconnect.text());
@@ -1002,11 +1021,11 @@ describe("createMiniLilacServer", () => {
     expect(completedWithoutCursor.status).toBe(204);
 
     const completedFull = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=0`),
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${runId}&after=0`),
     );
     expect(completedFull.status).toBe(204);
     const fullChunks = [...prefix.chunks, ...activeTail];
-    expect(service.store.getChunks(service.store.getLatestRun("session-1")?.id ?? "")).toEqual([]);
+    expect(service.store.getChunks(runId)).toEqual([]);
 
     const cursorChunks = fullChunks
       .map((chunk) => miniLilacStreamCursorChunkSchema.safeParse(chunk))
@@ -1022,14 +1041,20 @@ describe("createMiniLilacServer", () => {
     ).toBe(true);
 
     const completedTail = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=6`),
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${runId}&after=6`),
     );
     expect(completedTail.status).toBe(204);
 
     const invalidCursor = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=-1`),
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${runId}&after=-1`),
     );
     expect(invalidCursor.status).toBe(400);
+    for (const query of ["runId=run-only", "after=0", `runId=${runId}&after=0&extra=true`]) {
+      const malformed = await app.handle(
+        jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?${query}`),
+      );
+      expect(malformed.status).toBe(400);
+    }
     service.close();
   });
 
@@ -1050,7 +1075,7 @@ describe("createMiniLilacServer", () => {
     expect(response.status).toBe(200);
     expect(await responseJson(response)).toEqual([]);
     const stream = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/${session.id}/stream?after=0`),
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/${session.id}/stream`),
     );
     expect(stream.status).toBe(204);
     const catalog = await app.handle(
@@ -1119,7 +1144,7 @@ describe("createMiniLilacServer", () => {
     const replay = await app.handle(
       jsonRequest(
         "GET",
-        `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=${controlCursor.data.seq - 1}`,
+        `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${runId}&after=${controlCursor.data.seq - 1}`,
       ),
     );
     expect(replay.status).toBe(204);
@@ -1140,7 +1165,8 @@ describe("createMiniLilacServer", () => {
       );
       const fullChunks = parseSseChunks(await initial.text());
       const run = service.store.getLatestRun("session-1");
-      expect(run?.status).toBe("error");
+      if (!run) throw new Error("Expected an error run");
+      expect(run.status).toBe("error");
 
       const errorIndex = fullChunks.findIndex((chunk) => chunk.type === "error");
       const errorCursor = miniLilacStreamCursorChunkSchema.parse(fullChunks[errorIndex - 1]);
@@ -1159,7 +1185,7 @@ describe("createMiniLilacServer", () => {
       const replay = await app.handle(
         jsonRequest(
           "GET",
-          `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=${errorCursor.data.seq - 1}`,
+          `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${run.id}&after=${errorCursor.data.seq - 1}`,
         ),
       );
       expect(replay.status).toBe(204);
@@ -1209,9 +1235,94 @@ describe("createMiniLilacServer", () => {
       .run("2026-07-21T12:00:00.000Z", "session-1");
 
     const reconnect = await app.handle(
-      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?after=0`),
+      jsonRequest("GET", `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=newer-run&after=0`),
     );
     expect(reconnect.status).toBe(204);
+    service.close();
+  });
+
+  it("never rolls an exact reconnect from a terminal run into the next active run", async () => {
+    let releaseSecond = () => {};
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let modelCall = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCall += 1;
+        if (modelCall === 1) return textResult("first-answer", "first run");
+        await secondGate;
+        return textResult("second-answer", "second run");
+      },
+    });
+    const { app, directory, service } = await testServer(model);
+    const first = await app.handle(
+      jsonRequest("POST", `${MINI_LILAC_API_PREFIX}/chat`, chatBody(directory)),
+    );
+    const firstChunks = parseSseChunks(await first.text());
+    const firstCursor = firstChunks
+      .map((chunk) => miniLilacStreamCursorChunkSchema.safeParse(chunk))
+      .find((result) => result.success);
+    if (!firstCursor) throw new Error("Expected a first-run cursor");
+    const firstRunId = firstCursor.data.data.runId;
+
+    const second = await app.handle(
+      jsonRequest(
+        "POST",
+        `${MINI_LILAC_API_PREFIX}/chat`,
+        chatBody(directory, {
+          messages: [userMessage("user-2", "second prompt")],
+          clientCommandId: "prompt-command-2",
+          cwd: undefined,
+          model: undefined,
+          profile: undefined,
+          reasoning: undefined,
+        }),
+      ),
+    );
+    await Bun.sleep(0);
+    const secondRunId = service.getSnapshot("session-1").activeRunId;
+    if (!secondRunId) throw new Error("Expected a second active run");
+    expect(secondRunId).not.toBe(firstRunId);
+    await second.body?.cancel("disconnect second run");
+
+    const staleReconnect = await app.handle(
+      jsonRequest(
+        "GET",
+        `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${firstRunId}&after=${firstCursor.data.data.seq}`,
+      ),
+    );
+    expect(staleReconnect.status).toBe(204);
+
+    await service.createSession({
+      id: "other-session",
+      cwd: directory,
+      model: "test/plain",
+    });
+    const mismatch = await app.handle(
+      jsonRequest(
+        "GET",
+        `${MINI_LILAC_API_PREFIX}/chat/other-session/stream?runId=${secondRunId}&after=0`,
+      ),
+    );
+    expect(mismatch.status).toBe(409);
+    expect(await responseJson(mismatch)).toEqual({
+      error: {
+        code: "run_session_mismatch",
+        message: `Run '${secondRunId}' does not belong to session 'other-session'`,
+      },
+    });
+
+    const exactSecond = await app.handle(
+      jsonRequest(
+        "GET",
+        `${MINI_LILAC_API_PREFIX}/chat/session-1/stream?runId=${secondRunId}&after=0`,
+      ),
+    );
+    expect(exactSecond.status).toBe(200);
+    releaseSecond();
+    expect(await exactSecond.text()).toContain("second run");
+    expect(model.doStreamCalls).toHaveLength(2);
     service.close();
   });
 

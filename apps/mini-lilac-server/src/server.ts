@@ -6,6 +6,7 @@ import {
   miniLilacCompactRequestSchema,
   miniLilacInterruptQueuedSteeringRequestSchema,
   miniLilacMessagesSchema,
+  miniLilacReconnectQuerySchema,
   miniLilacSteerRequestSchema,
   miniLilacUndoRequestSchema,
   miniLilacUpdateSessionBindingsRequestSchema,
@@ -34,16 +35,6 @@ const skillsQuerySchema = z
   .object({
     cwd: z.string().trim().min(1),
     profile: identifierSchema.optional(),
-  })
-  .strict();
-const reconnectQuerySchema = z
-  .object({
-    after: z
-      .string()
-      .regex(/^\d+$/, "must be a nonnegative integer")
-      .transform(Number)
-      .pipe(z.number().int().nonnegative().finite())
-      .optional(),
   })
   .strict();
 const emptyBodySchema = z.union([z.undefined(), z.null(), z.object({}).strict()]);
@@ -400,15 +391,22 @@ export function createMiniLilacServer(options: CreateMiniLilacServerOptions) {
   app.get(`${MINI_LILAC_API_PREFIX}/chat/:sessionId/stream`, ({ params, query }) =>
     safely(() => {
       const { sessionId } = sessionParamsSchema.parse(params);
-      const { after } = reconnectQuerySchema.parse(query);
+      const reconnect = miniLilacReconnectQuerySchema.parse(query);
       const snapshot = existingSession(sessionService, sessionId);
       if (!snapshot) throw new ApiError(404, "not_found", `Session '${sessionId}' was not found`);
-      const run = sessionService.store.getLatestRun(sessionId);
-      if (!run) return new Response(null, { status: 204 });
-      if (run.status === "active") {
-        return uiMessageStreamResponse(sessionService.replayRun(run.id, { afterSeq: after }));
+      const runId = "runId" in reconnect ? reconnect.runId : snapshot.activeRunId;
+      if (runId === null) return new Response(null, { status: 204 });
+      const run = sessionService.store.getRun(runId);
+      if (run.sessionId !== sessionId) {
+        throw new ApiError(
+          409,
+          "run_session_mismatch",
+          `Run '${runId}' does not belong to session '${sessionId}'`,
+        );
       }
-      return new Response(null, { status: 204 });
+      if (run.status !== "active") return new Response(null, { status: 204 });
+      const afterSeq = "after" in reconnect ? reconnect.after : 0;
+      return uiMessageStreamResponse(sessionService.replayRun(run.id, { afterSeq }));
     }),
   );
 
@@ -416,6 +414,14 @@ export function createMiniLilacServer(options: CreateMiniLilacServerOptions) {
     safely(() => {
       const { sessionId } = sessionParamsSchema.parse(params);
       return jsonResponse(sessionService.getSnapshot(sessionId));
+    }),
+  );
+
+  app.get(`${MINI_LILAC_API_PREFIX}/sessions/:sessionId/resume`, ({ params }) =>
+    safely(async () => {
+      const { sessionId } = sessionParamsSchema.parse(params);
+      const resume = await sessionService.getSessionResume(sessionId);
+      return jsonResponse({ ...resume, todos: sessionService.getTodos(sessionId) });
     }),
   );
 
