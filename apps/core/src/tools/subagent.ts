@@ -2,38 +2,21 @@ import { tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import { type AdapterPlatform, type LilacBus } from "@stanley2058/lilac-event-bus";
 import {
+  subagentDelegateBaseInputSchema,
+  subagentDelegateOutputSchema,
+  subagentTerminalStatusSchema,
+  type SubagentDelegateOutput,
+  type SubagentMode,
+  type SubagentProfile,
+} from "@stanley2058/lilac-coding-tools/schemas";
+import {
   createLogger,
   MODEL_REASONING_EFFORTS,
   type ModelReasoningEffort,
 } from "@stanley2058/lilac-utils";
 import { requireRequestContext } from "../shared/req-context";
 
-const subagentProfileSchema = z.enum(["explore", "general", "self"]);
-const subagentModeSchema = z.enum(["deferred", "sync"]);
-const subagentSessionNameSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
-
 const modelReasoningEffortSchema = z.enum(MODEL_REASONING_EFFORTS);
-
-const subagentDelegateBaseInputSchema = z.object({
-  profile: subagentProfileSchema
-    .default("explore")
-    .describe("Subagent profile to run (explore, general, self)."),
-  task: z.string().min(1).describe("Objective for the subagent."),
-  mode: subagentModeSchema
-    .default("deferred")
-    .describe(
-      "Delegation mode. Use deferred by default for parallelizable work; use sync only when the child result is immediately required before any meaningful next step.",
-    ),
-  sessionName: subagentSessionNameSchema
-    .optional()
-    .describe(
-      "Optional stable short slug for continuing a subagent session within this parent session/channel. When omitted, a reusable short name is generated and returned.",
-    ),
-});
 
 type AgentSelectableModelPreset = {
   model: string;
@@ -91,37 +74,9 @@ function createSubagentDelegateInputSchema(
   });
 }
 
-const subagentTerminalStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);
-
-const subagentDelegateDeferredOutputSchema = z.object({
-  ok: z.literal(true),
-  mode: z.literal("deferred"),
-  status: z.literal("accepted"),
-  workflowRunId: z.string().min(1),
-  profile: subagentProfileSchema,
-  sessionName: subagentSessionNameSchema,
-});
-
-const subagentDelegateSyncOutputSchema = z.object({
-  ok: z.boolean(),
-  mode: z.literal("sync"),
-  status: subagentTerminalStatusSchema,
-  workflowRunId: z.string().min(1),
-  profile: subagentProfileSchema,
-  sessionName: subagentSessionNameSchema,
-  finalText: z.string(),
-  detail: z.string().optional(),
-});
-
-const subagentDelegateOutputSchema = z.discriminatedUnion("mode", [
-  subagentDelegateDeferredOutputSchema,
-  subagentDelegateSyncOutputSchema,
-]);
-
-export type SubagentDelegateOutput = z.output<typeof subagentDelegateOutputSchema>;
 type SubagentTerminalStatus = z.infer<typeof subagentTerminalStatusSchema>;
-export type SubagentProfile = z.infer<typeof subagentProfileSchema>;
-export type SubagentMode = z.infer<typeof subagentModeSchema>;
+export type { SubagentDelegateOutput, SubagentMode, SubagentProfile };
+export { subagentDelegateBaseInputSchema, subagentDelegateOutputSchema };
 
 type ChildToolStatus = "running" | "done";
 

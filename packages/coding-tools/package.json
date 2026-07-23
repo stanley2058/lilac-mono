@@ -1,0 +1,39 @@
+{
+  "name": "@stanley2058/lilac-coding-tools",
+  "version": "0.0.0",
+  "type": "module",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./schemas": {
+      "import": "./src/schemas.ts",
+      "types": "./src/schemas.ts"
+    },
+    "./apply-patch": {
+      "import": "./src/apply-patch.ts",
+      "types": "./src/apply-patch.ts"
+    },
+    "./batch": {
+      "import": "./src/batch.ts",
+      "types": "./src/batch.ts"
+    }
+  },
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "@stanley2058/lilac-agent": "workspace:*",
+    "@stanley2058/lilac-fs": "workspace:*",
+    "ai": "^7.0.22",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,4 +1,5 @@
 import type { CoreConfig, ResolvedNativeSubagentProfile } from "@stanley2058/lilac-utils";
+import { bashInputSchema } from "@stanley2058/lilac-coding-tools/schemas";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -6,23 +7,7 @@ import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-
 import { executeBash } from "./bash-impl";
 import { executeRestrictedBash } from "./restricted-bash";
 
-export const bashInputSchema = z.object({
-  command: z.string().describe("Bash command to execute"),
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Working directory (supports ~). Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
-    ),
-  timeoutMs: z.number().optional().describe("Timeout in ms (default: 1h)"),
-  stdinMode: z
-    .enum(["error", "eof"])
-    .optional()
-    .describe(
-      "stdin handling mode: 'error' (default, recommended) makes inherited stdin reads fail immediately (EBADF); use 'eof' only as a fallback if the command fails specifically due to this strict stdin mode.",
-    ),
-  dangerouslyAllow: z.boolean().optional().describe("Bypass safety guardrails for this call"),
-});
+export { bashInputSchema };
 
 const bashExecutionErrorSchema = z.discriminatedUnion("type", [
   z.object({

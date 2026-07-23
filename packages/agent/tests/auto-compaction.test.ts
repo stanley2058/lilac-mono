@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import type { LanguageModel, ModelMessage } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 
 import { ModelCapability } from "@stanley2058/lilac-utils";
 
-import { attachAutoCompaction, __autoCompactionInternals } from "../auto-compaction";
+import {
+  attachAutoCompaction,
+  compactMessages,
+  __autoCompactionInternals,
+} from "../auto-compaction";
 import { AiSdkPiAgent } from "../ai-sdk-pi-agent";
 
 function createRegistryFetch(registry: unknown): typeof fetch {
@@ -17,6 +22,22 @@ function createRegistryFetch(registry: unknown): typeof fetch {
 
 function fakeModel(): LanguageModel {
   return {} as LanguageModel;
+}
+
+function zeroUsage() {
+  return {
+    inputTokens: {
+      total: 0,
+      noCache: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    outputTokens: {
+      total: 0,
+      text: 0,
+      reasoning: 0,
+    },
+  };
 }
 
 describe("auto-compaction internals", () => {
@@ -226,6 +247,90 @@ describe("auto-compaction internals", () => {
     expect(fullOutputWindow.reservedOutputTokens).toBe(100_000);
     expect(fullOutputWindow.safeInputBudget).toBe(400_000);
     expect(fullOutputWindow.inputBudget).toBe(400_000);
+  });
+
+  it("normalizes configurable threshold fractions", () => {
+    expect(__autoCompactionInternals.normalizeThresholdFraction(undefined)).toBe(0.8);
+    expect(__autoCompactionInternals.normalizeThresholdFraction(Number.NaN)).toBe(0.8);
+    expect(__autoCompactionInternals.normalizeThresholdFraction(0)).toBe(0.05);
+    expect(__autoCompactionInternals.normalizeThresholdFraction(1)).toBe(0.95);
+    expect(__autoCompactionInternals.normalizeThresholdFraction(0.6)).toBe(0.6);
+  });
+
+  it("manually compacts persisted messages without an agent", async () => {
+    const summaryResponse = () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "text-start" as const, id: "summary" },
+          {
+            type: "text-delta" as const,
+            id: "summary",
+            delta: "Condensed prior work.",
+          },
+          { type: "text-end" as const, id: "summary" },
+          {
+            type: "finish" as const,
+            finishReason: { unified: "stop" as const, raw: "stop" },
+            usage: zeroUsage(),
+          },
+        ],
+      }),
+    });
+    const model = new MockLanguageModelV4({
+      doStream: [summaryResponse(), summaryResponse()],
+    });
+    const messages: ModelMessage[] = [
+      { role: "user", content: `old request ${"a".repeat(6_000)}` },
+      { role: "assistant", content: `old response ${"b".repeat(6_000)}` },
+      { role: "user", content: "latest request must remain verbatim" },
+    ];
+
+    const result = await compactMessages({
+      messages,
+      currentModel: model,
+      contextLimit: 10_000,
+      outputLimit: 1_000,
+      thresholdFraction: 0.25,
+      keepRecentTokens: 1,
+      keepLastMessages: 1,
+    });
+
+    expect(result.status).toBe("compacted");
+    expect(result.messageCountBefore).toBe(3);
+    expect(result.messageCountAfter).toBe(2);
+    expect(result.estimatedTokensAfter).toBeLessThan(result.estimatedTokensBefore);
+    expect(result.budget.inputBudget).toBe(2_500);
+    expect(result.messages[0]).toEqual({
+      role: "user",
+      content: [
+        "<context-compaction>",
+        "The conversation before this point was automatically compacted.",
+        "Treat this summary as prior conversation context, not as a new user request.",
+        "",
+        "Condensed prior work.",
+        "</context-compaction>",
+      ].join("\n"),
+    });
+    expect(result.messages[1]).toEqual(messages[2]);
+    expect(messages).toHaveLength(3);
+  });
+
+  it("returns typed noop metrics for an empty persisted transcript", async () => {
+    const result = await compactMessages({
+      messages: [],
+      currentModel: fakeModel(),
+      contextLimit: 100_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "noop",
+      reason: "empty",
+      messages: [],
+      messageCountBefore: 0,
+      messageCountAfter: 0,
+      estimatedTokensBefore: 0,
+      estimatedTokensAfter: 0,
+    });
   });
 
   it("computes fallback budget for unknown-model overflow retries", () => {

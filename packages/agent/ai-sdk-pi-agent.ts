@@ -14,6 +14,7 @@ import {
   type AssistantContent,
   type AssistantModelMessage,
   type FinishReason,
+  InvalidToolInputError,
   type LanguageModel,
   type LanguageModelUsage,
   type ModelMessage,
@@ -54,6 +55,15 @@ export type SteeringMode = "one-at-a-time" | "all";
  * Follow-ups are only injected when the model finishes a turn without tool calls.
  */
 export type FollowUpMode = "one-at-a-time" | "all";
+
+/** Stable identifier returned for an entry added to the steering queue. */
+export type SteeringQueueId = string;
+
+/** Outcome of requesting an immediate interrupt from the current steering queue. */
+export type InterruptQueuedSteeringResult =
+  | { status: "interrupted"; steeringIds: SteeringQueueId[] }
+  | { status: "empty" }
+  | { status: "inactive" };
 
 /**
  * Fine-grained events emitted while an assistant message is streaming.
@@ -109,10 +119,26 @@ export type AiSdkPiAssistantMessageEvent<TOOLS extends ToolSet> =
       type: "toolcall_end";
       toolCallId: string;
       raw: Extract<TextStreamPart<TOOLS>, { type: "tool-input-end" }>;
+    }
+  | {
+      type: "custom";
+      raw: Extract<TextStreamPart<TOOLS>, { type: "custom" }>;
+    }
+  | {
+      type: "source";
+      raw: Extract<TextStreamPart<TOOLS>, { type: "source" }>;
+    }
+  | {
+      type: "file";
+      raw: Extract<TextStreamPart<TOOLS>, { type: "file" }>;
+    }
+  | {
+      type: "reasoning_file";
+      raw: Extract<TextStreamPart<TOOLS>, { type: "reasoning-file" }>;
     };
 
 /** Why a turn ended without producing a `turn_end`. */
-export type TurnAbortReason = "interrupt" | "manual";
+export type TurnAbortReason = "cancel" | "interrupt" | "manual";
 
 /** Where the abort occurred: model streaming vs tool execution. */
 export type TurnAbortPhase = "model" | "tools";
@@ -165,7 +191,7 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
    */
   | {
       type: "messages_reset";
-      reason: "interrupt";
+      reason: "cancel" | "interrupt";
       messages: ModelMessage[];
       droppedMessageCount: number;
     }
@@ -208,6 +234,8 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
       args: unknown;
       result: unknown;
       isError: boolean;
+      output: ToolResultOutput;
+      outcome: "success" | "invalid-input" | "denied" | "error";
     };
 
 /**
@@ -343,6 +371,8 @@ export type AiSdkPiAgentOptions<TOOLS extends ToolSet> = {
   normalizeToolResultOutput?: NormalizeToolResultOutputFn;
   /** Tool names whose specs guarantee already-bounded model output. */
   genericOutputNormalizerBypassTools?: ReadonlySet<string>;
+  /** When any of these tools are called, other tools in the same model turn are rejected. */
+  exclusiveToolNames?: ReadonlySet<string>;
   /** Optional provider-specific options. */
   providerOptions?: {
     [x: string]: JSONObject;
@@ -367,6 +397,13 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     Symbol.asyncIterator in value &&
     typeof value[Symbol.asyncIterator] === "function"
   );
+}
+
+function isInvalidToolInputError(error: unknown): boolean {
+  if (InvalidToolInputError.isInstance(error)) return true;
+  if (!(error instanceof Error)) return false;
+  if (error.name === "ZodError") return true;
+  return isInvalidToolInputError(error.cause);
 }
 
 function cloneMessage(message: ModelMessage): ModelMessage {
@@ -437,7 +474,7 @@ function sumLanguageModelUsage(
   };
 }
 
-function takeQueued(mode: "one-at-a-time" | "all", queue: ModelMessage[]): ModelMessage[] {
+function takeQueued<T>(mode: "one-at-a-time" | "all", queue: T[]): T[] {
   if (queue.length === 0) return [];
   if (mode === "one-at-a-time") {
     return [queue.shift()!];
@@ -447,7 +484,7 @@ function takeQueued(mode: "one-at-a-time" | "all", queue: ModelMessage[]): Model
   return out;
 }
 
-function takeAll(queue: ModelMessage[]): ModelMessage[] {
+function takeAll<T>(queue: T[]): T[] {
   if (queue.length === 0) return [];
   const out = queue.slice();
   queue.length = 0;
@@ -682,10 +719,12 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
   private steeringMode: SteeringMode = "one-at-a-time";
   private followUpMode: FollowUpMode = "one-at-a-time";
-  private steeringQueue: ModelMessage[] = [];
+  private nextSteeringId = 1;
+  private steeringQueue: Array<{ id: SteeringQueueId; message: ModelMessage }> = [];
   private followUpQueue: ModelMessage[] = [];
 
-  private pendingInterrupt: ModelMessage | null = null;
+  private pendingInterrupt: ModelMessage[] | null = null;
+  private cancelResetPending = false;
   private abortRequestedReason: TurnAbortReason | null = null;
 
   private transformMessages: TransformMessagesFn | undefined;
@@ -694,6 +733,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private experimentalDownload: DownloadFunction | undefined;
   private normalizeToolResultOutput: NormalizeToolResultOutputFn | undefined;
   private genericOutputNormalizerBypassTools: ReadonlySet<string>;
+  private exclusiveToolNames: ReadonlySet<string>;
 
   private context?: unknown;
 
@@ -709,6 +749,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.normalizeToolResultOutput = options.normalizeToolResultOutput;
     this.genericOutputNormalizerBypassTools =
       options.genericOutputNormalizerBypassTools ?? new Set<string>();
+    this.exclusiveToolNames = options.exclusiveToolNames ?? new Set<string>();
 
     this.captureModelViewMessages = options.debug?.captureModelViewMessages === true;
 
@@ -771,6 +812,14 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   /** Replace the outbound message transform hook. */
   setTransformMessages(transformMessages: TransformMessagesFn | undefined) {
     this.transformMessages = transformMessages;
+  }
+
+  /** Append an outbound transform without replacing an existing transform. */
+  appendTransformMessages(transformMessages: TransformMessagesFn) {
+    const previous = this.transformMessages;
+    this.transformMessages = previous
+      ? async (messages, context) => transformMessages(await previous(messages, context), context)
+      : transformMessages;
   }
 
   /** Replace the turn-error recovery hook. */
@@ -838,8 +887,15 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
    * Steering is checked at turn boundaries. If a turn is executing tools,
    * queued steering messages are injected after the current tool phase completes.
    */
-  steer(message: string | ModelMessage) {
-    this.steeringQueue.push(makeUserMessage(message));
+  steer(message: string | ModelMessage): SteeringQueueId {
+    const id = `steering-${this.nextSteeringId++}`;
+    this.steeringQueue.push({ id, message: makeUserMessage(message) });
+    return id;
+  }
+
+  /** Snapshot entries that have not yet been drained at a steering boundary. */
+  getQueuedSteeringIds(): SteeringQueueId[] {
+    return this.steeringQueue.map((entry) => entry.id);
   }
 
   /**
@@ -851,14 +907,48 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.followUpQueue.push(makeUserMessage(message));
   }
 
+  /**
+   * Interrupt the active turn with a snapshot of every currently queued steering message.
+   *
+   * Buffered follow-ups are included ahead of steering messages, matching normal
+   * steering-boundary behavior. Queued steering is left untouched while idle.
+   */
+  interruptQueuedSteering(): InterruptQueuedSteeringResult {
+    if (this.steeringQueue.length === 0) return { status: "empty" };
+    if (!this.state.isStreaming || this.cancelResetPending) return { status: "inactive" };
+
+    const steering = takeAll(this.steeringQueue);
+    const followUps = takeAll(this.followUpQueue);
+    const pendingInterrupt = this.pendingInterrupt;
+    this.pendingInterrupt = mergeUserMessages([
+      ...(pendingInterrupt ?? []),
+      ...followUps,
+      ...steering.map((entry) => entry.message),
+    ]);
+    if (!pendingInterrupt) this.requestAbort("interrupt");
+
+    return {
+      status: "interrupted",
+      steeringIds: steering.map((entry) => entry.id),
+    };
+  }
+
   private requestAbort(reason: TurnAbortReason) {
-    if (reason === "interrupt") {
+    if (reason === "cancel") {
+      this.abortRequestedReason = "cancel";
+    } else if (reason === "interrupt" && this.abortRequestedReason !== "cancel") {
       this.abortRequestedReason = "interrupt";
     } else if (!this.abortRequestedReason) {
       this.abortRequestedReason = "manual";
     }
 
     this.abortController?.abort();
+  }
+
+  private takePendingInterrupt(): ModelMessage[] | null {
+    const messages = this.pendingInterrupt;
+    this.pendingInterrupt = null;
+    return messages;
   }
 
   /**
@@ -869,6 +959,26 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
    */
   abort() {
     this.requestAbort("manual");
+  }
+
+  /**
+   * Cancel the current run without adding a message.
+   *
+   * Cancellation clears queued work and rewinds the transcript to its last valid
+   * boundary. A `messages_reset` event with reason `cancel` is authoritative.
+   */
+  cancel() {
+    this.steeringQueue.length = 0;
+    this.followUpQueue.length = 0;
+    this.pendingInterrupt = null;
+
+    if (!this.state.isStreaming) {
+      this.finishCancellation();
+      return;
+    }
+
+    this.cancelResetPending = true;
+    this.requestAbort("cancel");
   }
 
   /**
@@ -890,7 +1000,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       throw new Error("Interrupt already pending");
     }
 
-    this.pendingInterrupt = makeUserMessage(message);
+    this.pendingInterrupt = [makeUserMessage(message)];
     this.requestAbort("interrupt");
   }
 
@@ -941,7 +1051,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.emit({ type: "message_end", message: cloneMessage(normalizedMessage) });
   }
 
-  private resetMessagesForInterrupt() {
+  private resetMessagesAfterAbort(reason: "cancel" | "interrupt") {
     const truncated = truncateToLastValidBoundary(this.state.messages);
     this.state.messages = truncated.messages;
     this.state.streamMessage = null;
@@ -949,10 +1059,18 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
     this.emit({
       type: "messages_reset",
-      reason: "interrupt",
+      reason,
       messages: this.state.messages.map(cloneMessage),
       droppedMessageCount: truncated.droppedMessageCount,
     });
+  }
+
+  private finishCancellation() {
+    this.resetMessagesAfterAbort("cancel");
+    this.steeringQueue.length = 0;
+    this.followUpQueue.length = 0;
+    this.pendingInterrupt = null;
+    this.cancelResetPending = false;
   }
 
   private async runLoop(options: { newMessages: ModelMessage[] | undefined }) {
@@ -977,10 +1095,16 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         }
 
         while (true) {
+          if (this.cancelResetPending) {
+            this.emit({ type: "turn_abort", reason: "cancel", phase: "tools" });
+            this.finishCancellation();
+            break;
+          }
+
           // Handle "interrupt" that arrived between awaited operations.
           if (this.pendingInterrupt) {
-            const interruptMessage = this.pendingInterrupt;
-            this.pendingInterrupt = null;
+            const interruptMessages = this.takePendingInterrupt();
+            if (!interruptMessages) continue;
 
             this.emit({
               type: "turn_abort",
@@ -988,8 +1112,12 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               phase: "tools",
             });
 
-            this.resetMessagesForInterrupt();
-            this.appendMessage(interruptMessage);
+            this.resetMessagesAfterAbort("interrupt");
+            if (this.cancelResetPending) {
+              this.finishCancellation();
+              break;
+            }
+            for (const message of interruptMessages) this.appendMessage(message);
 
             // The current abort signal is consumed; create a fresh one.
             this.abortController = new AbortController();
@@ -1003,6 +1131,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
 
           try {
             const turn = await this.runTurn();
+            if (this.cancelResetPending) {
+              throw new TurnAbortedError({ reason: "cancel", phase: "model" });
+            }
+
             for (const added of turn.newMessages) {
               this.state.messages.push(added);
             }
@@ -1016,6 +1148,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               usage: turn.usage,
               totalUsage: turn.totalUsage,
             });
+
+            if (this.cancelResetPending) {
+              throw new TurnAbortedError({ reason: "cancel", phase: "tools" });
+            }
 
             const hasLocalToolCalls =
               turn.finishReason === "tool-calls" && turn.toolCalls.length > 0;
@@ -1033,12 +1169,20 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               executedToolCallCount,
             });
 
+            if (this.cancelResetPending) {
+              throw new TurnAbortedError({ reason: "cancel", phase: "tools" });
+            }
+            if (this.pendingInterrupt) continue;
+
             // Steering should pick up any buffered follow-ups and remains ahead of
             // the normal tool-result continuation decision.
             const steeringNow = takeQueued(this.steeringMode, this.steeringQueue);
             if (steeringNow.length > 0) {
               const followUpsAll = takeAll(this.followUpQueue);
-              const merged = mergeUserMessages([...followUpsAll, ...steeringNow]);
+              const merged = mergeUserMessages([
+                ...followUpsAll,
+                ...steeringNow.map((entry) => entry.message),
+              ]);
               for (const msg of merged) {
                 this.appendMessage(msg);
               }
@@ -1074,16 +1218,24 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                 detail: err.detail,
               });
 
-              if (err.reason === "interrupt") {
-                const interruptMessage = this.pendingInterrupt;
-                this.pendingInterrupt = null;
+              if (this.cancelResetPending && err.reason !== "cancel") {
+                this.finishCancellation();
+                break;
+              }
 
-                if (!interruptMessage) {
+              if (err.reason === "interrupt") {
+                const interruptMessages = this.takePendingInterrupt();
+
+                if (!interruptMessages) {
                   break;
                 }
 
-                this.resetMessagesForInterrupt();
-                this.appendMessage(interruptMessage);
+                this.resetMessagesAfterAbort("interrupt");
+                if (this.cancelResetPending) {
+                  this.finishCancellation();
+                  break;
+                }
+                for (const message of interruptMessages) this.appendMessage(message);
 
                 // The current abort signal is consumed; create a fresh one.
                 this.abortController = new AbortController();
@@ -1092,14 +1244,44 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                 continue;
               }
 
+              if (err.reason === "cancel") {
+                this.finishCancellation();
+                break;
+              }
+
               // Manual abort: stop agent loop cleanly.
               break;
             }
 
-            if (this.turnErrorHandler) {
-              const decision = await this.turnErrorHandler(err, {
-                abortSignal: this.abortController?.signal,
+            if (this.cancelResetPending) {
+              this.emit({
+                type: "turn_abort",
+                reason: "cancel",
+                phase: this.state.pendingToolCalls.size > 0 ? "tools" : "model",
+                detail: err instanceof Error ? err.message : String(err),
               });
+              this.finishCancellation();
+              break;
+            }
+
+            if (this.turnErrorHandler) {
+              let decision: TurnErrorHandlerDecision | undefined;
+              try {
+                decision = await this.turnErrorHandler(err, {
+                  abortSignal: this.abortController?.signal,
+                });
+              } catch (handlerError) {
+                if (!this.cancelResetPending) throw handlerError;
+              }
+              if (this.cancelResetPending) {
+                this.emit({
+                  type: "turn_abort",
+                  reason: "cancel",
+                  phase: this.state.pendingToolCalls.size > 0 ? "tools" : "model",
+                });
+                this.finishCancellation();
+                break;
+              }
               if (decision === "retry") {
                 continue;
               }
@@ -1129,6 +1311,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         this.abortController = undefined;
         this.abortRequestedReason = null;
         this.pendingInterrupt = null;
+        if (this.cancelResetPending) {
+          this.steeringQueue.length = 0;
+          this.followUpQueue.length = 0;
+        }
+        this.cancelResetPending = false;
       }
     })();
 
@@ -1213,6 +1400,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       providerOptions: this.state.providerOptions,
       experimental_download: this.experimentalDownload,
       abortSignal,
+      onError: () => {},
     });
 
     let assistantStarted = false;
@@ -1245,7 +1433,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           part.type === "reasoning-delta" ||
           part.type === "tool-input-start" ||
           part.type === "tool-input-delta" ||
-          part.type === "tool-call")
+          part.type === "tool-call" ||
+          part.type === "custom" ||
+          part.type === "source" ||
+          part.type === "file" ||
+          part.type === "reasoning-file")
       ) {
         assistantStarted = true;
         this.state.streamMessage = partialAssistant;
@@ -1369,6 +1561,38 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               toolCallId: part.id,
               raw: part,
             },
+          });
+          break;
+        }
+        case "custom": {
+          this.emit({
+            type: "message_update",
+            message: cloneMessage(partialAssistant),
+            assistantMessageEvent: { type: "custom", raw: part },
+          });
+          break;
+        }
+        case "source": {
+          this.emit({
+            type: "message_update",
+            message: cloneMessage(partialAssistant),
+            assistantMessageEvent: { type: "source", raw: part },
+          });
+          break;
+        }
+        case "file": {
+          this.emit({
+            type: "message_update",
+            message: cloneMessage(partialAssistant),
+            assistantMessageEvent: { type: "file", raw: part },
+          });
+          break;
+        }
+        case "reasoning-file": {
+          this.emit({
+            type: "message_update",
+            message: cloneMessage(partialAssistant),
+            assistantMessageEvent: { type: "reasoning_file", raw: part },
           });
           break;
         }
@@ -1521,15 +1745,22 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       result: unknown;
       isError: boolean;
       toolOutput: ToolResultOutput;
+      outcome: "success" | "invalid-input" | "denied" | "error";
       expansion?: ToolExpansion;
     };
 
     const MAX_PARALLEL_TOOLS = 8;
+    const hasExclusiveTool = toolCalls.some((call) => this.exclusiveToolNames.has(call.toolName));
 
     const getAbortReason = (): TurnAbortReason =>
       this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
 
     const isAborted = (): boolean => this.abortController?.signal.aborted === true;
+    const assertNotAborted = () => {
+      if (isAborted()) {
+        throw new TurnAbortedError({ reason: getAbortReason(), phase: "tools" });
+      }
+    };
 
     const executeOne = async (call: ToolCall): Promise<ToolExecutionOutcome> => {
       const tool = this.state.tools[call.toolName] as Tool | undefined;
@@ -1541,15 +1772,24 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         toolName: call.toolName,
         args: call.input,
       });
+      assertNotAborted();
 
       let result: unknown;
       let isError = false;
       let toolOutput: ToolResultOutput;
       let expansion: ToolExpansion | undefined;
+      let outcome: ToolExecutionOutcome["outcome"] = "success";
 
       try {
-        if (call.invalid) {
+        if (hasExclusiveTool && !this.exclusiveToolNames.has(call.toolName)) {
           isError = true;
+          outcome = "error";
+          const message = `Tool '${call.toolName}' was not executed because an exclusive tool was selected in the same turn. Retry it after processing the exclusive tool result.`;
+          result = message;
+          toolOutput = { type: "error-text", value: message };
+        } else if (call.invalid) {
+          isError = true;
+          outcome = "invalid-input";
           const msg =
             call.error instanceof Error
               ? call.error.message
@@ -1570,6 +1810,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         } else if (!tool) {
           throw new Error(`Tool not found: ${call.toolName}`);
         } else {
+          assertNotAborted();
           const needsApproval =
             typeof tool.needsApproval === "function"
               ? await tool.needsApproval(call.input, {
@@ -1578,9 +1819,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                   context: this.context,
                 })
               : Boolean(tool.needsApproval);
+          assertNotAborted();
 
           if (needsApproval) {
             isError = true;
+            outcome = "denied";
             result = { denied: true };
             toolOutput = {
               type: "execution-denied",
@@ -1589,6 +1832,7 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           } else if (!tool.execute) {
             throw new Error(`Tool has no execute(): ${call.toolName}`);
           } else {
+            assertNotAborted();
             const raw = tool.execute(call.input, {
               toolCallId: call.toolCallId,
               messages: this.state.messages,
@@ -1599,20 +1843,34 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             let rawResult: unknown;
             if (isAsyncIterable(raw)) {
               let last: unknown = undefined;
-              for await (const chunk of raw) {
-                last = chunk;
-                this.emit({
-                  type: "tool_execution_update",
-                  toolCallId: call.toolCallId,
-                  toolName: call.toolName,
-                  args: call.input,
-                  partialResult: chunk,
-                });
+              const iterator = raw[Symbol.asyncIterator]();
+              let completed = false;
+              try {
+                while (true) {
+                  const next = await iterator.next();
+                  if (next.done) {
+                    completed = true;
+                    rawResult = next.value === undefined ? last : next.value;
+                    break;
+                  }
+                  assertNotAborted();
+                  last = next.value;
+                  this.emit({
+                    type: "tool_execution_update",
+                    toolCallId: call.toolCallId,
+                    toolName: call.toolName,
+                    args: call.input,
+                    partialResult: next.value,
+                  });
+                  assertNotAborted();
+                }
+              } finally {
+                if (!completed) await iterator.return?.();
               }
-              rawResult = last;
             } else {
               rawResult = await raw;
             }
+            assertNotAborted();
 
             if (isToolExpansion(rawResult)) {
               if (expansionDepth > 0) {
@@ -1630,18 +1888,27 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                     output: result,
                   })
                 : { type: "json", value: toJsonToolOutputValue(result) };
+              assertNotAborted();
             }
           }
         }
       } catch (e) {
+        if (e instanceof TurnAbortedError) throw e;
+        assertNotAborted();
         isError = true;
-        result = errorMessage(e);
+        const message = errorMessage(e);
+        outcome =
+          isInvalidToolInputError(e) || message.includes("AI_InvalidToolInputError")
+            ? "invalid-input"
+            : "error";
+        result = message;
         toolOutput = {
           type: "error-text",
-          value: errorMessage(e),
+          value: message,
         };
       }
 
+      assertNotAborted();
       if (this.normalizeToolResultOutput) {
         try {
           toolOutput = await this.normalizeToolResultOutput(toolOutput, {
@@ -1651,7 +1918,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
               call.toolName,
             ),
           });
+          assertNotAborted();
         } catch (error) {
+          if (error instanceof TurnAbortedError) throw error;
+          assertNotAborted();
           logger.warn("tool result normalization failed", {
             toolCallId: call.toolCallId,
             toolName: call.toolName,
@@ -1673,12 +1943,15 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         args: call.input,
         result,
         isError,
+        output: toolOutput,
+        outcome,
       });
 
       return {
         result,
         isError,
         toolOutput,
+        outcome,
         ...(expansion ? { expansion } : {}),
       };
     };

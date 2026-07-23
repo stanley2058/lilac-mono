@@ -135,6 +135,176 @@ describe("skills discovery", () => {
       source: "lilac-builtin",
     });
   });
+
+  it("caps discovered skills and reports truncation", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    for (const name of ["skill-one", "skill-two", "skill-three"]) {
+      await mkdirp(path.join(skillsRoot, name));
+      await fs.writeFile(
+        path.join(skillsRoot, name, "SKILL.md"),
+        `---\nname: ${name}\ndescription: ${name}\n---\n`,
+      );
+    }
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "*", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxSkills: 2,
+      maxScanEntries: 100,
+    });
+
+    expect(result.skills).toHaveLength(2);
+    expect(result.warnings.some((warning) => warning.message.includes("capped at 2"))).toBe(true);
+  });
+
+  it("caps filesystem scanning and does not follow skill directory symlinks", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    const externalRoot = path.join(tmpRoot, "external", "linked-skill");
+    await mkdirp(skillsRoot);
+    await mkdirp(externalRoot);
+    await fs.writeFile(
+      path.join(externalRoot, "SKILL.md"),
+      "---\nname: linked-skill\ndescription: linked\n---\n",
+    );
+    await fs.symlink(externalRoot, path.join(skillsRoot, "linked-skill"));
+    await mkdirp(path.join(skillsRoot, "ordinary-directory"));
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "**", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 1,
+    });
+
+    expect(result.skills.some((skill) => skill.name === "linked-skill")).toBe(false);
+    expect(result.warnings.some((warning) => warning.message.includes("scan capped at 1"))).toBe(
+      true,
+    );
+  });
+
+  it("preserves recursive depth and custom glob structure in bounded scans", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    const recursiveSkill = path.join(
+      skillsRoot,
+      "one",
+      "two",
+      "three",
+      "four",
+      "five",
+      "six",
+      "seven",
+      "recursive-skill",
+    );
+    const structuredSkill = path.join(skillsRoot, "group", "structured-skill");
+    const shallowSkill = path.join(skillsRoot, "shallow-skill");
+    for (const [directory, name] of [
+      [recursiveSkill, "recursive-skill"],
+      [structuredSkill, "structured-skill"],
+      [shallowSkill, "shallow-skill"],
+    ] as const) {
+      await mkdirp(directory);
+      await fs.writeFile(
+        path.join(directory, "SKILL.md"),
+        `---\nname: ${name}\ndescription: ${name}\n---\n`,
+      );
+    }
+
+    const recursive = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "**", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 100,
+    });
+    const structured = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "*", "*", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 100,
+    });
+
+    expect(recursive.skills.some((skill) => skill.name === "recursive-skill")).toBe(true);
+    expect(structured.skills.map((skill) => skill.name)).toEqual(["structured-skill"]);
+  });
+
+  it("skips hidden descendants during bounded recursive scans", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    const hiddenSkill = path.join(skillsRoot, ".hidden", "hidden-skill");
+    await mkdirp(hiddenSkill);
+    await fs.writeFile(
+      path.join(hiddenSkill, "SKILL.md"),
+      "---\nname: hidden-skill\ndescription: hidden\n---\n",
+    );
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "**", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 100,
+    });
+
+    expect(result.skills).toEqual([]);
+  });
+
+  it("returns absolute locations for bounded relative root patterns", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-relative-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    const skillDirectory = path.join(skillsRoot, "relative-skill");
+    await mkdirp(skillDirectory);
+    await fs.writeFile(
+      path.join(skillDirectory, "SKILL.md"),
+      "---\nname: relative-skill\ndescription: relative\n---\n",
+    );
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.relative(process.cwd(), path.join(skillsRoot, "*", "SKILL.md")),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 100,
+    });
+
+    expect(result.skills[0]?.location).toBe(path.join(skillDirectory, "SKILL.md"));
+  });
 });
 
 describe("skills prompt formatting", () => {

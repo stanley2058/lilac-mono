@@ -25,6 +25,14 @@ function zeroUsage() {
   };
 }
 
+function deferred() {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function syntheticResultMessages(toolCallId: string): ModelMessage[] {
   return [
     {
@@ -545,6 +553,627 @@ describe("AiSdkPiAgent model spec tracking", () => {
   });
 });
 
+describe("AiSdkPiAgent provider stream parts", () => {
+  it("emits custom, source, file, and reasoning-file updates without text or tools", async () => {
+    const providerMetadata = { test: { itemId: "provider-item" } };
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "custom", kind: "test.redacted", providerMetadata },
+            {
+              type: "source",
+              sourceType: "url",
+              id: "url-source",
+              url: "https://example.test/source",
+              title: "URL source",
+              providerMetadata,
+            },
+            {
+              type: "source",
+              sourceType: "document",
+              id: "document-source",
+              mediaType: "application/pdf",
+              title: "Document source",
+              filename: "source.pdf",
+              providerMetadata,
+            },
+            {
+              type: "file",
+              mediaType: "text/plain",
+              data: { type: "data", data: "ZmlsZQ==" },
+              providerMetadata,
+            },
+            {
+              type: "reasoning-file",
+              mediaType: "application/json",
+              data: { type: "data", data: "e30=" },
+              providerMetadata,
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const agent = new AiSdkPiAgent({ system: "test", model });
+    const updates: Array<{ type: string; rawType: string; providerMetadata: unknown }> = [];
+    let messageStarts = 0;
+    let messageEnds = 0;
+    agent.subscribe((event) => {
+      if (event.type === "message_start" && event.message.role === "assistant") messageStarts += 1;
+      if (event.type === "message_end" && event.message.role === "assistant") messageEnds += 1;
+      if (event.type === "message_update") {
+        updates.push({
+          type: event.assistantMessageEvent.type,
+          rawType: event.assistantMessageEvent.raw.type,
+          providerMetadata: event.assistantMessageEvent.raw.providerMetadata,
+        });
+      }
+    });
+
+    await agent.prompt("provider parts");
+
+    expect(messageStarts).toBe(1);
+    expect(messageEnds).toBe(1);
+    expect(updates.map(({ type, rawType }) => [type, rawType])).toEqual([
+      ["custom", "custom"],
+      ["source", "source"],
+      ["source", "source"],
+      ["file", "file"],
+      ["reasoning_file", "reasoning-file"],
+    ]);
+    expect(updates.every((update) => update.providerMetadata === providerMetadata)).toBe(true);
+  });
+});
+
+describe("AiSdkPiAgent queued steering and cancellation", () => {
+  it("returns stable steering IDs and interrupts with every queued message exactly once", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "text-1" },
+            { type: "text-delta", id: "text-1", delta: "done" },
+            { type: "text-end", id: "text-1" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const firstTransformEntered = deferred();
+    const releaseFirstTransform = deferred();
+    const modelInputs: Array<readonly ModelMessage[]> = [];
+    let transformCount = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      transformMessages: async (messages) => {
+        modelInputs.push(messages);
+        transformCount += 1;
+        if (transformCount === 1) {
+          firstTransformEntered.resolve();
+          await releaseFirstTransform.promise;
+        }
+        return [...messages];
+      },
+    });
+
+    const run = agent.prompt("start");
+    await firstTransformEntered.promise;
+
+    expect(agent.interruptQueuedSteering()).toEqual({ status: "empty" });
+    agent.followUp("queued follow-up");
+    const firstId = agent.steer("first steering");
+    const secondId = agent.steer("second steering");
+    expect(firstId).toBe("steering-1");
+    expect(secondId).toBe("steering-2");
+
+    expect(agent.interruptQueuedSteering()).toEqual({
+      status: "interrupted",
+      steeringIds: [firstId, secondId],
+    });
+    expect(agent.interruptQueuedSteering()).toEqual({ status: "empty" });
+
+    releaseFirstTransform.resolve();
+    await run;
+
+    expect(modelInputs).toHaveLength(2);
+    expect(modelInputs[1]).toEqual([
+      { role: "user", content: "start" },
+      {
+        role: "user",
+        content: "queued follow-up\n\nfirst steering\n\nsecond steering",
+      },
+    ]);
+    expect(agent.state.messages).toEqual([
+      { role: "user", content: "start" },
+      {
+        role: "user",
+        content: "queued follow-up\n\nfirst steering\n\nsecond steering",
+      },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("merges a second queued interrupt batch into the pending interrupt in admission order", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "text-1" },
+            { type: "text-delta", id: "text-1", delta: "done" },
+            { type: "text-end", id: "text-1" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const firstTransformEntered = deferred();
+    const releaseFirstTransform = deferred();
+    const modelInputs: Array<readonly ModelMessage[]> = [];
+    const interruptAbortEvents: string[] = [];
+    let transformCount = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      transformMessages: async (messages) => {
+        modelInputs.push(messages);
+        transformCount += 1;
+        if (transformCount === 1) {
+          firstTransformEntered.resolve();
+          await releaseFirstTransform.promise;
+        }
+        return [...messages];
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_abort" && event.reason === "interrupt") {
+        interruptAbortEvents.push(event.reason);
+      }
+    });
+
+    const run = agent.prompt("start");
+    await firstTransformEntered.promise;
+
+    agent.followUp("first follow-up");
+    const firstId = agent.steer("first steering");
+    expect(agent.interruptQueuedSteering()).toEqual({
+      status: "interrupted",
+      steeringIds: [firstId],
+    });
+
+    agent.followUp("second follow-up");
+    const secondId = agent.steer("second steering");
+    expect(agent.interruptQueuedSteering()).toEqual({
+      status: "interrupted",
+      steeringIds: [secondId],
+    });
+    expect(agent.getQueuedSteeringIds()).toEqual([]);
+    expect(agent.interruptQueuedSteering()).toEqual({ status: "empty" });
+
+    releaseFirstTransform.resolve();
+    await run;
+
+    const interruptedMessage = {
+      role: "user" as const,
+      content: "first follow-up\n\nfirst steering\n\nsecond follow-up\n\nsecond steering",
+    };
+    expect(interruptAbortEvents).toEqual(["interrupt"]);
+    expect(modelInputs).toEqual([
+      [{ role: "user", content: "start" }],
+      [{ role: "user", content: "start" }, interruptedMessage],
+    ]);
+    expect(agent.state.messages).toEqual([
+      { role: "user", content: "start" },
+      interruptedMessage,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("cancels without a message, rewinds, clears queues, and does not leak into a later prompt", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "cancelled-call",
+                toolName: "lookup",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "text-later" },
+              { type: "text-delta", id: "text-later", delta: "later response" },
+              { type: "text-end", id: "text-later" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const modelInputs: Array<readonly ModelMessage[]> = [];
+    const cancelResets: Array<{ messages: ModelMessage[]; droppedMessageCount: number }> = [];
+    let cancelled = false;
+    let toolExecutions = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        lookup: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => {
+            toolExecutions += 1;
+            return "unexpected";
+          },
+        }),
+      },
+      transformMessages: (messages) => {
+        modelInputs.push(messages);
+        return [...messages];
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_end" && !cancelled) {
+        cancelled = true;
+        agent.steer("must be cleared");
+        agent.followUp("also must be cleared");
+        agent.cancel();
+      }
+      if (event.type === "messages_reset" && event.reason === "cancel") {
+        cancelResets.push({
+          messages: event.messages,
+          droppedMessageCount: event.droppedMessageCount,
+        });
+      }
+    });
+
+    await agent.prompt("original prompt");
+
+    expect(toolExecutions).toBe(0);
+    expect(cancelResets).toEqual([
+      {
+        messages: [{ role: "user", content: "original prompt" }],
+        droppedMessageCount: 1,
+      },
+    ]);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "original prompt" }]);
+
+    await agent.prompt("later prompt");
+
+    expect(modelInputs).toEqual([
+      [{ role: "user", content: "original prompt" }],
+      [
+        { role: "user", content: "original prompt" },
+        { role: "user", content: "later prompt" },
+      ],
+    ]);
+    expect(agent.state.messages).toEqual([
+      { role: "user", content: "original prompt" },
+      { role: "user", content: "later prompt" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "later response" }],
+      },
+    ]);
+  });
+
+  it("lets cancellation win while the turn error handler is awaited", async () => {
+    for (const decision of ["fail", "retry"] as const) {
+      const handlerEntered = deferred();
+      const releaseHandler = deferred();
+      const originalError = new Error(`original ${decision} error`);
+      const cancelAbortEvents: string[] = [];
+      const cancelResetEvents: string[] = [];
+      const agent = new AiSdkPiAgent({
+        system: "test",
+        model: fakeModel(),
+        transformMessages: () => {
+          throw originalError;
+        },
+        turnErrorHandler: async () => {
+          handlerEntered.resolve();
+          await releaseHandler.promise;
+          return decision;
+        },
+      });
+      agent.subscribe((event) => {
+        if (event.type === "turn_abort" && event.reason === "cancel") {
+          cancelAbortEvents.push(event.reason);
+        }
+        if (event.type === "messages_reset" && event.reason === "cancel") {
+          cancelResetEvents.push(event.reason);
+        }
+      });
+
+      const run = agent.prompt(`${decision} prompt`);
+      await handlerEntered.promise;
+      agent.steer("must be cleared");
+      agent.followUp("also must be cleared");
+      agent.cancel();
+      releaseHandler.resolve();
+      await run;
+
+      expect(cancelAbortEvents).toEqual(["cancel"]);
+      expect(cancelResetEvents).toEqual(["cancel"]);
+      expect(agent.state.error).toBeUndefined();
+      expect(agent.state.messages).toEqual([{ role: "user", content: `${decision} prompt` }]);
+      expect(agent.interruptQueuedSteering()).toEqual({ status: "empty" });
+    }
+  });
+
+  it("lets cancellation win when the awaited turn error handler rejects", async () => {
+    const handlerEntered = deferred();
+    const releaseHandler = deferred();
+    const terminalEvents: string[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      transformMessages: () => {
+        throw new Error("original turn error");
+      },
+      turnErrorHandler: async () => {
+        handlerEntered.resolve();
+        await releaseHandler.promise;
+        throw new Error("handler rejection");
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_abort") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "messages_reset") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "agent_end") {
+        terminalEvents.push(event.type);
+      }
+    });
+
+    const run = agent.prompt("cancel rejected handler");
+    await handlerEntered.promise;
+    agent.cancel();
+    releaseHandler.resolve();
+    await run;
+
+    expect(terminalEvents).toEqual(["turn_abort:cancel", "messages_reset:cancel", "agent_end"]);
+    expect(agent.state.error).toBeUndefined();
+    expect(agent.state.messages).toEqual([{ role: "user", content: "cancel rejected handler" }]);
+  });
+
+  it("preserves turn error handler rejection when cancellation was not requested", async () => {
+    const handlerError = new Error("handler rejection");
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      transformMessages: () => {
+        throw new Error("original turn error");
+      },
+      turnErrorHandler: async () => {
+        throw handlerError;
+      },
+    });
+
+    await expect(agent.prompt("fail normally")).rejects.toBe(handlerError);
+    expect(agent.state.error).toBe(handlerError.message);
+  });
+
+  it("stops before approval when cancellation is requested by a tool start subscriber", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "tool-call", toolCallId: "cancel-at-start", toolName: "lookup", input: "{}" },
+            {
+              type: "finish",
+              finishReason: { unified: "tool-calls", raw: "tool-calls" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const terminalEvents: string[] = [];
+    let approvalChecks = 0;
+    let executions = 0;
+    let normalizations = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        lookup: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          needsApproval: () => {
+            approvalChecks += 1;
+            return false;
+          },
+          execute: () => {
+            executions += 1;
+            return "unexpected";
+          },
+        }),
+      },
+      normalizeToolResultOutput: (output) => {
+        normalizations += 1;
+        return output;
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_start") {
+        terminalEvents.push(event.type);
+        agent.cancel();
+      } else if (event.type === "turn_abort") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "messages_reset") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "agent_end") {
+        terminalEvents.push(event.type);
+      }
+    });
+
+    await agent.prompt("cancel tool at start");
+
+    expect(approvalChecks).toBe(0);
+    expect(executions).toBe(0);
+    expect(normalizations).toBe(0);
+    expect(terminalEvents).toEqual([
+      "tool_execution_start",
+      "turn_abort:cancel",
+      "messages_reset:cancel",
+      "agent_end",
+    ]);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "cancel tool at start" }]);
+  });
+
+  it("stops before execution when cancellation occurs while approval is awaited", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-call",
+              toolCallId: "cancel-during-approval",
+              toolName: "lookup",
+              input: "{}",
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "tool-calls", raw: "tool-calls" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const approvalEntered = deferred();
+    const releaseApproval = deferred();
+    const terminalEvents: string[] = [];
+    let executions = 0;
+    let normalizations = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        lookup: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          needsApproval: async () => {
+            approvalEntered.resolve();
+            await releaseApproval.promise;
+            return false;
+          },
+          execute: () => {
+            executions += 1;
+            return "unexpected";
+          },
+        }),
+      },
+      normalizeToolResultOutput: (output) => {
+        normalizations += 1;
+        return output;
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_start") {
+        terminalEvents.push(event.type);
+      } else if (event.type === "turn_abort") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "messages_reset") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "agent_end") {
+        terminalEvents.push(event.type);
+      }
+    });
+
+    const run = agent.prompt("cancel during approval");
+    await approvalEntered.promise;
+    agent.cancel();
+    releaseApproval.resolve();
+    await run;
+
+    expect(executions).toBe(0);
+    expect(normalizations).toBe(0);
+    expect(terminalEvents).toEqual([
+      "tool_execution_start",
+      "turn_abort:cancel",
+      "messages_reset:cancel",
+      "agent_end",
+    ]);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "cancel during approval" }]);
+  });
+
+  it("closes a streaming tool iterator when cancellation interrupts its output", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-call",
+              toolCallId: "cancel-streaming-tool",
+              toolName: "streaming",
+              input: "{}",
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "tool-calls", raw: "tool-calls" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    let cleanedUp = false;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        streaming: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: async function* () {
+            try {
+              yield "first";
+              yield "unexpected";
+            } finally {
+              cleanedUp = true;
+            }
+          },
+        }),
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_update") agent.cancel();
+    });
+
+    await agent.prompt("cancel streaming tool");
+
+    expect(cleanedUp).toBe(true);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "cancel streaming tool" }]);
+  });
+});
+
 describe("AiSdkPiAgent turn boundaries", () => {
   it("injects boundary messages after tool results and before the next model turn", async () => {
     const model = new MockLanguageModelV4({
@@ -749,6 +1378,68 @@ describe("AiSdkPiAgent turn boundaries", () => {
     await agent.prompt("start");
 
     expect(firstBoundary).toEqual([{ executed: 2, appended: 2 }]);
+  });
+
+  it("rejects other calls in a turn containing an exclusive tool", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "tool-call", toolCallId: "skill-1", toolName: "skill", input: "{}" },
+              { type: "tool-call", toolCallId: "bash-1", toolName: "bash", input: "{}" },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    let skillCalls = 0;
+    let bashCalls = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        skill: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => {
+            skillCalls += 1;
+            return { instructions: "read first" };
+          },
+        }),
+        bash: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => {
+            bashCalls += 1;
+            return "should not run";
+          },
+        }),
+      },
+      exclusiveToolNames: new Set(["skill"]),
+    });
+
+    await agent.prompt("start");
+
+    expect(skillCalls).toBe(1);
+    expect(bashCalls).toBe(0);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      "was not executed because an exclusive tool was selected",
+    );
   });
 
   it("does not append a boundary decision after the run is aborted", async () => {
