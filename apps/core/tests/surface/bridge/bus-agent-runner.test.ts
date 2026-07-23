@@ -30,6 +30,7 @@ import {
   buildAutoInjectedThreadSearchOverlay,
   buildCustomCommandFailureFinalText,
   consumeAssistantTextDelta,
+  consumeReasoningChunkEvent,
   computeTransientRetryDelayMs,
   createAssistantTextPartBoundaryState,
   createAgentRunIdleWatchdog,
@@ -75,6 +76,41 @@ import {
   shouldForceUrlDownloadForAnthropicFallback,
   withStableAnthropicUpstreamOrder,
 } from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
+
+describe("reasoning chunk streaming", () => {
+  it("publishes accumulated snapshots before thinking_end without duplicating on end", () => {
+    const state = { chunks: new Map<string, string>(), seq: 0 };
+
+    expect(
+      consumeReasoningChunkEvent(state, { type: "delta", chunkId: "reasoning-1", delta: "" }),
+    ).toEqual({ publishStart: true, snapshot: null });
+    expect(
+      consumeReasoningChunkEvent(state, {
+        type: "delta",
+        chunkId: "reasoning-1",
+        delta: "**Inspecting**",
+      }),
+    ).toEqual({
+      publishStart: false,
+      snapshot: { delta: "**Inspecting**", seq: 1 },
+    });
+    expect(
+      consumeReasoningChunkEvent(state, {
+        type: "delta",
+        chunkId: "reasoning-1",
+        delta: "\n\nChecking the stream.",
+      }),
+    ).toEqual({
+      publishStart: false,
+      snapshot: { delta: "**Inspecting**\n\nChecking the stream.", seq: 2 },
+    });
+    expect(consumeReasoningChunkEvent(state, { type: "end", chunkId: "reasoning-1" })).toEqual({
+      publishStart: false,
+      snapshot: null,
+    });
+    expect(state.chunks.has("reasoning-1")).toBe(false);
+  });
+});
 
 describe("deferred subagent result", () => {
   it("exposes the durable workflow run ID without exposing the child request ID", () => {

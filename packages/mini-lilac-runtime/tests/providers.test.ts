@@ -8,6 +8,7 @@ import {
   loadProviderAuth,
   loadProviderConfig,
   loadProviderRegistry,
+  reasoningProviderOptions,
   writeProviderAuth,
   type ProviderAuth,
   type ProviderConfig,
@@ -82,6 +83,72 @@ async function loadTestRegistry(
   const runtimeConfig = await loadRuntimeConfig(runtimeConfigFile);
   return loadProviderRegistry(runtimeConfig, { readCodexTokens: async () => oauth });
 }
+
+describe("reasoningProviderOptions", () => {
+  it("merges Codex OAuth store/include options with detailed summaries", () => {
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: true,
+        providerType: "openai",
+        reasoningEnabled: true,
+      }),
+    ).toEqual({
+      openai: {
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        reasoningSummary: "detailed",
+      },
+    });
+  });
+
+  it("requests detailed summaries for direct OpenAI providers", () => {
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: false,
+        providerType: "openai",
+        reasoningEnabled: true,
+      }),
+    ).toEqual({
+      openai: { reasoningSummary: "detailed" },
+    });
+  });
+
+  it("leaves other provider types and unknown providers untouched", () => {
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: false,
+        providerType: "anthropic",
+        reasoningEnabled: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: false,
+        providerType: undefined,
+        reasoningEnabled: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("does not request summaries when reasoning is disabled", () => {
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: true,
+        providerType: "openai",
+        reasoningEnabled: false,
+      }),
+    ).toEqual({
+      openai: { store: false, include: ["reasoning.encrypted_content"] },
+    });
+    expect(
+      reasoningProviderOptions({
+        usesCodexOAuth: false,
+        providerType: "openai",
+        reasoningEnabled: false,
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("provider configuration", () => {
   it("loads versioned provider YAML and private auth JSON", async () => {

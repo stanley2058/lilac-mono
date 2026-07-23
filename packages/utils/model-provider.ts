@@ -146,27 +146,64 @@ export async function refreshCodexOAuthTokens(
   return next;
 }
 
-function normalizeCodexResponsesEvent(event: Record<string, unknown>): Record<string, unknown> {
-  if (event.type === "response.done") {
-    return {
-      ...event,
-      type: "response.completed",
-    };
-  }
+function codexReasoningSummaryKey(event: Record<string, unknown>): string | undefined {
+  return typeof event.item_id === "string" && typeof event.summary_index === "number"
+    ? `${event.item_id}:${event.summary_index}`
+    : undefined;
+}
 
-  // Codex can emit reasoning-summary done events without the corresponding
-  // reasoning output item state expected by @ai-sdk/openai's Responses stream
-  // transform. We don't consume reasoning in these summarization calls, so
-  // normalize the event into a no-op delta that keeps the stream parser alive.
-  if (event.type === "response.reasoning_summary_part.done") {
-    return {
-      ...event,
-      type: "response.reasoning_summary_text.delta",
-      delta: "",
-    };
-  }
+function completedSummaryDelta(streamed: string, completed: string): string {
+  return completed.startsWith(streamed) ? completed.slice(streamed.length) : "";
+}
 
-  return event;
+export function createCodexResponsesEventNormalizer(): (
+  event: Record<string, unknown>,
+) => Record<string, unknown> {
+  const summaries = new Map<string, string>();
+
+  return (event) => {
+    const type = event.type;
+    if (
+      type === "response.done" ||
+      type === "response.completed" ||
+      type === "response.incomplete" ||
+      type === "response.failed" ||
+      type === "error"
+    ) {
+      summaries.clear();
+      return type === "response.done" ? { ...event, type: "response.completed" } : event;
+    }
+
+    const key = codexReasoningSummaryKey(event);
+    if (type === "response.reasoning_summary_text.delta") {
+      const delta = typeof event.delta === "string" ? event.delta : "";
+      if (key) summaries.set(key, `${summaries.get(key) ?? ""}${delta}`);
+      return event;
+    }
+
+    if (type === "response.reasoning_summary_text.done") {
+      const completed = typeof event.text === "string" ? event.text : "";
+      const delta = completedSummaryDelta(key ? (summaries.get(key) ?? "") : "", completed);
+      if (key) summaries.set(key, completed);
+      return { ...event, type: "response.reasoning_summary_text.delta", delta };
+    }
+
+    // Codex can omit the reasoning output item state expected by @ai-sdk/openai.
+    // Keep the parser alive while recovering any final text not already streamed.
+    if (type === "response.reasoning_summary_part.done") {
+      const part = isRecord(event.part) ? event.part : undefined;
+      const completed =
+        part?.type === "summary_text" && typeof part.text === "string" ? part.text : undefined;
+      const delta =
+        completed === undefined
+          ? ""
+          : completedSummaryDelta(key ? (summaries.get(key) ?? "") : "", completed);
+      if (key && completed !== undefined) summaries.set(key, completed);
+      return { ...event, type: "response.reasoning_summary_text.delta", delta };
+    }
+
+    return event;
+  };
 }
 
 export type CreateCodexOAuthProviderOptions = {
@@ -183,7 +220,7 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
     mode: env.providers.codex.responsesTransport,
     url: "wss://chatgpt.com/backend-api/codex/responses",
     completionEventTypes: ["response.completed", "response.done"],
-    normalizeEvent: normalizeCodexResponsesEvent,
+    createEventNormalizer: createCodexResponsesEventNormalizer,
     turnStateHeaderName: "x-codex-turn-state",
     onTransportSelected: (details) => {
       logger.info("responses transport selected", { provider: "codex", ...details });

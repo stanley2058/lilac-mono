@@ -22,6 +22,7 @@
   "dependencies": {
     "@opentui/core": "0.4.3",
     "@opentui/solid": "0.4.3",
+    "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/mini-lilac-client": "workspace:*",
     "ai": "^7.0.22",
     "solid-js": "1.9.12",

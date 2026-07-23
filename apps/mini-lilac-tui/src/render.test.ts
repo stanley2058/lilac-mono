@@ -70,7 +70,7 @@ describe("renderInitialMessages", () => {
         id: "message:assistant-1:0",
         kind: "reasoning",
         tone: "muted",
-        text: "thinking",
+        text: "Thought\nprivate chain",
       },
       {
         id: "message:assistant-1:1",
@@ -1262,7 +1262,7 @@ describe("renderInitialMessages", () => {
     expect(entries().at(-1)?.text).toBe("$ odd-command\n\nretain me");
   });
 
-  it("closes reasoning on reasoning-end", () => {
+  it("appends one entry per reasoning chunk and finalizes on reasoning-end", () => {
     let count = 0;
     const renderer = new ChunkRenderer(
       {
@@ -1279,5 +1279,125 @@ describe("renderInitialMessages", () => {
     renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
     renderer.handle({ type: "reasoning-start", id: "reasoning-2" });
     expect(count).toBe(2);
+  });
+
+  it("streams a title and body into an active then finalized reasoning entry", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**Inspecting the " });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "stream**\n\n" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "Checking ordering." });
+    expect(transcriptSemantics(entries())).toEqual([
+      {
+        kind: "reasoning",
+        tone: "muted",
+        text: "Thinking: Inspecting the stream\nChecking ordering.",
+      },
+    ]);
+
+    renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
+    expect(transcriptSemantics(entries())).toEqual([
+      {
+        kind: "reasoning",
+        tone: "muted",
+        text: "Thought: Inspecting the stream\nChecking ordering.",
+      },
+    ]);
+  });
+
+  it("renders a title-only reasoning summary", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**Reviewing plan**" });
+    renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thought: Reviewing plan" },
+    ]);
+  });
+
+  it("renders a body-only reasoning summary without a title convention", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "Just plain reasoning." });
+    renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thought\nJust plain reasoning." },
+    ]);
+  });
+
+  it("supports implicit reasoning starts from a delta", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "no start chunk" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thinking\nno start chunk" },
+    ]);
+  });
+
+  it("ignores an empty delta without an explicit reasoning start", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "" });
+    renderer.handle({ type: "finish" });
+    expect(entries()).toEqual([]);
+  });
+
+  it("finalizes open reasoning when text output begins without reasoning-end", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**Deciding**\n\nGo." });
+    renderer.handle({ type: "text-delta", id: "text-1", delta: "Answer" });
+    renderer.handle({ type: "finish" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thought: Deciding\nGo." },
+      { kind: "assistant", tone: "normal", text: "Answer" },
+    ]);
+  });
+
+  it("finalizes open reasoning when a finish boundary arrives without reasoning-end", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**Wrapping up**" });
+    renderer.handle({ type: "finish" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thought: Wrapping up" },
+    ]);
+  });
+
+  it("tracks multiple reasoning chunks without merging their content", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**First**\n\nOne." });
+    renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-start", id: "reasoning-2" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-2", delta: "**Second**\n\nTwo." });
+    renderer.handle({ type: "reasoning-end", id: "reasoning-2" });
+    expect(transcriptSemantics(entries())).toEqual([
+      { kind: "reasoning", tone: "muted", text: "Thought: First\nOne." },
+      { kind: "reasoning", tone: "muted", text: "Thought: Second\nTwo." },
+    ]);
+  });
+
+  it("matches persisted rendering for the same reasoning content", () => {
+    const { renderer, entries } = createRendererHarness();
+    renderer.startRun();
+    renderer.handle({ type: "reasoning-start", id: "reasoning-1" });
+    renderer.handle({ type: "reasoning-delta", id: "reasoning-1", delta: "**Plan**\n\nDo it." });
+    renderer.handle({ type: "reasoning-end", id: "reasoning-1" });
+
+    const persisted = renderInitialMessages([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "reasoning", text: "**Plan**\n\nDo it.", state: "done" }],
+      },
+    ]);
+    expect(transcriptSemantics(entries())).toEqual(transcriptSemantics(persisted));
   });
 });

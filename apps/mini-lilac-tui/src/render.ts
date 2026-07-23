@@ -3,6 +3,8 @@ import { posix } from "node:path";
 import { getToolName, isToolUIPart, type UIMessageChunk } from "ai";
 import { z } from "zod";
 
+import { parseReasoningSummary } from "@stanley2058/lilac-utils";
+
 import {
   miniLilacTodoChunkSchema,
   miniLilacTodosSchema,
@@ -936,6 +938,26 @@ function dataEntry(
   }
 }
 
+/**
+ * Render a provider reasoning summary as a muted transcript entry.
+ *
+ * Follows OpenCode's convention: a leading `**Title**` block separated by a
+ * blank line becomes the header, the remainder renders inline as the body. The
+ * header reads `Thinking: <title>` while streaming and `Thought: <title>` once
+ * finalized; a missing title falls back to `Thinking`/`Thought`. Summaries
+ * without the title convention keep the full text as the body.
+ */
+function reasoningEntry(text: string, finalized: boolean): Omit<TranscriptEntry, "id"> {
+  const summary = parseReasoningSummary(text);
+  const verb = finalized ? "Thought" : "Thinking";
+  const header = summary.title === null ? verb : `${verb}: ${summary.title}`;
+  return {
+    kind: "reasoning",
+    tone: "muted",
+    text: summary.body ? `${header}\n${summary.body}` : header,
+  };
+}
+
 /** Convert a canonical startup transcript into the same model used by live output. */
 export function renderInitialMessages(
   messages: readonly MiniLilacUIMessage[],
@@ -958,7 +980,7 @@ export function renderInitialMessages(
         return;
       }
       if (part.type === "reasoning") {
-        append({ id, kind: "reasoning", tone: "muted", text: "thinking" });
+        append({ id, ...reasoningEntry(part.text, part.state !== "streaming") });
         return;
       }
       if (isToolUIPart(part)) {
@@ -1068,7 +1090,7 @@ export class ChunkRenderer {
   private readonly explorationByToolId = new Map<string, ExplorationState>();
   private readonly subagents = new Map<string, SubagentTranscript>();
   private exploration: ExplorationState | undefined;
-  private reasoningOpen = false;
+  private readonly reasoningEntries = new Map<string, { id: string; text: string }>();
   private readonly textEntryIds = new Map<string, string>();
 
   constructor(
@@ -1089,10 +1111,10 @@ export class ChunkRenderer {
 
     switch (chunk.type) {
       case "text-start":
-        this.closeReasoning();
+        this.finalizeReasoning();
         return;
       case "text-delta":
-        this.closeReasoning();
+        this.finalizeReasoning();
         this.renderTextDelta(chunk.id, chunk.delta);
         return;
       case "text-end":
@@ -1100,14 +1122,16 @@ export class ChunkRenderer {
         return;
       case "finish":
         this.finishOpenText();
+        this.finalizeReasoning();
         return;
       case "reasoning-start":
-        this.openReasoning();
+        this.startReasoning(chunk.id);
         return;
       case "reasoning-delta":
+        this.appendReasoning(chunk.id, chunk.delta);
         return;
       case "reasoning-end":
-        this.closeReasoning();
+        this.endReasoning(chunk.id);
         return;
       case "tool-input-start":
         this.renderToolStart(chunk.toolCallId, chunk.toolName);
@@ -1141,10 +1165,12 @@ export class ChunkRenderer {
         return;
       case "error":
         this.finishOpenText();
+        this.finalizeReasoning();
         this.append({ kind: "error", tone: "danger", text: chunk.errorText });
         return;
       case "abort":
         this.finishOpenText();
+        this.finalizeReasoning();
         this.append({
           kind: "status",
           tone: "muted",
@@ -1200,7 +1226,7 @@ export class ChunkRenderer {
     this.subagents.set(status.toolCallId, subagent);
     let id = this.toolEntryIds.get(status.toolCallId);
     if (id === undefined) {
-      this.closeReasoning();
+      this.finalizeReasoning();
       id = this.append(subagentEntry(subagent));
       this.toolEntryIds.set(status.toolCallId, id);
     } else {
@@ -1216,6 +1242,7 @@ export class ChunkRenderer {
   ): void {
     this.toolNames.set(toolCallId, toolName);
     if (inputAvailable) this.toolInputs.set(toolCallId, input);
+    this.finalizeReasoning();
     if (toolName === "subagent_result") return;
     if (toolName === "subagent_delegate") {
       const parsed = subagentFromTool(toolCallId, input);
@@ -1227,7 +1254,6 @@ export class ChunkRenderer {
       this.subagents.set(toolCallId, subagent);
       const existingId = this.toolEntryIds.get(toolCallId);
       if (existingId === undefined) {
-        this.closeReasoning();
         this.toolEntryIds.set(toolCallId, this.append(subagentEntry(subagent)));
       } else if (inputAvailable) {
         this.output.update(existingId, subagentEntry(subagent));
@@ -1241,7 +1267,6 @@ export class ChunkRenderer {
     const category = explorationCategory(toolName);
     if (category !== undefined) {
       if (!inputAvailable || this.explorationByToolId.has(toolCallId)) return;
-      this.closeReasoning();
       if (this.exploration === undefined) {
         const state: ExplorationState = {
           id: "",
@@ -1282,7 +1307,6 @@ export class ChunkRenderer {
       }
       return;
     }
-    this.closeReasoning();
     const entry = toolEntry(toolName, input, { status: "active" }, this.options) ?? {
       kind: "tool" as const,
       tone: "accent" as const,
@@ -1460,14 +1484,37 @@ export class ChunkRenderer {
     this.output.update(state.id, explorationEntry(state, state === this.exploration));
   }
 
-  private openReasoning(): void {
-    if (this.reasoningOpen) return;
-    this.reasoningOpen = true;
-    this.append({ kind: "reasoning", tone: "muted", text: "thinking" });
+  private startReasoning(chunkId: string): void {
+    if (this.reasoningEntries.has(chunkId)) return;
+    const id = this.append(reasoningEntry("", false));
+    this.reasoningEntries.set(chunkId, { id, text: "" });
   }
 
-  private closeReasoning(): void {
-    this.reasoningOpen = false;
+  private appendReasoning(chunkId: string, delta: string): void {
+    // Codex may stream deltas without an explicit reasoning-start; open lazily.
+    const existing = this.reasoningEntries.get(chunkId);
+    if (existing === undefined && delta.length === 0) return;
+    const entry = existing ?? { id: this.append(reasoningEntry("", false)), text: "" };
+    entry.text += delta;
+    this.reasoningEntries.set(chunkId, entry);
+    this.output.update(entry.id, reasoningEntry(entry.text, false));
+  }
+
+  private endReasoning(chunkId: string): void {
+    const entry = this.reasoningEntries.get(chunkId);
+    if (entry === undefined) return;
+    this.output.update(entry.id, reasoningEntry(entry.text, true));
+    this.reasoningEntries.delete(chunkId);
+  }
+
+  // Codex may omit reasoning-end, so finalize any open entries when a text,
+  // tool, or finish boundary is reached. Each chunk keeps its own entry so
+  // separate reasoning blocks never merge.
+  private finalizeReasoning(): void {
+    for (const entry of this.reasoningEntries.values()) {
+      this.output.update(entry.id, reasoningEntry(entry.text, true));
+    }
+    this.reasoningEntries.clear();
   }
 
   private renderTextDelta(chunkId: string, delta: string): void {
@@ -1503,6 +1550,6 @@ export class ChunkRenderer {
     this.subagents.clear();
     this.exploration = undefined;
     this.textEntryIds.clear();
-    this.reasoningOpen = false;
+    this.reasoningEntries.clear();
   }
 }

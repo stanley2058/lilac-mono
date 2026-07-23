@@ -954,6 +954,57 @@ describe("experimental markdown table rendering", () => {
 });
 
 describe("reasoning display helpers", () => {
+  function getReasoningPresentation(
+    mode: "simple" | "detailed",
+    detailText: string,
+  ): { title: string; detail: string | null } {
+    const { client } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: mode,
+      workingIndicators: ["Working"],
+    });
+    Reflect.set(out as object, "hasReasoningStatus", true);
+    Reflect.set(out as object, "reasoningDetailText", detailText);
+
+    const getProgressTitle = Reflect.get(out as object, "getProgressTitle");
+    const getReasoningValue = Reflect.get(out as object, "getReasoningValue");
+    if (typeof getProgressTitle !== "function" || typeof getReasoningValue !== "function") {
+      throw new Error("reasoning presentation methods are unavailable");
+    }
+    return {
+      title: getProgressTitle.call(out) as string,
+      detail: getReasoningValue.call(out) as string | null,
+    };
+  }
+
+  it("shows a detailed title-only summary without an empty detail block", () => {
+    const presentation = getReasoningPresentation("detailed", "**Inspecting the stream**");
+
+    expect(presentation.title).toContain("Inspecting the stream");
+    expect(presentation.detail).toBeNull();
+  });
+
+  it("shows a detailed summary title in the heading and blockquotes only its body", () => {
+    const presentation = getReasoningPresentation(
+      "detailed",
+      "**Inspecting the stream**\n\nChecking event ordering.",
+    );
+
+    expect(presentation.title).toContain("Inspecting the stream");
+    expect(presentation.detail).toBe("> Checking event ordering.");
+  });
+
+  it("shows a simple summary title without a detail body", () => {
+    const presentation = getReasoningPresentation("simple", "**Inspecting the stream**");
+
+    expect(presentation.title).toContain("Inspecting the stream");
+    expect(presentation.detail).toBeNull();
+  });
+
   it("clamps long reasoning output and preserves leading content", () => {
     expect(clampReasoningDetail("0123456789", 4)).toBe("012…");
   });

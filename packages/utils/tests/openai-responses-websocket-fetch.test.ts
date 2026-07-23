@@ -248,15 +248,19 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
   it("supports codex-style response.done normalization", async () => {
     globals.fetch = (async () => new Response("fallback")) as unknown as typeof globalThis.fetch;
+    let normalizerCount = 0;
 
     const wsFetch = createOpenAIResponsesWebSocketFetch({
       mode: "websocket",
       completionEventTypes: ["response.completed", "response.done"],
-      normalizeEvent: (event) => {
-        if (event.type !== "response.done") return event;
-        return {
-          ...event,
-          type: "response.completed",
+      createEventNormalizer: () => {
+        normalizerCount += 1;
+        return (event) => {
+          if (event.type !== "response.done") return event;
+          return {
+            ...event,
+            type: "response.completed",
+          };
         };
       },
     });
@@ -275,6 +279,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
 
     expect(text).toContain('"type":"response.completed"');
     expect(text).not.toContain('"type":"response.done"');
+    expect(normalizerCount).toBe(1);
   });
 
   it("normalizes websocket response.failed into error events", async () => {

@@ -4,7 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { createGateway, createProviderRegistry } from "ai";
+import { createGateway, createProviderRegistry, type JSONValue } from "ai";
 import { chmod, open, readFile, rename, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
@@ -257,6 +257,35 @@ export function createAiProviderRegistry(
   );
 
   return createProviderRegistry(providers, { separator: "/" });
+}
+
+/**
+ * Build the OpenAI `providerOptions` for the selected model turn so reasoning
+ * summaries surface in the transcript.
+ *
+ * Codex OAuth keeps its existing `store: false` / encrypted-content include and
+ * additionally requests detailed summaries. Direct provider definitions of type
+ * `openai` request detailed summaries as well. All other provider types (and
+ * unknown providers) are left untouched.
+ */
+export function reasoningProviderOptions(params: {
+  readonly usesCodexOAuth: boolean;
+  readonly providerType: ProviderType | undefined;
+  readonly reasoningEnabled: boolean;
+}): { readonly openai: Record<string, JSONValue> } | undefined {
+  if (params.usesCodexOAuth) {
+    return {
+      openai: {
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        ...(params.reasoningEnabled ? { reasoningSummary: "detailed" } : {}),
+      },
+    };
+  }
+  if (params.providerType === "openai" && params.reasoningEnabled) {
+    return { openai: { reasoningSummary: "detailed" } };
+  }
+  return undefined;
 }
 
 export type LoadedProviderRegistry = {

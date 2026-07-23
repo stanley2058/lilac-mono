@@ -82,9 +82,18 @@ is a fixed multiline textarea and remains focused while output streams.
 ## Rendering
 
 [`src/render.ts`](./src/render.ts) maps standard AI SDK chunks to a plain semantic
-transcript model: text, reasoning (a collapsed indicator), tools/results, errors, plus
-mini-lilac data parts (`session`, `control`, `transcriptReset`, `subagentStatus`),
-which are validated with the client's Zod schema at the boundary.
+transcript model: text, reasoning, tools/results, errors, plus mini-lilac data
+parts (`session`, `control`, `transcriptReset`, `subagentStatus`), which are
+validated with the client's Zod schema at the boundary.
+
+Provider reasoning summaries always render inline as a muted entry. Following
+OpenCode's convention, a leading `**Title**` block (separated by a blank line)
+becomes the header: `Thinking: <title>` while streaming and `Thought: <title>`
+once finalized, and the remainder renders immediately as the body. Summaries
+without a title fall back to `Thinking`/`Thought` with the full text as the body.
+Each reasoning chunk is tracked by id, so blocks never merge; open reasoning is
+finalized when a text, tool, or finish boundary arrives (Codex may omit the
+`reasoning-end` chunk).
 
 Fenced code blocks use Tree-sitter syntax highlighting. JavaScript, TypeScript,
 Markdown, and Zig use OpenTUI's bundled parsers; Python, Bash, JSON, YAML, Rust,

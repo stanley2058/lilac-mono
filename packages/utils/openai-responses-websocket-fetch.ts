@@ -11,6 +11,7 @@ export type CreateOpenAIResponsesWebSocketFetchOptions = {
   fetch?: typeof globalThis.fetch;
   completionEventTypes?: readonly string[];
   normalizeEvent?: (event: Record<string, unknown>) => Record<string, unknown>;
+  createEventNormalizer?: () => (event: Record<string, unknown>) => Record<string, unknown>;
   idleTimeoutMs?: number;
   turnStateHeaderName?: string;
   onTransportSelected?: (details: ResponsesTransportSelectionDetails) => void;
@@ -327,6 +328,7 @@ export function createOpenAIResponsesWebSocketFetch(
     const method = getRequestMethod(input, init);
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     const isResponsesRequest = method === "POST" && requestUrl.pathname.endsWith("/responses");
+    const normalizeEvent = options.createEventNormalizer?.() ?? options.normalizeEvent;
 
     const forwardWithSseNormalization = async (): Promise<Response> => {
       const response = await fetchFn(input, init);
@@ -334,7 +336,7 @@ export function createOpenAIResponsesWebSocketFetch(
         response,
         requestUrl,
         method,
-        normalizeEvent: options.normalizeEvent,
+        normalizeEvent,
       });
     };
 
@@ -556,7 +558,7 @@ export function createOpenAIResponsesWebSocketFetch(
               }
             }
 
-            const normalized = normalizeResponsesEvent(eventJson, options.normalizeEvent);
+            const normalized = normalizeResponsesEvent(eventJson, normalizeEvent);
 
             if (isPreviousResponseNotFoundError(normalized) && retryWithoutOptimization()) {
               return;
@@ -959,6 +961,26 @@ function updateOutputItemDraft(
       const currentText = readString(existingPart.text) ?? "";
       existingPart.text = `${currentText}${readString(event.delta) ?? ""}`;
       summary[summaryIndex] = existingPart as JsonValue;
+      return;
+    }
+    case "response.reasoning_summary_text.done": {
+      const text = readString(event.text);
+      if (text === undefined) return;
+      const draft = ensureOutputItemDraft(drafts, itemId, "reasoning");
+      const summary = ensureDraftArray(draft, "summary");
+      const summaryIndex = readNumber(event.summary_index) ?? 0;
+      summary[summaryIndex] = { type: "summary_text", text };
+      return;
+    }
+    case "response.reasoning_summary_part.done": {
+      const part = asRecord(event.part);
+      if (!part || readString(part.type) !== "summary_text") return;
+      const text = readString(part.text);
+      if (text === undefined) return;
+      const draft = ensureOutputItemDraft(drafts, itemId, "reasoning");
+      const summary = ensureDraftArray(draft, "summary");
+      const summaryIndex = readNumber(event.summary_index) ?? 0;
+      summary[summaryIndex] = { type: "summary_text", text };
       return;
     }
     case "response.function_call_arguments.delta": {

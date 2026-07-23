@@ -83,7 +83,11 @@ import {
   type RuntimeConfig,
 } from "./config";
 import { parseModelRef, resolveLanguageModel } from "./model-catalog";
-import type { LoadedProviderRegistry } from "./providers";
+import {
+  reasoningProviderOptions,
+  type LoadedProviderRegistry,
+  type ProviderType,
+} from "./providers";
 import { MiniLilacSkillCatalog, type MiniLilacSkillCatalogSnapshot } from "./skills";
 import {
   MiniLilacSqliteStore,
@@ -540,6 +544,7 @@ class SessionActor {
       request: DelegatedSessionRequest,
     ) => Promise<DelegatedSessionHandle>,
     private readonly supersededProviderIds: ReadonlySet<string>,
+    private readonly resolveProviderType: (providerId: string) => ProviderType | undefined,
     private readonly skillCatalog: MiniLilacSkillCatalog | undefined,
     private readonly resolveWebSearchProvider: WebSearchProviderResolver,
     private readonly protectedToolPaths: readonly string[],
@@ -800,7 +805,13 @@ class SessionActor {
         : ((await this.resolveModelLimits(modelSpecifier))?.context ??
           this.snapshot.contextWindow ??
           undefined);
-    const usesCodexOAuth = this.supersededProviderIds.has(parseModelRef(modelSpecifier).providerId);
+    const providerId = parseModelRef(modelSpecifier).providerId;
+    const usesCodexOAuth = this.supersededProviderIds.has(providerId);
+    const providerOptions = reasoningProviderOptions({
+      usesCodexOAuth,
+      providerType: this.resolveProviderType(providerId),
+      reasoningEnabled: reasoning !== "none",
+    });
     let transientRetryOutputStarted = false;
     const transientRetryController = usesCodexOAuth
       ? createTransientModelRetryController({
@@ -825,9 +836,7 @@ class SessionActor {
       tools,
       exclusiveToolNames: tools.skill === undefined ? undefined : new Set(["skill"]),
       messages,
-      providerOptions: usesCodexOAuth
-        ? { openai: { store: false, include: ["reasoning.encrypted_content"] } }
-        : undefined,
+      providerOptions,
       turnErrorHandler: transientRetryController?.handler,
       turnBoundaryHandler: () => this.finishDeferredChildren(context),
     });
@@ -2241,6 +2250,7 @@ export class SessionService {
   ) => Promise<() => void>;
   private readonly subagentCapacity: SubagentCapacity;
   private readonly supersededProviderIds: ReadonlySet<string>;
+  private readonly resolveProviderType: (providerId: string) => ProviderType | undefined;
   private readonly resolveWebSearchProvider: WebSearchProviderResolver;
   private readonly protectedToolPaths: readonly string[];
   private readonly activeTasks = new Set<Promise<void>>();
@@ -2298,6 +2308,7 @@ export class SessionService {
       });
     this.attachCompaction = this.options.attachCompaction ?? attachAutoCompaction;
     this.supersededProviderIds = new Set(providers?.supersededProviderIds);
+    this.resolveProviderType = (providerId) => providers?.config.providers[providerId]?.type;
     this.resolveWebSearchProvider =
       this.options.webSearchProviderResolver ?? createWebSearchProviderResolver(providers);
     this.subagentCapacity = {
@@ -2613,6 +2624,7 @@ export class SessionService {
       this.subagentCapacity,
       (request) => this.promptDelegatedSession(request),
       this.supersededProviderIds,
+      this.resolveProviderType,
       this.options.skillCatalog,
       this.resolveWebSearchProvider,
       this.protectedToolPaths,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { CODEX_BASE_INSTRUCTIONS } from "../codex-instructions";
 import type { CodexOAuthTokens } from "../codex-oauth";
 import {
+  createCodexResponsesEventNormalizer,
   normalizeCodexResponsesRequestRecord,
   refreshCodexOAuthTokens,
   shouldRefreshCodexOAuthTokens,
@@ -132,6 +133,108 @@ describe("normalizeCodexResponsesRequestRecord", () => {
     expect(() => normalizeCodexResponsesRequestRecord({ stream: false, input: [] })).toThrow(
       "requires streaming",
     );
+  });
+});
+
+describe("createCodexResponsesEventNormalizer", () => {
+  it("recovers atomic completed reasoning summaries", () => {
+    const normalize = createCodexResponsesEventNormalizer();
+
+    expect(
+      normalize({
+        type: "response.reasoning_summary_text.done",
+        item_id: "reasoning-1",
+        summary_index: 0,
+        text: "**Inspecting the stream**",
+      }),
+    ).toMatchObject({
+      type: "response.reasoning_summary_text.delta",
+      delta: "**Inspecting the stream**",
+    });
+  });
+
+  it("does not duplicate text streamed before completion", () => {
+    const normalize = createCodexResponsesEventNormalizer();
+    normalize({
+      type: "response.reasoning_summary_text.delta",
+      item_id: "reasoning-1",
+      summary_index: 0,
+      delta: "**Inspecting",
+    });
+
+    expect(
+      normalize({
+        type: "response.reasoning_summary_part.done",
+        item_id: "reasoning-1",
+        summary_index: 0,
+        part: { type: "summary_text", text: "**Inspecting the stream**" },
+      }),
+    ).toMatchObject({
+      type: "response.reasoning_summary_text.delta",
+      delta: " the stream**",
+    });
+  });
+
+  it("turns duplicate done events into no-op deltas", () => {
+    const normalize = createCodexResponsesEventNormalizer();
+    normalize({
+      type: "response.reasoning_summary_text.delta",
+      item_id: "reasoning-1",
+      summary_index: 0,
+      delta: "**Inspecting the stream**",
+    });
+    normalize({
+      type: "response.reasoning_summary_text.done",
+      item_id: "reasoning-1",
+      summary_index: 0,
+      text: "**Inspecting the stream**",
+    });
+
+    expect(
+      normalize({
+        type: "response.reasoning_summary_part.done",
+        item_id: "reasoning-1",
+        summary_index: 0,
+        part: { type: "summary_text", text: "**Inspecting the stream**" },
+      }),
+    ).toMatchObject({ type: "response.reasoning_summary_text.delta", delta: "" });
+  });
+
+  it("keeps request normalizers isolated", () => {
+    const first = createCodexResponsesEventNormalizer();
+    const second = createCodexResponsesEventNormalizer();
+    first({
+      type: "response.reasoning_summary_text.delta",
+      item_id: "reasoning-1",
+      summary_index: 0,
+      delta: "**Inspecting",
+    });
+    second({ type: "response.completed" });
+
+    expect(
+      first({
+        type: "response.reasoning_summary_text.done",
+        item_id: "reasoning-1",
+        summary_index: 0,
+        text: "**Inspecting the stream**",
+      }),
+    ).toMatchObject({
+      type: "response.reasoning_summary_text.delta",
+      delta: " the stream**",
+    });
+  });
+
+  it("keeps repeated part completion events idempotent", () => {
+    const normalize = createCodexResponsesEventNormalizer();
+    const event = {
+      type: "response.reasoning_summary_part.done",
+      item_id: "reasoning-1",
+      summary_index: 0,
+      part: { type: "summary_text", text: "**Inspecting the stream**" },
+    };
+
+    expect(normalize(event)).toMatchObject({ delta: "**Inspecting the stream**" });
+    expect(normalize(event)).toMatchObject({ delta: "" });
   });
 });
 

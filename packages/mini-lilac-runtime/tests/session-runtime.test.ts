@@ -363,9 +363,13 @@ function loadedProviders(supersededProviderIds: readonly string[]): LoadedProvid
     providers: {
       oauth: { type: "openai", catalog: "models-dev" },
       api: { type: "openai", catalog: "models-dev" },
+      other: { type: "anthropic", catalog: "models-dev" },
     },
   };
-  const auth: ProviderAuth = { api: { type: "api-key", key: "test-api-key" } };
+  const auth: ProviderAuth = {
+    api: { type: "api-key", key: "test-api-key" },
+    other: { type: "api-key", key: "test-other-key" },
+  };
   const superseded = new Set(supersededProviderIds);
   return {
     config: providerConfig,
@@ -1525,7 +1529,11 @@ describe("SessionService", () => {
     expect(model.doStreamCalls).toHaveLength(2);
     expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).not.toContain("msg_first");
     expect(model.doStreamCalls[1]?.providerOptions).toEqual({
-      openai: { store: false, include: ["reasoning.encrypted_content"] },
+      openai: {
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        reasoningSummary: "detailed",
+      },
     });
     expect(JSON.stringify(service.store.getModelMessages(session.id))).toContain("msg_first");
     service.close();
@@ -1629,7 +1637,7 @@ describe("SessionService", () => {
     service.close();
   });
 
-  it("leaves OpenAI API-key replay metadata and call options untouched", async () => {
+  it("requests detailed reasoning summaries for direct OpenAI API-key providers", async () => {
     let callCount = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
@@ -1657,8 +1665,36 @@ describe("SessionService", () => {
     await collect((await service.startPrompt(session.id, userMessage("first"))).stream);
     await collect((await service.startPrompt(session.id, userMessage("second"))).stream);
 
+    // Direct OpenAI providers request detailed summaries but keep replay metadata intact.
     expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("msg_api_key");
-    expect(model.doStreamCalls[1]?.providerOptions).toBeUndefined();
+    expect(model.doStreamCalls[1]?.providerOptions).toEqual({
+      openai: { reasoningSummary: "detailed" },
+    });
+    service.close();
+  });
+
+  it("leaves non-OpenAI provider types without reasoning provider options", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => textResult("answer", "an answer"),
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-non-openai-"));
+    temporaryDirectories.push(directory);
+    const service = new SessionService({
+      config: config(),
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+      providers: loadedProviders(["oauth"]),
+    });
+    const session = await service.createSession({
+      cwd: directory,
+      model: "other/mock",
+      profile: "reader",
+      reasoning: "high",
+    });
+
+    await collect((await service.startPrompt(session.id, userMessage("hi"))).stream);
+
+    expect(model.doStreamCalls[0]?.providerOptions).toBeUndefined();
     service.close();
   });
 
