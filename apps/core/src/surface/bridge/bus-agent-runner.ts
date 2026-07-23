@@ -43,9 +43,11 @@ import {
   type RequestRunPolicy,
 } from "@stanley2058/lilac-event-bus";
 import {
+  AgentIdleTimeoutError,
   AiSdkPiAgent,
   attachAutoCompaction,
   buildSyntheticToolCallId,
+  createAgentRunIdleWatchdog,
   type AiSdkPiAgentEvent,
   type NormalizeToolResultOutputFn,
   type TransformMessagesFn,
@@ -57,7 +59,6 @@ import path from "node:path";
 import type { CoreToolPluginManager } from "../../plugins";
 import type { ToolResultArtifactStore } from "../../artifacts/tool-result-artifact-store";
 import { createAgentOutputActivityPublisher } from "../../shared/agent-output-activity";
-import { createIdleTimer } from "../../shared/idle-timer";
 import {
   createToolResultOutputNormalizer,
   normalizeSubagentFinalText,
@@ -160,6 +161,7 @@ import { resolveSessionSafetyMode, type SessionSafetyMode } from "./bus-request-
 import type { CustomCommandManager } from "../../custom-commands/manager";
 
 export { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
+export { AgentIdleTimeoutError, createAgentRunIdleWatchdog };
 export {
   shouldEnableAnthropicPromptCache,
   toOpenAIPromptCacheKey,
@@ -1209,15 +1211,6 @@ class RestartDrainingAbort extends Error {
   }
 }
 
-export class AgentIdleTimeoutError extends Error {
-  constructor(readonly idleTimeoutMs: number) {
-    super(
-      `agent idle timed out after ${idleTimeoutMs}ms without model, tool, or subagent activity`,
-    );
-    this.name = "AgentIdleTimeoutError";
-  }
-}
-
 class PreAgentRunCancelledError extends Error {
   constructor() {
     super("cancelled before agent start");
@@ -1228,51 +1221,6 @@ class PreAgentRunCancelledError extends Error {
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
 const LIVE_PARENT_RECONCILE_MS = 1_000;
 const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
-
-export function createAgentRunIdleWatchdog(params: {
-  idleTimeoutMs: number;
-  onTimeout: (error: AgentIdleTimeoutError) => void;
-}) {
-  let timedOut = false;
-  let monitoring = false;
-  let rejectTimeout: ((error: AgentIdleTimeoutError) => void) | null = null;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    rejectTimeout = reject;
-  });
-  void timeoutPromise.catch(() => undefined);
-
-  const timer = createIdleTimer(params.idleTimeoutMs, () => {
-    if (timedOut) return;
-    timedOut = true;
-    const error = new AgentIdleTimeoutError(params.idleTimeoutMs);
-    params.onTimeout(error);
-    rejectTimeout?.(error);
-    rejectTimeout = null;
-  });
-
-  return {
-    start() {
-      if (timedOut) return;
-      monitoring = true;
-      timer.reset();
-    },
-    reset() {
-      if (!timedOut && monitoring) timer.reset();
-    },
-    waitFor<T>(promise: Promise<T>): Promise<T> {
-      return Promise.race([promise, timeoutPromise]);
-    },
-    pause() {
-      monitoring = false;
-      timer.stop();
-    },
-    stop() {
-      monitoring = false;
-      timer.stop();
-      rejectTimeout = null;
-    },
-  };
-}
 
 function isCancelControlEntry(entry: Enqueued): boolean {
   const raw = entry.raw;
