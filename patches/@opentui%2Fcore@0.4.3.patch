@@ -1,0 +1,67 @@
+diff --git a/index.js b/index.js
+index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11ee8d16610 100644
+--- a/index.js
++++ b/index.js
+@@ -9093,7 +9093,11 @@ class MarkdownRenderable extends Renderable {
+     for (let i = 0;i < blocks.length; i += 1) {
+       const block = blocks[i];
+       const existing = this._blockStates[blockIndex];
+-      if (existing && existing.token === block.token && !forceTableRefresh) {
++      const shouldForceRefresh = forceTableRefresh && block.token.type === "table";
++      if (existing && existing.token === block.token && !shouldForceRefresh) {
++        if (forceTableRefresh && existing.canUpdateInPlace) {
++          this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, true);
++        }
+         if (existing.marginTop !== block.marginTop) {
+           this.applyMargins(existing.renderable, block.marginTop, 0);
+         }
+@@ -9101,7 +9105,10 @@ class MarkdownRenderable extends Renderable {
+         blockIndex++;
+         continue;
+       }
+-      if (existing && existing.tokenRaw === block.token.raw && existing.token.type === block.token.type && !forceTableRefresh) {
++      if (existing && existing.tokenRaw === block.token.raw && existing.token.type === block.token.type && !shouldForceRefresh) {
++        if (forceTableRefresh && existing.canUpdateInPlace) {
++          this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, true);
++        }
+         if (existing.marginTop !== block.marginTop) {
+           this.applyMargins(existing.renderable, block.marginTop, 0);
+         }
+@@ -9109,7 +9116,7 @@ class MarkdownRenderable extends Renderable {
+         blockIndex++;
+         continue;
+       }
+-      if (existing && !forceTableRefresh && existing.canUpdateInPlace && existing.token.type === block.token.type && this.canUpdateBlockRenderable(existing.renderable, block.token)) {
++      if (existing && !shouldForceRefresh && existing.canUpdateInPlace && existing.token.type === block.token.type && this.canUpdateBlockRenderable(existing.renderable, block.token)) {
+         if (this._renderNode) {
+           const custom = this.createTopLevelCustomRenderable(block, blockIndex);
+           if (custom.renderable && !custom.canUpdateInPlace) {
+@@ -9216,10 +9223,10 @@ class MarkdownRenderable extends Renderable {
+       const token = blockTokens[i];
+       const nextToken = blockTokens[i + 1];
+       const existing = this._blockStates[blockIndex];
+-      const shouldForceRefresh = forceTableRefresh;
+-      if (existing && existing.token === token) {
+-        if (shouldForceRefresh) {
+-          this.updateBlockRenderable(existing, token, blockIndex, nextToken);
++      const shouldForceRefresh = forceTableRefresh && token.type === "table";
++      if (existing && existing.token === token && !shouldForceRefresh) {
++        if (forceTableRefresh && existing.canUpdateInPlace) {
++          this.updateBlockRenderable(existing, token, blockIndex, nextToken, true);
+           existing.tokenRaw = token.raw;
+         } else {
+           this.applyInterBlockMargin(existing, token, nextToken);
+@@ -9227,10 +9234,10 @@ class MarkdownRenderable extends Renderable {
+         blockIndex++;
+         continue;
+       }
+-      if (existing && existing.tokenRaw === token.raw && existing.token.type === token.type) {
++      if (existing && existing.tokenRaw === token.raw && existing.token.type === token.type && !shouldForceRefresh) {
+         existing.token = token;
+-        if (shouldForceRefresh) {
+-          this.updateBlockRenderable(existing, token, blockIndex, nextToken);
++        if (forceTableRefresh && existing.canUpdateInPlace) {
++          this.updateBlockRenderable(existing, token, blockIndex, nextToken, true);
+           existing.tokenRaw = token.raw;
+         } else {
+           this.applyInterBlockMargin(existing, token, nextToken);
