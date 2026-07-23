@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ import {
   acquireDatabaseLock,
   createMiniLilacAuthDependencies,
   databaseLockPath,
+  initializeMiniLilacState,
   MINI_LILAC_SERVER_HELP,
   main,
   miniLilacStatePaths,
@@ -75,6 +76,8 @@ describe("mini-lilac server CLI", () => {
       provider: "codex",
       action: "logout",
     });
+    expect(parseCliArgs(["init"])).toEqual({ command: "init", force: false });
+    expect(parseCliArgs(["init", "--force"])).toEqual({ command: "init", force: true });
     expect(parseCliArgs(["--help"])).toEqual({ command: "help" });
     expect(parseCliArgs([])).toEqual({ command: "serve" });
     expect(MINI_LILAC_SERVER_HELP).toContain("mini-lilac server");
@@ -88,6 +91,8 @@ describe("mini-lilac server CLI", () => {
     expect(paths).toEqual({
       directory: path.join("/state", "mini-lilac"),
       configFile: path.join("/state", "mini-lilac", "config.yaml"),
+      providerConfigFile: path.join("/state", "mini-lilac", "providers.yaml"),
+      providerAuthFile: path.join("/state", "mini-lilac", "auth.json"),
       databaseFile: path.join("/state", "mini-lilac", "mini-lilac.sqlite"),
       codexOAuthFile: path.join("/state", "mini-lilac", "codex.json"),
       modelsDevCacheFile: path.join("/state", "mini-lilac", "models-dev.json"),
@@ -95,6 +100,31 @@ describe("mini-lilac server CLI", () => {
     expect(createMiniLilacAuthDependencies(paths).storagePath()).toBe(
       path.join("/state", "mini-lilac", "codex.json"),
     );
+  });
+
+  it("initializes owner-only defaults without replacing existing files", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-init-"));
+    temporaryDirectories.push(directory);
+    const paths = miniLilacStatePaths({ XDG_STATE_HOME: directory });
+
+    const created = await initializeMiniLilacState(paths);
+    expect(created.map((result) => result.status)).toEqual(["written", "written", "written"]);
+    expect(await readFile(paths.configFile, "utf8")).toContain("defaultProfile: general");
+    expect(await readFile(paths.providerConfigFile, "utf8")).toContain("catalog: models-dev");
+    expect(await readFile(paths.providerAuthFile, "utf8")).toBe("{}\n");
+    expect((await stat(paths.directory)).mode & 0o777).toBe(0o700);
+    for (const file of [paths.configFile, paths.providerConfigFile, paths.providerAuthFile]) {
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+    }
+
+    await writeFile(paths.configFile, "custom: true\n", "utf8");
+    const skipped = await initializeMiniLilacState(paths);
+    expect(skipped.map((result) => result.status)).toEqual(["skipped", "skipped", "skipped"]);
+    expect(await readFile(paths.configFile, "utf8")).toBe("custom: true\n");
+
+    const replaced = await initializeMiniLilacState(paths, { force: true });
+    expect(replaced.map((result) => result.status)).toEqual(["written", "written", "written"]);
+    expect(await readFile(paths.configFile, "utf8")).toContain("defaultProfile: general");
   });
 
   it("reports status and logout without starting network auth", async () => {

@@ -6,18 +6,15 @@ An Elysia HTTP server for `@stanley2058/mini-lilac-runtime`. Its API is mounted 
 ## Configure
 
 Mini Lilac centralizes persistent server state under `$XDG_STATE_HOME/mini-lilac` (falling back to
-`~/.local/state/mini-lilac`). Copy the example files there and restrict the auth file before
-starting. The three-file configuration remains strict even when OAuth supplies OpenAI
-authentication, so `auth.json` must exist and may contain `{}`:
+`~/.local/state/mini-lilac`). Initialize the three required configuration files before starting:
 
 ```sh
-state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/mini-lilac"
-mkdir -p "$state_dir"
-cp config.example.yaml "$state_dir/config.yaml"
-cp providers.example.yaml "$state_dir/providers.yaml"
-cp auth.example.json "$state_dir/auth.json"
-chmod 600 "$state_dir/auth.json"
+mini-lilac server init
 ```
+
+Existing files are preserved unless `--force` is supplied. The three-file configuration remains
+strict even when OAuth supplies OpenAI authentication, so `auth.json` must exist and may contain
+`{}`.
 
 The server caches the validated models.dev registry at `models-dev.json` in this state directory.
 Startup uses the cache immediately and refreshes it in the background; a cold cache never prevents

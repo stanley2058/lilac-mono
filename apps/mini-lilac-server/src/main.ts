@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -20,6 +20,9 @@ import {
 } from "@stanley2058/lilac-utils";
 import { z } from "zod";
 
+import authConfigTemplate from "../auth.example.json" with { type: "text" };
+import runtimeConfigTemplate from "../config.example.yaml" with { type: "text" };
+import providerConfigTemplate from "../providers.example.yaml" with { type: "text" };
 import { createMiniLilacServer } from "./server";
 
 const FLOCK_CONTENTION_EXIT_CODE = 200;
@@ -203,18 +206,26 @@ const authOptionsSchema = z.object({
   action: z.enum(["login", "status", "logout"]),
 });
 
+const initOptionsSchema = z.object({
+  command: z.literal("init"),
+  force: z.boolean(),
+});
+
 const helpOptionsSchema = z.object({ command: z.literal("help") });
 
 export type MiniLilacServerCliOptions =
   | z.infer<typeof serveOptionsSchema>
   | z.infer<typeof authOptionsSchema>
+  | z.infer<typeof initOptionsSchema>
   | z.infer<typeof helpOptionsSchema>;
 
 export const MINI_LILAC_SERVER_HELP = `Usage:
   mini-lilac server [--config <file>] [--database <file>]
+  mini-lilac server init [--force]
   mini-lilac server auth codex [--status | --logout]
 
 Commands:
+  init                 Create missing server configuration files in the state directory
   auth codex           Sign in with OpenAI Codex OAuth and store Lilac-owned tokens
   auth codex --status  Show Codex OAuth status without printing tokens
   auth codex --logout  Clear stored Lilac Codex OAuth tokens
@@ -222,6 +233,7 @@ Commands:
 Options:
   --config <file>    Server config (default: $XDG_STATE_HOME/mini-lilac/config.yaml)
   --database <file>  SQLite database (default: $XDG_STATE_HOME/mini-lilac/mini-lilac.sqlite)
+  --force            Replace existing files when running init
   --help             Show this help`;
 
 export function parseCliArgs(args: readonly string[]): MiniLilacServerCliOptions {
@@ -245,6 +257,15 @@ export function parseCliArgs(args: readonly string[]): MiniLilacServerCliOptions
       provider,
       action: parsed.values.status ? "status" : parsed.values.logout ? "logout" : "login",
     });
+  }
+  if (args[0] === "init") {
+    const parsed = parseArgs({
+      args: args.slice(1),
+      options: { force: { type: "boolean", default: false } },
+      allowPositionals: false,
+      strict: true,
+    });
+    return initOptionsSchema.parse({ command: "init", force: parsed.values.force });
   }
 
   const parsed = parseArgs({
@@ -270,6 +291,8 @@ export type MiniLilacAuthDependencies = {
 export type MiniLilacStatePaths = {
   readonly directory: string;
   readonly configFile: string;
+  readonly providerConfigFile: string;
+  readonly providerAuthFile: string;
   readonly databaseFile: string;
   readonly codexOAuthFile: string;
   readonly modelsDevCacheFile: string;
@@ -283,10 +306,51 @@ export function miniLilacStatePaths(
   return {
     directory,
     configFile: path.join(directory, "config.yaml"),
+    providerConfigFile: path.join(directory, "providers.yaml"),
+    providerAuthFile: path.join(directory, "auth.json"),
     databaseFile: path.join(directory, "mini-lilac.sqlite"),
     codexOAuthFile: path.join(directory, "codex.json"),
     modelsDevCacheFile: path.join(directory, "models-dev.json"),
   };
+}
+
+export type MiniLilacInitFileResult = {
+  readonly path: string;
+  readonly status: "written" | "skipped";
+};
+
+export async function initializeMiniLilacState(
+  paths: MiniLilacStatePaths = miniLilacStatePaths(),
+  options: { readonly force?: boolean } = {},
+): Promise<readonly MiniLilacInitFileResult[]> {
+  await mkdir(paths.directory, { recursive: true, mode: 0o700 });
+  await chmod(paths.directory, 0o700);
+
+  const files = [
+    { path: paths.configFile, contents: runtimeConfigTemplate },
+    { path: paths.providerConfigFile, contents: providerConfigTemplate },
+    { path: paths.providerAuthFile, contents: authConfigTemplate },
+  ];
+  const results: MiniLilacInitFileResult[] = [];
+  for (const file of files) {
+    try {
+      await writeFile(file.path, file.contents, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: options.force ? "w" : "wx",
+      });
+      await chmod(file.path, 0o600);
+      results.push({ path: file.path, status: "written" });
+    } catch (error) {
+      if (!options.force && error instanceof Error && "code" in error && error.code === "EEXIST") {
+        results.push({ path: file.path, status: "skipped" });
+        continue;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to initialize '${file.path}': ${message}`, { cause: error });
+    }
+  }
+  return results;
 }
 
 export function createMiniLilacAuthDependencies(
@@ -348,6 +412,17 @@ export async function main(
   }
   if (cli.command === "auth") {
     await runAuthCommand(cli, authDependencies ?? createMiniLilacAuthDependencies(statePaths));
+    return;
+  }
+  if (cli.command === "init") {
+    const results = await initializeMiniLilacState(statePaths, { force: cli.force });
+    for (const result of results) {
+      console.log(
+        result.status === "written"
+          ? `Wrote ${result.path}`
+          : `Skipped ${result.path} (already exists)`,
+      );
+    }
     return;
   }
   const databasePath = path.resolve(cli.database ?? statePaths.databaseFile);

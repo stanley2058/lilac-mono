@@ -18,6 +18,27 @@ bun add --global @stanley2058/mini-lilac
 npm install --global @stanley2058/mini-lilac
 ```
 
+## First Run
+
+Create the default server configuration, authenticate with Codex, and start the server:
+
+```sh
+mini-lilac server init
+mini-lilac server auth codex
+mini-lilac server
+```
+
+In another terminal, start the client from the workspace you want Mini Lilac to use:
+
+```sh
+cd /path/to/your/project
+mini-lilac
+```
+
+`server init` writes `config.yaml`, `providers.yaml`, and `auth.json` under
+`$XDG_STATE_HOME/mini-lilac` (or `~/.local/state/mini-lilac`). Existing files are skipped; use
+`mini-lilac server init --force` to replace them.
+
 Build and exercise the publication-ready package from this directory:
 
 ```sh
