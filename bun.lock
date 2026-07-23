@@ -109,6 +109,22 @@
         "typescript": "^7.0.2",
       },
     },
+    "packages/coding-tools": {
+      "name": "@stanley2058/lilac-coding-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@stanley2058/lilac-agent": "workspace:*",
+        "@stanley2058/lilac-fs": "workspace:*",
+        "ai": "^7.0.22",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+      },
+      "peerDependencies": {
+        "typescript": "^7.0.2",
+      },
+    },
     "packages/event-bus": {
       "name": "@stanley2058/lilac-event-bus",
       "dependencies": {
@@ -397,6 +413,8 @@
     "@stanley2058/lilac-acp-controller": ["@stanley2058/lilac-acp-controller@workspace:apps/acp-controller"],
 
     "@stanley2058/lilac-agent": ["@stanley2058/lilac-agent@workspace:packages/agent"],
+
+    "@stanley2058/lilac-coding-tools": ["@stanley2058/lilac-coding-tools@workspace:packages/coding-tools"],
 
     "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
 

@@ -146,6 +146,7 @@ COPY apps/core/package.json apps/core/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
 COPY apps/acp-controller/package.json apps/acp-controller/package.json
 COPY packages/agent/package.json packages/agent/package.json
+COPY packages/coding-tools/package.json packages/coding-tools/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/fs/package.json packages/fs/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
