@@ -1,18 +1,14 @@
-import type { ServerTool } from "../types";
-import { z } from "zod";
-import { zodObjectToCliLines } from "./zod-cli";
 import {
-  buildAuthorizeUrl,
-  CODEX_OAUTH_PORT,
-  CODEX_OAUTH_REDIRECT_URI,
-  exchangeCodeForTokens,
-  extractAccountId,
-  generatePKCE,
-  generateState,
-  getCodexAuthStoragePath,
-  writeCodexTokens,
   clearCodexTokens,
+  getCodexAuthStoragePath,
+  readCodexTokens,
+  startCodexOAuthLogin,
+  type CodexOAuthLogin,
 } from "@stanley2058/lilac-utils";
+import { z } from "zod";
+
+import type { ServerTool } from "../types";
+import { zodObjectToCliLines } from "./zod-cli";
 
 const loginInputSchema = z
   .object({
@@ -21,219 +17,89 @@ const loginInputSchema = z
       .describe(
         "start: returns a URL to open in a browser; exchange: manually paste callback URL/code.",
       ),
-
-    // Used for exchange mode.
     callbackUrl: z
       .string()
       .optional()
       .describe(
         "Callback URL from the browser (e.g. http://localhost:1455/auth/callback?code=...&state=...).",
       ),
-
     code: z.string().optional().describe("Authorization code (if you extracted it manually)."),
-
     state: z.string().optional().describe("State value (if you extracted it manually)."),
-
-    // These are required if the user is doing a full manual exchange.
     pkceVerifier: z.string().optional().describe("PKCE code verifier (from the start step)."),
   })
-  .superRefine((input, ctx) => {
+  .superRefine((input, context) => {
     if (input.mode === "start") return;
-
-    // exchange mode:
-    const hasCallbackUrl = typeof input.callbackUrl === "string";
-    const hasCode = typeof input.code === "string";
-
-    if (!hasCallbackUrl && !hasCode) {
-      ctx.addIssue({
+    if (!input.callbackUrl && !input.code) {
+      context.addIssue({
         code: "custom",
         message: "exchange mode requires either callbackUrl or code.",
       });
     }
-
+    if (input.code && !input.callbackUrl && !input.state) {
+      context.addIssue({
+        code: "custom",
+        path: ["state"],
+        message: "exchange mode with a manual code requires state from the start step.",
+      });
+    }
     if (!input.pkceVerifier) {
-      ctx.addIssue({
+      context.addIssue({
         code: "custom",
         path: ["pkceVerifier"],
         message: "exchange mode requires pkceVerifier from the start step.",
       });
     }
-
-    // state is recommended: used to protect against CSRF.
   });
 
 const statusInputSchema = z.object({});
 const logoutInputSchema = z.object({});
 
-type PendingOAuth = {
-  pkceVerifier: string;
-  pkceChallenge: string;
-  state: string;
-  startedAt: number;
+let pending: CodexOAuthLogin | null = null;
+let pendingGeneration = 0;
+let pendingTransition = Promise.resolve();
+
+async function runPendingTransition<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = pendingTransition;
+  let release = () => {};
+  pendingTransition = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+export type CodexDependencies = {
+  startLogin: typeof startCodexOAuthLogin;
+  readTokens: typeof readCodexTokens;
+  clearTokens: typeof clearCodexTokens;
+  storagePath: typeof getCodexAuthStoragePath;
 };
 
-let pending: PendingOAuth | null = null;
-let oauthServer: ReturnType<typeof Bun.serve> | null = null;
-
-function parseCallbackPayload(input: { callbackUrl?: string; code?: string; state?: string }): {
-  code?: string;
-  state?: string;
-  error?: string;
-  errorDescription?: string;
-} {
-  if (input.callbackUrl) {
-    try {
-      const url = new URL(input.callbackUrl);
-      return {
-        code: url.searchParams.get("code") ?? undefined,
-        state: url.searchParams.get("state") ?? undefined,
-        error: url.searchParams.get("error") ?? undefined,
-        errorDescription: url.searchParams.get("error_description") ?? undefined,
-      };
-    } catch {
-      // fall through
-    }
-  }
-
-  return { code: input.code, state: input.state };
-}
-
-const HTML_SUCCESS = `<!doctype html>
-<html>
-  <head>
-    <title>Lilac - Codex Authorization Successful</title>
-    <style>
-      body { font-family: system-ui, -apple-system, sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; background:#0f1216; color:#e8eef4; }
-      .container { text-align:center; padding:2rem; }
-      p { color:#a9b4bf; }
-      .dim { color:#7f8b96; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <h1>Authorization Successful</h1>
-      <p>You can close this tab and return to Lilac.</p>
-      <p class="dim">If the CLI didn't pick this up automatically, copy the URL from the address bar and run codex.login with mode=exchange.</p>
-    </div>
-    <script>setTimeout(() => window.close(), 2000)</script>
-  </body>
-</html>`;
-
-const htmlError = (error: string) => `<!doctype html>
-<html>
-  <head>
-    <title>Lilac - Codex Authorization Failed</title>
-    <style>
-      body { font-family: system-ui, -apple-system, sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; background:#0f1216; color:#e8eef4; }
-      .container { text-align:center; padding:2rem; }
-      .error { margin-top: 1rem; padding: 1rem; border-radius: 8px; background: #27161a; color: #ffd0d7; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <h1>Authorization Failed</h1>
-      <div class="error">${error}</div>
-    </div>
-  </body>
-</html>`;
-
-function startOAuthServer() {
-  if (oauthServer) return;
-
-  oauthServer = Bun.serve({
-    port: CODEX_OAUTH_PORT,
-    fetch(req) {
-      const url = new URL(req.url);
-
-      if (url.pathname === "/auth/callback") {
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-        if (state && pending && state !== pending.state) {
-          return new Response(htmlError("Invalid state"), {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-        const error = url.searchParams.get("error");
-        const errorDescription = url.searchParams.get("error_description");
-
-        if (error) {
-          return new Response(htmlError(errorDescription || error), {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-
-        if (!code) {
-          return new Response(htmlError("Missing authorization code"), {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-
-        // Prefer auto-exchange when we have pending PKCE material.
-        // If this fails for any reason, the user can still complete the flow manually.
-        if (pending && pending.pkceVerifier && pending.pkceChallenge) {
-          const verifier = pending.pkceVerifier;
-          const challenge = pending.pkceChallenge;
-          const redirectUri = CODEX_OAUTH_REDIRECT_URI;
-          exchangeCodeForTokens({
-            code,
-            redirectUri,
-            pkce: { verifier, challenge },
-          })
-            .then(async (tokens) => {
-              const accountId = extractAccountId({
-                id_token: tokens.id_token,
-                access_token: tokens.access_token,
-              });
-
-              const expires = Date.now() + (tokens.expires_in ?? 3600) * 1000;
-              await writeCodexTokens({
-                type: "oauth",
-                access: tokens.access_token,
-                refresh: tokens.refresh_token,
-                expires,
-                accountId,
-                idToken: tokens.id_token,
-              });
-
-              pending = null;
-              stopOAuthServer();
-            })
-            .catch(() => {
-              // If anything goes wrong (network, token exchange), user can still
-              // complete via manual paste.
-            });
-        }
-
-        return new Response(HTML_SUCCESS, {
-          headers: { "Content-Type": "text/html" },
-        });
-      }
-
-      if (url.pathname === "/cancel") {
-        pending = null;
-        return new Response("Login cancelled", { status: 200 });
-      }
-
-      return new Response("Not found", { status: 404 });
-    },
-  });
-}
-
-function stopOAuthServer() {
-  oauthServer?.stop();
-  oauthServer = null;
-}
+const defaultDependencies: CodexDependencies = {
+  startLogin: startCodexOAuthLogin,
+  readTokens: readCodexTokens,
+  clearTokens: clearCodexTokens,
+  storagePath: getCodexAuthStoragePath,
+};
 
 export class Codex implements ServerTool {
   id = "codex";
 
+  constructor(private readonly dependencies: CodexDependencies = defaultDependencies) {}
+
   async init(): Promise<void> {}
+
   async destroy(): Promise<void> {
-    stopOAuthServer();
-    pending = null;
+    pendingGeneration += 1;
+    await runPendingTransition(async () => {
+      const login = pending;
+      pending = null;
+      await login?.close();
+    });
   }
 
   async list() {
@@ -271,148 +137,82 @@ export class Codex implements ServerTool {
   async call(callableId: string, input: Record<string, unknown>): Promise<unknown> {
     if (callableId === "codex.login") {
       const payload = loginInputSchema.parse(input);
-
       if (payload.mode === "start") {
-        const pkce = await generatePKCE();
-        const state = generateState();
+        const generation = ++pendingGeneration;
+        return runPendingTransition(async () => {
+          if (generation !== pendingGeneration) {
+            throw new Error("Codex OAuth login was superseded");
+          }
+          const previous = pending;
+          pending = null;
+          await previous?.close();
+          if (generation !== pendingGeneration) {
+            throw new Error("Codex OAuth login was superseded");
+          }
 
-        pending = {
-          pkceVerifier: pkce.verifier,
-          pkceChallenge: pkce.challenge,
-          state,
-          startedAt: Date.now(),
-        };
-
-        // If you need to complete login manually later, keep these values.
-
-        // Try to run the localhost callback server. If it fails to bind,
-        // the flow still works via manual paste (`mode=exchange`).
-        try {
-          startOAuthServer();
-        } catch {
-          // ignore
-        }
-
-        const url = buildAuthorizeUrl({
-          redirectUri: CODEX_OAUTH_REDIRECT_URI,
-          pkce,
-          state,
+          const login = await this.dependencies.startLogin({ callbackServer: "optional" });
+          if (generation !== pendingGeneration) {
+            await login.close();
+            throw new Error("Codex OAuth login was superseded");
+          }
+          pending = login;
+          void login.result.then(
+            () => {
+              if (pending === login) pending = null;
+            },
+            () => {
+              if (pending === login) pending = null;
+            },
+          );
+          return {
+            step: "start" as const,
+            authorizeUrl: login.authorizeUrl,
+            redirectUri: login.redirectUri,
+            port: login.port,
+            state: login.state,
+            pkceVerifier: login.pkce.verifier,
+            storagePath: login.storagePath,
+            instructions: [
+              "1) Open authorizeUrl in your browser.",
+              "2) Sign in and approve.",
+              "3) The localhost callback exchanges and stores tokens automatically. If it cannot connect, run codex.login mode=exchange with callbackUrl and pkceVerifier. A manually extracted code also requires state.",
+            ].join("\n"),
+          };
         });
-
-        return {
-          step: "start" as const,
-          authorizeUrl: url,
-          redirectUri: CODEX_OAUTH_REDIRECT_URI,
-          port: CODEX_OAUTH_PORT,
-          state,
-          pkceVerifier: pkce.verifier,
-          storagePath: getCodexAuthStoragePath(),
-          instructions: [
-            "1) Open authorizeUrl in your browser.",
-            "2) Sign in and approve.",
-            "3) If the browser reaches a localhost callback, you can ignore it and just run codex.login mode=exchange with callbackUrl.",
-          ].join("\n"),
-        };
       }
 
-      // exchange
-      const parsed = parseCallbackPayload(payload);
-      if (parsed.error) {
-        const msg = parsed.errorDescription || parsed.error;
-        throw new Error(`OAuth error: ${msg}`);
-      }
-
-      const code = parsed.code;
-      if (!code) {
-        throw new Error("Missing authorization code");
-      }
-
-      const state = parsed.state;
-      if (pending && state && state !== pending.state) {
-        throw new Error("Invalid state - potential CSRF or mismatched start step");
-      }
-
-      const pkceVerifier = payload.pkceVerifier ?? pending?.pkceVerifier;
-      if (!pkceVerifier) {
-        throw new Error("Missing pkceVerifier");
-      }
-
-      const pkceChallenge = pending?.pkceChallenge;
-      if (!pkceChallenge) {
+      if (!pending) {
         throw new Error(
-          "Missing PKCE challenge. If you started the flow in a previous process, re-run codex.login mode=start (or let the browser callback do auto-exchange).",
+          "Missing PKCE challenge. Re-run codex.login mode=start before manual exchange.",
         );
       }
-
-      // Exchange code for tokens.
-      const tokens = await exchangeCodeForTokens({
-        code,
-        redirectUri: CODEX_OAUTH_REDIRECT_URI,
-        pkce: { verifier: pkceVerifier, challenge: pkceChallenge },
-      });
-
-      const accountId = extractAccountId({
-        id_token: tokens.id_token,
-        access_token: tokens.access_token,
-      });
-
-      const expires = Date.now() + (tokens.expires_in ?? 3600) * 1000;
-      await writeCodexTokens({
-        type: "oauth",
-        access: tokens.access_token,
-        refresh: tokens.refresh_token,
-        expires,
-        accountId,
-        idToken: tokens.id_token,
-      });
-
-      pending = null;
-      stopOAuthServer();
-
-      return {
-        step: "exchange" as const,
-        ok: true as const,
-        accountId,
-        expires,
-        storagePath: getCodexAuthStoragePath(),
-      };
+      const login = pending;
+      const result = await login.exchange(payload);
+      if (pending === login) pending = null;
+      return { step: "exchange" as const, ...result };
     }
 
     if (callableId === "codex.status") {
       statusInputSchema.parse(input);
-      const file = Bun.file(getCodexAuthStoragePath());
-      const exists = await file.exists();
-      if (!exists) {
-        return {
-          configured: false as const,
-          storagePath: getCodexAuthStoragePath(),
-        };
-      }
-
-      const raw = await file.json().catch(() => null as unknown);
-      if (!raw || typeof raw !== "object") {
-        return {
-          configured: false as const,
-          storagePath: getCodexAuthStoragePath(),
-          error: "invalid token file",
-        };
-      }
-
-      const obj = raw as Record<string, unknown>;
+      const tokens = await this.dependencies.readTokens();
       return {
-        configured: obj.type === "oauth" && typeof obj.refresh === "string",
-        storagePath: getCodexAuthStoragePath(),
-        expires: typeof obj.expires === "number" ? obj.expires : undefined,
-        accountId: typeof obj.accountId === "string" ? obj.accountId : undefined,
+        configured: tokens !== null,
+        storagePath: this.dependencies.storagePath(),
+        expires: tokens?.expires,
+        accountId: tokens?.accountId,
       };
     }
 
     if (callableId === "codex.logout") {
       logoutInputSchema.parse(input);
-      await clearCodexTokens();
-      pending = null;
-      stopOAuthServer();
-      return { ok: true as const, storagePath: getCodexAuthStoragePath() };
+      pendingGeneration += 1;
+      return runPendingTransition(async () => {
+        const login = pending;
+        pending = null;
+        await login?.close();
+        await this.dependencies.clearTokens();
+        return { ok: true as const, storagePath: this.dependencies.storagePath() };
+      });
     }
 
     throw new Error("Invalid callable ID");
