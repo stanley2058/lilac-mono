@@ -3228,7 +3228,7 @@ export async function startBusAgentRunner(params: {
             messageCountBefore,
             messageCountAfter,
             estimatedInputTokens,
-            estimatedOutputTokens,
+            estimatedInputTokensAfter,
             durationMs,
             status,
             error,
@@ -3265,7 +3265,7 @@ export async function startBusAgentRunner(params: {
               messageCountBefore,
               messageCountAfter,
               estimatedInputTokens,
-              estimatedOutputTokens,
+              estimatedInputTokensAfter,
             };
             if (status === "completed") {
               completedCompactionCount += 1;
