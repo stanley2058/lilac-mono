@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname, resolve, isAbsolute, sep, relative, matchesGlob } from "node:path";
@@ -464,7 +464,15 @@ export class FileSystem {
       fffCacheDir?: string;
     },
   ) {
-    this.denyPaths = (opts?.denyPaths ?? []).map((p) => resolve(expandTilde(p)));
+    this.denyPaths = (opts?.denyPaths ?? []).flatMap((p) => {
+      const resolvedPath = resolve(expandTilde(p));
+      try {
+        const canonicalPath = realpathSync(resolvedPath);
+        return canonicalPath === resolvedPath ? [resolvedPath] : [resolvedPath, canonicalPath];
+      } catch {
+        return [resolvedPath];
+      }
+    });
     this.fsBackend = opts?.fsBackend ?? "node-rg";
     this.fffCacheDir = opts?.fffCacheDir ? resolve(expandTilde(opts.fffCacheDir)) : undefined;
   }
@@ -524,6 +532,8 @@ export class FileSystem {
       } = opts;
 
       this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
+      const canonicalPath = await fs.realpath(resolvedPath);
+      this.assertAllowed(canonicalPath, "readFile", dangerouslyAllow);
 
       const requestedStartLine = start.type === "line" ? Math.max(1, Math.floor(start.line)) : 1;
       const requestedStartColumn =
@@ -623,7 +633,7 @@ export class FileSystem {
         }
       };
 
-      for await (const chunk of createReadStream(resolvedPath)) {
+      for await (const chunk of createReadStream(canonicalPath)) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         hasher.update(bytes);
         consumeText(decoder.write(bytes));
@@ -798,9 +808,11 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow);
+      const canonicalPath = await fs.realpath(resolvedPath);
+      this.assertAllowed(canonicalPath, "readFile", dangerouslyAllow);
 
       if (maxBytes !== undefined) {
-        const stats = await fs.stat(resolvedPath);
+        const stats = await fs.stat(canonicalPath);
         if (stats.size > maxBytes) {
           throw new Error(
             `File is too large to inline (${stats.size} bytes; maximum ${maxBytes} bytes): ${resolvedPath}`,
@@ -808,7 +820,7 @@ export class FileSystem {
         }
       }
 
-      const bytes = await fs.readFile(resolvedPath);
+      const bytes = await fs.readFile(canonicalPath);
       const fileHash = this.hash(bytes);
 
       this.fileAccessRecord.set(resolvedPath, {
