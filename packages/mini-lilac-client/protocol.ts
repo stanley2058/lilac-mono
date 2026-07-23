@@ -144,10 +144,19 @@ const commandFields = {
   clientCommandId: identifierSchema.optional(),
 };
 
-export const miniLilacInterruptQueuedSteeringRequestSchema = z.object(commandFields);
+export const miniLilacInterruptQueuedSteeringRequestSchema = z.strictObject({
+  ...commandFields,
+  pendingSteerCommandIds: z.array(identifierSchema).max(100).default([]),
+});
 export type MiniLilacInterruptQueuedSteeringRequest = z.infer<
   typeof miniLilacInterruptQueuedSteeringRequestSchema
 >;
+export type MiniLilacInterruptQueuedSteeringInput = Omit<
+  MiniLilacInterruptQueuedSteeringRequest,
+  "pendingSteerCommandIds"
+> & {
+  readonly pendingSteerCommandIds?: readonly string[];
+};
 
 export const miniLilacCancelRequestSchema = z.object(commandFields);
 export type MiniLilacCancelRequest = z.infer<typeof miniLilacCancelRequestSchema>;
@@ -294,6 +303,21 @@ export const miniLilacStreamCursorSchema = z
   })
   .strict();
 export type MiniLilacStreamCursor = z.infer<typeof miniLilacStreamCursorSchema>;
+
+const reconnectSequenceSchema = z
+  .string()
+  .regex(/^\d+$/, "must be a nonnegative integer")
+  .transform(Number)
+  .pipe(z.number().int().nonnegative().finite());
+
+export const miniLilacReconnectQuerySchema = z.union([
+  z.strictObject({}),
+  z.strictObject({
+    runId: identifierSchema,
+    after: reconnectSequenceSchema,
+  }),
+]);
+export type MiniLilacReconnectQuery = z.infer<typeof miniLilacReconnectQuerySchema>;
 
 export const miniLilacStreamCursorChunkSchema = z
   .object({
@@ -622,6 +646,13 @@ export const miniLilacUserUIMessageSchema = miniLilacUIMessageSchema.extend({
 });
 export type MiniLilacUserUIMessage = z.infer<typeof miniLilacUserUIMessageSchema>;
 
+export const miniLilacSteeringChunkSchema = z.strictObject({
+  type: z.literal("data-steering"),
+  id: identifierSchema.optional(),
+  data: miniLilacUserUIMessageSchema,
+});
+export type MiniLilacSteeringChunk = z.infer<typeof miniLilacSteeringChunkSchema>;
+
 export const miniLilacUndoResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("undone"),
@@ -642,5 +673,17 @@ export const miniLilacSteerRequestSchema = z.strictObject({
 export type MiniLilacSteerRequest = z.infer<typeof miniLilacSteerRequestSchema>;
 
 export const miniLilacMessagesSchema = z.array(miniLilacUIMessageSchema);
+export const miniLilacSessionResumeSchema = z.strictObject({
+  snapshot: miniLilacSessionSnapshotSchema,
+  messages: miniLilacMessagesSchema,
+  todos: miniLilacTodoStateSchema,
+  replayCursor: z
+    .strictObject({
+      runId: identifierSchema,
+      afterSeq: z.number().int().nonnegative(),
+    })
+    .nullable(),
+});
+export type MiniLilacSessionResume = z.infer<typeof miniLilacSessionResumeSchema>;
 export const miniLilacModelsSchema = z.array(miniLilacModelSummarySchema);
 export const miniLilacProfilesSchema = z.array(miniLilacProfileSummarySchema);

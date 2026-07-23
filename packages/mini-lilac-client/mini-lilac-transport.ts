@@ -13,14 +13,16 @@ import {
   type MiniLilacChatRequestExtras,
   type MiniLilacCompactInput,
   type MiniLilacCompactResult,
-  type MiniLilacInterruptQueuedSteeringRequest,
+  type MiniLilacInterruptQueuedSteeringInput,
   type MiniLilacInterruptQueuedSteeringResult,
   type MiniLilacModelSummary,
   type MiniLilacProfileSummary,
+  type MiniLilacSessionResume,
   type MiniLilacSessionSnapshot,
   type MiniLilacSkillSummary,
   type MiniLilacSteerRequest,
   type MiniLilacSteerResult,
+  type MiniLilacStreamCursor,
   type MiniLilacTodoState,
   type MiniLilacUIMessage,
   type MiniLilacUndoInput,
@@ -36,6 +38,7 @@ import {
   miniLilacMessagesSchema,
   miniLilacModelsSchema,
   miniLilacProfilesSchema,
+  miniLilacSessionResumeSchema,
   miniLilacSessionSnapshotSchema,
   miniLilacSessionsSchema,
   miniLilacSkillsSchema,
@@ -110,7 +113,7 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
   private readonly delegate: DefaultChatTransport<MiniLilacUIMessage>;
   private chatExtras: Omit<MiniLilacChatRequestExtras, "clientCommandId">;
   private bindingUpdateChain: Promise<void> = Promise.resolve();
-  private readonly lastStreamCursor = new Map<string, number>();
+  private readonly lastStreamCursor = new Map<string, MiniLilacStreamCursor>();
   private readonly streamGenerations = new Map<string, number>();
 
   constructor(options: MiniLilacTransportOptions = {}) {
@@ -149,13 +152,15 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
           },
         };
       },
-      prepareReconnectToStreamRequest: ({ id }) => ({
-        api: setQueryParameter(
-          this.resolveReconnectEndpoint(options.reconnectEndpoint, id),
-          "after",
-          String(this.getLastStreamCursor(id)),
-        ),
-      }),
+      prepareReconnectToStreamRequest: ({ id }) => {
+        const cursor = this.getLastStreamCursor(id);
+        let api = this.resolveReconnectEndpoint(options.reconnectEndpoint, id);
+        if (cursor !== undefined) {
+          api = setQueryParameter(api, "runId", cursor.runId);
+          api = setQueryParameter(api, "after", String(cursor.seq));
+        }
+        return { api };
+      },
     });
   }
 
@@ -164,8 +169,8 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
   ): Promise<ReadableStream<UIMessageChunk>> {
     const generation = (this.streamGenerations.get(options.chatId) ?? 0) + 1;
     this.streamGenerations.set(options.chatId, generation);
-    this.lastStreamCursor.set(options.chatId, 0);
     const stream = await this.delegate.sendMessages(options);
+    this.lastStreamCursor.delete(options.chatId);
     return this.trackStream(options.chatId, generation, stream);
   }
 
@@ -181,8 +186,8 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
     );
   }
 
-  getLastStreamCursor(chatId: string): number {
-    return this.lastStreamCursor.get(chatId) ?? 0;
+  getLastStreamCursor(chatId: string): MiniLilacStreamCursor | undefined {
+    return this.lastStreamCursor.get(chatId);
   }
 
   getSession(
@@ -193,6 +198,29 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
     return this.requestJson(`sessions/${encodeURIComponent(id)}`, miniLilacSessionSnapshotSchema, {
       signal: options.signal,
     });
+  }
+
+  getSessionResume(
+    sessionId: string,
+    options: MiniLilacRequestOptions = {},
+  ): Promise<MiniLilacSessionResume> {
+    const id = sessionIdSchema.parse(sessionId);
+    return this.requestJson(
+      `sessions/${encodeURIComponent(id)}/resume`,
+      miniLilacSessionResumeSchema,
+      { signal: options.signal },
+    );
+  }
+
+  setReconnectCursor(
+    chatId: string,
+    cursor: { readonly runId: string; readonly afterSeq: number } | null,
+  ): void {
+    if (cursor === null) {
+      this.lastStreamCursor.delete(chatId);
+      return;
+    }
+    this.lastStreamCursor.set(chatId, { runId: cursor.runId, seq: cursor.afterSeq });
   }
 
   listSessions(
@@ -228,7 +256,7 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
     const normalizedSessionId = sessionIdSchema.parse(sessionId);
     const headers = await this.createHeaders(false);
     const response = await this.fetch(
-      joinUrl(this.baseUrl, `chat/${encodeURIComponent(normalizedSessionId)}/stream?after=0`),
+      joinUrl(this.baseUrl, `chat/${encodeURIComponent(normalizedSessionId)}/stream`),
       { credentials: this.credentials, headers, signal: options.signal },
     );
     if (response.status === 204) return null;
@@ -325,7 +353,7 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
   }
 
   interruptQueuedSteering(
-    request: MiniLilacInterruptQueuedSteeringRequest,
+    request: MiniLilacInterruptQueuedSteeringInput,
     options: MiniLilacRequestOptions = {},
   ): Promise<MiniLilacInterruptQueuedSteeringResult> {
     const payload = miniLilacInterruptQueuedSteeringRequestSchema.parse({
@@ -426,7 +454,7 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
     generation: number,
     stream: ReadableStream<UIMessageChunk>,
   ): ReadableStream<UIMessageChunk> {
-    let pendingCursor: number | undefined;
+    let pendingCursor: MiniLilacStreamCursor | undefined;
 
     return stream.pipeThrough(
       new TransformStream<UIMessageChunk, UIMessageChunk>({
@@ -437,7 +465,7 @@ export class MiniLilacTransport implements ChatTransport<MiniLilacUIMessage> {
           if (!isCurrentGeneration) {
             pendingCursor = undefined;
           } else if (cursor.success) {
-            pendingCursor = cursor.data.data.seq;
+            pendingCursor = cursor.data.data;
           }
 
           controller.enqueue(chunk);

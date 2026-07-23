@@ -16,6 +16,7 @@ import {
   type MiniLilacUpdateSessionBindingsRequest,
   miniLilacCompactRequestSchema,
   miniLilacCompactResultSchema,
+  miniLilacReconnectQuerySchema,
   miniLilacSessionSnapshotSchema,
   miniLilacSkillsSchema,
   miniLilacSteerRequestSchema,
@@ -41,6 +42,24 @@ const pendingTodo = {
 } satisfies MiniLilacTodo;
 
 describe("miniLilacUIMessageSchema", () => {
+  it("strictly validates initial and exact-run reconnect queries", () => {
+    expect(miniLilacReconnectQuerySchema.parse({})).toEqual({});
+    expect(miniLilacReconnectQuerySchema.parse({ runId: "run-1", after: "12" })).toEqual({
+      runId: "run-1",
+      after: 12,
+    });
+
+    for (const malformed of [
+      { runId: "run-1" },
+      { after: "0" },
+      { runId: "run-1", after: "-1" },
+      { runId: "run-1", after: "1.5" },
+      { runId: "run-1", after: "0", unexpected: "value" },
+    ]) {
+      expect(miniLilacReconnectQuerySchema.safeParse(malformed).success).toBe(false);
+    }
+  });
+
   it("validates bounded skill summaries", () => {
     expect(
       miniLilacSkillsSchema.parse([

@@ -18,10 +18,10 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
-function cursor(seq: number): MiniLilacStreamCursorChunk {
+function cursor(seq: number, runId = "run-1"): MiniLilacStreamCursorChunk {
   return {
     type: "data-streamCursor",
-    data: { runId: "run-1", seq },
+    data: { runId, seq },
     transient: true,
   };
 }
@@ -89,6 +89,37 @@ async function readChunks(stream: ReadableStream<unknown>): Promise<unknown[]> {
 }
 
 describe("MiniLilacTransport", () => {
+  it("loads an atomic resume projection and primes its exact replay cursor", async () => {
+    const calls: FetchCall[] = [];
+    const resume = {
+      snapshot: {
+        id: "session-1",
+        activeRunId: "run-1",
+        status: "streaming" as const,
+        cwd: "/workspace",
+        model: "test/model",
+        profile: "coding",
+        reasoning: "high" as const,
+        queuedSteeringCount: 0,
+      },
+      messages: [],
+      todos: { revision: 0, todos: [] },
+      replayCursor: { runId: "run-1", afterSeq: 7 },
+    };
+    const transport = new MiniLilacTransport({
+      baseUrl: "/mini",
+      fetch: mockFetch(async (input, init) => {
+        calls.push({ input, init });
+        return jsonResponse(resume);
+      }),
+    });
+
+    expect(await transport.getSessionResume("session-1")).toEqual(resume);
+    transport.setReconnectCursor("session-1", resume.replayCursor);
+    expect(transport.getLastStreamCursor("session-1")).toEqual({ runId: "run-1", seq: 7 });
+    expect(String(calls[0]?.input)).toBe("/mini/sessions/session-1/resume");
+  });
+
   it("gets strict todo state from an encoded session URL with auth and abort signal", async () => {
     const calls: FetchCall[] = [];
     const controller = new AbortController();
@@ -187,7 +218,7 @@ describe("MiniLilacTransport", () => {
     const stream = await transport.streamSession("session / 1");
     if (stream === null) throw new Error("expected active session stream");
     expect(await readChunks(stream)).toEqual(chunks);
-    expect(String(calls[0]?.input)).toBe("/mini/chat/session%20%2F%201/stream?after=0");
+    expect(String(calls[0]?.input)).toBe("/mini/chat/session%20%2F%201/stream");
   });
 
   it("lists profile-aware skills for an encoded cwd", async () => {
@@ -446,9 +477,7 @@ describe("MiniLilacTransport", () => {
       messageId: "assistant-1",
     });
 
-    expect(String(calls[2]?.input)).toBe(
-      "https://streams.example.test/reconnect/session%201?after=0",
-    );
+    expect(String(calls[2]?.input)).toBe("https://streams.example.test/reconnect/session%201");
     expect(calls[2]?.init?.method).toBe("GET");
     expect(new Headers(calls[2]?.init?.headers).get("Authorization")).toBe("Bearer token-2");
   });
@@ -521,7 +550,12 @@ describe("MiniLilacTransport", () => {
         },
         clientCommandId: "command-explicit",
       },
-      { sessionId: "session-1", runId: "run-1", clientCommandId: "command-1" },
+      {
+        sessionId: "session-1",
+        runId: "run-1",
+        clientCommandId: "command-1",
+        pendingSteerCommandIds: [],
+      },
       { sessionId: "session-1", runId: "run-1", clientCommandId: "command-2" },
     ]);
     for (const call of calls) {
@@ -711,16 +745,16 @@ describe("MiniLilacTransport", () => {
       messages: [],
       abortSignal: undefined,
     });
-    expect(transport.getLastStreamCursor("chat-1")).toBe(0);
+    expect(transport.getLastStreamCursor("chat-1")).toBeUndefined();
     const reader = stream.getReader();
     expect((await reader.read()).value).toEqual(cursor(3));
-    expect(transport.getLastStreamCursor("chat-1")).toBe(0);
+    expect(transport.getLastStreamCursor("chat-1")).toBeUndefined();
     expect((await reader.read()).value).toEqual({ type: "text-start", id: "text-1" });
-    expect(transport.getLastStreamCursor("chat-1")).toBe(3);
+    expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: "run-1", seq: 3 });
     expect((await reader.read()).done).toBe(true);
 
     expect(await transport.reconnectToStream({ chatId: "chat-1" })).toBeNull();
-    expect(String(calls[1]?.input)).toBe("/mini/chat/chat-1/stream?after=3");
+    expect(String(calls[1]?.input)).toBe("/mini/chat/chat-1/stream?runId=run-1&after=3");
 
     await transport.sendMessages({
       trigger: "regenerate-message",
@@ -729,7 +763,7 @@ describe("MiniLilacTransport", () => {
       messages: [],
       abortSignal: undefined,
     });
-    expect(transport.getLastStreamCursor("chat-1")).toBe(0);
+    expect(transport.getLastStreamCursor("chat-1")).toBeUndefined();
   });
 
   it("retains the acknowledged cursor when the stream errors after the next cursor", async () => {
@@ -755,7 +789,7 @@ describe("MiniLilacTransport", () => {
     expect((await reader.read()).value).toEqual(cursor(4));
     source.fail(new Error("connection lost"));
     await expect(reader.read()).rejects.toThrow("connection lost");
-    expect(transport.getLastStreamCursor("chat-1")).toBe(2);
+    expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: "run-1", seq: 2 });
   });
 
   it("uses the prior acknowledged cursor when reconnecting after a partial pair", async () => {
@@ -779,9 +813,9 @@ describe("MiniLilacTransport", () => {
     });
 
     await readChunks(stream);
-    expect(transport.getLastStreamCursor("chat-1")).toBe(5);
+    expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: "run-1", seq: 5 });
     expect(await transport.reconnectToStream({ chatId: "chat-1" })).toBeNull();
-    expect(String(calls[1]?.input)).toBe("/mini/chat/chat-1/stream?after=5");
+    expect(String(calls[1]?.input)).toBe("/mini/chat/chat-1/stream?runId=run-1&after=5");
   });
 
   it("acknowledges multiple cursor-payload pairs in order", async () => {
@@ -806,7 +840,7 @@ describe("MiniLilacTransport", () => {
     });
 
     await readChunks(stream);
-    expect(transport.getLastStreamCursor("chat-1")).toBe(3);
+    expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: "run-1", seq: 3 });
   });
 
   it("does not acknowledge a pending cursor after the stream generation changes", async () => {
@@ -855,21 +889,93 @@ describe("MiniLilacTransport", () => {
     );
     firstController.close();
     expect((await firstReader.read()).value).toEqual({ type: "text-start", id: "stale-text" });
-    expect(transport.getLastStreamCursor("chat-1")).toBe(0);
+    expect(transport.getLastStreamCursor("chat-1")).toBeUndefined();
   });
 
-  it("replaces duplicate after parameters on custom reconnect endpoints", async () => {
+  it("rolls exact reconnect cursors across consecutive runs", async () => {
+    const calls: FetchCall[] = [];
+    let postCount = 0;
+    const transport = new MiniLilacTransport({
+      baseUrl: "/mini",
+      fetch: mockFetch(async (input, init) => {
+        calls.push({ input, init });
+        if (init?.method !== "POST") return new Response(null, { status: 204 });
+        postCount += 1;
+        return sseResponse([
+          cursor(1, `run-${postCount}`),
+          { type: "text-start", id: `text-${postCount}` },
+        ]);
+      }),
+    });
+
+    for (let run = 1; run <= 2; run += 1) {
+      const stream = await transport.sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      });
+      await readChunks(stream);
+      expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: `run-${run}`, seq: 1 });
+    }
+
+    expect(await transport.reconnectToStream({ chatId: "chat-1" })).toBeNull();
+    expect(String(calls[2]?.input)).toBe("/mini/chat/chat-1/stream?runId=run-2&after=1");
+  });
+
+  it("retains the exact cursor when admission of a newer run fails", async () => {
+    const calls: FetchCall[] = [];
+    let postCount = 0;
+    const transport = new MiniLilacTransport({
+      baseUrl: "/mini",
+      fetch: mockFetch(async (input, init) => {
+        calls.push({ input, init });
+        if (init?.method !== "POST") return new Response(null, { status: 204 });
+        postCount += 1;
+        if (postCount > 1) return new Response("session active", { status: 409 });
+        return sseResponse([cursor(4), { type: "text-start", id: "text-1" }]);
+      }),
+    });
+    const request = {
+      trigger: "submit-message" as const,
+      chatId: "chat-1",
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+    };
+
+    await readChunks(await transport.sendMessages(request));
+    await expect(transport.sendMessages(request)).rejects.toThrow("session active");
+    expect(transport.getLastStreamCursor("chat-1")).toEqual({ runId: "run-1", seq: 4 });
+    expect(await transport.reconnectToStream({ chatId: "chat-1" })).toBeNull();
+    expect(String(calls[2]?.input)).toBe("/mini/chat/chat-1/stream?runId=run-1&after=4");
+  });
+
+  it("replaces duplicate exact-run parameters on custom reconnect endpoints", async () => {
     const calls: FetchCall[] = [];
     const transport = new MiniLilacTransport({
       baseUrl: "/mini",
-      reconnectEndpoint: "reconnect?token=abc&after=99&after=100#stream",
+      reconnectEndpoint: "reconnect?token=abc&runId=old&after=99&after=100#stream",
       fetch: mockFetch(async (input, init) => {
         calls.push({ input, init });
+        if (init?.method === "POST") {
+          return sseResponse([cursor(7), { type: "text-start", id: "text-1" }]);
+        }
         return new Response(null, { status: 204 });
       }),
     });
 
+    await readChunks(
+      await transport.sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messageId: undefined,
+        messages: [],
+        abortSignal: undefined,
+      }),
+    );
     expect(await transport.reconnectToStream({ chatId: "chat-1" })).toBeNull();
-    expect(String(calls[0]?.input)).toBe("/mini/reconnect?token=abc&after=0#stream");
+    expect(String(calls[1]?.input)).toBe("/mini/reconnect?token=abc&runId=run-1&after=7#stream");
   });
 });
