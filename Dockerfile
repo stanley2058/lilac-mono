@@ -145,13 +145,18 @@ COPY package.json bun.lock ./
 COPY apps/core/package.json apps/core/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
 COPY apps/acp-controller/package.json apps/acp-controller/package.json
+COPY apps/mini-lilac-server/package.json apps/mini-lilac-server/package.json
+COPY apps/mini-lilac-tui/package.json apps/mini-lilac-tui/package.json
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/coding-tools/package.json packages/coding-tools/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/fs/package.json packages/fs/package.json
+COPY packages/mini-lilac-client/package.json packages/mini-lilac-client/package.json
+COPY packages/mini-lilac-runtime/package.json packages/mini-lilac-runtime/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
 COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.json
 COPY packages/utils/package.json packages/utils/package.json
+COPY patches patches
 
 # Install dependencies as root and normalize Bun package modes in the same
 # stable layer so source changes cannot trigger a dependency-sized rewrite.

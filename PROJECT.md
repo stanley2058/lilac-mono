@@ -42,6 +42,14 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Entry/client: `apps/acp-controller/client.ts`.
   - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js`).
 
+- `apps/mini-lilac-server/`
+  - Standalone, Redis-free coding-agent HTTP/SSE server with durable local sessions.
+  - Entry: `apps/mini-lilac-server/src/main.ts`; API wiring: `apps/mini-lilac-server/src/server.ts`.
+
+- `apps/mini-lilac-tui/`
+  - OpenTUI client for creating, resuming, steering, and inspecting Mini Lilac sessions.
+  - Entry: `apps/mini-lilac-tui/src/main.tsx`.
+
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.
   - Typed event contract: `packages/event-bus/lilac-spec.ts`.
@@ -60,6 +68,13 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Provider wiring: `packages/utils/model-provider.ts`.
   - Model selection for “main/fast” slots: `packages/utils/model-slot.ts`.
   - Prompt file workspace management: `packages/utils/agent-prompts.ts`.
+
+- `packages/mini-lilac-client/`
+  - Strict Mini Lilac wire protocol and reconnectable HTTP/SSE transport shared by clients and the server.
+
+- `packages/mini-lilac-runtime/`
+  - Standalone session actors, SQLite persistence, provider/model catalogs, and product-specific tools.
+  - Uses the shared agent, coding-tool, filesystem, OAuth, and skill primitives without depending on Core.
 
 - `data/`
   - “Runtime data directory” for local/dev.

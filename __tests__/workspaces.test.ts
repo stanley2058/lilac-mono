@@ -33,7 +33,16 @@ async function runBunTest(cwd: string): Promise<{
 
 describe("workspace tests", () => {
   it("runs bun tests in each workspace", async () => {
-    const roots = ["apps/core", "apps/acp-controller", "packages/utils", "packages/event-bus"];
+    const roots = [
+      "apps/core",
+      "apps/acp-controller",
+      "apps/mini-lilac-server",
+      "apps/mini-lilac-tui",
+      "packages/utils",
+      "packages/event-bus",
+      "packages/mini-lilac-client",
+      "packages/mini-lilac-runtime",
+    ];
 
     for (const dir of roots) {
       const res = await runBunTest(dir);
