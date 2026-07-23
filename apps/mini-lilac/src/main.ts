@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import path from "node:path";
+
 export const HELP_TEXT = `mini-lilac - local coding-agent clients and server
 
 Usage:
@@ -17,13 +20,23 @@ export type MiniLilacCommandRunners = {
   readonly server: (args: readonly string[]) => Promise<void>;
 };
 
+export function ensureServerDataDir(
+  env: Record<string, string | undefined>,
+  homeDirectory = homedir(),
+): void {
+  if (env.DATA_DIR?.trim()) return;
+  const stateHome = env.XDG_STATE_HOME?.trim() || path.join(homeDirectory, ".local", "state");
+  env.DATA_DIR = path.join(stateHome, "mini-lilac");
+}
+
 const defaultRunners: MiniLilacCommandRunners = {
   async tui(args) {
-    const { main } = await import("@stanley2058/mini-lilac-tui");
+    const { main } = await import("../../mini-lilac-tui/src/main");
     return main(args);
   },
   async server(args) {
-    const { main } = await import("@stanley2058/mini-lilac-server/cli");
+    ensureServerDataDir(process.env);
+    const { main } = await import("../../mini-lilac-server/src/main");
     await main(args);
   },
 };

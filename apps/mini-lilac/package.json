@@ -1,22 +1,36 @@
 {
   "name": "@stanley2058/mini-lilac",
   "version": "0.0.1",
+  "description": "Local Mini Lilac coding-agent terminal client and server.",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "terminal",
+    "tui"
+  ],
+  "private": true,
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stanley2058/lilac-mono.git"
+    "url": "git+https://github.com/stanley2058/lilac-mono.git",
+    "directory": "apps/mini-lilac"
+  },
+  "homepage": "https://github.com/stanley2058/lilac-mono/tree/main/apps/mini-lilac#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
   },
   "bin": {
     "mini-lilac": "dist/main.js"
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "start": "bun run src/main.ts",
     "build": "bun build.ts && chmod +x dist/main.js",
-    "prepack": "bun run build",
+    "pack:npm": "bun run build && npm pack --workspaces=false ./dist",
+    "publish:npm": "bun run build && npm publish --workspaces=false ./dist",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },
@@ -25,11 +39,7 @@
   },
   "devDependencies": {
     "@opentui/solid": "0.4.3",
-    "@stanley2058/mini-lilac-server": "workspace:*",
-    "@stanley2058/mini-lilac-tui": "workspace:*",
-    "@types/bun": "^1.3.14"
-  },
-  "peerDependencies": {
-    "typescript": "^7.0.2"
+    "@types/bun": "^1.3.14",
+    "zod": "^4.3.6"
   }
 }

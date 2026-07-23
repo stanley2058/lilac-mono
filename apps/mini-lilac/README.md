@@ -10,14 +10,26 @@ mini-lilac server                  # server
 mini-lilac server auth codex       # server administration
 ```
 
-Build and exercise the package from this directory:
+Install it with Bun or npm. Bun remains the runtime because the server uses Bun APIs:
+
+```sh
+bun add --global @stanley2058/mini-lilac
+# or
+npm install --global @stanley2058/mini-lilac
+```
+
+Build and exercise the publication-ready package from this directory:
 
 ```sh
 bun run build
 ./dist/main.js --help
 ./dist/main.js server --help
+npm pack ./dist
 ```
 
-The client and server remain separate workspace apps. This package owns command routing and the
-distribution artifact so future clients can be added as subcommands without coupling their code to
-the TUI or server.
+`bun run pack:npm` creates the npm tarball. `bun run publish:npm` publishes the staged `dist/`
+package, leaving workspace-only source, scripts, and dependencies out of the registry metadata.
+
+The client, server, and their internal workspace dependencies are bundled into `dist/main.js`.
+`@opentui/core` remains a package dependency so the package manager installs the correct native
+binary for the target platform. No other Mini Lilac workspace package is required after publishing.

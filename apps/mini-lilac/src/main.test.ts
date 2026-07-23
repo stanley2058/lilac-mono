@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { HELP_TEXT, runMiniLilac, type MiniLilacCommandRunners } from "./main";
+import { ensureServerDataDir, HELP_TEXT, runMiniLilac, type MiniLilacCommandRunners } from "./main";
 
 function testRunners(calls: string[]): MiniLilacCommandRunners {
   return {
@@ -15,6 +15,20 @@ function testRunners(calls: string[]): MiniLilacCommandRunners {
 }
 
 describe("mini-lilac command", () => {
+  it("gives bundled server utilities a package-safe data directory", () => {
+    const defaultEnv: Record<string, string | undefined> = {};
+    ensureServerDataDir(defaultEnv, "/home/tester");
+    expect(defaultEnv.DATA_DIR).toBe("/home/tester/.local/state/mini-lilac");
+
+    const xdgEnv: Record<string, string | undefined> = { XDG_STATE_HOME: "/state" };
+    ensureServerDataDir(xdgEnv, "/home/tester");
+    expect(xdgEnv.DATA_DIR).toBe("/state/mini-lilac");
+
+    const explicitEnv: Record<string, string | undefined> = { DATA_DIR: "/custom/data" };
+    ensureServerDataDir(explicitEnv, "/home/tester");
+    expect(explicitEnv.DATA_DIR).toBe("/custom/data");
+  });
+
   it("starts the TUI by default and supports an explicit tui command", async () => {
     const calls: string[] = [];
     const runners = testRunners(calls);
