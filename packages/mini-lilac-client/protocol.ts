@@ -513,6 +513,7 @@ function createToolPartSchema<TypeFields extends Record<string, z.ZodType>>(
       rawInput: z.never().optional(),
       output: z.never().optional(),
       errorText: z.never().optional(),
+      preliminary: z.never().optional(),
       callProviderMetadata: miniLilacProviderMetadataSchema.optional(),
       approval: z.never().optional(),
     }),
@@ -523,6 +524,7 @@ function createToolPartSchema<TypeFields extends Record<string, z.ZodType>>(
       rawInput: z.never().optional(),
       output: z.never().optional(),
       errorText: z.never().optional(),
+      preliminary: z.never().optional(),
       callProviderMetadata: miniLilacProviderMetadataSchema.optional(),
       approval: z.never().optional(),
     }),
@@ -533,6 +535,7 @@ function createToolPartSchema<TypeFields extends Record<string, z.ZodType>>(
       rawInput: z.never().optional(),
       output: z.never().optional(),
       errorText: z.never().optional(),
+      preliminary: z.never().optional(),
       callProviderMetadata: miniLilacProviderMetadataSchema.optional(),
       approval: z.strictObject({
         id: z.string(),
@@ -548,6 +551,7 @@ function createToolPartSchema<TypeFields extends Record<string, z.ZodType>>(
       rawInput: z.never().optional(),
       output: z.never().optional(),
       errorText: z.never().optional(),
+      preliminary: z.never().optional(),
       callProviderMetadata: miniLilacProviderMetadataSchema.optional(),
       approval: z.strictObject({
         id: z.string(),
@@ -601,6 +605,7 @@ function createToolPartSchema<TypeFields extends Record<string, z.ZodType>>(
       rawInput: z.never().optional(),
       output: z.never().optional(),
       errorText: z.never().optional(),
+      preliminary: z.never().optional(),
       callProviderMetadata: miniLilacProviderMetadataSchema.optional(),
       approval: z.strictObject({
         id: z.string(),

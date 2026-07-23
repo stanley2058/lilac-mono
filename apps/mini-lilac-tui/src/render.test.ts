@@ -666,6 +666,54 @@ describe("renderInitialMessages", () => {
     expect(renderInitialMessages(messages).map(({ id: _id, ...entry }) => entry)).toEqual(expected);
   });
 
+  it("shows native OpenAI web search queries from provider output", () => {
+    const query = "latest   runtime\nrelease";
+    const output = { action: { type: "search", query } };
+    const messages: MiniLilacUIMessage[] = [
+      {
+        id: "assistant-native-websearch",
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            toolName: "websearch",
+            toolCallId: "native-search-1",
+            state: "output-available",
+            input: {},
+            output,
+          },
+        ],
+      },
+    ];
+    const { renderer, entries } = createRendererHarness();
+
+    renderer.handle({
+      type: "tool-input-available",
+      toolCallId: "native-search-1",
+      toolName: "websearch",
+      input: {},
+      dynamic: true,
+    });
+    expect(entries()[0]?.text).toBe("Websearch");
+    renderer.handle({
+      type: "tool-output-available",
+      toolCallId: "native-search-1",
+      output,
+      dynamic: true,
+    });
+
+    const expected = {
+      kind: "tool",
+      tone: "success",
+      text: 'Search "latest runtime release"',
+      singleLine: true,
+    } satisfies Omit<TranscriptEntry, "id">;
+    expect(entries().map(({ id: _id, ...entry }) => entry)).toEqual([expected]);
+    expect(renderInitialMessages(messages).map(({ id: _id, ...entry }) => entry)).toEqual([
+      expected,
+    ]);
+  });
+
   it("collapses live and canonical reads and searches into one updating entry", () => {
     const { renderer, entries } = createRendererHarness();
     renderer.startRun();

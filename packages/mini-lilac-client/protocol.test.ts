@@ -485,6 +485,7 @@ describe("miniLilacUIMessageSchema", () => {
         toolMetadata: { destructive: false, tags: ["local"] },
         state: "input-streaming",
         input: { command: "pw" },
+        preliminary: undefined,
         providerExecuted: false,
         callProviderMetadata: { anthropic: { cacheControl: { type: "ephemeral" } } },
       },
@@ -494,12 +495,14 @@ describe("miniLilacUIMessageSchema", () => {
         toolCallId: "tool-2",
         state: "input-available",
         input: { query: "lilac" },
+        preliminary: undefined,
       },
       {
         type: "tool-shell",
         toolCallId: "tool-3",
         state: "approval-requested",
         input: { command: "rm file" },
+        preliminary: undefined,
         approval: {
           id: "approval-1",
           isAutomatic: false,
@@ -512,6 +515,7 @@ describe("miniLilacUIMessageSchema", () => {
         toolCallId: "tool-4",
         state: "approval-responded",
         input: { environment: "test" },
+        preliminary: undefined,
         approval: {
           id: "approval-2",
           approved: true,
@@ -550,6 +554,7 @@ describe("miniLilacUIMessageSchema", () => {
         toolCallId: "tool-7",
         state: "output-denied",
         input: { command: "rm file" },
+        preliminary: undefined,
         approval: {
           id: "approval-4",
           approved: false,

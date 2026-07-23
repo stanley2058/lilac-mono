@@ -80,15 +80,9 @@ export {
 export {
   createWebSearchProviderResolver,
   createWebsearchTool,
-  executeWebsearch,
   webSearchProviderSchema,
-  websearchInputSchema,
-  websearchOutputSchema,
-  type WebSearchGenerate,
-  type WebSearchGenerationResult,
   type WebSearchProvider,
   type WebSearchProviderResolver,
-  type WebsearchOutput,
 } from "./web-search";
 export {
   createWebfetchTool,

@@ -331,6 +331,9 @@ const todoWriteInputSchema = z.strictObject({ todos: miniLilacTodosSchema });
 const batchInputSchema = z.object({ tool_calls: z.array(z.unknown()) });
 const webfetchInputSchema = z.object({ url: z.string().trim().min(1) });
 const websearchInputSchema = z.object({ query: z.string().trim().min(1) });
+const websearchOutputSchema = z.object({
+  action: z.object({ query: z.string().trim().min(1) }),
+});
 
 type ToolRenderState =
   | { readonly status: "active"; readonly output?: unknown }
@@ -787,7 +790,14 @@ function toolEntry(
       edit,
     };
   }
-  const summary = name === "batch" ? "Parallel tools" : toolSummary(name, input);
+  const summary =
+    name === "batch"
+      ? "Parallel tools"
+      : toolSummary(
+          name,
+          input,
+          state.status === "success" || state.status === "active" ? state.output : undefined,
+        );
   const singleLine =
     name === "webfetch" || name === "websearch" || name === "apply_patch" || name === "edit_file";
   if (state.status === "error") {
@@ -822,7 +832,7 @@ function humanizeToolName(name: string): string {
     .join(" ");
 }
 
-export function toolSummary(name: string, input: unknown): string {
+export function toolSummary(name: string, input: unknown, output?: unknown): string {
   if (name === "bash") {
     const parsed = bashInputSchema.safeParse(input);
     if (parsed.success) return `$ ${previewText(parsed.data.command, 160)}`;
@@ -889,6 +899,10 @@ export function toolSummary(name: string, input: unknown): string {
   if (name === "websearch") {
     const parsed = websearchInputSchema.safeParse(input);
     if (parsed.success) return `Search "${parsed.data.query.replace(/\s+/gu, " ")}"`;
+    const parsedOutput = websearchOutputSchema.safeParse(output);
+    if (parsedOutput.success) {
+      return `Search "${parsedOutput.data.action.query.replace(/\s+/gu, " ")}"`;
+    }
   }
   return humanizeToolName(name);
 }
