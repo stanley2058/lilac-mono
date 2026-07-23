@@ -259,9 +259,7 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
         await refreshIfNeeded();
         auth = await readTokens();
         if (!auth?.access) {
-          throw new Error(
-            "Codex OAuth token refresh failed. Complete a new Codex OAuth login.",
-          );
+          throw new Error("Codex OAuth token refresh failed. Complete a new Codex OAuth login.");
         }
       }
 
