@@ -1,29 +1,19 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import {
+  parsePatch,
+  type PatchHunk,
+  type UpdateFileChunk,
+} from "@stanley2058/lilac-coding-tools/apply-patch";
+
+export { parsePatch };
 
 function expandTilde(inputPath: string): string {
   if (inputPath === "~") return homedir();
   if (inputPath.startsWith("~/")) return path.join(homedir(), inputPath.slice(2));
   return inputPath;
 }
-
-export type PatchHunk =
-  | { type: "add"; path: string; contents: string }
-  | { type: "delete"; path: string }
-  | {
-      type: "update";
-      path: string;
-      movePath?: string;
-      chunks: UpdateFileChunk[];
-    };
-
-export type UpdateFileChunk = {
-  oldLines: string[];
-  newLines: string[];
-  changeContext?: string;
-  isEndOfFile?: boolean;
-};
 
 function resolvePath(baseDir: string, p: string): string {
   return path.isAbsolute(p) ? p : path.resolve(baseDir, p);
@@ -38,181 +28,6 @@ function toDisplayPath(resolved: string, baseDir: string): string {
     return resolved;
   }
   return rel;
-}
-
-function stripHeredoc(input: string): string {
-  const heredocMatch = input.match(/^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/);
-  if (heredocMatch) return heredocMatch[2]!;
-  return input;
-}
-
-function parsePatchHeader(
-  lines: string[],
-  startIdx: number,
-): {
-  kind: "add" | "delete" | "update";
-  filePath: string;
-  movePath?: string;
-  nextIdx: number;
-} | null {
-  const line = lines[startIdx];
-  if (line === undefined) return null;
-
-  if (line.startsWith("*** Add File:")) {
-    const filePath = line.split(":", 2)[1]?.trim();
-    return filePath ? { kind: "add", filePath, nextIdx: startIdx + 1 } : null;
-  }
-
-  if (line.startsWith("*** Delete File:")) {
-    const filePath = line.split(":", 2)[1]?.trim();
-    return filePath ? { kind: "delete", filePath, nextIdx: startIdx + 1 } : null;
-  }
-
-  if (line.startsWith("*** Update File:")) {
-    const filePath = line.split(":", 2)[1]?.trim();
-    let movePath: string | undefined;
-    let nextIdx = startIdx + 1;
-
-    if (nextIdx < lines.length && lines[nextIdx]!.startsWith("*** Move to:")) {
-      movePath = lines[nextIdx]!.split(":", 2)[1]?.trim();
-      nextIdx += 1;
-    }
-
-    return filePath ? { kind: "update", filePath, movePath, nextIdx } : null;
-  }
-
-  return null;
-}
-
-function parseAddFileContent(
-  lines: string[],
-  startIdx: number,
-): { content: string; nextIdx: number } {
-  let content = "";
-  let i = startIdx;
-
-  while (i < lines.length && !lines[i]!.startsWith("***")) {
-    const line = lines[i]!;
-    if (line.startsWith("+")) {
-      content += line.substring(1) + "\n";
-    }
-    i += 1;
-  }
-
-  if (content.endsWith("\n")) {
-    content = content.slice(0, -1);
-  }
-
-  return { content, nextIdx: i };
-}
-
-function parseUpdateFileChunks(
-  lines: string[],
-  startIdx: number,
-): { chunks: UpdateFileChunk[]; nextIdx: number } {
-  const chunks: UpdateFileChunk[] = [];
-  let i = startIdx;
-
-  while (i < lines.length && !lines[i]!.startsWith("***")) {
-    const line = lines[i]!;
-    if (!line.startsWith("@@")) {
-      i += 1;
-      continue;
-    }
-
-    const contextLine = line.substring(2).trim();
-    i += 1;
-
-    const oldLines: string[] = [];
-    const newLines: string[] = [];
-    let isEndOfFile = false;
-
-    while (i < lines.length && !lines[i]!.startsWith("@@") && !lines[i]!.startsWith("***")) {
-      const changeLine = lines[i]!;
-      if (changeLine === "*** End of File") {
-        isEndOfFile = true;
-        i += 1;
-        break;
-      }
-
-      if (changeLine.startsWith(" ")) {
-        const content = changeLine.substring(1);
-        oldLines.push(content);
-        newLines.push(content);
-      } else if (changeLine.startsWith("-")) {
-        oldLines.push(changeLine.substring(1));
-      } else if (changeLine.startsWith("+")) {
-        newLines.push(changeLine.substring(1));
-      }
-
-      i += 1;
-    }
-
-    chunks.push({
-      oldLines,
-      newLines,
-      changeContext: contextLine || undefined,
-      isEndOfFile: isEndOfFile || undefined,
-    });
-  }
-
-  return { chunks, nextIdx: i };
-}
-
-export function parsePatch(patchText: string): PatchHunk[] {
-  const cleaned = stripHeredoc(patchText.trim());
-  const lines = cleaned.split("\n");
-
-  const beginMarker = "*** Begin Patch";
-  const endMarker = "*** End Patch";
-  const beginIdx = lines.findIndex((line) => line.trim() === beginMarker);
-  const endIdx = lines.findIndex((line) => line.trim() === endMarker);
-  if (beginIdx === -1 || endIdx === -1 || beginIdx >= endIdx) {
-    throw new Error("Invalid patch format: missing Begin/End markers");
-  }
-
-  const hunks: PatchHunk[] = [];
-  let i = beginIdx + 1;
-  while (i < endIdx) {
-    const header = parsePatchHeader(lines, i);
-    if (!header) {
-      i += 1;
-      continue;
-    }
-
-    if (header.kind === "add") {
-      const { content, nextIdx } = parseAddFileContent(lines, header.nextIdx);
-      hunks.push({ type: "add", path: header.filePath, contents: content });
-      i = nextIdx;
-      continue;
-    }
-
-    if (header.kind === "delete") {
-      hunks.push({ type: "delete", path: header.filePath });
-      i = header.nextIdx;
-      continue;
-    }
-
-    if (header.kind === "update") {
-      const { chunks, nextIdx } = parseUpdateFileChunks(lines, header.nextIdx);
-      hunks.push({
-        type: "update",
-        path: header.filePath,
-        movePath: header.movePath,
-        chunks,
-      });
-      i = nextIdx;
-      continue;
-    }
-
-    i += 1;
-  }
-
-  if (hunks.length === 0) {
-    throw new Error("patch rejected: empty patch");
-  }
-
-  return hunks;
 }
 
 function normalizeUnicode(str: string): string {

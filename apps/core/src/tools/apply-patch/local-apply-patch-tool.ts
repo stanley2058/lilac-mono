@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger } from "@stanley2058/lilac-utils";
+import { applyPatchInputSchema } from "@stanley2058/lilac-coding-tools/schemas";
 
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import { applyHunks, parsePatch } from "./apply-patch-core";
@@ -26,28 +27,12 @@ function isDeniedRemotePatchPath(remoteCwd: string, patchPath: string): boolean 
   return false;
 }
 
-const inputSchema = z.object({
-  patchText: z
-    .string()
-    .describe("Patch text in the '*** Begin Patch' format (Add/Update/Delete File sections)"),
-  cwd: z
-    .string()
-    .optional()
-    .describe(
-      "Optional base directory for relative patch paths. Also supports ssh-style '<host>:<path>' to run on a configured SSH host alias.",
-    ),
-  dangerouslyAllow: z
-    .boolean()
-    .optional()
-    .describe("Bypass filesystem denylist guardrails for this call."),
-});
-
 const outputSchema = z.object({
   status: z.enum(["completed", "failed"]),
   output: z.string().optional(),
 });
 
-type PatchInput = z.infer<typeof inputSchema>;
+type PatchInput = z.infer<typeof applyPatchInputSchema>;
 
 type ToolContext = {
   requestId: string;
@@ -69,7 +54,7 @@ export function localApplyPatchTool(
     apply_patch: tool({
       description:
         "Apply a patch in '*** Begin Patch' format (*** Add/Update/Delete File, optional *** Move to:, @@ context blocks). Remote denylisted paths require dangerouslyAllow=true.",
-      inputSchema,
+      inputSchema: applyPatchInputSchema,
       outputSchema,
       execute: async (input: PatchInput, { context }: { context?: unknown }) => {
         const ctx =

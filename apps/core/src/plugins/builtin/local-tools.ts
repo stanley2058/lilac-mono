@@ -1,4 +1,5 @@
 import type { ServerTool } from "@stanley2058/lilac-plugin-runtime";
+import { LEVEL1_TOOL_NAMES } from "@stanley2058/lilac-coding-tools/schemas";
 import { resolveNativeSubagentProfile } from "@stanley2058/lilac-utils";
 
 import { applyPatchTool } from "../../tools/apply-patch";
@@ -103,8 +104,8 @@ function getAgentActivityHandler(requestContext: {
     : undefined;
 }
 
-function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
-  return [
+export function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
+  const specs = [
     withBoundedOutput({
       name: "bash",
       isEnabled: () => true,
@@ -214,6 +215,14 @@ function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
         }).batch,
     }),
   ];
+  const names = specs.map((spec) => spec.name);
+  if (
+    names.length !== LEVEL1_TOOL_NAMES.length ||
+    names.some((name, index) => name !== LEVEL1_TOOL_NAMES[index])
+  ) {
+    throw new Error(`Built-in Level-1 registry does not match coding-tools: ${names.join(", ")}`);
+  }
+  return specs;
 }
 
 export function createBuiltinLocalToolsPlugin(): CoreToolPlugin {
